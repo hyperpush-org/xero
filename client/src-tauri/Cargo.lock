@@ -10277,6 +10277,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "xero-agent-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "xero-cli"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "xero-agent-core",
+]
+
+[[package]]
 name = "xero-desktop"
 version = "0.1.0"
 dependencies = [
@@ -10328,6 +10346,7 @@ dependencies = [
  "tonic-build",
  "url",
  "xcap",
+ "xero-agent-core",
  "zip",
 ]
 

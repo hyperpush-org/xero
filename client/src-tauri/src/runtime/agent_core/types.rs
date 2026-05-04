@@ -62,6 +62,51 @@ pub struct AgentToolDescriptor {
     pub input_schema: JsonValue,
 }
 
+impl AgentToolDescriptor {
+    pub fn to_core_descriptor_v2(
+        &self,
+        skill_tool_enabled: bool,
+    ) -> xero_agent_core::ToolDescriptorV2 {
+        let catalog = tool_catalog_metadata_for_tool(&self.name, skill_tool_enabled);
+        let effect_class = core_effect_class_for_tool(&self.name);
+        let mut telemetry_attributes = BTreeMap::from([
+            ("xero.tool.name".into(), self.name.clone()),
+            (
+                "xero.tool.effect_class".into(),
+                tool_effect_class(&self.name).as_str().into(),
+            ),
+            ("xero.tool.source".into(), "desktop_agent_registry".into()),
+        ]);
+        if let Some(catalog) = catalog.as_ref() {
+            for key in ["group", "riskClass", "effectClass"] {
+                if let Some(value) = catalog.get(key).and_then(JsonValue::as_str) {
+                    telemetry_attributes.insert(format!("xero.tool.catalog.{key}"), value.into());
+                }
+            }
+        }
+
+        xero_agent_core::ToolDescriptorV2 {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            input_schema: self.input_schema.clone(),
+            capability_tags: catalog
+                .as_ref()
+                .and_then(|catalog| catalog.get("tags"))
+                .map(json_string_vec)
+                .unwrap_or_default(),
+            effect_class,
+            mutability: core_mutability_for_tool(&self.name),
+            sandbox_requirement: core_sandbox_requirement_for_tool(&self.name),
+            approval_requirement: core_approval_requirement_for_tool(&self.name),
+            telemetry_attributes,
+            result_truncation: xero_agent_core::ToolResultTruncationContract {
+                max_output_bytes: 64 * 1024,
+                preserve_json_shape: false,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolRegistry {
     descriptors: Vec<AgentToolDescriptor>,
@@ -190,6 +235,13 @@ impl ToolRegistry {
 
     pub fn descriptors(&self) -> &[AgentToolDescriptor] {
         &self.descriptors
+    }
+
+    pub fn descriptors_v2(&self) -> Vec<xero_agent_core::ToolDescriptorV2> {
+        self.descriptors
+            .iter()
+            .map(|descriptor| descriptor.to_core_descriptor_v2(self.options.skill_tool_enabled))
+            .collect()
     }
 
     pub(crate) fn dynamic_routes(&self) -> &BTreeMap<String, AutonomousDynamicToolRoute> {
@@ -925,6 +977,59 @@ fn text_after_marker<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+fn core_effect_class_for_tool(tool_name: &str) -> xero_agent_core::ToolEffectClass {
+    match tool_effect_class(tool_name).as_str() {
+        "observe" => xero_agent_core::ToolEffectClass::Observe,
+        "runtime_state" => xero_agent_core::ToolEffectClass::AppStateMutation,
+        "write" | "destructive_write" => xero_agent_core::ToolEffectClass::WorkspaceMutation,
+        "command" | "process_control" => xero_agent_core::ToolEffectClass::CommandExecution,
+        "browser_control" => xero_agent_core::ToolEffectClass::BrowserControl,
+        "device_control" => xero_agent_core::ToolEffectClass::DeviceControl,
+        "external_service" | "skill_runtime" | "agent_delegation" => {
+            xero_agent_core::ToolEffectClass::ExternalService
+        }
+        _ => xero_agent_core::ToolEffectClass::Metadata,
+    }
+}
+
+fn core_mutability_for_tool(tool_name: &str) -> xero_agent_core::ToolMutability {
+    match tool_effect_class(tool_name).as_str() {
+        "observe" => xero_agent_core::ToolMutability::ReadOnly,
+        _ => xero_agent_core::ToolMutability::Mutating,
+    }
+}
+
+fn core_sandbox_requirement_for_tool(tool_name: &str) -> xero_agent_core::ToolSandboxRequirement {
+    match tool_effect_class(tool_name).as_str() {
+        "observe" => xero_agent_core::ToolSandboxRequirement::ReadOnly,
+        "runtime_state" => xero_agent_core::ToolSandboxRequirement::None,
+        "write" | "destructive_write" => xero_agent_core::ToolSandboxRequirement::WorkspaceWrite,
+        "external_service" => xero_agent_core::ToolSandboxRequirement::Network,
+        _ => xero_agent_core::ToolSandboxRequirement::FullLocal,
+    }
+}
+
+fn core_approval_requirement_for_tool(tool_name: &str) -> xero_agent_core::ToolApprovalRequirement {
+    match tool_effect_class(tool_name).as_str() {
+        "observe" => xero_agent_core::ToolApprovalRequirement::Never,
+        "destructive_write" => xero_agent_core::ToolApprovalRequirement::Always,
+        _ => xero_agent_core::ToolApprovalRequirement::Policy,
+    }
+}
+
+fn json_string_vec(value: &JsonValue) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1003,5 +1108,46 @@ mod tests {
             .expect_err("Ask must reject command calls even if the provider emits one");
 
         assert_eq!(error.code, "agent_tool_boundary_violation");
+    }
+
+    #[test]
+    fn descriptors_v2_preserve_policy_metadata_for_existing_tools() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_READ.to_string(),
+                AUTONOMOUS_TOOL_PATCH.to_string(),
+                AUTONOMOUS_TOOL_COMMAND.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        let descriptors = registry.descriptors_v2();
+        let read = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_READ)
+            .expect("read descriptor");
+        let patch = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_PATCH)
+            .expect("patch descriptor");
+        let command = descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_COMMAND)
+            .expect("command descriptor");
+
+        assert_eq!(read.mutability, xero_agent_core::ToolMutability::ReadOnly);
+        assert_eq!(patch.mutability, xero_agent_core::ToolMutability::Mutating);
+        assert_eq!(
+            command.effect_class,
+            xero_agent_core::ToolEffectClass::CommandExecution
+        );
+        assert!(read.capability_tags.iter().any(|tag| tag == "file"));
+        assert_eq!(
+            patch.sandbox_requirement,
+            xero_agent_core::ToolSandboxRequirement::WorkspaceWrite
+        );
     }
 }

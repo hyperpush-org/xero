@@ -1,4 +1,4 @@
-use std::{path::Path, thread};
+use std::path::Path;
 
 use tauri::{AppHandle, Runtime, State};
 
@@ -9,9 +9,8 @@ use crate::{
     },
     db::project_store::{self, RuntimeRunSnapshotRecord},
     runtime::{
-        create_owned_agent_run, drive_owned_agent_continuation, drive_owned_agent_run,
-        prepare_owned_agent_continuation_for_drive, AgentAutoCompactPreference, AgentRunSupervisor,
-        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
+        AgentAutoCompactPreference, AutonomousToolRuntime, ContinueOwnedAgentRunRequest,
+        DesktopAgentCoreRuntime, DesktopRunDriveMode, OwnedAgentRunRequest,
     },
     state::DesktopState,
 };
@@ -142,10 +141,8 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
     auto_compact: Option<AgentAutoCompactPreference>,
 ) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
-    if state
-        .agent_run_supervisor()
-        .is_active(&snapshot.run.run_id)?
-    {
+    let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+    if agent_core.is_active(&snapshot.run.run_id)? {
         return Err(CommandError::user_fixable(
             "agent_run_already_active",
             format!(
@@ -179,11 +176,10 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 answer_pending_actions,
                 auto_compact,
             };
-            let prepared = prepare_owned_agent_continuation_for_drive(&continuation)?;
+            let prepared =
+                agent_core.continue_run(continuation, DesktopRunDriveMode::CreateOnly)?;
             let target_run_id = prepared.drive_request.run_id.clone();
-            if target_run_id != snapshot.run.run_id
-                && state.agent_run_supervisor().is_active(&target_run_id)?
-            {
+            if target_run_id != snapshot.run.run_id && agent_core.is_active(&target_run_id)? {
                 return Err(CommandError::user_fixable(
                     "agent_run_already_active",
                     format!(
@@ -201,8 +197,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 None
             };
             if prepared.drive_required {
-                spawn_owned_agent_continuation(
-                    state.agent_run_supervisor().clone(),
+                agent_core.spawn_owned_agent_continuation(
                     prepared.snapshot.run.agent_session_id.clone(),
                     prepared.drive_request,
                 )?;
@@ -224,43 +219,11 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 tool_runtime,
                 provider_config,
             };
-            create_owned_agent_run(&request)?;
-            spawn_owned_agent_run(state.agent_run_supervisor().clone(), request)?;
+            agent_core.start_run(request, DesktopRunDriveMode::Background)?;
             Ok(None)
         }
         Err(error) => Err(error),
     }
-}
-
-fn spawn_owned_agent_run(
-    supervisor: AgentRunSupervisor,
-    request: OwnedAgentRunRequest,
-) -> CommandResult<()> {
-    let lease = supervisor.begin(
-        &request.project_id,
-        &request.agent_session_id,
-        &request.run_id,
-    )?;
-    thread::spawn(move || {
-        let token = lease.token();
-        let _ = drive_owned_agent_run(request, token);
-        drop(lease);
-    });
-    Ok(())
-}
-
-fn spawn_owned_agent_continuation(
-    supervisor: AgentRunSupervisor,
-    agent_session_id: String,
-    request: ContinueOwnedAgentRunRequest,
-) -> CommandResult<()> {
-    let lease = supervisor.begin(&request.project_id, &agent_session_id, &request.run_id)?;
-    thread::spawn(move || {
-        let token = lease.token();
-        let _ = drive_owned_agent_continuation(request, token);
-        drop(lease);
-    });
-    Ok(())
 }
 
 fn runtime_run_controls_as_input(

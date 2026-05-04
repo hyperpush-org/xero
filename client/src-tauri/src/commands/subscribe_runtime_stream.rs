@@ -348,10 +348,17 @@ fn owned_agent_event_runtime_item(
             let operation =
                 payload_string(&payload, "operation").unwrap_or_else(|| "change".into());
             let path = payload_string(&payload, "path").unwrap_or_else(|| "unknown path".into());
+            let actor = payload_string(&payload, "subagentId")
+                .zip(payload_string(&payload, "subagentRole"))
+                .map(|(subagent_id, role)| format!("{role} {subagent_id}"));
             item.title = Some("File changed".into());
             item.detail = payload_string(&payload, "toPath")
                 .map(|to_path| format!("{operation}: {path} -> {to_path}"))
-                .or_else(|| Some(format!("{operation}: {path}")));
+                .or_else(|| Some(format!("{operation}: {path}")))
+                .map(|detail| match actor {
+                    Some(actor) => format!("{detail} · {actor}"),
+                    None => detail,
+                });
             item.text = item.detail.clone();
         }
         AgentRunEventKind::CommandOutput => {

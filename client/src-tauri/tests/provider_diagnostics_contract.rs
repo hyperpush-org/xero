@@ -10,9 +10,9 @@ use xero_desktop_lib::{
     },
     runtime::{
         ambient_auth_failure_diagnostic, invalid_base_url_diagnostic,
-        provider_model_catalog_diagnostic, provider_readiness_diagnostic,
-        provider_validation_diagnostics, render_doctor_report, sanitize_diagnostic_text,
-        stale_runtime_binding_diagnostic, summarize_diagnostic_checks,
+        provider_capability_diagnostics, provider_model_catalog_diagnostic,
+        provider_readiness_diagnostic, provider_validation_diagnostics, render_doctor_report,
+        sanitize_diagnostic_text, stale_runtime_binding_diagnostic, summarize_diagnostic_checks,
         unsupported_provider_diagnostic, validate_diagnostic_check, validate_doctor_report,
         XeroDiagnosticCheck, XeroDiagnosticCheckInput, XeroDiagnosticEndpointMetadata,
         XeroDiagnosticRedactionClass, XeroDiagnosticSeverity, XeroDiagnosticStatus,
@@ -525,6 +525,35 @@ fn provider_diagnostics_validate_state_combinations_and_catalog_retryability() {
             .expect("manual catalog diagnostic");
     assert_eq!(manual.status, XeroDiagnosticStatus::Skipped);
     assert!(!manual.retryable);
+}
+
+#[test]
+fn provider_capability_diagnostics_classify_probe_truth_sources() {
+    let mut live_catalog = catalog(ProviderModelCatalogSource::Live, None);
+    live_catalog.models[0].context_window_tokens = Some(128_000);
+    live_catalog.models[0].max_output_tokens = Some(16_384);
+    let checks = provider_capability_diagnostics(&live_catalog, Some("openai/o4-mini"))
+        .expect("capability diagnostics");
+
+    assert!(checks.iter().any(|check| {
+        check.code == "provider_model_available"
+            && check.status == XeroDiagnosticStatus::Passed
+            && check.message.contains("openai/o4-mini")
+    }));
+    assert!(checks.iter().any(|check| {
+        check.code == "provider_tool_call_capability"
+            && check.status == XeroDiagnosticStatus::Passed
+    }));
+    assert!(checks.iter().any(|check| {
+        check.code == "provider_attachment_capability"
+            && check.status == XeroDiagnosticStatus::Failed
+    }));
+
+    let missing_model = provider_capability_diagnostics(&live_catalog, Some("missing-model"))
+        .expect("missing model diagnostics");
+    assert!(missing_model.iter().any(|check| {
+        check.code == "provider_model_unavailable" && check.status == XeroDiagnosticStatus::Failed
+    }));
 }
 
 #[test]

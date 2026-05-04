@@ -17,6 +17,9 @@ interface AgentContextMeterProps {
   status: AgentContextMeterStatus
   snapshot: SessionContextSnapshotDto | null
   hasUserMessage?: boolean
+  error?: {
+    message?: string | null
+  } | null
 }
 
 const RING_RADIUS = 8.5
@@ -81,7 +84,17 @@ function getRingTone(budget: SessionContextBudgetDto | null, status: AgentContex
   }
 }
 
-export function AgentContextMeter({ status, snapshot, hasUserMessage = true }: AgentContextMeterProps) {
+function getErrorMessage(error: AgentContextMeterProps['error']): string | null {
+  const message = error?.message?.trim()
+  return message && message.length > 0 ? message : null
+}
+
+export function AgentContextMeter({
+  status,
+  snapshot,
+  hasUserMessage = true,
+  error = null,
+}: AgentContextMeterProps) {
   const budget = snapshot?.budget ?? null
   const knownBudget = Boolean(budget?.knownProviderBudget && budget.pressurePercent != null)
   const hideBaselineUsage = knownBudget && !hasUserMessage
@@ -90,9 +103,12 @@ export function AgentContextMeter({ status, snapshot, hasUserMessage = true }: A
   const label = hideBaselineUsage ? 'Full' : getBudgetLabel(status, budget)
   const ringTone = hideBaselineUsage ? 'stroke-primary/65 text-primary' : getRingTone(budget, status)
   const fillOffset = RING_CIRCUMFERENCE * (1 - pressure / 100)
-  const tooltip = remainingPercent != null ? `${remainingPercent}% remaining` : label
+  const errorMessage = status === 'error' && !snapshot ? getErrorMessage(error) : null
+  const tooltip = errorMessage ?? (remainingPercent != null ? `${remainingPercent}% remaining` : label)
   const ariaValueText = knownBudget
     ? `${remainingPercent} percent context remaining for ${snapshot?.modelId ?? 'the selected model'}`
+    : errorMessage
+      ? `${label}: ${errorMessage}`
     : label
 
   return (

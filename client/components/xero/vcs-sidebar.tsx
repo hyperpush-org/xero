@@ -15,7 +15,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react"
-import { motion } from "motion/react"
+import { useReducedMotion } from "motion/react"
 import {
   createRepositoryStatusDiffRevision,
   type GitGenerateCommitMessageRequestDto,
@@ -48,7 +48,6 @@ import { useFixedVirtualizer } from "@/hooks/use-fixed-virtualizer"
 import { shouldVirtualizeRows } from "@/lib/virtual-list"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarMotion } from "@/lib/sidebar-motion"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
@@ -65,6 +64,9 @@ export const DIFF_LINE_HIGHLIGHT_BYTE_LIMIT = 8 * 1024
 export const DIFF_TOKENIZATION_BATCH_SIZE = 24
 const DIFF_PARSE_CACHE_MAX_ENTRIES = 80
 export const DIFF_PARSE_CACHE_MAX_BYTES = 4 * 1024 * 1024
+const SIDEBAR_REVEAL_EASE_CSS = "cubic-bezier(0.22, 1, 0.36, 1)"
+const SIDEBAR_REVEAL_DURATION_MS = 160
+const SIDEBAR_LAYOUT_DURATION_MS = 200
 
 type ChangeKind = RepositoryStatusEntryView["staged"]
 
@@ -151,11 +153,18 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
   const shouldRenderDiffPane = (status?.entries.length ?? 0) > 0
   const [width, setWidth] = useState<number>(() => defaultViewportWidth())
   const [isResizing, setIsResizing] = useState(false)
-  const { contentTransition, widthTransition } = useSidebarMotion(isResizing)
+  const shouldReduceMotion = useReducedMotion()
   const diffPatchCacheRef = useDiffPatchCacheRef()
   const widthRef = useRef(width)
   widthRef.current = width
   const renderedWidth = shouldRenderDiffPane ? width : FILE_LIST_WIDTH
+  const backdropTransition = shouldReduceMotion
+    ? "none"
+    : `opacity ${SIDEBAR_REVEAL_DURATION_MS}ms ${SIDEBAR_REVEAL_EASE_CSS}`
+  const panelTransition =
+    shouldReduceMotion || isResizing
+      ? "none"
+      : `transform ${SIDEBAR_LAYOUT_DURATION_MS}ms ${SIDEBAR_REVEAL_EASE_CSS}`
 
   useEffect(() => {
     diffPatchCacheRef.current.clear()
@@ -243,33 +252,32 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
   return (
     <>
       {/* Backdrop: dims the underlying app and dismisses the panel on click. */}
-      <motion.div
-        animate={{ opacity: open ? 1 : 0 }}
+      <div
         aria-hidden="true"
         className={cn(
           "fixed inset-0 z-40 bg-black/30",
-          open ? "pointer-events-auto" : "pointer-events-none",
+          open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
         )}
-        initial={false}
         onClick={handleClose}
-        transition={contentTransition}
+        style={{ transition: backdropTransition }}
       />
-      <motion.aside
-        animate={{ x: open ? 0 : renderedWidth }}
+      <aside
         aria-hidden={!open}
         aria-label="Source control panel"
         className={cn(
           "gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
           !open && "invisible",
         )}
-        initial={false}
         inert={!open ? true : undefined}
         style={{
           width: renderedWidth,
           contain: "layout paint style",
+          transform: open
+            ? "translate3d(0, 0, 0)"
+            : `translate3d(${renderedWidth}px, 0, 0)`,
+          transition: panelTransition,
           willChange: "transform",
         }}
-        transition={widthTransition}
       >
         {shouldRenderDiffPane ? (
           <div
@@ -291,7 +299,7 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
         ) : null}
 
         {open ? <VcsSidebarBody {...props} diffPatchCacheRef={diffPatchCacheRef} /> : null}
-      </motion.aside>
+      </aside>
     </>
   )
 })

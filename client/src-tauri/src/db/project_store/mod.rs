@@ -1,9 +1,11 @@
 mod agent_context;
 mod agent_continuity;
+mod agent_coordination;
 mod agent_core;
 mod agent_definition;
 mod agent_embeddings;
 mod agent_lineage;
+mod agent_mailbox;
 mod agent_memory;
 pub(crate) mod agent_memory_lance;
 mod agent_retrieval;
@@ -23,10 +25,12 @@ mod skills;
 
 pub use agent_context::*;
 pub use agent_continuity::*;
+pub use agent_coordination::*;
 pub use agent_core::*;
 pub use agent_definition::*;
 pub use agent_embeddings::*;
 pub use agent_lineage::*;
+pub use agent_mailbox::*;
 pub use agent_memory::*;
 pub use agent_retrieval::*;
 pub use agent_session::*;

@@ -34,7 +34,9 @@ import {
 import {
   agentRunEventSchema,
   agentRunSchema,
+  agentTraceExportSchema,
   cancelAgentRunRequestSchema,
+  exportAgentTraceRequestSchema,
   getAgentRunRequestSchema,
   listAgentRunsRequestSchema,
   listAgentRunsResponseSchema,
@@ -45,7 +47,9 @@ import {
   subscribeAgentStreamResponseSchema,
   type AgentRunDto,
   type AgentRunEventDto,
+  type AgentTraceExportDto,
   type CancelAgentRunRequestDto,
+  type ExportAgentTraceRequestDto,
   type GetAgentRunRequestDto,
   type ListAgentRunsResponseDto,
   type ResumeAgentRunRequestDto,
@@ -148,6 +152,13 @@ import {
   revokeProjectAssetTokensRequestSchema,
   searchProjectRequestSchema,
   searchProjectResponseSchema,
+  workspaceExplainRequestSchema,
+  workspaceExplainResponseSchema,
+  workspaceIndexRequestSchema,
+  workspaceIndexResponseSchema,
+  workspaceIndexStatusSchema,
+  workspaceQueryRequestSchema,
+  workspaceQueryResponseSchema,
   writeProjectFileRequestSchema,
   writeProjectFileResponseSchema,
   gitCommitRequestSchema,
@@ -187,6 +198,13 @@ import {
   type RevokeProjectAssetTokensRequestDto,
   type SearchProjectRequestDto,
   type SearchProjectResponseDto,
+  type WorkspaceExplainRequestDto,
+  type WorkspaceExplainResponseDto,
+  type WorkspaceIndexRequestDto,
+  type WorkspaceIndexResponseDto,
+  type WorkspaceIndexStatusDto,
+  type WorkspaceQueryRequestDto,
+  type WorkspaceQueryResponseDto,
   type WriteProjectFileResponseDto,
 } from '@/src/lib/xero-model/project'
 import {
@@ -391,6 +409,11 @@ const COMMANDS = {
   deleteProjectEntry: 'delete_project_entry',
   searchProject: 'search_project',
   replaceInProject: 'replace_in_project',
+  workspaceIndex: 'workspace_index',
+  workspaceStatus: 'workspace_status',
+  workspaceQuery: 'workspace_query',
+  workspaceExplain: 'workspace_explain',
+  workspaceReset: 'workspace_reset',
   createAgentSession: 'create_agent_session',
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
@@ -408,6 +431,7 @@ const COMMANDS = {
   cancelAgentRun: 'cancel_agent_run',
   resumeAgentRun: 'resume_agent_run',
   getAgentRun: 'get_agent_run',
+  exportAgentTrace: 'export_agent_trace',
   listAgentRuns: 'list_agent_runs',
   subscribeAgentStream: 'subscribe_agent_stream',
   getSessionTranscript: 'get_session_transcript',
@@ -709,6 +733,11 @@ export interface XeroDesktopAdapter {
   deleteProjectEntry(projectId: string, path: string): Promise<DeleteProjectEntryResponseDto>
   searchProject(request: SearchProjectRequestDto): Promise<SearchProjectResponseDto>
   replaceInProject(request: ReplaceInProjectRequestDto): Promise<ReplaceInProjectResponseDto>
+  workspaceIndex(request: WorkspaceIndexRequestDto): Promise<WorkspaceIndexResponseDto>
+  workspaceStatus(projectId: string): Promise<WorkspaceIndexStatusDto>
+  workspaceQuery(request: WorkspaceQueryRequestDto): Promise<WorkspaceQueryResponseDto>
+  workspaceExplain(request: WorkspaceExplainRequestDto): Promise<WorkspaceExplainResponseDto>
+  workspaceReset(projectId: string): Promise<WorkspaceIndexStatusDto>
   createAgentSession(request: CreateAgentSessionRequestDto): Promise<AgentSessionDto>
   listAgentDefinitions(
     request: ListAgentDefinitionsRequestDto,
@@ -745,6 +774,7 @@ export interface XeroDesktopAdapter {
     options?: { autoCompact?: ResumeAgentRunRequestDto['autoCompact'] },
   ): Promise<AgentRunDto>
   getAgentRun?(runId: string): Promise<AgentRunDto>
+  exportAgentTrace?(runId: string, options?: { includeSupportBundle?: boolean }): Promise<AgentTraceExportDto>
   listAgentRuns?(projectId: string, agentSessionId: string): Promise<ListAgentRunsResponseDto>
   getSessionTranscript?(request: GetSessionTranscriptRequestDto): Promise<SessionTranscriptDto>
   exportSessionTranscript?(
@@ -796,7 +826,7 @@ export interface XeroDesktopAdapter {
   runDoctorReport(request?: Partial<RunDoctorReportRequestDto>): Promise<XeroDoctorReportDto>
   checkProviderProfile(
     profileId: string,
-    options?: { includeNetwork?: boolean },
+    options?: { includeNetwork?: boolean; modelId?: string | null },
   ): Promise<ProviderProfileDiagnosticsDto>
   startOpenAiLogin(options?: StartOpenAiLoginOptions): Promise<ProviderAuthSessionDto>
   submitOpenAiCallback(
@@ -1635,6 +1665,41 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  workspaceIndex(request) {
+    const parsed = workspaceIndexRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.workspaceIndex, workspaceIndexResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  workspaceStatus(projectId) {
+    const request = z.object({ projectId: z.string().trim().min(1) }).parse({ projectId })
+    return invokeTypedDeduped(COMMANDS.workspaceStatus, workspaceIndexStatusSchema, {
+      request,
+    })
+  },
+
+  workspaceQuery(request) {
+    const parsed = workspaceQueryRequestSchema.parse(request)
+    return invokeTypedDeduped(COMMANDS.workspaceQuery, workspaceQueryResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  workspaceExplain(request) {
+    const parsed = workspaceExplainRequestSchema.parse(request)
+    return invokeTypedDeduped(COMMANDS.workspaceExplain, workspaceExplainResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  workspaceReset(projectId) {
+    const request = z.object({ projectId: z.string().trim().min(1) }).parse({ projectId })
+    return invokeTyped(COMMANDS.workspaceReset, workspaceIndexStatusSchema, {
+      request,
+    })
+  },
+
   createAgentSession(request) {
     const parsed = createAgentSessionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.createAgentSession, agentSessionSchema, {
@@ -1781,6 +1846,16 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       runId,
     })
     return invokeTyped(COMMANDS.getAgentRun, agentRunSchema, {
+      request,
+    })
+  },
+
+  exportAgentTrace(runId, options) {
+    const request: ExportAgentTraceRequestDto = exportAgentTraceRequestSchema.parse({
+      runId,
+      includeSupportBundle: options?.includeSupportBundle ?? false,
+    })
+    return invokeTyped(COMMANDS.exportAgentTrace, agentTraceExportSchema, {
       request,
     })
   },
@@ -2047,6 +2122,7 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     const request = checkProviderProfileRequestSchema.parse({
       profileId,
       includeNetwork: options?.includeNetwork ?? false,
+      modelId: options?.modelId ?? null,
     })
     return invokeTyped(COMMANDS.checkProviderProfile, providerProfileDiagnosticsSchema, {
       request,

@@ -1,34 +1,44 @@
 import {
   CheckCircle2,
-  Circle,
   Loader2,
   FolderTree,
   FileCode2,
   GitBranch,
   Play,
   Cpu,
+  PauseCircle,
+  Bot,
 } from "lucide-react"
 
-const steps = [
-  { label: "Parse spec & scaffold Next.js app", state: "done" as const },
-  { label: "Provision Postgres + run migrations", state: "done" as const },
-  { label: "Generate auth flow (credentials + OAuth)", state: "done" as const },
-  { label: "Implement billing w/ Stripe checkout", state: "running" as const },
-  { label: "Write Playwright e2e suite", state: "queued" as const },
-  { label: "Deploy preview to Vercel", state: "queued" as const },
+const events = [
+  { kind: "tool", label: "repo.read · src/billing.ts", state: "done" as const },
+  { kind: "tool", label: "repo.edit · extract retry helper", state: "done" as const },
+  { kind: "tool", label: "shell · cargo test billing", state: "done" as const, detail: "12 passed · 0 failed · 8.2s" },
+  { kind: "tool", label: "git.commit · refactor: extract retry helper", state: "done" as const },
+  { kind: "tool", label: "browser · localhost:3000/billing", state: "running" as const, detail: "navigating · captured a11y snapshot" },
+  { kind: "ask", label: "approval · push branch `try-pg` to origin?", state: "paused" as const },
 ]
 
 const files = [
   { name: "app/", depth: 0, type: "folder" as const },
   { name: "layout.tsx", depth: 1, type: "file" as const },
-  { name: "page.tsx", depth: 1, type: "file" as const, active: true },
+  { name: "page.tsx", depth: 1, type: "file" as const },
   { name: "(auth)/", depth: 1, type: "folder" as const },
   { name: "login/page.tsx", depth: 2, type: "file" as const },
-  { name: "billing/route.ts", depth: 1, type: "file" as const, changed: true },
+  { name: "billing/", depth: 1, type: "folder" as const },
+  { name: "billing.ts", depth: 2, type: "file" as const, active: true, changed: true },
+  { name: "billing.test.ts", depth: 2, type: "file" as const, changed: true },
   { name: "components/", depth: 0, type: "folder" as const },
-  { name: "pricing.tsx", depth: 1, type: "file" as const },
   { name: "lib/", depth: 0, type: "folder" as const },
-  { name: "db.ts", depth: 1, type: "file" as const },
+]
+
+const panes = [
+  { role: "Engineer", model: "claude-opus-4.7", state: "running" },
+  { role: "Debug", model: "gpt-5", state: "running" },
+  { role: "Ask", model: "gemini-2.5-pro", state: "idle" },
+  { role: "Engineer", model: "qwen3:32b · ollama", state: "running" },
+  { role: "Engineer", model: "via openrouter", state: "decision" },
+  { role: "solana-ops", model: "claude-sonnet-4.6", state: "idle" },
 ]
 
 export function AppWindowMock() {
@@ -43,13 +53,13 @@ export function AppWindowMock() {
         </div>
         <div className="mx-auto flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-3 py-1 text-xs text-muted-foreground">
           <GitBranch className="h-3 w-3" />
-          <span className="font-mono">Xero / acme-saas</span>
+          <span className="font-mono">xero / acme-saas</span>
           <span className="mx-1 text-border">·</span>
-          <span className="font-mono text-primary">main</span>
+          <span className="font-mono text-primary">try-pg</span>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Cpu className="h-3.5 w-3.5" />
-          <span className="font-mono">42MB</span>
+          <span className="font-mono">6 panes · live</span>
         </div>
       </div>
 
@@ -83,6 +93,40 @@ export function AppWindowMock() {
               </li>
             ))}
           </ul>
+
+          <div className="mt-5 space-y-1.5">
+            <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              Sessions
+            </div>
+            {panes.map((p, i) => (
+              <div
+                key={i}
+                className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-[11px] ${
+                  p.state === "decision"
+                    ? "border-primary/40 bg-primary/[0.06]"
+                    : "border-border/60 bg-background/40"
+                }`}
+              >
+                <Bot
+                  className={`h-3 w-3 shrink-0 ${
+                    p.state === "running" || p.state === "decision"
+                      ? "text-primary"
+                      : "text-muted-foreground/70"
+                  }`}
+                />
+                <span className="truncate font-mono text-foreground/90">{p.role}</span>
+                <span
+                  className={`ml-auto text-[9px] uppercase tracking-wider ${
+                    p.state === "running" || p.state === "decision"
+                      ? "text-primary"
+                      : "text-muted-foreground/70"
+                  }`}
+                >
+                  {p.state}
+                </span>
+              </div>
+            ))}
+          </div>
         </aside>
 
         {/* Middle: agent run */}
@@ -93,18 +137,22 @@ export function AppWindowMock() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-70" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
               </div>
-              <span className="text-sm font-medium">Agent · build SaaS with auth &amp; billing</span>
+              <span className="text-sm font-medium">Engineer · refactor billing module</span>
             </div>
             <span className="rounded-md border border-border/70 bg-secondary/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-              step 4 / 6
+              event 6 / 6
             </span>
           </div>
 
           <ol className="space-y-2">
-            {steps.map((s, i) => (
+            {events.map((s, i) => (
               <li
                 key={s.label}
-                className="flex items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2"
+                className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${
+                  s.state === "paused"
+                    ? "border-primary/40 bg-primary/[0.06]"
+                    : "border-border/60 bg-background/40"
+                }`}
               >
                 <div className="mt-0.5 shrink-0">
                   {s.state === "done" && (
@@ -113,23 +161,20 @@ export function AppWindowMock() {
                   {s.state === "running" && (
                     <Loader2 className="h-4 w-4 animate-spin text-primary" />
                   )}
-                  {s.state === "queued" && (
-                    <Circle className="h-4 w-4 text-muted-foreground/60" />
+                  {s.state === "paused" && (
+                    <PauseCircle className="h-4 w-4 text-primary" />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div
-                    className={`text-sm ${
-                      s.state === "queued"
-                        ? "text-muted-foreground"
-                        : "text-foreground"
-                    }`}
-                  >
+                  <div className="text-sm text-foreground">
+                    <span className="mr-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                      {s.kind}
+                    </span>
                     {s.label}
                   </div>
-                  {s.state === "running" && (
+                  {s.detail && (
                     <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                      <span className="text-primary">→</span> running `cargo test billing` · 8.2s
+                      <span className="text-primary">→</span> {s.detail}
                     </div>
                   )}
                 </div>
@@ -141,7 +186,7 @@ export function AppWindowMock() {
           </ol>
         </div>
 
-        {/* Right: approval / notification */}
+        {/* Right: approval / preview */}
         <div className="col-span-12 flex flex-col gap-3 border-t border-border/60 p-4 md:col-span-3 md:border-t-0">
           <div className="rounded-lg border border-primary/30 bg-primary/[0.06] p-3">
             <div className="flex items-center gap-2 text-xs font-medium text-primary">
@@ -149,15 +194,15 @@ export function AppWindowMock() {
               Decision needed
             </div>
             <p className="mt-1.5 text-sm text-foreground">
-              Stripe test key detected. Use <span className="font-mono text-primary">test</span>{" "}
-              mode or prompt for live keys?
+              Push branch <span className="font-mono text-primary">try-pg</span>{" "}
+              to <span className="font-mono">origin</span>? 4 commits ahead.
             </p>
             <div className="mt-3 flex gap-2">
               <button className="flex-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90">
-                Test mode
+                Approve
               </button>
               <button className="flex-1 rounded-md border border-border/70 bg-secondary/40 px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">
-                Prompt me
+                Skip
               </button>
             </div>
             <p className="mt-3 font-mono text-[10px] text-muted-foreground">
@@ -168,7 +213,7 @@ export function AppWindowMock() {
           <div className="rounded-lg border border-border/60 bg-background/40 p-3">
             <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
               <Play className="h-3 w-3" />
-              Preview
+              Browser pane
             </div>
             <div className="space-y-1.5">
               <div className="h-1.5 w-3/4 rounded-full bg-secondary" />
@@ -188,14 +233,14 @@ export function AppWindowMock() {
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1">
             <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-            agent: claude-opus-4.6
+            engineer · claude-opus-4.7
           </span>
-          <span>harness: rust-tokio</span>
-          <span className="hidden sm:inline">persistence: sqlite</span>
+          <span className="hidden sm:inline">persistence: local sqlite</span>
+          <span className="hidden md:inline">redaction: on</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="hidden sm:inline">123 tool calls</span>
-          <span>via your ChatGPT plan</span>
+          <span className="hidden sm:inline">7 tools wired</span>
+          <span>via your own provider keys</span>
           <span className="text-primary">●</span>
         </div>
       </div>

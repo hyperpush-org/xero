@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use xero_agent_core::ProviderCapabilityCatalog;
 
 use super::agent::AgentAutoCompactPreferenceDto;
 use super::autonomous::{
@@ -742,6 +743,17 @@ pub struct ProviderModelDto {
     pub model_id: String,
     pub display_name: String,
     pub thinking: ProviderModelThinkingCapabilityDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_source: Option<super::session_context::SessionContextLimitSourceDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_confidence: Option<super::session_context::SessionContextLimitConfidenceDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_limit_fetched_at: Option<String>,
+    pub capabilities: ProviderCapabilityCatalog,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -751,8 +763,12 @@ pub struct ProviderModelCatalogDto {
     pub provider_id: String,
     pub configured_model_id: String,
     pub source: ProviderModelCatalogSourceDto,
+    pub capabilities: ProviderCapabilityCatalog,
     pub fetched_at: Option<String>,
     pub last_success_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_age_seconds: Option<i64>,
+    pub cache_ttl_seconds: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refresh_error: Option<ProviderModelCatalogDiagnosticDto>,
     pub models: Vec<ProviderModelDto>,
@@ -819,6 +835,8 @@ pub struct CheckProviderProfileRequestDto {
     pub profile_id: String,
     #[serde(default)]
     pub include_network: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -829,6 +847,8 @@ pub struct ProviderProfileDiagnosticsDto {
     pub provider_id: String,
     pub validation_checks: Vec<crate::runtime::XeroDiagnosticCheck>,
     pub reachability_checks: Vec<crate::runtime::XeroDiagnosticCheck>,
+    #[serde(default)]
+    pub capability_checks: Vec<crate::runtime::XeroDiagnosticCheck>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_catalog: Option<ProviderModelCatalogDto>,
 }

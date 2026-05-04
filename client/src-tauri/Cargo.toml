@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = [".", "crates/xero-agent-core", "crates/xero-cli"]
 exclude = ["crates/cookie-importer"]
 resolver = "2"
 
@@ -97,6 +97,7 @@ tonic = { version = "0.12", optional = true }
 url = "2"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+xero-agent-core = { path = "crates/xero-agent-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.23", features = ["elcapitan"] }

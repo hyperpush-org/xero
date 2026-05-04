@@ -135,7 +135,7 @@ function renderVcsSidebar(
     onPush: vi.fn(async () => ({ remote: 'origin', branch: 'main', updates: [] })),
   }
 
-  return { ...render(<VcsSidebar {...props} />), onLoadDiff }
+  return { ...render(<VcsSidebar {...props} />), onLoadDiff, props }
 }
 
 describe('VcsSidebar', () => {
@@ -185,6 +185,19 @@ describe('VcsSidebar', () => {
     expect(screen.queryByLabelText('Resize source control sidebar')).not.toBeInTheDocument()
     expect(screen.queryByText('Select a file')).not.toBeInTheDocument()
     expect(onLoadDiff).not.toHaveBeenCalled()
+  })
+
+  it('moves onscreen immediately when opened after mounting closed', () => {
+    const { props, rerender } = renderVcsSidebar('', { open: false })
+    const panel = screen.getByLabelText('Source control panel')
+
+    expect(panel).toHaveClass('invisible')
+    expect(panel.style.transform).not.toBe('translate3d(0, 0, 0)')
+
+    rerender(<VcsSidebar {...props} open />)
+
+    expect(panel).not.toHaveClass('invisible')
+    expect(panel.style.transform).toBe('translate3d(0, 0, 0)')
   })
 
   it('keeps the hidden panel unpainted when closed status changes add a diff pane', () => {

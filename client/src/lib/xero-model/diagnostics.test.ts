@@ -204,9 +204,11 @@ describe('diagnostics contract', () => {
     expect(checkProviderProfileRequestSchema.parse({
       profileId: ' openrouter-default ',
       includeNetwork: true,
+      modelId: ' openai/gpt-4.1-mini ',
     })).toEqual({
       profileId: 'openrouter-default',
       includeNetwork: true,
+      modelId: 'openai/gpt-4.1-mini',
     })
 
     const validationCheck = createXeroDiagnosticCheck({
@@ -231,6 +233,16 @@ describe('diagnostics contract', () => {
       affectedProviderId: 'openrouter',
       remediation: 'Xero is keeping the last successful model catalog visible.',
     })
+    const capabilityCheck = createXeroDiagnosticCheck({
+      subject: 'model_catalog',
+      status: 'passed',
+      severity: 'info',
+      retryable: false,
+      code: 'provider_tool_call_capability_supported',
+      message: 'OpenRouter tool-call support is available for the selected model.',
+      affectedProfileId: 'openrouter-default',
+      affectedProviderId: 'openrouter',
+    })
 
     const diagnostics = providerProfileDiagnosticsSchema.parse({
       checkedAt: '2026-04-26T12:00:00Z',
@@ -238,6 +250,7 @@ describe('diagnostics contract', () => {
       providerId: 'openrouter',
       validationChecks: [validationCheck],
       reachabilityChecks: [reachabilityCheck],
+      capabilityChecks: [capabilityCheck],
       modelCatalog: {
         profileId: 'openrouter-default',
         providerId: 'openrouter',
@@ -266,6 +279,7 @@ describe('diagnostics contract', () => {
 
     expect(diagnostics.validationChecks[0].code).toBe('provider_credentials_missing')
     expect(diagnostics.reachabilityChecks[0].code).toBe('openrouter_rate_limited')
+    expect(diagnostics.capabilityChecks[0].code).toBe('provider_tool_call_capability_supported')
 
     expect(() =>
       providerProfileDiagnosticsSchema.parse({

@@ -62,6 +62,7 @@ pub mod update_runtime_run_controls;
 pub mod upsert_mcp_server;
 pub mod upsert_notification_route;
 pub mod upsert_notification_route_credentials;
+pub mod workspace_index;
 
 mod contracts;
 pub(crate) mod runtime_support;
@@ -75,8 +76,8 @@ pub use agent_session::{
 };
 pub use agent_session_title::auto_name_agent_session;
 pub use agent_task::{
-    cancel_agent_run, get_agent_run, list_agent_runs, resume_agent_run, send_agent_message,
-    start_agent_task, subscribe_agent_stream,
+    cancel_agent_run, export_agent_trace, get_agent_run, list_agent_runs, resume_agent_run,
+    send_agent_message, start_agent_task, subscribe_agent_stream,
 };
 pub use browser::{
     browser_back, browser_click, browser_control_settings, browser_control_update_settings,
@@ -200,6 +201,9 @@ pub use update_runtime_run_controls::update_runtime_run_controls;
 pub use upsert_mcp_server::upsert_mcp_server;
 pub use upsert_notification_route::upsert_notification_route;
 pub use upsert_notification_route_credentials::upsert_notification_route_credentials;
+pub use workspace_index::{
+    workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,
+};
 
 pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{

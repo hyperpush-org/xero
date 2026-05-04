@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Workflow as WorkflowIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
 import { cn } from '@/lib/utils'
 import type { WorkflowPaneView } from '@/src/features/xero/use-xero-desktop-state'
 
@@ -15,6 +16,7 @@ interface PhaseViewProps {
   onToggleWorkflows?: () => void
   workflowsOpen?: boolean
   onCreateWorkflow?: () => void
+  onCreateAgent?: () => void
 }
 
 const BASE_GRID_SIZE = 28
@@ -22,7 +24,12 @@ const MIN_ZOOM = 0.25
 const MAX_ZOOM = 4
 
 export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
-  const { onToggleWorkflows, workflowsOpen = false, onCreateWorkflow } = props
+  const {
+    onToggleWorkflows,
+    workflowsOpen = false,
+    onCreateWorkflow,
+    onCreateAgent,
+  } = props
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
@@ -125,6 +132,11 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
         ['--workflow-dot-size' as string]: `${dotRadius}px`,
       }}
     >
+      <WorkflowCanvasEmptyState
+        onCreateWorkflow={onCreateWorkflow}
+        onCreateAgent={onCreateAgent}
+      />
+
       {onToggleWorkflows || onCreateWorkflow ? (
         <div
           className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"

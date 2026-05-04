@@ -1560,6 +1560,7 @@ pub fn approved_memory_context_contributors(
 
 const DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS: u64 = 4_096;
 const DEFAULT_CONTEXT_LIMIT_SAFETY_RESERVE_PERCENT: u64 = 15;
+const OPENAI_CODEX_CONTEXT_WINDOW_TOKENS: u64 = 272_000;
 
 pub fn context_budget(
     estimated_tokens: u64,
@@ -1754,6 +1755,19 @@ fn built_in_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
     }
     if model.contains("claude") {
         return Some(200_000);
+    }
+    if [
+        "gpt-5.2",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.5",
+    ]
+    .iter()
+    .any(|model_marker| model.contains(model_marker))
+    {
+        return Some(OPENAI_CODEX_CONTEXT_WINDOW_TOKENS);
     }
     if model.contains("gpt-5")
         || model.contains("gpt-4.1")

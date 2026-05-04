@@ -9,6 +9,7 @@ use std::{
 use git2::{IndexAddOption, Repository, Signature};
 use tauri::Manager;
 use tempfile::TempDir;
+use xero_agent_core::DomainToolPackHealthStatus;
 use xero_desktop_lib::{
     commands::{
         RepositoryDiffScope, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
@@ -22,20 +23,20 @@ use xero_desktop_lib::{
     },
     registry::{self, RegistryProjectRecord},
     runtime::{
-        AutonomousCodeIntelAction, AutonomousCodeIntelRequest, AutonomousCommandPolicyOutcome,
-        AutonomousCommandRequest, AutonomousEditRequest, AutonomousFindRequest,
-        AutonomousGitDiffRequest, AutonomousGitStatusRequest, AutonomousLspAction,
-        AutonomousLspRequest, AutonomousMacosAutomationAction, AutonomousMacosAutomationRequest,
-        AutonomousMcpAction, AutonomousMcpRequest, AutonomousNotebookEditRequest,
-        AutonomousProcessManagerAction, AutonomousProcessManagerRequest,
-        AutonomousProcessOwnershipScope, AutonomousReadMode, AutonomousReadRequest,
-        AutonomousSearchRequest, AutonomousSubagentAction, AutonomousSubagentRequest,
-        AutonomousSubagentRole, AutonomousTodoAction, AutonomousTodoRequest,
-        AutonomousToolAccessAction, AutonomousToolAccessRequest, AutonomousToolOutput,
-        AutonomousToolRequest, AutonomousToolRuntime, AutonomousToolRuntimeLimits,
-        AutonomousToolSearchRequest, AutonomousWebConfig, AutonomousWebFetchContentKind,
-        AutonomousWebFetchRequest, AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest,
-        AutonomousWriteRequest,
+        AutonomousAgentToolPolicy, AutonomousCodeIntelAction, AutonomousCodeIntelRequest,
+        AutonomousCommandPolicyOutcome, AutonomousCommandRequest, AutonomousEditRequest,
+        AutonomousFindRequest, AutonomousGitDiffRequest, AutonomousGitStatusRequest,
+        AutonomousLspAction, AutonomousLspRequest, AutonomousMacosAutomationAction,
+        AutonomousMacosAutomationRequest, AutonomousMcpAction, AutonomousMcpRequest,
+        AutonomousNotebookEditRequest, AutonomousProcessManagerAction,
+        AutonomousProcessManagerRequest, AutonomousProcessOwnershipScope, AutonomousReadMode,
+        AutonomousReadRequest, AutonomousSearchRequest, AutonomousSubagentAction,
+        AutonomousSubagentLimits, AutonomousSubagentRequest, AutonomousSubagentRole,
+        AutonomousTodoAction, AutonomousTodoRequest, AutonomousToolAccessAction,
+        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
+        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousToolSearchRequest,
+        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
 };
@@ -385,7 +386,7 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
     match list.output {
         AutonomousToolOutput::ToolAccess(output) => {
             assert_eq!(output.action, "list");
-            assert!(output
+            assert!(!output
                 .available_groups
                 .iter()
                 .any(|group| group.name == "emulator"));
@@ -394,6 +395,7 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                 .iter()
                 .any(|group| group.name == "process_manager"
                     && group.tools == vec!["process_manager"]));
+            #[cfg(target_os = "macos")]
             assert!(output
                 .available_groups
                 .iter()
@@ -403,9 +405,10 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                     && group.tools == vec!["web_search"]
                     && group.risk_class == "network"
             }));
-            assert!(output.available_groups.iter().any(|group| {
-                group.name == "browser_observe" && group.tools == vec!["browser"]
-            }));
+            assert!(!output
+                .available_groups
+                .iter()
+                .any(|group| group.name == "browser_observe"));
             assert!(output.available_groups.iter().any(|group| {
                 group.name == "command_readonly" && group.tools == vec!["command"]
             }));
@@ -413,6 +416,16 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                 .available_groups
                 .iter()
                 .any(|group| { group.name == "mcp_list" && group.tools == vec!["mcp"] }));
+            assert!(output
+                .available_tool_packs
+                .iter()
+                .any(|pack| pack.pack_id == "project_context"));
+            let browser_health = output
+                .tool_pack_health
+                .iter()
+                .find(|report| report.pack_id == "browser")
+                .expect("browser tool-pack health");
+            assert_eq!(browser_health.status, DomainToolPackHealthStatus::Skipped);
         }
         other => panic!("unexpected output: {other:?}"),
     }
@@ -436,15 +449,16 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
     match request.output {
         AutonomousToolOutput::ToolAccess(output) => {
             assert_eq!(output.action, "request");
-            assert!(output.granted_tools.contains(&"emulator".into()));
             assert!(output.granted_tools.contains(&"process_manager".into()));
+            #[cfg(target_os = "macos")]
             assert!(output.granted_tools.contains(&"macos_automation".into()));
             assert!(output.granted_tools.contains(&"web_search".into()));
             assert!(output
                 .granted_tools
                 .contains(&"command_session_start".into()));
             assert!(output.granted_tools.contains(&"command".into()));
-            assert!(output.granted_tools.contains(&"solana_alt".into()));
+            assert!(output.denied_tools.contains(&"emulator".into()));
+            assert!(output.denied_tools.contains(&"solana_alt".into()));
             assert!(output.denied_tools.contains(&"missing_tool".into()));
         }
         other => panic!("unexpected output: {other:?}"),
@@ -938,6 +952,7 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
             assert_eq!(first.tool_name, "solana_alt");
             assert!(first.tags.contains(&"address_lookup_table".into()));
             assert!(first.activation_groups.contains(&"solana".into()));
+            assert!(first.tool_pack_ids.contains(&"solana".into()));
         }
         other => panic!("unexpected obscure solana tool search output: {other:?}"),
     }
@@ -980,11 +995,15 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
         .subagent(AutonomousSubagentRequest {
             action: AutonomousSubagentAction::Spawn,
             task_id: None,
-            role: Some(AutonomousSubagentRole::Explorer),
+            role: Some(AutonomousSubagentRole::Researcher),
             prompt: Some("Find the relevant symbols.".into()),
             model_id: Some("fast-model".into()),
             write_set: Vec::new(),
             decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
         })
         .expect("subagent task");
     match subagent.output {
@@ -1092,22 +1111,31 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
 }
 
 #[test]
-fn subagent_runtime_enforces_worker_ownership_and_integration_decisions() {
+fn subagent_runtime_enforces_engineer_ownership_and_integration_decisions() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let runtime = AutonomousToolRuntime::new(temp.path()).expect("runtime");
+    let runtime = AutonomousToolRuntime::new(temp.path())
+        .expect("runtime")
+        .with_subagent_limits(AutonomousSubagentLimits {
+            max_concurrent_child_runs: 6,
+            ..AutonomousSubagentLimits::default()
+        });
 
-    let first_worker = runtime
+    let first_engineer = runtime
         .subagent(AutonomousSubagentRequest {
             action: AutonomousSubagentAction::Spawn,
             task_id: None,
-            role: Some(AutonomousSubagentRole::Worker),
+            role: Some(AutonomousSubagentRole::Engineer),
             prompt: Some("Own the source root.".into()),
             model_id: None,
             write_set: vec!["src".into()],
             decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
         })
-        .expect("spawn first worker");
-    match first_worker.output {
+        .expect("spawn first engineer");
+    match first_engineer.output {
         AutonomousToolOutput::Subagent(output) => {
             assert_eq!(output.task.status, "registered");
             assert_eq!(output.task.write_set, vec!["src"]);
@@ -1115,18 +1143,22 @@ fn subagent_runtime_enforces_worker_ownership_and_integration_decisions() {
         other => panic!("unexpected subagent output: {other:?}"),
     }
 
-    let overlapping_worker = runtime.subagent(AutonomousSubagentRequest {
+    let overlapping_engineer = runtime.subagent(AutonomousSubagentRequest {
         action: AutonomousSubagentAction::Spawn,
         task_id: None,
-        role: Some(AutonomousSubagentRole::Worker),
+        role: Some(AutonomousSubagentRole::Engineer),
         prompt: Some("Try overlapping ownership.".into()),
         model_id: None,
         write_set: vec!["src/lib.rs".into()],
         decision: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        max_tokens: None,
+        max_cost_micros: None,
     });
     assert_eq!(
-        overlapping_worker
-            .expect_err("overlapping worker should be denied")
+        overlapping_engineer
+            .expect_err("overlapping engineer should be denied")
             .code,
         "autonomous_tool_subagent_write_set_conflict"
     );
@@ -1139,6 +1171,10 @@ fn subagent_runtime_enforces_worker_ownership_and_integration_decisions() {
         model_id: None,
         write_set: vec!["README.md".into()],
         decision: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        max_tokens: None,
+        max_cost_micros: None,
     });
     assert_eq!(
         readonly_with_write_set
@@ -1156,8 +1192,12 @@ fn subagent_runtime_enforces_worker_ownership_and_integration_decisions() {
             model_id: None,
             write_set: Vec::new(),
             decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
         })
-        .expect("cancel worker");
+        .expect("cancel engineer");
 
     let integrated = runtime
         .subagent(AutonomousSubagentRequest {
@@ -1167,19 +1207,298 @@ fn subagent_runtime_enforces_worker_ownership_and_integration_decisions() {
             prompt: None,
             model_id: None,
             write_set: Vec::new(),
-            decision: Some("Do not apply output; worker was cancelled.".into()),
+            decision: Some("Do not apply output; engineer was cancelled.".into()),
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
         })
-        .expect("integrate cancelled worker");
+        .expect("integrate cancelled engineer");
     match integrated.output {
         AutonomousToolOutput::Subagent(output) => {
             assert_eq!(
                 output.task.parent_decision.as_deref(),
-                Some("Do not apply output; worker was cancelled.")
+                Some("Do not apply output; engineer was cancelled.")
             );
             assert!(output.task.integrated_at.is_some());
         }
         other => panic!("unexpected subagent output: {other:?}"),
     }
+}
+
+#[test]
+fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(temp.path())
+        .expect("runtime")
+        .with_subagent_limits(AutonomousSubagentLimits {
+            max_child_agents: 2,
+            max_depth: 1,
+            max_concurrent_child_runs: 2,
+            max_delegated_tool_calls: 5,
+            max_delegated_tokens: 1_000,
+            max_delegated_cost_micros: 10_000,
+        });
+
+    let planner = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Planner),
+            prompt: Some("Plan the implementation.".into()),
+            model_id: None,
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: Some(50),
+            max_tokens: Some(50_000),
+            max_cost_micros: Some(500_000),
+        })
+        .expect("spawn planner");
+    match planner.output {
+        AutonomousToolOutput::Subagent(output) => {
+            assert_eq!(output.task.subagent_id, "subagent-1");
+            assert_eq!(output.task.role_label, "Planner");
+            assert_eq!(output.task.depth, 1);
+            assert_eq!(output.task.max_tool_calls, 5);
+            assert_eq!(output.task.max_tokens, 1_000);
+            assert_eq!(output.task.max_cost_micros, 10_000);
+            assert!(output
+                .task
+                .verification_contract
+                .contains("actionable plan"));
+        }
+        other => panic!("unexpected planner output: {other:?}"),
+    }
+
+    let follow_up = runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::SendInput,
+            task_id: Some("subagent-1".into()),
+            role: None,
+            prompt: Some("Include migration risks.".into()),
+            model_id: None,
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect("send input");
+    match follow_up.output {
+        AutonomousToolOutput::Subagent(output) => {
+            assert_eq!(output.task.input_log.len(), 1);
+            assert_eq!(output.task.input_log[0].kind, "send_input");
+        }
+        other => panic!("unexpected follow-up output: {other:?}"),
+    }
+
+    runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Wait,
+            task_id: Some("subagent-1".into()),
+            role: None,
+            prompt: None,
+            model_id: None,
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: Some(0),
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect("wait");
+
+    runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Close,
+            task_id: Some("subagent-1".into()),
+            role: None,
+            prompt: None,
+            model_id: None,
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect("close planner");
+
+    runtime
+        .subagent(AutonomousSubagentRequest {
+            action: AutonomousSubagentAction::Spawn,
+            task_id: None,
+            role: Some(AutonomousSubagentRole::Researcher),
+            prompt: Some("Research options.".into()),
+            model_id: None,
+            write_set: Vec::new(),
+            decision: None,
+            timeout_ms: None,
+            max_tool_calls: None,
+            max_tokens: None,
+            max_cost_micros: None,
+        })
+        .expect("spawn researcher");
+
+    let over_budget = runtime.subagent(AutonomousSubagentRequest {
+        action: AutonomousSubagentAction::Spawn,
+        task_id: None,
+        role: Some(AutonomousSubagentRole::Reviewer),
+        prompt: Some("Review the plan.".into()),
+        model_id: None,
+        write_set: Vec::new(),
+        decision: None,
+        timeout_ms: None,
+        max_tool_calls: None,
+        max_tokens: None,
+        max_cost_micros: None,
+    });
+    assert_eq!(
+        over_budget.expect_err("third child should be denied").code,
+        "autonomous_tool_subagent_child_budget_exceeded"
+    );
+}
+
+#[test]
+fn subagent_role_policies_are_least_privilege_and_parent_bounded() {
+    let researcher_policy = AutonomousAgentToolPolicy::for_subagent_role(
+        AutonomousSubagentRole::Researcher,
+        None,
+        false,
+    );
+    assert!(researcher_policy.allows_tool("read"));
+    assert!(researcher_policy.allows_tool("code_intel"));
+    assert!(!researcher_policy.allows_tool("write"));
+    assert!(!researcher_policy.allows_tool("command"));
+    assert!(!researcher_policy.allows_tool("subagent"));
+
+    let parent_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
+        "toolPolicy": {
+            "allowedTools": ["read"]
+        }
+    }))
+    .expect("parent policy");
+    let engineer_policy = AutonomousAgentToolPolicy::for_subagent_role(
+        AutonomousSubagentRole::Engineer,
+        Some(&parent_policy),
+        false,
+    );
+    assert!(engineer_policy.allows_tool("read"));
+    assert!(!engineer_policy.allows_tool("write"));
+    assert!(!engineer_policy.allows_tool("command"));
+}
+
+#[test]
+fn custom_agent_policy_can_enable_and_disable_domain_tool_packs() {
+    let browser_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
+        "toolPolicy": {
+            "allowedToolPacks": ["browser"],
+            "deniedToolPacks": ["emulator"],
+            "browserControlAllowed": true
+        }
+    }))
+    .expect("browser policy");
+    assert!(browser_policy.allows_tool("browser"));
+    assert!(!browser_policy.allows_tool("emulator"));
+    assert!(!browser_policy.allows_tool("solana_simulate"));
+
+    let browser_without_opt_in =
+        AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
+            "toolPolicy": {
+                "allowedToolPacks": ["browser"],
+                "browserControlAllowed": false
+            }
+        }))
+        .expect("browser policy without opt in");
+    assert!(!browser_without_opt_in.allows_tool("browser"));
+
+    let solana_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
+        "toolPolicy": {
+            "allowedToolPacks": ["solana"],
+            "externalServiceAllowed": true,
+            "commandAllowed": true,
+            "destructiveWriteAllowed": true
+        }
+    }))
+    .expect("solana policy");
+    assert!(solana_policy.allows_tool("solana_simulate"));
+    assert!(solana_policy.allows_tool("solana_deploy"));
+}
+
+#[test]
+fn subagent_runtime_supports_phase_nine_role_scenarios() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let runtime = AutonomousToolRuntime::new(temp.path())
+        .expect("runtime")
+        .with_subagent_limits(AutonomousSubagentLimits {
+            max_concurrent_child_runs: 6,
+            ..AutonomousSubagentLimits::default()
+        });
+
+    let spawn = |role, prompt: &str, write_set: Vec<&str>| {
+        runtime
+            .subagent(AutonomousSubagentRequest {
+                action: AutonomousSubagentAction::Spawn,
+                task_id: None,
+                role: Some(role),
+                prompt: Some(prompt.into()),
+                model_id: None,
+                write_set: write_set.into_iter().map(str::to_owned).collect(),
+                decision: None,
+                timeout_ms: None,
+                max_tool_calls: None,
+                max_tokens: None,
+                max_cost_micros: None,
+            })
+            .expect("spawn role scenario")
+    };
+
+    let research = spawn(
+        AutonomousSubagentRole::Researcher,
+        "Research the migration approach.",
+        Vec::new(),
+    );
+    let implement = spawn(
+        AutonomousSubagentRole::Engineer,
+        "Implement the researched path.",
+        vec!["src/phase9"],
+    );
+    let debug = spawn(
+        AutonomousSubagentRole::Debugger,
+        "Debug the failing verification.",
+        vec!["tests/phase9"],
+    );
+    let verify = spawn(
+        AutonomousSubagentRole::Reviewer,
+        "Verify the implementation evidence.",
+        Vec::new(),
+    );
+    let plan = spawn(
+        AutonomousSubagentRole::Planner,
+        "Plan the engineer handoff.",
+        Vec::new(),
+    );
+
+    let outputs = [research, implement, debug, verify, plan];
+    let roles = outputs
+        .into_iter()
+        .map(|result| match result.output {
+            AutonomousToolOutput::Subagent(output) => output.task.role,
+            other => panic!("unexpected subagent output: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        roles,
+        vec![
+            AutonomousSubagentRole::Researcher,
+            AutonomousSubagentRole::Engineer,
+            AutonomousSubagentRole::Debugger,
+            AutonomousSubagentRole::Reviewer,
+            AutonomousSubagentRole::Planner,
+        ]
+    );
 }
 
 #[test]

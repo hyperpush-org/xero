@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -1273,6 +1274,7 @@ function createMockAdapter(options?: {
       providerId: currentProfile.providerId,
       validationChecks: [],
       reachabilityChecks: [],
+      capabilityChecks: [],
       modelCatalog,
     }
   })
@@ -1755,6 +1757,49 @@ function createMockAdapter(options?: {
     filesChanged: 0,
     totalReplacements: 0,
   }))
+  const workspaceStatus = vi.fn(async (projectId: string) => ({
+    projectId,
+    state: 'empty' as const,
+    indexVersion: 1,
+    rootPath: '/repo',
+    storagePath: '/app-data/projects/project-1',
+    totalFiles: 0,
+    indexedFiles: 0,
+    skippedFiles: 0,
+    staleFiles: 0,
+    symbolCount: 0,
+    indexedBytes: 0,
+    coveragePercent: 0,
+    headSha: null,
+    startedAt: null,
+    completedAt: null,
+    updatedAt: null,
+    diagnostics: [],
+  }))
+  const workspaceIndex = vi.fn(async (request: { projectId: string }) => ({
+    status: await workspaceStatus(request.projectId),
+    changedFiles: 0,
+    unchangedFiles: 0,
+    removedFiles: 0,
+    durationMs: 0,
+  }))
+  const workspaceQuery = vi.fn(async (request: { projectId: string; query: string; mode: 'auto' | 'semantic' | 'symbol' | 'related_tests' | 'impact' }) => ({
+    projectId: request.projectId,
+    query: request.query,
+    mode: request.mode,
+    resultCount: 0,
+    stale: false,
+    diagnostics: [],
+    results: [],
+  }))
+  const workspaceExplain = vi.fn(async (request: { projectId: string }) => ({
+    projectId: request.projectId,
+    summary: 'Workspace index is empty.',
+    status: await workspaceStatus(request.projectId),
+    topSignals: [],
+    diagnostics: [],
+  }))
+  const workspaceReset = vi.fn(async (projectId: string) => workspaceStatus(projectId))
 
   const adapter: XeroDesktopAdapter = {
     isDesktopRuntime: () => true,
@@ -1811,6 +1856,11 @@ function createMockAdapter(options?: {
     deleteProjectEntry,
     searchProject,
     replaceInProject,
+    workspaceIndex,
+    workspaceStatus,
+    workspaceQuery,
+    workspaceExplain,
+    workspaceReset,
     createAgentSession,
     listAgentDefinitions,
     archiveAgentDefinition,
@@ -2623,6 +2673,61 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
   )
 }
 
+function AgentProjectionStabilityHarness({ adapter }: { adapter: XeroDesktopAdapter }) {
+  const [localRenderCount, setLocalRenderCount] = useState(0)
+  const [baselineReady, setBaselineReady] = useState(false)
+  const state = useXeroDesktopState({ adapter })
+  const baselineRef = useRef<{
+    agentView: typeof state.agentView
+    agentWorkspacePanes: typeof state.agentWorkspacePanes
+    firstPaneAgent: typeof state.agentWorkspacePanes[number]['agent'] | null
+  } | null>(null)
+
+  useEffect(() => {
+    if (
+      baselineRef.current ||
+      state.isLoading ||
+      state.agentView?.notificationRouteLoadStatus !== 'ready' ||
+      state.agentWorkspacePanes.length === 0
+    ) {
+      return
+    }
+
+    baselineRef.current = {
+      agentView: state.agentView,
+      agentWorkspacePanes: state.agentWorkspacePanes,
+      firstPaneAgent: state.agentWorkspacePanes[0]?.agent ?? null,
+    }
+    setBaselineReady(true)
+  }, [
+    state.agentView,
+    state.agentWorkspacePanes,
+    state.isLoading,
+  ])
+
+  const baseline = baselineRef.current
+  const agentProjectionStable = Boolean(
+    baseline &&
+      baseline.agentView === state.agentView &&
+      baseline.agentWorkspacePanes === state.agentWorkspacePanes &&
+      baseline.firstPaneAgent === (state.agentWorkspacePanes[0]?.agent ?? null),
+  )
+
+  return (
+    <div>
+      <div data-testid="baseline-ready">{String(baselineReady)}</div>
+      <div data-testid="agent-projection-stable">{String(agentProjectionStable)}</div>
+      <div data-testid="local-render-count">{String(localRenderCount)}</div>
+      <button
+        onClick={() => setLocalRenderCount((current) => current + 1)}
+        type="button"
+      >
+        Local rerender
+      </button>
+    </div>
+  )
+}
+
 describe('useXeroDesktopState', () => {
   it('loads the project list, repository truth, and runtime session for the active project', async () => {
     const setup = createMockAdapter()
@@ -2644,6 +2749,20 @@ describe('useXeroDesktopState', () => {
     expect(setup.getRuntimeSession).toHaveBeenCalledWith('project-1')
     expect(setup.listNotificationRoutes).toHaveBeenCalledWith('project-1')
     expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()
+  })
+
+  it('keeps agent projections stable across unrelated local rerenders', async () => {
+    const setup = createMockAdapter()
+
+    render(<AgentProjectionStabilityHarness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('baseline-ready')).toHaveTextContent('true'))
+    expect(screen.getByTestId('agent-projection-stable')).toHaveTextContent('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Local rerender' }))
+
+    expect(screen.getByTestId('local-render-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('agent-projection-stable')).toHaveTextContent('true')
   })
 
   it('loads model catalogs for credentialed providers and feeds the agent composer', async () => {

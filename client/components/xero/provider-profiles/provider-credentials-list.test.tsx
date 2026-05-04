@@ -4,6 +4,7 @@ import { ProviderCredentialsList } from '@/components/xero/provider-profiles/pro
 import type {
   ProviderCredentialDto,
   ProviderCredentialsSnapshotDto,
+  ProviderProfileDiagnosticsDto,
   RuntimeSessionView,
 } from '@/src/lib/xero-model'
 
@@ -63,6 +64,36 @@ function makeRuntimeSession(overrides: Partial<RuntimeSessionView> = {}): Runtim
   }
 }
 
+function makeProviderDiagnostics(overrides: Partial<ProviderProfileDiagnosticsDto> = {}): ProviderProfileDiagnosticsDto {
+  return {
+    checkedAt: '2026-04-26T12:00:00Z',
+    profileId: 'openrouter',
+    providerId: 'openrouter',
+    validationChecks: [],
+    reachabilityChecks: [],
+    capabilityChecks: [
+      {
+        contractVersion: 1,
+        checkId: 'diagnostic:v1:openrouter:provider_tool_call_capability',
+        subject: 'model_catalog',
+        status: 'passed',
+        severity: 'info',
+        retryable: false,
+        code: 'provider_tool_call_capability_supported',
+        message: 'Tool calls are supported.',
+        affectedProfileId: 'openrouter',
+        affectedProviderId: 'openrouter',
+        endpoint: null,
+        remediation: null,
+        redactionClass: 'public',
+        redacted: false,
+      },
+    ],
+    modelCatalog: null,
+    ...overrides,
+  }
+}
+
 function getProviderCard(label: string): HTMLElement {
   const card = screen
     .getAllByText(label)
@@ -110,6 +141,35 @@ describe('ProviderCredentialsList', () => {
     )
 
     expect(within(getProviderCard('OpenRouter')).getByText('Ready')).toBeInTheDocument()
+  })
+
+  it('runs a provider preflight check from a connected provider row', async () => {
+    const onCheckProviderProfile = vi.fn(async () => makeProviderDiagnostics())
+    const credentials = makeSnapshot([
+      makeCredential({ providerId: 'openrouter', readinessProof: 'stored_secret', defaultModelId: 'openai/gpt-4.1-mini' }),
+    ])
+    render(
+      <ProviderCredentialsList
+        providerCredentials={credentials}
+        providerCredentialsLoadStatus="ready"
+        providerCredentialsLoadError={null}
+        providerCredentialsSaveStatus="idle"
+        providerCredentialsSaveError={null}
+        onCheckProviderProfile={onCheckProviderProfile}
+      />,
+    )
+
+    const card = getProviderCard('OpenRouter')
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: /check/i }))
+    })
+
+    await waitFor(() => expect(onCheckProviderProfile).toHaveBeenCalledWith('openrouter', {
+      includeNetwork: true,
+      modelId: 'openai/gpt-4.1-mini',
+    }))
+    expect(await within(card).findByText('OpenRouter is ready')).toBeInTheDocument()
+    expect(within(card).getByText('1 passed')).toBeInTheDocument()
   })
 
   it('shows Signed in badge and Sign out button for OAuth provider with active session', () => {

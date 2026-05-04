@@ -260,7 +260,8 @@ The visible product surface includes:
 | Execution sandbox | Command policy, no clear OS sandbox | Best inspected sandboxing | Best operational sandbox service | Worktree isolation | Permission profiles plus local OS sandbox plus optional Docker/remote sandbox |
 | Context continuity | Best inspected manifests/memory | Strong history/thread store | Conversation/event persistence | Compaction commands | Preserve Xero lead, add CLI commands and trace exports |
 | Retrieval | Project records and memory via SQLite/LanceDB | Skills/history/context | Not primary in inspected app server | Semantic workspace sync/search | Add local semantic code index alongside project memory |
-| Multi-agent | Existing subagent/tooling | Strong primitives and limits | Parent/sub conversations | Subagents and roles | Role registry, budgets, lineage, wait/follow-up, pane UI |
+| Multi-agent | Existing subagent/tooling | Strong primitives and limits | Parent/sub conversations | Subagents and roles | Role registry, budgets, lineage, wait/follow-up, pane-contained child activity |
+| Active coordination | Per-run events and in-memory subagent write sets | Thread events and task state | Conversation events | Hidden if present | Temporary cross-session swarm state for active panes and child runs |
 | Conversation lifecycle | Runs/sessions/lineage | Threads/forks/resume | Best start/status workflow | Best terminal commands | Observable lifecycle phases plus conversation CLI |
 | UI | Desktop-native Tauri | TUI/IDE/desktop | Web app/cloud GUI | Terminal/VS Code/zsh | Desktop first, with CLI/TUI/headless companions |
 | Integrations | Notifications, MCP, providers, domain tools | MCP/hooks/plugins | Best external workflow integrations | MCP/provider/VS Code | Add issue/PR/resolver integrations after core extraction |
@@ -622,6 +623,11 @@ Xero should not try to become a clone of any one competitor. The target should b
 
 ### Build
 
+- Keep the UI model explicit:
+  - Panes are top-level main-agent sessions.
+  - Subagents are children inside the owning pane's main-agent runtime.
+  - Spawning a subagent must not create a new pane.
+  - Child-agent activity can appear as trace, attribution, or collapsible lineage inside the existing pane.
 - Formalize a role registry:
   - Engineer.
   - Debugger.
@@ -645,19 +651,19 @@ Xero should not try to become a clone of any one competitor. The target should b
   - Max concurrent child runs.
   - Max delegated tool calls.
   - Max delegated token/cost budget.
-- Add mailbox-style summarization between agents.
 - Integrate with the existing multi-pane workspace plan:
   - Up to six panes.
   - Independent sessions.
   - Focused pane command routing.
-  - Shared project context.
-  - Clear lineage display.
+  - Pane-contained child-run lineage.
+  - File-change attribution by top-level pane and child agent where applicable.
 
 ### Acceptance Criteria
 
 - Parent and child runs have explicit lineage and trace IDs.
 - Delegated runs cannot escalate tools beyond their assigned policy.
 - The UI can show which agent changed which files.
+- Subagents never appear as independent workspace panes.
 - Multi-agent scenario tests cover research plus implementation, debug plus verification, and planner plus engineer workflows.
 
 ### Inspiration
@@ -666,91 +672,241 @@ Xero should not try to become a clone of any one competitor. The target should b
 - ForgeCode implementation/planning/research roles.
 - Xero's existing multi-pane workspace plan.
 
-## Phase 10: Product Workflow Integrations
+## Phase 10: Active Agent Coordination Bus
+
+### Current Code Baseline
+
+- Durable project records and approved memories already exist under OS app-data, with LanceDB-backed storage, freshness, supersession, redaction, retrieval logs, and context manifests.
+- The `project_context` tool already lets agents search, read, record, update, and refresh durable context.
+- Automatic memory extraction already creates durable memory records from run transcripts, with duplicate and redaction checks.
+- Provider turns already persist context manifests; durable project context is tool-mediated instead of raw memory being treated as prompt authority.
+- Agent sessions, runs, events, messages, tool calls, and file changes are persisted per run.
+- Multi-pane workspace state already maps panes to top-level agent sessions in the frontend.
+- Subagent write-set conflict checks already exist, but only inside one parent runtime's in-memory subagent task store.
+
+The missing piece is not another durable memory layer. The missing piece is short-lived, cross-session awareness for active work.
 
 ### Build
 
-- Add issue and PR resolver workflows:
-  - GitHub.
-  - GitLab.
-  - Bitbucket.
-  - Azure DevOps.
-  - Forgejo.
-- Add planning and task workflow integrations:
-  - Jira.
-  - Linear.
-  - Slack.
-- Add triggers:
-  - Manual app trigger.
-  - CLI trigger.
-  - MCP trigger.
-  - Scheduled automation.
-  - PR comment.
-  - Issue assignment.
-  - Slack command.
-- Add guarded output actions:
-  - Draft PR description.
-  - Commit message.
-  - Branch summary.
-  - Review summary.
-  - Release note draft.
-- Keep all credentials in OS app-data/keychain-backed storage.
+- Add an app-data-backed temporary coordination plane for active top-level sessions and their child runs.
+- Store structured state in SQLite first:
+  - Active run presence.
+  - Pane/session/run identity.
+  - Current phase or activity summary.
+  - File reservations.
+  - Recent coordination events.
+  - Expiration timestamps.
+- Do not overload durable `agent_memories` or `project_records` for this state.
+- Do not write temporary coordination state under `.xero/`.
+- Treat every coordination row as TTL-scoped and garbage-collectable.
+- Publish presence from active runs:
+  - Run started.
+  - Provider turn started.
+  - Tool call started/completed.
+  - File observation.
+  - File write intent.
+  - File changed.
+  - Verification started/completed.
+  - Run completed/failed/cancelled.
+- Add file reservations:
+  - Repo-relative path or path prefix.
+  - Operation such as observing, editing, refactoring, testing, or verifying.
+  - Owning agent session, run, child run, role, and pane when known.
+  - Optional note describing intent.
+  - Lease duration and renewal heartbeat.
+  - Release on completion, cancellation, integration, or timeout.
+- Make reservations advisory, not filesystem locks:
+  - Warn agents before overlapping work.
+  - Require an explicit override reason to proceed through a conflict.
+  - Record override events for audit.
+- Feed active coordination into provider turns as low-priority context:
+  - Include only active same-project sessions with recent activity.
+  - Prefer concise summaries over raw event streams.
+  - Include file reservations before tool use and write attempts.
+  - Record coordination contributor IDs in context manifests.
+- Add an `agent_coordination` read surface:
+  - List active agents.
+  - List file reservations.
+  - Check conflicts for a path set.
+  - Claim and release file reservations.
+  - Explain recent active-agent activity.
+- Keep UI changes minimal:
+  - Existing panes remain the only top-level agent containers.
+  - Show passive conflict/presence indicators inside existing pane chrome or activity surfaces.
+  - Do not create panes for subagents or mailbox messages.
 
 ### Acceptance Criteria
 
-- Integrations use least-privilege credentials.
-- A resolver run has a visible source trigger and external artifact links.
-- The user approves external writes unless a trusted automation policy exists.
-- Integration failures do not corrupt local sessions.
+- Two active top-level sessions in the same project can see each other's recent activity without using durable memory.
+- If one active session reserves a file or directory, another active session gets a conflict warning before editing overlapping paths.
+- Stale reservations expire automatically when a run stops heartbeating.
+- Subagent worker write sets are visible to sibling top-level sessions as reservations while the child run is active.
+- Provider context manifests identify which active-coordination records were included.
+- Tests cover reservation overlap, lease expiry, explicit override, child-run publication, and completed-run cleanup.
 
 ### Inspiration
 
-- OpenHands app integrations.
-- ForgeCode commit and command helpers.
+- Xero's existing run heartbeat and file-change records.
+- Xero's existing frontend multi-pane layout.
+- Xero's existing in-memory subagent worker write-set conflict guard.
 
-## Phase 11: Provider Breadth And Diagnostics
+## Phase 11: Swarm Mailbox And Temporary Memory
 
 ### Build
 
-- Add a provider catalog with:
-  - Capabilities.
-  - Auth method.
-  - Streaming support.
-  - Tool-call support.
-  - Reasoning support.
-  - Vision support.
-  - Context window.
-  - Known limitations.
-  - Cost hints when available.
-- Expand adapters carefully:
-  - Additional OpenAI-compatible vendors.
-  - Local runtimes.
-  - Bedrock variants.
-  - Vertex variants.
-  - Subscription-backed external CLIs through ACP, not by pretending they are normal APIs.
-- Add provider diagnostics:
-  - Auth valid.
-  - Model available.
-  - Streaming works.
-  - Tool call schema accepted.
-  - Context limit detected.
-  - Rate-limit behavior.
-  - Redacted request preview.
-- Cache model/provider lists with a visible TTL.
+- Add a temporary agent mailbox on top of the coordination bus.
+- Keep it separate from durable project memory:
+  - No mailbox item becomes approved memory automatically.
+  - Durable promotion must use the existing project-context or memory-review flow.
+  - Mailbox records expire unless explicitly promoted.
+- Define mailbox item types:
+  - Heads-up.
+  - Question.
+  - Answer.
+  - Blocker.
+  - File-ownership note.
+  - Finding-in-progress.
+  - Verification note.
+  - Handoff-lite summary.
+- Scope each item:
+  - Project.
+  - Target session or all active sessions.
+  - Parent run or child run.
+  - Role.
+  - Related paths.
+  - Priority.
+  - TTL.
+- Add agent actions:
+  - Publish message.
+  - Read inbox.
+  - Acknowledge.
+  - Reply.
+  - Mark resolved.
+  - Promote to durable context candidate.
+- Add swarm summaries for provider turns:
+  - "What other active agents are doing."
+  - "Files to avoid."
+  - "Questions waiting for this agent."
+  - "Recent blockers or verification results."
+- Use SQLite for the first implementation.
+- Add a separate TTL LanceDB dataset only if semantic mailbox search becomes necessary; do not mix temporary mailbox vectors into durable memory/project-record datasets.
+- Keep the operator in control:
+  - Show a compact activity trail.
+  - Let users clear temporary swarm state for a project.
+  - Never let temporary mailbox content override user instructions, tool policy, or current file evidence.
 
 ### Acceptance Criteria
 
-- Provider setup can be diagnosed without starting an agent run.
-- The app and CLI show the same provider catalog.
-- Tool-call incompatibility is detected before long-running tasks.
-- Diagnostics redact secrets by default.
+- Active sessions can publish and read temporary mailbox items without creating durable memories.
+- Agents receive concise "swarm awareness" before risky edits and provider turns.
+- Mailbox items expire or resolve and do not pollute durable retrieval.
+- A mailbox item can be promoted into the existing durable-context review path with provenance.
+- Tests cover publish/read/ack/reply/resolve, TTL expiry, scoped delivery, prompt-injection filtering, and promotion.
+
+### Inspiration
+
+- Xero's durable context manifests and retrieval diagnostics.
+- Xero's existing project-context promotion path.
+- Swarm-style coordination without turning panes into subagent containers.
+
+## Phase 13: Provider Breadth And Diagnostics
+
+### What This Actually Delivers
+
+This phase is still needed, but it should not be framed as "add provider setup." Xero already has first-class provider presets, app-local credentials, OpenAI-compatible recipes, model catalog refresh/cache behavior, quick and extended doctor reports, redacted diagnostic output, and per-profile connection checks.
+
+Code review update: the app already has a shared provider capability contract in the frontend model layer and `xero-agent-core`, backend model-catalog cache/TTL plumbing, a Provider "Check" action, composer capability badges, doctor reports, CLI provider list/doctor commands, and runtime guards that block obvious owned-agent incompatibilities such as missing tool-call support. The remaining user value is narrower: prove the exact selected model path before the run starts, record the proof used for that run, and make inferred/manual/cached truth impossible to mistake for a live green light.
+
+The user-facing gap is confidence before a run starts. A user should be able to open Providers or the future CLI, choose a provider/model, and know:
+
+- Whether the credential, ambient auth, endpoint, model, stream path, and tool-call path work right now.
+- Whether the selected model supports the agent features Xero will use: streaming, function/tool calls, reasoning controls, image/document input, context size, and usable output limits.
+- Whether Xero is using live provider truth, cached truth, manual truth, or an unverified fallback.
+- Whether a provider is a normal model API, a local runtime, an ambient-cloud runtime, or an external subscription-backed agent CLI.
+- Whether a failure is local setup, auth, model availability, schema incompatibility, rate limit, provider outage, or an unsupported capability.
+
+The phase should deliver fewer mysterious failed agent starts, safer model selection, clearer support reports, and one provider capability source shared by the app, CLI, and owned-agent runtime.
+
+### Build
+
+- Promote the existing preset and model-catalog work into a single provider capability catalog.
+  - Keep provider identity, runtime family, auth method, credential proof, endpoint shape, model-list strategy, cache state, and default model in one shared contract.
+  - Add capability fields per provider family and per model where known:
+    - Streaming: supported, probed, unavailable, or not applicable.
+    - Tool calls: supported, strictness behavior, schema dialect, parallel-call behavior, and known incompatibilities.
+    - Reasoning controls: effort levels, summary support, provider-specific clamping, and unsupported-model fallback.
+    - Vision/document input: supported attachment types and provider-family limits.
+    - Context window and max output: live catalog, known static table, manual, or unknown confidence.
+    - Transport mode: hosted API, OpenAI-compatible API, local API, ambient-cloud API, cloud CLI bridge, or external agent CLI.
+    - Cost hints when the provider exposes usable metadata; never block on cost data.
+    - Known limitations and remediation copy that can be shown directly in the UI.
+  - Reuse the current provider presets and model catalog cache instead of creating a second catalog path.
+  - Expose the same catalog contract to the app, owned-agent runtime, and CLI.
+- Tighten model catalog behavior already present in the app.
+  - Surface cache age and TTL visibly in the composer, Providers settings, and doctor output.
+  - Preserve the difference between live, cache, manual, and unavailable sources.
+  - Do not hide manual catalog fallbacks behind "available" language; make them explicit.
+  - Carry context-window and max-output metadata through the frontend contract, not only backend normalization.
+  - Store provider/model cache under OS app-data only; never revive repo-local `.xero/` state.
+- Add a preflight provider probe that runs without starting an agent run.
+  - Return separate declared, inferred, cached, and probed statuses so a static capability table never masquerades as a live probe.
+  - Validate credential or ambient auth.
+  - Verify the selected model exists or explain that the provider is manual/unverified.
+  - Send a minimal streaming probe where supported.
+  - Send a minimal tool-call schema probe using a harmless echo/no-op tool.
+  - Verify reasoning-effort request shape only when the selected model exposes reasoning controls.
+  - Verify attachment support with metadata-only or fixture-free checks where possible.
+  - Detect context-limit source and confidence.
+  - Classify rate-limit and provider-error responses as retryable or blocking.
+  - Produce a redacted request preview that shows route, model, enabled features, tool schema names, and non-secret headers/metadata.
+  - Cache the last preflight result in app-data with profile id, provider id, model id, catalog source, cache age, probe age, and the exact feature set checked.
+  - Persist the provider capability and preflight snapshot used for every provider turn beside the context manifest.
+- Tighten provider-specific probe behavior.
+  - OpenAI Codex and OpenAI-compatible providers: verify Responses/chat route shape, streaming, and a minimal no-op tool schema against the selected model.
+  - OpenRouter: distinguish model-list availability from tool-call compatibility for the selected routed model.
+  - Anthropic: verify Messages route, tool-use schema, streaming, and thinking controls separately.
+  - GitHub Models: keep token setup simple, but mark model catalog and tool-call support as unverified unless the selected endpoint proves them.
+  - Ollama and local APIs: treat server reachability, model presence, and tool-call support as separate checks; "server is running" is not enough.
+  - Bedrock and Vertex: check ambient credentials, region/project, model access, and streaming/tool-call limits through provider-specific paths.
+  - External subscription-backed CLIs: verify executable, version, approval/sandbox posture, and provenance labels; keep them out of normal model-provider execution.
+- Make diagnostics actionable in the UI.
+  - Add a "Check" action beside each configured provider and selected composer model.
+  - Show a compact capability matrix for the selected model: streaming, tools, reasoning, vision/documents, context, catalog freshness.
+  - Link failed checks to the exact repair surface: reconnect OAuth, paste key, fix base URL, refresh ambient cloud auth, start local server, choose another model, or switch provider.
+  - Include copied doctor JSON for provider capability results with the existing redaction contract.
+- Expand adapters only where diagnostics can prove the path works.
+  - Add named OpenAI-compatible recipes only when endpoint shape, auth header behavior, model listing, and tool-call behavior are declared.
+  - Treat local runtimes as local API providers with explicit "server running" probes.
+  - Treat Bedrock and Vertex as ambient-cloud providers with region/project checks and clear non-streaming or CLI-bridge limits where applicable.
+  - Add subscription-backed external CLIs through ACP/external-agent adapters, not as normal model APIs.
+  - Keep external-agent catalog entries separate from owned-model providers so users do not accidentally bind the wrong runtime.
+- Add guardrails before provider turns.
+  - Block or warn before a long-running task when the chosen provider/model lacks required tool-call support.
+  - Warn when the selected model is only present through cached or manual truth.
+  - Explain when Xero disables or clamps a control, such as reasoning effort or parallel tool calls.
+  - Persist the provider capability snapshot used for each provider turn alongside the context manifest.
+  - Reuse the most recent successful preflight only when it matches the selected profile, model, catalog source, and required features; otherwise show it as stale and ask for a fresh check.
+
+### Acceptance Criteria
+
+- Provider setup and selected-model capability can be diagnosed without starting an agent run.
+- The app, CLI, and owned-agent runtime consume the same provider capability catalog.
+- The composer can show whether its selected model is live, cached, manual, or unavailable, including visible cache age/TTL.
+- Tool-call incompatibility is detected before long-running tasks and produces a direct remediation.
+- Reasoning controls, attachment support, context limits, and streaming support are either verified, explicitly inferred, or marked unknown.
+- Bedrock, Vertex, local runtime, and OpenAI-compatible providers report transport-specific limits instead of pretending to be identical APIs.
+- External subscription-backed agent CLIs appear as external-agent adapters, not normal model providers.
+- Diagnostics redact secrets, secret-bearing paths, auth headers, and sensitive endpoint components by default.
+- Provider doctor JSON includes capability results, cache metadata, and redacted request previews that are safe to share.
+- Tests cover catalog contract validation, live/cache/manual/unavailable state transitions, TTL display data, redaction, per-profile diagnostics, selected-model preflight, harmless tool-call schema rejection, streaming failure classification, rate-limit classification, app-data preflight cache invalidation, persisted provider-turn snapshots, and external-agent separation.
 
 ### Inspiration
 
 - ForgeCode provider list and config.
 - Xero provider setup docs.
+- Xero's existing provider presets, model catalog cache, provider diagnostics, and redacted doctor report contracts.
 
-## Phase 12: Domain Tool Packs As Xero Differentiators
+## Phase 14: Domain Tool Packs As Xero Differentiators
 
 ### Build
 
@@ -793,14 +949,29 @@ Xero should not try to become a clone of any one competitor. The target should b
 - Xero's existing unique tool breadth.
 - Codex-style tool policy.
 
-## Phase 13: Observability, Replay, And Quality Gates
+## Phase 15: Observability, Replay, And Quality Gates
+
+### What This Actually Delivers
+
+This phase is still useful, but only if it becomes a user-support workflow over the trace primitives Xero already has. It should not create a second trace system, duplicate the typed protocol work, or repeat Phase 13's provider diagnostics.
+
+The user-facing deliverable is simple: when a run fails, stalls, uses surprising context, or is blocked by policy, the user can open the run and see what happened without manually replaying the task. They should be able to answer:
+
+- Which provider/model and capability snapshot did this run use?
+- What context manifest, retrieved records, and active coordination records reached the provider?
+- Which tool call, approval, sandbox decision, provider retry, storage write, or verification gate changed the outcome?
+- What can be shared with support safely?
+
+For maintainers, this phase delivers trace-linked regression gates: a failed quality check should point at the event, manifest, policy decision, or provider-preflight category that regressed. The current code already has run events, trace IDs, context manifests, CLI trace export/conversation dump, fake-provider harness tests, and internal quality evals. The remaining work is to make those artifacts inspectable, redacted, and tied to gates.
 
 ### Build
 
-- Add a trace viewer for:
+- Add a desktop run timeline and support view over the existing event store and `xero-agent-core` trace export for:
   - Provider turns.
+  - Provider capability/preflight snapshots from Phase 13.
   - Context manifests.
   - Retrieved records.
+  - Active coordination and mailbox records included in provider context.
   - Tool registry snapshots.
   - Tool calls.
   - Approvals.
@@ -808,16 +979,27 @@ Xero should not try to become a clone of any one competitor. The target should b
   - File changes.
   - Verification gates.
   - Memory captures.
+  - Storage writes and storage errors.
+  - Provider retries, rate limits, and response-shape failures.
 - Add export formats:
   - JSON trace.
   - Markdown summary.
   - Redacted support bundle.
-- Add quality gates:
-  - Prompt injection regression pass.
+  - Keep all exports generated from the same trace snapshot so support bundles, CLI dumps, and the UI timeline do not disagree.
+  - Redact secrets, bearer headers, OAuth tokens, cloud credential paths, private-key paths, secret-bearing URLs, raw file contents, and unapproved memory text by default.
+  - Include app/runtime versions, provider diagnostic summaries, environment health, and relevant doctor checks without copying raw credentials.
+- Add replay as deterministic timeline reconstruction, not provider/tool re-execution.
+  - Rebuild the ordered run timeline from persisted events, messages, context manifests, file-change records, and trace IDs.
+  - Show missing/corrupt event ranges explicitly.
+  - Preserve the current raw transcript and compaction boundaries; do not silently mutate replay state.
+- Wire quality gates to trace categories:
+  - Prompt-injection regression pass.
   - Sandbox policy pass.
-  - Provider fake-adapter pass.
+  - Provider capability/preflight pass owned by Phase 13.
   - Tool schema validation pass.
   - Context manifest determinism pass.
+  - Event/protocol schema snapshot pass.
+  - Support-bundle redaction pass.
 - Add diagnostic signals:
   - Context pressure.
   - Tool failures.
@@ -828,12 +1010,19 @@ Xero should not try to become a clone of any one competitor. The target should b
   - Retrieval usage.
   - Redaction events.
   - Storage errors.
+  - Stale, manual, cached, or unprobed provider capability state.
+  - Missing timeline segments or trace/export conversion failures.
 
 ### Acceptance Criteria
 
 - A failed quality gate points to a specific trace and regression category.
-- A maintainer can inspect a run timeline without replaying the task manually.
+- A user or maintainer can inspect a run timeline without replaying the task manually.
+- A failed run shows the most likely failing layer: provider, context assembly, retrieval, tool schema, approval, sandbox, filesystem, verification, storage, or redaction.
+- The UI, CLI dump, MCP trace export, and support bundle are generated from the same canonical trace snapshot.
 - Support bundles are redacted by default.
+- Support bundles include enough provider, environment, context-manifest, tool, and verification metadata to diagnose common failures without raw secrets or raw repository contents.
+- Existing fake-provider/core tests and quality evals remain the fast gate; new gates add trace-linked failure output instead of only pass/fail summaries.
+- Phase 15 does not add a parallel provider-diagnostics system; selected-model preflight and provider fake-adapter coverage live in Phase 13.
 
 ### Inspiration
 
@@ -854,7 +1043,7 @@ If the team can only do ten things, do these in order:
 7. Add local semantic workspace indexing and expose it to both app and agent tools.
 8. Ship a `xero` CLI with provider, conversation, workspace, and `agent exec` commands.
 9. Add MCP server and ACP-style external agent hosting.
-10. Add trace viewer, support bundles, and quality gates for prompt, tool, and sandbox regressions.
+10. Add active-agent coordination with temporary file reservations and swarm mailbox state.
 
 ## Risks And Mitigations
 
@@ -868,6 +1057,7 @@ If the team can only do ten things, do these in order:
 | Provider catalog becomes unmaintainable | Vendor behavior changes often | Use capability probes and cached diagnostics instead of static claims only |
 | CLI and desktop diverge | Two product surfaces can develop different semantics | Make both consume the same core protocol and storage APIs |
 | Memory becomes too magical | Bad retrieval can mislead the model | Keep memory review, retrieval diagnostics, redaction, and prompt-injection filtering central |
+| Temporary swarm state becomes stale or bossy | Agents may avoid files because of dead reservations or treat peer notes as instructions | TTL every row, require heartbeats, expose clear/reset controls, and keep swarm context lower priority than user intent and current file evidence |
 
 ## Concrete Milestones
 
@@ -958,17 +1148,52 @@ Deliverables:
 
 - Role registry.
 - Subagent lifecycle hardening.
-- Multi-pane lineage integration.
+- Pane-contained child-run lineage integration.
 - MCP server.
 - ACP external agent adapter.
 
 Exit criteria:
 
 - Parent/child runs have clear lineage.
+- Subagents stay inside their owning top-level pane.
 - External agent sessions are labeled and sandboxed.
 - Multi-agent scenario tests pass with budget enforcement.
 
-## Milestone 7: Integrations And Domain Packs
+## Milestone 7: Active Agent Coordination Bus
+
+Deliverables:
+
+- Active run presence records.
+- File reservation records with TTL leases.
+- Coordination event publication from run/tool/file-change lifecycle.
+- Conflict check before overlapping write attempts.
+- Context-manifest contributors for active coordination.
+
+Exit criteria:
+
+- Two active top-level sessions can see each other's active work.
+- Overlapping file reservations warn before writes and support explicit override.
+- Child worker write sets are visible as active reservations.
+- Stale reservations expire when heartbeats stop.
+
+## Milestone 8: Swarm Mailbox And Temporary Memory
+
+Deliverables:
+
+- Temporary mailbox records.
+- Agent coordination tool actions for publish/read/ack/reply/resolve.
+- Scoped swarm summaries in provider context.
+- Promotion path into existing durable context review.
+- Clear/reset controls for temporary swarm state.
+
+Exit criteria:
+
+- Agents can communicate temporary blockers, questions, and file-ownership notes across active sessions.
+- Mailbox items expire or resolve without polluting durable memory.
+- Prompt-injection filtering applies before mailbox content reaches provider context.
+- Tests cover scoped delivery, TTL expiry, acknowledgement, reply, resolve, and promotion.
+
+## Milestone 9: Integrations And Domain Packs
 
 Deliverables:
 
@@ -1048,8 +1273,10 @@ The strategic sequence is:
 3. Tool registry and sandbox hardening.
 4. Environment lifecycle and workspace indexing.
 5. CLI/MCP/external agent surfaces.
-6. Multi-agent roles and panes.
-7. Integrations and domain tool packs.
-8. Traceability and quality gates.
+6. Multi-agent roles inside main-agent panes.
+7. Active-agent coordination bus with file reservations.
+8. Swarm mailbox and temporary memory.
+9. Integrations and domain tool packs.
+10. Traceability and quality gates.
 
 If Xero executes that sequence, it can become the best blend of the three competitors rather than a partial clone of any one of them: safer and more reusable than OpenHands, more product-complete than Codex, more transparent and desktop-native than ForgeCode, and more continuity-aware than all three.

@@ -583,6 +583,31 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('heading', { name: 'Recent autonomous workers' })).not.toBeInTheDocument()
   })
 
+  it('does not expose run support controls when trace export is available', () => {
+    const dictation = createDictationAdapter()
+    const exportAgentTrace = vi.fn(async () => {
+      throw new Error('Run support should not load')
+    })
+    const desktopAdapter = {
+      ...dictation.adapter,
+      exportAgentTrace,
+    } as ComponentProps<typeof AgentRuntime>['desktopAdapter']
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Open run support' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Run support' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Run support')).not.toBeInTheDocument()
+    expect(exportAgentTrace).not.toHaveBeenCalled()
+  })
 
   it('does not render worker lifecycle cards on the Agent tab', () => {
     render(
@@ -2060,6 +2085,105 @@ describe('AgentRuntime current UI', () => {
       )
 
       await waitFor(() => expect(onComposerControlsChange).toHaveBeenCalledTimes(1))
+    })
+
+    it('defers and dedupes foreground-only context meter refreshes', async () => {
+      vi.useFakeTimers()
+      const originalRequestAnimationFrame = window.requestAnimationFrame
+      const originalCancelAnimationFrame = window.cancelAnimationFrame
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        value: (callback: FrameRequestCallback) =>
+          window.setTimeout(() => callback(performance.now()), 0),
+      })
+      Object.defineProperty(window, 'cancelAnimationFrame', {
+        configurable: true,
+        value: (handle: number) => window.clearTimeout(handle),
+      })
+
+      try {
+        const dictation = createDictationAdapter()
+        const getSessionContextSnapshot = vi.fn(async () => ({} as never))
+        const agent = makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })
+        const desktopAdapter = {
+          ...dictation.adapter,
+          getSessionContextSnapshot,
+        }
+
+        const { rerender } = render(
+          <AgentRuntime
+            active={false}
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+
+        await act(async () => {
+          vi.advanceTimersByTime(1_000)
+          await Promise.resolve()
+        })
+
+        expect(getSessionContextSnapshot).not.toHaveBeenCalled()
+
+        rerender(
+          <AgentRuntime
+            active
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+
+        await act(async () => {
+          vi.advanceTimersByTime(40)
+          await Promise.resolve()
+        })
+        await act(async () => {
+          vi.advanceTimersByTime(230)
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(getSessionContextSnapshot).toHaveBeenCalledTimes(1)
+
+        rerender(
+          <AgentRuntime
+            active={false}
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+        rerender(
+          <AgentRuntime
+            active
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+
+        await act(async () => {
+          vi.advanceTimersByTime(40)
+          await Promise.resolve()
+        })
+        await act(async () => {
+          vi.advanceTimersByTime(230)
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(getSessionContextSnapshot).toHaveBeenCalledTimes(1)
+      } finally {
+        Object.defineProperty(window, 'requestAnimationFrame', {
+          configurable: true,
+          value: originalRequestAnimationFrame,
+        })
+        Object.defineProperty(window, 'cancelAnimationFrame', {
+          configurable: true,
+          value: originalCancelAnimationFrame,
+        })
+      }
     })
 
     it('disables the spawn-pane button when the workspace is at capacity', () => {

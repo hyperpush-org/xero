@@ -15,6 +15,7 @@ use reqwest::{
 };
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
+use xero_agent_core::domain_tool_pack_ids_for_tool;
 
 use super::{
     deferred_tool_catalog,
@@ -27,20 +28,21 @@ use super::{
     AutonomousLspInstallSuggestion, AutonomousLspOutput, AutonomousLspRequest,
     AutonomousLspServerStatus, AutonomousMcpAction, AutonomousMcpOutput, AutonomousMcpRequest,
     AutonomousMcpServerSummary, AutonomousNotebookEditOutput, AutonomousNotebookEditRequest,
-    AutonomousPowerShellRequest, AutonomousSubagentAction, AutonomousSubagentOutput,
-    AutonomousSubagentRequest, AutonomousSubagentRole, AutonomousSubagentTask,
-    AutonomousTodoAction, AutonomousTodoItem, AutonomousTodoOutput, AutonomousTodoRequest,
-    AutonomousTodoStatus, AutonomousToolCatalogEntry, AutonomousToolOutput, AutonomousToolResult,
-    AutonomousToolRuntime, AutonomousToolSearchMatch, AutonomousToolSearchOutput,
-    AutonomousToolSearchRequest, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
-    AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT,
-    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AutonomousPowerShellRequest, AutonomousSubagentAction, AutonomousSubagentInputRecord,
+    AutonomousSubagentOutput, AutonomousSubagentRequest, AutonomousSubagentRole,
+    AutonomousSubagentTask, AutonomousTodoAction, AutonomousTodoItem, AutonomousTodoOutput,
+    AutonomousTodoRequest, AutonomousTodoStatus, AutonomousToolCatalogEntry, AutonomousToolOutput,
+    AutonomousToolResult, AutonomousToolRuntime, AutonomousToolSearchMatch,
+    AutonomousToolSearchOutput, AutonomousToolSearchRequest, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX,
+    AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_MCP,
+    AUTONOMOUS_TOOL_NOTEBOOK_EDIT, AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_SKILL,
+    AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_SEARCH,
 };
 
 use crate::{
     auth::now_timestamp,
     commands::{validate_non_empty, CommandError, CommandResult, RuntimeAgentIdDto},
+    db::project_store,
     mcp::{load_mcp_registry_from_path, McpConnectionStatus, McpServerRecord, McpTransport},
     runtime::autonomous_skill_runtime::{
         sanitize_skill_tool_model_text, XeroSkillSourceKind, XeroSkillToolAccessStatus,
@@ -90,6 +92,7 @@ impl AutonomousToolRuntime {
                         catalog_kind: "builtin".into(),
                         description: entry.description.into(),
                         score,
+                        tool_pack_ids: domain_tool_pack_ids_for_tool(entry.tool_name),
                         activation_groups,
                         activation_tools: vec![entry.tool_name.into()],
                         tags: entry.tags.iter().map(|tag| (*tag).to_owned()).collect(),
@@ -239,13 +242,37 @@ impl AutonomousToolRuntime {
         match request.action {
             AutonomousSubagentAction::Spawn => self.spawn_subagent(request),
             AutonomousSubagentAction::Status => self.subagent_status(request.task_id.as_deref()),
+            AutonomousSubagentAction::SendInput => {
+                let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
+                self.send_subagent_input(&task_id, request.prompt, "send_input")
+            }
+            AutonomousSubagentAction::Wait => {
+                let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
+                self.wait_subagent(&task_id, request.timeout_ms)
+            }
+            AutonomousSubagentAction::FollowUp => {
+                let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
+                self.send_subagent_input(&task_id, request.prompt, "follow_up")
+            }
+            AutonomousSubagentAction::Interrupt => {
+                let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
+                self.interrupt_subagent(&task_id)
+            }
             AutonomousSubagentAction::Cancel => {
                 let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
                 self.cancel_subagent(&task_id)
             }
+            AutonomousSubagentAction::Close => {
+                let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
+                self.close_subagent(&task_id)
+            }
             AutonomousSubagentAction::Integrate => {
                 let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
                 self.integrate_subagent(&task_id, request.decision)
+            }
+            AutonomousSubagentAction::ExportTrace => {
+                let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
+                self.export_subagent_trace(&task_id)
             }
         }
     }
@@ -263,18 +290,37 @@ impl AutonomousToolRuntime {
             .role
             .ok_or_else(|| CommandError::invalid_request("role"))?;
         let write_set = normalize_subagent_write_set(request.write_set)?;
-        if role == AutonomousSubagentRole::Worker && write_set.is_empty() {
+        if role.requires_write_set() && write_set.is_empty() {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_subagent_write_set_required",
-                "Xero requires worker subagents to declare a non-empty writeSet ownership boundary.",
+                format!(
+                    "Xero requires {} subagents to declare a non-empty writeSet ownership boundary.",
+                    role.label()
+                ),
             ));
         }
-        if role != AutonomousSubagentRole::Worker && !write_set.is_empty() {
+        if !role.allows_write_set() && !write_set.is_empty() {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_subagent_readonly_write_set",
-                "Xero only allows writeSet ownership boundaries on worker subagents.",
+                format!(
+                    "Xero does not allow writeSet ownership boundaries on {} subagents.",
+                    role.label()
+                ),
             ));
         }
+        self.enforce_subagent_budget_before_spawn(role)?;
+        let max_tool_calls = request
+            .max_tool_calls
+            .unwrap_or(self.subagent_limits.max_delegated_tool_calls)
+            .min(self.subagent_limits.max_delegated_tool_calls);
+        let max_tokens = request
+            .max_tokens
+            .unwrap_or(self.subagent_limits.max_delegated_tokens)
+            .min(self.subagent_limits.max_delegated_tokens);
+        let max_cost_micros = request
+            .max_cost_micros
+            .unwrap_or(self.subagent_limits.max_delegated_cost_micros)
+            .min(self.subagent_limits.max_delegated_cost_micros);
 
         let task = {
             let mut tasks = self.subagent_tasks.lock().map_err(|_| {
@@ -283,14 +329,20 @@ impl AutonomousToolRuntime {
                     "Xero could not lock the owned-agent subagent task store.",
                 )
             })?;
-            enforce_disjoint_worker_write_set(&tasks, &write_set)?;
+            enforce_disjoint_writer_write_set(&tasks, &write_set)?;
             let subagent_id = next_subagent_id(&tasks);
             let task = AutonomousSubagentTask {
                 subagent_id: subagent_id.clone(),
                 role,
+                role_label: role.label().into(),
                 prompt: prompt.trim().into(),
                 model_id: normalize_optional_text(request.model_id),
                 write_set,
+                verification_contract: role.verification_contract().into(),
+                depth: self.subagent_execution_depth + 1,
+                max_tool_calls,
+                max_tokens,
+                max_cost_micros,
                 status: if self.subagent_executor.is_some() {
                     "running".into()
                 } else {
@@ -302,6 +354,13 @@ impl AutonomousToolRuntime {
                 cancelled_at: None,
                 integrated_at: None,
                 run_id: None,
+                trace_id: None,
+                parent_run_id: self
+                    .agent_run_context
+                    .as_ref()
+                    .map(|context| context.run_id.clone()),
+                parent_trace_id: None,
+                input_log: Vec::new(),
                 result_summary: None,
                 result_artifact: None,
                 parent_decision: None,
@@ -310,6 +369,13 @@ impl AutonomousToolRuntime {
             task
         };
 
+        if let Err(error) = self.claim_subagent_write_set_reservations(&task) {
+            if let Ok(mut tasks) = self.subagent_tasks.lock() {
+                tasks.remove(&task.subagent_id);
+            }
+            return Err(error);
+        }
+        let initially_reserved_task = task.clone();
         let task = if let Some(executor) = &self.subagent_executor {
             match executor.execute_subagent(task.clone(), self.subagent_tasks.clone()) {
                 Ok(started_task) => started_task,
@@ -324,6 +390,17 @@ impl AutonomousToolRuntime {
             task
         };
 
+        if task.run_id != initially_reserved_task.run_id {
+            self.release_subagent_write_set_reservations(
+                &initially_reserved_task,
+                "subagent_child_run_started",
+            )?;
+            if subagent_status_holds_reservation(&task.status) {
+                self.claim_subagent_write_set_reservations(&task)?;
+            }
+        } else if !subagent_status_holds_reservation(&task.status) {
+            self.release_subagent_write_set_reservations(&task, "subagent_terminal")?;
+        }
         let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
 
         Ok(AutonomousToolResult {
@@ -333,7 +410,11 @@ impl AutonomousToolRuntime {
                 task.subagent_id, task.status, task.role
             ),
             command_result: None,
-            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput { task, active_tasks }),
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
         })
     }
 
@@ -364,41 +445,159 @@ impl AutonomousToolRuntime {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent status returned {} task(s).", active_tasks.len()),
             command_result: None,
-            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput { task, active_tasks }),
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
+        })
+    }
+
+    fn send_subagent_input(
+        &self,
+        task_id: &str,
+        prompt: Option<String>,
+        kind: &str,
+    ) -> CommandResult<AutonomousToolResult> {
+        let prompt = prompt
+            .as_deref()
+            .ok_or_else(|| CommandError::invalid_request("prompt"))?;
+        validate_non_empty(prompt, "prompt")?;
+        let mut task = self.subagent_task(task_id)?;
+        if matches!(task.status.as_str(), "cancelled" | "closed" | "interrupted") {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_subagent_not_accepting_input",
+                format!(
+                    "Xero cannot send input to subagent task `{task_id}` because it is {}.",
+                    task.status
+                ),
+            ));
+        }
+        if let Some(executor) = &self.subagent_executor {
+            task = executor.send_subagent_input(&task, prompt.trim())?;
+        }
+        task.input_log.push(AutonomousSubagentInputRecord {
+            kind: kind.into(),
+            text: prompt.trim().into(),
+            created_at: now_timestamp(),
+        });
+        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
+            summary: format!("Subagent task `{}` recorded {kind}.", task.subagent_id),
+            command_result: None,
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
+        })
+    }
+
+    fn wait_subagent(
+        &self,
+        task_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> CommandResult<AutonomousToolResult> {
+        let timeout = Duration::from_millis(timeout_ms.unwrap_or(1_000).min(30_000));
+        let deadline = Instant::now() + timeout;
+        let mut task = self.subagent_task(task_id)?;
+        while matches!(task.status.as_str(), "registered" | "running") && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(25));
+            task = self.subagent_task(task_id)?;
+        }
+        let active_tasks = self.list_subagent_tasks()?;
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
+            summary: format!("Subagent task `{}` is {}.", task.subagent_id, task.status),
+            command_result: None,
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
+        })
+    }
+
+    fn interrupt_subagent(&self, task_id: &str) -> CommandResult<AutonomousToolResult> {
+        let mut task = self.cancelled_subagent_task(task_id)?;
+        task.status = "interrupted".into();
+        self.release_subagent_write_set_reservations(&task, "subagent_interrupted")?;
+        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
+            summary: format!("Subagent task `{}` was interrupted.", task.subagent_id),
+            command_result: None,
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
         })
     }
 
     fn cancel_subagent(&self, task_id: &str) -> CommandResult<AutonomousToolResult> {
-        let task = {
-            let tasks = self.subagent_tasks.lock().map_err(|_| {
-                CommandError::system_fault(
-                    "autonomous_tool_subagent_lock_failed",
-                    "Xero could not lock the owned-agent subagent task store.",
-                )
-            })?;
-            tasks.get(task_id).cloned().ok_or_else(|| {
-                CommandError::user_fixable(
-                    "autonomous_tool_subagent_unknown",
-                    format!("Xero could not find subagent task `{task_id}`."),
-                )
-            })?
-        };
-        let mut task = if let Some(executor) = &self.subagent_executor {
-            executor.cancel_subagent(&task)?
-        } else {
-            task
-        };
-        task.status = "cancelled".into();
-        task.cancelled_at = Some(now_timestamp());
-        if task.completed_at.is_none() {
-            task.completed_at = task.cancelled_at.clone();
-        }
+        let task = self.cancelled_subagent_task(task_id)?;
+        self.release_subagent_write_set_reservations(&task, "subagent_cancelled")?;
         let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` is cancelled.", task.subagent_id),
             command_result: None,
-            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput { task, active_tasks }),
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
+        })
+    }
+
+    fn close_subagent(&self, task_id: &str) -> CommandResult<AutonomousToolResult> {
+        let mut task = self.subagent_task(task_id)?;
+        if matches!(task.status.as_str(), "registered" | "running") {
+            task = self.cancelled_subagent_task(task_id)?;
+        }
+        task.status = "closed".into();
+        task.completed_at.get_or_insert_with(now_timestamp);
+        self.release_subagent_write_set_reservations(&task, "subagent_closed")?;
+        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
+            summary: format!("Subagent task `{}` was closed.", task.subagent_id),
+            command_result: None,
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
+        })
+    }
+
+    fn export_subagent_trace(&self, task_id: &str) -> CommandResult<AutonomousToolResult> {
+        let task = self.subagent_task(task_id)?;
+        let trace = if let Some(executor) = &self.subagent_executor {
+            Some(executor.export_subagent_trace(&task)?)
+        } else {
+            task.result_artifact.as_ref().map(|artifact| {
+                json!({
+                    "artifact": artifact,
+                    "subagentId": task.subagent_id.clone(),
+                    "runId": task.run_id.clone(),
+                    "traceId": task.trace_id.clone(),
+                })
+            })
+        };
+        let active_tasks = self.list_subagent_tasks()?;
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
+            summary: format!("Subagent task `{}` trace was exported.", task.subagent_id),
+            command_result: None,
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace,
+            }),
         })
     }
 
@@ -426,7 +625,10 @@ impl AutonomousToolRuntime {
                     format!("Xero could not find subagent task `{task_id}`."),
                 )
             })?;
-            if !matches!(task.status.as_str(), "completed" | "failed" | "cancelled") {
+            if !matches!(
+                task.status.as_str(),
+                "completed" | "failed" | "cancelled" | "interrupted" | "closed"
+            ) {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_subagent_not_ready",
                     format!(
@@ -439,6 +641,7 @@ impl AutonomousToolRuntime {
             task.parent_decision = Some(decision);
             task.clone()
         };
+        self.release_subagent_write_set_reservations(&task, "subagent_integrated")?;
         let active_tasks = {
             let tasks = self.subagent_tasks.lock().map_err(|_| {
                 CommandError::system_fault(
@@ -452,8 +655,200 @@ impl AutonomousToolRuntime {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` was integrated.", task.subagent_id),
             command_result: None,
-            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput { task, active_tasks }),
+            output: AutonomousToolOutput::Subagent(AutonomousSubagentOutput {
+                task,
+                active_tasks,
+                trace: None,
+            }),
         })
+    }
+
+    fn claim_subagent_write_set_reservations(
+        &self,
+        task: &AutonomousSubagentTask,
+    ) -> CommandResult<()> {
+        if task.write_set.is_empty() {
+            return Ok(());
+        }
+        let Some(run_context) = self.agent_run_context.as_ref() else {
+            return Ok(());
+        };
+        let owner_run_id = task
+            .run_id
+            .as_deref()
+            .or(task.parent_run_id.as_deref())
+            .unwrap_or(&run_context.run_id);
+        let now = now_timestamp();
+        let operation = match task.role {
+            AutonomousSubagentRole::Engineer => {
+                project_store::AgentCoordinationReservationOperation::Refactoring
+            }
+            AutonomousSubagentRole::Debugger => {
+                project_store::AgentCoordinationReservationOperation::Editing
+            }
+            _ => project_store::AgentCoordinationReservationOperation::Observing,
+        };
+        let claim = project_store::claim_agent_file_reservations(
+            &self.repo_root,
+            &project_store::ClaimAgentFileReservationRequest {
+                project_id: run_context.project_id.clone(),
+                owner_run_id: owner_run_id.to_string(),
+                paths: task.write_set.clone(),
+                operation,
+                note: Some(format!(
+                    "Subagent {} {} writeSet.",
+                    task.subagent_id,
+                    task.role.as_str()
+                )),
+                override_reason: None,
+                claimed_at: now,
+                lease_seconds: None,
+            },
+        )?;
+        if claim.conflicts.is_empty() {
+            return Ok(());
+        }
+        let details = claim
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                format!(
+                    "`{}` overlaps `{}` owned by `{}`",
+                    conflict.requested_path,
+                    conflict.reservation.path,
+                    conflict
+                        .reservation
+                        .owner_child_run_id
+                        .as_deref()
+                        .unwrap_or(&conflict.reservation.owner_run_id)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(CommandError::new(
+            "autonomous_tool_subagent_write_set_reservation_conflict",
+            crate::commands::CommandErrorClass::PolicyDenied,
+            format!(
+                "Xero refused to start subagent `{}` because its writeSet conflicts with active file reservations: {details}. Use `agent_coordination` with an overrideReason or choose a disjoint writeSet.",
+                task.subagent_id
+            ),
+            false,
+        ))
+    }
+
+    fn release_subagent_write_set_reservations(
+        &self,
+        task: &AutonomousSubagentTask,
+        reason: &str,
+    ) -> CommandResult<()> {
+        if task.write_set.is_empty() {
+            return Ok(());
+        }
+        let Some(run_context) = self.agent_run_context.as_ref() else {
+            return Ok(());
+        };
+        let owner_run_id = task
+            .run_id
+            .as_deref()
+            .or(task.parent_run_id.as_deref())
+            .unwrap_or(&run_context.run_id);
+        project_store::release_agent_file_reservations(
+            &self.repo_root,
+            &project_store::ReleaseAgentFileReservationRequest {
+                project_id: run_context.project_id.clone(),
+                owner_run_id: owner_run_id.to_string(),
+                reservation_id: None,
+                paths: task.write_set.clone(),
+                release_reason: reason.into(),
+                released_at: now_timestamp(),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn enforce_subagent_budget_before_spawn(
+        &self,
+        role: AutonomousSubagentRole,
+    ) -> CommandResult<()> {
+        if self.subagent_execution_depth >= self.subagent_limits.max_depth {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_subagent_depth_exceeded",
+                format!(
+                    "Xero refused to spawn a {} subagent because the max subagent depth is {}.",
+                    role.label(),
+                    self.subagent_limits.max_depth
+                ),
+            ));
+        }
+        let tasks = self.subagent_tasks.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_subagent_lock_failed",
+                "Xero could not lock the owned-agent subagent task store.",
+            )
+        })?;
+        if tasks.len() >= self.subagent_limits.max_child_agents {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_subagent_child_budget_exceeded",
+                format!(
+                    "Xero refused to spawn another subagent because this run is limited to {} child agents.",
+                    self.subagent_limits.max_child_agents
+                ),
+            ));
+        }
+        let running = tasks
+            .values()
+            .filter(|task| matches!(task.status.as_str(), "registered" | "running"))
+            .count();
+        if running >= self.subagent_limits.max_concurrent_child_runs {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_subagent_concurrency_exceeded",
+                format!(
+                    "Xero refused to spawn another subagent because {} child run(s) are already active.",
+                    running
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn subagent_task(&self, task_id: &str) -> CommandResult<AutonomousSubagentTask> {
+        let tasks = self.subagent_tasks.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_subagent_lock_failed",
+                "Xero could not lock the owned-agent subagent task store.",
+            )
+        })?;
+        tasks.get(task_id).cloned().ok_or_else(|| {
+            CommandError::user_fixable(
+                "autonomous_tool_subagent_unknown",
+                format!("Xero could not find subagent task `{task_id}`."),
+            )
+        })
+    }
+
+    fn list_subagent_tasks(&self) -> CommandResult<Vec<AutonomousSubagentTask>> {
+        let tasks = self.subagent_tasks.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_subagent_lock_failed",
+                "Xero could not lock the owned-agent subagent task store.",
+            )
+        })?;
+        Ok(tasks.values().cloned().collect())
+    }
+
+    fn cancelled_subagent_task(&self, task_id: &str) -> CommandResult<AutonomousSubagentTask> {
+        let task = self.subagent_task(task_id)?;
+        let mut task = if let Some(executor) = &self.subagent_executor {
+            executor.cancel_subagent(&task)?
+        } else {
+            task
+        };
+        task.status = "cancelled".into();
+        task.cancelled_at = Some(now_timestamp());
+        if task.completed_at.is_none() {
+            task.completed_at = task.cancelled_at.clone();
+        }
+        Ok(task)
     }
 
     pub fn notebook_edit(
@@ -983,6 +1378,7 @@ impl AutonomousToolRuntime {
                     catalog_kind: capability.kind.catalog_kind().into(),
                     description: capability.model_description(),
                     score,
+                    tool_pack_ids: Vec::new(),
                     activation_groups: vec!["mcp_invoke".into()],
                     activation_tools: vec![activation_tool],
                     tags,
@@ -1077,6 +1473,7 @@ impl AutonomousToolRuntime {
                     catalog_kind: "skill".into(),
                     description,
                     score,
+                    tool_pack_ids: domain_tool_pack_ids_for_tool(AUTONOMOUS_TOOL_SKILL),
                     activation_groups: vec!["skills".into()],
                     activation_tools: vec![AUTONOMOUS_TOOL_SKILL.into()],
                     tags,
@@ -1978,7 +2375,7 @@ fn normalize_subagent_write_set(paths: Vec<String>) -> CommandResult<Vec<String>
         .map(|paths| paths.into_iter().collect())
 }
 
-fn enforce_disjoint_worker_write_set(
+fn enforce_disjoint_writer_write_set(
     tasks: &std::collections::BTreeMap<String, AutonomousSubagentTask>,
     write_set: &[String],
 ) -> CommandResult<()> {
@@ -1986,7 +2383,7 @@ fn enforce_disjoint_worker_write_set(
         return Ok(());
     }
     for task in tasks.values() {
-        if task.role != AutonomousSubagentRole::Worker
+        if !task.role.allows_write_set()
             || !matches!(task.status.as_str(), "registered" | "running")
         {
             continue;
@@ -2001,7 +2398,7 @@ fn enforce_disjoint_worker_write_set(
                     "autonomous_tool_subagent_write_set_conflict",
                     crate::commands::CommandErrorClass::PolicyDenied,
                     format!(
-                        "Xero refused to start a worker subagent for `{requested}` because `{}` already owns overlapping writeSet `{conflict}`.",
+                        "Xero refused to start a writer subagent for `{requested}` because `{}` already owns overlapping writeSet `{conflict}`.",
                         task.subagent_id
                     ),
                     false,
@@ -2010,6 +2407,10 @@ fn enforce_disjoint_worker_write_set(
         }
     }
     Ok(())
+}
+
+fn subagent_status_holds_reservation(status: &str) -> bool {
+    matches!(status, "registered" | "running")
 }
 
 fn subagent_write_sets_overlap(left: &str, right: &str) -> bool {
@@ -2064,10 +2465,18 @@ fn empty_subagent_status_task() -> AutonomousSubagentTask {
     let now = now_timestamp();
     AutonomousSubagentTask {
         subagent_id: "none".into(),
-        role: AutonomousSubagentRole::Explorer,
+        role: AutonomousSubagentRole::Researcher,
+        role_label: AutonomousSubagentRole::Researcher.label().into(),
         prompt: String::new(),
         model_id: None,
         write_set: Vec::new(),
+        verification_contract: AutonomousSubagentRole::Researcher
+            .verification_contract()
+            .into(),
+        depth: 0,
+        max_tool_calls: 0,
+        max_tokens: 0,
+        max_cost_micros: 0,
         status: "none".into(),
         created_at: now,
         started_at: None,
@@ -2075,6 +2484,10 @@ fn empty_subagent_status_task() -> AutonomousSubagentTask {
         cancelled_at: None,
         integrated_at: None,
         run_id: None,
+        trace_id: None,
+        parent_run_id: None,
+        parent_trace_id: None,
+        input_log: Vec::new(),
         result_summary: None,
         result_artifact: None,
         parent_decision: None,

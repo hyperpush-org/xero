@@ -2054,11 +2054,12 @@ export function useXeroDesktopState(
   const checkProviderProfile = useCallback(
     async (
       profileId: string,
-      options: { includeNetwork?: boolean } = {},
+      options: { includeNetwork?: boolean; modelId?: string | null } = {},
     ): Promise<ProviderProfileDiagnosticsDto> => {
       const trimmedProfileId = profileId.trim()
       const response = await adapter.checkProviderProfile(trimmedProfileId, {
         includeNetwork: options.includeNetwork ?? true,
+        modelId: options.modelId ?? null,
       })
 
       const modelCatalog = response.modelCatalog
@@ -3160,11 +3161,15 @@ export function useXeroDesktopState(
     activeRuntimeStreamCandidate?.agentSessionId === activeAgentSessionId
       ? activeRuntimeStreamCandidate
       : null
-  const activeNotificationRoutes = activeProject
-    ? (notificationRoutes[activeProject.id] ?? []).filter(
-        (route) => route.projectId === activeProject.id && route.routeId.trim().length > 0,
-      )
-    : []
+  const activeNotificationRoutes = useMemo(
+    () =>
+      activeProject
+        ? (notificationRoutes[activeProject.id] ?? []).filter(
+            (route) => route.projectId === activeProject.id && route.routeId.trim().length > 0,
+          )
+        : [],
+    [activeProject, notificationRoutes],
+  )
   const activeNotificationRouteLoadStatus: NotificationRoutesLoadStatus = activeProject
     ? notificationRouteLoadStatuses[activeProject.id] ?? 'idle'
     : 'idle'

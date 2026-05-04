@@ -1,6 +1,6 @@
 "use client"
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react"
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ElementType } from "react"
 import type {
   AgentPaneView,
   DoctorReportRunStatus,
@@ -26,6 +26,7 @@ import type {
   McpRegistryDto,
   ProviderCredentialsSnapshotDto,
   ProviderAuthSessionView,
+  ProviderProfileDiagnosticsDto,
   RuntimeProviderIdDto,
   RunDoctorReportRequestDto,
   ListSkillRegistryRequestDto,
@@ -50,7 +51,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Code2, Globe, Heart, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Code2, Database, Globe, Heart, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -58,72 +59,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-
-const LazyAccountSection = lazy(() =>
-  import("@/components/xero/settings-dialog/account-section").then((module) => ({
-    default: module.AccountSection,
-  })),
-)
-const LazyAgentsSection = lazy(() =>
-  import("@/components/xero/settings-dialog/agents-section").then((module) => ({
-    default: module.AgentsSection,
-  })),
-)
-const LazyBrowserSection = lazy(() =>
-  import("@/components/xero/settings-dialog/browser-section").then((module) => ({
-    default: module.BrowserSection,
-  })),
-)
-const LazyDevelopmentSection = lazy(() =>
-  import("@/components/xero/settings-dialog/development-section").then((module) => ({
-    default: module.DevelopmentSection,
-  })),
-)
-const LazyDictationSection = lazy(() =>
-  import("@/components/xero/settings-dialog/dictation-section").then((module) => ({
-    default: module.DictationSection,
-  })),
-)
-const LazyDiagnosticsSection = lazy(() =>
-  import("@/components/xero/settings-dialog/diagnostics-section").then((module) => ({
-    default: module.DiagnosticsSection,
-  })),
-)
-const LazyMcpSection = lazy(() =>
-  import("@/components/xero/settings-dialog/mcp-section").then((module) => ({
-    default: module.McpSection,
-  })),
-)
-const LazyNotificationsSection = lazy(() =>
-  import("@/components/xero/settings-dialog/notifications-section").then((module) => ({
-    default: module.NotificationsSection,
-  })),
-)
-const LazyProvidersSection = lazy(() =>
-  import("@/components/xero/settings-dialog/providers-section").then((module) => ({
-    default: module.ProvidersSection,
-  })),
-)
-const LazyPluginsSection = lazy(() =>
-  import("@/components/xero/settings-dialog/plugins-section").then((module) => ({
-    default: module.PluginsSection,
-  })),
-)
-const LazySkillsSection = lazy(() =>
-  import("@/components/xero/settings-dialog/skills-section").then((module) => ({
-    default: module.SkillsSection,
-  })),
-)
-const LazySoulSection = lazy(() =>
-  import("@/components/xero/settings-dialog/soul-section").then((module) => ({
-    default: module.SoulSection,
-  })),
-)
-const LazyThemesSection = lazy(() =>
-  import("@/components/xero/settings-dialog/themes-section").then((module) => ({
-    default: module.ThemesSection,
-  })),
-)
 
 export type SettingsSection =
   | "account"
@@ -137,13 +72,138 @@ export type SettingsSection =
   | "agents"
   | "plugins"
   | "browser"
+  | "workspaceIndex"
   | "themes"
   | "development"
+
+const SETTINGS_SECTIONS: SettingsSection[] = [
+  "account",
+  "providers",
+  "diagnostics",
+  "soul",
+  "dictation",
+  "notifications",
+  "mcp",
+  "agents",
+  "skills",
+  "plugins",
+  "browser",
+  "workspaceIndex",
+  "themes",
+  "development",
+]
+
+const loadAccountSection = () =>
+  import("@/components/xero/settings-dialog/account-section").then((module) => ({
+    default: module.AccountSection,
+  }))
+const loadAgentsSection = () =>
+  import("@/components/xero/settings-dialog/agents-section").then((module) => ({
+    default: module.AgentsSection,
+  }))
+const loadBrowserSection = () =>
+  import("@/components/xero/settings-dialog/browser-section").then((module) => ({
+    default: module.BrowserSection,
+  }))
+const loadDevelopmentSection = () =>
+  import("@/components/xero/settings-dialog/development-section").then((module) => ({
+    default: module.DevelopmentSection,
+  }))
+const loadDictationSection = () =>
+  import("@/components/xero/settings-dialog/dictation-section").then((module) => ({
+    default: module.DictationSection,
+  }))
+const loadDiagnosticsSection = () =>
+  import("@/components/xero/settings-dialog/diagnostics-section").then((module) => ({
+    default: module.DiagnosticsSection,
+  }))
+const loadMcpSection = () =>
+  import("@/components/xero/settings-dialog/mcp-section").then((module) => ({
+    default: module.McpSection,
+  }))
+const loadNotificationsSection = () =>
+  import("@/components/xero/settings-dialog/notifications-section").then((module) => ({
+    default: module.NotificationsSection,
+  }))
+const loadProvidersSection = () =>
+  import("@/components/xero/settings-dialog/providers-section").then((module) => ({
+    default: module.ProvidersSection,
+  }))
+const loadPluginsSection = () =>
+  import("@/components/xero/settings-dialog/plugins-section").then((module) => ({
+    default: module.PluginsSection,
+  }))
+const loadSkillsSection = () =>
+  import("@/components/xero/settings-dialog/skills-section").then((module) => ({
+    default: module.SkillsSection,
+  }))
+const loadSoulSection = () =>
+  import("@/components/xero/settings-dialog/soul-section").then((module) => ({
+    default: module.SoulSection,
+  }))
+const loadThemesSection = () =>
+  import("@/components/xero/settings-dialog/themes-section").then((module) => ({
+    default: module.ThemesSection,
+  }))
+const loadWorkspaceIndexSection = () =>
+  import("@/components/xero/settings-dialog/workspace-index-section").then((module) => ({
+    default: module.WorkspaceIndexSection,
+  }))
+
+const LazyAccountSection = lazy(loadAccountSection)
+const LazyAgentsSection = lazy(loadAgentsSection)
+const LazyBrowserSection = lazy(loadBrowserSection)
+const LazyDevelopmentSection = lazy(loadDevelopmentSection)
+const LazyDictationSection = lazy(loadDictationSection)
+const LazyDiagnosticsSection = lazy(loadDiagnosticsSection)
+const LazyMcpSection = lazy(loadMcpSection)
+const LazyNotificationsSection = lazy(loadNotificationsSection)
+const LazyProvidersSection = lazy(loadProvidersSection)
+const LazyPluginsSection = lazy(loadPluginsSection)
+const LazySkillsSection = lazy(loadSkillsSection)
+const LazySoulSection = lazy(loadSoulSection)
+const LazyThemesSection = lazy(loadThemesSection)
+const LazyWorkspaceIndexSection = lazy(loadWorkspaceIndexSection)
+
+const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> = {
+  account: loadAccountSection,
+  providers: loadProvidersSection,
+  diagnostics: loadDiagnosticsSection,
+  soul: loadSoulSection,
+  dictation: loadDictationSection,
+  notifications: loadNotificationsSection,
+  mcp: loadMcpSection,
+  agents: loadAgentsSection,
+  skills: loadSkillsSection,
+  plugins: loadPluginsSection,
+  browser: loadBrowserSection,
+  workspaceIndex: loadWorkspaceIndexSection,
+  themes: loadThemesSection,
+  development: loadDevelopmentSection,
+}
+
+const warmedSectionChunks = new Map<SettingsSection, Promise<unknown>>()
+
+export function preloadSettingsSectionChunk(section: SettingsSection): Promise<unknown> {
+  const existing = warmedSectionChunks.get(section)
+  if (existing) return existing
+
+  const promise = SETTINGS_SECTION_LOADERS[section]()
+  warmedSectionChunks.set(section, promise)
+  void promise.catch(() => warmedSectionChunks.delete(section))
+  return promise
+}
+
+export function preloadSettingsSectionChunks(
+  sections: readonly SettingsSection[] = SETTINGS_SECTIONS,
+): Promise<unknown[]> {
+  return Promise.all(sections.map((section) => preloadSettingsSectionChunk(section)))
+}
 
 interface NavItem {
   id: SettingsSection
   label: string
-  icon: React.ElementType
+  icon: ElementType
 }
 
 interface NavGroup {
@@ -172,6 +232,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
+    { id: "workspaceIndex", label: "Workspace Index", icon: Database },
   ],
 }
 
@@ -214,6 +275,10 @@ export interface SettingsDialogProps {
     providerId: RuntimeProviderIdDto
     originator?: string | null
   }) => Promise<ProviderAuthSessionView | null>
+  onCheckProviderProfile?: (
+    profileId: string,
+    options?: { includeNetwork?: boolean; modelId?: string | null },
+  ) => Promise<ProviderProfileDiagnosticsDto>
   doctorReport?: XeroDoctorReportDto | null
   doctorReportStatus?: DoctorReportRunStatus
   doctorReportError?: OperatorActionErrorView | null
@@ -295,6 +360,7 @@ export function SettingsDialog({
   onUpsertProviderCredential,
   onDeleteProviderCredential,
   onStartOAuthLogin,
+  onCheckProviderProfile,
   doctorReport = null,
   doctorReportStatus = "idle",
   doctorReportError = null,
@@ -352,15 +418,28 @@ export function SettingsDialog({
   onAgentRegistryChanged,
 }: SettingsDialogProps) {
   const [section, setSection] = useState<SettingsSection>("providers")
+  const [mountedSections, setMountedSections] = useState<ReadonlySet<SettingsSection>>(
+    () => new Set(["providers"]),
+  )
   const refreshOnOpenCallbacksRef = useRef({
     providerCredentials: onRefreshProviderCredentials,
     environment: onRefreshEnvironmentDiscovery,
     mcpRegistry: onRefreshMcpRegistry,
     skillRegistry: onRefreshSkillRegistry,
   })
+  const renderedSections = useMemo(() => {
+    const sections = SETTINGS_SECTIONS.filter((candidate) => mountedSections.has(candidate))
+    return sections.length > 0 ? sections : [section]
+  }, [mountedSections, section])
 
   useEffect(() => {
-    if (open) setSection(initialSection)
+    if (!open) {
+      return
+    }
+
+    void preloadSettingsSectionChunk(initialSection)
+    setSection(initialSection)
+    setMountedSections(new Set([initialSection]))
   }, [initialSection, open])
 
   useEffect(() => {
@@ -384,6 +463,235 @@ export function SettingsDialog({
     void mcpRegistry?.({ force: true }).catch(() => undefined)
     void skillRegistry?.({ force: true }).catch(() => undefined)
   }, [open])
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    if (
+      typeof window === "undefined" ||
+      typeof window.requestAnimationFrame !== "function" ||
+      typeof window.cancelAnimationFrame !== "function"
+    ) {
+      void preloadSettingsSectionChunks().catch(() => undefined)
+      return
+    }
+
+    let cancelled = false
+    let frame = 0
+    const queue = SETTINGS_SECTIONS.filter((candidate) => candidate !== section)
+
+    const warmNext = () => {
+      if (cancelled) return
+      const next = queue.shift()
+      if (!next) return
+
+      void preloadSettingsSectionChunk(next)
+      frame = window.requestAnimationFrame(warmNext)
+    }
+
+    frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(warmNext)
+    })
+
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame(frame)
+    }
+  }, [open, section])
+
+  const selectSection = useCallback((nextSection: SettingsSection) => {
+    void preloadSettingsSectionChunk(nextSection)
+
+    startTransition(() => {
+      setSection(nextSection)
+      setMountedSections((current) => {
+        if (current.has(nextSection)) {
+          return current
+        }
+
+        const next = new Set(current)
+        next.add(nextSection)
+        return next
+      })
+    })
+  }, [])
+
+  const renderSectionContent = (renderedSection: SettingsSection) => {
+    if (renderedSection === "account") {
+      return (
+        <LazyAccountSection
+          session={githubSession ?? null}
+          status={githubAuthStatus ?? "idle"}
+          error={githubAuthError ?? null}
+          onLogin={() => onGithubLogin?.()}
+          onLogout={() => onGithubLogout?.()}
+        />
+      )
+    }
+
+    if (renderedSection === "providers") {
+      return (
+        <LazyProvidersSection
+          active={open && section === "providers"}
+          agent={agent}
+          providerCredentials={providerCredentials}
+          providerCredentialsLoadStatus={providerCredentialsLoadStatus}
+          providerCredentialsLoadError={providerCredentialsLoadError}
+          providerCredentialsSaveStatus={providerCredentialsSaveStatus}
+          providerCredentialsSaveError={providerCredentialsSaveError}
+          onRefreshProviderCredentials={onRefreshProviderCredentials}
+          onUpsertProviderCredential={onUpsertProviderCredential}
+          onDeleteProviderCredential={onDeleteProviderCredential}
+          onStartOAuthLogin={onStartOAuthLogin}
+          onCheckProviderProfile={onCheckProviderProfile}
+        />
+      )
+    }
+
+    if (renderedSection === "diagnostics") {
+      return (
+        <LazyDiagnosticsSection
+          doctorReport={doctorReport}
+          doctorReportStatus={doctorReportStatus}
+          doctorReportError={doctorReportError}
+          environmentDiscoveryStatus={environmentDiscoveryStatus}
+          environmentProfileSummary={environmentProfileSummary}
+          onRefreshEnvironmentDiscovery={onRefreshEnvironmentDiscovery}
+          onVerifyUserEnvironmentTool={onVerifyUserEnvironmentTool}
+          onSaveUserEnvironmentTool={onSaveUserEnvironmentTool}
+          onRemoveUserEnvironmentTool={onRemoveUserEnvironmentTool}
+          onRunDoctorReport={onRunDoctorReport}
+        />
+      )
+    }
+
+    if (renderedSection === "soul") {
+      return <LazySoulSection adapter={soulAdapter} />
+    }
+
+    if (renderedSection === "dictation") {
+      return <LazyDictationSection adapter={dictationAdapter} />
+    }
+
+    if (renderedSection === "notifications") {
+      return agent ? (
+        <LazyNotificationsSection
+          agent={agent}
+          onUpsertNotificationRoute={onUpsertNotificationRoute}
+        />
+      ) : (
+        <ProjectBoundEmptyState
+          title="Notifications require a selected project"
+          body="Provider settings are app-global, but notification routes stay project-bound so Xero never writes cross-project delivery state into the wrong repository view."
+        />
+      )
+    }
+
+    if (renderedSection === "mcp") {
+      return (
+        <LazyMcpSection
+          mcpRegistry={mcpRegistry}
+          mcpImportDiagnostics={mcpImportDiagnostics}
+          mcpRegistryLoadStatus={mcpRegistryLoadStatus}
+          mcpRegistryLoadError={mcpRegistryLoadError}
+          mcpRegistryMutationStatus={mcpRegistryMutationStatus}
+          pendingMcpServerId={pendingMcpServerId}
+          mcpRegistryMutationError={mcpRegistryMutationError}
+          onRefreshMcpRegistry={onRefreshMcpRegistry}
+          onUpsertMcpServer={onUpsertMcpServer}
+          onRemoveMcpServer={onRemoveMcpServer}
+          onImportMcpServers={onImportMcpServers}
+          onRefreshMcpServerStatuses={onRefreshMcpServerStatuses}
+        />
+      )
+    }
+
+    if (renderedSection === "agents") {
+      return (
+        <LazyAgentsSection
+          projectId={agent?.project.id ?? null}
+          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+          onListAgentDefinitions={onListAgentDefinitions}
+          onArchiveAgentDefinition={onArchiveAgentDefinition}
+          onGetAgentDefinitionVersion={onGetAgentDefinitionVersion}
+          onRegistryChanged={onAgentRegistryChanged}
+        />
+      )
+    }
+
+    if (renderedSection === "skills") {
+      return (
+        <LazySkillsSection
+          agent={agent}
+          skillRegistry={skillRegistry}
+          skillRegistryLoadStatus={skillRegistryLoadStatus}
+          skillRegistryLoadError={skillRegistryLoadError}
+          skillRegistryMutationStatus={skillRegistryMutationStatus}
+          pendingSkillSourceId={pendingSkillSourceId}
+          skillRegistryMutationError={skillRegistryMutationError}
+          onRefreshSkillRegistry={onRefreshSkillRegistry}
+          onReloadSkillRegistry={onReloadSkillRegistry}
+          onSetSkillEnabled={onSetSkillEnabled}
+          onRemoveSkill={onRemoveSkill}
+          onUpsertSkillLocalRoot={onUpsertSkillLocalRoot}
+          onRemoveSkillLocalRoot={onRemoveSkillLocalRoot}
+          onUpdateProjectSkillSource={onUpdateProjectSkillSource}
+          onUpdateGithubSkillSource={onUpdateGithubSkillSource}
+        />
+      )
+    }
+
+    if (renderedSection === "plugins") {
+      return (
+        <LazyPluginsSection
+          agent={agent}
+          skillRegistry={skillRegistry}
+          skillRegistryLoadStatus={skillRegistryLoadStatus}
+          skillRegistryLoadError={skillRegistryLoadError}
+          skillRegistryMutationStatus={skillRegistryMutationStatus}
+          pendingSkillSourceId={pendingSkillSourceId}
+          skillRegistryMutationError={skillRegistryMutationError}
+          onRefreshSkillRegistry={onRefreshSkillRegistry}
+          onReloadSkillRegistry={onReloadSkillRegistry}
+          onUpsertPluginRoot={onUpsertPluginRoot}
+          onRemovePluginRoot={onRemovePluginRoot}
+          onSetPluginEnabled={onSetPluginEnabled}
+          onRemovePlugin={onRemovePlugin}
+        />
+      )
+    }
+
+    if (renderedSection === "browser") {
+      return <LazyBrowserSection />
+    }
+
+    if (renderedSection === "workspaceIndex") {
+      return (
+        <LazyWorkspaceIndexSection
+          projectId={agent?.project.id ?? null}
+          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+        />
+      )
+    }
+
+    if (renderedSection === "themes") {
+      return <LazyThemesSection />
+    }
+
+    if (renderedSection === "development") {
+      return (
+        <LazyDevelopmentSection
+          platformOverride={platformOverride}
+          onPlatformOverrideChange={onPlatformOverrideChange}
+          onStartOnboarding={onStartOnboarding}
+        />
+      )
+    }
+
+    return null
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -424,7 +732,13 @@ export function SettingsDialog({
                           type="button"
                           aria-label={label}
                           aria-current={active ? "page" : undefined}
-                          onClick={() => setSection(id)}
+                          onClick={() => selectSection(id)}
+                          onFocus={() => {
+                            void preloadSettingsSectionChunk(id)
+                          }}
+                          onPointerEnter={() => {
+                            void preloadSettingsSectionChunk(id)
+                          }}
                           className={cn(
                             "group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13.5px] leading-tight transition-colors",
                             active
@@ -449,133 +763,24 @@ export function SettingsDialog({
           </nav>
 
           <div className="flex flex-1 flex-col overflow-y-auto scrollbar-thin">
-            <div
-              key={section}
-              className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 px-10 py-10 animate-in fade-in-0 motion-enter"
-            >
-              <Suspense fallback={<SettingsSectionFallback />}>
-              {section === "account" ? (
-                <LazyAccountSection
-                  session={githubSession ?? null}
-                  status={githubAuthStatus ?? "idle"}
-                  error={githubAuthError ?? null}
-                  onLogin={() => onGithubLogin?.()}
-                  onLogout={() => onGithubLogout?.()}
-                />
-              ) : section === "providers" ? (
-                <LazyProvidersSection
-                  active={open && section === "providers"}
-                  agent={agent}
-                  providerCredentials={providerCredentials}
-                  providerCredentialsLoadStatus={providerCredentialsLoadStatus}
-                  providerCredentialsLoadError={providerCredentialsLoadError}
-                  providerCredentialsSaveStatus={providerCredentialsSaveStatus}
-                  providerCredentialsSaveError={providerCredentialsSaveError}
-                  onRefreshProviderCredentials={onRefreshProviderCredentials}
-                  onUpsertProviderCredential={onUpsertProviderCredential}
-                  onDeleteProviderCredential={onDeleteProviderCredential}
-                  onStartOAuthLogin={onStartOAuthLogin}
-                />
-              ) : section === "diagnostics" ? (
-                <LazyDiagnosticsSection
-                  doctorReport={doctorReport}
-                  doctorReportStatus={doctorReportStatus}
-                  doctorReportError={doctorReportError}
-                  environmentDiscoveryStatus={environmentDiscoveryStatus}
-                  environmentProfileSummary={environmentProfileSummary}
-                  onRefreshEnvironmentDiscovery={onRefreshEnvironmentDiscovery}
-                  onVerifyUserEnvironmentTool={onVerifyUserEnvironmentTool}
-                  onSaveUserEnvironmentTool={onSaveUserEnvironmentTool}
-                  onRemoveUserEnvironmentTool={onRemoveUserEnvironmentTool}
-                  onRunDoctorReport={onRunDoctorReport}
-                />
-              ) : section === "soul" ? (
-                <LazySoulSection adapter={soulAdapter} />
-              ) : section === "dictation" ? (
-                <LazyDictationSection adapter={dictationAdapter} />
-              ) : section === "notifications" ? (
-                agent ? (
-                  <LazyNotificationsSection
-                    agent={agent}
-                    onUpsertNotificationRoute={onUpsertNotificationRoute}
-                  />
-                ) : (
-                  <ProjectBoundEmptyState
-                    title="Notifications require a selected project"
-                    body="Provider settings are app-global, but notification routes stay project-bound so Xero never writes cross-project delivery state into the wrong repository view."
-                  />
-                )
-              ) : section === "mcp" ? (
-                <LazyMcpSection
-                  mcpRegistry={mcpRegistry}
-                  mcpImportDiagnostics={mcpImportDiagnostics}
-                  mcpRegistryLoadStatus={mcpRegistryLoadStatus}
-                  mcpRegistryLoadError={mcpRegistryLoadError}
-                  mcpRegistryMutationStatus={mcpRegistryMutationStatus}
-                  pendingMcpServerId={pendingMcpServerId}
-                  mcpRegistryMutationError={mcpRegistryMutationError}
-                  onRefreshMcpRegistry={onRefreshMcpRegistry}
-                  onUpsertMcpServer={onUpsertMcpServer}
-                  onRemoveMcpServer={onRemoveMcpServer}
-                  onImportMcpServers={onImportMcpServers}
-                  onRefreshMcpServerStatuses={onRefreshMcpServerStatuses}
-                />
-              ) : section === "agents" ? (
-                <LazyAgentsSection
-                  projectId={agent?.project.id ?? null}
-                  projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
-                  onListAgentDefinitions={onListAgentDefinitions}
-                  onArchiveAgentDefinition={onArchiveAgentDefinition}
-                  onGetAgentDefinitionVersion={onGetAgentDefinitionVersion}
-                  onRegistryChanged={onAgentRegistryChanged}
-                />
-              ) : section === "skills" ? (
-                <LazySkillsSection
-                  agent={agent}
-                  skillRegistry={skillRegistry}
-                  skillRegistryLoadStatus={skillRegistryLoadStatus}
-                  skillRegistryLoadError={skillRegistryLoadError}
-                  skillRegistryMutationStatus={skillRegistryMutationStatus}
-                  pendingSkillSourceId={pendingSkillSourceId}
-                  skillRegistryMutationError={skillRegistryMutationError}
-                  onRefreshSkillRegistry={onRefreshSkillRegistry}
-                  onReloadSkillRegistry={onReloadSkillRegistry}
-                  onSetSkillEnabled={onSetSkillEnabled}
-                  onRemoveSkill={onRemoveSkill}
-                  onUpsertSkillLocalRoot={onUpsertSkillLocalRoot}
-                  onRemoveSkillLocalRoot={onRemoveSkillLocalRoot}
-                  onUpdateProjectSkillSource={onUpdateProjectSkillSource}
-                  onUpdateGithubSkillSource={onUpdateGithubSkillSource}
-                />
-              ) : section === "plugins" ? (
-                <LazyPluginsSection
-                  agent={agent}
-                  skillRegistry={skillRegistry}
-                  skillRegistryLoadStatus={skillRegistryLoadStatus}
-                  skillRegistryLoadError={skillRegistryLoadError}
-                  skillRegistryMutationStatus={skillRegistryMutationStatus}
-                  pendingSkillSourceId={pendingSkillSourceId}
-                  skillRegistryMutationError={skillRegistryMutationError}
-                  onRefreshSkillRegistry={onRefreshSkillRegistry}
-                  onReloadSkillRegistry={onReloadSkillRegistry}
-                  onUpsertPluginRoot={onUpsertPluginRoot}
-                  onRemovePluginRoot={onRemovePluginRoot}
-                  onSetPluginEnabled={onSetPluginEnabled}
-                  onRemovePlugin={onRemovePlugin}
-                />
-              ) : section === "browser" ? (
-                <LazyBrowserSection />
-              ) : section === "themes" ? (
-                <LazyThemesSection />
-              ) : section === "development" ? (
-                <LazyDevelopmentSection
-                  platformOverride={platformOverride}
-                  onPlatformOverrideChange={onPlatformOverrideChange}
-                  onStartOnboarding={onStartOnboarding}
-                />
-              ) : null}
-              </Suspense>
-            </div>
+            {renderedSections.map((renderedSection) => {
+              const active = section === renderedSection
+              return (
+                <div
+                  key={renderedSection}
+                  aria-hidden={!active}
+                  className={cn(
+                    "mx-auto w-full max-w-3xl flex-1 flex-col gap-5 px-10 py-10",
+                    active ? "flex animate-in fade-in-0 motion-enter" : "hidden",
+                  )}
+                  inert={!active ? true : undefined}
+                >
+                  <Suspense fallback={<SettingsSectionFallback />}>
+                    {renderSectionContent(renderedSection)}
+                  </Suspense>
+                </div>
+              )
+            })}
           </div>
         </div>
       </DialogContent>
@@ -588,9 +793,21 @@ function SettingsSectionFallback() {
     <div
       aria-busy="true"
       aria-label="Loading settings section"
-      className="min-h-[240px]"
+      className="flex min-h-[240px] flex-col gap-5"
       role="status"
-    />
+    >
+      <div className="space-y-2">
+        <div className="h-5 w-44 rounded-md bg-secondary/60" />
+        <div className="h-3 w-80 max-w-full rounded bg-secondary/40" />
+      </div>
+      <div className="rounded-md border border-border/60 bg-card/30 p-4">
+        <div className="h-4 w-36 rounded bg-secondary/50" />
+        <div className="mt-4 space-y-2">
+          <div className="h-3 w-full rounded bg-secondary/35" />
+          <div className="h-3 w-2/3 rounded bg-secondary/30" />
+        </div>
+      </div>
+    </div>
   )
 }
 

@@ -1,4 +1,4 @@
-import { Check, Github, KeyRound, Route, Sparkles, Webhook } from "lucide-react"
+import { Check, Cloud, Github, KeyRound, Route, Server, Sparkles, Webhook } from "lucide-react"
 import {
   AnthropicIcon,
   GoogleIcon,
@@ -14,40 +14,64 @@ type Provider = {
 
 const providers: Provider[] = [
   {
-    name: "ChatGPT / Codex",
-    plan: "Plus · Pro · Team plans",
+    name: "OpenAI / Codex",
+    plan: "API key, Codex CLI auth, or ChatGPT plan",
     icon: <OpenAIIcon className="h-4 w-4" />,
     badgeClass: "bg-[#10a37f] text-white",
   },
   {
-    name: "Claude",
-    plan: "Pro · Max · Team plans",
+    name: "Anthropic",
+    plan: "API key or Claude plan",
     icon: <AnthropicIcon className="h-4 w-4" />,
     badgeClass: "bg-[#cc785c] text-white",
   },
   {
-    name: "GitHub Copilot",
-    plan: "Individual · Business",
-    icon: <Github className="h-4 w-4" />,
-    badgeClass: "bg-foreground text-background",
-  },
-  {
-    name: "OpenRouter",
-    plan: "Unified billing across 200+ models",
-    icon: <Route className="h-4 w-4" />,
-    badgeClass: "border border-border bg-secondary text-foreground",
-  },
-  {
     name: "Google Gemini",
-    plan: "AI Pro · Ultra subscriptions",
+    plan: "AI Studio API keys",
     icon: <GoogleIcon className="h-4 w-4" />,
     badgeClass: "bg-[#4285f4] text-white",
   },
   {
-    name: "Any OpenAI-compatible API",
-    plan: "Ollama · Groq · xAI · Together · vLLM",
-    icon: <Webhook className="h-4 w-4" />,
+    name: "OpenRouter",
+    plan: "One key, hundreds of models",
+    icon: <Route className="h-4 w-4" />,
+    badgeClass: "border border-border bg-secondary text-foreground",
+  },
+  {
+    name: "GitHub Models",
+    plan: "Sign in with your GitHub account",
+    icon: <Github className="h-4 w-4" />,
+    badgeClass: "bg-foreground text-background",
+  },
+  {
+    name: "Ollama",
+    plan: "Local models · zero round trips",
+    icon: <Server className="h-4 w-4" />,
     badgeClass: "border border-primary/30 bg-primary/15 text-primary",
+  },
+  {
+    name: "Azure OpenAI",
+    plan: "Enterprise deployments",
+    icon: <Cloud className="h-4 w-4" />,
+    badgeClass: "bg-[#0078d4] text-white",
+  },
+  {
+    name: "AWS Bedrock",
+    plan: "Anthropic, Meta, and more",
+    icon: <Cloud className="h-4 w-4" />,
+    badgeClass: "bg-[#ff9900] text-white",
+  },
+  {
+    name: "Google Vertex AI",
+    plan: "Gemini and partner models on GCP",
+    icon: <GoogleIcon className="h-4 w-4" />,
+    badgeClass: "bg-[#1a73e8] text-white",
+  },
+  {
+    name: "Any OpenAI-compatible API",
+    plan: "Groq · xAI · Together · vLLM · LM Studio",
+    icon: <Webhook className="h-4 w-4" />,
+    badgeClass: "border border-border bg-secondary text-foreground",
   },
 ]
 
@@ -64,12 +88,13 @@ export function Models() {
               Bring your own model
             </p>
             <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-4xl lg:text-5xl">
-              Works with the subscriptions you already pay for.
+              Ten provider integrations. No middle layer.
             </h2>
             <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
-              Xero is model-agnostic. Sign in with your ChatGPT, Claude, or Copilot
-              plan, paste an OpenRouter key, or point it at a self-hosted endpoint. Your
-              keys live in the OS keychain — never on our servers.
+              Xero is model-agnostic. Add an API key, sign in with the CLI auth
+              flow you already use, or point a session at a local Ollama or
+              OpenAI-compatible endpoint. Credentials stay on your machine,
+              keychain-backed where the OS supports it.
             </p>
 
             <ul className="mt-6 flex flex-col gap-3">
@@ -78,9 +103,9 @@ export function Models() {
                   <KeyRound className="h-3 w-3" />
                 </span>
                 <span className="text-foreground/90">
-                  <span className="font-medium">No extra vendor lock-in.</span>{" "}
+                  <span className="font-medium">No relay servers.</span>{" "}
                   <span className="text-muted-foreground">
-                    Keep using the plan your team already has.
+                    Requests go directly from your machine to the provider.
                   </span>
                 </span>
               </li>
@@ -89,10 +114,10 @@ export function Models() {
                   <Sparkles className="h-3 w-3" />
                 </span>
                 <span className="text-foreground/90">
-                  <span className="font-medium">Mix models per agent.</span>{" "}
+                  <span className="font-medium">Mix models per session.</span>{" "}
                   <span className="text-muted-foreground">
-                    Route the planner to Opus, workers to a fast Sonnet / GPT-5-mini,
-                    critic to whichever you trust most.
+                    Run an Anthropic engineer next to a Gemini ask agent next to
+                    a local Ollama coder.
                   </span>
                 </span>
               </li>
@@ -130,10 +155,9 @@ export function Models() {
             </ul>
 
             <div className="mt-4 rounded-xl border border-dashed border-border/70 bg-background/40 p-4 font-mono text-[12px] text-muted-foreground">
-              <span className="text-primary">$</span> Xero auth add anthropic
-              <span className="text-primary"> --plan=max</span>
+              <span className="text-primary">$</span> xero providers add anthropic
               <span className="ml-2 text-foreground/70">
-                # stored securely in macOS keychain
+                # stored in OS keychain · redacted in doctor reports
               </span>
             </div>
           </div>

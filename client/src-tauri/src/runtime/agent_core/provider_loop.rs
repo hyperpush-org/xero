@@ -64,6 +64,22 @@ pub(crate) fn drive_provider_loop(
             turn_index,
             controls: controls.clone(),
         };
+        let provider_turn_started_at = now_timestamp();
+        project_store::upsert_agent_coordination_presence(
+            repo_root,
+            &project_store::UpsertAgentCoordinationPresenceRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                pane_id: None,
+                status: "running".into(),
+                current_phase: "provider_turn_started".into(),
+                activity_summary: format!("Provider turn {turn_index} started."),
+                last_event_id: None,
+                last_event_kind: None,
+                updated_at: provider_turn_started_at,
+                lease_seconds: None,
+            },
+        )?;
 
         let outcome = provider.stream_turn(&turn, &mut |event| {
             cancellation.check_cancelled()?;

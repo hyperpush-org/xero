@@ -40,6 +40,14 @@ pub(crate) fn assemble_provider_context_package(
 ) -> CommandResult<ProviderContextPackage> {
     let created_at = now_timestamp();
     let retrieved_project_context = retrieve_project_context(&input, &created_at)?;
+    let active_coordination_context = project_store::active_agent_coordination_context(
+        input.repo_root,
+        input.project_id,
+        input.run_id,
+        &created_at,
+    )?;
+    let active_coordination_summary =
+        active_coordination_prompt_summary(&active_coordination_context);
     let compilation = PromptCompiler::new(
         input.repo_root,
         Some(input.project_id),
@@ -51,6 +59,7 @@ pub(crate) fn assemble_provider_context_package(
     .with_soul_settings(input.soul_settings)
     .with_agent_definition_snapshot(input.agent_definition_snapshot)
     .with_owned_process_summary(input.owned_process_summary)
+    .with_active_coordination_summary(active_coordination_summary.as_deref())
     .with_skill_contexts(skill_contexts)
     .compile()?;
 
@@ -59,9 +68,12 @@ pub(crate) fn assemble_provider_context_package(
     let (message_contributors, messages_json, messages_redacted) =
         provider_message_manifest_entries(input.messages)?;
     let (tool_contributors, tool_descriptors_json) = tool_descriptor_manifest_entries(input.tools)?;
+    let (coordination_contributors, coordination_json) =
+        active_coordination_manifest_entries(&active_coordination_context, input.tools);
     let mut included = included_contributors;
     included.extend(message_contributors);
     included.extend(tool_contributors);
+    included.extend(coordination_contributors);
 
     let mut excluded = Vec::new();
     append_empty_context_exclusions(
@@ -180,6 +192,7 @@ pub(crate) fn assemble_provider_context_package(
         "messages": messages_json,
         "toolDescriptors": tool_descriptors_json,
         "retrieval": retrieval_json,
+        "coordination": coordination_json,
         "compactionId": active_compaction.as_ref().map(|compaction| compaction.compaction_id.as_str()),
         "redactionState": redaction_state_label(&redaction_state),
     });
@@ -357,6 +370,177 @@ fn tool_descriptor_manifest_entries(
     Ok((contributors, tools_json))
 }
 
+fn active_coordination_manifest_entries(
+    context: &project_store::AgentCoordinationContext,
+    tools: &[AgentToolDescriptor],
+) -> (
+    Vec<project_store::AgentContextManifestContributorRecord>,
+    JsonValue,
+) {
+    let mut contributors = Vec::new();
+    for presence in &context.presence {
+        let summary = format!(
+            "{} {} {} {}",
+            presence.run_id, presence.status, presence.current_phase, presence.activity_summary
+        );
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!("agent_coordination_presence:{}", presence.run_id),
+            kind: "active_agent_presence".into(),
+            source_id: Some(presence.run_id.clone()),
+            estimated_tokens: estimate_tokens(&summary),
+            reason: Some("active_same_project_session_recent".into()),
+        });
+    }
+    for reservation in &context.reservations {
+        let summary = format!(
+            "{} {} {}",
+            reservation.path,
+            reservation.operation.as_str(),
+            reservation
+                .owner_child_run_id
+                .as_deref()
+                .unwrap_or(&reservation.owner_run_id)
+        );
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!("agent_file_reservation:{}", reservation.reservation_id),
+            kind: "active_file_reservation".into(),
+            source_id: Some(reservation.reservation_id.clone()),
+            estimated_tokens: estimate_tokens(&summary),
+            reason: Some("active_same_project_file_reservation".into()),
+        });
+    }
+    for event in &context.events {
+        let summary = format!("{} {} {}", event.run_id, event.event_kind, event.summary);
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!("agent_coordination_event:{}", event.id),
+            kind: "active_agent_coordination_event".into(),
+            source_id: Some(event.id.to_string()),
+            estimated_tokens: estimate_tokens(&summary),
+            reason: Some("recent_active_coordination_event".into()),
+        });
+    }
+    for delivery in &context.mailbox {
+        let item = &delivery.item;
+        let summary = format!(
+            "{} {} {} {}",
+            item.item_id,
+            item.item_type.as_str(),
+            item.priority.as_str(),
+            item.title
+        );
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!("agent_mailbox_item:{}", item.item_id),
+            kind: "active_agent_mailbox_item".into(),
+            source_id: Some(item.item_id.clone()),
+            estimated_tokens: estimate_tokens(&summary),
+            reason: Some("temporary_swarm_mailbox_delivery".into()),
+        });
+    }
+
+    let manifest = json!({
+        "deliveryModel": "prompt_fragment_and_tool",
+        "rawDurableMemoryInjected": false,
+        "promptFragmentId": if context.presence.is_empty() && context.reservations.is_empty() && context.events.is_empty() && context.mailbox.is_empty() {
+            JsonValue::Null
+        } else {
+            JsonValue::String("xero.active_coordination".into())
+        },
+        "toolAvailability": {
+            "agent_coordination": tools.iter().any(|tool| tool.name == AUTONOMOUS_TOOL_AGENT_COORDINATION),
+        },
+        "presenceCount": context.presence.len(),
+        "reservationCount": context.reservations.len(),
+        "eventCount": context.events.len(),
+        "mailboxCount": context.mailbox.len(),
+        "presence": context.presence.iter().map(coordination_presence_manifest_json).collect::<Vec<_>>(),
+        "reservations": context.reservations.iter().map(coordination_reservation_manifest_json).collect::<Vec<_>>(),
+        "events": context.events.iter().map(coordination_event_manifest_json).collect::<Vec<_>>(),
+        "mailbox": context.mailbox.iter().map(coordination_mailbox_manifest_json).collect::<Vec<_>>(),
+    });
+    (contributors, manifest)
+}
+
+fn active_coordination_prompt_summary(
+    context: &project_store::AgentCoordinationContext,
+) -> Option<String> {
+    if context.presence.is_empty()
+        && context.reservations.is_empty()
+        && context.events.is_empty()
+        && context.mailbox.is_empty()
+    {
+        return None;
+    }
+    let mut lines = vec![
+        "--- BEGIN ACTIVE AGENT COORDINATION ---".to_string(),
+        "Use as advisory same-project coordination state; current files and current tool output remain higher priority.".to_string(),
+    ];
+    if !context.presence.is_empty() {
+        lines.push("Active sibling agents:".into());
+        for presence in &context.presence {
+            let role = presence.role.as_deref().unwrap_or("agent");
+            lines.push(format!(
+                "- {} ({role}, {}, phase {}, updated {}): {}",
+                presence.run_id,
+                presence.status,
+                presence.current_phase,
+                presence.updated_at,
+                presence.activity_summary
+            ));
+        }
+    }
+    if !context.reservations.is_empty() {
+        lines.push("Active file reservations:".into());
+        for reservation in &context.reservations {
+            let owner = reservation
+                .owner_child_run_id
+                .as_deref()
+                .unwrap_or(&reservation.owner_run_id);
+            let note = reservation
+                .note
+                .as_deref()
+                .map(|note| format!(" note: {note}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "- {} reserved for {} by {} until {}.{}",
+                reservation.path,
+                reservation.operation.as_str(),
+                owner,
+                reservation.expires_at,
+                note
+            ));
+        }
+    }
+    if !context.events.is_empty() {
+        lines.push("Recent activity events:".into());
+        for event in &context.events {
+            lines.push(format!(
+                "- {} {} {}: {}",
+                event.created_at, event.run_id, event.event_kind, event.summary
+            ));
+        }
+    }
+    if !context.mailbox.is_empty() {
+        lines.push("Temporary swarm mailbox:".into());
+        for delivery in &context.mailbox {
+            let item = &delivery.item;
+            lines.push(format!(
+                "- {} {} from {} priority {} about {}: {}",
+                item.created_at,
+                item.item_type.as_str(),
+                item.sender_run_id,
+                item.priority.as_str(),
+                item.related_paths
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("general work"),
+                item.title
+            ));
+        }
+    }
+    lines.push("--- END ACTIVE AGENT COORDINATION ---".into());
+    Some(lines.join("\n"))
+}
+
 fn append_empty_context_exclusions(
     excluded: &mut Vec<project_store::AgentContextManifestContributorRecord>,
     fragments: &[PromptFragment],
@@ -491,6 +675,7 @@ fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
         "project.code_map" => "code_map",
         "xero.owned_process_state" => "process_state",
         "xero.durable_context_tools" => "durable_context_tool_instruction",
+        "xero.active_coordination" => "active_agent_coordination",
         id if id.starts_with("project.instructions.") => "repository_instructions",
         id if id.starts_with("skill.context.") => "skill_context",
         _ => "prompt_fragment",
@@ -514,6 +699,92 @@ fn manifest_contributor_json(
         "sourceId": contributor.source_id,
         "estimatedTokens": contributor.estimated_tokens,
         "reason": contributor.reason,
+    })
+}
+
+fn coordination_presence_manifest_json(
+    presence: &project_store::AgentCoordinationPresenceRecord,
+) -> JsonValue {
+    json!({
+        "runId": presence.run_id,
+        "agentSessionId": presence.agent_session_id,
+        "traceId": presence.trace_id,
+        "lineageKind": presence.lineage_kind,
+        "parentRunId": presence.parent_run_id,
+        "parentSubagentId": presence.parent_subagent_id,
+        "role": presence.role,
+        "paneId": presence.pane_id,
+        "status": presence.status,
+        "currentPhase": presence.current_phase,
+        "activitySummary": presence.activity_summary,
+        "lastEventId": presence.last_event_id,
+        "lastEventKind": presence.last_event_kind,
+        "lastHeartbeatAt": presence.last_heartbeat_at,
+        "updatedAt": presence.updated_at,
+        "expiresAt": presence.expires_at,
+    })
+}
+
+fn coordination_reservation_manifest_json(
+    reservation: &project_store::AgentFileReservationRecord,
+) -> JsonValue {
+    json!({
+        "reservationId": reservation.reservation_id,
+        "path": reservation.path,
+        "pathKind": reservation.path_kind,
+        "operation": reservation.operation.as_str(),
+        "ownerAgentSessionId": reservation.owner_agent_session_id,
+        "ownerRunId": reservation.owner_run_id,
+        "ownerChildRunId": reservation.owner_child_run_id,
+        "ownerRole": reservation.owner_role,
+        "ownerPaneId": reservation.owner_pane_id,
+        "ownerTraceId": reservation.owner_trace_id,
+        "note": reservation.note,
+        "overridePresent": reservation.override_reason.is_some(),
+        "claimedAt": reservation.claimed_at,
+        "lastHeartbeatAt": reservation.last_heartbeat_at,
+        "expiresAt": reservation.expires_at,
+    })
+}
+
+fn coordination_event_manifest_json(
+    event: &project_store::AgentCoordinationEventRecord,
+) -> JsonValue {
+    json!({
+        "id": event.id,
+        "runId": event.run_id,
+        "traceId": event.trace_id,
+        "eventKind": event.event_kind,
+        "summary": event.summary,
+        "createdAt": event.created_at,
+        "expiresAt": event.expires_at,
+    })
+}
+
+fn coordination_mailbox_manifest_json(
+    delivery: &project_store::AgentMailboxDeliveryRecord,
+) -> JsonValue {
+    let item = &delivery.item;
+    json!({
+        "itemId": item.item_id,
+        "itemType": item.item_type.as_str(),
+        "parentItemId": item.parent_item_id,
+        "senderAgentSessionId": item.sender_agent_session_id,
+        "senderRunId": item.sender_run_id,
+        "senderChildRunId": item.sender_child_run_id,
+        "senderRole": item.sender_role,
+        "senderTraceId": item.sender_trace_id,
+        "targetAgentSessionId": item.target_agent_session_id,
+        "targetRunId": item.target_run_id,
+        "targetRole": item.target_role,
+        "title": item.title,
+        "relatedPaths": item.related_paths,
+        "priority": item.priority.as_str(),
+        "status": item.status.as_str(),
+        "acknowledgedAt": delivery.acknowledged_at,
+        "createdAt": item.created_at,
+        "expiresAt": item.expires_at,
+        "promotedRecordId": item.promoted_record_id,
     })
 }
 
@@ -772,5 +1043,257 @@ mod tests {
             false
         );
         assert!(!first.manifest.retrieval_result_ids.is_empty());
+    }
+
+    #[test]
+    fn provider_context_package_includes_active_coordination_contributors() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.clone(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-sibling".into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Edit sibling path.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed sibling run");
+        let presence = project_store::upsert_agent_coordination_presence(
+            &repo_root,
+            &project_store::UpsertAgentCoordinationPresenceRecord {
+                project_id: project_id.clone(),
+                run_id: "run-sibling".into(),
+                pane_id: Some("pane-2".into()),
+                status: "running".into(),
+                current_phase: "editing".into(),
+                activity_summary: "Sibling run is editing src/shared.rs.".into(),
+                last_event_id: None,
+                last_event_kind: None,
+                updated_at: "2099-05-01T12:01:00Z".into(),
+                lease_seconds: Some(600),
+            },
+        )
+        .expect("publish sibling presence");
+        let reservation = project_store::claim_agent_file_reservations(
+            &repo_root,
+            &project_store::ClaimAgentFileReservationRequest {
+                project_id: project_id.clone(),
+                owner_run_id: "run-sibling".into(),
+                paths: vec!["src/shared.rs".into()],
+                operation: project_store::AgentCoordinationReservationOperation::Editing,
+                note: Some("Sibling edit in progress.".into()),
+                override_reason: None,
+                claimed_at: "2099-05-01T12:01:00Z".into(),
+                lease_seconds: Some(600),
+            },
+        )
+        .expect("claim sibling reservation")
+        .claimed
+        .into_iter()
+        .next()
+        .expect("reservation");
+        let event = project_store::append_agent_coordination_event(
+            &repo_root,
+            &project_store::NewAgentCoordinationEventRecord {
+                project_id: project_id.clone(),
+                run_id: "run-sibling".into(),
+                event_kind: "tool_call_started".into(),
+                summary: "Sibling started edit.".into(),
+                payload: json!({"toolName": "edit"}),
+                created_at: "2099-05-01T12:01:00Z".into(),
+                lease_seconds: Some(600),
+            },
+        )
+        .expect("append sibling event");
+        let mailbox = project_store::publish_agent_mailbox_item(
+            &repo_root,
+            &project_store::NewAgentMailboxItemRecord {
+                project_id: project_id.clone(),
+                sender_run_id: "run-sibling".into(),
+                item_type: project_store::AgentMailboxItemType::Question,
+                parent_item_id: None,
+                target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                target_run_id: Some("run-context-package".into()),
+                target_role: None,
+                title: "Can current run avoid src/shared.rs?".into(),
+                body: "Sibling work has an active edit reservation on src/shared.rs.".into(),
+                related_paths: vec!["src/shared.rs".into()],
+                priority: project_store::AgentMailboxPriority::High,
+                created_at: "2099-05-01T12:02:00Z".into(),
+                ttl_seconds: Some(600),
+            },
+        )
+        .expect("publish mailbox item");
+
+        let messages = vec![ProviderMessage::User {
+            content: "Coordinate with active sibling work.".into(),
+            attachments: Vec::new(),
+        }];
+        let tools = builtin_tool_descriptors()
+            .into_iter()
+            .filter(|tool| tool.name == AUTONOMOUS_TOOL_AGENT_COORDINATION)
+            .collect::<Vec<_>>();
+        let package = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root: &repo_root,
+                project_id: &project_id,
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                run_id: "run-context-package",
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer",
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_definition_snapshot: None,
+                provider_id: OPENAI_CODEX_PROVIDER_ID,
+                model_id: OPENAI_CODEX_PROVIDER_ID,
+                turn_index: 0,
+                browser_control_preference: BrowserControlPreferenceDto::Default,
+                soul_settings: None,
+                tools: &tools,
+                messages: &messages,
+                owned_process_summary: None,
+            },
+            Vec::new(),
+        )
+        .expect("assemble provider package");
+
+        assert!(package.system_prompt.contains("Active sibling agents:"));
+        assert!(package.system_prompt.contains("Temporary swarm mailbox:"));
+        assert!(package
+            .compilation
+            .fragments
+            .iter()
+            .any(|fragment| fragment.id == "xero.active_coordination"));
+        let included = package.manifest.manifest["contributors"]["included"]
+            .as_array()
+            .expect("included contributors");
+        assert!(included.iter().any(|contributor| {
+            contributor["contributorId"]
+                == format!("agent_coordination_presence:{}", presence.run_id)
+        }));
+        assert!(included.iter().any(|contributor| {
+            contributor["contributorId"]
+                == format!("agent_file_reservation:{}", reservation.reservation_id)
+        }));
+        assert!(included.iter().any(|contributor| {
+            contributor["contributorId"] == format!("agent_coordination_event:{}", event.id)
+        }));
+        assert!(included.iter().any(|contributor| {
+            contributor["contributorId"] == format!("agent_mailbox_item:{}", mailbox.item_id)
+        }));
+        assert_eq!(
+            package.manifest.manifest["coordination"]["presenceCount"],
+            1
+        );
+        assert_eq!(
+            package.manifest.manifest["coordination"]["reservationCount"],
+            1
+        );
+        assert_eq!(package.manifest.manifest["coordination"]["eventCount"], 1);
+        assert_eq!(package.manifest.manifest["coordination"]["mailboxCount"], 1);
+    }
+
+    #[test]
+    fn provider_context_package_includes_mailbox_only_swarm_context() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.clone(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-mailbox-sibling".into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Ask a coordination question.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed sibling run");
+        let mailbox = project_store::publish_agent_mailbox_item(
+            &repo_root,
+            &project_store::NewAgentMailboxItemRecord {
+                project_id: project_id.clone(),
+                sender_run_id: "run-mailbox-sibling".into(),
+                item_type: project_store::AgentMailboxItemType::Blocker,
+                parent_item_id: None,
+                target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                target_run_id: Some("run-context-package".into()),
+                target_role: None,
+                title: "Generated bindings are mid-update".into(),
+                body: "Avoid src/generated until the sibling run finishes verification.".into(),
+                related_paths: vec!["src/generated".into()],
+                priority: project_store::AgentMailboxPriority::Urgent,
+                created_at: "2099-05-01T12:02:00Z".into(),
+                ttl_seconds: Some(600),
+            },
+        )
+        .expect("publish mailbox item");
+
+        let messages = vec![ProviderMessage::User {
+            content: "Use swarm mailbox context.".into(),
+            attachments: Vec::new(),
+        }];
+        let tools = builtin_tool_descriptors()
+            .into_iter()
+            .filter(|tool| tool.name == AUTONOMOUS_TOOL_AGENT_COORDINATION)
+            .collect::<Vec<_>>();
+        let package = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root: &repo_root,
+                project_id: &project_id,
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                run_id: "run-context-package",
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer",
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_definition_snapshot: None,
+                provider_id: OPENAI_CODEX_PROVIDER_ID,
+                model_id: OPENAI_CODEX_PROVIDER_ID,
+                turn_index: 0,
+                browser_control_preference: BrowserControlPreferenceDto::Default,
+                soul_settings: None,
+                tools: &tools,
+                messages: &messages,
+                owned_process_summary: None,
+            },
+            Vec::new(),
+        )
+        .expect("assemble provider package");
+
+        assert!(package.system_prompt.contains("Temporary swarm mailbox:"));
+        assert!(package
+            .compilation
+            .fragments
+            .iter()
+            .any(|fragment| fragment.id == "xero.active_coordination"));
+        assert_eq!(
+            package.manifest.manifest["coordination"]["presenceCount"],
+            0
+        );
+        assert_eq!(package.manifest.manifest["coordination"]["mailboxCount"], 1);
+        assert_eq!(
+            package.manifest.manifest["coordination"]["promptFragmentId"],
+            "xero.active_coordination"
+        );
+        let included = package.manifest.manifest["contributors"]["included"]
+            .as_array()
+            .expect("included contributors");
+        assert!(included.iter().any(|contributor| {
+            contributor["contributorId"] == format!("agent_mailbox_item:{}", mailbox.item_id)
+        }));
     }
 }

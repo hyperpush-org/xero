@@ -1,7 +1,16 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
-import { ArrowDown, Check, ChevronDown, ChevronRight, Loader2, Plus, SplitSquareHorizontal, X } from 'lucide-react'
+import {
+  ArrowDown,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Plus,
+  SplitSquareHorizontal,
+  X,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -80,6 +89,8 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
 
 export interface AgentRuntimeProps {
   agent: AgentPaneView
+  /** True while this pane belongs to the foreground app view. */
+  active?: boolean
   onOpenSettings?: () => void
   onOpenDiagnostics?: () => void
   onStartLogin?: (options?: { originator?: string | null }) => Promise<ProviderAuthSessionView | null>
@@ -159,12 +170,16 @@ export interface AgentRuntimeProps {
   onCloseSidebar?: () => void
 }
 
+const EMPTY_RUNTIME_STREAM_ITEMS: RuntimeStreamViewItem[] = []
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
 const MAX_VISIBLE_RUNTIME_ACTION_TURNS = 16
 const COMPACT_TOOL_BURST_THRESHOLD = 5
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
 const BACKGROUND_PANE_STREAM_ITEM_LIMIT = 160
 const BACKGROUND_PANE_VISIBLE_TURN_LIMIT = 48
+const FOREGROUND_WORK_DEFER_MS = 32
+const CONTEXT_METER_REFRESH_IDLE_TIMEOUT_MS = 1200
+const CONTEXT_METER_REFRESH_FALLBACK_DELAY_MS = 220
 
 export interface AgentPaneCloseState {
   hasRunningRun: boolean
@@ -292,6 +307,59 @@ function mergeActionTurn(existing: ConversationTurn, incoming: ConversationTurn)
   }
 }
 
+function scheduleForegroundWork(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => {}
+  }
+
+  let cancelled = false
+  let frameId = 0
+  let timeoutId = 0
+  const run = () => {
+    if (!cancelled) {
+      callback()
+    }
+  }
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(run, FOREGROUND_WORK_DEFER_MS)
+    })
+  } else {
+    timeoutId = window.setTimeout(run, FOREGROUND_WORK_DEFER_MS)
+  }
+
+  return () => {
+    cancelled = true
+    if (frameId !== 0) {
+      window.cancelAnimationFrame(frameId)
+    }
+    if (timeoutId !== 0) {
+      window.clearTimeout(timeoutId)
+    }
+  }
+}
+
+function useDeferredForegroundWork(active: boolean): boolean {
+  const [ready, setReady] = useState(active)
+
+  useEffect(() => {
+    if (!active) {
+      setReady(false)
+      return
+    }
+
+    if (ready) {
+      return
+    }
+
+    return scheduleForegroundWork(() => setReady(true))
+  }, [active, ready])
+
+  return active && ready
+}
+
 function isActionLikeTurn(
   turn: ConversationTurn,
 ): turn is Extract<ConversationTurn, { kind: 'action' | 'action_group' }> {
@@ -407,14 +475,26 @@ function limitActionTurns(turns: ConversationTurn[]): ConversationTurn[] {
   return turns.filter((turn, index) => !isActionLikeTurn(turn) || keptActionTurnIndexes.has(index))
 }
 
-function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): ConversationTurn[] {
+interface ConversationProjection {
+  visibleTurns: ConversationTurn[]
+  hasUserMessage: boolean
+}
+
+const conversationProjectionCache = new WeakMap<readonly RuntimeStreamViewItem[], ConversationProjection>()
+
+function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamViewItem[]): ConversationProjection {
   const turns: ConversationTurn[] = []
   const actionTurnIndexByToolCallId = new Map<string, number>()
+  let hasUserMessage = false
 
   for (const item of runtimeStreamItems) {
     if (item.kind === 'transcript') {
       if (item.role !== 'user' && item.role !== 'assistant') {
         continue
+      }
+
+      if (item.role === 'user') {
+        hasUserMessage = true
       }
 
       const previous = turns.at(-1)
@@ -490,7 +570,23 @@ function buildConversationTurns(runtimeStreamItems: RuntimeStreamViewItem[]): Co
     turns.push(incomingActionTurn)
   }
 
-  return limitActionTurns(compactActionBursts(turns))
+  return {
+    visibleTurns: limitActionTurns(compactActionBursts(turns)),
+    hasUserMessage,
+  }
+}
+
+function getConversationProjection(
+  runtimeStreamItems: readonly RuntimeStreamViewItem[],
+): ConversationProjection {
+  const cached = conversationProjectionCache.get(runtimeStreamItems)
+  if (cached) {
+    return cached
+  }
+
+  const projection = buildConversationProjection(runtimeStreamItems)
+  conversationProjectionCache.set(runtimeStreamItems, projection)
+  return projection
 }
 
 function sliceBackgroundPaneStreamItems(
@@ -507,6 +603,61 @@ function sliceBackgroundPaneTurns(visibleTurns: ConversationTurn[]): Conversatio
     return visibleTurns
   }
   return visibleTurns.slice(-BACKGROUND_PANE_VISIBLE_TURN_LIMIT)
+}
+
+function getContextMeterRequestKey(options: {
+  projectId: string
+  agentSessionId: string | null
+  runId: string | null
+  providerId: string | null
+  modelId: string | null
+  pendingPrompt: string
+  lifecycleKey: string
+}): string {
+  return [
+    options.projectId,
+    options.agentSessionId ?? '',
+    options.runId ?? '',
+    options.providerId ?? '',
+    options.modelId ?? '',
+    options.pendingPrompt,
+    options.lifecycleKey,
+  ].join('\u0000')
+}
+
+function scheduleContextMeterRefresh(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => {}
+  }
+
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+    cancelIdleCallback?: (handle: number) => void
+  }
+
+  let cancelled = false
+  const run = () => {
+    if (!cancelled) {
+      callback()
+    }
+  }
+
+  if (typeof idleWindow.requestIdleCallback === 'function') {
+    const idleHandle = idleWindow.requestIdleCallback(run, {
+      timeout: CONTEXT_METER_REFRESH_IDLE_TIMEOUT_MS,
+    })
+    return () => {
+      cancelled = true
+      idleWindow.cancelIdleCallback?.(idleHandle)
+    }
+  }
+
+  const timeout = window.setTimeout(run, CONTEXT_METER_REFRESH_FALLBACK_DELAY_MS)
+  return () => {
+    cancelled = true
+    window.clearTimeout(timeout)
+  }
 }
 
 function toContextMeterError(error: unknown): {
@@ -551,26 +702,68 @@ function useAgentContextMeterSnapshot(options: {
   const [error, setError] = useState<ReturnType<typeof toContextMeterError> | null>(null)
   const requestIdRef = useRef(0)
   const snapshotRef = useRef<SessionContextSnapshotDto | null>(null)
+  const inFlightRequestKeyRef = useRef<string | null>(null)
+  const settledRequestKeyRef = useRef<string | null>(null)
   const enabled = options.enabled ?? true
+  const requestKey = useMemo(
+    () =>
+      getContextMeterRequestKey({
+        projectId: options.projectId,
+        agentSessionId: options.agentSessionId,
+        runId: options.runId,
+        providerId: options.providerId,
+        modelId: options.modelId,
+        pendingPrompt: debouncedPendingPrompt,
+        lifecycleKey: debouncedLifecycleKey,
+      }),
+    [
+      debouncedLifecycleKey,
+      debouncedPendingPrompt,
+      options.agentSessionId,
+      options.modelId,
+      options.projectId,
+      options.providerId,
+      options.runId,
+    ],
+  )
 
   useEffect(() => {
     snapshotRef.current = snapshot
   }, [snapshot])
 
-  const refresh = useCallback(() => {
-    if (!enabled || !options.adapter?.getSessionContextSnapshot || !options.agentSessionId) {
+  const runRefresh = useCallback((refreshOptions: { force?: boolean } = {}) => {
+    if (!enabled) {
       requestIdRef.current += 1
+      inFlightRequestKeyRef.current = null
+      return
+    }
+
+    if (!options.adapter?.getSessionContextSnapshot || !options.agentSessionId) {
+      requestIdRef.current += 1
+      inFlightRequestKeyRef.current = null
+      settledRequestKeyRef.current = null
+      snapshotRef.current = null
       setStatus('idle')
       setSnapshot(null)
       setError(null)
       return
     }
 
+    if (!refreshOptions.force) {
+      if (settledRequestKeyRef.current === requestKey && snapshotRef.current) {
+        setStatus((current) => (current === 'ready' ? current : 'ready'))
+        return
+      }
+
+      if (inFlightRequestKeyRef.current === requestKey) {
+        return
+      }
+    }
+
     const requestId = requestIdRef.current + 1
     requestIdRef.current = requestId
-    if (!snapshotRef.current) {
-      setStatus('loading')
-    }
+    inFlightRequestKeyRef.current = requestKey
+    setStatus(snapshotRef.current ? 'stale' : 'loading')
     setError(null)
 
     void options.adapter
@@ -584,12 +777,17 @@ function useAgentContextMeterSnapshot(options: {
       })
       .then((nextSnapshot) => {
         if (requestIdRef.current !== requestId) return
+        inFlightRequestKeyRef.current = null
+        settledRequestKeyRef.current = requestKey
+        snapshotRef.current = nextSnapshot
         setSnapshot(nextSnapshot)
         setStatus('ready')
         setError(null)
       })
       .catch((nextError) => {
         if (requestIdRef.current !== requestId) return
+        inFlightRequestKeyRef.current = null
+        settledRequestKeyRef.current = null
         setError(toContextMeterError(nextError))
         setStatus('error')
       })
@@ -602,17 +800,34 @@ function useAgentContextMeterSnapshot(options: {
     options.projectId,
     options.providerId,
     options.runId,
+    requestKey,
   ])
 
   useEffect(() => {
-    refresh()
-  }, [refresh, debouncedLifecycleKey])
+    if (!enabled) {
+      requestIdRef.current += 1
+      inFlightRequestKeyRef.current = null
+      return
+    }
+
+    if (!options.adapter?.getSessionContextSnapshot || !options.agentSessionId) {
+      runRefresh({ force: true })
+      return
+    }
+
+    return scheduleContextMeterRefresh(() => runRefresh())
+  }, [enabled, options.adapter, options.agentSessionId, requestKey, runRefresh])
+
+  const refresh = useCallback(() => {
+    runRefresh({ force: true })
+  }, [runRefresh])
 
   return { status, snapshot, error, refresh }
 }
 
 export const AgentRuntime = memo(function AgentRuntime({
   agent,
+  active = true,
   onOpenSettings,
   onOpenDiagnostics,
   onStartRuntimeRun,
@@ -649,7 +864,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const hasIncompleteRuntimeRunPayload = Boolean(runtimeRun && !renderableRuntimeRun)
   const runtimeStream = agent.runtimeStream ?? null
   const streamStatus = agent.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
-  const runtimeStreamItems = agent.runtimeStreamItems ?? runtimeStream?.items ?? []
+  const runtimeStreamItems = agent.runtimeStreamItems ?? runtimeStream?.items ?? EMPTY_RUNTIME_STREAM_ITEMS
   const activityItems = agent.activityItems ?? runtimeStream?.activityItems ?? []
   const skillItems = agent.skillItems ?? runtimeStream?.skillItems ?? []
   const actionRequiredItems = agent.actionRequiredItems ?? runtimeStream?.actionRequired ?? EMPTY_ACTION_REQUIRED_ITEMS
@@ -657,7 +872,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   const toolCalls = runtimeStream?.toolCalls ?? []
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
   const isFocusedPane = paneCount <= 1 || isPaneFocused !== false
-  const useBackgroundPaneFastPath = paneCount >= 3 && !isFocusedPane
+  const foregroundWorkReady = useDeferredForegroundWork(active)
+  const useBackgroundPaneFastPath = !foregroundWorkReady || (paneCount >= 3 && !isFocusedPane)
   const runtimeStreamItemsForTurns = useMemo(
     () =>
       useBackgroundPaneFastPath
@@ -665,10 +881,11 @@ export const AgentRuntime = memo(function AgentRuntime({
         : runtimeStreamItems,
     [runtimeStreamItems, useBackgroundPaneFastPath],
   )
-  const visibleTurns = useMemo(
-    () => buildConversationTurns(runtimeStreamItemsForTurns),
+  const conversationProjection = useMemo(
+    () => getConversationProjection(runtimeStreamItemsForTurns),
     [runtimeStreamItemsForTurns],
   )
+  const visibleTurns = conversationProjection.visibleTurns
   const visibleTurnsForDisplay = useMemo(
     () =>
       useBackgroundPaneFastPath
@@ -691,10 +908,7 @@ export const AgentRuntime = memo(function AgentRuntime({
         !runtimeStream?.failure
       ),
   )
-  const hasUserMessage = useMemo(
-    () => runtimeStreamItems.some((item) => item.kind === 'transcript' && item.role === 'user'),
-    [runtimeStreamItems],
-  )
+  const hasUserMessage = conversationProjection.hasUserMessage
   const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
@@ -909,9 +1123,9 @@ export const AgentRuntime = memo(function AgentRuntime({
     canStopRuntimeRun,
     actionRequiredItems,
     dictationAdapter: desktopAdapter,
-    dictationEnabled: isFocusedPane,
+    dictationEnabled: foregroundWorkReady && isFocusedPane,
     dictationScopeKey: `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`,
-    reportComposerControls: isFocusedPane,
+    reportComposerControls: foregroundWorkReady && isFocusedPane,
     onStartRuntimeRun,
     onStartRuntimeSession,
     onUpdateRuntimeRunControls: canMutateRuntimeRun ? onUpdateRuntimeRunControls : undefined,
@@ -941,7 +1155,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const contextMeterState = useAgentContextMeterSnapshot({
-    enabled: isFocusedPane,
+    enabled: foregroundWorkReady && isFocusedPane,
     adapter: desktopAdapter,
     projectId: agent.project.id,
     agentSessionId: selectedAgentSessionId,
@@ -963,6 +1177,7 @@ export const AgentRuntime = memo(function AgentRuntime({
         status={contextMeterState.status}
         snapshot={contextMeterState.snapshot}
         hasUserMessage={hasUserMessage}
+        error={contextMeterState.error}
       />
     )
   const composerThinkingPlaceholder = controller.composerThinkingEffort
@@ -1090,6 +1305,10 @@ export const AgentRuntime = memo(function AgentRuntime({
   }, [controller, scrollToLatest])
 
   useEffect(() => {
+    if (!foregroundWorkReady) {
+      return
+    }
+
     if (!hasConversationViewportContent) {
       shouldAutoFollowRef.current = true
       setShowJumpToLatest(false)
@@ -1103,7 +1322,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
 
     setShowJumpToLatest(true)
-  }, [conversationScrollKey, hasConversationViewportContent, scrollToLatest])
+  }, [conversationScrollKey, foregroundWorkReady, hasConversationViewportContent, scrollToLatest])
 
   const isCompact = density === 'compact'
   const isDense = isCompact || paneCount >= 4 || useBackgroundPaneFastPath

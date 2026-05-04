@@ -174,7 +174,9 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
     return
   }
   if (target === 'settings') {
-    void loadSettingsDialog()
+    void loadSettingsDialog().then((module) =>
+      module.preloadSettingsSectionChunks().catch(() => undefined),
+    )
     return
   }
   if (target === 'usage') {
@@ -240,7 +242,9 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
     loadIosEmulatorSidebar(),
     loadAndroidEmulatorSidebar(),
     loadSolanaWorkbenchSidebar().then((module) => module.preloadSolanaWorkbenchPanels()),
-    loadSettingsDialog(),
+    loadSettingsDialog().then((module) => {
+      void module.preloadSettingsSectionChunks().catch(() => undefined)
+    }),
     loadUsageStatsSidebar(),
     loadVcsSidebar(),
     loadWorkflowsSidebar(),
@@ -878,6 +882,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     logoutRuntimeSession,
     resolveOperatorAction,
     resumeOperatorRun,
+    checkProviderProfile,
     runDoctorReport,
     refreshProviderCredentials,
     upsertProviderCredential,
@@ -1503,6 +1508,20 @@ export function XeroApp({ adapter }: XeroAppProps) {
       }
     })
   }, [activeProject, agentWorkspaceLayout])
+  const agentCommandPalettePanes = useMemo(() => {
+    if (!agentWorkspaceLayout || !activeProject) return []
+    return agentWorkspaceLayout.paneSlots.map((slot, index) => {
+      const session = activeProject.agentSessions.find(
+        (candidate) => candidate.agentSessionId === slot.agentSessionId,
+      )
+      return {
+        paneId: slot.id,
+        paneNumber: index + 1,
+        sessionTitle: session?.title ?? 'Untitled',
+        isFocused: slot.id === agentWorkspaceLayout.focusedPaneId,
+      }
+    })
+  }, [activeProject, agentWorkspaceLayout])
   const preSpawnExplorerModeRef = useRef<'pinned' | 'collapsed' | null>(null)
   useEffect(() => {
     if (activeView !== 'agent') return
@@ -1723,6 +1742,47 @@ export function XeroApp({ adapter }: XeroAppProps) {
       handleSelectAgentSession(result.agentSessionId)
     }
   }, [activeProject, handleSelectAgentSession, setActiveView])
+  const handleLoadArchivedAgentSessions = useCallback(
+    async (projectId: string) => {
+      const response = await resolvedAdapter.listAgentSessions({
+        projectId,
+        includeArchived: true,
+      })
+      return response.sessions
+        .filter((session) => session.status === 'archived')
+        .map(mapAgentSession)
+    },
+    [resolvedAdapter],
+  )
+  const handleRestoreAgentSession = useCallback(
+    async (agentSessionId: string) => {
+      await restoreAgentSession(agentSessionId)
+      await selectAgentSession(agentSessionId)
+    },
+    [restoreAgentSession, selectAgentSession],
+  )
+  const handleDeleteAgentSession = useCallback(
+    async (agentSessionId: string) => {
+      await deleteAgentSession(agentSessionId)
+    },
+    [deleteAgentSession],
+  )
+  const handleSearchAgentSessions = useCallback(
+    async (query: string) => {
+      if (!activeProjectId || !resolvedAdapter.searchSessionTranscripts) {
+        return []
+      }
+
+      const response = await resolvedAdapter.searchSessionTranscripts({
+        projectId: activeProjectId,
+        query,
+        includeArchived: true,
+        limit: 12,
+      })
+      return response.results
+    },
+    [activeProjectId, resolvedAdapter],
+  )
 
   const handleOpenAgentManagement = useCallback(() => openSettings('agents'), [openSettings])
   const handleOpenAgentProviderSettings = useCallback(
@@ -1977,33 +2037,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onSelectSession={handleSelectAgentSession}
           onCreateSession={handleCreateAgentSession}
           onArchiveSession={handleArchiveAgentSession}
-          onLoadArchivedSessions={async (projectId) => {
-            const response = await resolvedAdapter.listAgentSessions({
-              projectId,
-              includeArchived: true,
-            })
-            return response.sessions
-              .filter((session) => session.status === 'archived')
-              .map(mapAgentSession)
-          }}
-          onRestoreSession={async (agentSessionId) => {
-            await restoreAgentSession(agentSessionId)
-            await selectAgentSession(agentSessionId)
-          }}
-          onDeleteSession={async (agentSessionId) => {
-            await deleteAgentSession(agentSessionId)
-          }}
+          onLoadArchivedSessions={handleLoadArchivedAgentSessions}
+          onRestoreSession={handleRestoreAgentSession}
+          onDeleteSession={handleDeleteAgentSession}
           onSearchSessions={
             resolvedAdapter.searchSessionTranscripts
-              ? async (query) => {
-                  const response = await resolvedAdapter.searchSessionTranscripts?.({
-                    projectId: activeProject.id,
-                    query,
-                    includeArchived: true,
-                    limit: 12,
-                  })
-                  return response?.results ?? []
-                }
+              ? handleSearchAgentSessions
               : undefined
           }
           onOpenSearchResult={handleOpenSearchResult}
@@ -2020,21 +2059,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         />
         <AgentCommandPalette
           enabled={activeView === 'agent' && Boolean(agentWorkspaceLayout)}
-          panes={
-            agentWorkspaceLayout
-              ? agentWorkspaceLayout.paneSlots.map((slot, index) => {
-                  const session = activeProject.agentSessions.find(
-                    (candidate) => candidate.agentSessionId === slot.agentSessionId,
-                  )
-                  return {
-                    paneId: slot.id,
-                    paneNumber: index + 1,
-                    sessionTitle: session?.title ?? 'Untitled',
-                    isFocused: slot.id === agentWorkspaceLayout.focusedPaneId,
-                  }
-                })
-              : []
-          }
+          panes={agentCommandPalettePanes}
           spawnDisabled={paneCount >= 6}
           onSpawnPane={handleSpawnPane}
           onClosePane={handleClosePane}
@@ -2088,6 +2113,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onToggleWorkflows={toggleWorkflows}
                 workflowsOpen={workflowsOpen}
                 onCreateWorkflow={handleCreateWorkflow}
+                onCreateAgent={handleCreateAgentSession}
               />
             </LazyActivityPane>
           ) : null}
@@ -2102,6 +2128,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
               prewarm={startupSurfacePrewarm.shouldMount}
             >
               <AgentWorkspace
+                active={activeView === 'agent'}
                 layout={agentWorkspaceLayout}
                 panes={agentWorkspacePanes}
                 highChurnStore={highChurnStore}
@@ -2590,6 +2617,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onUpsertProviderCredential={(request) => upsertProviderCredential(request)}
                 onDeleteProviderCredential={(providerId) => deleteProviderCredential(providerId)}
                 onStartOAuthLogin={(request) => startOAuthLogin(request)}
+                onCheckProviderProfile={(profileId, options) => checkProviderProfile(profileId, options)}
                 doctorReport={doctorReport}
                 doctorReportStatus={doctorReportStatus}
                 doctorReportError={doctorReportError}

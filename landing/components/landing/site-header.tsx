@@ -9,9 +9,9 @@ import { cn } from "@/lib/utils"
 
 const nav = [
   { label: "Product", href: "#product" },
+  { label: "Capabilities", href: "#capabilities" },
   { label: "Models", href: "#models" },
   { label: "Workflow", href: "#workflow" },
-  { label: "Integrations", href: "#integrations" },
   { label: "Pricing", href: "#pricing" },
 ]
 

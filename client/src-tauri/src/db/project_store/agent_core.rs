@@ -78,6 +78,12 @@ pub struct AgentRunRecord {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub lineage_kind: String,
+    pub parent_run_id: Option<String>,
+    pub parent_trace_id: Option<String>,
+    pub parent_subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub provider_id: String,
     pub model_id: String,
     pub status: AgentRunStatus,
@@ -170,6 +176,10 @@ pub struct AgentFileChangeRecord {
     pub id: i64,
     pub project_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub top_level_run_id: String,
+    pub subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub path: String,
     pub operation: String,
     pub old_hash: Option<String>,
@@ -243,6 +253,17 @@ pub struct NewAgentRunRecord {
     pub prompt: String,
     pub system_prompt: String,
     pub now: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunLineageUpdateRecord {
+    pub project_id: String,
+    pub run_id: String,
+    pub parent_run_id: String,
+    pub parent_trace_id: String,
+    pub parent_subagent_id: String,
+    pub subagent_role: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +380,7 @@ pub fn insert_agent_run(
         }
         (None, None) => resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?,
     };
+    let trace_id = xero_agent_core::runtime_trace_id_for_run(&record.project_id, &record.run_id);
     let connection = open_agent_database(repo_root)?;
     connection
         .execute(
@@ -370,6 +392,7 @@ pub fn insert_agent_run(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
                 provider_id,
                 model_id,
                 status,
@@ -379,7 +402,7 @@ pub fn insert_agent_run(
                 last_heartbeat_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'starting', ?9, ?10, ?11, ?11, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'starting', ?10, ?11, ?12, ?12, ?12)
             "#,
             params![
                 selection.runtime_agent_id.as_str(),
@@ -388,6 +411,7 @@ pub fn insert_agent_run(
                 record.project_id,
                 record.agent_session_id,
                 record.run_id,
+                trace_id,
                 record.provider_id,
                 record.model_id,
                 record.prompt,
@@ -509,6 +533,55 @@ pub fn append_agent_message(
         created_at: record.created_at.clone(),
         attachments: stored_attachments,
     })
+}
+
+pub fn update_agent_run_lineage(
+    repo_root: &Path,
+    record: &AgentRunLineageUpdateRecord,
+) -> Result<AgentRunSnapshotRecord, CommandError> {
+    validate_non_empty_text(&record.project_id, "projectId")?;
+    validate_non_empty_text(&record.run_id, "runId")?;
+    validate_non_empty_text(&record.parent_run_id, "parentRunId")?;
+    validate_non_empty_text(&record.parent_trace_id, "parentTraceId")?;
+    validate_non_empty_text(&record.parent_subagent_id, "parentSubagentId")?;
+    validate_non_empty_text(&record.subagent_role, "subagentRole")?;
+    let connection = open_agent_database(repo_root)?;
+    let updated = connection
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET lineage_kind = 'subagent_child',
+                parent_run_id = ?3,
+                parent_trace_id = ?4,
+                parent_subagent_id = ?5,
+                subagent_role = ?6,
+                updated_at = ?7
+            WHERE project_id = ?1
+              AND run_id = ?2
+            "#,
+            params![
+                record.project_id,
+                record.run_id,
+                record.parent_run_id,
+                record.parent_trace_id,
+                record.parent_subagent_id,
+                record.subagent_role,
+                record.updated_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_lineage_update_failed", error)
+        })?;
+    if updated != 1 {
+        return Err(CommandError::system_fault(
+            "agent_run_lineage_run_missing",
+            format!(
+                "Xero could not attach subagent lineage to run `{}` in project `{}` because the run was not found.",
+                record.run_id, record.project_id
+            ),
+        ));
+    }
+    load_agent_run(repo_root, &record.project_id, &record.run_id)
 }
 
 pub fn append_agent_event(
@@ -693,19 +766,37 @@ pub fn append_agent_file_change(
     validate_optional_sha256(record.new_hash.as_deref(), "newHash")?;
 
     let connection = open_agent_database(repo_root)?;
-    connection
+    let inserted = connection
         .execute(
             r#"
             INSERT INTO agent_file_changes (
                 project_id,
                 run_id,
+                trace_id,
+                top_level_run_id,
+                subagent_id,
+                subagent_role,
                 path,
                 operation,
                 old_hash,
                 new_hash,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            SELECT
+                ?1,
+                ?2,
+                agent_runs.trace_id,
+                COALESCE(agent_runs.parent_run_id, agent_runs.run_id),
+                agent_runs.parent_subagent_id,
+                agent_runs.subagent_role,
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7
+            FROM agent_runs
+            WHERE agent_runs.project_id = ?1
+              AND agent_runs.run_id = ?2
             "#,
             params![
                 record.project_id,
@@ -720,12 +811,69 @@ pub fn append_agent_file_change(
         .map_err(|error| {
             map_agent_store_write_error(repo_root, "agent_file_change_insert_failed", error)
         })?;
+    if inserted != 1 {
+        return Err(CommandError::system_fault(
+            "agent_file_change_run_missing",
+            format!(
+                "Xero could not attribute a file change for run `{}` in project `{}` because the run was not found.",
+                record.run_id, record.project_id
+            ),
+        ));
+    }
 
     let id = connection.last_insert_rowid();
     Ok(AgentFileChangeRecord {
         id,
         project_id: record.project_id.clone(),
         run_id: record.run_id.clone(),
+        trace_id: connection
+            .query_row(
+                "SELECT trace_id FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_file_change_trace_query_failed",
+                    error,
+                )
+            })?,
+        top_level_run_id: connection
+            .query_row(
+                "SELECT top_level_run_id FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_file_change_top_level_query_failed",
+                    error,
+                )
+            })?,
+        subagent_id: connection
+            .query_row(
+                "SELECT subagent_id FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_file_change_subagent_query_failed",
+                    error,
+                )
+            })?,
+        subagent_role: connection
+            .query_row(
+                "SELECT subagent_role FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(repo_root, "agent_file_change_role_query_failed", error)
+            })?,
         path: record.path.clone(),
         operation: record.operation.clone(),
         old_hash: record.old_hash.clone(),
@@ -1025,6 +1173,12 @@ pub fn load_agent_run(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
+                lineage_kind,
+                parent_run_id,
+                parent_trace_id,
+                parent_subagent_id,
+                subagent_role,
                 provider_id,
                 model_id,
                 status,
@@ -1371,6 +1525,12 @@ pub fn list_agent_runs(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
+                lineage_kind,
+                parent_run_id,
+                parent_trace_id,
+                parent_subagent_id,
+                subagent_role,
                 provider_id,
                 model_id,
                 status,
@@ -1421,6 +1581,12 @@ fn list_agent_runs_for_session(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
+                lineage_kind,
+                parent_run_id,
+                parent_trace_id,
+                parent_subagent_id,
+                subagent_role,
                 provider_id,
                 model_id,
                 status,
@@ -1707,7 +1873,19 @@ fn read_agent_file_changes(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, run_id, path, operation, old_hash, new_hash, created_at
+            SELECT
+                id,
+                project_id,
+                run_id,
+                trace_id,
+                top_level_run_id,
+                subagent_id,
+                subagent_role,
+                path,
+                operation,
+                old_hash,
+                new_hash,
+                created_at
             FROM agent_file_changes
             WHERE project_id = ?1
               AND run_id = ?2
@@ -1723,11 +1901,15 @@ fn read_agent_file_changes(
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 run_id: row.get(2)?,
-                path: row.get(3)?,
-                operation: row.get(4)?,
-                old_hash: row.get(5)?,
-                new_hash: row.get(6)?,
-                created_at: row.get(7)?,
+                trace_id: row.get(3)?,
+                top_level_run_id: row.get(4)?,
+                subagent_id: row.get(5)?,
+                subagent_role: row.get(6)?,
+                path: row.get(7)?,
+                operation: row.get(8)?,
+                old_hash: row.get(9)?,
+                new_hash: row.get(10)?,
+                created_at: row.get(11)?,
             })
         })
         .map_err(|error| {
@@ -1830,8 +2012,8 @@ fn read_agent_action_requests(
 }
 
 fn read_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecord> {
-    let last_error_code: Option<String> = row.get(15)?;
-    let last_error_message: Option<String> = row.get(16)?;
+    let last_error_code: Option<String> = row.get(21)?;
+    let last_error_message: Option<String> = row.get(22)?;
     Ok(AgentRunRecord {
         runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(0)?.as_str()),
         agent_definition_id: row.get(1)?,
@@ -1839,20 +2021,26 @@ fn read_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecor
         project_id: row.get(3)?,
         agent_session_id: row.get(4)?,
         run_id: row.get(5)?,
-        provider_id: row.get(6)?,
-        model_id: row.get(7)?,
-        status: parse_agent_run_status(row.get::<_, String>(8)?.as_str()),
-        prompt: row.get(9)?,
-        system_prompt: row.get(10)?,
-        started_at: row.get(11)?,
-        last_heartbeat_at: row.get(12)?,
-        completed_at: row.get(13)?,
-        cancelled_at: row.get(14)?,
+        trace_id: row.get(6)?,
+        lineage_kind: row.get(7)?,
+        parent_run_id: row.get(8)?,
+        parent_trace_id: row.get(9)?,
+        parent_subagent_id: row.get(10)?,
+        subagent_role: row.get(11)?,
+        provider_id: row.get(12)?,
+        model_id: row.get(13)?,
+        status: parse_agent_run_status(row.get::<_, String>(14)?.as_str()),
+        prompt: row.get(15)?,
+        system_prompt: row.get(16)?,
+        started_at: row.get(17)?,
+        last_heartbeat_at: row.get(18)?,
+        completed_at: row.get(19)?,
+        cancelled_at: row.get(20)?,
         last_error: match (last_error_code, last_error_message) {
             (Some(code), Some(message)) => Some(AgentRunDiagnosticRecord { code, message }),
             _ => None,
         },
-        updated_at: row.get(17)?,
+        updated_at: row.get(23)?,
     })
 }
 

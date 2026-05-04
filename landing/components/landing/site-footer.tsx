@@ -32,7 +32,7 @@ export function SiteFooter() {
               X
             </span>
             <span className="text-xs text-muted-foreground/70">
-              © {new Date().getFullYear()} Xero Labs · Built in Rust
+              © {new Date().getFullYear()} Xero Labs · Local-first, built in Rust
             </span>
           </div>
 

@@ -2,6 +2,7 @@ use std::{path::Path, path::PathBuf, thread};
 
 use rand::RngCore;
 use tauri::{AppHandle, Emitter, Runtime};
+use xero_agent_core::{provider_capability_catalog, ProviderCapabilityCatalogInput};
 
 use crate::{
     auth::{
@@ -248,6 +249,11 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         &definition_selection,
         requested_controls.as_ref(),
         initial_prompt.as_deref(),
+    )?;
+    ensure_owned_runtime_provider_turn_capabilities(
+        &active_profile.provider_id,
+        &run_controls.active.model_id,
+        &initial_attachments,
     )?;
     let run_id = generate_runtime_run_id();
     let mut snapshot = persist_owned_runtime_run(
@@ -681,6 +687,57 @@ fn is_local_provider_endpoint(base_url: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn ensure_owned_runtime_provider_turn_capabilities(
+    provider_id: &str,
+    model_id: &str,
+    initial_attachments: &[crate::commands::StagedAgentAttachmentDto],
+) -> CommandResult<()> {
+    let capability = provider_capability_catalog(ProviderCapabilityCatalogInput {
+        provider_id: provider_id.into(),
+        model_id: model_id.into(),
+        catalog_source: "manual".into(),
+        fetched_at: None,
+        last_success_at: None,
+        cache_age_seconds: None,
+        cache_ttl_seconds: Some(xero_agent_core::DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+        credential_proof: None,
+        context_window_tokens: None,
+        max_output_tokens: None,
+        context_limit_source: None,
+        context_limit_confidence: None,
+        thinking_supported: false,
+        thinking_efforts: Vec::new(),
+        thinking_default_effort: None,
+    });
+
+    if capability.capabilities.tool_calls.status == "unavailable" {
+        return Err(CommandError::user_fixable(
+            "provider_tool_call_capability_missing",
+            format!(
+                "Xero cannot start an owned agent turn with provider `{provider_id}` and model `{model_id}` because tool-call support is unavailable."
+            ),
+        ));
+    }
+
+    let has_rich_attachment = initial_attachments.iter().any(|attachment| {
+        matches!(
+            attachment.kind,
+            crate::commands::AgentAttachmentKindDto::Image
+                | crate::commands::AgentAttachmentKindDto::Document
+        )
+    });
+    if has_rich_attachment && capability.capabilities.attachments.status != "supported" {
+        return Err(CommandError::user_fixable(
+            "provider_attachment_capability_missing",
+            format!(
+                "Xero cannot send image or document attachments to provider `{provider_id}` with the current owned adapter. Choose an attachment-capable provider or remove the attachments before starting the run."
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 pub(crate) fn generate_runtime_run_id() -> String {

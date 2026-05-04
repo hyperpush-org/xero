@@ -8,6 +8,7 @@ use std::{
 mod context_package;
 mod evals;
 mod events;
+mod facade;
 mod provider_adapters;
 mod supervisor;
 
@@ -29,6 +30,11 @@ pub use evals::{
     XeroQualityEvalReport,
 };
 pub use events::{publish_agent_event, subscribe_agent_events, AgentEventSubscription};
+pub use facade::{
+    DesktopAgentCoreRuntime, DesktopCancelRunRequest, DesktopContinueRunRequest,
+    DesktopExportTraceRequest, DesktopRunDriveMode, DesktopStartRunRequest,
+    DesktopUnsupportedRuntimeRequest,
+};
 pub use provider_adapters::{
     create_provider_adapter, AgentProviderConfig, AnthropicProviderConfig, BedrockProviderConfig,
     OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
@@ -74,21 +80,22 @@ use crate::{
             emulator::emulator_schema, system_diagnostics_action_approval_id,
             tool_access_all_known_tools, tool_access_group_tools,
             tool_allowed_for_runtime_agent_with_policy, tool_catalog_metadata_for_tool,
-            AutonomousAgentToolPolicy, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_BROWSER,
-            AUTONOMOUS_TOOL_EMULATOR, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT, AUTONOMOUS_TOOL_SOLANA_ALT,
-            AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE, AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
-            AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ, AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
-            AUTONOMOUS_TOOL_SOLANA_CLUSTER, AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
-            AUTONOMOUS_TOOL_SOLANA_CODAMA, AUTONOMOUS_TOOL_SOLANA_COST,
-            AUTONOMOUS_TOOL_SOLANA_DEPLOY, AUTONOMOUS_TOOL_SOLANA_DOCS,
-            AUTONOMOUS_TOOL_SOLANA_EXPLAIN, AUTONOMOUS_TOOL_SOLANA_IDL,
-            AUTONOMOUS_TOOL_SOLANA_INDEXER, AUTONOMOUS_TOOL_SOLANA_LOGS,
-            AUTONOMOUS_TOOL_SOLANA_PDA, AUTONOMOUS_TOOL_SOLANA_PROGRAM,
-            AUTONOMOUS_TOOL_SOLANA_REPLAY, AUTONOMOUS_TOOL_SOLANA_SECRETS,
-            AUTONOMOUS_TOOL_SOLANA_SIMULATE, AUTONOMOUS_TOOL_SOLANA_SQUADS,
-            AUTONOMOUS_TOOL_SOLANA_TX, AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
-            AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
+            tool_effect_class, AutonomousAgentToolPolicy, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX,
+            AUTONOMOUS_TOOL_AGENT_COORDINATION, AUTONOMOUS_TOOL_BROWSER, AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            AUTONOMOUS_TOOL_SOLANA_ALT, AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE,
+            AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL, AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ,
+            AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC, AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+            AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT, AUTONOMOUS_TOOL_SOLANA_CODAMA,
+            AUTONOMOUS_TOOL_SOLANA_COST, AUTONOMOUS_TOOL_SOLANA_DEPLOY,
+            AUTONOMOUS_TOOL_SOLANA_DOCS, AUTONOMOUS_TOOL_SOLANA_EXPLAIN,
+            AUTONOMOUS_TOOL_SOLANA_IDL, AUTONOMOUS_TOOL_SOLANA_INDEXER,
+            AUTONOMOUS_TOOL_SOLANA_LOGS, AUTONOMOUS_TOOL_SOLANA_PDA,
+            AUTONOMOUS_TOOL_SOLANA_PROGRAM, AUTONOMOUS_TOOL_SOLANA_REPLAY,
+            AUTONOMOUS_TOOL_SOLANA_SECRETS, AUTONOMOUS_TOOL_SOLANA_SIMULATE,
+            AUTONOMOUS_TOOL_SOLANA_SQUADS, AUTONOMOUS_TOOL_SOLANA_TX,
+            AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK, AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
         },
         redaction::{find_prohibited_persistence_content, redact_command_argv_for_persistence},
         AutonomousDynamicToolRoute, AutonomousMacosAutomationAction,

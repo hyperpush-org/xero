@@ -15,13 +15,13 @@ export function CTA() {
       />
       <div className="mx-auto w-full max-w-5xl px-4 py-24 text-center sm:px-6 lg:px-8 lg:py-32">
         <h2 className="mx-auto max-w-3xl font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl lg:text-6xl">
-          Stop watching a spinner. <br className="hidden sm:block" />
-          <span className="text-muted-foreground">Ship while you&apos;re AFK.</span>
+          A real harness for serious coding agents. <br className="hidden sm:block" />
+          <span className="text-muted-foreground">Local. Persistent. Yours.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-pretty text-muted-foreground">
-          Xero is a free download. No credit card. Sign in with the ChatGPT,
-          Claude, or Copilot plan you already have and start a build in under two
-          minutes.
+          Xero is a free desktop app. No credit card. Bring your own keys for
+          OpenAI, Anthropic, Gemini, OpenRouter, GitHub Models, Azure, Bedrock,
+          Vertex, or a local Ollama and start a session in minutes.
         </p>
 
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
