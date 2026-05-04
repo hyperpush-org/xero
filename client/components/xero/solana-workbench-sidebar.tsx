@@ -3,6 +3,7 @@
 import {
   Suspense,
   lazy,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -137,6 +138,7 @@ type TabId =
   | "rpc"
 
 interface SolanaWorkbenchSidebarProps {
+  active?: boolean
   open: boolean
   prewarm?: boolean
 }
@@ -184,16 +186,22 @@ function SolanaPanelFallback() {
 function SolanaPanelSlot({
   active,
   children,
+  mounted = active,
   padded = true,
   tabId,
   warmLayout = false,
 }: {
   active: boolean
   children: React.ReactNode
+  mounted?: boolean
   padded?: boolean
   tabId: TabId
   warmLayout?: boolean
 }) {
+  if (!active && !mounted) {
+    return null
+  }
+
   return (
     <div
       aria-hidden={!active}
@@ -216,12 +224,13 @@ function SolanaPanelSlot({
   )
 }
 
-export function SolanaWorkbenchSidebar({
+export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
+  active,
   open,
 }: SolanaWorkbenchSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
-  const workbenchActive = open
+  const workbenchActive = active ?? open
   const targetWidth = open ? width : 0
   const widthMotion = useSidebarWidthMotion(targetWidth, {
     animate: false,
@@ -233,6 +242,23 @@ export function SolanaWorkbenchSidebar({
   const workbench = useSolanaWorkbench({ active: workbenchActive })
   const [selectedKind, setSelectedKind] = useState<ClusterKind>("localnet")
   const [activeTab, setActiveTab] = useState<TabId>("cluster")
+  const [mountedTabs, setMountedTabs] = useState<ReadonlySet<TabId>>(
+    () => new Set<TabId>(["cluster"]),
+  )
+
+  useEffect(() => {
+    setMountedTabs((current) => {
+      if (current.has(activeTab)) return current
+      const next = new Set(current)
+      next.add(activeTab)
+      return next
+    })
+  }, [activeTab])
+
+  const isTabMounted = useCallback(
+    (tabId: TabId) => activeTab === tabId || mountedTabs.has(tabId),
+    [activeTab, mountedTabs],
+  )
 
   useEffect(() => {
     if (!workbench.clusters.length) return
@@ -916,7 +942,11 @@ export function SolanaWorkbenchSidebar({
           </SolanaPanelSlot>
 
           <Suspense fallback={activeTab === "personas" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "personas"} tabId="personas">
+            <SolanaPanelSlot
+              active={activeTab === "personas"}
+              mounted={isTabMounted("personas")}
+              tabId="personas"
+            >
               <LazySolanaPersonaPanel
                 busy={workbench.personaBusy}
                 cluster={selectedKind}
@@ -932,7 +962,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "scenarios" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "scenarios"} tabId="scenarios">
+            <SolanaPanelSlot
+              active={activeTab === "scenarios"}
+              mounted={isTabMounted("scenarios")}
+              tabId="scenarios"
+            >
               <LazySolanaScenarioPanel
                 busy={workbench.scenarioBusy}
                 cluster={selectedKind}
@@ -946,7 +980,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "tx" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "tx"} tabId="tx">
+            <SolanaPanelSlot
+              active={activeTab === "tx"}
+              mounted={isTabMounted("tx")}
+              tabId="tx"
+            >
               <LazySolanaTxInspector
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
@@ -961,7 +999,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "logs" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "logs"} tabId="logs">
+            <SolanaPanelSlot
+              active={activeTab === "logs"}
+              mounted={isTabMounted("logs")}
+              tabId="logs"
+            >
               <LazySolanaLogFeed
                 cluster={selectedKind}
                 busy={workbench.logBusy}
@@ -979,7 +1021,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "indexer" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "indexer"} tabId="indexer">
+            <SolanaPanelSlot
+              active={activeTab === "indexer"}
+              mounted={isTabMounted("indexer")}
+              tabId="indexer"
+            >
               <LazySolanaIndexerPanel
                 cluster={selectedKind}
                 busy={workbench.indexerBusy}
@@ -992,7 +1038,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "idl" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "idl"} tabId="idl">
+            <SolanaPanelSlot
+              active={activeTab === "idl"}
+              mounted={isTabMounted("idl")}
+              tabId="idl"
+            >
               <LazySolanaIdlPanel
                 cluster={selectedKind}
                 idls={workbench.idls}
@@ -1016,7 +1066,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "deploy" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "deploy"} tabId="deploy">
+            <SolanaPanelSlot
+              active={activeTab === "deploy"}
+              mounted={isTabMounted("deploy")}
+              tabId="deploy"
+            >
               <LazySolanaDeployPanel
                 busy={workbench.programBusy}
                 cluster={selectedKind}
@@ -1038,7 +1092,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "audit" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "audit"} tabId="audit">
+            <SolanaPanelSlot
+              active={activeTab === "audit"}
+              mounted={isTabMounted("audit")}
+              tabId="audit"
+            >
               <LazySolanaAuditPanel
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
@@ -1063,7 +1121,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "token" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "token"} tabId="token">
+            <SolanaPanelSlot
+              active={activeTab === "token"}
+              mounted={isTabMounted("token")}
+              tabId="token"
+            >
               <LazySolanaTokenPanel
                 cluster={selectedKind}
                 clusterRunning={clusterRunning}
@@ -1079,7 +1141,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "wallet" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "wallet"} tabId="wallet">
+            <SolanaPanelSlot
+              active={activeTab === "wallet"}
+              mounted={isTabMounted("wallet")}
+              tabId="wallet"
+            >
               <LazySolanaWalletPanel
                 cluster={selectedKind}
                 busy={workbench.walletBusy}
@@ -1091,7 +1157,11 @@ export function SolanaWorkbenchSidebar({
           </Suspense>
 
           <Suspense fallback={activeTab === "safety" ? <SolanaPanelFallback /> : null}>
-            <SolanaPanelSlot active={activeTab === "safety"} tabId="safety">
+            <SolanaPanelSlot
+              active={activeTab === "safety"}
+              mounted={isTabMounted("safety")}
+              tabId="safety"
+            >
               <LazySolanaSafetyPanel
                 busy={workbench.safetyBusy}
                 lastSecretScan={workbench.lastSecretScan}
@@ -1108,7 +1178,11 @@ export function SolanaWorkbenchSidebar({
             </SolanaPanelSlot>
           </Suspense>
 
-          <SolanaPanelSlot active={activeTab === "rpc"} tabId="rpc">
+          <SolanaPanelSlot
+            active={activeTab === "rpc"}
+            mounted={isTabMounted("rpc")}
+            tabId="rpc"
+          >
             <RpcEndpoints
               active={activeTab === "rpc"}
               onRefresh={() => workbench.refreshRpcHealth()}
@@ -1121,7 +1195,7 @@ export function SolanaWorkbenchSidebar({
       </div>
     </aside>
   )
-}
+})
 
 interface TabDescriptor {
   id: TabId

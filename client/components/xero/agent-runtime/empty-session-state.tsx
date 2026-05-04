@@ -78,15 +78,6 @@ export function EmptySessionState({
 
   return (
     <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/2 h-[420px] w-[680px] -translate-x-1/2 -translate-y-[60%] rounded-full opacity-[0.07] blur-[120px]"
-        style={{
-          background:
-            'radial-gradient(closest-side, #d4a574 0%, rgba(212,165,116,0.4) 45%, transparent 75%)',
-        }}
-      />
-
       <div className="relative flex w-full max-w-xl flex-col items-center px-8 py-12 text-center">
         <BrandGlyph />
 
@@ -141,7 +132,6 @@ function getDaypartGreeting(): string {
 function BrandGlyph() {
   return (
     <div className="relative">
-      <div className="absolute inset-0 -z-10 rounded-3xl bg-primary/10 blur-2xl" />
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-card/60">
         <AppLogo className="h-7 w-7" />
       </div>

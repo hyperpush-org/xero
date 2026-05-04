@@ -2975,6 +2975,52 @@ describe('XeroApp current UI', () => {
     expect(within(breadcrumb).getByText('Cluster')).toBeVisible()
   })
 
+  it('opens the preloaded Solana workbench without waiting for an animation frame', async () => {
+    const { adapter } = createAdapter()
+    await import('@/components/xero/solana-workbench-sidebar')
+    const originalRequestAnimationFrame = window.requestAnimationFrame
+    const originalCancelAnimationFrame = window.cancelAnimationFrame
+    const frames: FrameRequestCallback[] = []
+
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      },
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    try {
+      render(<XeroApp adapter={adapter} />)
+
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+      )
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Open Solana workbench' }))
+
+      const breadcrumb = screen.getByRole('navigation', {
+        name: 'Solana Workbench breadcrumb',
+      })
+      expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
+      expect(screen.queryByLabelText('Loading Solana Workbench')).not.toBeInTheDocument()
+    } finally {
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        value: originalRequestAnimationFrame,
+      })
+      Object.defineProperty(window, 'cancelAnimationFrame', {
+        configurable: true,
+        value: originalCancelAnimationFrame,
+      })
+    }
+  })
+
   it('auto-collapses the project rail for a non-floating right sidebar but allows manual expansion', async () => {
     const { adapter } = createAdapter()
 

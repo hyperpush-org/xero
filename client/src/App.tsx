@@ -70,7 +70,6 @@ const loadExecutionView = () => import('@/components/xero/execution-view')
 const loadGamesSidebar = () => import('@/components/xero/games-sidebar')
 const loadBrowserSidebar = () => import('@/components/xero/browser-sidebar')
 const loadIosEmulatorSidebar = () => import('@/components/xero/ios-emulator-sidebar')
-const loadAndroidEmulatorSidebar = () => import('@/components/xero/android-emulator-sidebar')
 const loadSolanaWorkbenchSidebar = () => import('@/components/xero/solana-workbench-sidebar')
 const loadSettingsDialog = () => import('@/components/xero/settings-dialog')
 const loadUsageStatsSidebar = () => import('@/components/xero/usage-stats-sidebar')
@@ -87,7 +86,6 @@ const IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
   'browser',
   'settings',
   'usage',
-  'android',
   'ios',
   'games',
 ]
@@ -102,7 +100,6 @@ const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
   'games',
   'browser',
   'ios',
-  'android',
   'solana',
   'settings',
   'usage',
@@ -141,7 +138,6 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   if (target === 'tools') {
     preloadSurfaceChunk('browser')
     preloadSurfaceChunk('solana')
-    preloadSurfaceChunk('android')
     preloadSurfaceChunk('ios')
     return
   }
@@ -161,10 +157,6 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   }
   if (target === 'ios') {
     void loadIosEmulatorSidebar()
-    return
-  }
-  if (target === 'android') {
-    void loadAndroidEmulatorSidebar()
     return
   }
   if (target === 'solana') {
@@ -209,6 +201,43 @@ function scheduleIdlePreload(callback: () => void, timeout: number): () => void 
   return () => window.clearTimeout(handle)
 }
 
+function scheduleAfterNextPaint(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => {}
+  }
+
+  let cancelled = false
+  let timeout: number | null = null
+
+  const run = () => {
+    timeout = window.setTimeout(() => {
+      if (!cancelled) {
+        callback()
+      }
+    }, 0)
+  }
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    const frame = window.requestAnimationFrame(run)
+    return () => {
+      cancelled = true
+      window.cancelAnimationFrame?.(frame)
+      if (timeout !== null) {
+        window.clearTimeout(timeout)
+      }
+    }
+  }
+
+  run()
+  return () => {
+    cancelled = true
+    if (timeout !== null) {
+      window.clearTimeout(timeout)
+    }
+  }
+}
+
 function waitForStartupPrewarmPaints(): Promise<void> {
   if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
     return Promise.resolve()
@@ -238,7 +267,6 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
     loadGamesSidebar(),
     loadBrowserSidebar(),
     loadIosEmulatorSidebar(),
-    loadAndroidEmulatorSidebar(),
     loadSolanaWorkbenchSidebar().then((module) => module.preloadSolanaWorkbenchPanels()),
     loadSettingsDialog().then((module) => {
       void module.preloadSettingsSectionChunks().catch(() => undefined)
@@ -347,9 +375,6 @@ const LazyBrowserSidebar = lazy(() =>
 )
 const LazyIosEmulatorSidebar = lazy(() =>
   loadIosEmulatorSidebar().then((module) => ({ default: module.IosEmulatorSidebar })),
-)
-const LazyAndroidEmulatorSidebar = lazy(() =>
-  loadAndroidEmulatorSidebar().then((module) => ({ default: module.AndroidEmulatorSidebar })),
 )
 const LazySolanaWorkbenchSidebar = lazy(() =>
   loadSolanaWorkbenchSidebar().then((module) => ({ default: module.SolanaWorkbenchSidebar })),
@@ -528,46 +553,24 @@ function LazyMountedPane({
   )
 }
 
-interface LazyActivitySurfaceProps {
+interface LazyPrerenderedSurfaceProps {
   children: ReactNode
-  name: string
   open: boolean
   prewarm?: boolean
 }
 
-function LazyActivitySurface({ children, name, open, prewarm = false }: LazyActivitySurfaceProps) {
+function LazyPrerenderedSurface({
+  children,
+  open,
+  prewarm = false,
+}: LazyPrerenderedSurfaceProps) {
   const shouldMount = useActivatedSurface(open, prewarm)
 
   if (!shouldMount) {
     return null
   }
 
-  return (
-    <Activity mode={open ? 'visible' : 'hidden'} name={name}>
-      {children}
-    </Activity>
-  )
-}
-
-function useDeferredSolanaWorkbenchMount(open: boolean, prewarm: boolean): boolean {
-  const [mounted, setMounted] = useState(prewarm)
-
-  useEffect(() => {
-    if (prewarm) {
-      setMounted(true)
-      preloadSurfaceChunk('solana')
-      return
-    }
-
-    if (!open || mounted) {
-      return
-    }
-
-    preloadSurfaceChunk('solana')
-    setMounted(true)
-  }, [mounted, open, prewarm])
-
-  return mounted
+  return <>{children}</>
 }
 
 function SolanaWorkbenchOpeningShell({ open }: { open: boolean }) {
@@ -715,24 +718,44 @@ function ModalLoadingShell({ open }: { open: boolean }) {
   )
 }
 
+function useSolanaWorkbenchActivation(open: boolean, prewarm: boolean): boolean {
+  const [active, setActive] = useState(prewarm)
+
+  useEffect(() => {
+    if (prewarm) {
+      setActive(true)
+      return
+    }
+
+    if (!open || active) {
+      return
+    }
+
+    return scheduleAfterNextPaint(() => setActive(true))
+  }, [active, open, prewarm])
+
+  return active
+}
+
 function SolanaWorkbenchSurface({ open, prewarm = false }: { open: boolean; prewarm?: boolean }) {
   const shouldMount = useActivatedSurface(open, prewarm)
-  const workbenchMounted = useDeferredSolanaWorkbenchMount(open, prewarm)
+  const active = useSolanaWorkbenchActivation(open, prewarm)
 
   if (!shouldMount) {
     return null
   }
 
   return (
-    <Activity mode={open ? 'visible' : 'hidden'} name="solana-workbench-sidebar">
-      {workbenchMounted ? (
-        <Suspense fallback={<SolanaWorkbenchOpeningShell open={open} />}>
-          <LazySolanaWorkbenchSidebar open={open} prewarm={prewarm} />
-        </Suspense>
-      ) : (
-        <SolanaWorkbenchOpeningShell open={open} />
-      )}
-    </Activity>
+    <div
+      aria-hidden={!open}
+      className="relative flex shrink-0 overflow-hidden"
+      inert={!open ? true : undefined}
+      style={{ width: open ? undefined : 0 }}
+    >
+      <Suspense fallback={<SolanaWorkbenchOpeningShell open={open} />}>
+        <LazySolanaWorkbenchSidebar active={active} open prewarm={prewarm} />
+      </Suspense>
+    </div>
   )
 }
 
@@ -911,7 +934,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [gamesOpen, setGamesOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [iosOpen, setIosOpen] = useState(false)
-  const [androidOpen, setAndroidOpen] = useState(false)
   const [solanaOpen, setSolanaOpen] = useState(false)
   const [vcsOpen, setVcsOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
@@ -943,7 +965,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     gamesOpen ||
     browserOpen ||
     iosOpen ||
-    androidOpen ||
     solanaOpen ||
     workflowsOpen ||
     agentDockOpen
@@ -962,22 +983,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setProjectRailSnapWidth(false)
     }, SIDEBAR_WIDTH_DURATION_MS + 40)
   }, [])
-  const requestProjectRailCollapseForRightSidebarOpen = useCallback(() => {
-    if (projectRailViewAutoCollapseActive || nonFloatingRightSidebarOpen) {
-      return
-    }
-
-    shouldRestoreSidebarFromRightSidebarRef.current = !sidebarCollapsed
-    if (!sidebarCollapsed) {
-      snapProjectRailWidthForRightSidebar()
-      setSidebarCollapsed(true)
-    }
-  }, [
-    nonFloatingRightSidebarOpen,
-    projectRailViewAutoCollapseActive,
-    sidebarCollapsed,
-    snapProjectRailWidthForRightSidebar,
-  ])
   const restoreProjectRailForRightSidebarClose = useCallback(() => {
     if (projectRailViewAutoCollapseActive) {
       return
@@ -1144,18 +1149,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setGamesOpen(false)
       return
     }
-
-    preloadSurfaceChunk('games')
-    requestProjectRailCollapseForRightSidebarOpen()
     setBrowserOpen(false)
     setIosOpen(false)
-    setAndroidOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setGamesOpen(true)
-  }, [gamesOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
+  }, [gamesOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleBrowser = useCallback(() => {
     if (browserOpen) {
@@ -1163,18 +1164,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setBrowserOpen(false)
       return
     }
-
-    preloadSurfaceChunk('browser')
-    requestProjectRailCollapseForRightSidebarOpen()
     setGamesOpen(false)
     setIosOpen(false)
-    setAndroidOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setBrowserOpen(true)
-  }, [browserOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
+  }, [browserOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleIos = useCallback(() => {
     if (iosOpen) {
@@ -1182,37 +1179,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setIosOpen(false)
       return
     }
-
-    preloadSurfaceChunk('ios')
-    requestProjectRailCollapseForRightSidebarOpen()
     setGamesOpen(false)
     setBrowserOpen(false)
-    setAndroidOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setIosOpen(true)
-  }, [iosOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
-
-  const toggleAndroid = useCallback(() => {
-    if (androidOpen) {
-      restoreProjectRailForRightSidebarClose()
-      setAndroidOpen(false)
-      return
-    }
-
-    preloadSurfaceChunk('android')
-    requestProjectRailCollapseForRightSidebarOpen()
-    setGamesOpen(false)
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setAndroidOpen(true)
-  }, [androidOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
+  }, [iosOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleSolana = useCallback(() => {
     if (solanaOpen) {
@@ -1220,18 +1194,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSolanaOpen(false)
       return
     }
-
-    preloadSurfaceChunk('solana')
-    requestProjectRailCollapseForRightSidebarOpen()
     setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
-    setAndroidOpen(false)
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setSolanaOpen(true)
-  }, [requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose, solanaOpen])
+  }, [restoreProjectRailForRightSidebarClose, solanaOpen])
 
   const toggleVcs = useCallback(() => {
     if (vcsOpen) {
@@ -1239,18 +1209,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setVcsOpen(false)
       return
     }
-
-    preloadSurfaceChunk('vcs')
-    requestProjectRailCollapseForRightSidebarOpen()
     setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
-    setAndroidOpen(false)
     setSolanaOpen(false)
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setVcsOpen(true)
-  }, [requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose, vcsOpen])
+  }, [restoreProjectRailForRightSidebarClose, vcsOpen])
 
   const toggleWorkflows = useCallback(() => {
     if (workflowsOpen) {
@@ -1258,18 +1224,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setWorkflowsOpen(false)
       return
     }
-
-    preloadSurfaceChunk('workflows')
-    requestProjectRailCollapseForRightSidebarOpen()
     setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
-    setAndroidOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
     setAgentDockOpen(false)
     setWorkflowsOpen(true)
-  }, [requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose, workflowsOpen])
+  }, [restoreProjectRailForRightSidebarClose, workflowsOpen])
 
   const toggleAgentDock = useCallback(() => {
     if (agentDockOpen) {
@@ -1277,18 +1239,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setAgentDockOpen(false)
       return
     }
-
-    requestProjectRailCollapseForRightSidebarOpen()
     setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
-    setAndroidOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
     setWorkflowsOpen(false)
     setUsageOpen(false)
     setAgentDockOpen(true)
-  }, [agentDockOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
+  }, [agentDockOpen, restoreProjectRailForRightSidebarClose])
   useEffect(() => {
     if (activeView === 'agent' && agentDockOpen) {
       setAgentDockOpen(false)
@@ -2324,8 +2283,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
         browserOpen={browserOpen}
         onToggleIos={toggleIos}
         iosOpen={iosOpen}
-        onToggleAndroid={toggleAndroid}
-        androidOpen={androidOpen}
         onToggleSolana={toggleSolana}
         solanaOpen={solanaOpen}
         onToggleVcs={toggleVcs}
@@ -2410,8 +2367,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
           browserOpen={browserOpen}
           onToggleIos={toggleIos}
           iosOpen={iosOpen}
-          onToggleAndroid={toggleAndroid}
-          androidOpen={androidOpen}
           onToggleSolana={toggleSolana}
           solanaOpen={solanaOpen}
           onToggleVcs={toggleVcs}
@@ -2455,8 +2410,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             }
           />
           {renderBody()}
-          <LazyActivitySurface
-            name="games-sidebar"
+          <LazyPrerenderedSurface
             open={gamesOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2465,9 +2419,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyGamesSidebar accountLogin={githubSession?.user.login ?? null} open={gamesOpen} />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="browser-sidebar"
+          </LazyPrerenderedSurface>
+          <LazyPrerenderedSurface
             open={browserOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2476,9 +2429,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyBrowserSidebar open={browserOpen} />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="usage-sidebar"
+          </LazyPrerenderedSurface>
+          <LazyPrerenderedSurface
             open={usageOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2500,9 +2452,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onRefresh={refreshUsageSummary}
               />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="ios-emulator-sidebar"
+          </LazyPrerenderedSurface>
+          <LazyPrerenderedSurface
             open={iosOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2517,30 +2468,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyIosEmulatorSidebar open={iosOpen} />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="android-emulator-sidebar"
-            open={androidOpen}
-            prewarm={startupSurfacePrewarm.shouldMount}
-          >
-            <Suspense
-              fallback={
-                <InlineSidebarLoadingShell
-                  label="Android Emulator"
-                  open={androidOpen}
-                  width={640}
-                />
-              }
-            >
-              <LazyAndroidEmulatorSidebar open={androidOpen} />
-            </Suspense>
-          </LazyActivitySurface>
+          </LazyPrerenderedSurface>
           <SolanaWorkbenchSurface
             open={solanaOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           />
-          <LazyActivitySurface
-            name="workflows-sidebar"
+          <LazyPrerenderedSurface
             open={workflowsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2555,9 +2488,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <LazyWorkflowsSidebar open={workflowsOpen} />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="vcs-sidebar"
+          </LazyPrerenderedSurface>
+          <LazyPrerenderedSurface
             open={vcsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2589,9 +2521,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onPush={pushRepository}
               />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="agent-dock-sidebar"
+          </LazyPrerenderedSurface>
+          <LazyPrerenderedSurface
             open={agentDockOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2649,9 +2580,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onRetryStream={retry}
               />
             </Suspense>
-          </LazyActivitySurface>
-          <LazyActivitySurface
-            name="settings-dialog"
+          </LazyPrerenderedSurface>
+          <LazyPrerenderedSurface
             open={settingsOpen}
             prewarm={startupSurfacePrewarm.shouldMount}
           >
@@ -2734,7 +2664,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onAgentRegistryChanged={refreshCustomAgentDefinitions}
               />
             </Suspense>
-          </LazyActivitySurface>
+          </LazyPrerenderedSurface>
           <ProjectAddDialog
             open={projectAddOpen}
             onOpenChange={setProjectAddOpen}

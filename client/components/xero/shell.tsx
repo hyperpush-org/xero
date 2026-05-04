@@ -28,7 +28,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { AndroidLogoIcon, AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
+import { AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
 import { AppLogo } from "./app-logo"
 import type { View } from "./data"
 import { StatusFooter, type StatusFooterProps } from "./status-footer"
@@ -42,7 +42,6 @@ export type PlatformVariant = "macos" | "windows" | "linux"
 export type SurfacePreloadTarget =
   | "browser"
   | "games"
-  | "android"
   | "ios"
   | "settings"
   | "solana"
@@ -114,8 +113,6 @@ interface XeroShellProps {
   browserOpen?: boolean
   onToggleIos?: () => void
   iosOpen?: boolean
-  onToggleAndroid?: () => void
-  androidOpen?: boolean
   onToggleSolana?: () => void
   solanaOpen?: boolean
   onToggleVcs?: () => void
@@ -158,9 +155,6 @@ interface IosSdkSignal {
 
 interface EmulatorSdkSignal {
   ios: IosSdkSignal
-  /** `android.present` is already sufficient for the Android button —
-   * we don't hide it when absent, just let the sidebar offer provisioning. */
-  androidPresent: boolean
 }
 
 /** App Store listing for Xcode — the CTA target when the button is in
@@ -176,12 +170,10 @@ function formatVcsCount(value: number): string {
 
 /** Poll `emulator_sdk_status` and keep it in sync with the backend
  * `emulator:sdk_status_changed` event so the titlebar reacts to a fresh
- * Xcode install (or an Android SDK provisioning finish) without a
- * reload. */
+ * Xcode install without a reload. */
 function useEmulatorSdkSignal(desktopRuntime: boolean): EmulatorSdkSignal {
   const [signal, setSignal] = useState<EmulatorSdkSignal>({
     ios: { supported: false, xcodePresent: false },
-    androidPresent: false,
   })
 
   useEffect(() => {
@@ -192,13 +184,11 @@ function useEmulatorSdkSignal(desktopRuntime: boolean): EmulatorSdkSignal {
     const probe = async () => {
       try {
         const status = await invoke<{
-          android: { present: boolean }
           ios: { present: boolean; supported: boolean }
         }>("emulator_sdk_status")
         if (cancelled) return
         setSignal({
           ios: { supported: status.ios.supported, xcodePresent: status.ios.present },
-          androidPresent: status.android.present,
         })
       } catch {
         // Probe failures leave the button in its last-known state —
@@ -219,8 +209,7 @@ function useEmulatorSdkSignal(desktopRuntime: boolean): EmulatorSdkSignal {
     })
 
     // Also re-probe when the window regains focus — the user might have
-    // installed Xcode (or brew-installed the Android SDK) between
-    // sessions without triggering a backend event.
+    // installed Xcode between sessions without triggering a backend event.
     const onFocus = () => {
       void probe()
     }
@@ -258,8 +247,6 @@ export function XeroShell({
   browserOpen = false,
   onToggleIos,
   iosOpen = false,
-  onToggleAndroid,
-  androidOpen = false,
   onToggleSolana,
   solanaOpen = false,
   onToggleVcs,
@@ -305,21 +292,33 @@ export function XeroShell({
     e.stopPropagation()
   }
 
-  const runAfterMenuClosePaint = (action?: () => void) => {
-    if (!action) return
+  const queueSurfacePreload = (target: SurfacePreloadTarget) => {
+    if (!onSurfacePreload) return
     if (typeof window === "undefined") {
-      action()
+      onSurfacePreload(target)
+      return
+    }
+
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+    }
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      idleWindow.requestIdleCallback(() => onSurfacePreload(target), { timeout: 1200 })
       return
     }
 
     if (typeof window.requestAnimationFrame !== "function") {
-      window.setTimeout(action, 0)
+      window.setTimeout(() => onSurfacePreload(target), 0)
       return
     }
-
     window.requestAnimationFrame(() => {
-      window.setTimeout(action, 0)
+      window.setTimeout(() => onSurfacePreload(target), 0)
     })
+  }
+
+  const runMenuItemAction = (action?: () => void) => {
+    if (!action) return
+    action()
   }
 
   // ------------------------------------------------------------------
@@ -413,9 +412,9 @@ export function XeroShell({
     <button
       aria-label="Settings"
       className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
-      onFocus={() => onSurfacePreload?.("settings")}
+      onFocus={() => queueSurfacePreload("settings")}
       onClick={onOpenSettings}
-      onPointerEnter={() => onSurfacePreload?.("settings")}
+      onPointerEnter={() => queueSurfacePreload("settings")}
       type="button"
     >
       <Settings className="h-4 w-4" />
@@ -432,9 +431,9 @@ export function XeroShell({
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
       )}
-      onFocus={() => onSurfacePreload?.("games")}
+      onFocus={() => queueSurfacePreload("games")}
       onClick={onToggleGames}
-      onPointerEnter={() => onSurfacePreload?.("games")}
+      onPointerEnter={() => queueSurfacePreload("games")}
       type="button"
     >
       <Gamepad2 className="h-4 w-4" />
@@ -457,20 +456,13 @@ export function XeroShell({
     })
   }
 
-  // Android button stays visible on every platform — even without an
-  // SDK installed, clicking it opens the sidebar, which surfaces the
-  // one-click provisioning flow. Setup-needed state is conveyed via the
-  // tooltip rather than an amber tint so the tool menu reads as a
-  // uniform set.
   // Before the first probe completes we don't know whether Xcode is
   // present — optimistically render the iOS toggle. Once the probe
   // resolves we flip to the CTA if Xcode is missing. The "supported"
   // flag stays true on all macOS hosts per the backend contract.
   const xcodeKnownMissing =
     platform === "macos" && desktopRuntime && emulatorSdk.ios.supported && !emulatorSdk.ios.xcodePresent
-  const androidSetupNeeded =
-    desktopRuntime && !emulatorSdk.androidPresent && !androidOpen
-  const toolPanelOpen = iosOpen || androidOpen || browserOpen || solanaOpen
+  const toolPanelOpen = iosOpen || browserOpen || solanaOpen
 
   const toolItemClassName =
     "min-w-44 cursor-pointer px-2.5 py-2 text-[13px]"
@@ -493,9 +485,8 @@ export function XeroShell({
               ? "bg-primary/15 text-primary"
               : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
           )}
-          onFocus={() => onSurfacePreload?.("tools")}
-          onPointerDown={() => onSurfacePreload?.("tools")}
-          onPointerEnter={() => onSurfacePreload?.("tools")}
+          onFocus={() => queueSurfacePreload("tools")}
+          onPointerEnter={() => queueSurfacePreload("tools")}
           title="Tools"
           type="button"
         >
@@ -512,9 +503,9 @@ export function XeroShell({
                 toolItemClassName,
                 "text-warning/90 focus:bg-warning/15 focus:text-warning",
               )}
-              onFocus={() => onSurfacePreload?.("ios")}
-              onPointerEnter={() => onSurfacePreload?.("ios")}
-              onSelect={() => runAfterMenuClosePaint(handleInstallXcode)}
+              onFocus={() => queueSurfacePreload("ios")}
+              onPointerEnter={() => queueSurfacePreload("ios")}
+              onSelect={() => runMenuItemAction(handleInstallXcode)}
               title="iOS Simulator needs Xcode. Click to install."
             >
               <AppleLogoIcon className="h-4 w-4" />
@@ -524,9 +515,9 @@ export function XeroShell({
             <DropdownMenuItem
               aria-label={iosOpen ? "Close iOS simulator" : "Open iOS simulator"}
               className={cn(toolItemClassName, iosOpen && activeToolItemClassName)}
-              onFocus={() => onSurfacePreload?.("ios")}
-              onPointerEnter={() => onSurfacePreload?.("ios")}
-              onSelect={() => runAfterMenuClosePaint(onToggleIos)}
+              onFocus={() => queueSurfacePreload("ios")}
+              onPointerEnter={() => queueSurfacePreload("ios")}
+              onSelect={() => runMenuItemAction(onToggleIos)}
             >
               <AppleLogoIcon className="h-4 w-4" />
               <span>iOS Simulator</span>
@@ -535,27 +526,11 @@ export function XeroShell({
           )
         ) : null}
         <DropdownMenuItem
-          aria-label={androidOpen ? "Close Android emulator" : "Open Android emulator"}
-          className={cn(toolItemClassName, androidOpen && activeToolItemClassName)}
-          onFocus={() => onSurfacePreload?.("android")}
-          onPointerEnter={() => onSurfacePreload?.("android")}
-          onSelect={() => runAfterMenuClosePaint(onToggleAndroid)}
-          title={
-            androidSetupNeeded
-              ? "Android SDK not installed - click to set it up"
-              : undefined
-          }
-        >
-          <AndroidLogoIcon className="h-4 w-4" />
-          <span>Android Emulator</span>
-          {androidOpen ? ToolActiveDot : null}
-        </DropdownMenuItem>
-        <DropdownMenuItem
           aria-label={browserOpen ? "Close browser" : "Open browser"}
           className={cn(toolItemClassName, browserOpen && activeToolItemClassName)}
-          onFocus={() => onSurfacePreload?.("browser")}
-          onPointerEnter={() => onSurfacePreload?.("browser")}
-          onSelect={() => runAfterMenuClosePaint(onToggleBrowser)}
+          onFocus={() => queueSurfacePreload("browser")}
+          onPointerEnter={() => queueSurfacePreload("browser")}
+          onSelect={() => runMenuItemAction(onToggleBrowser)}
         >
           <Globe className="h-4 w-4" />
           <span>Browser</span>
@@ -564,9 +539,9 @@ export function XeroShell({
         <DropdownMenuItem
           aria-label={solanaOpen ? "Close Solana workbench" : "Open Solana workbench"}
           className={cn(toolItemClassName, solanaOpen && activeToolItemClassName)}
-          onFocus={() => onSurfacePreload?.("solana")}
-          onPointerEnter={() => onSurfacePreload?.("solana")}
-          onSelect={() => runAfterMenuClosePaint(onToggleSolana)}
+          onFocus={() => queueSurfacePreload("solana")}
+          onPointerEnter={() => queueSurfacePreload("solana")}
+          onSelect={() => runMenuItemAction(onToggleSolana)}
         >
           <SolanaLogoIcon className="h-4 w-4" mono />
           <span>Solana Workbench</span>
@@ -587,9 +562,9 @@ export function XeroShell({
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
       )}
-      onFocus={() => onSurfacePreload?.("vcs")}
+      onFocus={() => queueSurfacePreload("vcs")}
       onClick={onToggleVcs}
-      onPointerEnter={() => onSurfacePreload?.("vcs")}
+      onPointerEnter={() => queueSurfacePreload("vcs")}
       title={
         vcsChangeCount > 0
           ? `${vcsChangeCount} file${vcsChangeCount === 1 ? "" : "s"} changed · +${vcsAdditions} −${vcsDeletions}`
@@ -627,9 +602,9 @@ export function XeroShell({
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
       )}
-      onFocus={() => onSurfacePreload?.("workflows")}
+      onFocus={() => queueSurfacePreload("workflows")}
       onClick={onToggleWorkflows}
-      onPointerEnter={() => onSurfacePreload?.("workflows")}
+      onPointerEnter={() => queueSurfacePreload("workflows")}
       title="Workflows"
       type="button"
     >
@@ -774,7 +749,7 @@ export function XeroShell({
   let titlebar: React.ReactNode
 
   if (platform === "macos") {
-    // macOS: [traffic-lights] [sidebar-toggle] [|] [nav] ··· (centered logo) ··· [vcs] [tools] [games] [settings]
+    // macOS: [traffic-lights] [sidebar-toggle] [|] [nav] ··· (centered logo) ··· [vcs] [games] [account] [tools] [settings]
     titlebar = (
       <header className="relative flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3">
         {TrafficLights}
@@ -803,17 +778,17 @@ export function XeroShell({
           >
             {WorkflowsBtn}
             {VcsBtn}
-            {ToolsMenu}
             {GamesBtn}
             {AgentDockBtn}
             {AccountBtn}
+            {ToolsMenu}
             {SettingsBtn}
           </div>
         ) : null}
       </header>
     )
   } else {
-    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [games] [settings] [|] [min][max][close]
+    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [games] [account] [tools] [settings] [|] [min][max][close]
     titlebar = (
       <header className="flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3">
         <div
@@ -843,10 +818,10 @@ export function XeroShell({
             <>
               {WorkflowsBtn}
               {VcsBtn}
-              {ToolsMenu}
               {GamesBtn}
               {AgentDockBtn}
               {AccountBtn}
+              {ToolsMenu}
               {SettingsBtn}
               <div className="mx-2 h-4 w-px bg-border" />
             </>
