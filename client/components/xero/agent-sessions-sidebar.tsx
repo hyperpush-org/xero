@@ -206,6 +206,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
   const widthRef = useRef(width)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const wasStripModeRef = useRef(isStripMode)
+  const wasCollapsedRef = useRef(collapsed)
   const collapseGhostTimerRef = useRef<number | null>(null)
   widthRef.current = width
 
@@ -221,11 +222,13 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
 
   useLayoutEffect(() => {
     const wasStripMode = wasStripModeRef.current
+    const wasCollapsed = wasCollapsedRef.current
     wasStripModeRef.current = isStripMode
+    wasCollapsedRef.current = collapsed
 
     clearCollapseGhostTimer()
 
-    if (!wasStripMode && isStripMode) {
+    if (!wasStripMode && isStripMode && !wasCollapsed) {
       setCollapseGhostActive(true)
       collapseGhostTimerRef.current = window.setTimeout(() => {
         collapseGhostTimerRef.current = null
@@ -234,10 +237,8 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
       return
     }
 
-    if (!isStripMode) {
-      setCollapseGhostActive(false)
-    }
-  }, [clearCollapseGhostTimer, isStripMode])
+    setCollapseGhostActive(false)
+  }, [clearCollapseGhostTimer, collapsed, isStripMode])
 
   useEffect(() => clearCollapseGhostTimer, [clearCollapseGhostTimer])
 

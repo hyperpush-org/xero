@@ -124,17 +124,21 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       onPointerUp={endDrag}
       role="presentation"
       style={{
-        backgroundImage:
-          'radial-gradient(circle, color-mix(in oklab, var(--foreground) 14%, transparent) var(--workflow-dot-size), transparent calc(var(--workflow-dot-size) + 0.5px))',
-        backgroundSize: `${gridSize}px ${gridSize}px`,
-        backgroundPosition: `${bgX}px ${bgY}px`,
+        ['--workflow-grid-size' as string]: `${gridSize}px`,
+        ['--workflow-grid-x' as string]: `${bgX}px`,
+        ['--workflow-grid-y' as string]: `${bgY}px`,
         // CSS custom property for the dot radius so the gradient stops stay in sync.
         ['--workflow-dot-size' as string]: `${dotRadius}px`,
       }}
     >
+      <div aria-hidden="true" className="workflow-canvas-grid" />
+
       <WorkflowCanvasEmptyState
         onCreateWorkflow={onCreateWorkflow}
         onCreateAgent={onCreateAgent}
+        onBrowseWorkflows={
+          onToggleWorkflows && !workflowsOpen ? onToggleWorkflows : undefined
+        }
       />
 
       {onToggleWorkflows || onCreateWorkflow ? (

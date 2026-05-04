@@ -187,17 +187,16 @@ describe('VcsSidebar', () => {
     expect(onLoadDiff).not.toHaveBeenCalled()
   })
 
-  it('moves onscreen immediately when opened after mounting closed', () => {
+  it('opens the floating panel immediately without staging a slide animation', () => {
     const { props, rerender } = renderVcsSidebar('', { open: false })
-    const panel = screen.getByLabelText('Source control panel')
-
-    expect(panel).toHaveClass('invisible')
-    expect(panel.style.transform).not.toBe('translate3d(0, 0, 0)')
+    expect(screen.queryByLabelText('Source control panel')).not.toBeInTheDocument()
 
     rerender(<VcsSidebar {...props} open />)
 
+    const panel = screen.getByLabelText('Source control panel')
     expect(panel).not.toHaveClass('invisible')
-    expect(panel.style.transform).toBe('translate3d(0, 0, 0)')
+    expect(panel.style.transform).toBe('')
+    expect(panel.style.transition).toBe('')
   })
 
   it('keeps the hidden panel unpainted when closed status changes add a diff pane', () => {
@@ -218,7 +217,7 @@ describe('VcsSidebar', () => {
       status: cleanStatus,
     })
 
-    expect(screen.getByLabelText('Source control panel')).toHaveClass('invisible')
+    expect(screen.queryByLabelText('Source control panel')).not.toBeInTheDocument()
 
     rerender(
       <VcsSidebar
@@ -248,7 +247,7 @@ describe('VcsSidebar', () => {
       />,
     )
 
-    expect(screen.getByLabelText('Source control panel')).toHaveClass('invisible')
+    expect(screen.queryByLabelText('Source control panel')).not.toBeInTheDocument()
   })
 
   it('does not reload the selected diff when only repository totals change', async () => {

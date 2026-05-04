@@ -47,6 +47,7 @@ interface ProjectRailProps {
   onRemoveProject: (projectId: string) => void
   onSessionsHoverEnter?: () => void
   onSessionsHoverLeave?: () => void
+  snapWidth?: boolean
 }
 
 function viewportMaxWidth() {
@@ -95,6 +96,7 @@ export function ProjectRail({
   onRemoveProject,
   onSessionsHoverEnter,
   onSessionsHoverLeave,
+  snapWidth = false,
 }: ProjectRailProps) {
   const isRemovingProject = projectRemovalStatus === 'running'
   const isBusy = isLoading || isImporting || isRemovingProject
@@ -104,7 +106,7 @@ export function ProjectRail({
   const [optimisticProjectId, setOptimisticProjectId] = useState<string | null>(null)
   const targetWidth = collapsed ? COLLAPSED_WIDTH : width
   const displayedActiveProjectId = optimisticProjectId ?? pendingProjectSelectionId ?? activeProjectId
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
+  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing: isResizing || snapWidth })
   const widthRef = useRef(width)
   widthRef.current = width
 
@@ -264,7 +266,23 @@ export function ProjectRail({
             <Plus className="h-3.5 w-3.5" />
           </button>
         </div>
-      ) : null}
+      ) : (
+        <div className="flex h-11 shrink-0 items-center justify-center border-b border-border/70">
+          <button
+            aria-label="Import repository"
+            className={cn(
+              'flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground transition-colors',
+              'hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50',
+            )}
+            disabled={isImporting || isRemovingProject}
+            onClick={onImportProject}
+            title="Import repository"
+            type="button"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {errorMessage && !collapsed ? (
         <div className="border-b border-border/70 bg-destructive/5 px-3 py-2 text-[11px] leading-snug text-destructive">

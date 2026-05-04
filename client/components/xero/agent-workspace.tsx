@@ -5,6 +5,7 @@ import { useDroppable } from '@dnd-kit/core'
 
 import { PaneGrid, type PaneDragHandle, type PaneGridSlot } from '@/components/xero/agent-runtime/pane-grid'
 import { AGENT_WORKSPACE_DROP_TARGET_ID } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
+import { isAgentPaneWorking } from '@/components/xero/agent-runtime/runtime-stream-helpers'
 import type { AgentPaneCloseState, AgentRuntimeProps } from '@/components/xero/agent-runtime'
 import { LiveAgentRuntimeView } from '@/components/xero/agent-runtime/live-agent-runtime'
 import type {
@@ -195,6 +196,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
         paneId: pane.paneId,
         isFocused: pane.paneId === focusedPaneId,
         ariaLabel: getPaneAriaLabel(pane, index + 1),
+        isWorking: isAgentPaneWorking(pane.agent),
       })),
     [panes, focusedPaneId],
   )

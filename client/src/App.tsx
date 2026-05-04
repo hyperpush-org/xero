@@ -96,9 +96,7 @@ const SOLANA_WORKBENCH_WIDTH_STORAGE_KEY = 'xero.solana.workbench.width'
 const SOLANA_WORKBENCH_MIN_WIDTH = 360
 const SOLANA_WORKBENCH_DEFAULT_WIDTH = 440
 const SOLANA_WORKBENCH_MAX_WIDTH = 900
-const SIDEBAR_REVEAL_EASE_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
 const SIDEBAR_WIDTH_DURATION_MS = 200
-const SOLANA_WORKBENCH_MOUNT_DELAY_MS = SIDEBAR_WIDTH_DURATION_MS + 40
 const STARTUP_SURFACE_PREWARM_SETTLE_MS = 320
 const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
   'games',
@@ -566,32 +564,7 @@ function useDeferredSolanaWorkbenchMount(open: boolean, prewarm: boolean): boole
     }
 
     preloadSurfaceChunk('solana')
-
-    if (typeof window === 'undefined') {
-      setMounted(true)
-      return
-    }
-
-    let timer = 0
-    let frame = 0
-    const scheduleMount = () => {
-      timer = window.setTimeout(() => {
-        setMounted(true)
-      }, SOLANA_WORKBENCH_MOUNT_DELAY_MS)
-    }
-
-    if (typeof window.requestAnimationFrame === 'function') {
-      frame = window.requestAnimationFrame(scheduleMount)
-    } else {
-      scheduleMount()
-    }
-
-    return () => {
-      if (frame !== 0) {
-        window.cancelAnimationFrame(frame)
-      }
-      window.clearTimeout(timer)
-    }
+    setMounted(true)
   }, [mounted, open, prewarm])
 
   return mounted
@@ -607,14 +580,11 @@ function SolanaWorkbenchOpeningShell({ open }: { open: boolean }) {
       aria-hidden={!open}
       aria-label="Loading Solana Workbench"
       className={cn(
-        'sidebar-motion-island relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
+        'sidebar-layout-island relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
         open ? 'border-l border-border/80' : 'border-l-0',
       )}
       inert={!open ? true : undefined}
-      style={{
-        width: targetWidth,
-        transition: `width ${SIDEBAR_WIDTH_DURATION_MS}ms ${SIDEBAR_REVEAL_EASE_CSS}`,
-      }}
+      style={{ width: targetWidth }}
     >
       <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
         <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
@@ -664,14 +634,11 @@ function InlineSidebarLoadingShell({
       aria-hidden={!open}
       aria-label={`Loading ${label}`}
       className={cn(
-        'sidebar-motion-island relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
+        'sidebar-layout-island relative flex shrink-0 flex-col overflow-hidden bg-sidebar',
         open ? 'border-l border-border/80' : 'border-l-0',
       )}
       inert={!open ? true : undefined}
-      style={{
-        width: targetWidth,
-        transition: `width ${SIDEBAR_WIDTH_DURATION_MS}ms ${SIDEBAR_REVEAL_EASE_CSS}`,
-      }}
+      style={{ width: targetWidth }}
     >
       <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
         <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
@@ -712,21 +679,23 @@ function OverlaySidebarLoadingShell({
       <aside
         aria-busy="true"
         aria-label={`Loading ${label}`}
-        className="gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl"
+        className="fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl"
         style={{ width }}
       >
-        <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
-          <div className="min-w-0 truncate text-[11px] font-semibold text-foreground">
-            {label}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 pl-3 pr-2">
+            <div className="min-w-0 truncate text-[11px] font-semibold text-foreground">
+              {label}
+            </div>
+            <div className="h-3 w-3 shrink-0 animate-spin rounded-full border border-primary/30 border-t-primary" />
           </div>
-          <div className="h-3 w-3 shrink-0 animate-spin rounded-full border border-primary/30 border-t-primary" />
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3">
-          <div className="h-7 w-40 max-w-[70%] rounded-md bg-secondary/50" />
-          <div className="h-24 rounded-md border border-border/60 bg-background/35" />
-          <div className="space-y-2">
-            <div className="h-3 w-3/4 rounded bg-secondary/45" />
-            <div className="h-3 w-1/2 rounded bg-secondary/35" />
+          <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3">
+            <div className="h-7 w-40 max-w-[70%] rounded-md bg-secondary/50" />
+            <div className="h-24 rounded-md border border-border/60 bg-background/35" />
+            <div className="space-y-2">
+              <div className="h-3 w-3/4 rounded bg-secondary/45" />
+              <div className="h-3 w-1/2 rounded bg-secondary/35" />
+            </div>
           </div>
         </div>
       </aside>
@@ -960,6 +929,86 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const refreshCustomAgentDefinitions = useCallback(() => {
     setCustomAgentDefinitionsRevision((current) => current + 1)
   }, [])
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [projectRailSnapWidth, setProjectRailSnapWidth] = useState(false)
+  const projectRailSnapWidthTimerRef = useRef<number | null>(null)
+  const shouldRestoreSidebarFromAutoCollapseRef = useRef(false)
+  const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
+  const previousViewRef = useRef<View>(activeView)
+  const previousBrowserOpenRef = useRef<boolean>(browserOpen)
+  const shouldRestoreSidebarFromRightSidebarRef = useRef(false)
+  const previousNonFloatingRightSidebarOpenRef = useRef(false)
+  const projectRailViewAutoCollapseActive = activeView === 'execution' || activeView === 'agent'
+  const nonFloatingRightSidebarOpen =
+    gamesOpen ||
+    browserOpen ||
+    iosOpen ||
+    androidOpen ||
+    solanaOpen ||
+    workflowsOpen ||
+    agentDockOpen
+  const snapProjectRailWidthForRightSidebar = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    if (projectRailSnapWidthTimerRef.current !== null) {
+      window.clearTimeout(projectRailSnapWidthTimerRef.current)
+    }
+
+    setProjectRailSnapWidth(true)
+    projectRailSnapWidthTimerRef.current = window.setTimeout(() => {
+      projectRailSnapWidthTimerRef.current = null
+      setProjectRailSnapWidth(false)
+    }, SIDEBAR_WIDTH_DURATION_MS + 40)
+  }, [])
+  const requestProjectRailCollapseForRightSidebarOpen = useCallback(() => {
+    if (projectRailViewAutoCollapseActive || nonFloatingRightSidebarOpen) {
+      return
+    }
+
+    shouldRestoreSidebarFromRightSidebarRef.current = !sidebarCollapsed
+    if (!sidebarCollapsed) {
+      snapProjectRailWidthForRightSidebar()
+      setSidebarCollapsed(true)
+    }
+  }, [
+    nonFloatingRightSidebarOpen,
+    projectRailViewAutoCollapseActive,
+    sidebarCollapsed,
+    snapProjectRailWidthForRightSidebar,
+  ])
+  const restoreProjectRailForRightSidebarClose = useCallback(() => {
+    if (projectRailViewAutoCollapseActive) {
+      return
+    }
+
+    const shouldRestoreSidebar =
+      shouldRestoreSidebarFromRightSidebarRef.current ||
+      shouldRestoreSidebarFromAutoCollapseRef.current
+    shouldRestoreSidebarFromRightSidebarRef.current = false
+    shouldRestoreSidebarFromAutoCollapseRef.current = false
+
+    if (shouldRestoreSidebar && sidebarCollapsed) {
+      snapProjectRailWidthForRightSidebar()
+      setSidebarCollapsed(false)
+    }
+  }, [projectRailViewAutoCollapseActive, sidebarCollapsed, snapProjectRailWidthForRightSidebar])
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((current) => {
+      if (nonFloatingRightSidebarOpen) {
+        shouldRestoreSidebarFromRightSidebarRef.current = false
+      }
+      return !current
+    })
+  }, [nonFloatingRightSidebarOpen])
+  useEffect(() => {
+    return () => {
+      if (projectRailSnapWidthTimerRef.current !== null) {
+        window.clearTimeout(projectRailSnapWidthTimerRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     setAgentComposerControls(null)
@@ -1090,149 +1139,161 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
 
   const toggleGames = useCallback(() => {
-    setGamesOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('games')
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setAndroidOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (gamesOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setGamesOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('games')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setAndroidOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setGamesOpen(true)
+  }, [gamesOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleBrowser = useCallback(() => {
-    setBrowserOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('browser')
-        setGamesOpen(false)
-        setIosOpen(false)
-        setAndroidOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (browserOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setBrowserOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('browser')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setIosOpen(false)
+    setAndroidOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setBrowserOpen(true)
+  }, [browserOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleIos = useCallback(() => {
-    setIosOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('ios')
-        setGamesOpen(false)
-        setBrowserOpen(false)
-        setAndroidOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (iosOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setIosOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('ios')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setBrowserOpen(false)
+    setAndroidOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setIosOpen(true)
+  }, [iosOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleAndroid = useCallback(() => {
-    setAndroidOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('android')
-        setGamesOpen(false)
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (androidOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setAndroidOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('android')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setAndroidOpen(true)
+  }, [androidOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
 
   const toggleSolana = useCallback(() => {
-    setSolanaOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('solana')
-        setGamesOpen(false)
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setAndroidOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (solanaOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setSolanaOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('solana')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setAndroidOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setSolanaOpen(true)
+  }, [requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose, solanaOpen])
 
   const toggleVcs = useCallback(() => {
-    setVcsOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('vcs')
-        setGamesOpen(false)
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setAndroidOpen(false)
-        setSolanaOpen(false)
-        setWorkflowsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (vcsOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setVcsOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('vcs')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setAndroidOpen(false)
+    setSolanaOpen(false)
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setVcsOpen(true)
+  }, [requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose, vcsOpen])
 
   const toggleWorkflows = useCallback(() => {
-    setWorkflowsOpen((current) => {
-      const next = !current
-      if (next) {
-        preloadSurfaceChunk('workflows')
-        setGamesOpen(false)
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setAndroidOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setAgentDockOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (workflowsOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setWorkflowsOpen(false)
+      return
+    }
+
+    preloadSurfaceChunk('workflows')
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setAndroidOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setAgentDockOpen(false)
+    setWorkflowsOpen(true)
+  }, [requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose, workflowsOpen])
 
   const toggleAgentDock = useCallback(() => {
-    setAgentDockOpen((current) => {
-      const next = !current
-      if (next) {
-        setGamesOpen(false)
-        setBrowserOpen(false)
-        setIosOpen(false)
-        setAndroidOpen(false)
-        setSolanaOpen(false)
-        setVcsOpen(false)
-        setWorkflowsOpen(false)
-        setUsageOpen(false)
-      }
-      return next
-    })
-  }, [])
+    if (agentDockOpen) {
+      restoreProjectRailForRightSidebarClose()
+      setAgentDockOpen(false)
+      return
+    }
+
+    requestProjectRailCollapseForRightSidebarOpen()
+    setGamesOpen(false)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setAndroidOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setWorkflowsOpen(false)
+    setUsageOpen(false)
+    setAgentDockOpen(true)
+  }, [agentDockOpen, requestProjectRailCollapseForRightSidebarOpen, restoreProjectRailForRightSidebarClose])
   useEffect(() => {
     if (activeView === 'agent' && agentDockOpen) {
       setAgentDockOpen(false)
     }
   }, [activeView, agentDockOpen])
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const toggleSidebarCollapsed = useCallback(() => {
-    setSidebarCollapsed((current) => !current)
-  }, [])
   const [explorerMode, setExplorerMode] = useState<'pinned' | 'collapsed'>(() => {
     if (typeof window === 'undefined') return 'pinned'
     try {
@@ -1297,22 +1358,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
-  const shouldRestoreSidebarFromAutoCollapseRef = useRef(false)
-  const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
-  const previousViewRef = useRef<View>(activeView)
-  const previousBrowserOpenRef = useRef<boolean>(browserOpen)
-  const shouldRestoreSidebarFromRightSidebarRef = useRef(false)
-  const previousNonFloatingRightSidebarOpenRef = useRef(false)
-  const projectRailViewAutoCollapseActive = activeView === 'execution' || activeView === 'agent'
-  const nonFloatingRightSidebarOpen =
-    gamesOpen ||
-    browserOpen ||
-    iosOpen ||
-    androidOpen ||
-    solanaOpen ||
-    workflowsOpen ||
-    agentDockOpen
-
   useEffect(() => {
     const wasBrowserOpen = previousBrowserOpenRef.current
 
@@ -1408,11 +1453,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
   useEffect(() => {
     const wasOpen = previousNonFloatingRightSidebarOpenRef.current
 
-    if (nonFloatingRightSidebarOpen && !wasOpen) {
+    if (nonFloatingRightSidebarOpen && !wasOpen && !sidebarCollapsed) {
       shouldRestoreSidebarFromRightSidebarRef.current = !sidebarCollapsed
-    }
-
-    if (nonFloatingRightSidebarOpen && !sidebarCollapsed) {
+      snapProjectRailWidthForRightSidebar()
       setSidebarCollapsed(true)
     }
 
@@ -1423,6 +1466,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
       shouldRestoreSidebarFromRightSidebarRef.current = false
       shouldRestoreSidebarFromAutoCollapseRef.current = false
       if (shouldRestoreSidebar && sidebarCollapsed) {
+        snapProjectRailWidthForRightSidebar()
         setSidebarCollapsed(false)
       }
     }
@@ -1432,7 +1476,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
 
     previousNonFloatingRightSidebarOpenRef.current = nonFloatingRightSidebarOpen
-  }, [nonFloatingRightSidebarOpen, projectRailViewAutoCollapseActive, sidebarCollapsed])
+  }, [
+    nonFloatingRightSidebarOpen,
+    projectRailViewAutoCollapseActive,
+    sidebarCollapsed,
+    snapProjectRailWidthForRightSidebar,
+  ])
 
   useEffect(() => {
     if (!onboardingDismissed && !isLoading && projects.length === 0) {
@@ -2006,10 +2055,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
     const isExecutionVisible = activeView === 'execution'
     const getViewPaneClassName = (
       visible: boolean,
-      options: { heavySwitchSurface?: boolean } = {},
+      options: { heavySwitchSurface?: boolean; workflowSurface?: boolean } = {},
     ) =>
       cn(
         'view-pane absolute inset-0 flex min-h-0 min-w-0 overflow-hidden motion-standard',
+        options.workflowSurface && 'workflow-view-pane',
         options.heavySwitchSurface
           ? 'transition-opacity'
           : 'transform-gpu transition-[opacity,transform]',
@@ -2096,7 +2146,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
           {workflowView ? (
             <LazyActivityPane
               active={activeView === 'phases'}
-              className={getViewPaneClassName(activeView === 'phases')}
+              className={getViewPaneClassName(activeView === 'phases', {
+                workflowSurface: true,
+              })}
               name="workflow-pane"
               prewarm={startupSurfacePrewarm.shouldMount}
             >
@@ -2390,6 +2442,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             pendingProjectRemovalId={pendingProjectRemovalId}
             projectRemovalStatus={projectRemovalStatus}
             projects={projects}
+            snapWidth={projectRailSnapWidth}
             onSessionsHoverEnter={
               activeView === 'agent' && explorerCollapsed && Boolean(activeProject)
                 ? requestExplorerPeek

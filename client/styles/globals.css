@@ -1182,6 +1182,37 @@
     backface-visibility: hidden;
   }
 
+  .workflow-canvas {
+    contain: strict;
+    isolation: isolate;
+    transform: translateZ(0);
+    backface-visibility: hidden;
+  }
+
+  .workflow-view-pane {
+    contain: layout paint style;
+    isolation: isolate;
+  }
+
+  .workflow-canvas-grid {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--foreground) 14%, transparent) var(--workflow-dot-size),
+      transparent calc(var(--workflow-dot-size) + 0.5px)
+    );
+    background-position: var(--workflow-grid-x) var(--workflow-grid-y);
+    background-size: var(--workflow-grid-size) var(--workflow-grid-size);
+    transform: translateZ(0);
+  }
+
+  .workflow-empty-state {
+    contain: layout paint style;
+    isolation: isolate;
+  }
+
   /* Containment for the main content area so a sidebar's width change
    * doesn't propagate paint invalidation up to the root and back down through
    * heavy children (editors, file trees, agent UIs). */
@@ -1385,6 +1416,37 @@
   .agent-pane-shell[data-pane-focused='false'] {
     content-visibility: auto;
     contain-intrinsic-size: 360px 320px;
+  }
+
+  /* Background pane that has an actively working agent — pulsing glow draws
+   * the eye without being noisy. Applied via className only on non-focused
+   * panes, so the focused pane keeps its calmer selected style. */
+  .agent-pane-shell-working {
+    animation: agent-pane-shell-working-pulse 2200ms ease-in-out infinite;
+    will-change: box-shadow;
+  }
+
+  @keyframes agent-pane-shell-working-pulse {
+    0%,
+    100% {
+      box-shadow:
+        0 0 0 1px hsl(var(--primary) / 0.22),
+        0 0 8px hsl(var(--primary) / 0.12);
+    }
+    50% {
+      box-shadow:
+        0 0 0 1px hsl(var(--primary) / 0.55),
+        0 0 18px hsl(var(--primary) / 0.32);
+    }
+  }
+
+  /* Background pane whose agent just finished — bright, static border flags
+   * "ready for you" until the user focuses the pane. Intentionally brighter
+   * than the focused style; focusing the pane clears this state. */
+  .agent-pane-shell-attention {
+    box-shadow:
+      0 0 0 1px hsl(var(--primary) / 0.55),
+      0 0 14px hsl(var(--primary) / 0.28);
   }
 }
 

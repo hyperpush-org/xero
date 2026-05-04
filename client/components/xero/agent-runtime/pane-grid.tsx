@@ -12,6 +12,7 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
+type PaneVisualState = 'idle' | 'working' | 'attention'
 import {
   SortableContext,
   rectSortingStrategy,
@@ -43,6 +44,7 @@ export interface PaneGridSlot {
   paneId: string
   isFocused: boolean
   ariaLabel: string
+  isWorking?: boolean
 }
 
 export interface PaneGridProps {
@@ -214,6 +216,32 @@ const PaneShell = memo(function PaneShell({
     }
   }, [onFocusPane, slot.isFocused, slot.paneId])
 
+  const isWorking = slot.isWorking ?? false
+  const wasWorkingRef = useRef(isWorking)
+  const [hasPendingAttention, setHasPendingAttention] = useState(false)
+
+  useEffect(() => {
+    const previouslyWorking = wasWorkingRef.current
+    if (previouslyWorking && !isWorking && !slot.isFocused) {
+      setHasPendingAttention(true)
+    }
+    wasWorkingRef.current = isWorking
+  }, [isWorking, slot.isFocused])
+
+  useEffect(() => {
+    if (slot.isFocused) {
+      setHasPendingAttention(false)
+    }
+  }, [slot.isFocused])
+
+  const visualState: PaneVisualState = slot.isFocused
+    ? 'idle'
+    : isWorking
+      ? 'working'
+      : hasPendingAttention
+        ? 'attention'
+        : 'idle'
+
   if (isSolo) {
     return (
       <div
@@ -243,6 +271,7 @@ const PaneShell = memo(function PaneShell({
       data-pane-id={slot.paneId}
       data-pane-focused={slot.isFocused ? 'true' : 'false'}
       data-pane-dragging={isDragging ? 'true' : undefined}
+      data-pane-state={visualState}
       onFocusCapture={handleFocusCapture}
       onMouseDown={handleMouseDown}
       style={sortableStyle}
@@ -250,7 +279,11 @@ const PaneShell = memo(function PaneShell({
         'agent-pane-shell flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-background transition-[border-color,box-shadow] duration-200 ease-out',
         slot.isFocused
           ? 'border-primary/40 shadow-[0_0_0_1px_hsl(var(--primary)/0.18)]'
-          : 'border-border/60',
+          : visualState === 'working'
+            ? 'agent-pane-shell-working border-primary/55'
+            : visualState === 'attention'
+              ? 'agent-pane-shell-attention border-primary/70'
+              : 'border-border/60',
       )}
     >
       {renderChildren(dragHandle)}

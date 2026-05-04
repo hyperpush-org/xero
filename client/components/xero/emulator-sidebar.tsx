@@ -19,10 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  useDeferredSidebarActivation,
-  useSidebarWidthMotion,
-} from "@/lib/sidebar-motion"
+import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import {
   useEmulatorSession,
   type EmulatorInputKind,
@@ -222,12 +219,9 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
   )
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
-  const {
-    activateAfterAnimation: activateSessionAfterAnimation,
-    active: sessionActive,
-  } = useDeferredSidebarActivation(open)
+  const sessionActive = open
   const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
+  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
@@ -405,11 +399,6 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         open ? "border-l border-border/80" : "border-l-0",
       )}
       inert={!open ? true : undefined}
-      onTransitionEnd={(event) => {
-        if (event.target === event.currentTarget && event.propertyName === "width") {
-          activateSessionAfterAnimation()
-        }
-      }}
       style={widthMotion.style}
     >
       <div

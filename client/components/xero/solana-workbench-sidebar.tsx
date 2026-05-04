@@ -30,10 +30,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import {
-  useDeferredSidebarActivation,
-  useSidebarWidthMotion,
-} from "@/lib/sidebar-motion"
+import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -221,17 +218,13 @@ function SolanaPanelSlot({
 
 export function SolanaWorkbenchSidebar({
   open,
-  prewarm = false,
 }: SolanaWorkbenchSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
-  const {
-    activateAfterAnimation: activateWorkbenchAfterAnimation,
-    active: workbenchActive,
-  } = useDeferredSidebarActivation(open)
+  const workbenchActive = open
   const targetWidth = open ? width : 0
   const widthMotion = useSidebarWidthMotion(targetWidth, {
-    durationMs: prewarm ? 80 : undefined,
+    animate: false,
     isResizing,
   })
   const widthRef = useRef(width)
@@ -707,11 +700,6 @@ export function SolanaWorkbenchSidebar({
         open ? "border-l border-border/80" : "border-l-0",
       )}
       inert={!open ? true : undefined}
-      onTransitionEnd={(event) => {
-        if (event.target === event.currentTarget && event.propertyName === "width") {
-          activateWorkbenchAfterAnimation()
-        }
-      }}
       style={widthMotion.style}
     >
       <div
