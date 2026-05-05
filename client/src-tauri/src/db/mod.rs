@@ -596,6 +596,11 @@ fn register_project_database_path(repo_root: &Path, database_path: &Path) {
         .insert(normalized_repo_root, database_path.to_path_buf());
 }
 
+#[cfg(test)]
+pub(crate) fn register_project_database_path_for_tests(repo_root: &Path, database_path: PathBuf) {
+    register_project_database_path(repo_root, &database_path);
+}
+
 fn normalize_repo_root(repo_root: &Path) -> PathBuf {
     fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf())
 }

@@ -7,9 +7,10 @@ use crate::{
         ProviderModelDto, ProviderModelThinkingCapabilityDto, ProviderModelThinkingEffortDto,
     },
     provider_models::{
-        load_provider_model_catalog, ProviderModelCatalog, ProviderModelCatalogDiagnostic,
-        ProviderModelCatalogSource, ProviderModelRecord, ProviderModelThinkingCapability,
-        ProviderModelThinkingEffort,
+        catalog_age_seconds, load_provider_model_catalog, provider_capability_catalog_for_catalog,
+        provider_capability_catalog_for_model, ProviderModelCatalog,
+        ProviderModelCatalogDiagnostic, ProviderModelCatalogSource, ProviderModelRecord,
+        ProviderModelThinkingCapability, ProviderModelThinkingEffort,
     },
     state::DesktopState,
 };
@@ -40,15 +41,26 @@ pub async fn get_provider_model_catalog<R: Runtime + 'static>(
 }
 
 pub(crate) fn map_provider_model_catalog(catalog: ProviderModelCatalog) -> ProviderModelCatalogDto {
+    let capabilities = provider_capability_catalog_for_catalog(&catalog, None);
+    let cache_age_seconds = catalog.fetched_at.as_deref().and_then(catalog_age_seconds);
+    let models = catalog
+        .models
+        .iter()
+        .map(|model| map_provider_model(&catalog, model))
+        .collect();
+
     ProviderModelCatalogDto {
         profile_id: catalog.profile_id,
         provider_id: catalog.provider_id,
         configured_model_id: catalog.configured_model_id,
         source: map_catalog_source(catalog.source),
+        capabilities,
         fetched_at: catalog.fetched_at,
         last_success_at: catalog.last_success_at,
+        cache_age_seconds,
+        cache_ttl_seconds: xero_agent_core::DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
         last_refresh_error: catalog.last_refresh_error.map(map_catalog_diagnostic),
-        models: catalog.models.into_iter().map(map_provider_model).collect(),
+        models,
     }
 }
 
@@ -71,11 +83,20 @@ fn map_catalog_diagnostic(
     }
 }
 
-fn map_provider_model(model: ProviderModelRecord) -> ProviderModelDto {
+fn map_provider_model(
+    catalog: &ProviderModelCatalog,
+    model: &ProviderModelRecord,
+) -> ProviderModelDto {
     ProviderModelDto {
-        model_id: model.model_id,
-        display_name: model.display_name,
-        thinking: map_thinking_capability(model.thinking),
+        model_id: model.model_id.clone(),
+        display_name: model.display_name.clone(),
+        thinking: map_thinking_capability(model.thinking.clone()),
+        context_window_tokens: model.context_window_tokens,
+        max_output_tokens: model.max_output_tokens,
+        context_limit_source: model.context_limit_source.clone(),
+        context_limit_confidence: model.context_limit_confidence.clone(),
+        context_limit_fetched_at: model.context_limit_fetched_at.clone(),
+        capabilities: provider_capability_catalog_for_model(catalog, model),
     }
 }
 

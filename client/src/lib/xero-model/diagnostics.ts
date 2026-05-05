@@ -189,6 +189,7 @@ export const checkProviderProfileRequestSchema = z
   .object({
     profileId: z.string().trim().min(1),
     includeNetwork: z.boolean().default(false),
+    modelId: z.string().trim().min(1).nullable().optional(),
   })
   .strict()
 
@@ -199,6 +200,7 @@ export const providerProfileDiagnosticsSchema = z
     providerId: runtimeProviderIdSchema,
     validationChecks: z.array(xeroDiagnosticCheckSchema).default([]),
     reachabilityChecks: z.array(xeroDiagnosticCheckSchema).default([]),
+    capabilityChecks: z.array(xeroDiagnosticCheckSchema).default([]),
     modelCatalog: providerModelCatalogSchema.nullable().optional(),
   })
   .strict()
@@ -219,6 +221,16 @@ export const providerProfileDiagnosticsSchema = z
           code: z.ZodIssueCode.custom,
           path: ['reachabilityChecks', index, 'affectedProfileId'],
           message: 'Provider diagnostics must not include reachability checks for another provider connection.',
+        })
+      }
+    }
+
+    for (const [index, check] of diagnostics.capabilityChecks.entries()) {
+      if (check.affectedProfileId && check.affectedProfileId !== diagnostics.profileId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['capabilityChecks', index, 'affectedProfileId'],
+          message: 'Provider diagnostics must not include capability checks for another provider connection.',
         })
       }
     }

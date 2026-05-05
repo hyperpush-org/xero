@@ -64,6 +64,9 @@ export interface ComposerModelOptionView {
   thinking: ProviderModelDto['thinking']
   thinkingEffortOptions: ProviderModelThinkingEffortDto[]
   defaultThinkingEffort: ProviderModelThinkingEffortDto | null
+  contextWindowTokens?: number | null
+  maxOutputTokens?: number | null
+  capabilities?: ProviderModelDto['capabilities']
 }
 
 export function buildComposerModelSelectionKey(
@@ -170,6 +173,9 @@ export function buildComposerModelOptions(
         thinking: model.thinking,
         thinkingEffortOptions,
         defaultThinkingEffort: defaultThinkingEffortFor(model, thinkingEffortOptions),
+        contextWindowTokens: model.contextWindowTokens ?? null,
+        maxOutputTokens: model.maxOutputTokens ?? null,
+        capabilities: model.capabilities ?? null,
       })
     }
   }

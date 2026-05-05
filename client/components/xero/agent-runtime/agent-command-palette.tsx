@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { ArrowLeftRight, Plus, SplitSquareHorizontal, X } from 'lucide-react'
 
 import {
@@ -30,7 +30,7 @@ export interface AgentCommandPaletteProps {
   onCycleFocus: (delta: number) => void
 }
 
-export function AgentCommandPalette({
+export const AgentCommandPalette = memo(function AgentCommandPalette({
   enabled,
   panes,
   spawnDisabled,
@@ -183,4 +183,4 @@ export function AgentCommandPalette({
       </CommandList>
     </CommandDialog>
   )
-}
+})

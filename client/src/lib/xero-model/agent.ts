@@ -63,6 +63,20 @@ export const agentActionRequestStatusSchema = z.enum([
   'cancelled',
 ])
 const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/)
+const traceIdSchema = z.string().regex(/^[0-9a-f]{32}$/)
+const agentRunLineageKindSchema = z.enum(['top_level', 'subagent_child'])
+const subagentRoleSchema = z.enum([
+  'engineer',
+  'debugger',
+  'planner',
+  'researcher',
+  'reviewer',
+  'agent_builder',
+  'browser',
+  'emulator',
+  'solana',
+  'database',
+])
 
 export const agentMessageAttachmentKindSchema = z.enum(['image', 'document', 'text'])
 
@@ -124,6 +138,10 @@ export const agentFileChangeSchema = z
     id: z.number().int().positive(),
     projectId: z.string().trim().min(1),
     runId: z.string().trim().min(1),
+    traceId: traceIdSchema,
+    topLevelRunId: z.string().trim().min(1),
+    subagentId: z.string().trim().min(1).nullable().optional(),
+    subagentRole: subagentRoleSchema.nullable().optional(),
     path: z.string().trim().min(1),
     operation: agentFileChangeOperationSchema,
     oldHash: sha256Schema.nullable().optional(),
@@ -167,6 +185,12 @@ export const agentRunSchema = z
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
     runId: z.string().trim().min(1),
+    traceId: traceIdSchema,
+    lineageKind: agentRunLineageKindSchema,
+    parentRunId: z.string().trim().min(1).nullable().optional(),
+    parentTraceId: traceIdSchema.nullable().optional(),
+    parentSubagentId: z.string().trim().min(1).nullable().optional(),
+    subagentRole: subagentRoleSchema.nullable().optional(),
     providerId: z.string().trim().min(1),
     modelId: z.string().trim().min(1),
     status: agentRunStatusSchema,
@@ -246,6 +270,25 @@ export const getAgentRunRequestSchema = z
   })
   .strict()
 
+export const exportAgentTraceRequestSchema = z
+  .object({
+    runId: z.string().trim().min(1),
+    includeSupportBundle: z.boolean().default(false),
+  })
+  .strict()
+
+export const agentTraceExportSchema = z
+  .object({
+    trace: z.unknown(),
+    timeline: z.unknown(),
+    diagnostics: z.unknown(),
+    qualityGates: z.unknown(),
+    markdownSummary: z.string(),
+    supportBundle: z.unknown().nullable().optional(),
+    canonicalTrace: z.unknown(),
+  })
+  .strict()
+
 export const listAgentRunsRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -277,6 +320,8 @@ export type AgentMessageRoleDto = z.infer<typeof agentMessageRoleSchema>
 export type AgentRunEventKindDto = z.infer<typeof agentRunEventKindSchema>
 export type AgentToolCallStateDto = z.infer<typeof agentToolCallStateSchema>
 export type AgentFileChangeOperationDto = z.infer<typeof agentFileChangeOperationSchema>
+export type AgentRunLineageKindDto = z.infer<typeof agentRunLineageKindSchema>
+export type AgentSubagentRoleDto = z.infer<typeof subagentRoleSchema>
 export type AgentCheckpointKindDto = z.infer<typeof agentCheckpointKindSchema>
 export type AgentActionRequestStatusDto = z.infer<typeof agentActionRequestStatusSchema>
 export type AgentMessageDto = z.infer<typeof agentMessageSchema>
@@ -295,6 +340,8 @@ export type SendAgentMessageRequestDto = z.infer<typeof sendAgentMessageRequestS
 export type CancelAgentRunRequestDto = z.infer<typeof cancelAgentRunRequestSchema>
 export type ResumeAgentRunRequestDto = z.infer<typeof resumeAgentRunRequestSchema>
 export type GetAgentRunRequestDto = z.infer<typeof getAgentRunRequestSchema>
+export type ExportAgentTraceRequestDto = z.infer<typeof exportAgentTraceRequestSchema>
+export type AgentTraceExportDto = z.infer<typeof agentTraceExportSchema>
 export type ListAgentRunsRequestDto = z.infer<typeof listAgentRunsRequestSchema>
 export type ListAgentRunsResponseDto = z.infer<typeof listAgentRunsResponseSchema>
 export type SubscribeAgentStreamRequestDto = z.infer<typeof subscribeAgentStreamRequestSchema>

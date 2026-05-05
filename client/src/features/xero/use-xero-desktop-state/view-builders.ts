@@ -3,6 +3,7 @@ import {
   type SyncNotificationAdaptersResponseDto,
 } from '@/src/lib/xero-model/notifications'
 import {
+  getProviderModelCatalogFreshnessLabel,
   getProviderModelCatalogFetchedAt,
   type ProviderModelCatalogDto,
   type ProviderModelThinkingEffortDto,
@@ -293,6 +294,9 @@ function buildOrphanedAgentProviderModel(
     thinkingSupported: false,
     thinkingEffortOptions: [],
     defaultThinkingEffort: null,
+    contextWindowTokens: null,
+    maxOutputTokens: null,
+    capabilities: null,
   }
 }
 
@@ -467,6 +471,9 @@ function buildAgentProviderModelCatalog(options: {
     thinkingSupported: option.thinking.supported,
     thinkingEffortOptions: option.thinkingEffortOptions,
     defaultThinkingEffort: option.defaultThinkingEffort,
+    contextWindowTokens: option.contextWindowTokens ?? null,
+    maxOutputTokens: option.maxOutputTokens ?? null,
+    capabilities: option.capabilities ?? null,
   }))
 
   const configuredModelId =
@@ -517,6 +524,7 @@ function buildAgentProviderModelCatalog(options: {
         stateLabel: 'Catalog unavailable',
         detail: `Add a ${providerLabel} credential in Settings to discover models for this provider.`,
       }
+  const catalogFreshness = catalog ? getProviderModelCatalogFreshnessLabel(catalog) : null
 
   return {
     providerModelCatalog: {
@@ -528,9 +536,12 @@ function buildAgentProviderModelCatalog(options: {
       loadStatus,
       state: stateCopy.state,
       stateLabel: stateCopy.stateLabel,
-      detail: stateCopy.detail,
+      detail: catalogFreshness ? `${stateCopy.detail} ${catalogFreshness}.` : stateCopy.detail,
       fetchedAt: getProviderModelCatalogFetchedAt(catalog),
       lastSuccessAt: catalog?.lastSuccessAt ?? null,
+      cacheAgeSeconds: catalog?.cacheAgeSeconds ?? catalog?.capabilities?.cache.ageSeconds ?? null,
+      cacheTtlSeconds: catalog?.cacheTtlSeconds ?? catalog?.capabilities?.cache.ttlSeconds ?? null,
+      capabilities: catalog?.capabilities ?? null,
       lastRefreshError: refreshError,
       models: finalModels,
     },

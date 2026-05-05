@@ -1536,6 +1536,103 @@ function createAdapter(options?: {
       filesChanged: 0,
       totalReplacements: 0,
     }),
+    workspaceIndex: async (request) => ({
+      status: {
+        projectId: request.projectId,
+        state: 'ready' as const,
+        indexVersion: 1,
+        rootPath: '/repo',
+        storagePath: '/app-data/projects/project-1',
+        totalFiles: 0,
+        indexedFiles: 0,
+        skippedFiles: 0,
+        staleFiles: 0,
+        symbolCount: 0,
+        indexedBytes: 0,
+        coveragePercent: 0,
+        headSha: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: null,
+        diagnostics: [],
+      },
+      changedFiles: 0,
+      unchangedFiles: 0,
+      removedFiles: 0,
+      durationMs: 0,
+    }),
+    workspaceStatus: async (projectId) => ({
+      projectId,
+      state: 'empty' as const,
+      indexVersion: 1,
+      rootPath: '/repo',
+      storagePath: '/app-data/projects/project-1',
+      totalFiles: 0,
+      indexedFiles: 0,
+      skippedFiles: 0,
+      staleFiles: 0,
+      symbolCount: 0,
+      indexedBytes: 0,
+      coveragePercent: 0,
+      headSha: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: null,
+      diagnostics: [],
+    }),
+    workspaceQuery: async (request) => ({
+      projectId: request.projectId,
+      query: request.query,
+      mode: request.mode,
+      resultCount: 0,
+      stale: false,
+      diagnostics: [],
+      results: [],
+    }),
+    workspaceExplain: async (request) => ({
+      projectId: request.projectId,
+      summary: 'Workspace index is empty.',
+      status: {
+        projectId: request.projectId,
+        state: 'empty' as const,
+        indexVersion: 1,
+        rootPath: '/repo',
+        storagePath: '/app-data/projects/project-1',
+        totalFiles: 0,
+        indexedFiles: 0,
+        skippedFiles: 0,
+        staleFiles: 0,
+        symbolCount: 0,
+        indexedBytes: 0,
+        coveragePercent: 0,
+        headSha: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: null,
+        diagnostics: [],
+      },
+      topSignals: [],
+      diagnostics: [],
+    }),
+    workspaceReset: async (projectId) => ({
+      projectId,
+      state: 'empty' as const,
+      indexVersion: 1,
+      rootPath: '/repo',
+      storagePath: '/app-data/projects/project-1',
+      totalFiles: 0,
+      indexedFiles: 0,
+      skippedFiles: 0,
+      staleFiles: 0,
+      symbolCount: 0,
+      indexedBytes: 0,
+      coveragePercent: 0,
+      headSha: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: null,
+      diagnostics: [],
+    }),
     listAgentDefinitions: async () => ({ definitions: [] }),
     archiveAgentDefinition: async () => {
       throw new Error('archiveAgentDefinition not stubbed in test adapter')
@@ -1730,6 +1827,7 @@ function createAdapter(options?: {
         providerId: currentProfile.providerId,
         validationChecks: [],
         reachabilityChecks: [],
+        capabilityChecks: [],
         modelCatalog,
       }
     },
@@ -2592,6 +2690,7 @@ describe('XeroApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     expect(await screen.findByRole('button', { name: 'Show sessions sidebar' })).toBeVisible()
+    expect(document.querySelector('[data-session-collapse-ghost="true"]')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
     await waitFor(() =>
@@ -2791,6 +2890,35 @@ describe('XeroApp current UI', () => {
     })
   })
 
+  it('opens the project usage sidebar from the footer spend button on the first click', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const statusBar = screen.getByRole('contentinfo', { name: 'Status bar' })
+    const spendButton = within(statusBar).getByRole('button', {
+      name: /Project spend: no usage recorded yet/i,
+    })
+
+    expect(spendButton).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(spendButton)
+
+    await waitFor(() => expect(spendButton).toHaveAttribute('aria-pressed', 'true'))
+
+    const panel = await screen.findByRole('complementary', {
+      name: 'Project usage statistics',
+    })
+    expect(panel).not.toHaveClass('invisible')
+    expect(panel.style.transform).toBe('')
+    expect(panel.style.transition).toBe('')
+    expect(screen.getByText('No agent runs recorded for this project yet.')).toBeVisible()
+  })
+
   it('collapses the project rail into a compact icon strip from the titlebar toggle', async () => {
     const { adapter } = createAdapter()
 
@@ -2807,6 +2935,21 @@ describe('XeroApp current UI', () => {
     expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Project actions for xero' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /xero/i })).toBeVisible()
+  })
+
+  it('keeps the project rail animated on the workflow canvas view', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const rail = document.querySelector('aside[data-collapsed]') as HTMLElement
+
+    expect(screen.getByLabelText('Workflow canvas')).toBeInTheDocument()
+    expect(rail.style.transition).toContain('width')
   })
 
   it('opens the Solana workbench from the titlebar in the normal app shell', async () => {
@@ -2832,7 +2975,53 @@ describe('XeroApp current UI', () => {
     expect(within(breadcrumb).getByText('Cluster')).toBeVisible()
   })
 
-  it('keeps the project rail collapsed while a non-floating right sidebar is open', async () => {
+  it('opens the preloaded Solana workbench without waiting for an animation frame', async () => {
+    const { adapter } = createAdapter()
+    await import('@/components/xero/solana-workbench-sidebar')
+    const originalRequestAnimationFrame = window.requestAnimationFrame
+    const originalCancelAnimationFrame = window.cancelAnimationFrame
+    const frames: FrameRequestCallback[] = []
+
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      },
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    try {
+      render(<XeroApp adapter={adapter} />)
+
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+      )
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Open Solana workbench' }))
+
+      const breadcrumb = screen.getByRole('navigation', {
+        name: 'Solana Workbench breadcrumb',
+      })
+      expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
+      expect(screen.queryByLabelText('Loading Solana Workbench')).not.toBeInTheDocument()
+    } finally {
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        value: originalRequestAnimationFrame,
+      })
+      Object.defineProperty(window, 'cancelAnimationFrame', {
+        configurable: true,
+        value: originalCancelAnimationFrame,
+      })
+    }
+  })
+
+  it('auto-collapses the project rail for a non-floating right sidebar but allows manual expansion', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -2850,7 +3039,8 @@ describe('XeroApp current UI', () => {
     expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand project sidebar' }))
-    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close browser' }))

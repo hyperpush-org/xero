@@ -13,32 +13,33 @@ export function Integrations() {
       <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-10 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:px-8 lg:py-28">
         <div className="flex flex-col justify-center">
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">
-            Notifications
+            Human approval loop
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Go for a walk. Xero will message you when it matters.
+            Pauses for real decisions. Pings the channel you actually read.
           </h2>
           <p className="mt-4 max-w-xl text-pretty text-muted-foreground">
-            Most agents either stop cold or hallucinate forward when they hit ambiguity.
-            Xero pauses, states the tradeoff clearly, and pings you on{" "}
+            When an agent hits a tradeoff or wants to take an action you flagged
+            for approval, it pauses cleanly and notifies you on{" "}
             <span className="text-foreground">Discord</span> or{" "}
-            <span className="text-foreground">Telegram</span>. Reply in a sentence —
-            it picks up exactly where it left off.
+            <span className="text-foreground">Telegram</span> with the relevant
+            diff, command, or context. Reply in a sentence — the session picks
+            up where it left off.
           </p>
 
           <ul className="mt-8 space-y-3">
             {[
               {
-                title: "Rich, contextual decisions",
-                copy: "Messages include the exact diff, failing test, or tradeoff — not a vague 'need your input'.",
+                title: "Rich, contextual approvals",
+                copy: "Notifications include the exact diff, command, or tradeoff — not a vague \"need your input\".",
               },
               {
                 title: "Reply from anywhere",
-                copy: "Approve, redirect, or answer a clarifying question in natural language from your phone.",
+                copy: "Approve, reject, or redirect from Discord or Telegram on your phone or laptop.",
               },
               {
-                title: "Smart batching & quiet hours",
-                copy: "Xero groups minor decisions and respects your focus time. No 3am pings.",
+                title: "You decide what gets escalated",
+                copy: "Per-tool and per-session rules for which actions auto-run and which ones wait for a human.",
               },
             ].map((f) => (
               <li key={f.title} className="flex gap-3">
@@ -63,9 +64,9 @@ export function Integrations() {
             <ChatMock
               platform="Discord"
               platformIcon={<DiscordIcon className="h-3 w-3 text-white" />}
-              channelLabel="#Xero-alerts"
+              channelLabel="#xero-approvals"
               accent="#5865F2"
-              username="Xero-bot"
+              username="xero-bot"
               tag="APP"
               messages={[
                 {
@@ -73,25 +74,26 @@ export function Integrations() {
                   body: (
                     <>
                       <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
-                        <Bell className="h-3 w-3" /> decision
+                        <Bell className="h-3 w-3" /> approval
                       </div>
                       <p className="text-sm">
-                        <span className="font-medium">acme-saas</span> · Stripe test key
-                        detected. Use{" "}
+                        <span className="font-medium">acme-saas</span> · Engineer
+                        wants to push branch{" "}
                         <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">
-                          test
+                          try-pg
                         </code>{" "}
-                        mode or prompt for live keys?
+                        to <code className="rounded bg-secondary px-1 py-0.5 font-mono text-[11px]">origin</code>.
+                        4 commits ahead.
                       </p>
                       <div className="mt-2 flex gap-2">
                         <span className="rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground">
-                          Use test
+                          Approve
                         </span>
                         <span className="rounded-md border border-border/70 bg-secondary px-2 py-1 text-[11px]">
-                          Prompt me
+                          Reject
                         </span>
                         <span className="rounded-md border border-border/70 bg-secondary px-2 py-1 text-[11px]">
-                          Skip billing
+                          Show diff
                         </span>
                       </div>
                     </>
@@ -99,7 +101,7 @@ export function Integrations() {
                 },
                 {
                   kind: "you",
-                  body: <p className="text-sm">test mode — we&apos;ll wire live keys later</p>,
+                  body: <p className="text-sm">approve — but rebase on main first</p>,
                 },
               ]}
             />
@@ -109,7 +111,7 @@ export function Integrations() {
               platformIcon={<TelegramIcon className="h-3 w-3 text-white" />}
               channelLabel="direct chat"
               accent="#26A5E4"
-              username="Xero"
+              username="xero"
               tag="BOT"
               messages={[
                 {
@@ -117,15 +119,16 @@ export function Integrations() {
                   body: (
                     <>
                       <p className="text-sm">
-                        <span className="font-medium">acme-saas</span> · Build green ✓
+                        <span className="font-medium">acme-saas</span> · Engineer
+                        paused at checkpoint
                         <br />
                         <span className="text-muted-foreground">
-                          42 files · 6 migrations · 18 tests passing
+                          context auto-compacted to 42% · awaiting your call on the next step
                         </span>
                       </p>
                       <div className="mt-2 rounded-md border border-border/70 bg-background/60 p-2 font-mono text-[11px]">
-                        <span className="text-primary">preview</span> →
-                        acme-saas-git-main.vercel.app
+                        <span className="text-primary">branch</span> · try-pg ·
+                        3 checkpoints · 1 handoff
                       </div>
                     </>
                   ),

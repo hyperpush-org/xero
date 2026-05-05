@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 type ListenerHandle = () => void
@@ -224,6 +224,9 @@ describe("SolanaWorkbenchSidebar", () => {
 
     await Promise.resolve()
 
+    expect(
+      document.querySelector('[aria-label="Solana Workbench breadcrumb"]'),
+    ).not.toBeNull()
     expect(invokedCommands).toEqual([])
     expect(Array.from(eventListeners.keys())).toEqual([])
   })
@@ -247,5 +250,15 @@ describe("SolanaWorkbenchSidebar", () => {
     expect(
       screen.queryByRole("tab", { name: /Wallet, 5/i }),
     ).not.toBeInTheDocument()
+  })
+
+  it("mounts non-active workbench panels only after the user opens their tab", async () => {
+    render(<SolanaWorkbenchSidebar open />)
+
+    expect(screen.queryByText("New persona")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("tab", { name: "Personas" }))
+
+    expect(await screen.findByText("New persona")).toBeVisible()
   })
 })

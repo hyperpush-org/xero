@@ -117,6 +117,14 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
         };
     let rollback_checkpoints =
         rollback_checkpoints_for_request(repo_root, &request, &write_observations)?;
+    let auto_file_reservations =
+        match claim_file_reservations_for_request(repo_root, project_id, run_id, &request) {
+            Ok(reservations) => reservations,
+            Err(error) => {
+                finish_failed_tool_call(repo_root, project_id, run_id, &tool_call, &error)?;
+                return Err(error);
+            }
+        };
 
     let tool_execution = if operator_approved {
         tool_runtime.execute_approved(request)
@@ -165,6 +173,13 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
                 &tool_call.tool_call_id,
                 &rollback_checkpoints,
             )?;
+            release_auto_file_reservations(
+                repo_root,
+                project_id,
+                run_id,
+                &auto_file_reservations,
+                "tool_completed",
+            )?;
             workspace_guard.record_tool_output(repo_root, &tool_result.output)?;
             append_event(
                 repo_root,
@@ -188,10 +203,115 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
             })
         }
         Err(error) => {
+            release_auto_file_reservations(
+                repo_root,
+                project_id,
+                run_id,
+                &auto_file_reservations,
+                "tool_failed",
+            )?;
             finish_failed_tool_call(repo_root, project_id, run_id, &tool_call, &error)?;
             Err(error)
         }
     }
+}
+
+fn claim_file_reservations_for_request(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    request: &AutonomousToolRequest,
+) -> CommandResult<Vec<project_store::AgentFileReservationRecord>> {
+    let planned = planned_file_reservation_operations(request)?;
+    if planned.is_empty() {
+        return Ok(Vec::new());
+    }
+    let paths = planned
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let now = now_timestamp();
+    if project_store::has_active_agent_file_reservation_for_paths(
+        repo_root, project_id, run_id, &paths, &now,
+    )? {
+        return Ok(Vec::new());
+    }
+    let operation = planned
+        .iter()
+        .map(|(_, operation)| *operation)
+        .find(|operation| {
+            *operation == project_store::AgentCoordinationReservationOperation::Writing
+        })
+        .unwrap_or(project_store::AgentCoordinationReservationOperation::Editing);
+    let claim = project_store::claim_agent_file_reservations(
+        repo_root,
+        &project_store::ClaimAgentFileReservationRequest {
+            project_id: project_id.into(),
+            owner_run_id: run_id.into(),
+            paths,
+            operation,
+            note: Some("Owned-agent write intent.".into()),
+            override_reason: None,
+            claimed_at: now,
+            lease_seconds: None,
+        },
+    )?;
+    if claim.conflicts.is_empty() {
+        return Ok(claim.claimed);
+    }
+    let conflict_summary = claim
+        .conflicts
+        .iter()
+        .take(5)
+        .map(|conflict| {
+            format!(
+                "`{}` overlaps reservation `{}` by run `{}`",
+                conflict.requested_path,
+                conflict.reservation.path,
+                conflict
+                    .reservation
+                    .owner_child_run_id
+                    .as_deref()
+                    .unwrap_or(conflict.reservation.owner_run_id.as_str())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(CommandError::new(
+        "agent_file_reservation_conflict",
+        CommandErrorClass::PolicyDenied,
+        format!(
+            "Xero found active file reservation conflict(s) before this write: {conflict_summary}. Check or claim with the `agent_coordination` tool and provide an overrideReason if you intentionally need overlapping work."
+        ),
+        false,
+    ))
+}
+
+fn release_auto_file_reservations(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    reservations: &[project_store::AgentFileReservationRecord],
+    reason: &str,
+) -> CommandResult<()> {
+    if reservations.is_empty() {
+        return Ok(());
+    }
+    let released_at = now_timestamp();
+    for reservation in reservations {
+        project_store::release_agent_file_reservations(
+            repo_root,
+            &project_store::ReleaseAgentFileReservationRequest {
+                project_id: project_id.into(),
+                owner_run_id: run_id.into(),
+                reservation_id: Some(reservation.reservation_id.clone()),
+                paths: Vec::new(),
+                release_reason: reason.into(),
+                released_at: released_at.clone(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn record_policy_decode_failure_event(

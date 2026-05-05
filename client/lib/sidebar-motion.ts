@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import { useReducedMotion, type Transition } from 'motion/react'
 
 const SIDEBAR_REVEAL_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1]
@@ -56,15 +56,15 @@ export interface SidebarWidthMotion {
  */
 export function useSidebarWidthMotion(
   width: number,
-  options: { isResizing?: boolean; durationMs?: number } = {},
+  options: { animate?: boolean; isResizing?: boolean; durationMs?: number } = {},
 ): SidebarWidthMotion {
   const shouldReduceMotion = useReducedMotion()
-  const { isResizing = false, durationMs = SIDEBAR_WIDTH_DURATION_MS } = options
+  const { animate = true, isResizing = false, durationMs = SIDEBAR_WIDTH_DURATION_MS } = options
 
   return useMemo<SidebarWidthMotion>(() => {
-    const noTransition = shouldReduceMotion || isResizing
+    const noTransition = !animate || shouldReduceMotion || isResizing
     return {
-      islandClassName: 'sidebar-motion-island',
+      islandClassName: animate ? 'sidebar-motion-island' : 'sidebar-layout-island',
       style: {
         width,
         transition: noTransition
@@ -72,7 +72,7 @@ export function useSidebarWidthMotion(
           : `width ${durationMs}ms ${SIDEBAR_REVEAL_EASE_CSS}`,
       },
     }
-  }, [durationMs, isResizing, shouldReduceMotion, width])
+  }, [animate, durationMs, isResizing, shouldReduceMotion, width])
 }
 
 /**
@@ -95,45 +95,4 @@ export function useSidebarMotion(isResizing = false) {
       ? SIDEBAR_INSTANT_TRANSITION
       : SIDEBAR_WIDTH_TRANSITION,
   }
-}
-
-export function useDeferredSidebarActivation(open: boolean) {
-  const [active, setActive] = useState(open)
-  const activationFramesRef = useRef<number[]>([])
-
-  const cancelActivationFrames = useCallback(() => {
-    if (typeof window === 'undefined') return
-    for (const frame of activationFramesRef.current) {
-      window.cancelAnimationFrame(frame)
-    }
-    activationFramesRef.current = []
-  }, [])
-
-  useEffect(() => {
-    if (!open) {
-      cancelActivationFrames()
-      setActive(false)
-    }
-  }, [cancelActivationFrames, open])
-
-  useEffect(() => cancelActivationFrames, [cancelActivationFrames])
-
-  const activateAfterAnimation = useCallback(() => {
-    if (!open) return
-    cancelActivationFrames()
-    if (typeof window === 'undefined') {
-      setActive(true)
-      return
-    }
-    const firstFrame = window.requestAnimationFrame(() => {
-      const secondFrame = window.requestAnimationFrame(() => {
-        activationFramesRef.current = []
-        setActive(true)
-      })
-      activationFramesRef.current = [secondFrame]
-    })
-    activationFramesRef.current = [firstFrame]
-  }, [cancelActivationFrames, open])
-
-  return { activateAfterAnimation, active }
 }

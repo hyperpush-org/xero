@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { motion } from "motion/react"
 import {
   Copy,
   MoreHorizontal,
@@ -24,7 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
 
 const MIN_WIDTH = 280
 const MAX_WIDTH = 1200
@@ -130,8 +129,7 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
-  const { contentTransition } = useSidebarMotion(isResizing)
+  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
   const deferredQuery = useDeferredFilterQuery(query)
@@ -228,12 +226,7 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
       />
 
       <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
-        <motion.div
-          animate={{ opacity: 1, x: 0 }}
-          className="flex min-h-0 flex-1 flex-col"
-          initial={{ opacity: 0, x: 12 }}
-          transition={contentTransition}
-        >
+        <div className="flex min-h-0 flex-1 flex-col">
           <Header
             total={workflows.length}
             searchOpen={searchOpen}
@@ -256,7 +249,7 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
             />
           ) : null}
           <WorkflowsTable workflows={filtered} />
-        </motion.div>
+        </div>
       </div>
     </aside>
   )

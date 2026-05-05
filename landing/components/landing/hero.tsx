@@ -27,19 +27,21 @@ export function Hero() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
             </span>
-            v0.9 — Persistent agents, now in public beta
+            Beta — persistent agents, multi-pane workspace, BYO models
             <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
           </Link>
 
           <h1 className="mt-6 font-sans text-4xl font-medium tracking-tight text-balance sm:text-6xl lg:text-7xl">
-            The agentic coding studio{" "}
-            <span className="text-muted-foreground">that lives on your desktop.</span>
+            A local-first desktop harness{" "}
+            <span className="text-muted-foreground">for serious coding agents.</span>
           </h1>
 
           <p className="mx-auto mt-6 max-w-2xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Xero ships production software end-to-end — scaffold, build, test, deploy.
-            Written from the ground up in Rust, it runs agents locally with a persistent
-            harness and pings you on Discord or Telegram the moment it needs a decision.
+            Xero runs coding agents on your machine — not just a chat window.
+            Sessions survive long runs, compaction, branch and rewind. Bring your
+            own model from any major provider. Real tools for repo, shell, git,
+            browser, mobile, MCP, and Solana. Decisions pause cleanly and ping
+            you on Discord or Telegram.
           </p>
 
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -65,6 +67,23 @@ export function Hero() {
               </Link>
             </Button>
           </div>
+
+          <ul className="mx-auto mt-8 flex max-w-3xl flex-wrap items-center justify-center gap-2 text-[11px] font-mono text-muted-foreground">
+            {[
+              "Up to 6 sessions per project",
+              "Persistent across reboots",
+              "10+ model providers",
+              "Discord / Telegram approvals",
+              "Coming soon: agent swarm",
+            ].map((tag) => (
+              <li
+                key={tag}
+                className="rounded-full border border-border/60 bg-secondary/30 px-2.5 py-1 uppercase tracking-wider"
+              >
+                {tag}
+              </li>
+            ))}
+          </ul>
         </div>
 
         <div className="relative mx-auto mt-16 max-w-6xl">

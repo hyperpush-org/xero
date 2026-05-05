@@ -12,6 +12,32 @@ import {
   getRuntimeRunStatusLabel,
 } from '@/src/lib/xero-model'
 
+export function isAgentPaneWorking(agent: AgentPaneView): boolean {
+  const isQueueingRuntimePrompt =
+    agent.runtimeRunActionStatus === 'running' &&
+    (agent.pendingRuntimeRunAction === 'start' ||
+      agent.pendingRuntimeRunAction === 'update_controls')
+  if (isQueueingRuntimePrompt) {
+    return true
+  }
+
+  if (agent.selectedPrompt.hasQueuedPrompt) {
+    return true
+  }
+
+  const runtimeRun = agent.runtimeRun ?? null
+  const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
+  const runtimeStream = agent.runtimeStream ?? null
+  const streamStatus = agent.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
+
+  return Boolean(
+    renderableRuntimeRun?.isActive &&
+      streamStatus !== 'complete' &&
+      streamStatus !== 'error' &&
+      !runtimeStream?.failure,
+  )
+}
+
 import { type BadgeVariant, displayValue } from './shared-helpers'
 
 export function getStreamBadgeVariant(status: RuntimeStreamStatus): BadgeVariant {

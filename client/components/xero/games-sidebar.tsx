@@ -2,12 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChevronRight, Play, Search } from "lucide-react"
-import { motion } from "motion/react"
 import { useDeferredFilterQuery } from "@/lib/input-priority"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { loadGameStats, recordGameRun, type GameStatDto } from "@/src/lib/game-stats"
-import { useSidebarMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import type { GameRunCompletion } from "./games/use-game-run-completion"
 import { Asteroids } from "./games/asteroids"
 import { Breakout } from "./games/breakout"
@@ -316,12 +315,10 @@ export function GamesSidebar({ open, accountLogin }: GamesSidebarProps) {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null)
   const [serverStats, setServerStats] = useState<GameStatDto[] | null>(null)
   const targetWidth = open ? width : 0
-  const { contentTransition } = useSidebarMotion(isResizing)
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
+  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
   const widthBeforeSelectRef = useRef<number | null>(null)
-  const viewDirectionRef = useRef<1 | -1>(1)
   const deferredQuery = useDeferredFilterQuery(query)
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -371,7 +368,6 @@ export function GamesSidebar({ open, accountLogin }: GamesSidebarProps) {
   }, [])
 
   const handleSelectGame = useCallback((gameId: string) => {
-    viewDirectionRef.current = 1
     if (typeof window !== "undefined") {
       widthBeforeSelectRef.current = widthRef.current
       const target = Math.round(window.innerWidth / 2)
@@ -382,7 +378,6 @@ export function GamesSidebar({ open, accountLogin }: GamesSidebarProps) {
   }, [])
 
   const handleBack = useCallback(() => {
-    viewDirectionRef.current = -1
     const prev = widthBeforeSelectRef.current
     if (prev !== null) {
       setWidth(prev)
@@ -494,32 +489,26 @@ export function GamesSidebar({ open, accountLogin }: GamesSidebarProps) {
         className="flex h-full min-w-0 shrink-0 flex-col"
         style={{ width }}
       >
-      <motion.div
-        animate={{ opacity: 1, x: 0 }}
-        className="flex min-h-0 flex-1 flex-col"
-        initial={{ opacity: 0, x: viewDirectionRef.current * 12 }}
-        key={selectedGame?.id ?? "__list__"}
-        transition={contentTransition}
-      >
-        {selectedGame ? (
-          <GameDetail
-            accountLogin={accountLogin}
-            active={open}
-            game={selectedGame}
-            onBack={handleBack}
-            onRunComplete={handleRunComplete}
-            stats={statsByGameId.get(selectedGame.id) ?? EMPTY_STATS}
-          />
-        ) : (
-          <GameList
-            filtered={filtered}
-            onQueryChange={setQuery}
-            onSelect={handleSelectGame}
-            query={query}
-            total={GAMES.length}
-          />
-        )}
-      </motion.div>
+        <div className="flex min-h-0 flex-1 flex-col" key={selectedGame?.id ?? "__list__"}>
+          {selectedGame ? (
+            <GameDetail
+              accountLogin={accountLogin}
+              active={open}
+              game={selectedGame}
+              onBack={handleBack}
+              onRunComplete={handleRunComplete}
+              stats={statsByGameId.get(selectedGame.id) ?? EMPTY_STATS}
+            />
+          ) : (
+            <GameList
+              filtered={filtered}
+              onQueryChange={setQuery}
+              onSelect={handleSelectGame}
+              query={query}
+              total={GAMES.length}
+            />
+          )}
+        </div>
       </div>
     </aside>
   )

@@ -32,6 +32,11 @@ pub const GET_PROJECT_SNAPSHOT_COMMAND: &str = "get_project_snapshot";
 pub const GET_REPOSITORY_STATUS_COMMAND: &str = "get_repository_status";
 pub const GET_REPOSITORY_DIFF_COMMAND: &str = "get_repository_diff";
 pub const GIT_GENERATE_COMMIT_MESSAGE_COMMAND: &str = "git_generate_commit_message";
+pub const WORKSPACE_INDEX_COMMAND: &str = "workspace_index";
+pub const WORKSPACE_STATUS_COMMAND: &str = "workspace_status";
+pub const WORKSPACE_QUERY_COMMAND: &str = "workspace_query";
+pub const WORKSPACE_EXPLAIN_COMMAND: &str = "workspace_explain";
+pub const WORKSPACE_RESET_COMMAND: &str = "workspace_reset";
 pub const LIST_PROJECT_FILES_COMMAND: &str = "list_project_files";
 pub const READ_PROJECT_FILE_COMMAND: &str = "read_project_file";
 pub const WRITE_PROJECT_FILE_COMMAND: &str = "write_project_file";
@@ -106,6 +111,11 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     GET_PROJECT_SNAPSHOT_COMMAND,
     GET_REPOSITORY_STATUS_COMMAND,
     GET_REPOSITORY_DIFF_COMMAND,
+    WORKSPACE_INDEX_COMMAND,
+    WORKSPACE_STATUS_COMMAND,
+    WORKSPACE_QUERY_COMMAND,
+    WORKSPACE_EXPLAIN_COMMAND,
+    WORKSPACE_RESET_COMMAND,
     LIST_PROJECT_FILES_COMMAND,
     READ_PROJECT_FILE_COMMAND,
     WRITE_PROJECT_FILE_COMMAND,
@@ -237,6 +247,144 @@ pub struct ListProjectFilesRequestDto {
 pub struct RepositoryDiffRequestDto {
     pub project_id: String,
     pub scope: RepositoryDiffScope,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceIndexStateDto {
+    Empty,
+    Indexing,
+    Ready,
+    Stale,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceQueryModeDto {
+    Auto,
+    Semantic,
+    Symbol,
+    RelatedTests,
+    Impact,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceIndexDiagnosticDto {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceIndexStatusDto {
+    pub project_id: String,
+    pub state: WorkspaceIndexStateDto,
+    pub index_version: u32,
+    pub root_path: String,
+    pub storage_path: String,
+    pub total_files: u32,
+    pub indexed_files: u32,
+    pub skipped_files: u32,
+    pub stale_files: u32,
+    pub symbol_count: u32,
+    pub indexed_bytes: u64,
+    pub coverage_percent: f64,
+    pub head_sha: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub diagnostics: Vec<WorkspaceIndexDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceIndexRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceIndexResponseDto {
+    pub status: WorkspaceIndexStatusDto,
+    pub changed_files: u32,
+    pub unchanged_files: u32,
+    pub removed_files: u32,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceQueryRequestDto {
+    pub project_id: String,
+    pub query: String,
+    #[serde(default = "default_workspace_query_mode")]
+    pub mode: WorkspaceQueryModeDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceQueryResultDto {
+    pub rank: u32,
+    pub path: String,
+    pub score: f64,
+    pub language: String,
+    pub summary: String,
+    pub snippet: String,
+    pub symbols: Vec<String>,
+    pub imports: Vec<String>,
+    pub tests: Vec<String>,
+    pub diffs: Vec<String>,
+    pub failures: Vec<String>,
+    pub reasons: Vec<String>,
+    pub content_hash: String,
+    pub indexed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceQueryResponseDto {
+    pub project_id: String,
+    pub query: String,
+    pub mode: WorkspaceQueryModeDto,
+    pub result_count: u32,
+    pub stale: bool,
+    pub diagnostics: Vec<WorkspaceIndexDiagnosticDto>,
+    pub results: Vec<WorkspaceQueryResultDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceExplainRequestDto {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceExplainResponseDto {
+    pub project_id: String,
+    pub summary: String,
+    pub status: WorkspaceIndexStatusDto,
+    pub top_signals: Vec<String>,
+    pub diagnostics: Vec<WorkspaceIndexDiagnosticDto>,
+}
+
+pub fn default_workspace_query_mode() -> WorkspaceQueryModeDto {
+    WorkspaceQueryModeDto::Auto
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

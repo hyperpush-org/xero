@@ -229,11 +229,22 @@ async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandE
                 schema,
             );
             let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> = Box::new(iter);
-            connection
+            match connection
                 .create_table(PROJECT_RECORDS_TABLE, reader)
                 .execute()
                 .await
-                .map_err(|error| map_lance_error("project_record_lance_create_table_failed", error))
+            {
+                Ok(table) => Ok(table),
+                Err(create_error) => match connection.open_table(PROJECT_RECORDS_TABLE).execute().await {
+                    Ok(table) => Ok(table),
+                    Err(open_error) => Err(CommandError::retryable(
+                        "project_record_lance_create_table_failed",
+                        format!(
+                            "Xero project_records lance store failed: {create_error}; retry open failed: {open_error}"
+                        ),
+                    )),
+                },
+            }
         }
     }
 }

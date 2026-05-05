@@ -20,10 +20,11 @@ type PricingTier = {
   ctaHref: string
   highlight: boolean
   badge: string | null
+  comingSoon?: boolean
   features: string[]
 }
 
-const paidPlanHref = "mailto:team@Xero.sh?subject=Xero%20paid%20plan%20beta"
+const waitlistHref = "mailto:team@xero.sh?subject=Xero%20paid%20plan%20waitlist"
 
 const tiers: PricingTier[] = [
   {
@@ -31,19 +32,19 @@ const tiers: PricingTier[] = [
     price: "$0",
     period: "forever",
     icon: Laptop,
-    description: "The local desktop studio for builders who bring their own model keys.",
+    description: "The local desktop harness. Bring your own model keys, run as many sessions as your machine can handle.",
     cta: "Download Xero",
     ctaHref: "#download",
-    highlight: false,
-    badge: null,
+    highlight: true,
+    badge: "Available now",
     features: [
       "Unlimited local projects",
-      "Bring your own key: Claude, GPT, Gemini, OpenRouter, Ollama",
-      "Local autonomous agent runtime",
-      "Workflow graph & operator loop",
-      "Repo editor, search, and file operations",
-      "Local SQLite persistence",
-      "Discord & Telegram notifications",
+      "Up to 6 agent sessions per project",
+      "Bring your own model · 10 provider integrations",
+      "Persistent sessions · branch, rewind, compact, handoff",
+      "Real tools · repo, shell, git, browser, mobile, MCP, Solana",
+      "Discord & Telegram approval notifications",
+      "Local-first · credentials in OS keychain, redaction by default",
       "Community support",
     ],
   },
@@ -52,19 +53,19 @@ const tiers: PricingTier[] = [
     price: "$20",
     period: "/ month",
     icon: Cloud,
-    description: "Cloud runtime, sync, and durable background runs with no model markup.",
-    cta: "Join Pro beta",
-    ctaHref: paidPlanHref,
-    highlight: true,
-    badge: "Recommended",
+    description: "Cloud runtime, sync, and durable background runs. Bring the same model keys you already use.",
+    cta: "Join the waitlist",
+    ctaHref: waitlistHref,
+    highlight: false,
+    badge: "Coming soon",
+    comingSoon: true,
     features: [
       "Everything in Free",
-      "Cloud runtime with your existing model subscriptions",
-      "Runs continue while your laptop sleeps",
-      "Sync across devices",
+      "Cloud runtime that keeps a session running while your laptop sleeps",
+      "Sync sessions and project state across devices",
       "Hosted run history and replay",
-      "Parallel agent workers · up to 16",
       "Priority support",
+      "No model markup · use your own provider accounts",
     ],
   },
   {
@@ -72,19 +73,20 @@ const tiers: PricingTier[] = [
     price: "$50",
     period: "/ month",
     icon: Rocket,
-    description: "Pro plus the on-chain workbench bundle for serious Solana builds.",
-    cta: "Join Solana beta",
-    ctaHref: paidPlanHref,
+    description: "Pro plus a managed on-chain workbench bundle for serious Solana builds.",
+    cta: "Join the waitlist",
+    ctaHref: waitlistHref,
     highlight: false,
-    badge: "On-chain dev",
+    badge: "Coming soon",
+    comingSoon: true,
     features: [
       "Everything in Pro",
-      "Managed Solana dev subscription bundle",
+      "Managed Solana developer-infrastructure bundle",
       "Agent-usable RPC, indexer, and webhook credentials",
       "Hosted forks and reusable snapshots",
       "Tx simulation, fee tuning, ALT and IDL helpers",
       "Deploy safety, Squads proposals, verified builds",
-      "Program monitoring, drift, logs, and cost alerts",
+      "Program monitoring · drift, logs, cost alerts",
     ],
   },
 ]
@@ -99,11 +101,12 @@ export function Pricing() {
             Pricing
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Pay for the studio, not the tokens.
+            Free today. Paid plans clearly marked when they ship.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            Start local for free, add cloud runs when work needs to keep moving,
-            and add the Solana bundle when on-chain infrastructure becomes the bottleneck.
+            The desktop harness is free to download and use. The cloud and Solana
+            plans below are on the roadmap — there&apos;s a waitlist instead of a
+            checkout while we build them.
           </p>
         </div>
 
@@ -118,7 +121,9 @@ export function Pricing() {
                   "relative flex flex-col overflow-hidden rounded-2xl px-1 py-1 transition-all hover:-translate-y-0.5",
                   t.highlight
                     ? "border-primary/40 shadow-[0_30px_80px_-30px_color-mix(in_oklab,var(--primary)_35%,transparent)] ring-1 ring-primary/25"
-                    : "border-border/60 hover:border-border",
+                    : t.comingSoon
+                      ? "border-dashed border-border/70 hover:border-border"
+                      : "border-border/60 hover:border-border",
                 )}
               >
                 {t.highlight && (
@@ -136,7 +141,7 @@ export function Pricing() {
                         : "border-border/70 bg-background text-muted-foreground",
                     )}
                   >
-                    {!t.highlight ? (
+                    {t.comingSoon ? (
                       <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
                     ) : null}
                     {t.badge}
@@ -215,15 +220,16 @@ export function Pricing() {
         </div>
 
         <div className="mx-auto mt-5 max-w-6xl rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 text-center text-xs leading-5 text-muted-foreground">
-          AI model usage stays on your own provider accounts. Solana Pro includes a managed
-          developer-infrastructure bundle for normal build and test workflows; heavy production
-          traffic can move to a custom team plan.
+          AI model usage stays on your own provider accounts. Pro and Solana Pro
+          are not on sale yet — joining the waitlist is the only honest button
+          we can offer until those services are running.
         </div>
 
         {/* Footer note */}
         <p className="mt-8 text-center text-xs text-muted-foreground/60">
-          Need team seats, SSO, or heavier Solana infrastructure?{" "}
-          <Link href="mailto:team@Xero.sh" className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
+          Need team seats or heavier Solana infrastructure when those plans go
+          live?{" "}
+          <Link href="mailto:team@xero.sh" className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
             Talk to us
           </Link>
           .

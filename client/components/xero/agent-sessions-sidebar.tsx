@@ -142,7 +142,7 @@ interface SessionEntry {
   state: SessionEntryState
 }
 
-export function AgentSessionsSidebar({
+export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
   projectId,
   sessions,
   selectedSessionId,
@@ -206,6 +206,7 @@ export function AgentSessionsSidebar({
   const widthRef = useRef(width)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const wasStripModeRef = useRef(isStripMode)
+  const wasCollapsedRef = useRef(collapsed)
   const collapseGhostTimerRef = useRef<number | null>(null)
   widthRef.current = width
 
@@ -221,11 +222,13 @@ export function AgentSessionsSidebar({
 
   useLayoutEffect(() => {
     const wasStripMode = wasStripModeRef.current
+    const wasCollapsed = wasCollapsedRef.current
     wasStripModeRef.current = isStripMode
+    wasCollapsedRef.current = collapsed
 
     clearCollapseGhostTimer()
 
-    if (!wasStripMode && isStripMode) {
+    if (!wasStripMode && isStripMode && !wasCollapsed) {
       setCollapseGhostActive(true)
       collapseGhostTimerRef.current = window.setTimeout(() => {
         collapseGhostTimerRef.current = null
@@ -234,10 +237,8 @@ export function AgentSessionsSidebar({
       return
     }
 
-    if (!isStripMode) {
-      setCollapseGhostActive(false)
-    }
-  }, [clearCollapseGhostTimer, isStripMode])
+    setCollapseGhostActive(false)
+  }, [clearCollapseGhostTimer, collapsed, isStripMode])
 
   useEffect(() => clearCollapseGhostTimer, [clearCollapseGhostTimer])
 
@@ -579,7 +580,8 @@ export function AgentSessionsSidebar({
     </li>
   )
 
-  const panelChildren = (
+  const shouldRenderPanelChildren = !collapsed || showOverlay || collapseGhostActive
+  const panelChildren = shouldRenderPanelChildren ? (
     <>
       <div className="flex shrink-0 items-start justify-between gap-2 px-3 pt-2 pb-2">
         <div className="min-w-0">
@@ -806,7 +808,7 @@ export function AgentSessionsSidebar({
           )}
       </div>
     </>
-  )
+  ) : null
 
   return (
     <aside
@@ -927,7 +929,7 @@ export function AgentSessionsSidebar({
 
     </aside>
   )
-}
+})
 
 function SidebarSectionHeader({ label }: { label: string }) {
   return (

@@ -8,18 +8,17 @@ use tauri::{
 use crate::{
     commands::{
         agent_event_dto, agent_run_dto, agent_run_summary_dto, validate_non_empty, AgentRunDto,
-        AgentRunEventDto, CancelAgentRunRequestDto, CommandError, CommandResult,
-        GetAgentRunRequestDto, ListAgentRunsRequestDto, ListAgentRunsResponseDto,
-        ResumeAgentRunRequestDto, SendAgentMessageRequestDto, StartAgentTaskRequestDto,
-        SubscribeAgentStreamRequestDto, SubscribeAgentStreamResponseDto,
+        AgentRunEventDto, AgentTraceExportDto, CancelAgentRunRequestDto, CommandError,
+        CommandResult, ExportAgentTraceRequestDto, GetAgentRunRequestDto, ListAgentRunsRequestDto,
+        ListAgentRunsResponseDto, ResumeAgentRunRequestDto, SendAgentMessageRequestDto,
+        StartAgentTaskRequestDto, SubscribeAgentStreamRequestDto, SubscribeAgentStreamResponseDto,
     },
     db::project_store,
     registry::read_registry,
     runtime::{
-        cancel_owned_agent_run, create_owned_agent_run, drive_owned_agent_continuation,
-        drive_owned_agent_run, prepare_owned_agent_continuation_for_drive, subscribe_agent_events,
-        AgentAutoCompactPreference, AgentEventSubscription, AgentRunSupervisor,
-        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, OwnedAgentRunRequest,
+        subscribe_agent_events, AgentAutoCompactPreference, AgentEventSubscription,
+        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, DesktopAgentCoreRuntime,
+        DesktopRunDriveMode, OwnedAgentRunRequest,
     },
     state::DesktopState,
 };
@@ -54,8 +53,8 @@ pub fn start_agent_task<R: Runtime + 'static>(
         tool_runtime,
         provider_config,
     };
-    let snapshot = create_owned_agent_run(&owned_request)?;
-    spawn_owned_agent_run(state.inner().agent_run_supervisor().clone(), owned_request)?;
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let snapshot = runtime.start_run(owned_request, DesktopRunDriveMode::Background)?;
 
     Ok(agent_run_dto(snapshot))
 }
@@ -88,15 +87,9 @@ pub fn send_agent_message<R: Runtime + 'static>(
         answer_pending_actions: false,
         auto_compact: auto_compact_preference(request.auto_compact)?,
     };
-    let prepared = prepare_owned_agent_continuation_for_drive(&continuation)?;
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let prepared = runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;
     let snapshot = prepared.snapshot.clone();
-    if prepared.drive_required {
-        spawn_owned_agent_continuation(
-            state.inner().agent_run_supervisor().clone(),
-            snapshot.run.agent_session_id.clone(),
-            prepared.drive_request,
-        )?;
-    }
     Ok(agent_run_dto(snapshot))
 }
 
@@ -112,14 +105,11 @@ pub fn cancel_agent_run<R: Runtime>(
         project_id,
         ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
-    let _ = state
-        .inner()
-        .agent_run_supervisor()
-        .cancel(&request.run_id)?;
-    Ok(agent_run_dto(cancel_owned_agent_run(
-        &repo_root,
-        &project_id,
-        &request.run_id,
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    Ok(agent_run_dto(runtime.cancel_run(
+        repo_root,
+        project_id,
+        request.run_id,
     )?))
 }
 
@@ -151,15 +141,9 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         answer_pending_actions: true,
         auto_compact: auto_compact_preference(request.auto_compact)?,
     };
-    let prepared = prepare_owned_agent_continuation_for_drive(&continuation)?;
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let prepared = runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;
     let snapshot = prepared.snapshot.clone();
-    if prepared.drive_required {
-        spawn_owned_agent_continuation(
-            state.inner().agent_run_supervisor().clone(),
-            snapshot.run.agent_session_id.clone(),
-            prepared.drive_request,
-        )?;
-    }
     Ok(agent_run_dto(snapshot))
 }
 
@@ -172,6 +156,64 @@ pub fn get_agent_run<R: Runtime>(
     validate_non_empty(&request.run_id, "runId")?;
     let located = locate_agent_run(&app, state.inner(), &request.run_id)?;
     Ok(agent_run_dto(located.snapshot))
+}
+
+#[tauri::command]
+pub fn export_agent_trace<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ExportAgentTraceRequestDto,
+) -> CommandResult<AgentTraceExportDto> {
+    validate_non_empty(&request.run_id, "runId")?;
+    let located = locate_agent_run(&app, state.inner(), &request.run_id)?;
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let trace = runtime.export_trace(
+        located.repo_root,
+        located.project_id,
+        located.snapshot.run.run_id.clone(),
+    )?;
+    let canonical = trace.canonical_snapshot().map_err(|error| {
+        CommandError::system_fault(
+            error.code,
+            format!(
+                "Xero could not build the canonical owned-agent trace snapshot: {}",
+                error.message
+            ),
+        )
+    })?;
+    let markdown_summary = trace.to_markdown_summary().map_err(|error| {
+        CommandError::system_fault(
+            error.code,
+            format!(
+                "Xero could not render the owned-agent trace Markdown summary: {}",
+                error.message
+            ),
+        )
+    })?;
+    let support_bundle = if request.include_support_bundle {
+        Some(trace_to_json_value(
+            trace.redacted_support_bundle().map_err(|error| {
+                CommandError::system_fault(
+                    error.code,
+                    format!(
+                        "Xero could not build the redacted owned-agent support bundle: {}",
+                        error.message
+                    ),
+                )
+            })?,
+        )?)
+    } else {
+        None
+    };
+    Ok(AgentTraceExportDto {
+        trace: trace_to_json_value(&canonical.trace)?,
+        timeline: trace_to_json_value(&canonical.timeline)?,
+        diagnostics: trace_to_json_value(&canonical.diagnostics)?,
+        quality_gates: trace_to_json_value(&canonical.quality_gates)?,
+        markdown_summary,
+        support_bundle,
+        canonical_trace: trace_to_json_value(&canonical)?,
+    })
 }
 
 #[tauri::command]
@@ -245,39 +287,18 @@ pub fn subscribe_agent_stream<R: Runtime>(
     })
 }
 
-fn spawn_owned_agent_run(
-    supervisor: AgentRunSupervisor,
-    request: OwnedAgentRunRequest,
-) -> CommandResult<()> {
-    let lease = supervisor.begin(
-        &request.project_id,
-        &request.agent_session_id,
-        &request.run_id,
-    )?;
-    thread::spawn(move || {
-        let token = lease.token();
-        let _ = drive_owned_agent_run(request, token);
-        drop(lease);
-    });
-    Ok(())
-}
-
-fn spawn_owned_agent_continuation(
-    supervisor: AgentRunSupervisor,
-    agent_session_id: String,
-    request: ContinueOwnedAgentRunRequest,
-) -> CommandResult<()> {
-    let lease = supervisor.begin(&request.project_id, &agent_session_id, &request.run_id)?;
-    thread::spawn(move || {
-        let token = lease.token();
-        let _ = drive_owned_agent_continuation(request, token);
-        drop(lease);
-    });
-    Ok(())
+fn trace_to_json_value<T: serde::Serialize>(value: T) -> CommandResult<serde_json::Value> {
+    serde_json::to_value(value).map_err(|error| {
+        CommandError::system_fault(
+            "agent_trace_export_encode_failed",
+            format!("Xero could not encode owned-agent trace export data: {error}"),
+        )
+    })
 }
 
 fn ensure_agent_run_not_active(state: &DesktopState, run_id: &str) -> CommandResult<()> {
-    if state.agent_run_supervisor().is_active(run_id)? {
+    let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+    if runtime.is_active(run_id)? {
         return Err(CommandError::user_fixable(
             "agent_run_already_active",
             format!(

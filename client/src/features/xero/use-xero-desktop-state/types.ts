@@ -18,6 +18,7 @@ import type {
   ProjectDetailView,
   ProjectListItem,
   ProjectUsageSummaryDto,
+  ProviderCapabilityCatalogDto,
   ProviderModelCatalogDto,
   ProviderModelCatalogSourceDto,
   ProviderModelThinkingEffortDto,
@@ -195,6 +196,9 @@ export interface AgentProviderModelView {
   thinkingSupported: boolean
   thinkingEffortOptions: ProviderModelThinkingEffortDto[]
   defaultThinkingEffort: ProviderModelThinkingEffortDto | null
+  contextWindowTokens?: number | null
+  maxOutputTokens?: number | null
+  capabilities?: ProviderCapabilityCatalogDto | null
 }
 
 export interface AgentProviderModelCatalogView {
@@ -209,6 +213,9 @@ export interface AgentProviderModelCatalogView {
   detail: string
   fetchedAt: string | null
   lastSuccessAt: string | null
+  cacheAgeSeconds?: number | null
+  cacheTtlSeconds?: number | null
+  capabilities?: ProviderCapabilityCatalogDto | null
   lastRefreshError: OperatorActionErrorView | null
   models: AgentProviderModelView[]
 }
@@ -549,7 +556,7 @@ export interface UseXeroDesktopStateResult {
   ) => Promise<ProviderModelCatalogDto>
   checkProviderProfile: (
     profileId: string,
-    options?: { includeNetwork?: boolean },
+    options?: { includeNetwork?: boolean; modelId?: string | null },
   ) => Promise<ProviderProfileDiagnosticsDto>
   runDoctorReport: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
   refreshMcpRegistry: (options?: { force?: boolean }) => Promise<McpRegistryDto>

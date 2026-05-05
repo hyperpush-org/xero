@@ -553,6 +553,7 @@ fn insert_replay_run(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
                 provider_id,
                 model_id,
                 status,
@@ -567,7 +568,7 @@ fn insert_replay_run(
                 updated_at,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12, NULL, NULL, NULL, ?12, ?12)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?13, NULL, NULL, NULL, ?13, ?13)
             "#,
             params![
                 source_snapshot.run.runtime_agent_id.as_str(),
@@ -576,6 +577,7 @@ fn insert_replay_run(
                 project_id,
                 child_agent_session_id,
                 replay_run_id,
+                xero_agent_core::runtime_trace_id_for_run(project_id, replay_run_id),
                 source_snapshot.run.provider_id.as_str(),
                 source_snapshot.run.model_id.as_str(),
                 agent_run_status_sql_value(&AgentRunStatus::Completed),
@@ -756,17 +758,25 @@ fn copy_replay_file_changes(
                 INSERT INTO agent_file_changes (
                     project_id,
                     run_id,
+                    trace_id,
+                    top_level_run_id,
+                    subagent_id,
+                    subagent_role,
                     path,
                     operation,
                     old_hash,
                     new_hash,
                     created_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                VALUES (?1, ?2, ?3, ?2, NULL, NULL, ?4, ?5, ?6, ?7, ?8)
                 "#,
                 params![
                     change.project_id.as_str(),
                     replay_run_id,
+                    xero_agent_core::runtime_trace_id_for_run(
+                        change.project_id.as_str(),
+                        replay_run_id,
+                    ),
                     change.path.as_str(),
                     change.operation.as_str(),
                     change.old_hash.as_deref(),

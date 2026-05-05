@@ -98,6 +98,7 @@ describe('ProjectRail', () => {
   })
 
   it('keeps only compact project monograms when collapsed', () => {
+    const onImportProject = vi.fn()
     const { container } = render(
       <ProjectRail
         activeProjectId="project-1"
@@ -105,7 +106,7 @@ describe('ProjectRail', () => {
         errorMessage={null}
         isImporting
         isLoading={false}
-        onImportProject={() => undefined}
+        onImportProject={onImportProject}
         onRemoveProject={() => undefined}
         onSelectProject={() => undefined}
         pendingProjectRemovalId={null}
@@ -115,9 +116,11 @@ describe('ProjectRail', () => {
     )
 
     const rail = screen.getByRole('complementary')
+    const importButton = screen.getByRole('button', { name: 'Import repository' })
     const projectButton = screen.getByRole('button', { name: 'mesh-lang' })
 
-    expect(screen.queryByRole('button', { name: 'Import repository' })).not.toBeInTheDocument()
+    expect(importButton).toBeVisible()
+    expect(importButton).toBeDisabled()
     expect(screen.queryByText('Projects')).not.toBeInTheDocument()
     expect(screen.queryByText(/Importing/)).not.toBeInTheDocument()
     expect(projectButton).toBeVisible()
@@ -128,6 +131,52 @@ describe('ProjectRail', () => {
     expect(screen.queryByRole('separator', { name: 'Resize projects sidebar' })).not.toBeInTheDocument()
     expect(rail).toHaveAttribute('data-collapsed', 'true')
     expect(rail).toHaveClass('w-11')
+    expect(onImportProject).not.toHaveBeenCalled()
+  })
+
+  it('imports a project from the collapsed rail add button', () => {
+    const onImportProject = vi.fn()
+
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        collapsed
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={onImportProject}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import repository' }))
+
+    expect(onImportProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('snaps width transitions when requested', () => {
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        collapsed
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+        snapWidth
+      />,
+    )
+
+    expect(screen.getByRole('complementary')).toHaveStyle({ transition: 'none' })
   })
 
   it('keeps the project monogram visible while selection is pending', () => {

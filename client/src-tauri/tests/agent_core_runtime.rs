@@ -796,6 +796,30 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
         .run
         .prompt
         .contains("Explore priority one work"));
+    assert_eq!(snapshot.run.lineage_kind, "top_level");
+    assert_eq!(child_snapshot.run.lineage_kind, "subagent_child");
+    assert_eq!(
+        child_snapshot.run.agent_session_id,
+        snapshot.run.agent_session_id
+    );
+    assert_eq!(
+        child_snapshot.run.parent_run_id.as_deref(),
+        Some(snapshot.run.run_id.as_str())
+    );
+    assert_eq!(
+        child_snapshot.run.parent_trace_id.as_deref(),
+        Some(snapshot.run.trace_id.as_str())
+    );
+    assert_eq!(
+        child_snapshot.run.parent_subagent_id.as_deref(),
+        Some("subagent-1")
+    );
+    assert_eq!(
+        child_snapshot.run.subagent_role.as_deref(),
+        Some("researcher")
+    );
+    assert_eq!(snapshot.run.trace_id.len(), 32);
+    assert_eq!(child_snapshot.run.trace_id.len(), 32);
 }
 
 #[test]

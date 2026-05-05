@@ -97,7 +97,7 @@ export function AgentDockSidebar({
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
+  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
 
@@ -182,7 +182,10 @@ export function AgentDockSidebar({
         tabIndex={open ? 0 : -1}
       />
 
-      <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
+      <div
+        className="flex h-full min-w-0 shrink-0 flex-col"
+        style={{ width }}
+      >
         <div className="flex min-h-0 flex-1 flex-col">
           {agent ? (
             <LiveAgentRuntimeView
