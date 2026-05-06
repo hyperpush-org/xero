@@ -24,8 +24,8 @@ use xero_desktop_lib::{
         SessionCompactionTriggerDto, SessionContextContributorKindDto,
         SessionContextPolicyActionDto, SessionContextPolicyDecisionKindDto, SessionMemoryKindDto,
         SessionMemoryReviewStateDto, SessionMemoryScopeDto, SessionTranscriptExportFormatDto,
-        SessionTranscriptExportPayloadDto, SessionTranscriptScopeDto, SessionUsageSourceDto,
-        UpdateSessionMemoryRequestDto,
+        SessionTranscriptExportPayloadDto, SessionTranscriptItemKindDto, SessionTranscriptScopeDto,
+        SessionUsageSourceDto, UpdateSessionMemoryRequestDto,
     },
     configure_builder_with_state,
     db::{self, project_store},
@@ -193,6 +193,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
         "Summarize the completed export work.",
         None,
     );
+    let rollback = seed_code_rollback_operation(&repo_root, &project_id, "run-history-1");
 
     let transcript = get_session_transcript(
         app.handle().clone(),
@@ -237,6 +238,28 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     assert!(tool_summary.contains("read ended succeeded."));
     assert!(tool_summary.contains("..."));
     assert!(tool_summary.len() < 380);
+    let rollback_item = transcript
+        .items
+        .iter()
+        .find(|item| item.item_id == format!("code_rollback:{}", rollback.operation_id))
+        .expect("rollback transcript item");
+    assert_eq!(
+        rollback_item.kind,
+        SessionTranscriptItemKindDto::CodeRollback
+    );
+    assert_eq!(rollback_item.source_table, "code_rollback_operations");
+    assert_eq!(
+        rollback_item.code_change_group_id.as_deref(),
+        Some(rollback.result_change_group_id.as_str())
+    );
+    assert!(rollback_item
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("Conversation history was preserved")));
+    assert!(rollback_item
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("src/tracked.txt")));
 
     let serialized = serde_json::to_string(&transcript).expect("serialize transcript");
     assert!(!serialized.contains("sk-history-secret"));
@@ -295,6 +318,33 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             && !contributor.model_visible
             && !contributor.included
     }));
+    let rollback_prompt_contributor = context_snapshot
+        .contributors
+        .iter()
+        .find(|contributor| {
+            contributor.prompt_fragment_id.as_deref() == Some("xero.code_rollback_state")
+        })
+        .expect("rollback prompt context contributor");
+    assert!(rollback_prompt_contributor.included);
+    assert!(rollback_prompt_contributor.model_visible);
+    assert!(rollback_prompt_contributor
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("Current files on disk")));
+    let rollback_contributor = context_snapshot
+        .contributors
+        .iter()
+        .find(|contributor| {
+            contributor.kind == SessionContextContributorKindDto::CodeRollback
+                && contributor.source_id.as_deref() == Some(rollback.operation_id.as_str())
+        })
+        .expect("rollback context contributor");
+    assert!(rollback_contributor.included);
+    assert!(rollback_contributor.model_visible);
+    assert!(rollback_contributor
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("Project files were restored independently")));
     let context_json = serde_json::to_string(&context_snapshot).expect("serialize context");
     assert!(!context_json.contains("sk-history-secret"));
     assert!(!context_json.contains("/Users/sn0w/.config"));
@@ -320,6 +370,11 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     assert!(markdown_export
         .content
         .contains("Validation passed after cargo test."));
+    assert!(markdown_export.content.contains("Code rollback applied"));
+    assert!(markdown_export.content.contains(&rollback.operation_id));
+    assert!(markdown_export
+        .content
+        .contains("rollback candidate summary"));
     assert!(!markdown_export.content.contains("sk-history-secret"));
     assert!(!markdown_export.content.contains("/Users/sn0w/.config"));
 
@@ -375,6 +430,32 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
         .results
         .iter()
         .any(|result| result.snippet.to_ascii_lowercase().contains("validation")));
+    for query in [
+        rollback.operation_id.as_str(),
+        "tracked.txt",
+        "rollback candidate summary",
+    ] {
+        let rollback_search = search_session_transcripts(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            SearchSessionTranscriptsRequestDto {
+                project_id: project_id.clone(),
+                query: query.into(),
+                agent_session_id: Some(SESSION_ID.into()),
+                run_id: None,
+                include_archived: false,
+                limit: Some(10),
+            },
+        )
+        .expect("rollback search");
+        assert!(
+            rollback_search
+                .results
+                .iter()
+                .any(|result| result.item_id == format!("code_rollback:{}", rollback.operation_id)),
+            "rollback search for `{query}` should find the rollback event"
+        );
+    }
 
     project_store::archive_agent_session(&repo_root, &project_id, SESSION_ID)
         .expect("archive session");
@@ -1359,6 +1440,47 @@ fn seed_history_run(
     );
 }
 
+fn seed_code_rollback_operation(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> project_store::AppliedCodeRollback {
+    let tracked_path = repo_root.join("src").join("tracked.txt");
+    let handle = project_store::begin_exact_path_capture(
+        repo_root,
+        project_store::CodeChangeGroupInput {
+            project_id: project_id.into(),
+            agent_session_id: SESSION_ID.into(),
+            run_id: run_id.into(),
+            change_group_id: Some("code-change-rollback-candidate".into()),
+            parent_change_group_id: None,
+            tool_call_id: Some(format!("{run_id}-tool-edit")),
+            runtime_event_id: None,
+            conversation_sequence: Some(11),
+            change_kind: project_store::CodeChangeKind::FileTool,
+            summary_label: "rollback candidate summary".into(),
+            restore_state: project_store::CodeChangeRestoreState::SnapshotAvailable,
+        },
+        vec![project_store::CodeRollbackCaptureTarget::modify(
+            "src/tracked.txt",
+        )],
+    )
+    .expect("begin rollback candidate capture");
+    fs::write(&tracked_path, "rollback candidate content\n").expect("write candidate content");
+    let completed = project_store::complete_exact_path_capture(repo_root, handle)
+        .expect("complete rollback candidate capture");
+    fs::write(&tracked_path, "later overwritten content\n").expect("write later content");
+
+    let rollback =
+        project_store::apply_code_rollback(repo_root, project_id, &completed.change_group_id)
+            .expect("apply rollback for session history");
+    assert_eq!(
+        fs::read_to_string(&tracked_path).expect("read restored tracked file"),
+        "alpha\nbeta\n"
+    );
+    rollback
+}
+
 #[allow(clippy::too_many_arguments)]
 fn seed_history_run_with_provider(
     repo_root: &Path,
@@ -1499,6 +1621,7 @@ fn seed_history_run_with_provider(
         &project_store::NewAgentFileChangeRecord {
             project_id: project_id.into(),
             run_id: run_id.into(),
+            change_group_id: None,
             path: "/Users/sn0w/.config/xero/token.json".into(),
             operation: "write".into(),
             old_hash: None,

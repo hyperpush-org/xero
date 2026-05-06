@@ -951,6 +951,7 @@ fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
         "xero.agent_definition_policy" => "agent_definition_policy",
         "project.workspace_manifest" => "workspace_manifest",
         "xero.owned_process_state" => "process_state",
+        "xero.code_rollback_state" => "code_rollback_state",
         "xero.durable_context_tools" => "durable_context_tool_instruction",
         "xero.active_coordination" => "active_agent_coordination",
         id if id.starts_with("project.instructions.") => "repository_instructions",

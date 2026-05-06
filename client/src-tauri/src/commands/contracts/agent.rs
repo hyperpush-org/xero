@@ -149,6 +149,7 @@ pub struct AgentFileChangeDto {
     pub top_level_run_id: String,
     pub subagent_id: Option<String>,
     pub subagent_role: Option<String>,
+    pub change_group_id: Option<String>,
     pub path: String,
     pub operation: String,
     pub old_hash: Option<String>,
@@ -534,6 +535,7 @@ fn agent_file_change_dto(file_change: AgentFileChangeRecord) -> AgentFileChangeD
         top_level_run_id: file_change.top_level_run_id,
         subagent_id: file_change.subagent_id,
         subagent_role: file_change.subagent_role,
+        change_group_id: file_change.change_group_id,
         path: file_change.path,
         operation: file_change.operation,
         old_hash: file_change.old_hash,
@@ -597,6 +599,8 @@ pub enum AgentDefinitionLifecycleStateDto {
 #[serde(rename_all = "snake_case")]
 pub enum AgentDefinitionBaseCapabilityProfileDto {
     ObserveOnly,
+    Planning,
+    RepositoryRecon,
     Engineering,
     Debugging,
     AgentBuilder,
@@ -729,6 +733,8 @@ fn parse_agent_definition_base_capability_profile(
     value: &str,
 ) -> AgentDefinitionBaseCapabilityProfileDto {
     match value {
+        "planning" => AgentDefinitionBaseCapabilityProfileDto::Planning,
+        "repository_recon" => AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon,
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,
         "agent_builder" => AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,

@@ -190,6 +190,7 @@ pub struct AgentFileChangeRecord {
     pub top_level_run_id: String,
     pub subagent_id: Option<String>,
     pub subagent_role: Option<String>,
+    pub change_group_id: Option<String>,
     pub path: String,
     pub operation: String,
     pub old_hash: Option<String>,
@@ -372,6 +373,7 @@ pub struct AgentToolCallFinishRecord {
 pub struct NewAgentFileChangeRecord {
     pub project_id: String,
     pub run_id: String,
+    pub change_group_id: Option<String>,
     pub path: String,
     pub operation: String,
     pub old_hash: Option<String>,
@@ -1182,6 +1184,9 @@ pub fn append_agent_file_change(
 ) -> Result<AgentFileChangeRecord, CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
+    if let Some(change_group_id) = record.change_group_id.as_deref() {
+        validate_non_empty_text(change_group_id, "changeGroupId")?;
+    }
     validate_non_empty_text(&record.path, "path")?;
     validate_non_empty_text(&record.operation, "operation")?;
     validate_optional_sha256(record.old_hash.as_deref(), "oldHash")?;
@@ -1198,6 +1203,7 @@ pub fn append_agent_file_change(
                 top_level_run_id,
                 subagent_id,
                 subagent_role,
+                change_group_id,
                 path,
                 operation,
                 old_hash,
@@ -1215,7 +1221,8 @@ pub fn append_agent_file_change(
                 ?4,
                 ?5,
                 ?6,
-                ?7
+                ?7,
+                ?8
             FROM agent_runs
             WHERE agent_runs.project_id = ?1
               AND agent_runs.run_id = ?2
@@ -1223,6 +1230,7 @@ pub fn append_agent_file_change(
             params![
                 record.project_id,
                 record.run_id,
+                record.change_group_id,
                 record.path,
                 record.operation,
                 record.old_hash,
@@ -1296,6 +1304,7 @@ pub fn append_agent_file_change(
             .map_err(|error| {
                 map_agent_store_query_error(repo_root, "agent_file_change_role_query_failed", error)
             })?,
+        change_group_id: record.change_group_id.clone(),
         path: record.path.clone(),
         operation: record.operation.clone(),
         old_hash: record.old_hash.clone(),
@@ -2377,6 +2386,7 @@ fn read_agent_file_changes(
                 top_level_run_id,
                 subagent_id,
                 subagent_role,
+                change_group_id,
                 path,
                 operation,
                 old_hash,
@@ -2401,11 +2411,12 @@ fn read_agent_file_changes(
                 top_level_run_id: row.get(4)?,
                 subagent_id: row.get(5)?,
                 subagent_role: row.get(6)?,
-                path: row.get(7)?,
-                operation: row.get(8)?,
-                old_hash: row.get(9)?,
-                new_hash: row.get(10)?,
-                created_at: row.get(11)?,
+                change_group_id: row.get(7)?,
+                path: row.get(8)?,
+                operation: row.get(9)?,
+                old_hash: row.get(10)?,
+                new_hash: row.get(11)?,
+                created_at: row.get(12)?,
             })
         })
         .map_err(|error| {
@@ -2701,6 +2712,7 @@ fn parse_agent_run_status(value: &str) -> AgentRunStatus {
 
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
+        "plan" => RuntimeAgentIdDto::Plan,
         "engineer" => RuntimeAgentIdDto::Engineer,
         "debug" => RuntimeAgentIdDto::Debug,
         "crawl" => RuntimeAgentIdDto::Crawl,

@@ -97,6 +97,7 @@ pub enum RuntimeRunApprovalModeDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentIdDto {
     Ask,
+    Plan,
     Engineer,
     Debug,
     Crawl,
@@ -124,6 +125,7 @@ pub enum RuntimeAgentLifecycleStateDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentBaseCapabilityProfileDto {
     ObserveOnly,
+    Planning,
     RepositoryRecon,
     Engineering,
     Debugging,
@@ -135,6 +137,7 @@ pub enum RuntimeAgentBaseCapabilityProfileDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentPromptPolicyDto {
     Ask,
+    Plan,
     Engineer,
     Debug,
     Crawl,
@@ -146,6 +149,7 @@ pub enum RuntimeAgentPromptPolicyDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentToolPolicyDto {
     ObserveOnly,
+    Planning,
     RepositoryRecon,
     Engineering,
     AgentBuilder,
@@ -156,6 +160,7 @@ pub enum RuntimeAgentToolPolicyDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentOutputContractDto {
     Answer,
+    PlanPack,
     CrawlReport,
     EngineeringSummary,
     DebugSummary,
@@ -189,6 +194,7 @@ impl RuntimeAgentIdDto {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ask => "ask",
+            Self::Plan => "plan",
             Self::Engineer => "engineer",
             Self::Debug => "debug",
             Self::Crawl => "crawl",
@@ -200,6 +206,7 @@ impl RuntimeAgentIdDto {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Ask => "Ask",
+            Self::Plan => "Plan",
             Self::Engineer => "Engineer",
             Self::Debug => "Debug",
             Self::Crawl => "Crawl",
@@ -296,6 +303,7 @@ pub fn default_runtime_agent_approval_mode(
 ) -> RuntimeRunApprovalModeDto {
     match agent_id {
         RuntimeAgentIdDto::Ask => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::Plan => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Engineer => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Debug => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Crawl => RuntimeRunApprovalModeDto::Suggest,
@@ -309,6 +317,7 @@ pub fn runtime_agent_allowed_approval_modes(
 ) -> Vec<RuntimeRunApprovalModeDto> {
     match agent_id {
         RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::Plan
         | RuntimeAgentIdDto::Crawl
         | RuntimeAgentIdDto::AgentCreate
         | RuntimeAgentIdDto::Test => {
@@ -328,6 +337,7 @@ pub fn runtime_agent_allows_approval_mode(
 ) -> bool {
     match agent_id {
         RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::Plan
         | RuntimeAgentIdDto::Crawl
         | RuntimeAgentIdDto::AgentCreate
         | RuntimeAgentIdDto::Test => {
@@ -340,6 +350,7 @@ pub fn runtime_agent_allows_approval_mode(
 pub fn builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
     [
         runtime_agent_descriptor(RuntimeAgentIdDto::Ask),
+        runtime_agent_descriptor(RuntimeAgentIdDto::Plan),
         runtime_agent_descriptor(RuntimeAgentIdDto::Engineer),
         runtime_agent_descriptor(RuntimeAgentIdDto::Debug),
         runtime_agent_descriptor(RuntimeAgentIdDto::Crawl),
@@ -374,6 +385,25 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             prompt_policy: RuntimeAgentPromptPolicyDto::Ask,
             tool_policy: RuntimeAgentToolPolicyDto::ObserveOnly,
             output_contract: RuntimeAgentOutputContractDto::Answer,
+            allow_plan_gate: false,
+            allow_verification_gate: false,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::Plan => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Plan".into(),
+            short_label: "Plan".into(),
+            description: "Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.".into(),
+            task_purpose: "Interview the user, inspect project context when useful, draft a reproducible Plan Pack, and prepare Engineer handoff.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::Planning,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: runtime_agent_allowed_approval_modes(&agent_id),
+            prompt_policy: RuntimeAgentPromptPolicyDto::Plan,
+            tool_policy: RuntimeAgentToolPolicyDto::Planning,
+            output_contract: RuntimeAgentOutputContractDto::PlanPack,
             allow_plan_gate: false,
             allow_verification_gate: false,
             allow_auto_compact: true,
@@ -1115,8 +1145,48 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ask", "engineer", "debug", "crawl", "agent_create", "test"]
+            vec![
+                "ask",
+                "plan",
+                "engineer",
+                "debug",
+                "crawl",
+                "agent_create",
+                "test"
+            ]
         );
+
+        let plan = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == RuntimeAgentIdDto::Plan)
+            .expect("Plan descriptor should be seeded");
+
+        assert_eq!(plan.label, "Plan");
+        assert_eq!(
+            plan.base_capability_profile,
+            RuntimeAgentBaseCapabilityProfileDto::Planning
+        );
+        assert_eq!(plan.prompt_policy, RuntimeAgentPromptPolicyDto::Plan);
+        assert_eq!(plan.tool_policy, RuntimeAgentToolPolicyDto::Planning);
+        assert_eq!(
+            plan.output_contract,
+            RuntimeAgentOutputContractDto::PlanPack
+        );
+        assert_eq!(
+            plan.allowed_approval_modes,
+            vec![RuntimeRunApprovalModeDto::Suggest]
+        );
+        assert!(!plan.allow_plan_gate);
+        assert!(!plan.allow_verification_gate);
+        assert!(!RuntimeAgentIdDto::Plan.allows_engineering_tools());
+        assert!(runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Plan,
+            &RuntimeRunApprovalModeDto::Suggest
+        ));
+        assert!(!runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Plan,
+            &RuntimeRunApprovalModeDto::AutoEdit
+        ));
 
         let crawl = descriptors
             .iter()
@@ -1216,6 +1286,15 @@ mod tests {
     #[test]
     fn runtime_agent_id_dto_serializes_and_deserializes_test() {
         assert_eq!(
+            serde_json::to_string(&RuntimeAgentIdDto::Plan).expect("serialize Plan agent id"),
+            r#""plan""#
+        );
+        assert_eq!(
+            serde_json::from_str::<RuntimeAgentIdDto>(r#""plan""#)
+                .expect("deserialize Plan agent id"),
+            RuntimeAgentIdDto::Plan
+        );
+        assert_eq!(
             serde_json::to_string(&RuntimeAgentIdDto::Test).expect("serialize Test agent id"),
             r#""test""#
         );
@@ -1275,6 +1354,13 @@ mod tests {
             Some("0")
         ));
         assert!(runtime_agent_is_available_for_context(
+            RuntimeAgentIdDto::Plan,
+            false,
+            false,
+            None,
+            None
+        ));
+        assert!(runtime_agent_is_available_for_context(
             RuntimeAgentIdDto::Ask,
             false,
             false,
@@ -1303,6 +1389,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 RuntimeAgentIdDto::Ask,
+                RuntimeAgentIdDto::Plan,
                 RuntimeAgentIdDto::Engineer,
                 RuntimeAgentIdDto::Debug,
                 RuntimeAgentIdDto::Crawl,
@@ -1378,6 +1465,14 @@ pub struct RuntimeStreamPlanItemDto {
     pub notes: Option<String>,
     pub status: RuntimeStreamPlanItemStatus,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1387,6 +1482,10 @@ pub enum RuntimeActionAnswerShape {
     TerminalInput,
     SingleChoice,
     MultiChoice,
+    ShortText,
+    LongText,
+    Number,
+    Date,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1430,6 +1529,8 @@ pub struct RuntimeStreamItemDto {
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_state: Option<RuntimeToolCallState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_change_group_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_summary: Option<ToolResultSummaryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -54,6 +54,34 @@ describe('session context contract', () => {
       actor: 'user',
       kind: 'message',
     })
+    const rollbackTranscript = runTranscriptSchema.parse({
+      ...transcript,
+      items: [
+        ...transcript.items,
+        {
+          ...transcript.items[1],
+          itemId: 'code_rollback:rollback-1',
+          sourceTable: 'code_rollback_operations',
+          sourceId: 'rollback-1',
+          sequence: 3,
+          createdAt: '2026-04-26T10:00:20Z',
+          kind: 'code_rollback',
+          actor: 'xero',
+          title: 'Code rollback applied',
+          text: 'Project files were restored independently of conversation history.',
+          summary: 'Code rollback applied.',
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          filePath: 'src/tracked.txt',
+          codeChangeGroupId: 'code-change-rollback-result',
+        },
+      ],
+    })
+    expect(rollbackTranscript.items[2]).toMatchObject({
+      kind: 'code_rollback',
+      codeChangeGroupId: 'code-change-rollback-result',
+    })
 
     expect(() =>
       runTranscriptSchema.parse({

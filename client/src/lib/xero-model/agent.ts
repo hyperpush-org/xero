@@ -143,6 +143,7 @@ export const agentFileChangeSchema = z
     topLevelRunId: z.string().trim().min(1),
     subagentId: z.string().trim().min(1).nullable().optional(),
     subagentRole: subagentRoleSchema.nullable().optional(),
+    changeGroupId: z.string().trim().min(1).nullable().optional(),
     path: z.string().trim().min(1),
     operation: agentFileChangeOperationSchema,
     oldHash: sha256Schema.nullable().optional(),

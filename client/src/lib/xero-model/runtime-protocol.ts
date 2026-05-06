@@ -217,6 +217,10 @@ const runtimePlanItemSchema = z
     id: nonEmptyTextSchema,
     text: z.string(),
     status: nonEmptyTextSchema,
+    phaseId: nonEmptyTextSchema.optional(),
+    phaseTitle: nonEmptyTextSchema.optional(),
+    sliceId: nonEmptyTextSchema.optional(),
+    handoffNote: nonEmptyTextSchema.optional(),
   })
   .strict()
 

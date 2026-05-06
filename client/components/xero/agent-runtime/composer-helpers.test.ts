@@ -44,6 +44,7 @@ const customDefinition: AgentDefinitionSummaryDto = {
 describe('runtimeAgentIdForCustomBaseCapability', () => {
   it('maps each base capability profile to the matching runtime agent id', () => {
     expect(runtimeAgentIdForCustomBaseCapability('observe_only')).toBe('ask')
+    expect(runtimeAgentIdForCustomBaseCapability('planning')).toBe('plan')
     expect(runtimeAgentIdForCustomBaseCapability('repository_recon')).toBe('crawl')
     expect(runtimeAgentIdForCustomBaseCapability('engineering')).toBe('engineer')
     expect(runtimeAgentIdForCustomBaseCapability('debugging')).toBe('debug')

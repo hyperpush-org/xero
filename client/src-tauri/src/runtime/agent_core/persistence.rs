@@ -1299,7 +1299,7 @@ pub(crate) fn capture_memory_candidates_for_run(
     provider: &dyn ProviderAdapter,
     trigger: &str,
 ) -> CommandResult<()> {
-    let source = build_runtime_memory_extraction_source(snapshot);
+    let source = build_runtime_memory_extraction_source(repo_root, snapshot)?;
     if source.transcript.trim().is_empty() {
         return Ok(());
     }
@@ -1660,8 +1660,9 @@ struct RuntimeMemoryExtractionSource {
 }
 
 fn build_runtime_memory_extraction_source(
+    repo_root: &Path,
     snapshot: &AgentRunSnapshotRecord,
-) -> RuntimeMemoryExtractionSource {
+) -> CommandResult<RuntimeMemoryExtractionSource> {
     let transcript = crate::commands::run_transcript_from_agent_snapshot(snapshot, None);
     let mut source_item_ids = Vec::new();
     let mut text = format!(
@@ -1671,6 +1672,7 @@ fn build_runtime_memory_extraction_source(
         snapshot.run.model_id,
         snapshot.run.status,
     );
+    text.push_str("Code rollback rows are provenance: do not promote implementation details from turns before a rollback as durable facts unless the memory text explicitly notes the rollback state and cites rollback provenance.\n");
     for item in &transcript.items {
         source_item_ids.push(item.item_id.clone());
         let body = item
@@ -1690,11 +1692,47 @@ fn build_runtime_memory_extraction_source(
             truncate_memory_source_text(body, 600)
         ));
     }
-    RuntimeMemoryExtractionSource {
+    for operation in project_store::list_code_rollback_operations_for_session(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+        Some(&snapshot.run.run_id),
+    )? {
+        let operation_source_id = format!("code_rollback_operations:{}", operation.operation_id);
+        source_item_ids.push(operation_source_id.clone());
+        text.push_str(&format!(
+            "- [{}] code rollback {}: {}\n",
+            operation_source_id,
+            operation.status,
+            truncate_memory_source_text(&runtime_rollback_memory_line(&operation), 600)
+        ));
+    }
+    Ok(RuntimeMemoryExtractionSource {
         transcript: text,
         source_run_id: snapshot.run.run_id.clone(),
         source_item_ids,
-    }
+    })
+}
+
+fn runtime_rollback_memory_line(operation: &project_store::CodeRollbackOperationRecord) -> String {
+    let paths = operation
+        .affected_files
+        .iter()
+        .filter_map(|file| file.path_after.as_deref().or(file.path_before.as_deref()))
+        .collect::<BTreeSet<_>>();
+    let path_text = if paths.is_empty() {
+        "no affected paths recorded".into()
+    } else {
+        paths.into_iter().collect::<Vec<_>>().join(", ")
+    };
+    format!(
+        "operationId={} targetChangeGroupId={} targetSnapshotId={} resultChangeGroupId={} paths={}. Conversation history stayed append-only; project files were restored independently.",
+        operation.operation_id,
+        operation.target_change_group_id,
+        operation.target_snapshot_id,
+        operation.result_change_group_id.as_deref().unwrap_or("none"),
+        path_text,
+    )
 }
 
 fn prepare_automatic_memory_candidate(
@@ -1938,9 +1976,13 @@ pub(crate) fn record_file_change_event(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
     write_observations: &[AgentWorkspaceWriteObservation],
     output: &AutonomousToolOutput,
+    code_change_group: Option<&project_store::CompletedCodeChangeGroup>,
 ) -> CommandResult<()> {
+    let code_change_group_id = code_change_group.map(|group| group.change_group_id.as_str());
     if let AutonomousToolOutput::Patch(output) = output {
         if !output.applied {
             return Ok(());
@@ -1956,6 +1998,9 @@ pub(crate) fn record_file_change_event(
                     to_path: None,
                     old_hash: Some(file.old_hash.clone()),
                     new_hash: Some(file.new_hash.clone()),
+                    tool_call_id,
+                    tool_name,
+                    code_change_group_id,
                 },
             )?;
         }
@@ -1995,8 +2040,75 @@ pub(crate) fn record_file_change_event(
             to_path,
             old_hash,
             new_hash,
+            tool_call_id,
+            tool_name,
+            code_change_group_id,
         },
     )
+}
+
+pub(crate) fn record_code_change_group_file_change_events(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    group: &project_store::CompletedCodeChangeGroup,
+) -> CommandResult<()> {
+    for file in &group.affected_files {
+        let path = file
+            .path_after
+            .as_deref()
+            .or(file.path_before.as_deref())
+            .unwrap_or("unknown");
+        let to_path = if file.operation == project_store::CodeFileOperation::Rename {
+            file.path_after.clone()
+        } else {
+            None
+        };
+        record_single_file_change_event(
+            repo_root,
+            project_id,
+            run_id,
+            FileChangeEvent {
+                operation: agent_file_change_operation_for_code_operation(file.operation),
+                path,
+                to_path,
+                old_hash: file.before_hash.clone(),
+                new_hash: file.after_hash.clone(),
+                tool_call_id,
+                tool_name,
+                code_change_group_id: Some(group.change_group_id.as_str()),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn output_records_own_file_change_event(output: &AutonomousToolOutput) -> bool {
+    matches!(
+        output,
+        AutonomousToolOutput::Write(_)
+            | AutonomousToolOutput::Edit(_)
+            | AutonomousToolOutput::Patch(_)
+            | AutonomousToolOutput::NotebookEdit(_)
+            | AutonomousToolOutput::Delete(_)
+            | AutonomousToolOutput::Rename(_)
+            | AutonomousToolOutput::Mkdir(_)
+    )
+}
+
+fn agent_file_change_operation_for_code_operation(
+    operation: project_store::CodeFileOperation,
+) -> &'static str {
+    match operation {
+        project_store::CodeFileOperation::Create => "create",
+        project_store::CodeFileOperation::Delete => "delete",
+        project_store::CodeFileOperation::Rename => "rename",
+        project_store::CodeFileOperation::Modify
+        | project_store::CodeFileOperation::ModeChange
+        | project_store::CodeFileOperation::SymlinkChange => "write",
+    }
 }
 
 struct FileChangeEvent<'a> {
@@ -2005,6 +2117,9 @@ struct FileChangeEvent<'a> {
     to_path: Option<String>,
     old_hash: Option<String>,
     new_hash: Option<String>,
+    tool_call_id: &'a str,
+    tool_name: &'a str,
+    code_change_group_id: Option<&'a str>,
 }
 
 fn record_single_file_change_event(
@@ -2018,6 +2133,7 @@ fn record_single_file_change_event(
         &NewAgentFileChangeRecord {
             project_id: project_id.into(),
             run_id: run_id.into(),
+            change_group_id: change.code_change_group_id.map(ToOwned::to_owned),
             path: change.path.into(),
             operation: change.operation.into(),
             old_hash: change.old_hash.clone(),
@@ -2054,6 +2170,9 @@ fn record_single_file_change_event(
             "toPath": change.to_path,
             "oldHash": change.old_hash,
             "newHash": change.new_hash,
+            "toolCallId": change.tool_call_id,
+            "toolName": change.tool_name,
+            "codeChangeGroupId": change.code_change_group_id,
             "traceId": stored_change.trace_id,
             "topLevelRunId": stored_change.top_level_run_id,
             "subagentId": stored_change.subagent_id,

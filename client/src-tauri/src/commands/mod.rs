@@ -5,6 +5,7 @@ pub mod agent_task;
 pub mod backend_jobs;
 pub mod browser;
 pub mod cancel_autonomous_run;
+pub mod code_rollback;
 pub mod complete_oauth_callback;
 pub mod create_repository;
 pub mod development_storage;
@@ -94,6 +95,7 @@ pub use browser::{
     BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
+pub use code_rollback::apply_code_rollback;
 pub use complete_oauth_callback::complete_oauth_callback;
 pub use create_repository::create_repository;
 pub use development_storage::{developer_storage_overview, developer_storage_read_table};
@@ -209,8 +211,8 @@ pub use workspace_index::{
 
 pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{
-    agent::*, autonomous::*, dictation::*, error::*, mcp::*, notifications::*, runtime::*,
-    session_context::*, skills::*, surface::*, usage::*, workflow::*,
+    agent::*, autonomous::*, code_history::*, dictation::*, error::*, mcp::*, notifications::*,
+    runtime::*, session_context::*, skills::*, surface::*, usage::*, workflow::*,
 };
 
 pub(crate) use contracts::{

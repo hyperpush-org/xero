@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
 import { AgentContextMeter } from '@/components/xero/agent-runtime/agent-context-meter'
 import {
@@ -195,6 +195,45 @@ describe('AgentContextMeter', () => {
       '0 percent context remaining for gpt-5.4',
     )
     expect(progress.querySelector('circle:last-child')).toHaveClass('stroke-destructive')
+  })
+
+  it('explains rollback context when rollback state is model-visible', async () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    const snapshot = makeSnapshot()
+    snapshot.contributors = [
+      ...snapshot.contributors,
+      {
+        ...snapshot.contributors[0],
+        contributorId: 'code_rollback:rollback-1',
+        kind: 'code_rollback',
+        label: 'Code rollback applied',
+        sourceId: 'rollback-1',
+        sequence: 2,
+        text: 'Project files were restored independently of conversation history.',
+      },
+    ]
+    render(
+      <AgentContextMeter
+        status="ready"
+        snapshot={snapshot}
+      />,
+    )
+
+    fireEvent.focus(screen.getByRole('button', { name: /context meter:/i }))
+
+    const tooltipText = await screen.findAllByText(
+      'Code rollback is in context; current files are authoritative and history stayed visible.',
+    )
+    expect(
+      tooltipText.some((element) => element.getAttribute('data-slot') === 'tooltip-content'),
+    ).toBe(true)
   })
 
   it('renders an unavailable state when refresh fails before a snapshot exists', () => {

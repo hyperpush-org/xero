@@ -188,6 +188,10 @@ pub enum SupervisorActionAnswerShape {
     TerminalInput,
     SingleChoice,
     MultiChoice,
+    ShortText,
+    LongText,
+    Number,
+    Date,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,6 +220,14 @@ pub struct SupervisorPlanItem {
     pub notes: Option<String>,
     pub status: SupervisorPlanItemStatus,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

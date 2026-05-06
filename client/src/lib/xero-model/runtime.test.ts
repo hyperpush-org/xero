@@ -70,11 +70,13 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
 describe('runtime run control schemas', () => {
   it('registers built-in runtime agents as descriptor-backed entries', () => {
     expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
+    expect(runtimeAgentIdSchema.parse('plan')).toBe('plan')
     expect(runtimeAgentIdSchema.parse('crawl')).toBe('crawl')
     expect(runtimeAgentIdSchema.parse('agent_create')).toBe('agent_create')
     expect(runtimeAgentIdSchema.parse('test')).toBe('test')
     expect(ALL_RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual([
       'ask',
+      'plan',
       'engineer',
       'debug',
       'crawl',
@@ -94,6 +96,22 @@ describe('runtime run control schemas', () => {
       allowPlanGate: true,
       allowVerificationGate: true,
       allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    })
+    expect(getRuntimeAgentDescriptor('plan')).toMatchObject({
+      id: 'plan',
+      label: 'Plan',
+      shortLabel: 'Plan',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'planning',
+      promptPolicy: 'plan',
+      toolPolicy: 'planning',
+      outputContract: 'plan_pack',
+      defaultApprovalMode: 'suggest',
+      allowPlanGate: false,
+      allowVerificationGate: false,
+      allowAutoCompact: true,
+      allowedApprovalModes: ['suggest'],
     })
     expect(getRuntimeAgentDescriptor('crawl')).toMatchObject({
       id: 'crawl',
@@ -149,12 +167,12 @@ describe('runtime run control schemas', () => {
       getRuntimeAgentDescriptorsForAvailability({ testAgentEnabled: false }).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'engineer', 'debug', 'crawl', 'agent_create'])
+    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
     expect(
       getRuntimeAgentDescriptorsForAvailability({ testAgentEnabled: true }).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'engineer', 'debug', 'crawl', 'agent_create', 'test'])
+    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create', 'test'])
 
     expect(
       getRuntimeAgentAvailability({ DEV: true, MODE: 'development' }).testAgentEnabled,
@@ -180,18 +198,20 @@ describe('runtime run control schemas', () => {
     expect(runtimeAgentIsSelectableForProjectOrigin('crawl', 'brownfield')).toBe(true)
     expect(runtimeAgentIsSelectableForProjectOrigin('crawl', 'greenfield')).toBe(false)
     expect(runtimeAgentIsSelectableForProjectOrigin('crawl', 'unknown')).toBe(false)
+    expect(runtimeAgentIsSelectableForProjectOrigin('plan', 'greenfield')).toBe(true)
+    expect(runtimeAgentIsSelectableForProjectOrigin('plan', 'brownfield')).toBe(true)
     expect(runtimeAgentIsSelectableForProjectOrigin('ask', 'unknown')).toBe(true)
 
     expect(
       getRuntimeAgentDescriptorsForProjectOrigin('greenfield', { testAgentEnabled: false }).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'engineer', 'debug', 'agent_create'])
+    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'agent_create'])
     expect(
       getRuntimeAgentDescriptorsForProjectOrigin('brownfield', { testAgentEnabled: false }).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'engineer', 'debug', 'crawl', 'agent_create'])
+    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
   })
 
   it('maps durable active and pending control snapshots into a selected pending projection', () => {

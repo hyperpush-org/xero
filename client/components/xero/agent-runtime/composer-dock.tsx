@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, ListChecks, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { forwardRef, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
@@ -133,6 +133,8 @@ function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
   switch (agentId) {
     case 'ask':
       return MessageCircle
+    case 'plan':
+      return ListChecks
     case 'debug':
       return Bug
     case 'crawl':

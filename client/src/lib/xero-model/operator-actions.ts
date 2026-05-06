@@ -16,6 +16,10 @@ export type OperatorApprovalAnswerShapeKind =
   | 'terminal_input'
   | 'single_choice'
   | 'multi_choice'
+  | 'short_text'
+  | 'long_text'
+  | 'number'
+  | 'date'
 type OperatorRuntimeResumableClassification = 'not_runtime_scoped' | 'runtime_resumable' | 'runtime_malformed'
 
 export interface OperatorApprovalAnswerShapeMeta {
@@ -91,6 +95,34 @@ const OPERATOR_ACTION_ANSWER_SHAPES: Record<string, OperatorApprovalAnswerShapeM
     guidance:
       'Pick one or more options from the list provided by the agent. Xero submits the chosen option ids as a JSON array.',
     placeholder: 'Choose one or more options to resume the agent run.',
+  },
+  short_text_required: {
+    kind: 'short_text',
+    label: 'Short-text response',
+    guidance:
+      'Provide a concise answer for the planning prompt without secrets.',
+    placeholder: 'Enter a short answer.',
+  },
+  long_text_required: {
+    kind: 'long_text',
+    label: 'Detailed text response',
+    guidance:
+      'Provide the requested planning detail in plain text without secrets.',
+    placeholder: 'Enter the requested details.',
+  },
+  number_required: {
+    kind: 'number',
+    label: 'Number response',
+    guidance:
+      'Provide the requested numeric value for the planning prompt.',
+    placeholder: 'Enter a number.',
+  },
+  date_required: {
+    kind: 'date',
+    label: 'Date response',
+    guidance:
+      'Provide the requested date for the planning prompt.',
+    placeholder: 'Choose a date.',
   },
 }
 

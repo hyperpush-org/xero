@@ -23,6 +23,7 @@ const PROJECT_CONTEXT_RECORD_SCHEMA: &str = "xero.project_context_tool.record.v1
 const PROJECT_CONTEXT_UPDATE_SCHEMA: &str = "xero.project_context_tool.record_update.v1";
 const PROJECT_CONTEXT_RECORD_CANDIDATE_SCHEMA: &str =
     "xero.project_context_tool.record_candidate.v1";
+const PLAN_PACK_SCHEMA: &str = "xero.plan_pack.v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -568,7 +569,7 @@ impl AutonomousToolRuntime {
         run_context: &AutonomousAgentRunContext,
         runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
-        ensure_context_write_allowed(runtime_agent_id)?;
+        ensure_context_write_allowed(runtime_agent_id, &request)?;
         let action = request.action;
         let record = self.insert_context_record(
             request,
@@ -599,14 +600,15 @@ impl AutonomousToolRuntime {
         run_context: &AutonomousAgentRunContext,
         runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
-        ensure_context_write_allowed(runtime_agent_id)?;
+        ensure_context_write_allowed(runtime_agent_id, &request)?;
         let action = request.action;
+        let schema_name = context_record_schema_name(&request, PROJECT_CONTEXT_RECORD_SCHEMA);
         let record = self.insert_context_record(
             request,
             run_context,
             runtime_agent_id,
             project_store::ProjectRecordVisibility::Retrieval,
-            PROJECT_CONTEXT_RECORD_SCHEMA,
+            schema_name,
         )?;
         Ok(AutonomousProjectContextOutput {
             action,
@@ -630,7 +632,6 @@ impl AutonomousToolRuntime {
         run_context: &AutonomousAgentRunContext,
         runtime_agent_id: RuntimeAgentIdDto,
     ) -> CommandResult<AutonomousProjectContextOutput> {
-        ensure_context_write_allowed(runtime_agent_id)?;
         let action = request.action;
         let superseded_record_id = optional_trimmed(request.record_id.as_deref());
         let superseded_record = superseded_record_id
@@ -725,12 +726,14 @@ impl AutonomousToolRuntime {
             ));
         }
 
+        ensure_context_write_allowed(runtime_agent_id, &request)?;
+        let schema_name = context_record_schema_name(&request, PROJECT_CONTEXT_UPDATE_SCHEMA);
         let mut record = self.insert_context_record(
             request,
             run_context,
             runtime_agent_id,
             project_store::ProjectRecordVisibility::Retrieval,
-            PROJECT_CONTEXT_UPDATE_SCHEMA,
+            schema_name,
         )?;
         if let Some(record_id) = superseded_record_id {
             project_store::mark_project_record_superseded_by(
@@ -1385,7 +1388,10 @@ fn generated_project_context_query_id(run_id: &str) -> String {
     format!("project-context-{run_id}-{suffix}")
 }
 
-fn ensure_context_write_allowed(runtime_agent_id: RuntimeAgentIdDto) -> CommandResult<()> {
+fn ensure_context_write_allowed(
+    runtime_agent_id: RuntimeAgentIdDto,
+    request: &AutonomousProjectContextRequest,
+) -> CommandResult<()> {
     if runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
         return Err(CommandError::user_fixable(
             "project_context_write_forbidden_for_agent_create",
@@ -1398,7 +1404,49 @@ fn ensure_context_write_allowed(runtime_agent_id: RuntimeAgentIdDto) -> CommandR
             "Crawl can search and read durable project context, but persists repository reconnaissance through its structured crawl report.",
         ));
     }
+    if runtime_agent_id == RuntimeAgentIdDto::Plan && !is_accepted_plan_pack_context_write(request)
+    {
+        return Err(CommandError::user_fixable(
+            "project_context_write_forbidden_for_plan",
+            "Plan can record durable project context only for accepted xero.plan_pack.v1 plan records.",
+        ));
+    }
     Ok(())
+}
+
+fn context_record_schema_name(
+    request: &AutonomousProjectContextRequest,
+    fallback: &'static str,
+) -> &'static str {
+    if is_plan_pack_context_write(request) {
+        PLAN_PACK_SCHEMA
+    } else {
+        fallback
+    }
+}
+
+fn is_accepted_plan_pack_context_write(request: &AutonomousProjectContextRequest) -> bool {
+    matches!(
+        request.action,
+        AutonomousProjectContextAction::RecordContext
+            | AutonomousProjectContextAction::UpdateContext
+    ) && is_plan_pack_context_write(request)
+        && request
+            .content_json
+            .as_ref()
+            .and_then(|content| content.get("status"))
+            .and_then(JsonValue::as_str)
+            == Some("accepted")
+}
+
+fn is_plan_pack_context_write(request: &AutonomousProjectContextRequest) -> bool {
+    request.record_kind == Some(AutonomousProjectContextRecordKind::Plan)
+        && request
+            .content_json
+            .as_ref()
+            .and_then(|content| content.get("schema"))
+            .and_then(JsonValue::as_str)
+            == Some(PLAN_PACK_SCHEMA)
 }
 
 fn context_record_tags(
@@ -2055,5 +2103,49 @@ fn context_manifest_request_kind_label(
         project_store::AgentContextManifestRequestKind::HandoffSource => "handoff_source",
         project_store::AgentContextManifestRequestKind::Diagnostic => "diagnostic",
         project_store::AgentContextManifestRequestKind::Test => "test",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan_pack_request(status: &str) -> AutonomousProjectContextRequest {
+        let mut request =
+            AutonomousProjectContextRequest::new(AutonomousProjectContextAction::RecordContext);
+        request.record_kind = Some(AutonomousProjectContextRecordKind::Plan);
+        request.content_json = Some(json!({
+            "schema": PLAN_PACK_SCHEMA,
+            "status": status,
+            "planId": "plan-1"
+        }));
+        request
+    }
+
+    #[test]
+    fn plan_agent_can_record_only_accepted_plan_pack_context() {
+        let accepted = plan_pack_request("accepted");
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Plan, &accepted).is_ok());
+        assert_eq!(
+            context_record_schema_name(&accepted, PROJECT_CONTEXT_RECORD_SCHEMA),
+            PLAN_PACK_SCHEMA
+        );
+
+        let draft = plan_pack_request("draft");
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Plan, &draft).is_err());
+
+        let mut generic_note =
+            AutonomousProjectContextRequest::new(AutonomousProjectContextAction::RecordContext);
+        generic_note.record_kind = Some(AutonomousProjectContextRecordKind::ContextNote);
+        generic_note.content_json = Some(json!({ "schema": "xero.note.v1" }));
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Plan, &generic_note).is_err());
+    }
+
+    #[test]
+    fn non_plan_agents_keep_existing_context_write_rules() {
+        let request = plan_pack_request("accepted");
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Engineer, &request).is_ok());
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::AgentCreate, &request).is_err());
+        assert!(ensure_context_write_allowed(RuntimeAgentIdDto::Crawl, &request).is_err());
     }
 }

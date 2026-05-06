@@ -1585,7 +1585,7 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
         .map(|tool_call| tool_call.tool_name.as_str())
         .collect::<Vec<_>>();
     assert!(tool_names.contains(&"patch"));
-    assert!(tool_names.contains(&"command"));
+    assert!(tool_names.contains(&"command_probe"));
     assert!(tool_names.contains(&"file_hash"));
     assert!(tool_names.contains(&"mkdir"));
     assert!(tool_names.contains(&"rename"));
@@ -1601,6 +1601,88 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
     assert!(operations.contains(&"create"));
     assert!(operations.contains(&"rename"));
     assert!(operations.contains(&"delete"));
+
+    let connection =
+        Connection::open(db::database_path_for_repo(&repo_root)).expect("open project db");
+    let exact_commit_count: i64 = connection
+        .query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM code_commits
+            JOIN code_change_groups
+              ON code_change_groups.project_id = code_commits.project_id
+             AND code_change_groups.change_group_id = code_commits.change_group_id
+            WHERE code_commits.project_id = ?1
+              AND code_commits.run_id = 'owned-run-file-tools-1'
+              AND code_change_groups.change_kind = 'file_tool'
+            "#,
+            params![project_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("count exact file tool commits");
+    assert_eq!(exact_commit_count, 5);
+    let workspace_head = db::project_store::read_code_workspace_head(&repo_root, &project_id)
+        .expect("read code workspace head")
+        .expect("code workspace head");
+    assert_eq!(workspace_head.workspace_epoch, 5);
+    assert!(workspace_head
+        .head_id
+        .as_deref()
+        .is_some_and(|head_id| head_id.starts_with("code-commit-")));
+    let patch_operations = {
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT code_patch_files.operation
+                FROM code_patch_files
+                JOIN code_commits
+                  ON code_commits.project_id = code_patch_files.project_id
+                 AND code_commits.patchset_id = code_patch_files.patchset_id
+                JOIN code_change_groups
+                  ON code_change_groups.project_id = code_commits.project_id
+                 AND code_change_groups.change_group_id = code_commits.change_group_id
+                WHERE code_commits.project_id = ?1
+                  AND code_commits.run_id = 'owned-run-file-tools-1'
+                  AND code_change_groups.change_kind = 'file_tool'
+                ORDER BY code_commits.workspace_epoch ASC, code_patch_files.file_index ASC
+                "#,
+            )
+            .expect("prepare patch operation query");
+        statement
+            .query_map(params![project_id.as_str()], |row| row.get::<_, String>(0))
+            .expect("query patch operations")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect patch operations")
+    };
+    assert!(patch_operations
+        .iter()
+        .any(|operation| operation == "modify"));
+    assert!(patch_operations
+        .iter()
+        .any(|operation| operation == "create"));
+    assert!(patch_operations
+        .iter()
+        .any(|operation| operation == "rename"));
+    assert!(patch_operations
+        .iter()
+        .any(|operation| operation == "delete"));
+    let mkdir_kind: String = connection
+        .query_row(
+            r#"
+            SELECT after_file_kind
+            FROM code_patch_files
+            JOIN code_commits
+              ON code_commits.project_id = code_patch_files.project_id
+             AND code_commits.patchset_id = code_patch_files.patchset_id
+            WHERE code_commits.project_id = ?1
+              AND code_commits.run_id = 'owned-run-file-tools-1'
+              AND code_patch_files.path_after = 'generated'
+            "#,
+            params![project_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("mkdir patch file kind");
+    assert_eq!(mkdir_kind, "directory");
 }
 
 #[test]
@@ -1659,7 +1741,7 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
     assert!(tool_names.contains(&"subagent"));
     assert!(tool_names.contains(&"code_intel"));
     assert!(tool_names.contains(&"lsp"));
-    assert!(tool_names.contains(&"mcp"));
+    assert!(tool_names.contains(&"mcp_list"));
     assert!(snapshot.messages.iter().any(|message| {
         message.role == db::project_store::AgentMessageRole::Tool
             && message.content.contains("\"toolName\":\"code_intel\"")
@@ -3062,6 +3144,111 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
     assert_eq!(payload["operation"], "write");
     assert!(payload["oldHash"].as_str().is_some());
     assert!(payload["newHash"].as_str().is_some());
+    let change_group_id = file_change
+        .change_group_id
+        .as_deref()
+        .expect("file change should link code change group");
+    assert_eq!(payload["codeChangeGroupId"], change_group_id);
+
+    let connection =
+        Connection::open(db::database_path_for_repo(&repo_root)).expect("open project db");
+    let (change_kind, status, before_snapshot_id, after_snapshot_id, file_version_count): (
+        String,
+        String,
+        String,
+        String,
+        i64,
+    ) = connection
+        .query_row(
+            r#"
+            SELECT
+                code_change_groups.change_kind,
+                code_change_groups.status,
+                code_change_groups.before_snapshot_id,
+                code_change_groups.after_snapshot_id,
+                COUNT(code_file_versions.id)
+            FROM code_change_groups
+            LEFT JOIN code_file_versions
+              ON code_file_versions.project_id = code_change_groups.project_id
+             AND code_file_versions.change_group_id = code_change_groups.change_group_id
+            WHERE code_change_groups.project_id = ?1
+              AND code_change_groups.change_group_id = ?2
+            GROUP BY code_change_groups.change_group_id
+            "#,
+            params![project_id.as_str(), change_group_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("code change group row");
+    assert_eq!(change_kind, "file_tool");
+    assert_eq!(status, "completed");
+    assert!(before_snapshot_id.starts_with("code-snapshot-"));
+    assert!(after_snapshot_id.starts_with("code-snapshot-"));
+    assert_eq!(file_version_count, 1);
+    let (commit_id, commit_epoch, patch_file_count, patch_operation, merge_policy, hunk_count): (
+        String,
+        i64,
+        i64,
+        String,
+        String,
+        i64,
+    ) = connection
+        .query_row(
+            r#"
+            SELECT
+                code_commits.commit_id,
+                code_commits.workspace_epoch,
+                code_patchsets.file_count,
+                code_patch_files.operation,
+                code_patch_files.merge_policy,
+                code_patch_files.text_hunk_count
+            FROM code_commits
+            JOIN code_patchsets
+              ON code_patchsets.project_id = code_commits.project_id
+             AND code_patchsets.patchset_id = code_commits.patchset_id
+            JOIN code_patch_files
+              ON code_patch_files.project_id = code_patchsets.project_id
+             AND code_patch_files.patchset_id = code_patchsets.patchset_id
+            WHERE code_commits.project_id = ?1
+              AND code_commits.change_group_id = ?2
+            "#,
+            params![project_id.as_str(), change_group_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .expect("code history commit row");
+    assert!(commit_id.starts_with("code-commit-"));
+    assert_eq!(commit_epoch, 1);
+    assert_eq!(patch_file_count, 1);
+    assert_eq!(patch_operation, "modify");
+    assert_eq!(merge_policy, "text");
+    assert_eq!(hunk_count, 1);
+    let workspace_head = db::project_store::read_code_workspace_head(&repo_root, &project_id)
+        .expect("read code workspace head")
+        .expect("code workspace head");
+    assert_eq!(workspace_head.head_id.as_deref(), Some(commit_id.as_str()));
+    assert_eq!(workspace_head.workspace_epoch, 1);
+    let path_epoch =
+        db::project_store::read_code_path_epoch(&repo_root, &project_id, "src/tracked.txt")
+            .expect("read path epoch")
+            .expect("path epoch");
+    assert_eq!(path_epoch.workspace_epoch, 1);
+    assert_eq!(path_epoch.commit_id.as_deref(), Some(commit_id.as_str()));
 
     let updated = fs::read_to_string(repo_root.join("src").join("tracked.txt"))
         .expect("updated tracked file");
@@ -3081,6 +3268,307 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
     assert_eq!(payload["path"], "src/tracked.txt");
     assert_eq!(payload["operation"], "write");
     assert_eq!(payload["oldContentBase64"], "YWxwaGEKYmV0YQo=");
+}
+
+#[test]
+fn owned_agent_command_mutation_records_broad_code_change_group() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let seed_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build seed autonomous tool runtime");
+    let seed_snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-explicit-generated-seed-1".into(),
+        prompt: "Seed an explicit generated path.\ntool:mkdir target\ntool:write target/explicit.txt seed\n"
+            .into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime: seed_tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("owned agent generated seed run succeeds");
+    assert_eq!(
+        seed_snapshot.run.status,
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        seed_snapshot.run.last_error
+    );
+    fs::write(repo_root.join("delete-me.txt"), "remove me\n").expect("seed file for delete");
+
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-command-code-change-1".into(),
+        prompt: [
+            "Run a command that mutates broad file state.",
+            "tool:command_sh python3 -c \"from pathlib import Path; Path('src/tracked.txt').write_text('changed'); Path('binary.bin').write_bytes(bytes([0, 1]) + b'binary'); Path('delete-me.txt').unlink(); Path('target/explicit.txt').write_text('mutated')\"",
+        ]
+        .join("\n"),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("owned agent command run succeeds");
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
+    );
+    assert!(
+        snapshot
+            .tool_calls
+            .iter()
+            .any(|tool_call| tool_call.tool_name == "command_run"
+                && tool_call.state == db::project_store::AgentToolCallState::Succeeded),
+        "tool calls: {:?}",
+        snapshot
+            .tool_calls
+            .iter()
+            .map(|tool_call| (
+                tool_call.tool_name.as_str(),
+                format!("{:?}", tool_call.state),
+                tool_call.error.as_ref().map(|error| error.code.as_str())
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    let connection =
+        Connection::open(db::database_path_for_repo(&repo_root)).expect("open project db");
+    let (change_group_id, change_kind, status): (String, String, String) = connection
+        .query_row(
+            r#"
+            SELECT change_group_id, change_kind, status
+            FROM code_change_groups
+            WHERE project_id = ?1
+              AND run_id = 'owned-run-command-code-change-1'
+              AND change_kind = 'command'
+            "#,
+            params![project_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("command code change group");
+    assert_eq!(change_kind, "command");
+    assert_eq!(status, "completed");
+    let (commit_id, workspace_epoch, file_count): (String, i64, i64) = connection
+        .query_row(
+            r#"
+            SELECT
+                code_commits.commit_id,
+                code_commits.workspace_epoch,
+                code_patchsets.file_count
+            FROM code_commits
+            JOIN code_patchsets
+              ON code_patchsets.project_id = code_commits.project_id
+             AND code_patchsets.patchset_id = code_commits.patchset_id
+            WHERE code_commits.project_id = ?1
+              AND code_commits.change_group_id = ?2
+              AND code_commits.run_id = 'owned-run-command-code-change-1'
+            "#,
+            params![project_id.as_str(), change_group_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("command code history commit");
+    assert!(commit_id.starts_with("code-commit-"));
+    assert_eq!(workspace_epoch, 3);
+    assert_eq!(file_count, 4);
+    let patch_files = {
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT
+                    path_before,
+                    path_after,
+                    operation,
+                    merge_policy,
+                    text_hunk_count,
+                    result_blob_id
+                FROM code_patch_files
+                JOIN code_commits
+                  ON code_commits.project_id = code_patch_files.project_id
+                 AND code_commits.patchset_id = code_patch_files.patchset_id
+                WHERE code_commits.project_id = ?1
+                  AND code_commits.change_group_id = ?2
+                ORDER BY code_patch_files.path_before, code_patch_files.path_after
+                "#,
+            )
+            .expect("prepare command patch file query");
+        statement
+            .query_map(
+                params![project_id.as_str(), change_group_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .expect("query command patch files")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect command patch files")
+    };
+    assert!(patch_files
+        .iter()
+        .any(|(_, path_after, operation, merge_policy, hunk_count, _)| {
+            path_after.as_deref() == Some("src/tracked.txt")
+                && operation == "modify"
+                && merge_policy == "text"
+                && *hunk_count == 1
+        }));
+    assert!(patch_files.iter().any(
+        |(_, path_after, operation, merge_policy, hunk_count, result_blob_id)| {
+            path_after.as_deref() == Some("binary.bin")
+                && operation == "create"
+                && merge_policy == "exact"
+                && *hunk_count == 0
+                && result_blob_id
+                    .as_deref()
+                    .is_some_and(|hash| hash.len() == 64)
+        }
+    ));
+    assert!(patch_files
+        .iter()
+        .any(|(path_before, path_after, operation, _, _, _)| {
+            path_before.as_deref() == Some("delete-me.txt")
+                && path_after.is_none()
+                && operation == "delete"
+        }));
+    assert!(patch_files
+        .iter()
+        .any(|(_, path_after, operation, merge_policy, hunk_count, _)| {
+            path_after.as_deref() == Some("target/explicit.txt")
+                && operation == "modify"
+                && merge_policy == "text"
+                && *hunk_count == 1
+        }));
+    let generated_version_flags: (i64, i64) = connection
+        .query_row(
+            r#"
+            SELECT generated, explicitly_edited
+            FROM code_file_versions
+            WHERE project_id = ?1
+              AND change_group_id = ?2
+              AND path_after = 'target/explicit.txt'
+            "#,
+            params![project_id.as_str(), change_group_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("generated explicit broad file version");
+    assert_eq!(generated_version_flags, (1, 1));
+    let workspace_head = db::project_store::read_code_workspace_head(&repo_root, &project_id)
+        .expect("read code workspace head")
+        .expect("code workspace head");
+    assert_eq!(workspace_head.head_id.as_deref(), Some(commit_id.as_str()));
+    assert_eq!(workspace_head.workspace_epoch, 3);
+    let generated_path_epoch =
+        db::project_store::read_code_path_epoch(&repo_root, &project_id, "target/explicit.txt")
+            .expect("read generated path epoch")
+            .expect("generated path epoch");
+    assert_eq!(generated_path_epoch.workspace_epoch, 3);
+    assert_eq!(
+        generated_path_epoch.commit_id.as_deref(),
+        Some(commit_id.as_str())
+    );
+    assert_eq!(
+        fs::read_to_string(repo_root.join("src").join("tracked.txt")).expect("command text file"),
+        "changed"
+    );
+    assert_eq!(
+        fs::read(repo_root.join("binary.bin")).expect("command binary file"),
+        vec![0, 1, b'b', b'i', b'n', b'a', b'r', b'y']
+    );
+    assert!(!repo_root.join("delete-me.txt").exists());
+    assert_eq!(
+        fs::read_to_string(repo_root.join("target").join("explicit.txt"))
+            .expect("generated explicit file"),
+        "mutated"
+    );
+}
+
+#[test]
+fn owned_agent_verification_command_write_is_recovered_mutation() {
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::write(
+        repo_root.join("package.json"),
+        r#"{"scripts":{"test":"node -e \"require('fs').writeFileSync('recovered.txt','recovered')\""}} "#,
+    )
+    .expect("write package");
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-recovered-mutation-1".into(),
+        prompt: "Run focused verification.\ntool:command_verify npm test".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("owned agent verification run returns a snapshot");
+
+    let file_change = snapshot
+        .file_changes
+        .iter()
+        .find(|change| change.path == "recovered.txt")
+        .expect("recovered mutation file change");
+    let change_group_id = file_change
+        .change_group_id
+        .as_deref()
+        .expect("recovered mutation should link code change group");
+    let connection =
+        Connection::open(db::database_path_for_repo(&repo_root)).expect("open project db");
+    let change_kind: String = connection
+        .query_row(
+            "SELECT change_kind FROM code_change_groups WHERE project_id = ?1 AND change_group_id = ?2",
+            params![project_id, change_group_id],
+            |row| row.get(0),
+        )
+        .expect("recovered mutation code change group");
+    assert_eq!(change_kind, "recovered_mutation");
+    assert_eq!(
+        fs::read_to_string(repo_root.join("recovered.txt")).expect("recovered file"),
+        "recovered"
+    );
 }
 
 #[test]
@@ -3231,7 +3719,18 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
 
     assert_eq!(
         resumed.run.status,
-        db::project_store::AgentRunStatus::Completed
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}; action requests: {:?}",
+        resumed.run.last_error,
+        resumed
+            .action_requests
+            .iter()
+            .map(|action| (
+                action.action_id.as_str(),
+                action.action_type.as_str(),
+                action.status.as_str()
+            ))
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         fs::read_to_string(repo_root.join("src").join("tracked.txt"))
@@ -3291,7 +3790,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         db::project_store::AgentRunStatus::Paused
     );
     assert!(snapshot.tool_calls.iter().any(|tool_call| {
-        tool_call.tool_name == "command"
+        tool_call.tool_name == "command_run"
             && tool_call.state == db::project_store::AgentToolCallState::Succeeded
     }));
     assert!(snapshot.tool_calls.iter().any(|tool_call| {
@@ -3433,7 +3932,7 @@ fn owned_agent_command_tools_emit_command_output_events() {
     let partial_payload: serde_json::Value = serde_json::from_str(&partial_output.payload_json)
         .expect("partial command output payload JSON");
     assert_eq!(partial_payload["toolCallId"], "tool-call-command-1");
-    assert_eq!(partial_payload["toolName"], "command");
+    assert_eq!(partial_payload["toolName"], "command_probe");
     assert_eq!(partial_payload["stream"], "stdout");
     assert_eq!(partial_payload["text"], "hello-xero");
 
@@ -3448,7 +3947,7 @@ fn owned_agent_command_tools_emit_command_output_events() {
     let payload: serde_json::Value =
         serde_json::from_str(&command_output.payload_json).expect("command output payload JSON");
     assert_eq!(payload["toolCallId"], "tool-call-command-1");
-    assert_eq!(payload["toolName"], "command");
+    assert_eq!(payload["toolName"], "command_probe");
     assert_eq!(payload["argv"], json!(["echo", "hello-xero"]));
     assert_eq!(payload["stdout"], "hello-xero");
     assert_eq!(payload["spawned"], true);
@@ -3548,7 +4047,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
     let command_call = resumed
         .tool_calls
         .iter()
-        .find(|tool_call| tool_call.tool_name == "command")
+        .find(|tool_call| tool_call.tool_name == "command_run")
         .expect("command tool call should remain in journal");
     assert!(command_call
         .result_json
@@ -4066,7 +4565,7 @@ fn start_agent_task_returns_running_before_background_driver_finishes() {
         db::project_store::AgentRunStatus::Completed,
     );
     assert!(completed.tool_calls.iter().any(|tool_call| {
-        tool_call.tool_name == "command"
+        tool_call.tool_name == "command_run"
             && tool_call.state == db::project_store::AgentToolCallState::Succeeded
     }));
 }

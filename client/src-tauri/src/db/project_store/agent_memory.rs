@@ -920,6 +920,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-memory-source".into(),
+                change_group_id: None,
                 path: "src/lib.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -983,6 +984,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-memory-supersession-old".into(),
+                change_group_id: None,
                 path: "src/memory_subject.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -1017,6 +1019,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-memory-supersession-new".into(),
+                change_group_id: None,
                 path: "src/memory_subject.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -1088,6 +1091,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-memory-candidate-old".into(),
+                change_group_id: None,
                 path: "src/candidate_subject.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -1122,6 +1126,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-memory-candidate-new".into(),
+                change_group_id: None,
                 path: "src/candidate_subject.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,

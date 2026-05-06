@@ -24,6 +24,7 @@ if (!HTMLElement.prototype.releasePointerCapture) {
 
 import {
   AgentRuntime,
+  type AgentRuntimeDesktopAdapter,
   isRuntimeConversationNearBottom,
 } from '@/components/xero/agent-runtime'
 import type { SpeechDictationAdapter } from '@/components/xero/agent-runtime/use-speech-dictation'
@@ -32,6 +33,7 @@ import type { DictationEventDto, DictationStatusDto } from '@/src/lib/xero-model
 import type {
   ProjectDetailView,
   RuntimeRunView,
+  RuntimeStreamActivityItemView,
   RuntimeSessionView,
   RuntimeStreamToolItemView,
 } from '@/src/lib/xero-model'
@@ -511,6 +513,50 @@ function makeReasoningItem(options: {
   }
 }
 
+function makeFileChangeItem(
+  options: Partial<RuntimeStreamActivityItemView> & {
+    sequence: number
+    detail?: string | null
+    codeChangeGroupId?: string | null
+  },
+): RuntimeStreamActivityItemView {
+  const { sequence, ...rest } = options
+
+  return {
+    id: `activity:run-1:${sequence}`,
+    kind: 'activity',
+    runId: 'run-1',
+    sequence,
+    createdAt: `2026-04-29T00:48:${String(sequence).padStart(2, '0')}Z`,
+    code: 'owned_agent_file_changed',
+    title: 'File changed',
+    text: null,
+    detail: 'modify: client/src/file.ts',
+    codeChangeGroupId: 'code-change-1',
+    ...rest,
+  }
+}
+
+type CodeRollbackResponse = Awaited<ReturnType<NonNullable<AgentRuntimeDesktopAdapter['applyCodeRollback']>>>
+
+function makeCodeRollbackResponse(overrides: Partial<CodeRollbackResponse> = {}): CodeRollbackResponse {
+  return {
+    projectId: 'project-1',
+    agentSessionId: 'agent-session-main',
+    runId: 'run-1',
+    operationId: 'rollback-operation-1',
+    targetChangeGroupId: 'code-change-1',
+    targetSnapshotId: 'snapshot-before-change',
+    preRollbackSnapshotId: 'snapshot-before-rollback',
+    resultChangeGroupId: 'code-change-rollback-1',
+    restoredPaths: ['client/src/file.ts'],
+    removedPaths: [],
+    affectedFiles: [],
+    repositoryStatus: {} as CodeRollbackResponse['repositoryStatus'],
+    ...overrides,
+  }
+}
+
 function setScrollMetrics(
   element: HTMLElement,
   metrics: { scrollTop: number; scrollHeight: number; clientHeight: number },
@@ -883,6 +929,226 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByLabelText('Agent conversation viewport')).toHaveClass('select-text')
     expect(screen.getByLabelText('Agent conversation', { selector: 'section' })).toHaveClass('select-text')
+  })
+
+  it('enables rollback on changed file entries with captured change groups', () => {
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applyCodeRollback: vi.fn(async () => makeCodeRollbackResponse()),
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    expect(screen.getByText('client/src/file.ts')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Rollback client/src/file.ts' })).toBeEnabled()
+  })
+
+  it('disables rollback when a changed file entry has no restorable change group', () => {
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applyCodeRollback: vi.fn(async () => makeCodeRollbackResponse()),
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: null,
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Rollback unavailable for client/src/file.ts' })).toBeDisabled()
+  })
+
+  it('calls the rollback command from the changed file entry', async () => {
+    const applyCodeRollback = vi.fn(async () => makeCodeRollbackResponse())
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applyCodeRollback,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+
+    await waitFor(() => expect(applyCodeRollback).toHaveBeenCalledWith('project-1', 'code-change-1'))
+  })
+
+  it('shows rollback success and refreshes after rollback resolves', async () => {
+    const applyCodeRollback = vi.fn(async () => makeCodeRollbackResponse())
+    const onCodeRollbackApplied = vi.fn(async () => undefined)
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applyCodeRollback,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+        onCodeRollbackApplied={onCodeRollbackApplied}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+
+    expect(screen.getByRole('button', { name: 'Rolling back client/src/file.ts' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByText('Rolled back 1 restored path.')).toBeVisible())
+    expect(onCodeRollbackApplied).toHaveBeenCalled()
+  })
+
+  it('preserves conversation scroll position after rollback succeeds', async () => {
+    const applyCodeRollback = vi.fn(async () => makeCodeRollbackResponse())
+    const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      writable: true,
+      value: (callback: FrameRequestCallback) => {
+        callback(0)
+        return 1
+      },
+    })
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applyCodeRollback,
+    }
+
+    try {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 1, role: 'user', text: 'Keep my place.' }),
+              makeFileChangeItem({
+                sequence: 2,
+                detail: 'modify: client/src/file.ts',
+                codeChangeGroupId: 'code-change-1',
+              }),
+            ],
+          })}
+          desktopAdapter={desktopAdapter}
+        />,
+      )
+
+      const viewport = screen.getByLabelText('Agent conversation viewport')
+      setScrollMetrics(viewport, {
+        scrollTop: 128,
+        scrollHeight: 1_000,
+        clientHeight: 360,
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+
+      await waitFor(() => expect(screen.getByText('Rolled back 1 restored path.')).toBeVisible())
+      expect(viewport.scrollTop).toBe(128)
+    } finally {
+      if (originalRequestAnimationFrame) {
+        Object.defineProperty(window, 'requestAnimationFrame', originalRequestAnimationFrame)
+      } else {
+        Reflect.deleteProperty(window, 'requestAnimationFrame')
+      }
+    }
+  })
+
+  it('shows rollback failure on the changed file entry', async () => {
+    const applyCodeRollback = vi.fn(async () => {
+      throw new Error('Snapshot blob is missing.')
+    })
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applyCodeRollback,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+
+    await waitFor(() => expect(screen.getByText('Snapshot blob is missing.')).toBeVisible())
+    expect(screen.getByRole('button', { name: 'Retry rollback for client/src/file.ts' })).toBeEnabled()
   })
 
   it('copies user prompts, agent responses, and the visible conversation', async () => {

@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, Loader2 } from 'lucide-react'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
-import type { RuntimeStreamPlanItemView } from '@/src/lib/xero-model'
+import type { RuntimeStreamPlanItemDto, RuntimeStreamPlanItemView } from '@/src/lib/xero-model'
 
 interface PlanTrayProps {
   plan: RuntimeStreamPlanItemView | null
   density?: 'comfortable' | 'compact'
+}
+
+interface PlanPhaseGroup {
+  key: string
+  title: string | null
+  completed: number
+  items: { item: RuntimeStreamPlanItemDto; index: number }[]
 }
 
 export function PlanTray({ plan, density = 'comfortable' }: PlanTrayProps) {
@@ -34,6 +43,7 @@ export function PlanTray({ plan, density = 'comfortable' }: PlanTrayProps) {
     }
     return { pending, inProgress, completed, total: items.length }
   }, [items])
+  const groups = useMemo(() => groupPlanItemsByPhase(items ?? []), [items])
 
   useEffect(() => {
     if (!plan) {
@@ -64,6 +74,7 @@ export function PlanTray({ plan, density = 'comfortable' }: PlanTrayProps) {
 
   const isCompact = density === 'compact'
   const inProgressItem = items.find((item) => item.status === 'in_progress') ?? null
+  const progressValue = counts.total > 0 ? Math.round((counts.completed / counts.total) * 100) : 0
   const summaryHead = `Plan · ${counts.completed}/${counts.total}`
   const summaryDetail =
     inProgressItem ? `Currently: ${inProgressItem.title}` : counts.pending === 0 ? 'All steps complete' : null
@@ -103,56 +114,111 @@ export function PlanTray({ plan, density = 'comfortable' }: PlanTrayProps) {
               <span className="min-w-0 truncate text-muted-foreground">· {summaryDetail}</span>
             ) : null}
           </span>
-          {counts.inProgress > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-medium text-primary">
-              <Loader2 className="h-2.5 w-2.5 animate-spin" />
-              {counts.inProgress} active
-            </span>
-          ) : null}
+          <span className="flex shrink-0 items-center gap-2">
+            {!isCompact ? (
+              <span className="hidden w-16 sm:block">
+                <Progress value={progressValue} className="h-1.5 bg-muted" />
+              </span>
+            ) : null}
+            {counts.inProgress > 0 ? (
+              <Badge variant="secondary" className="h-5 rounded-sm bg-primary/10 px-1.5 text-[10.5px] text-primary">
+                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                {counts.inProgress} active
+              </Badge>
+            ) : null}
+          </span>
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <ol
-          aria-label="Plan steps"
-          className="flex flex-col gap-0.5 border-t border-border/40 px-3 py-2"
-        >
-          {items.map((item, index) => (
-            <li
-              key={item.id}
-              className={cn(
-                'flex items-start gap-2 rounded-sm px-1 py-0.5 text-[12px]',
-                item.status === 'in_progress' ? 'text-foreground' : null,
-                item.status === 'completed' ? 'text-muted-foreground' : null,
-                item.status === 'pending' ? 'text-foreground/85' : null,
-              )}
-            >
-              <span className="mt-0.5 shrink-0">
-                {item.status === 'completed' ? (
-                  <CheckCircle2 className="h-3 w-3 text-success" />
-                ) : item.status === 'in_progress' ? (
-                  <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                ) : (
-                  <Circle className="h-3 w-3 text-muted-foreground/60" />
-                )}
-              </span>
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span
-                  className={cn(
-                    'truncate',
-                    item.status === 'completed' ? 'line-through decoration-muted-foreground/40' : null,
-                  )}
-                >
-                  <span className="select-none text-muted-foreground/60">{index + 1}.</span>{' '}
-                  {item.title}
-                </span>
-                {item.notes ? (
-                  <span className="truncate text-[11px] text-muted-foreground/85">{item.notes}</span>
-                ) : null}
-              </span>
-            </li>
+        <div aria-label="Plan steps" className="flex flex-col gap-1 border-t border-border/40 px-3 py-2">
+          {groups.map((group) => (
+            <div key={group.key} className="flex flex-col gap-0.5">
+              {group.title ? (
+                <div className="flex min-w-0 items-center justify-between gap-2 px-1 py-0.5">
+                  <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
+                    {group.title}
+                  </span>
+                  <Badge variant="outline" className="h-5 rounded-sm px-1.5 text-[10px] text-muted-foreground">
+                    {group.completed}/{group.items.length}
+                  </Badge>
+                </div>
+              ) : null}
+              <ol className="flex flex-col gap-0.5" aria-label={group.title ? `${group.title} steps` : 'Plan steps'}>
+                {group.items.map(({ item, index }) => (
+                  <li
+                    key={item.id}
+                    className={cn(
+                      'flex items-start gap-2 rounded-sm px-1 py-0.5 text-[12px]',
+                      item.status === 'in_progress' ? 'text-foreground' : null,
+                      item.status === 'completed' ? 'text-muted-foreground' : null,
+                      item.status === 'pending' ? 'text-foreground/85' : null,
+                    )}
+                  >
+                    <span className="mt-0.5 shrink-0">
+                      {item.status === 'completed' ? (
+                        <CheckCircle2 className="h-3 w-3 text-success" />
+                      ) : item.status === 'in_progress' ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                      ) : (
+                        <Circle className="h-3 w-3 text-muted-foreground/60" />
+                      )}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span
+                        className={cn(
+                          'truncate',
+                          item.status === 'completed' ? 'line-through decoration-muted-foreground/40' : null,
+                        )}
+                      >
+                        <span className="select-none text-muted-foreground/60">
+                          {item.sliceId ?? `${index + 1}.`}
+                        </span>{' '}
+                        {item.title}
+                      </span>
+                      {item.notes || item.handoffNote ? (
+                        <span className="truncate text-[11px] text-muted-foreground/85">
+                          {item.notes ?? item.handoffNote}
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
           ))}
-        </ol>
+        </div>
       </CollapsibleContent>
     </Collapsible>
   )
+}
+
+function groupPlanItemsByPhase(items: RuntimeStreamPlanItemDto[]): PlanPhaseGroup[] {
+  const groups: PlanPhaseGroup[] = []
+  const groupIndexes = new Map<string, number>()
+
+  items.forEach((item, index) => {
+    const phaseTitle = item.phaseTitle?.trim() || null
+    const phaseId = item.phaseId?.trim() || null
+    const key = phaseId ?? phaseTitle ?? 'flat'
+    let groupIndex = groupIndexes.get(key)
+    if (groupIndex == null) {
+      groupIndex = groups.length
+      groupIndexes.set(key, groupIndex)
+      groups.push({
+        key,
+        title: phaseTitle,
+        completed: 0,
+        items: [],
+      })
+    }
+
+    const group = groups[groupIndex]
+    if (!group) return
+    if (item.status === 'completed') {
+      group.completed += 1
+    }
+    group.items.push({ item, index })
+  })
+
+  return groups
 }

@@ -6,6 +6,15 @@ import type {
   RuntimeActionRequiredOptionDto,
 } from '@/src/lib/xero-model'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
@@ -132,7 +141,14 @@ export function ActionPromptCard({
         />
       ) : null}
 
-      {(shape === 'plain_text' || shape === 'terminal_input') && (
+      {(
+        shape === 'plain_text' ||
+        shape === 'terminal_input' ||
+        shape === 'short_text' ||
+        shape === 'long_text' ||
+        shape === 'number' ||
+        shape === 'date'
+      ) && (
         <FreeformBody
           actionId={actionId}
           shape={shape}
@@ -158,14 +174,53 @@ function SingleChoiceBody({
   disabled: boolean
   onPick: (optionId: string) => void
 }) {
+  const [selected, setSelected] = useState('')
+  const selectedOption = options.find((option) => option.id === selected) ?? null
+
+  if (options.length > 3) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <Select value={selected} onValueChange={setSelected} disabled={disabled}>
+          <SelectTrigger
+            size="sm"
+            className="h-8 w-full border-border/50 bg-background/40 text-[12px]"
+            aria-label="Choose one option"
+          >
+            <SelectValue placeholder="Choose an option" />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={`${actionId}:${option.id}`} value={option.id}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {selectedOption?.description ? (
+          <span className="text-[11px] text-muted-foreground">{selectedOption.description}</span>
+        ) : null}
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={disabled || selected.length === 0}
+            onClick={() => onPick(selected)}
+            className="h-7 px-2.5 text-[12px]"
+          >
+            Submit
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div role="radiogroup" aria-label="Choose one option" className="flex flex-col gap-1.5">
+    <div aria-label="Choose one option" className="flex flex-col gap-1.5">
       {options.map((option) => (
         <button
           key={`${actionId}:${option.id}`}
           type="button"
-          role="radio"
-          aria-checked="false"
           disabled={disabled}
           onClick={() => onPick(option.id)}
           className={cn(
@@ -226,6 +281,9 @@ function MultiChoiceBody({
           return (
             <label
               key={`${actionId}:${option.id}`}
+              onClick={() => {
+                if (!disabled) toggle(option.id)
+              }}
               className={cn(
                 'flex cursor-pointer items-start gap-2 rounded-md border border-border/40 bg-background/40 px-2.5 py-1.5 text-[12px] transition-colors',
                 'hover:border-primary/40 hover:bg-primary/5',
@@ -233,12 +291,12 @@ function MultiChoiceBody({
                 checked ? 'border-primary/50 bg-primary/5' : null,
               )}
             >
-              <input
-                type="checkbox"
-                className="mt-0.5 h-3 w-3 shrink-0 accent-primary"
+              <Checkbox
+                className="mt-0.5 h-3.5 w-3.5"
                 checked={checked}
                 disabled={disabled}
-                onChange={() => toggle(option.id)}
+                onClick={(event) => event.stopPropagation()}
+                onCheckedChange={() => toggle(option.id)}
               />
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="truncate font-medium text-foreground">{option.label}</span>
@@ -274,29 +332,41 @@ function FreeformBody({
   onReject,
 }: {
   actionId: string
-  shape: 'plain_text' | 'terminal_input'
+  shape: RuntimeActionAnswerShapeDto
   disabled: boolean
   onApprove: (value: string) => void
   onReject: () => void
 }) {
   const [value, setValue] = useState('')
   const trimmed = value.trim()
-  const placeholder =
-    shape === 'terminal_input'
-      ? 'Type the exact terminal input to submit on resume.'
-      : 'Optional plain-text rationale for this decision.'
+  const placeholder = getFreeformPlaceholder(shape)
+  const isTextArea = shape === 'plain_text' || shape === 'terminal_input' || shape === 'long_text'
+  const requiresValue = shape !== 'plain_text'
 
   return (
     <div className="flex flex-col gap-1.5">
-      <Textarea
-        aria-label="Operator response"
-        rows={2}
-        className="min-h-[64px] resize-none border-border/50 bg-background/40 text-[12px]"
-        disabled={disabled}
-        onChange={(event) => setValue(event.target.value)}
-        placeholder={placeholder}
-        value={value}
-      />
+      {isTextArea ? (
+        <Textarea
+          aria-label="Operator response"
+          rows={2}
+          className="min-h-[64px] resize-none border-border/50 bg-background/40 text-[12px]"
+          disabled={disabled}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder={placeholder}
+          value={value}
+        />
+      ) : (
+        <Input
+          aria-label="Operator response"
+          className="h-8 border-border/50 bg-background/40 text-[12px]"
+          disabled={disabled}
+          inputMode={shape === 'number' ? 'decimal' : undefined}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder={placeholder}
+          type={shape === 'number' ? 'number' : shape === 'date' ? 'date' : 'text'}
+          value={value}
+        />
+      )}
       <div className="flex justify-end gap-1.5">
         <Button
           type="button"
@@ -313,7 +383,7 @@ function FreeformBody({
           type="button"
           size="sm"
           variant="secondary"
-          disabled={disabled || (shape === 'terminal_input' && trimmed.length === 0)}
+          disabled={disabled || (requiresValue && trimmed.length === 0)}
           onClick={() => onApprove(trimmed.length > 0 ? trimmed : '')}
           className="h-7 px-2.5 text-[12px]"
           data-action-id={actionId}
@@ -323,4 +393,23 @@ function FreeformBody({
       </div>
     </div>
   )
+}
+
+function getFreeformPlaceholder(shape: RuntimeActionAnswerShapeDto): string {
+  switch (shape) {
+    case 'terminal_input':
+      return 'Type the exact terminal input to submit on resume.'
+    case 'short_text':
+      return 'Enter a short answer.'
+    case 'long_text':
+      return 'Enter the details.'
+    case 'number':
+      return 'Enter a number.'
+    case 'date':
+      return 'Choose a date.'
+    case 'plain_text':
+    case 'single_choice':
+    case 'multi_choice':
+      return 'Optional plain-text rationale for this decision.'
+  }
 }
