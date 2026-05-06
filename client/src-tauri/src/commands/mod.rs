@@ -211,8 +211,8 @@ pub use workspace_index::{
 
 pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{
-    agent::*, autonomous::*, dictation::*, error::*, mcp::*, notifications::*, runtime::*,
-    session_context::*, skills::*, surface::*, usage::*, workflow::*,
+    agent::*, autonomous::*, code_history::*, dictation::*, error::*, mcp::*, notifications::*,
+    runtime::*, session_context::*, skills::*, surface::*, usage::*, workflow::*,
 };
 
 pub(crate) use contracts::{

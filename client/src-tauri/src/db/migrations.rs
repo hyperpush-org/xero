@@ -17,6 +17,8 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up_with_hook("", migrate_agent_events_current_event_kinds),
             M::up_with_hook("", migrate_project_origin_column),
             M::up(MIGRATION_010_CODE_ROLLBACK_STORAGE_SQL),
+            M::up(MIGRATION_011_CODE_HISTORY_WORKSPACE_HEAD_SQL),
+            M::up(MIGRATION_012_CODE_HISTORY_COMMIT_PATCHSET_SQL),
         ])
     });
 
@@ -726,6 +728,202 @@ const MIGRATION_010_CODE_ROLLBACK_STORAGE_SQL: &str = r#"
         ON code_rollback_operations(project_id, agent_session_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_code_rollback_operations_target
         ON code_rollback_operations(project_id, target_change_group_id, created_at DESC);
+"#;
+
+const MIGRATION_011_CODE_HISTORY_WORKSPACE_HEAD_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS code_workspace_heads (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        head_id TEXT,
+        tree_id TEXT,
+        workspace_epoch INTEGER NOT NULL DEFAULT 0 CHECK (workspace_epoch >= 0),
+        latest_history_operation_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (head_id IS NULL OR head_id <> ''),
+        CHECK (tree_id IS NULL OR tree_id <> ''),
+        CHECK (latest_history_operation_id IS NULL OR latest_history_operation_id <> '')
+    );
+
+    CREATE TABLE IF NOT EXISTS code_path_epochs (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        workspace_epoch INTEGER NOT NULL CHECK (workspace_epoch >= 0),
+        commit_id TEXT,
+        history_operation_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, path),
+        CHECK (path <> ''),
+        CHECK (commit_id IS NULL OR commit_id <> ''),
+        CHECK (history_operation_id IS NULL OR history_operation_id <> '')
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_path_epochs_project_epoch
+        ON code_path_epochs(project_id, workspace_epoch DESC, path);
+    CREATE INDEX IF NOT EXISTS idx_code_path_epochs_commit
+        ON code_path_epochs(project_id, commit_id)
+        WHERE commit_id IS NOT NULL;
+"#;
+
+const MIGRATION_012_CODE_HISTORY_COMMIT_PATCHSET_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS code_patchsets (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        patchset_id TEXT NOT NULL,
+        change_group_id TEXT NOT NULL,
+        base_commit_id TEXT,
+        base_tree_id TEXT,
+        result_tree_id TEXT NOT NULL,
+        patch_kind TEXT NOT NULL,
+        file_count INTEGER NOT NULL CHECK (file_count >= 0),
+        text_hunk_count INTEGER NOT NULL CHECK (text_hunk_count >= 0),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, patchset_id),
+        CHECK (patchset_id <> ''),
+        CHECK (change_group_id <> ''),
+        CHECK (base_commit_id IS NULL OR base_commit_id <> ''),
+        CHECK (base_tree_id IS NULL OR base_tree_id <> ''),
+        CHECK (result_tree_id <> ''),
+        CHECK (patch_kind IN ('change_group', 'undo', 'session_rollback', 'recovered_mutation', 'imported_baseline')),
+        FOREIGN KEY (project_id, change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_patchsets_change_group
+        ON code_patchsets(project_id, change_group_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_patchsets_base_commit
+        ON code_patchsets(project_id, base_commit_id)
+        WHERE base_commit_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS code_commits (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        commit_id TEXT NOT NULL,
+        parent_commit_id TEXT,
+        tree_id TEXT NOT NULL,
+        parent_tree_id TEXT,
+        patchset_id TEXT NOT NULL,
+        change_group_id TEXT NOT NULL,
+        history_operation_id TEXT,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        tool_call_id TEXT,
+        runtime_event_id INTEGER,
+        conversation_sequence INTEGER,
+        commit_kind TEXT NOT NULL,
+        summary_label TEXT NOT NULL,
+        workspace_epoch INTEGER NOT NULL CHECK (workspace_epoch >= 0),
+        created_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, commit_id),
+        CHECK (commit_id <> ''),
+        CHECK (parent_commit_id IS NULL OR parent_commit_id <> ''),
+        CHECK (tree_id <> ''),
+        CHECK (parent_tree_id IS NULL OR parent_tree_id <> ''),
+        CHECK (patchset_id <> ''),
+        CHECK (change_group_id <> ''),
+        CHECK (history_operation_id IS NULL OR history_operation_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (tool_call_id IS NULL OR tool_call_id <> ''),
+        CHECK (runtime_event_id IS NULL OR runtime_event_id > 0),
+        CHECK (conversation_sequence IS NULL OR conversation_sequence >= 0),
+        CHECK (commit_kind IN ('change_group', 'undo', 'session_rollback', 'recovered_mutation', 'imported_baseline')),
+        CHECK (summary_label <> ''),
+        FOREIGN KEY (project_id, parent_commit_id)
+            REFERENCES code_commits(project_id, commit_id) ON DELETE SET NULL,
+        FOREIGN KEY (project_id, patchset_id)
+            REFERENCES code_patchsets(project_id, patchset_id) ON DELETE RESTRICT,
+        FOREIGN KEY (project_id, change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_commits_change_group
+        ON code_commits(project_id, change_group_id, completed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_commits_session
+        ON code_commits(project_id, agent_session_id, completed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_commits_run
+        ON code_commits(project_id, run_id, completed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_commits_patchset
+        ON code_commits(project_id, patchset_id);
+
+    CREATE TABLE IF NOT EXISTS code_patch_files (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        patchset_id TEXT NOT NULL,
+        patch_file_id TEXT NOT NULL,
+        file_index INTEGER NOT NULL CHECK (file_index >= 0),
+        path_before TEXT,
+        path_after TEXT,
+        operation TEXT NOT NULL,
+        merge_policy TEXT NOT NULL,
+        before_file_kind TEXT,
+        after_file_kind TEXT,
+        base_hash TEXT,
+        result_hash TEXT,
+        base_blob_id TEXT,
+        result_blob_id TEXT,
+        base_size INTEGER,
+        result_size INTEGER,
+        base_mode INTEGER,
+        result_mode INTEGER,
+        base_symlink_target TEXT,
+        result_symlink_target TEXT,
+        text_hunk_count INTEGER NOT NULL CHECK (text_hunk_count >= 0),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, patch_file_id),
+        UNIQUE (project_id, patchset_id, file_index),
+        CHECK (patch_file_id <> ''),
+        CHECK (path_before IS NOT NULL OR path_after IS NOT NULL),
+        CHECK (path_before IS NULL OR path_before <> ''),
+        CHECK (path_after IS NULL OR path_after <> ''),
+        CHECK (operation IN ('create', 'modify', 'delete', 'rename', 'mode_change', 'symlink_change')),
+        CHECK (merge_policy IN ('text', 'exact')),
+        CHECK (before_file_kind IS NULL OR before_file_kind IN ('file', 'directory', 'symlink')),
+        CHECK (after_file_kind IS NULL OR after_file_kind IN ('file', 'directory', 'symlink')),
+        CHECK (base_hash IS NULL OR (length(base_hash) = 64 AND base_hash NOT GLOB '*[^0-9a-f]*')),
+        CHECK (result_hash IS NULL OR (length(result_hash) = 64 AND result_hash NOT GLOB '*[^0-9a-f]*')),
+        CHECK (base_blob_id IS NULL OR (length(base_blob_id) = 64 AND base_blob_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (result_blob_id IS NULL OR (length(result_blob_id) = 64 AND result_blob_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (base_size IS NULL OR base_size >= 0),
+        CHECK (result_size IS NULL OR result_size >= 0),
+        FOREIGN KEY (project_id, patchset_id)
+            REFERENCES code_patchsets(project_id, patchset_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, base_blob_id)
+            REFERENCES code_blobs(project_id, blob_id) ON DELETE RESTRICT,
+        FOREIGN KEY (project_id, result_blob_id)
+            REFERENCES code_blobs(project_id, blob_id) ON DELETE RESTRICT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_patch_files_patchset
+        ON code_patch_files(project_id, patchset_id, file_index ASC);
+    CREATE INDEX IF NOT EXISTS idx_code_patch_files_paths
+        ON code_patch_files(project_id, path_before, path_after);
+
+    CREATE TABLE IF NOT EXISTS code_patch_hunks (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        patch_file_id TEXT NOT NULL,
+        hunk_id TEXT NOT NULL,
+        hunk_index INTEGER NOT NULL CHECK (hunk_index >= 0),
+        base_start_line INTEGER NOT NULL CHECK (base_start_line >= 0),
+        base_line_count INTEGER NOT NULL CHECK (base_line_count >= 0),
+        result_start_line INTEGER NOT NULL CHECK (result_start_line >= 0),
+        result_line_count INTEGER NOT NULL CHECK (result_line_count >= 0),
+        removed_lines_json TEXT NOT NULL DEFAULT '[]' CHECK (removed_lines_json <> '' AND json_valid(removed_lines_json)),
+        added_lines_json TEXT NOT NULL DEFAULT '[]' CHECK (added_lines_json <> '' AND json_valid(added_lines_json)),
+        context_before_json TEXT NOT NULL DEFAULT '[]' CHECK (context_before_json <> '' AND json_valid(context_before_json)),
+        context_after_json TEXT NOT NULL DEFAULT '[]' CHECK (context_after_json <> '' AND json_valid(context_after_json)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, patch_file_id, hunk_id),
+        CHECK (patch_file_id <> ''),
+        CHECK (hunk_id <> ''),
+        FOREIGN KEY (project_id, patch_file_id)
+            REFERENCES code_patch_files(project_id, patch_file_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_patch_hunks_file
+        ON code_patch_hunks(project_id, patch_file_id, hunk_index ASC);
 "#;
 
 const BASELINE_SCHEMA_SQL: &str = r#"
@@ -2627,9 +2825,15 @@ mod tests {
                 "autonomous_runs",
                 "code_blobs",
                 "code_change_groups",
+                "code_commits",
                 "code_file_versions",
+                "code_path_epochs",
+                "code_patch_files",
+                "code_patch_hunks",
+                "code_patchsets",
                 "code_rollback_operations",
                 "code_snapshots",
+                "code_workspace_heads",
                 "installed_plugin_records",
                 "installed_skill_records",
                 "meta",

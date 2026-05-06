@@ -20,7 +20,15 @@ use crate::{
     db::{database_path_for_repo, project_app_data_dir_for_repo},
 };
 
-use super::{open_runtime_database, read_project_row};
+use super::{
+    code_history::{
+        advance_code_workspace_epoch, ensure_code_workspace_head, persist_code_patchset_commit,
+        AdvanceCodeWorkspaceEpochRequest, CodeHistoryCommitKind, CodePatchFileInput,
+        CodePatchFileKind, CodePatchFileOperation, CodePatchHunkInput, CodePatchMergePolicy,
+        CodePatchsetCommitInput,
+    },
+    open_runtime_database, read_project_row,
+};
 
 const SNAPSHOT_SCHEMA: &str = "xero.code_snapshot.v1";
 const CODE_ROLLBACK_DIR: &str = "code-rollback";
@@ -521,6 +529,7 @@ pub fn begin_broad_capture(
         .change_group_id
         .clone()
         .unwrap_or_else(|| generate_id("code-change"));
+    let explicit_paths = broad_capture_explicit_paths(repo_root, &input.project_id)?;
     insert_change_group_open(repo_root, &input, &change_group_id)?;
     let before_snapshot = match capture_code_snapshot_internal(
         repo_root,
@@ -531,7 +540,7 @@ pub fn begin_broad_capture(
             change_group_id: Some(change_group_id.clone()),
             boundary_kind: CodeSnapshotBoundaryKind::Before,
             previous_snapshot_id: None,
-            explicit_paths: BTreeSet::new(),
+            explicit_paths,
         },
     ) {
         Ok(snapshot) => snapshot,
@@ -562,6 +571,7 @@ pub fn complete_broad_capture(
     repo_root: &Path,
     handle: CodeRollbackCaptureHandle,
 ) -> CommandResult<CompletedCodeChangeGroup> {
+    let explicit_paths = broad_capture_explicit_paths(repo_root, &handle.project_id)?;
     let after_snapshot = match capture_code_snapshot_internal(
         repo_root,
         SnapshotCaptureRequest {
@@ -571,7 +581,7 @@ pub fn complete_broad_capture(
             change_group_id: Some(handle.change_group_id.clone()),
             boundary_kind: CodeSnapshotBoundaryKind::After,
             previous_snapshot_id: Some(handle.before_snapshot_id.clone()),
-            explicit_paths: BTreeSet::new(),
+            explicit_paths: explicit_paths.clone(),
         },
     ) {
         Ok(snapshot) => snapshot,
@@ -586,7 +596,12 @@ pub fn complete_broad_capture(
         }
     };
 
-    persist_broad_file_versions(repo_root, &handle, &after_snapshot.snapshot_id)
+    persist_broad_file_versions(
+        repo_root,
+        &handle,
+        &after_snapshot.snapshot_id,
+        &explicit_paths,
+    )
 }
 
 pub fn fail_code_change_capture(
@@ -653,6 +668,7 @@ pub fn apply_code_rollback(
         summary_label: result_summary,
         restore_state: CodeChangeRestoreState::SnapshotAvailable,
     };
+    let explicit_paths = broad_capture_explicit_paths(repo_root, &target.project_id)?;
     insert_change_group_open(repo_root, &result_group_input, &result_change_group_id)?;
     if let Err(error) = insert_pending_rollback_operation(
         repo_root,
@@ -678,7 +694,7 @@ pub fn apply_code_rollback(
             change_group_id: Some(result_change_group_id.clone()),
             boundary_kind: CodeSnapshotBoundaryKind::PreRollback,
             previous_snapshot_id: None,
-            explicit_paths: BTreeSet::new(),
+            explicit_paths: explicit_paths.clone(),
         },
     ) {
         Ok(snapshot) => snapshot,
@@ -741,7 +757,7 @@ pub fn apply_code_rollback(
             change_group_id: Some(result_change_group_id.clone()),
             boundary_kind: CodeSnapshotBoundaryKind::PostRollback,
             previous_snapshot_id: Some(pre_rollback_snapshot.snapshot_id.clone()),
-            explicit_paths: BTreeSet::new(),
+            explicit_paths: explicit_paths.clone(),
         },
     ) {
         Ok(snapshot) => snapshot,
@@ -768,6 +784,7 @@ pub fn apply_code_rollback(
             targets: Vec::new(),
         },
         &post_rollback_snapshot.snapshot_id,
+        &explicit_paths,
     ) {
         Ok(group) => group,
         Err(error) => {
@@ -1353,7 +1370,7 @@ fn persist_exact_file_versions(
         )
     })?;
 
-    Ok(CompletedCodeChangeGroup {
+    let completed = CompletedCodeChangeGroup {
         project_id: handle.project_id.clone(),
         agent_session_id: handle.agent_session_id.clone(),
         run_id: handle.run_id.clone(),
@@ -1362,13 +1379,17 @@ fn persist_exact_file_versions(
         after_snapshot_id: after_snapshot_id.into(),
         file_version_count: affected_files.len(),
         affected_files,
-    })
+    };
+    persist_exact_capture_history_commit(repo_root, handle, &before_manifest, &after_manifest)?;
+
+    Ok(completed)
 }
 
 fn persist_broad_file_versions(
     repo_root: &Path,
     handle: &CodeRollbackCaptureHandle,
     after_snapshot_id: &str,
+    explicit_paths: &BTreeSet<String>,
 ) -> CommandResult<CompletedCodeChangeGroup> {
     let (connection, database_path) = open_code_rollback_database(repo_root)?;
     let before_manifest = load_completed_snapshot_manifest(
@@ -1409,7 +1430,11 @@ fn persist_broad_file_versions(
             path_before: before_entry.map(|entry| entry.path.clone()),
             path_after: after_entry.map(|entry| entry.path.clone()),
             operation: None,
-            explicitly_edited: false,
+            explicitly_edited: target_overlaps_explicit_paths(
+                before_entry,
+                after_entry,
+                explicit_paths,
+            ),
         };
         let operation = infer_file_operation(&target, before_entry, after_entry);
         insert_file_version(
@@ -1421,7 +1446,7 @@ fn persist_broad_file_versions(
             operation,
             before_entry,
             after_entry,
-            false,
+            target.explicitly_edited,
         )?;
         affected_files.push(completed_file_from_entries(
             &target,
@@ -1448,7 +1473,7 @@ fn persist_broad_file_versions(
         )
     })?;
 
-    Ok(CompletedCodeChangeGroup {
+    let completed = CompletedCodeChangeGroup {
         project_id: handle.project_id.clone(),
         agent_session_id: handle.agent_session_id.clone(),
         run_id: handle.run_id.clone(),
@@ -1457,7 +1482,595 @@ fn persist_broad_file_versions(
         after_snapshot_id: after_snapshot_id.into(),
         file_version_count: affected_files.len(),
         affected_files,
+    };
+    persist_broad_capture_history_commit(repo_root, handle, &before_manifest, &after_manifest)?;
+
+    Ok(completed)
+}
+
+#[derive(Debug)]
+struct CompletedChangeGroupCommitMetadata {
+    tool_call_id: Option<String>,
+    runtime_event_id: Option<i64>,
+    conversation_sequence: Option<i64>,
+    change_kind: String,
+    summary_label: String,
+    started_at: String,
+    completed_at: String,
+}
+
+fn persist_exact_capture_history_commit(
+    repo_root: &Path,
+    handle: &CodeRollbackCaptureHandle,
+    before_manifest: &CodeSnapshotManifest,
+    after_manifest: &CodeSnapshotManifest,
+) -> CommandResult<()> {
+    let before_entries = before_manifest.entry_map();
+    let after_entries = after_manifest.entry_map();
+    let mut files = Vec::new();
+
+    for target in &handle.targets {
+        let before_entry = target
+            .path_before
+            .as_deref()
+            .and_then(|path| before_entries.get(path));
+        let after_entry = target
+            .path_after
+            .as_deref()
+            .and_then(|path| after_entries.get(path));
+        let requested_operation = target
+            .operation
+            .unwrap_or_else(|| infer_file_operation(target, before_entry, after_entry));
+        if before_entry == after_entry && target.path_before == target.path_after {
+            continue;
+        }
+        let Some(file) = patch_file_input_from_entries(
+            repo_root,
+            &handle.project_id,
+            files.len(),
+            requested_operation,
+            before_entry,
+            after_entry,
+        )?
+        else {
+            continue;
+        };
+        files.push(file);
+    }
+
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    let metadata = load_completed_change_group_commit_metadata(
+        repo_root,
+        &handle.project_id,
+        &handle.change_group_id,
+    )?;
+    let parent_head = ensure_code_workspace_head(repo_root, &handle.project_id)?;
+    let workspace_epoch = parent_head.workspace_epoch.checked_add(1).ok_or_else(|| {
+        CommandError::system_fault(
+            "code_workspace_epoch_overflow",
+            format!(
+                "Xero could not commit exact-path capture `{}` because the workspace epoch is already at the maximum value.",
+                handle.change_group_id
+            ),
+        )
+    })?;
+    let commit_id = generate_id("code-commit");
+    let tree_id = code_tree_id_for_manifest(after_manifest)?;
+    let patchset_id = generate_id("code-patchset");
+    let affected_paths = affected_paths_for_patch_files(&files);
+    let updated_at = metadata.completed_at.clone();
+
+    persist_code_patchset_commit(
+        repo_root,
+        &CodePatchsetCommitInput {
+            project_id: handle.project_id.clone(),
+            commit_id: commit_id.clone(),
+            parent_commit_id: parent_head.head_id.clone(),
+            tree_id: tree_id.clone(),
+            parent_tree_id: parent_head.tree_id.clone(),
+            patchset_id,
+            change_group_id: handle.change_group_id.clone(),
+            history_operation_id: None,
+            agent_session_id: handle.agent_session_id.clone(),
+            run_id: handle.run_id.clone(),
+            tool_call_id: metadata.tool_call_id,
+            runtime_event_id: metadata.runtime_event_id,
+            conversation_sequence: metadata.conversation_sequence,
+            commit_kind: commit_kind_for_change_kind(&metadata.change_kind),
+            summary_label: metadata.summary_label,
+            workspace_epoch,
+            created_at: metadata.started_at,
+            completed_at: updated_at.clone(),
+            files,
+        },
+    )?;
+
+    advance_code_workspace_epoch(
+        repo_root,
+        &AdvanceCodeWorkspaceEpochRequest {
+            project_id: handle.project_id.clone(),
+            head_id: Some(commit_id.clone()),
+            tree_id: Some(tree_id),
+            commit_id: Some(commit_id),
+            latest_history_operation_id: None,
+            affected_paths,
+            updated_at,
+        },
+    )?;
+
+    Ok(())
+}
+
+fn persist_broad_capture_history_commit(
+    repo_root: &Path,
+    handle: &CodeRollbackCaptureHandle,
+    before_manifest: &CodeSnapshotManifest,
+    after_manifest: &CodeSnapshotManifest,
+) -> CommandResult<()> {
+    let files = patch_files_from_manifest_diff(
+        repo_root,
+        &handle.project_id,
+        before_manifest,
+        after_manifest,
+    )?;
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    let metadata = load_completed_change_group_commit_metadata(
+        repo_root,
+        &handle.project_id,
+        &handle.change_group_id,
+    )?;
+    let parent_head = ensure_code_workspace_head(repo_root, &handle.project_id)?;
+    let workspace_epoch = parent_head.workspace_epoch.checked_add(1).ok_or_else(|| {
+        CommandError::system_fault(
+            "code_workspace_epoch_overflow",
+            format!(
+                "Xero could not commit broad capture `{}` because the workspace epoch is already at the maximum value.",
+                handle.change_group_id
+            ),
+        )
+    })?;
+    let commit_id = generate_id("code-commit");
+    let tree_id = code_tree_id_for_manifest(after_manifest)?;
+    let patchset_id = generate_id("code-patchset");
+    let affected_paths = affected_paths_for_patch_files(&files);
+    let updated_at = metadata.completed_at.clone();
+
+    persist_code_patchset_commit(
+        repo_root,
+        &CodePatchsetCommitInput {
+            project_id: handle.project_id.clone(),
+            commit_id: commit_id.clone(),
+            parent_commit_id: parent_head.head_id.clone(),
+            tree_id: tree_id.clone(),
+            parent_tree_id: parent_head.tree_id.clone(),
+            patchset_id,
+            change_group_id: handle.change_group_id.clone(),
+            history_operation_id: None,
+            agent_session_id: handle.agent_session_id.clone(),
+            run_id: handle.run_id.clone(),
+            tool_call_id: metadata.tool_call_id,
+            runtime_event_id: metadata.runtime_event_id,
+            conversation_sequence: metadata.conversation_sequence,
+            commit_kind: commit_kind_for_change_kind(&metadata.change_kind),
+            summary_label: metadata.summary_label,
+            workspace_epoch,
+            created_at: metadata.started_at,
+            completed_at: updated_at.clone(),
+            files,
+        },
+    )?;
+
+    advance_code_workspace_epoch(
+        repo_root,
+        &AdvanceCodeWorkspaceEpochRequest {
+            project_id: handle.project_id.clone(),
+            head_id: Some(commit_id.clone()),
+            tree_id: Some(tree_id),
+            commit_id: Some(commit_id),
+            latest_history_operation_id: None,
+            affected_paths,
+            updated_at,
+        },
+    )?;
+
+    Ok(())
+}
+
+fn patch_files_from_manifest_diff(
+    repo_root: &Path,
+    project_id: &str,
+    before_manifest: &CodeSnapshotManifest,
+    after_manifest: &CodeSnapshotManifest,
+) -> CommandResult<Vec<CodePatchFileInput>> {
+    let before_entries = before_manifest.entry_map();
+    let after_entries = after_manifest.entry_map();
+    let all_paths = before_entries
+        .keys()
+        .chain(after_entries.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut files = Vec::new();
+
+    for path in all_paths {
+        let before_entry = before_entries.get(&path);
+        let after_entry = after_entries.get(&path);
+        if before_entry == after_entry {
+            continue;
+        }
+        let target = CodeRollbackCaptureTarget {
+            path_before: before_entry.map(|entry| entry.path.clone()),
+            path_after: after_entry.map(|entry| entry.path.clone()),
+            operation: None,
+            explicitly_edited: false,
+        };
+        let operation = infer_file_operation(&target, before_entry, after_entry);
+        let Some(file) = patch_file_input_from_entries(
+            repo_root,
+            project_id,
+            files.len(),
+            operation,
+            before_entry,
+            after_entry,
+        )?
+        else {
+            continue;
+        };
+        files.push(file);
+    }
+
+    Ok(files)
+}
+
+fn patch_file_input_from_entries(
+    repo_root: &Path,
+    project_id: &str,
+    file_index: usize,
+    requested_operation: CodeFileOperation,
+    before_entry: Option<&CodeSnapshotFileEntry>,
+    after_entry: Option<&CodeSnapshotFileEntry>,
+) -> CommandResult<Option<CodePatchFileInput>> {
+    let Some(operation) =
+        patch_operation_from_entries(requested_operation, before_entry, after_entry)
+    else {
+        return Ok(None);
+    };
+    let patch_file_id = format!(
+        "{}-{}",
+        generate_id("code-patch-file"),
+        file_index.saturating_add(1)
+    );
+    let (merge_policy, hunks) = patch_merge_policy_and_hunks(
+        repo_root,
+        project_id,
+        &patch_file_id,
+        operation,
+        before_entry,
+        after_entry,
+    )?;
+
+    Ok(Some(CodePatchFileInput {
+        patch_file_id,
+        path_before: before_entry.map(|entry| entry.path.clone()),
+        path_after: after_entry.map(|entry| entry.path.clone()),
+        operation,
+        merge_policy,
+        before_file_kind: before_entry.map(patch_file_kind_from_snapshot),
+        after_file_kind: after_entry.map(patch_file_kind_from_snapshot),
+        base_hash: before_entry.and_then(|entry| entry.sha256.clone()),
+        result_hash: after_entry.and_then(|entry| entry.sha256.clone()),
+        base_blob_id: before_entry.and_then(|entry| entry.blob_id.clone()),
+        result_blob_id: after_entry.and_then(|entry| entry.blob_id.clone()),
+        base_size: before_entry.and_then(|entry| entry.size),
+        result_size: after_entry.and_then(|entry| entry.size),
+        base_mode: before_entry.and_then(|entry| entry.mode),
+        result_mode: after_entry.and_then(|entry| entry.mode),
+        base_symlink_target: before_entry.and_then(|entry| entry.symlink_target.clone()),
+        result_symlink_target: after_entry.and_then(|entry| entry.symlink_target.clone()),
+        hunks,
+    }))
+}
+
+fn patch_operation_from_entries(
+    requested_operation: CodeFileOperation,
+    before_entry: Option<&CodeSnapshotFileEntry>,
+    after_entry: Option<&CodeSnapshotFileEntry>,
+) -> Option<CodePatchFileOperation> {
+    match (before_entry, after_entry) {
+        (None, None) => None,
+        (None, Some(_)) => Some(CodePatchFileOperation::Create),
+        (Some(_), None) => Some(CodePatchFileOperation::Delete),
+        (Some(before), Some(after)) if before.path != after.path => {
+            Some(CodePatchFileOperation::Rename)
+        }
+        (Some(_), Some(_)) => Some(match requested_operation {
+            CodeFileOperation::Create | CodeFileOperation::Modify | CodeFileOperation::Delete => {
+                CodePatchFileOperation::Modify
+            }
+            CodeFileOperation::Rename => CodePatchFileOperation::Rename,
+            CodeFileOperation::ModeChange => CodePatchFileOperation::ModeChange,
+            CodeFileOperation::SymlinkChange => CodePatchFileOperation::SymlinkChange,
+        }),
+    }
+}
+
+fn patch_merge_policy_and_hunks(
+    repo_root: &Path,
+    project_id: &str,
+    patch_file_id: &str,
+    operation: CodePatchFileOperation,
+    before_entry: Option<&CodeSnapshotFileEntry>,
+    after_entry: Option<&CodeSnapshotFileEntry>,
+) -> CommandResult<(CodePatchMergePolicy, Vec<CodePatchHunkInput>)> {
+    if !matches!(
+        operation,
+        CodePatchFileOperation::Create
+            | CodePatchFileOperation::Modify
+            | CodePatchFileOperation::Delete
+    ) {
+        return Ok((CodePatchMergePolicy::Exact, Vec::new()));
+    }
+    if !entry_side_is_absent_or_file(before_entry) || !entry_side_is_absent_or_file(after_entry) {
+        return Ok((CodePatchMergePolicy::Exact, Vec::new()));
+    }
+
+    let Some(before_text) = text_for_patch_entry(repo_root, project_id, before_entry)? else {
+        return Ok((CodePatchMergePolicy::Exact, Vec::new()));
+    };
+    let Some(after_text) = text_for_patch_entry(repo_root, project_id, after_entry)? else {
+        return Ok((CodePatchMergePolicy::Exact, Vec::new()));
+    };
+    if before_text == after_text {
+        return Ok((CodePatchMergePolicy::Exact, Vec::new()));
+    }
+
+    Ok((
+        CodePatchMergePolicy::Text,
+        build_single_text_hunk(patch_file_id, &before_text, &after_text),
+    ))
+}
+
+fn entry_side_is_absent_or_file(entry: Option<&CodeSnapshotFileEntry>) -> bool {
+    entry.map_or(true, |entry| entry.kind == CodeSnapshotFileKind::File)
+}
+
+fn text_for_patch_entry(
+    repo_root: &Path,
+    project_id: &str,
+    entry: Option<&CodeSnapshotFileEntry>,
+) -> CommandResult<Option<String>> {
+    let Some(entry) = entry else {
+        return Ok(Some(String::new()));
+    };
+    if entry.kind != CodeSnapshotFileKind::File {
+        return Ok(None);
+    }
+    let Some(blob_id) = entry.blob_id.as_deref() else {
+        return Ok(None);
+    };
+    let (connection, _database_path) = open_code_rollback_database(repo_root)?;
+    let bytes = read_blob_bytes(&connection, repo_root, project_id, blob_id)?;
+    if bytes.contains(&0) {
+        return Ok(None);
+    }
+    String::from_utf8(bytes).map(Some).map_err(|error| {
+        CommandError::system_fault(
+            "code_patch_text_decode_failed",
+            format!(
+                "Xero could not decode text blob `{blob_id}` for code history patch capture: {error}"
+            ),
+        )
     })
+}
+
+fn build_single_text_hunk(
+    patch_file_id: &str,
+    before_text: &str,
+    after_text: &str,
+) -> Vec<CodePatchHunkInput> {
+    let before_lines = split_text_lines_preserving_endings(before_text);
+    let after_lines = split_text_lines_preserving_endings(after_text);
+    let mut prefix_len = 0;
+    while before_lines.get(prefix_len) == after_lines.get(prefix_len)
+        && prefix_len < before_lines.len()
+        && prefix_len < after_lines.len()
+    {
+        prefix_len += 1;
+    }
+
+    let mut suffix_len = 0;
+    while suffix_len < before_lines.len().saturating_sub(prefix_len)
+        && suffix_len < after_lines.len().saturating_sub(prefix_len)
+        && before_lines[before_lines.len() - 1 - suffix_len]
+            == after_lines[after_lines.len() - 1 - suffix_len]
+    {
+        suffix_len += 1;
+    }
+
+    let before_end = before_lines.len().saturating_sub(suffix_len);
+    let after_end = after_lines.len().saturating_sub(suffix_len);
+    let context_before_start = prefix_len.saturating_sub(3);
+    let context_after_end = (before_end + 3).min(before_lines.len());
+
+    vec![CodePatchHunkInput {
+        hunk_id: format!("{}-{}", generate_id("code-hunk"), patch_file_id),
+        hunk_index: 0,
+        base_start_line: start_line_for_hunk(prefix_len, before_lines.len()),
+        base_line_count: (before_end - prefix_len).min(u32::MAX as usize) as u32,
+        result_start_line: start_line_for_hunk(prefix_len, after_lines.len()),
+        result_line_count: (after_end - prefix_len).min(u32::MAX as usize) as u32,
+        removed_lines: before_lines[prefix_len..before_end].to_vec(),
+        added_lines: after_lines[prefix_len..after_end].to_vec(),
+        context_before: before_lines[context_before_start..prefix_len].to_vec(),
+        context_after: before_lines[before_end..context_after_end].to_vec(),
+    }]
+}
+
+fn split_text_lines_preserving_endings(text: &str) -> Vec<String> {
+    text.split_inclusive('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+}
+
+fn start_line_for_hunk(prefix_len: usize, total_lines: usize) -> u32 {
+    if total_lines == 0 {
+        0
+    } else {
+        prefix_len.saturating_add(1).min(u32::MAX as usize) as u32
+    }
+}
+
+fn patch_file_kind_from_snapshot(entry: &CodeSnapshotFileEntry) -> CodePatchFileKind {
+    match entry.kind {
+        CodeSnapshotFileKind::File => CodePatchFileKind::File,
+        CodeSnapshotFileKind::Directory => CodePatchFileKind::Directory,
+        CodeSnapshotFileKind::Symlink => CodePatchFileKind::Symlink,
+    }
+}
+
+fn load_completed_change_group_commit_metadata(
+    repo_root: &Path,
+    project_id: &str,
+    change_group_id: &str,
+) -> CommandResult<CompletedChangeGroupCommitMetadata> {
+    let (connection, database_path) = open_code_rollback_database(repo_root)?;
+    let row = connection
+        .query_row(
+            r#"
+            SELECT
+                tool_call_id,
+                runtime_event_id,
+                conversation_sequence,
+                change_kind,
+                summary_label,
+                status,
+                started_at,
+                completed_at
+            FROM code_change_groups
+            WHERE project_id = ?1
+              AND change_group_id = ?2
+            "#,
+            params![project_id, change_group_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "code_change_group_query_failed",
+                format!(
+                    "Xero could not query code change group `{change_group_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "code_change_group_missing",
+                format!("Xero could not find code change group `{change_group_id}`."),
+            )
+        })?;
+    let (
+        tool_call_id,
+        runtime_event_id,
+        conversation_sequence,
+        change_kind,
+        summary_label,
+        status,
+        started_at,
+        completed_at,
+    ) = row;
+    if status != "completed" {
+        return Err(CommandError::retryable(
+            "code_change_group_not_complete",
+            format!(
+                "Code change group `{change_group_id}` is `{status}` and cannot be committed to code history yet."
+            ),
+        ));
+    }
+    let completed_at = completed_at.ok_or_else(|| {
+        CommandError::system_fault(
+            "code_change_group_completed_at_missing",
+            format!("Completed code change group `{change_group_id}` is missing completed_at."),
+        )
+    })?;
+
+    Ok(CompletedChangeGroupCommitMetadata {
+        tool_call_id,
+        runtime_event_id,
+        conversation_sequence,
+        change_kind,
+        summary_label,
+        started_at,
+        completed_at,
+    })
+}
+
+fn commit_kind_for_change_kind(change_kind: &str) -> CodeHistoryCommitKind {
+    match change_kind {
+        "recovered_mutation" => CodeHistoryCommitKind::RecoveredMutation,
+        "imported_baseline" => CodeHistoryCommitKind::ImportedBaseline,
+        _ => CodeHistoryCommitKind::ChangeGroup,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TreeFingerprintEntry<'a> {
+    path: &'a str,
+    kind: &'static str,
+    size: Option<u64>,
+    sha256: Option<&'a str>,
+    mode: Option<u32>,
+    symlink_target: Option<&'a str>,
+}
+
+fn code_tree_id_for_manifest(manifest: &CodeSnapshotManifest) -> CommandResult<String> {
+    let entry_map = manifest.entry_map();
+    let entries = entry_map
+        .values()
+        .map(|entry| TreeFingerprintEntry {
+            path: entry.path.as_str(),
+            kind: entry.kind.as_str(),
+            size: entry.size,
+            sha256: entry.sha256.as_deref(),
+            mode: entry.mode,
+            symlink_target: entry.symlink_target.as_deref(),
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_vec(&entries).map_err(|error| {
+        CommandError::system_fault(
+            "code_tree_fingerprint_encode_failed",
+            format!("Xero could not encode code tree fingerprint: {error}"),
+        )
+    })?;
+    Ok(format!("code-tree-{}", sha256_hex(&encoded)))
+}
+
+fn affected_paths_for_patch_files(files: &[CodePatchFileInput]) -> Vec<String> {
+    files
+        .iter()
+        .flat_map(|file| [file.path_before.as_deref(), file.path_after.as_deref()])
+        .flatten()
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn completed_file_from_entries(
@@ -3556,6 +4169,85 @@ fn explicit_paths_for_targets(targets: &[CodeRollbackCaptureTarget]) -> BTreeSet
         .collect()
 }
 
+fn target_overlaps_explicit_paths(
+    before_entry: Option<&CodeSnapshotFileEntry>,
+    after_entry: Option<&CodeSnapshotFileEntry>,
+    explicit_paths: &BTreeSet<String>,
+) -> bool {
+    [before_entry, after_entry]
+        .into_iter()
+        .flatten()
+        .any(|entry| explicit_paths.contains(&entry.path))
+}
+
+fn broad_capture_explicit_paths(
+    repo_root: &Path,
+    project_id: &str,
+) -> CommandResult<BTreeSet<String>> {
+    let (connection, database_path) = open_code_rollback_database(repo_root)?;
+    read_project_row(&connection, &database_path, repo_root, project_id)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT path
+            FROM (
+                SELECT path_before AS path
+                FROM code_file_versions
+                WHERE project_id = ?1
+                  AND explicitly_edited = 1
+                  AND generated = 1
+                  AND path_before IS NOT NULL
+                UNION
+                SELECT path_after AS path
+                FROM code_file_versions
+                WHERE project_id = ?1
+                  AND explicitly_edited = 1
+                  AND generated = 1
+                  AND path_after IS NOT NULL
+            )
+            ORDER BY path ASC
+            "#,
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "code_broad_capture_explicit_paths_prepare_failed",
+                format!(
+                    "Xero could not prepare broad capture explicit path query in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    let rows = statement
+        .query_map(params![project_id], |row| row.get::<_, String>(0))
+        .map_err(|error| {
+            CommandError::system_fault(
+                "code_broad_capture_explicit_paths_query_failed",
+                format!(
+                    "Xero could not query broad capture explicit paths in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    let mut paths = BTreeSet::new();
+    for row in rows {
+        let path = row.map_err(|error| {
+            CommandError::system_fault(
+                "code_broad_capture_explicit_paths_decode_failed",
+                format!(
+                    "Xero could not decode broad capture explicit path in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+        if safe_relative_path(&path).is_some() {
+            paths.insert(path);
+        }
+    }
+
+    Ok(paths)
+}
+
 fn normalize_optional_path(
     value: Option<&str>,
     field: &'static str,
@@ -3977,6 +4669,7 @@ mod tests {
                 CodeRollbackCaptureTarget::rename("old-name.txt", "new-name.txt"),
                 CodeRollbackCaptureTarget::modify("binary.dat"),
                 CodeRollbackCaptureTarget::symlink_change("link"),
+                CodeRollbackCaptureTarget::create("created-dir"),
             ],
         )
         .expect("begin capture");
@@ -3988,9 +4681,79 @@ mod tests {
         fs::write(root.join("binary.dat"), [9_u8, 8, 7, 6]).expect("binary after");
         fs::remove_file(root.join("link")).expect("remove link");
         std::os::unix::fs::symlink("target-v2", root.join("link")).expect("symlink v2");
+        fs::create_dir(root.join("created-dir")).expect("created dir");
 
         let completed = complete_exact_path_capture(root, handle).expect("complete capture");
-        assert_eq!(completed.file_version_count, 6);
+        assert_eq!(completed.file_version_count, 7);
+
+        let head = db::project_store::read_code_workspace_head(root, &project.project_id)
+            .expect("read workspace head")
+            .expect("workspace head");
+        assert_eq!(head.workspace_epoch, 1);
+        let commit = db::project_store::read_code_patchset_commit(
+            root,
+            &project.project_id,
+            head.head_id.as_deref().expect("head commit id"),
+        )
+        .expect("read exact capture commit")
+        .expect("exact capture commit");
+        assert_eq!(commit.commit.change_group_id, completed.change_group_id);
+        assert_eq!(commit.commit.workspace_epoch, 1);
+        assert_eq!(commit.patchset.file_count, 7);
+        assert_eq!(commit.files.len(), 7);
+        assert!(commit
+            .files
+            .iter()
+            .any(|file| file.operation == CodePatchFileOperation::Delete
+                && file.path_before.as_deref() == Some("delete.txt")));
+        assert!(commit
+            .files
+            .iter()
+            .any(|file| file.operation == CodePatchFileOperation::Rename
+                && file.path_before.as_deref() == Some("old-name.txt")
+                && file.path_after.as_deref() == Some("new-name.txt")));
+        let text_modify = commit
+            .files
+            .iter()
+            .find(|file| file.path_after.as_deref() == Some("src/modify.txt"))
+            .expect("text modify patch file");
+        assert_eq!(text_modify.merge_policy, CodePatchMergePolicy::Text);
+        assert_eq!(text_modify.hunks.len(), 1);
+        assert_eq!(text_modify.hunks[0].removed_lines, vec!["before\n"]);
+        assert_eq!(text_modify.hunks[0].added_lines, vec!["after\n"]);
+        let binary_modify = commit
+            .files
+            .iter()
+            .find(|file| file.path_after.as_deref() == Some("binary.dat"))
+            .expect("binary modify patch file");
+        assert_eq!(binary_modify.merge_policy, CodePatchMergePolicy::Exact);
+        assert!(binary_modify.hunks.is_empty());
+        let directory_create = commit
+            .files
+            .iter()
+            .find(|file| file.path_after.as_deref() == Some("created-dir"))
+            .expect("directory create patch file");
+        assert_eq!(directory_create.operation, CodePatchFileOperation::Create);
+        assert_eq!(
+            directory_create.after_file_kind,
+            Some(CodePatchFileKind::Directory)
+        );
+        assert_eq!(directory_create.merge_policy, CodePatchMergePolicy::Exact);
+        let old_name_epoch =
+            db::project_store::read_code_path_epoch(root, &project.project_id, "old-name.txt")
+                .expect("read old-name path epoch")
+                .expect("old-name path epoch");
+        let new_name_epoch =
+            db::project_store::read_code_path_epoch(root, &project.project_id, "new-name.txt")
+                .expect("read new-name path epoch")
+                .expect("new-name path epoch");
+        assert_eq!(old_name_epoch.workspace_epoch, 1);
+        assert_eq!(new_name_epoch.workspace_epoch, 1);
+        assert_eq!(old_name_epoch.commit_id.as_deref(), head.head_id.as_deref());
+        assert_eq!(
+            new_name_epoch.commit_id.as_deref(),
+            old_name_epoch.commit_id.as_deref()
+        );
 
         fs::write(root.join("src/modify.txt"), "later user edit\n").expect("later modify");
         fs::write(root.join("created.txt"), "later created edit\n").expect("later created");
@@ -3998,6 +4761,7 @@ mod tests {
         fs::write(root.join("binary.dat"), [1_u8, 2, 3]).expect("later binary");
         fs::remove_file(root.join("link")).expect("remove link later");
         std::os::unix::fs::symlink("target-user", root.join("link")).expect("symlink user");
+        assert!(root.join("created-dir").is_dir());
         fs::write(root.join("extra.txt"), "remove me\n").expect("extra");
 
         let outcome =
@@ -4028,6 +4792,7 @@ mod tests {
                 .to_string_lossy(),
             "target-v1"
         );
+        assert!(!root.join("created-dir").exists());
         assert!(!root.join("extra.txt").exists());
         assert!(outcome.removed_paths.iter().any(|path| path == "extra.txt"));
         assert!(code_rollback_storage_dir_for_repo(root).starts_with(

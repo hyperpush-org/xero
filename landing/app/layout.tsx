@@ -14,13 +14,30 @@ const geistMono = Geist_Mono({
   display: 'swap',
 })
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://xero.app'
+const TITLE = 'Xero — The agentic coding studio for your desktop'
+const DESCRIPTION =
+  'A native desktop app that builds production software end-to-end. Written from the ground up in Rust — agentic workflow, harness, and persistence — with Discord and Telegram pings when you are needed. Works with your existing Claude, ChatGPT, Copilot, and OpenRouter subscriptions.'
+
 export const metadata: Metadata = {
-  title: 'Xero — The agentic coding studio for your desktop',
-  description:
-    'A native desktop app that builds production software end-to-end. Written from the ground up in Rust — agentic workflow, harness, and persistence — with Discord and Telegram pings when you are needed. Works with your existing Claude, ChatGPT, Copilot, and OpenRouter subscriptions.',
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
   generator: 'v0.app',
   icons: {
     icon: '/icon-logo.svg',
+  },
+  openGraph: {
+    type: 'website',
+    url: SITE_URL,
+    siteName: 'Xero',
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: TITLE,
+    description: DESCRIPTION,
   },
 }
 
