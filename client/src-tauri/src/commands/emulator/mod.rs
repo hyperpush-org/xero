@@ -43,6 +43,9 @@ use automation::{
     LocationRequest, LogSubscribeRequest, PushNotificationRequest, ScreenshotResponse, Selector,
     SubscriptionToken, SwipeRequest, TapTarget, TypeRequest, UiTree,
 };
+use automation::metro_inspector::{
+    ElementInfo, MetroInspector, MetroStatus, METRO_PORT_RANGE,
+};
 
 /// Process-wide emulator state. Holds the FrameBus (shared with the URI
 /// scheme handler) and the single active device session, if any.
@@ -51,6 +54,8 @@ pub struct EmulatorState {
     active: Mutex<Option<ActiveDevice>>,
     log_collector: automation::logs::LogCollector,
     log_stream: Mutex<Option<LogStreamHandle>>,
+    /// Metro inspector bridge (React Native / Expo).
+    metro_inspector: Mutex<Option<MetroInspector>>,
 }
 
 enum LogStreamHandle {
@@ -65,6 +70,7 @@ impl Default for EmulatorState {
             active: Mutex::new(None),
             log_collector: automation::logs::LogCollector::new(),
             log_stream: Mutex::new(None),
+            metro_inspector: Mutex::new(None),
         }
     }
 }
@@ -271,6 +277,50 @@ pub fn emulator_ios_open_accessibility_settings() -> CommandResult<()> {
             .map_err(|e| {
                 CommandError::system_fault(
                     "ios_open_accessibility_failed",
+                    format!("could not launch System Settings: {e}"),
+                )
+            })?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+/// macOS only — trigger the system Screen Recording permission prompt.
+/// Required by ScreenCaptureKit for the Swift helper's frame capture.
+/// Returns the current permission state after the call.
+#[tauri::command]
+pub fn emulator_ios_request_screen_recording_permission<R: Runtime>(
+    app: AppHandle<R>,
+) -> CommandResult<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let granted = ios::cg_input::request_screen_recording_permission();
+        let _ = app.emit(EMULATOR_SDK_STATUS_CHANGED_EVENT, ());
+        Ok(granted)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(false)
+    }
+}
+
+/// Open the Privacy & Security → Screen Recording pane in System Settings
+/// so the user can enable Xero. macOS-only; on other hosts this is a no-op.
+#[tauri::command]
+pub fn emulator_ios_open_screen_recording_settings() -> CommandResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            .status()
+            .map_err(|e| {
+                CommandError::system_fault(
+                    "ios_open_screen_recording_failed",
                     format!("could not launch System Settings: {e}"),
                 )
             })?;
@@ -790,16 +840,12 @@ pub fn emulator_ui_dump(state: State<'_, EmulatorState>) -> CommandResult<UiTree
             }),
         #[cfg(target_os = "macos")]
         Some(ActiveDevice::Ios { session, .. }) => {
-            let client = session.client().ok_or_else(|| {
-                CommandError::user_fixable(
-                    "ios_idb_companion_unavailable",
-                    "The idb_companion sidecar isn't installed, so UI dumps aren't \
-                     available in this session. Install it via Homebrew \
-                     (`brew install facebook/fb/idb-companion`) and restart the \
-                     session — input still works without it.",
-                )
-            })?;
-            automation::ios_ui::dump(&client)
+            let helper = session.helper_client();
+            let idb = session.client();
+            automation::ios_ui::dump(
+                helper.as_deref(),
+                idb.as_deref(),
+            )
         }
         #[cfg(feature = "emulator-synthetic")]
         Some(ActiveDevice::Synthetic { .. }) => Err(CommandError::user_fixable(
@@ -1233,6 +1279,122 @@ impl ActiveDevice {
             }
         }
     }
+}
+
+// ---------- Metro Inspector commands (Phase 2) ----------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InspectorConnectRequest {
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InspectorElementAtRequest {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Connect to the Metro inspector. Auto-discovers Metro on common ports
+/// unless an explicit port is provided.
+#[tauri::command]
+pub fn emulator_inspector_connect(
+    state: State<'_, EmulatorState>,
+    request: InspectorConnectRequest,
+) -> CommandResult<MetroStatus> {
+    // Disconnect any existing connection first.
+    let _ = state.metro_inspector.lock().unwrap().take();
+
+    let (inspector, status) = if let Some(port) = request.port {
+        MetroInspector::connect(port)?
+    } else {
+        MetroInspector::connect_auto(METRO_PORT_RANGE)?
+    };
+
+    *state.metro_inspector.lock().unwrap() = Some(inspector);
+    Ok(status)
+}
+
+/// Disconnect from the Metro inspector.
+#[tauri::command]
+pub fn emulator_inspector_disconnect(
+    state: State<'_, EmulatorState>,
+) -> CommandResult<()> {
+    let _ = state.metro_inspector.lock().unwrap().take();
+    Ok(())
+}
+
+/// Query the element at a device-pixel coordinate. Tries Metro inspector
+/// first (React Native), falls back to the Swift helper's AXUIElement
+/// bridge (native Swift/UIKit apps).
+#[tauri::command]
+pub fn emulator_inspector_element_at(
+    state: State<'_, EmulatorState>,
+    request: InspectorElementAtRequest,
+) -> CommandResult<ElementInfo> {
+    // 1. Try Metro inspector (React Native / Expo).
+    {
+        let mut guard = state.metro_inspector.lock().unwrap();
+        if let Some(inspector) = guard.as_mut() {
+            if let Ok(info) = inspector.element_at_point(request.x, request.y) {
+                return Ok(info);
+            }
+        }
+    }
+
+    // 2. Fall back to AX inspection via the Swift helper (native apps).
+    #[cfg(target_os = "macos")]
+    {
+        let active = state.active.lock().expect("emulator active mutex poisoned");
+        if let Some(ActiveDevice::Ios { session, .. }) = active.as_ref() {
+            if let Some(hc) = session.helper_client() {
+                let resp = hc.send_request_raw("accessibility_element_at", serde_json::json!({
+                    "x": request.x,
+                    "y": request.y,
+                }))?;
+                if let Some(element) = resp.get("element") {
+                    let bounds_obj = element.get("frame").or(element.get("bounds"));
+                    return Ok(ElementInfo {
+                        component_name: element["label"].as_str()
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| element["type"].as_str())
+                            .map(|s| s.to_string()),
+                        native_type: element["type"].as_str().map(|s| s.to_string()),
+                        bounds: automation::Bounds {
+                            x: bounds_obj.and_then(|b| b["x"].as_f64()).unwrap_or(0.0) as i32,
+                            y: bounds_obj.and_then(|b| b["y"].as_f64()).unwrap_or(0.0) as i32,
+                            w: bounds_obj.and_then(|b| b["w"].as_f64().or(b["width"].as_f64())).unwrap_or(0.0) as i32,
+                            h: bounds_obj.and_then(|b| b["h"].as_f64().or(b["height"].as_f64())).unwrap_or(0.0) as i32,
+                        },
+                        props: serde_json::Value::Object(Default::default()),
+                        source: None, // AX doesn't provide source location.
+                    });
+                }
+            }
+        }
+    }
+
+    Err(CommandError::user_fixable(
+        "inspector_no_source",
+        "No inspection source available. For React Native apps, ensure Metro is running. \
+         For native apps, the Swift helper must be active.".to_string(),
+    ))
+}
+
+/// Get the full React component tree via the Metro inspector.
+#[tauri::command]
+pub fn emulator_inspector_component_tree(
+    state: State<'_, EmulatorState>,
+) -> CommandResult<serde_json::Value> {
+    let mut guard = state.metro_inspector.lock().unwrap();
+    let inspector = guard.as_mut().ok_or_else(|| {
+        CommandError::user_fixable(
+            "metro_not_connected",
+            "Metro inspector is not connected.".to_string(),
+        )
+    })?;
+    inspector.component_tree()
 }
 
 fn uuid_like() -> String {

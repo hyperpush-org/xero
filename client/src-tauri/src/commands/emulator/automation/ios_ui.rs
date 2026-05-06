@@ -1,25 +1,55 @@
 //! iOS UI tree dump.
 //!
-//! Depends on the idb `AccessibilityInfo` RPC, which returns a JSON tree
-//! we can map 1:1 onto our shared [`UiTree`]. Until `idb.proto` is
-//! vendored, this is a stub that returns a helpful error — the session
-//! module surfaces the error into `emulator_ui_dump`'s response.
+//! Supports two sources for the accessibility tree:
+//!   1. Swift helper's AXUIElement bridge (Phase 3) — works without
+//!      idb_companion, inspects the Simulator process from the host Mac.
+//!   2. idb `AccessibilityInfo` RPC — uses XCUITest-based inspection
+//!      inside the simulated app (requires idb_companion).
+//!
+//! The caller passes whichever clients are available; this module tries
+//! the helper first, then idb.
 
 #![cfg(target_os = "macos")]
 
 use super::{Bounds, UiNode, UiTree};
+use crate::commands::emulator::ios::helper_client::HelperClient;
 use crate::commands::emulator::ios::idb_client::IdbClient;
 use crate::commands::CommandError;
 
-/// Pull a fresh accessibility tree from idb. Consumed by `emulator_ui_dump`.
-pub fn dump(client: &IdbClient) -> Result<UiTree, CommandError> {
-    let raw = client.accessibility_tree()?;
-    normalize_tree(raw).map_err(|msg| {
-        CommandError::system_fault(
-            "ios_ui_dump_parse_failed",
-            format!("failed to map idb accessibility tree: {msg}"),
-        )
-    })
+/// Pull a fresh accessibility tree. Tries the Swift helper's AXUIElement
+/// bridge first (works without idb_companion), then falls back to idb's
+/// AccessibilityInfo RPC.
+pub fn dump(
+    helper: Option<&HelperClient>,
+    idb: Option<&IdbClient>,
+) -> Result<UiTree, CommandError> {
+    // 1. Try Swift helper AX bridge (Phase 3).
+    if let Some(hc) = helper {
+        if let Ok(raw) = hc.accessibility_tree() {
+            return normalize_tree(raw).map_err(|msg| {
+                CommandError::system_fault(
+                    "ios_ui_dump_parse_failed",
+                    format!("failed to map helper AX tree: {msg}"),
+                )
+            });
+        }
+    }
+
+    // 2. Fall back to idb AccessibilityInfo RPC.
+    if let Some(client) = idb {
+        let raw = client.accessibility_tree()?;
+        return normalize_tree(raw).map_err(|msg| {
+            CommandError::system_fault(
+                "ios_ui_dump_parse_failed",
+                format!("failed to map idb accessibility tree: {msg}"),
+            )
+        });
+    }
+
+    Err(CommandError::user_fixable(
+        "ios_no_inspection_source",
+        "Neither the Swift helper nor idb_companion is available for UI inspection.".to_string(),
+    ))
 }
 
 /// Map the idb accessibility JSON into our shared tree shape. The idb

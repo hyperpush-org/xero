@@ -22,13 +22,12 @@ import type {
   WorkflowPaneView,
 } from '@/src/features/xero/use-xero-desktop-state'
 import type { AgentProviderModelCatalogView } from '@/src/features/xero/use-xero-desktop-state/types'
-import {
-  getRuntimeAgentLabel,
-  type ProjectDetailView,
-  type ProviderModelThinkingEffortDto,
-  type RuntimeRunView,
-  type RuntimeSessionView,
-  type RuntimeStreamView,
+import type {
+  ProjectDetailView,
+  ProviderModelThinkingEffortDto,
+  RuntimeRunView,
+  RuntimeSessionView,
+  RuntimeStreamView,
 } from '@/src/lib/xero-model'
 
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
@@ -363,7 +362,8 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
     controlTruthSource:
       overrides.controlTruthSource ?? (selectedControls && !runtimeRun?.isTerminal ? 'runtime_run' : 'fallback'),
     selectedRuntimeAgentId,
-    selectedRuntimeAgentLabel: overrides.selectedRuntimeAgentLabel ?? getRuntimeAgentLabel(selectedRuntimeAgentId),
+    selectedRuntimeAgentLabel:
+      overrides.selectedRuntimeAgentLabel ?? (selectedRuntimeAgentId === 'engineer' ? 'Engineer' : 'Ask'),
     selectedModelId: overrides.selectedModelId ?? selectedControls?.modelId ?? selectedModelOption?.modelId ?? null,
     selectedThinkingEffort:
       overrides.selectedThinkingEffort ??

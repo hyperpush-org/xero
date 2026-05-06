@@ -14,3 +14,9 @@
 # SFSpeechRecognizer path (which works on all deployment targets).
 [env]
 MACOSX_DEPLOYMENT_TARGET = "26.0"
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-L", "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib",
+    "-L", "/usr/lib",
+]

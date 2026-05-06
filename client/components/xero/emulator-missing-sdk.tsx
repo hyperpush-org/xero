@@ -22,6 +22,8 @@ interface SdkStatus {
     idbCompanionPresent: boolean
     supported: boolean
     axPermissionGranted: boolean
+    screenRecordingPermissionGranted: boolean
+    helperPresent: boolean
   }
 }
 
@@ -194,6 +196,15 @@ export function EmulatorMissingSdk({ active = true, platform, onDismiss }: Props
     )
   }
 
+  // Screen Recording permission is needed for the Swift helper's
+  // ScreenCaptureKit frame capture. Show this card when the helper
+  // binary is present but permission hasn't been granted yet.
+  if (status.ios.present && status.ios.helperPresent && !status.ios.screenRecordingPermissionGranted) {
+    return (
+      <IosScreenRecordingPermissionCard isProbing={isProbing} onDismiss={onDismiss} onProbe={probe} />
+    )
+  }
+
   // AX-permission case takes precedence when Xcode is fine but macOS
   // hasn't granted us the Accessibility right. We render a dedicated
   // card because it needs invoke-backed action buttons, not just hrefs.
@@ -286,6 +297,105 @@ function IosAxPermissionCard({
         >
           <ExternalLink className="h-3 w-3" />
           Open Accessibility settings
+        </button>
+        <button
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 py-0.5",
+            "text-[11px] text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60",
+          )}
+          disabled={busy}
+          onClick={handlePrompt}
+          type="button"
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          Prompt macOS
+        </button>
+        <button
+          aria-label="Re-detect permission"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 py-0.5 text-[11px] text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
+          disabled={isProbing}
+          onClick={onProbe}
+          type="button"
+        >
+          <RefreshCw className={cn("h-3 w-3", isProbing && "animate-spin")} />
+          Re-check
+        </button>
+        {onDismiss ? (
+          <button
+            className="ml-auto text-[11px] text-muted-foreground/80 underline-offset-2 hover:text-foreground hover:underline"
+            onClick={onDismiss}
+            type="button"
+          >
+            Dismiss
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function IosScreenRecordingPermissionCard({
+  isProbing,
+  onDismiss,
+  onProbe,
+}: {
+  isProbing: boolean
+  onDismiss?: () => void
+  onProbe: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+
+  // Poll while this banner is mounted so it disappears within a second
+  // or two of the user granting the permission.
+  useEffect(() => {
+    if (!isTauri()) return
+    const handle = window.setInterval(() => {
+      onProbe()
+    }, 1500)
+    return () => window.clearInterval(handle)
+  }, [onProbe])
+
+  const handlePrompt = useCallback(async () => {
+    if (!isTauri()) return
+    setBusy(true)
+    try {
+      await invoke("emulator_ios_request_screen_recording_permission")
+    } finally {
+      setBusy(false)
+      onProbe()
+    }
+  }, [onProbe])
+
+  const handleOpenSettings = useCallback(async () => {
+    if (!isTauri()) return
+    await invoke("emulator_ios_open_screen_recording_settings")
+  }, [])
+
+  return (
+    <div
+      aria-live="polite"
+      className="flex shrink-0 flex-col gap-2 border-b border-border/60 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed"
+      role="region"
+    >
+      <div className="font-medium text-warning">Screen Recording permission needed</div>
+      <div className="text-muted-foreground">
+        Xero captures the iOS Simulator window for a smooth preview using
+        ScreenCaptureKit — macOS requires Screen Recording permission for this.
+        Without it, Xero falls back to slower screenshot polling. Enable Xero in
+        System Settings → Privacy & Security → Screen Recording.
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md border border-warning/60 bg-warning/20 px-2 py-0.5",
+            "font-medium text-[11px] text-warning transition-colors hover:border-warning hover:bg-warning/30 disabled:opacity-60",
+          )}
+          disabled={busy}
+          onClick={handleOpenSettings}
+          type="button"
+        >
+          <ExternalLink className="h-3 w-3" />
+          Open Screen Recording settings
         </button>
         <button
           className={cn(

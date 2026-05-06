@@ -101,7 +101,10 @@ interface Options {
 
 function asTauri<T>(command: string, args?: Record<string, unknown>): Promise<T | null> {
   if (!isTauri()) return Promise.resolve(null)
-  return invoke<T>(command, args).catch(() => null)
+  return invoke<T>(command, args).catch((err) => {
+    console.error(`[emulator] ${command} failed:`, err)
+    return null
+  })
 }
 
 function errorMessage(error: unknown): string {
@@ -133,7 +136,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
   const frameCoalescerRef = useRef<FrameCoalescer<EmulatorFrameInfo> | null>(null)
   if (!frameCoalescerRef.current) {
     frameCoalescerRef.current = createFrameCoalescer<EmulatorFrameInfo>({
-      getEnabled: () => activeRef.current && !isDocumentHidden(),
+      getEnabled: () => activeRef.current,
       onFlush: (nextFrame) => setFrame(nextFrame),
     })
   }
@@ -179,7 +182,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
 
     void listen<EmulatorFrameInfo>(EMULATOR_FRAME_EVENT, (event) => {
       if (cancelled) return
-      frameCoalescerRef.current?.schedule(event.payload)
+      setFrame(event.payload)
     }).then((unsub) => {
       if (cancelled) {
         unsub()
@@ -262,6 +265,27 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
           devicePixelRatio: response.devicePixelRatio,
         }
         setCurrentDevice(descriptor)
+        // The backend emits status/frame events during spawn, but the
+        // async listener may not have resolved in time. Force-sync now.
+        setStatus({
+          phase: "streaming",
+          platform: platformTag,
+          deviceId,
+          message: `streaming at ${response.width}x${response.height}`,
+        })
+        // Fetch the latest frame snapshot so we don't show a stale/empty
+        // viewport while waiting for the next emulator:frame event.
+        try {
+          const snapshot = await invoke<{
+            status: { phase: string }
+            frame: EmulatorFrameInfo | null
+          }>("emulator_subscribe_ready")
+          if (snapshot.frame) {
+            setFrame(snapshot.frame)
+          }
+        } catch {
+          // best-effort
+        }
         return response
       } catch (err) {
         setError(errorMessage(err))
@@ -284,6 +308,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
       setIsStopping(false)
       setCurrentDevice(null)
       setFrame(null)
+      setStatus({ phase: "idle", platform: null, deviceId: null, message: null })
     }
   }, [])
 

@@ -19,6 +19,8 @@ pub mod android_ui;
 pub mod apps;
 pub mod ios_ui;
 pub mod logs;
+pub mod metro_detect;
+pub mod metro_inspector;
 pub mod selector;
 
 use serde::{Deserialize, Serialize};

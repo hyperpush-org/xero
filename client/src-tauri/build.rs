@@ -22,6 +22,7 @@ fn main() {
     configure_custom_cfgs();
     tauri_build::build();
     compile_dictation_shim();
+    compile_ios_helper();
     build_cookie_importer();
     fetch_scrcpy_server();
     fetch_idb_companion();
@@ -149,6 +150,142 @@ fn compile_dictation_shim() {
     }
     println!("cargo:rustc-link-lib=static=XeroDictationShim");
     println!("cargo:rustc-cfg=xero_dictation_native_shim");
+}
+
+/// Compile the Swift helper binary (`xero-ios-helper`) that uses
+/// ScreenCaptureKit for frame capture and IndigoHID for input injection.
+/// The binary is a standalone executable (not a static library) that
+/// communicates with the Tauri Rust backend over a Unix domain socket.
+///
+/// Unlike `compile_dictation_shim()` which produces a `.a` linked into the
+/// main binary, this produces an independent executable copied next to the
+/// Tauri output binary.
+#[cfg(target_os = "macos")]
+fn compile_ios_helper() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let helper_dir = manifest_dir.join("native/ios-helper");
+
+    println!("cargo:rerun-if-changed=native/ios-helper/Main.swift");
+    println!("cargo:rerun-if-changed=native/ios-helper/Connection.swift");
+    println!("cargo:rerun-if-changed=native/ios-helper/FrameCapture.swift");
+    println!("cargo:rerun-if-changed=native/ios-helper/HidBridge.swift");
+    println!("cargo:rerun-if-changed=native/ios-helper/JpegEncoder.swift");
+    println!("cargo:rerun-if-changed=native/ios-helper/AccessibilityBridge.swift");
+    println!("cargo:rerun-if-env-changed=XERO_SKIP_IOS_HELPER");
+
+    if std::env::var_os("XERO_SKIP_IOS_HELPER").is_some() {
+        println!(
+            "cargo:warning=XERO_SKIP_IOS_HELPER is set; iOS helper binary will not be compiled."
+        );
+        return;
+    }
+
+    let Some(swiftc) = xcrun_find("swiftc") else {
+        println!(
+            "cargo:warning=swiftc not found via xcrun; iOS helper binary will not be compiled."
+        );
+        return;
+    };
+    let Some(sdk_path) = xcrun_output(&["--sdk", "macosx", "--show-sdk-path"]) else {
+        println!(
+            "cargo:warning=macOS SDK path not found; iOS helper binary will not be compiled."
+        );
+        return;
+    };
+
+    // Check that ScreenCaptureKit is available (macOS 12.3+ SDK).
+    let sdk_version = xcrun_output(&["--sdk", "macosx", "--show-sdk-version"]).unwrap_or_default();
+    let major: u32 = sdk_version
+        .split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if major < 12 {
+        println!(
+            "cargo:warning=macOS SDK {sdk_version} < 12.3; ScreenCaptureKit unavailable. \
+             iOS helper binary will not be compiled."
+        );
+        return;
+    }
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let output = out_dir.join("xero-ios-helper");
+
+    let sources = [
+        helper_dir.join("Main.swift"),
+        helper_dir.join("Connection.swift"),
+        helper_dir.join("FrameCapture.swift"),
+        helper_dir.join("HidBridge.swift"),
+        helper_dir.join("JpegEncoder.swift"),
+        helper_dir.join("AccessibilityBridge.swift"),
+    ];
+
+    let status = Command::new(&swiftc)
+        .arg("-parse-as-library")
+        .arg("-module-name")
+        .arg("XeroIosHelper")
+        .arg("-sdk")
+        .arg(&sdk_path)
+        .arg("-O")
+        .arg("-framework")
+        .arg("ScreenCaptureKit")
+        .arg("-framework")
+        .arg("CoreGraphics")
+        .arg("-framework")
+        .arg("ImageIO")
+        .arg("-framework")
+        .arg("Foundation")
+        .arg("-framework")
+        .arg("CoreMedia")
+        .arg("-framework")
+        .arg("ApplicationServices")
+        .arg("-framework")
+        .arg("AppKit")
+        .arg("-o")
+        .arg(&output)
+        .args(sources.iter())
+        .status()
+        .expect("failed to spawn swiftc for iOS helper");
+
+    if !status.success() {
+        // Non-fatal: the helper is optional. The session falls back to
+        // idb_companion / screenshot polling when the binary is absent.
+        println!(
+            "cargo:warning=failed to compile xero-ios-helper (exit {status:?}); \
+             iOS Simulator will use fallback paths."
+        );
+        return;
+    }
+
+    // Copy the binary next to the Tauri output executable so it can be
+    // discovered by `helper::resolve_helper_binary()` during development.
+    // In bundled builds the binary is included via tauri.conf.json resources.
+    let profile_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR should be inside target/<profile>/build/<pkg>/out")
+        .to_path_buf();
+    let destination = profile_dir.join("xero-ios-helper");
+    if let Err(e) = std::fs::copy(&output, &destination) {
+        println!(
+            "cargo:warning=failed to copy xero-ios-helper to {}: {e}",
+            destination.display()
+        );
+    }
+
+    // Also copy to resources/ for Tauri bundling.
+    let resources_dir = manifest_dir.join("resources");
+    let res_destination = resources_dir.join("xero-ios-helper");
+    if let Err(e) = std::fs::copy(&output, &res_destination) {
+        println!(
+            "cargo:warning=failed to copy xero-ios-helper to resources/: {e}"
+        );
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn compile_ios_helper() {
+    // No-op on non-macOS hosts.
 }
 
 fn xcrun_find(tool: &str) -> Option<PathBuf> {

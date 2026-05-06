@@ -33,11 +33,12 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 tar = "0.4"
 
 [features]
-# Keep dev startup lean. `ios-grpc` remains available for full iOS
-# Simulator HID/streaming work, but the default build uses the
-# simctl-screenshot + AppleScript fallback to avoid pulling tonic/prost
-# into every `tauri dev` boot.
-default = []
+# ios-grpc is default so touch/swipe/HID input works out of the box
+# via idb_companion. The Swift helper (ScreenCaptureKit + IndigoHID) is
+# the primary input path; ios-grpc is the fallback when the helper is
+# unavailable. Without ios-grpc, touch and swipe fall back to
+# AppleScript click-only which can't handle drag gestures.
+default = ["ios-grpc"]
 # When enabled, `emulator_start` spins up a color-cycling frame generator
 # instead of launching a real device. Used for end-to-end testing of the
 # frame pipeline without an Android SDK / Xcode.
@@ -54,6 +55,11 @@ emulator-live = ["dep:openh264", "ios-grpc"]
 # and accessibility-tree/log RPCs; builds without this feature fall back to
 # a simctl-screenshot poll + AppleScript HID where possible.
 ios-grpc = ["dep:tonic", "dep:tonic-build", "dep:protoc-bin-vendored", "dep:prost", "dep:tokio-stream"]
+# Enables compilation of the Swift ios-helper binary (xero-ios-helper) in
+# build.rs. The helper uses ScreenCaptureKit for 30 FPS frame capture and
+# IndigoHID for reliable input injection. Runtime detection works regardless
+# of this feature — if the binary exists on disk, the session will use it.
+ios-helper = []
 
 [dependencies]
 arc-swap = "1"
@@ -94,6 +100,7 @@ time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
 tokio-stream = { version = "0.1", optional = true }
 tonic = { version = "0.12", optional = true }
+tungstenite = "0.24"
 url = "2"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }

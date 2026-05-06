@@ -118,6 +118,7 @@ prepare_macos_dev_bundle() {
   sync_resources_if_present "$target_dir/resources" "$resources_dir/resources"
 
   copy_sidecar_if_present "$target_dir/xero-cookie-importer" "$macos_dir" "$identifier"
+  copy_sidecar_if_present "$target_dir/xero-ios-helper" "$macos_dir" "$identifier"
   for sidecar in "$target_dir"/Xero-runtime-supervisor*; do
     copy_sidecar_if_present "$sidecar" "$macos_dir" "$identifier"
   done

@@ -111,7 +111,11 @@ fn is_emulator_relevant(name: &str) -> bool {
     let leaf = lower.rsplit('/').next().unwrap_or(&lower);
     matches!(
         leaf,
-        "qemu-system-aarch64" | "qemu-system-x86_64" | "idb_companion" | "scrcpy-server"
+        "qemu-system-aarch64"
+            | "qemu-system-x86_64"
+            | "idb_companion"
+            | "scrcpy-server"
+            | "xero-ios-helper"
     ) || leaf.starts_with("qemu-system-")
         || leaf == "emulator64-arm"
         || leaf == "emulator64-x86"

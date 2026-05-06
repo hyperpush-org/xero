@@ -79,6 +79,21 @@ pub fn ax_permission_granted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+/// `true` when Xero has been granted Screen Recording permission (required
+/// by ScreenCaptureKit to capture the Simulator window). Checked without
+/// triggering any UI — safe to poll.
+pub fn screen_recording_permission_granted() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Trigger macOS's Screen Recording permission prompt. Returns the
+/// permission state after the call. On macOS 15+ this opens System
+/// Settings → Privacy & Security → Screen Recording. Note: unlike the
+/// AX prompt, this may require an app restart to take effect.
+pub fn request_screen_recording_permission() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
+}
+
 /// Trigger macOS's Accessibility permission prompt. If Xero is already
 /// registered in System Settings → Privacy & Security → Accessibility,
 /// this is a no-op and returns the current state. Otherwise a system
@@ -517,6 +532,8 @@ fn find_bounds(dict: &CFDictionary, key: &str) -> Option<CGRect> {
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
 }
 
 // Accessibility permission lives in HIServices.framework, which is

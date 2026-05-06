@@ -27,7 +27,9 @@ import {
   type EmulatorPlatform,
 } from "@/src/features/emulator/use-emulator-session"
 import { EmulatorHardwareStrip } from "./emulator-hardware-strip"
+import { InspectorOverlay, InspectModeButton } from "./emulator-inspector-overlay"
 import { EmulatorMissingSdk } from "./emulator-missing-sdk"
+import { useInspector } from "@/src/features/emulator/use-inspector"
 
 interface EmulatorSidebarProps {
   open: boolean
@@ -227,6 +229,20 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
 
   const session = useEmulatorSession({ platform, active: sessionActive })
+  const inspector = useInspector()
+
+  // Auto-connect Metro inspector when streaming an iOS session.
+  useEffect(() => {
+    if (session.status.phase === "streaming" && platform === "ios" && !inspector.metroConnected) {
+      inspector.connect().catch(() => {
+        // Metro not running — silent, inspect button stays available.
+      })
+    }
+    if (session.status.phase !== "streaming" && inspector.metroConnected) {
+      inspector.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.status.phase, platform])
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -311,8 +327,14 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
   const Icon = platform === "ios" ? Apple : Smartphone
 
   const handleStart = useCallback(() => {
-    if (!selectedDeviceId) return
-    void session.start(selectedDeviceId)
+    // Use selected device, or auto-pick first available device.
+    const deviceId = selectedDeviceId ?? session.devices[0]?.id
+    if (!deviceId) {
+      // Force refresh devices then retry.
+      void session.refreshDevices()
+      return
+    }
+    void session.start(deviceId)
   }, [selectedDeviceId, session])
 
   const handleStop = useCallback(() => {
@@ -430,7 +452,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
           {meta.label}
         </span>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           {session.devices.length > 0 ? (
             <Select
               disabled={isActive}
@@ -465,6 +487,12 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
               >
                 <RotateCcw className="h-3 w-3" />
               </button>
+              <InspectModeButton
+                active={inspector.inspectMode}
+                connected={inspector.metroConnected}
+                disabled={!isStreaming}
+                onClick={inspector.toggleInspect}
+              />
               <button
                 aria-label="Stop device"
                 className="flex h-6 items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-60"
@@ -484,7 +512,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
             <button
               aria-label="Start device"
               className="flex h-6 items-center gap-1 rounded-md border border-border/70 bg-background/60 px-2 text-[11px] text-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-60"
-              disabled={!selectedDeviceId || session.isStarting}
+              disabled={session.isStarting}
               onClick={handleStart}
               type="button"
             >
@@ -493,7 +521,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
               ) : (
                 <Play className="h-3 w-3" />
               )}
-              Start
+              {session.devices.length === 0 ? "Loading..." : "Start"}
             </button>
           )}
         </div>
@@ -506,6 +534,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
         error={session.error}
         frameSeq={session.frame?.seq ?? null}
         inputError={session.inputError}
+        inspector={inspector}
         isStreaming={isStreaming}
         onDismissInputError={session.dismissInputError}
         onInput={(payload) => void session.sendInput(payload)}
@@ -531,6 +560,7 @@ interface ViewportProps {
   error: string | null
   frameSeq: number | null
   inputError: string | null
+  inspector: ReturnType<typeof useInspector>
   isStreaming: boolean
   onDismissInputError: () => void
   onInput: (input: { kind: EmulatorInputKind; x?: number; y?: number }) => void
@@ -546,6 +576,7 @@ function EmulatorViewport({
   error,
   frameSeq,
   inputError,
+  inspector,
   isStreaming,
   onDismissInputError,
   onInput,
@@ -614,6 +645,9 @@ function EmulatorViewport({
       </div>
     )
   }
+
+  // DEBUG: log every render to find why frames don't show
+  console.log("[viewport] isStreaming:", isStreaming, "frameSrc:", frameSrc?.slice(0, 50), "currentDevice:", !!currentDevice, "frameSeq:", frameSeq, "status:", status.phase)
 
   if (!isStreaming || frameSrc === null || !currentDevice) {
     const headline =
@@ -695,6 +729,18 @@ function EmulatorViewport({
             onLoad={settleFrameRequest}
             src={frameSrc}
           />
+          {inspector.inspectMode && currentDevice && (
+            <InspectorOverlay
+              deviceWidth={currentDevice.width}
+              deviceHeight={currentDevice.height}
+              inspector={inspector}
+              onSearchProject={(query) => {
+                // TODO: Wire to editor search command when available.
+                // For now, copy to clipboard as a bridging affordance.
+                navigator.clipboard?.writeText(query).catch(() => {})
+              }}
+            />
+          )}
           {isIos && !isTablet ? <DynamicIsland /> : null}
           {isIos && !isTablet ? <HomeIndicator /> : null}
         </div>

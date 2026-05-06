@@ -325,6 +325,9 @@ pub mod hid_fallback {
 /// follow up with an activate in the caller for keystrokes that need
 /// focus.
 pub fn focus_simulator(udid: &str) -> Result<()> {
+    // Do NOT use -j (hide) — iOS 26 needs the display pipeline active
+    // to finish booting. The window opens in background (-g) so Xero
+    // stays frontmost.
     let status = Command::new("open")
         .args([
             "-g",
@@ -340,9 +343,8 @@ pub fn focus_simulator(udid: &str) -> Result<()> {
             "could not launch Simulator.app: open exited {status}"
         )));
     }
-    // Give Simulator.app a brief moment to claim the window when we just
-    // launched it; System Events can't target a process that hasn't
-    // registered yet.
+    // Give Simulator.app a moment to register its window for
+    // ScreenCaptureKit / CGEvent targeting.
     std::thread::sleep(Duration::from_millis(150));
     Ok(())
 }
