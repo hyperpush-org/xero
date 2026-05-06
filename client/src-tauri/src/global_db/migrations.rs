@@ -16,10 +16,28 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(ENVIRONMENT_PROFILE_SQL),
             M::up(SOUL_SETTINGS_SQL),
             M::up(USER_ADDED_ENVIRONMENT_TOOLS_SQL),
+            M::up(PROVIDER_PREFLIGHT_RESULTS_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const PROVIDER_PREFLIGHT_RESULTS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS provider_preflight_results (
+        profile_id              TEXT NOT NULL CHECK (profile_id <> ''),
+        provider_id             TEXT NOT NULL CHECK (provider_id <> ''),
+        model_id                TEXT NOT NULL CHECK (model_id <> ''),
+        source                  TEXT NOT NULL CHECK (source IN ('live_probe', 'live_catalog', 'cached_probe', 'static_manual', 'unavailable')),
+        status                  TEXT NOT NULL CHECK (status IN ('passed', 'warning', 'failed', 'skipped')),
+        checked_at              TEXT NOT NULL CHECK (checked_at <> ''),
+        required_features_json  TEXT NOT NULL CHECK (required_features_json <> '' AND json_valid(required_features_json)),
+        payload                 TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        PRIMARY KEY (profile_id, provider_id, model_id)
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_provider_preflight_results_checked
+        ON provider_preflight_results(provider_id, model_id, checked_at DESC);
+"#;
 
 const USER_ADDED_ENVIRONMENT_TOOLS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS user_added_environment_tools (

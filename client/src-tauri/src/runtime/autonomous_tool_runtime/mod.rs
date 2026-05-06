@@ -1,3 +1,4 @@
+mod agent_coordination;
 mod agent_definition;
 pub mod browser;
 pub mod emulator;
@@ -14,10 +15,11 @@ mod repo_scope;
 mod skills;
 pub mod solana;
 mod system_diagnostics;
+mod workspace_index;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -25,6 +27,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tauri::{AppHandle, Manager, Runtime};
+use xero_agent_core::{
+    domain_tool_pack_health_report, domain_tool_pack_ids_for_tool, domain_tool_pack_manifests,
+    domain_tool_pack_tools, DomainToolPackHealthInput, DomainToolPackHealthReport,
+    DomainToolPackManifest, SandboxExecutionMetadata,
+};
 
 use super::autonomous_web_runtime::{
     AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchOutput,
@@ -49,6 +56,10 @@ use crate::{
     state::DesktopState,
 };
 
+pub use agent_coordination::{
+    AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput,
+    AutonomousAgentCoordinationRequest,
+};
 pub use agent_definition::{
     AutonomousAgentDefinitionAction, AutonomousAgentDefinitionOutput,
     AutonomousAgentDefinitionRequest, AutonomousAgentDefinitionSummary,
@@ -101,6 +112,9 @@ pub use solana::{
     AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
 };
 pub(crate) use system_diagnostics::system_diagnostics_action_approval_id;
+pub use workspace_index::{
+    AutonomousWorkspaceIndexAction, AutonomousWorkspaceIndexOutput, AutonomousWorkspaceIndexRequest,
+};
 
 pub const AUTONOMOUS_TOOL_READ: &str = "read";
 pub const AUTONOMOUS_TOOL_SEARCH: &str = "search";
@@ -133,6 +147,8 @@ pub const AUTONOMOUS_TOOL_POWERSHELL: &str = "powershell";
 pub const AUTONOMOUS_TOOL_TOOL_SEARCH: &str = "tool_search";
 pub const AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT: &str = "environment_context";
 pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT: &str = "project_context";
+pub const AUTONOMOUS_TOOL_WORKSPACE_INDEX: &str = "workspace_index";
+pub const AUTONOMOUS_TOOL_AGENT_COORDINATION: &str = "agent_coordination";
 pub const AUTONOMOUS_TOOL_SKILL: &str = "skill";
 pub const AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX: &str = "mcp__";
 
@@ -146,6 +162,12 @@ pub(super) const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 5_000;
 const MAX_COMMAND_TIMEOUT_MS: u64 = 60_000;
 const MAX_COMMAND_CAPTURE_BYTES: usize = 8 * 1024;
 const MAX_COMMAND_EXCERPT_CHARS: usize = 2_000;
+const DEFAULT_SUBAGENT_MAX_CHILD_AGENTS: usize = 6;
+const DEFAULT_SUBAGENT_MAX_DEPTH: usize = 1;
+const DEFAULT_SUBAGENT_MAX_CONCURRENT_CHILD_RUNS: usize = 3;
+const DEFAULT_SUBAGENT_MAX_DELEGATED_TOOL_CALLS: usize = 40;
+const DEFAULT_SUBAGENT_MAX_DELEGATED_TOKENS: u64 = 160_000;
+const DEFAULT_SUBAGENT_MAX_DELEGATED_COST_MICROS: u64 = 250_000;
 
 const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
@@ -156,6 +178,8 @@ const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_AGENT_COORDINATION,
     AUTONOMOUS_TOOL_TODO,
     AUTONOMOUS_TOOL_LIST,
     AUTONOMOUS_TOOL_HASH,
@@ -463,9 +487,24 @@ pub fn tool_catalog_metadata_for_tool(
         .into_iter()
         .find(|entry| entry.tool_name == tool_name)
         .map(|entry| {
+            let tool_pack_ids = domain_tool_pack_ids_for_tool(entry.tool_name);
+            let tool_packs = tool_pack_ids
+                .iter()
+                .filter_map(|pack_id| {
+                    xero_agent_core::domain_tool_pack_manifest(pack_id).map(|manifest| {
+                        json!({
+                            "packId": manifest.pack_id,
+                            "label": manifest.label,
+                            "policyProfile": manifest.policy_profile,
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
             json!({
                 "toolName": entry.tool_name,
                 "group": entry.group,
+                "toolPackIds": tool_pack_ids,
+                "toolPacks": tool_packs,
                 "activationGroups": tool_catalog_activation_groups(entry.tool_name),
                 "activationTools": [entry.tool_name],
                 "tags": entry.tags,
@@ -523,6 +562,8 @@ pub struct AutonomousAgentToolPolicy {
     allowed_effect_classes: BTreeSet<String>,
     allowed_tools: BTreeSet<String>,
     denied_tools: BTreeSet<String>,
+    allowed_tool_packs: BTreeSet<String>,
+    denied_tool_packs: BTreeSet<String>,
     external_service_allowed: bool,
     browser_control_allowed: bool,
     skill_runtime_allowed: bool,
@@ -532,6 +573,44 @@ pub struct AutonomousAgentToolPolicy {
 }
 
 impl AutonomousAgentToolPolicy {
+    pub fn for_subagent_role(
+        role: AutonomousSubagentRole,
+        parent_policy: Option<&AutonomousAgentToolPolicy>,
+        skill_tool_enabled: bool,
+    ) -> Self {
+        let role_policy = Self::from_subagent_role(role);
+        let allowed_tools = deferred_tool_catalog(skill_tool_enabled)
+            .into_iter()
+            .map(|entry| entry.tool_name.to_owned())
+            .filter(|tool| role_policy.allows_tool(tool))
+            .filter(|tool| {
+                parent_policy
+                    .map(|policy| policy.allows_tool(tool))
+                    .unwrap_or(true)
+            })
+            .collect::<BTreeSet<_>>();
+        Self::from_allowed_tools(allowed_tools)
+    }
+
+    pub fn intersect_optional(
+        left: Option<&AutonomousAgentToolPolicy>,
+        right: Option<&AutonomousAgentToolPolicy>,
+        skill_tool_enabled: bool,
+    ) -> Option<Self> {
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                let allowed_tools = deferred_tool_catalog(skill_tool_enabled)
+                    .into_iter()
+                    .map(|entry| entry.tool_name.to_owned())
+                    .filter(|tool| left.allows_tool(tool) && right.allows_tool(tool))
+                    .collect::<BTreeSet<_>>();
+                Some(Self::from_allowed_tools(allowed_tools))
+            }
+            (Some(policy), None) | (None, Some(policy)) => Some(policy.clone()),
+            (None, None) => None,
+        }
+    }
+
     pub fn from_definition_snapshot(snapshot: &JsonValue) -> Option<Self> {
         let value = snapshot.get("toolPolicy")?;
         if let Some(label) = value.as_str() {
@@ -539,15 +618,30 @@ impl AutonomousAgentToolPolicy {
         }
         let object = value.as_object()?;
         let mut allowed_tools = string_set_from_json(object.get("allowedTools"));
+        let allowed_tool_packs = string_set_from_json(object.get("allowedToolPacks"));
+        for pack_id in &allowed_tool_packs {
+            if let Some(tools) = domain_tool_pack_tools(pack_id) {
+                allowed_tools.extend(tools);
+            }
+        }
         for group in string_set_from_json(object.get("allowedToolGroups")) {
             if let Some(tools) = tool_access_group_tools(&group) {
                 allowed_tools.extend(tools.iter().map(|tool| (*tool).to_owned()));
             }
         }
+        let mut denied_tools = string_set_from_json(object.get("deniedTools"));
+        let denied_tool_packs = string_set_from_json(object.get("deniedToolPacks"));
+        for pack_id in &denied_tool_packs {
+            if let Some(tools) = domain_tool_pack_tools(pack_id) {
+                denied_tools.extend(tools);
+            }
+        }
         Some(Self {
             allowed_effect_classes: string_set_from_json(object.get("allowedEffectClasses")),
             allowed_tools,
-            denied_tools: string_set_from_json(object.get("deniedTools")),
+            denied_tools,
+            allowed_tool_packs,
+            denied_tool_packs,
             external_service_allowed: json_bool(object.get("externalServiceAllowed")),
             browser_control_allowed: json_bool(object.get("browserControlAllowed")),
             skill_runtime_allowed: json_bool(object.get("skillRuntimeAllowed")),
@@ -573,6 +667,8 @@ impl AutonomousAgentToolPolicy {
                 .collect(),
                 allowed_tools: BTreeSet::new(),
                 denied_tools: BTreeSet::new(),
+                allowed_tool_packs: BTreeSet::new(),
+                denied_tool_packs: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -587,6 +683,8 @@ impl AutonomousAgentToolPolicy {
                     .collect(),
                 allowed_tools: [AUTONOMOUS_TOOL_AGENT_DEFINITION.to_string()].into(),
                 denied_tools: BTreeSet::new(),
+                allowed_tool_packs: BTreeSet::new(),
+                denied_tool_packs: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -598,6 +696,8 @@ impl AutonomousAgentToolPolicy {
                 allowed_effect_classes: ["observe"].into_iter().map(ToOwned::to_owned).collect(),
                 allowed_tools: BTreeSet::new(),
                 denied_tools: BTreeSet::new(),
+                allowed_tool_packs: BTreeSet::new(),
+                denied_tool_packs: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -606,6 +706,174 @@ impl AutonomousAgentToolPolicy {
                 destructive_write_allowed: false,
             },
         }
+    }
+
+    fn from_subagent_role(role: AutonomousSubagentRole) -> Self {
+        match role {
+            AutonomousSubagentRole::Engineer => Self::from_groups_and_tools(
+                &[
+                    "core",
+                    "mutation",
+                    "command_readonly",
+                    "intelligence",
+                    "environment",
+                ],
+                &[],
+                &[
+                    "observe",
+                    "runtime_state",
+                    "write",
+                    "destructive_write",
+                    "command",
+                ],
+                RiskyToolOptIns {
+                    command_allowed: true,
+                    destructive_write_allowed: true,
+                    ..RiskyToolOptIns::default()
+                },
+            ),
+            AutonomousSubagentRole::Debugger => Self::from_groups_and_tools(
+                &[
+                    "core",
+                    "mutation",
+                    "command_readonly",
+                    "command_session",
+                    "intelligence",
+                    "system_diagnostics",
+                    "environment",
+                ],
+                &[],
+                &[
+                    "observe",
+                    "runtime_state",
+                    "write",
+                    "destructive_write",
+                    "command",
+                    "process_control",
+                ],
+                RiskyToolOptIns {
+                    command_allowed: true,
+                    destructive_write_allowed: true,
+                    ..RiskyToolOptIns::default()
+                },
+            ),
+            AutonomousSubagentRole::Planner
+            | AutonomousSubagentRole::Researcher
+            | AutonomousSubagentRole::Reviewer
+            | AutonomousSubagentRole::Database => Self::from_groups_and_tools(
+                &["core", "intelligence", "environment"],
+                &[],
+                &["observe", "runtime_state"],
+                RiskyToolOptIns::default(),
+            ),
+            AutonomousSubagentRole::AgentBuilder => Self::from_groups_and_tools(
+                &["core", "agent_builder"],
+                &[],
+                &["observe", "runtime_state"],
+                RiskyToolOptIns::default(),
+            ),
+            AutonomousSubagentRole::Browser => Self::from_groups_and_tools(
+                &["core", "web", "browser_observe", "intelligence"],
+                &[],
+                &[
+                    "observe",
+                    "runtime_state",
+                    "browser_control",
+                    "external_service",
+                ],
+                RiskyToolOptIns {
+                    browser_control_allowed: true,
+                    external_service_allowed: true,
+                    ..RiskyToolOptIns::default()
+                },
+            ),
+            AutonomousSubagentRole::Emulator => Self::from_groups_and_tools(
+                &["core", "emulator", "intelligence"],
+                &[],
+                &["observe", "runtime_state", "device_control"],
+                RiskyToolOptIns::default(),
+            ),
+            AutonomousSubagentRole::Solana => Self::from_groups_and_tools(
+                &["core", "solana", "intelligence"],
+                &[],
+                &["observe", "runtime_state", "external_service", "command"],
+                RiskyToolOptIns {
+                    external_service_allowed: true,
+                    command_allowed: true,
+                    ..RiskyToolOptIns::default()
+                },
+            ),
+        }
+    }
+
+    fn from_groups_and_tools(
+        groups: &[&str],
+        tools: &[&str],
+        _effect_classes: &[&str],
+        opt_ins: RiskyToolOptIns,
+    ) -> Self {
+        let mut allowed_tools = tools
+            .iter()
+            .map(|tool| (*tool).to_owned())
+            .collect::<BTreeSet<_>>();
+        for group in groups {
+            if let Some(group_tools) = tool_access_group_tools(group) {
+                allowed_tools.extend(group_tools.iter().map(|tool| (*tool).to_owned()));
+            }
+        }
+        Self {
+            allowed_effect_classes: BTreeSet::new(),
+            allowed_tools,
+            denied_tools: BTreeSet::new(),
+            allowed_tool_packs: BTreeSet::new(),
+            denied_tool_packs: BTreeSet::new(),
+            external_service_allowed: opt_ins.external_service_allowed,
+            browser_control_allowed: opt_ins.browser_control_allowed,
+            skill_runtime_allowed: opt_ins.skill_runtime_allowed,
+            subagent_allowed: opt_ins.subagent_allowed,
+            command_allowed: opt_ins.command_allowed,
+            destructive_write_allowed: opt_ins.destructive_write_allowed,
+        }
+    }
+
+    fn from_allowed_tools(allowed_tools: BTreeSet<String>) -> Self {
+        let mut policy = Self {
+            allowed_effect_classes: BTreeSet::new(),
+            allowed_tools,
+            denied_tools: BTreeSet::new(),
+            allowed_tool_packs: BTreeSet::new(),
+            denied_tool_packs: BTreeSet::new(),
+            external_service_allowed: false,
+            browser_control_allowed: false,
+            skill_runtime_allowed: false,
+            subagent_allowed: false,
+            command_allowed: false,
+            destructive_write_allowed: false,
+        };
+        for tool in policy.allowed_tools.iter() {
+            match tool_effect_class(tool) {
+                AutonomousToolEffectClass::ExternalService => {
+                    policy.external_service_allowed = true;
+                }
+                AutonomousToolEffectClass::BrowserControl => {
+                    policy.browser_control_allowed = true;
+                }
+                AutonomousToolEffectClass::SkillRuntime => {
+                    policy.skill_runtime_allowed = true;
+                }
+                AutonomousToolEffectClass::AgentDelegation => {
+                    policy.subagent_allowed = true;
+                }
+                AutonomousToolEffectClass::Command | AutonomousToolEffectClass::ProcessControl => {
+                    policy.command_allowed = true;
+                }
+                AutonomousToolEffectClass::DestructiveWrite => {
+                    policy.destructive_write_allowed = true;
+                }
+                _ => {}
+            }
+        }
+        policy
     }
 
     pub fn allows_tool(&self, tool_name: &str) -> bool {
@@ -635,6 +903,16 @@ impl AutonomousAgentToolPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RiskyToolOptIns {
+    external_service_allowed: bool,
+    browser_control_allowed: bool,
+    skill_runtime_allowed: bool,
+    subagent_allowed: bool,
+    command_allowed: bool,
+    destructive_write_allowed: bool,
+}
+
 fn string_set_from_json(value: Option<&JsonValue>) -> BTreeSet<String> {
     value
         .and_then(JsonValue::as_array)
@@ -654,6 +932,30 @@ fn json_bool(value: Option<&JsonValue>) -> bool {
     value.and_then(JsonValue::as_bool).unwrap_or(false)
 }
 
+fn executable_on_path(command: &str) -> bool {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        return command_path.is_file();
+    }
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    for directory in env::split_paths(&paths) {
+        let candidate = directory.join(command);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            let candidate = directory.join(format!("{command}.exe"));
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
     if tool_name.starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX) {
         return AutonomousToolEffectClass::ExternalService;
@@ -670,10 +972,12 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_LSP
         | AUTONOMOUS_TOOL_TOOL_SEARCH
         | AUTONOMOUS_TOOL_PROJECT_CONTEXT
+        | AUTONOMOUS_TOOL_WORKSPACE_INDEX
         | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT => AutonomousToolEffectClass::Observe,
-        AUTONOMOUS_TOOL_TOOL_ACCESS | AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_AGENT_DEFINITION => {
-            AutonomousToolEffectClass::RuntimeState
-        }
+        AUTONOMOUS_TOOL_TOOL_ACCESS
+        | AUTONOMOUS_TOOL_TODO
+        | AUTONOMOUS_TOOL_AGENT_COORDINATION
+        | AUTONOMOUS_TOOL_AGENT_DEFINITION => AutonomousToolEffectClass::RuntimeState,
         AUTONOMOUS_TOOL_WRITE
         | AUTONOMOUS_TOOL_EDIT
         | AUTONOMOUS_TOOL_PATCH
@@ -729,7 +1033,7 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
     match agent_id {
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => true,
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
                 || tool_effect_class(tool_name).is_ask_observe_only()
@@ -761,6 +1065,9 @@ fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::AgentCreate, tool_name) {
         agents.push(RuntimeAgentIdDto::AgentCreate.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Test, tool_name) {
+        agents.push(RuntimeAgentIdDto::Test.as_str());
     }
     agents
 }
@@ -836,6 +1143,70 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "Record or update durable context after a durable finding.",
             ],
             "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            "core",
+            "Query the local app-data semantic workspace index for code search, symbol lookup, related tests, change impact, and index freshness.",
+            &[
+                "workspace",
+                "semantic",
+                "index",
+                "code_search",
+                "symbols",
+                "tests",
+                "impact",
+                "local",
+            ],
+            &["action", "query", "path", "limit"],
+            &[
+                "Find files related to runtime protocol events.",
+                "Discover tests related to settings dialog changes.",
+            ],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_AGENT_COORDINATION,
+            "core",
+            "Read and manage the temporary app-data active-agent coordination bus, including presence, recent activity, and advisory file reservations.",
+            &[
+                "agent",
+                "coordination",
+                "presence",
+                "reservation",
+                "conflict",
+                "lease",
+                "active_run",
+                "mailbox",
+                "swarm",
+            ],
+            &[
+                "action",
+                "path",
+                "paths",
+                "operation",
+                "note",
+                "overrideReason",
+                "reservationId",
+                "releaseReason",
+                "itemType",
+                "itemId",
+                "targetAgentSessionId",
+                "targetRunId",
+                "targetRole",
+                "title",
+                "body",
+                "priority",
+                "ttlSeconds",
+                "summary",
+                "limit",
+            ],
+            &[
+                "Check whether another active run owns an overlapping file reservation.",
+                "Publish a temporary blocker or question for sibling agents.",
+                "Promote a mailbox finding to a durable-context review candidate.",
+            ],
+            "coordination_state",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_TOOL_ACCESS,
@@ -1105,10 +1476,10 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_SUBAGENT,
             "agent_ops",
-            "Manage async model-routed subagent tasks.",
+            "Manage pane-contained child agents with role-scoped tool policy and trace lineage.",
             &["agent", "subagent", "delegate", "explore", "verify", "parallel"],
-            &["action", "taskId", "role", "prompt", "modelId", "writeSet", "decision"],
-            &["Spawn an explorer for a bounded codebase question.", "Poll a worker and integrate its result with a parent decision."],
+            &["action", "taskId", "role", "prompt", "modelId", "writeSet", "decision", "maxToolCalls"],
+            &["Spawn a researcher for a bounded codebase question.", "Poll an engineer and integrate its result with a parent decision."],
             "agent_delegation",
         ),
         catalog_entry(
@@ -1453,6 +1824,8 @@ pub struct AutonomousToolRuntime {
     pub(super) subagent_executor: Option<Arc<dyn AutonomousSubagentExecutor>>,
     pub(super) subagent_execution_depth: usize,
     pub(super) subagent_write_scope: Option<AutonomousSubagentWriteScope>,
+    pub(super) subagent_limits: AutonomousSubagentLimits,
+    pub(super) delegated_tool_call_budget: Option<AutonomousDelegatedToolCallBudget>,
     pub(super) skill_tool: Option<AutonomousSkillToolRuntime>,
     process_sessions: Arc<process::ProcessSessionRegistry>,
     owned_processes: Arc<process_manager::OwnedProcessRegistry>,
@@ -1474,6 +1847,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("mcp_registry_path", &self.mcp_registry_path)
             .field("subagent_execution_depth", &self.subagent_execution_depth)
             .field("subagent_write_scope", &self.subagent_write_scope)
+            .field("subagent_limits", &self.subagent_limits)
             .field("skill_tool_enabled", &self.skill_tool.is_some())
             .finish_non_exhaustive()
     }
@@ -1492,6 +1866,35 @@ pub struct AutonomousSubagentWriteScope {
     pub write_set: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutonomousSubagentLimits {
+    pub max_child_agents: usize,
+    pub max_depth: usize,
+    pub max_concurrent_child_runs: usize,
+    pub max_delegated_tool_calls: usize,
+    pub max_delegated_tokens: u64,
+    pub max_delegated_cost_micros: u64,
+}
+
+impl Default for AutonomousSubagentLimits {
+    fn default() -> Self {
+        Self {
+            max_child_agents: DEFAULT_SUBAGENT_MAX_CHILD_AGENTS,
+            max_depth: DEFAULT_SUBAGENT_MAX_DEPTH,
+            max_concurrent_child_runs: DEFAULT_SUBAGENT_MAX_CONCURRENT_CHILD_RUNS,
+            max_delegated_tool_calls: DEFAULT_SUBAGENT_MAX_DELEGATED_TOOL_CALLS,
+            max_delegated_tokens: DEFAULT_SUBAGENT_MAX_DELEGATED_TOKENS,
+            max_delegated_cost_micros: DEFAULT_SUBAGENT_MAX_DELEGATED_COST_MICROS,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AutonomousDelegatedToolCallBudget {
+    owner: String,
+    remaining: Arc<Mutex<usize>>,
+}
+
 pub trait AutonomousSubagentExecutor: Send + Sync {
     fn execute_subagent(
         &self,
@@ -1503,6 +1906,14 @@ pub trait AutonomousSubagentExecutor: Send + Sync {
         &self,
         task: &AutonomousSubagentTask,
     ) -> CommandResult<AutonomousSubagentTask>;
+
+    fn send_subagent_input(
+        &self,
+        task: &AutonomousSubagentTask,
+        text: &str,
+    ) -> CommandResult<AutonomousSubagentTask>;
+
+    fn export_subagent_trace(&self, task: &AutonomousSubagentTask) -> CommandResult<JsonValue>;
 }
 
 impl AutonomousToolRuntime {
@@ -1568,6 +1979,8 @@ impl AutonomousToolRuntime {
             subagent_executor: None,
             subagent_execution_depth: 0,
             subagent_write_scope: None,
+            subagent_limits: AutonomousSubagentLimits::default(),
+            delegated_tool_call_budget: None,
             skill_tool: None,
             process_sessions: Arc::new(process::ProcessSessionRegistry::default()),
             owned_processes: Arc::new(process_manager::OwnedProcessRegistry::default()),
@@ -1768,6 +2181,11 @@ impl AutonomousToolRuntime {
         self
     }
 
+    pub fn with_subagent_limits(mut self, limits: AutonomousSubagentLimits) -> Self {
+        self.subagent_limits = limits;
+        self
+    }
+
     pub fn with_subagent_write_scope(
         mut self,
         role: AutonomousSubagentRole,
@@ -1779,6 +2197,18 @@ impl AutonomousToolRuntime {
 
     pub fn subagent_write_scope(&self) -> Option<&AutonomousSubagentWriteScope> {
         self.subagent_write_scope.as_ref()
+    }
+
+    pub fn with_delegated_tool_call_budget(
+        mut self,
+        owner: impl Into<String>,
+        max_tool_calls: usize,
+    ) -> Self {
+        self.delegated_tool_call_budget = Some(AutonomousDelegatedToolCallBudget {
+            owner: owner.into(),
+            remaining: Arc::new(Mutex::new(max_tool_calls)),
+        });
+        self
     }
 
     pub fn with_skill_tool(
@@ -1852,6 +2282,7 @@ impl AutonomousToolRuntime {
 
     pub fn execute(&self, request: AutonomousToolRequest) -> CommandResult<AutonomousToolResult> {
         self.check_cancelled()?;
+        self.consume_delegated_tool_call_budget()?;
         match request {
             AutonomousToolRequest::Read(request) => self.read(request),
             AutonomousToolRequest::Search(request) => self.search(request),
@@ -1892,6 +2323,8 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::ToolSearch(request) => self.tool_search(request),
             AutonomousToolRequest::EnvironmentContext(request) => self.environment_context(request),
             AutonomousToolRequest::ProjectContext(request) => self.project_context(request),
+            AutonomousToolRequest::WorkspaceIndex(request) => self.workspace_index(request),
+            AutonomousToolRequest::AgentCoordination(request) => self.agent_coordination(request),
             AutonomousToolRequest::AgentDefinition(request) => self.agent_definition(request),
             AutonomousToolRequest::Skill(request) => self.skill(request),
             AutonomousToolRequest::Browser(request) => self.browser(request),
@@ -1989,6 +2422,29 @@ impl AutonomousToolRuntime {
                     executor.docs(request)
                 }),
         }
+    }
+
+    fn consume_delegated_tool_call_budget(&self) -> CommandResult<()> {
+        let Some(budget) = self.delegated_tool_call_budget.as_ref() else {
+            return Ok(());
+        };
+        let mut remaining = budget.remaining.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_subagent_budget_lock_failed",
+                "Xero could not lock the subagent delegated tool-call budget.",
+            )
+        })?;
+        if *remaining == 0 {
+            return Err(CommandError::user_fixable(
+                "autonomous_tool_subagent_tool_budget_exhausted",
+                format!(
+                    "Xero stopped subagent `{}` because its delegated tool-call budget is exhausted.",
+                    budget.owner
+                ),
+            ));
+        }
+        *remaining -= 1;
+        Ok(())
     }
 
     pub fn execute_approved(
@@ -2108,6 +2564,8 @@ impl AutonomousToolRuntime {
                 granted_tools: Vec::new(),
                 denied_tools: Vec::new(),
                 available_groups: self.available_tool_access_groups(),
+                available_tool_packs: self.available_tool_pack_manifests(),
+                tool_pack_health: self.tool_pack_health_reports(),
                 message:
                     "Available tool groups returned. Request a group or specific tool by name."
                         .into(),
@@ -2159,6 +2617,8 @@ impl AutonomousToolRuntime {
                     granted_tools: requested.into_iter().collect(),
                     denied_tools: denied.into_iter().collect(),
                     available_groups: self.available_tool_access_groups(),
+                    available_tool_packs: self.available_tool_pack_manifests(),
+                    tool_pack_health: self.tool_pack_health_reports(),
                     message: "Requested tools will be exposed on the next provider turn.".into(),
                 }
             }
@@ -2195,6 +2655,79 @@ impl AutonomousToolRuntime {
             .collect()
     }
 
+    fn available_tool_pack_manifests(&self) -> Vec<DomainToolPackManifest> {
+        domain_tool_pack_manifests()
+            .into_iter()
+            .filter(|manifest| self.tool_pack_enabled_by_policy(manifest))
+            .collect()
+    }
+
+    pub fn tool_pack_health_reports(&self) -> Vec<DomainToolPackHealthReport> {
+        domain_tool_pack_manifests()
+            .into_iter()
+            .map(|manifest| {
+                let available_prerequisites = self.available_prerequisites_for_tool_pack(&manifest);
+                let input = DomainToolPackHealthInput {
+                    pack_id: manifest.pack_id.clone(),
+                    enabled_by_policy: self.tool_pack_enabled_by_policy(&manifest),
+                    available_prerequisites,
+                    checked_at: crate::auth::now_timestamp(),
+                };
+                domain_tool_pack_health_report(&manifest, &input)
+            })
+            .collect()
+    }
+
+    fn tool_pack_enabled_by_policy(&self, manifest: &DomainToolPackManifest) -> bool {
+        manifest.tools.iter().any(|tool| {
+            self.tool_available_by_runtime(tool) && self.tool_allowed_by_active_agent(tool)
+        })
+    }
+
+    fn available_prerequisites_for_tool_pack(
+        &self,
+        manifest: &DomainToolPackManifest,
+    ) -> Vec<String> {
+        let mut available = BTreeSet::new();
+        for prerequisite in &manifest.prerequisites {
+            if self
+                .tool_pack_prerequisite_available(&manifest.pack_id, &prerequisite.prerequisite_id)
+            {
+                available.insert(prerequisite.prerequisite_id.clone());
+            }
+        }
+        available.into_iter().collect()
+    }
+
+    fn tool_pack_prerequisite_available(&self, pack_id: &str, prerequisite_id: &str) -> bool {
+        match (pack_id, prerequisite_id) {
+            ("browser", "desktop_browser_executor") => self.browser_executor.is_some(),
+            ("browser", "webview_runtime") => self.browser_executor.is_some(),
+            ("emulator", "desktop_emulator_executor") => self.emulator_executor.is_some(),
+            ("emulator", "adb") => executable_on_path("adb"),
+            ("emulator", "xcrun") => executable_on_path("xcrun"),
+            ("solana", "solana_state_executor") => self.solana_executor.is_some(),
+            ("solana", "solana") => executable_on_path("solana"),
+            ("solana", "anchor") => executable_on_path("anchor"),
+            ("os_automation", "desktop_runtime") => true,
+            ("os_automation", "macos_platform") => cfg!(target_os = "macos"),
+            ("os_automation", "accessibility_permission")
+            | ("os_automation", "screen_recording_permission") => false,
+            ("project_context", "repo_root") => self.repo_root.is_dir(),
+            ("project_context", "app_data_store") => {
+                self.agent_run_context.is_some()
+                    || self.environment_profile_database_path.is_some()
+                    || self.skill_tool_enabled()
+            }
+            ("project_context", "workspace_index_store") => {
+                crate::db::project_app_data_dir_for_repo(&self.repo_root)
+                    .join("workspace-index")
+                    .exists()
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn active_runtime_agent_id(&self) -> RuntimeAgentIdDto {
         self.command_controls
             .as_ref()
@@ -2211,7 +2744,23 @@ impl AutonomousToolRuntime {
     }
 
     fn tool_available_by_runtime(&self, tool: &str) -> bool {
-        tool != AUTONOMOUS_TOOL_SKILL || self.skill_tool_enabled()
+        if tool == AUTONOMOUS_TOOL_SKILL {
+            return self.skill_tool_enabled();
+        }
+        let pack_ids = domain_tool_pack_ids_for_tool(tool);
+        if pack_ids.iter().any(|pack_id| pack_id == "browser") {
+            return self.browser_executor.is_some();
+        }
+        if pack_ids.iter().any(|pack_id| pack_id == "emulator") {
+            return self.emulator_executor.is_some();
+        }
+        if pack_ids.iter().any(|pack_id| pack_id == "solana") {
+            return self.solana_executor.is_some();
+        }
+        if tool == AUTONOMOUS_TOOL_MACOS_AUTOMATION {
+            return cfg!(target_os = "macos");
+        }
+        true
     }
 
     pub fn web_fetch(
@@ -2301,6 +2850,8 @@ pub enum AutonomousToolRequest {
     ToolSearch(AutonomousToolSearchRequest),
     EnvironmentContext(AutonomousEnvironmentContextRequest),
     ProjectContext(AutonomousProjectContextRequest),
+    WorkspaceIndex(AutonomousWorkspaceIndexRequest),
+    AgentCoordination(AutonomousAgentCoordinationRequest),
     AgentDefinition(AutonomousAgentDefinitionRequest),
     Skill(XeroSkillToolInput),
     Browser(AutonomousBrowserRequest),
@@ -2842,17 +3393,94 @@ pub struct AutonomousMcpRequest {
 pub enum AutonomousSubagentAction {
     Spawn,
     Status,
+    SendInput,
+    Wait,
+    FollowUp,
+    Interrupt,
     Cancel,
+    Close,
     Integrate,
+    ExportTrace,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomousSubagentRole {
-    Explorer,
-    Worker,
-    Verifier,
+    Engineer,
+    Debugger,
+    Planner,
+    Researcher,
     Reviewer,
+    AgentBuilder,
+    Browser,
+    Emulator,
+    Solana,
+    Database,
+}
+
+impl AutonomousSubagentRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Engineer => "engineer",
+            Self::Debugger => "debugger",
+            Self::Planner => "planner",
+            Self::Researcher => "researcher",
+            Self::Reviewer => "reviewer",
+            Self::AgentBuilder => "agent_builder",
+            Self::Browser => "browser",
+            Self::Emulator => "emulator",
+            Self::Solana => "solana",
+            Self::Database => "database",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Engineer => "Engineer",
+            Self::Debugger => "Debugger",
+            Self::Planner => "Planner",
+            Self::Researcher => "Researcher",
+            Self::Reviewer => "Reviewer",
+            Self::AgentBuilder => "Agent Builder",
+            Self::Browser => "Browser specialist",
+            Self::Emulator => "Emulator specialist",
+            Self::Solana => "Solana specialist",
+            Self::Database => "Database specialist",
+        }
+    }
+
+    pub const fn allows_write_set(self) -> bool {
+        matches!(self, Self::Engineer | Self::Debugger)
+    }
+
+    pub const fn requires_write_set(self) -> bool {
+        matches!(self, Self::Engineer)
+    }
+
+    pub const fn verification_contract(self) -> &'static str {
+        match self {
+            Self::Engineer => "Verify scoped edits before reporting completion.",
+            Self::Debugger => "State the reproduction, evidence, fix, and verification result.",
+            Self::Planner => "Return an actionable plan with assumptions and unresolved risks.",
+            Self::Researcher => "Return source-grounded findings without mutating files.",
+            Self::Reviewer => "Lead with concrete findings, risks, and test gaps.",
+            Self::AgentBuilder => {
+                "Return a least-privilege agent definition proposal and validation notes."
+            }
+            Self::Browser => {
+                "Return browser evidence, selectors, screenshots, or accessibility findings."
+            }
+            Self::Emulator => {
+                "Return device state, reproduction steps, and bounded automation evidence."
+            }
+            Self::Solana => {
+                "Return cluster/program evidence and safety notes for chain-affecting work."
+            }
+            Self::Database => {
+                "Return schema/query findings, migration risks, and verification notes."
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2867,6 +3495,14 @@ pub struct AutonomousSubagentRequest {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_micros: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_set: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2875,13 +3511,27 @@ pub struct AutonomousSubagentRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSubagentInputRecord {
+    pub kind: String,
+    pub text: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousSubagentTask {
     pub subagent_id: String,
     pub role: AutonomousSubagentRole,
+    pub role_label: String,
     pub prompt: String,
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_set: Vec<String>,
+    pub verification_contract: String,
+    pub depth: usize,
+    pub max_tool_calls: usize,
+    pub max_tokens: u64,
+    pub max_cost_micros: u64,
     pub status: String,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2894,6 +3544,14 @@ pub struct AutonomousSubagentTask {
     pub integrated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_log: Vec<AutonomousSubagentInputRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3130,6 +3788,8 @@ pub enum AutonomousToolOutput {
     ToolSearch(AutonomousToolSearchOutput),
     EnvironmentContext(AutonomousEnvironmentContextOutput),
     ProjectContext(AutonomousProjectContextOutput),
+    WorkspaceIndex(AutonomousWorkspaceIndexOutput),
+    AgentCoordination(AutonomousAgentCoordinationOutput),
     AgentDefinition(AutonomousAgentDefinitionOutput),
     Skill(AutonomousSkillToolOutput),
     Browser(AutonomousBrowserOutput),
@@ -3306,6 +3966,10 @@ pub struct AutonomousToolAccessOutput {
     pub granted_tools: Vec<String>,
     pub denied_tools: Vec<String>,
     pub available_groups: Vec<AutonomousToolAccessGroup>,
+    #[serde(default)]
+    pub available_tool_packs: Vec<DomainToolPackManifest>,
+    #[serde(default)]
+    pub tool_pack_health: Vec<DomainToolPackHealthReport>,
     pub message: String,
 }
 
@@ -3446,6 +4110,8 @@ pub struct AutonomousCommandOutput {
     pub timed_out: bool,
     pub spawned: bool,
     pub policy: AutonomousCommandPolicyTrace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3461,6 +4127,15 @@ pub enum AutonomousCommandSessionOperation {
 pub enum AutonomousCommandSessionStream {
     Stdout,
     Stderr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCommandOutputChunk {
+    pub stream: AutonomousCommandSessionStream,
+    pub text: Option<String>,
+    pub truncated: bool,
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3486,6 +4161,8 @@ pub struct AutonomousCommandSessionOutput {
     pub chunks: Vec<AutonomousCommandSessionChunk>,
     pub next_sequence: u64,
     pub policy: Option<AutonomousCommandPolicyTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3940,6 +4617,8 @@ pub struct AutonomousMcpOutput {
 pub struct AutonomousSubagentOutput {
     pub task: AutonomousSubagentTask,
     pub active_tasks: Vec<AutonomousSubagentTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4049,6 +4728,8 @@ pub struct AutonomousToolSearchMatch {
     pub catalog_kind: String,
     pub description: String,
     pub score: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_pack_ids: Vec<String>,
     pub activation_groups: Vec<String>,
     pub activation_tools: Vec<String>,
     pub tags: Vec<String>,

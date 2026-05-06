@@ -247,6 +247,33 @@ describe('AgentSessionsSidebar', () => {
     expect(container.querySelector('[data-session-collapse-ghost="true"]')).toBeInTheDocument()
   })
 
+  it('does not animate a collapse ghost when an already-collapsed hidden sidebar enters strip mode', () => {
+    const props: ComponentProps<typeof AgentSessionsSidebar> = {
+      projectId: 'project-1',
+      sessions,
+      selectedSessionId: 'agent-session-main',
+      onSelectSession: vi.fn(),
+      onCreateSession: vi.fn(),
+      onArchiveSession: vi.fn(),
+      collapsed: true,
+      mode: 'pinned',
+    }
+    const { container, rerender } = render(<AgentSessionsSidebar {...props} />)
+
+    rerender(
+      <AgentSessionsSidebar
+        {...props}
+        mode="collapsed"
+        onPin={vi.fn()}
+      />,
+    )
+
+    const sidebar = container.querySelector('aside') as HTMLElement
+    expect(sidebar.style.width).toBe('6px')
+    expect(sidebar.style.transition).toBe('none')
+    expect(container.querySelector('[data-session-collapse-ghost="true"]')).not.toBeInTheDocument()
+  })
+
   it('expands the collapsed sessions strip when the chevron is pressed without requesting peek', () => {
     const onPin = vi.fn()
     const onRequestPeek = vi.fn()

@@ -9,10 +9,12 @@ use crate::{
     },
     provider_credentials::ProviderCredentialProfile,
     provider_models::load_provider_model_catalog,
+    provider_preflight::run_selected_provider_preflight,
     runtime::{
-        provider_model_catalog_diagnostic, provider_validation_diagnostics, XeroDiagnosticCheck,
-        XeroDiagnosticCheckInput, XeroDiagnosticSeverity, XeroDiagnosticStatus,
-        XeroDiagnosticSubject, OPENAI_CODEX_PROVIDER_ID,
+        provider_capability_diagnostics, provider_model_catalog_diagnostic,
+        provider_validation_diagnostics, XeroDiagnosticCheck, XeroDiagnosticCheckInput,
+        XeroDiagnosticSeverity, XeroDiagnosticStatus, XeroDiagnosticSubject,
+        OPENAI_CODEX_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -29,12 +31,21 @@ pub fn check_provider_profile<R: Runtime>(
     }
 
     let snapshot = load_provider_credentials_view(&app, state.inner())?;
-    let profile = snapshot.profile(profile_id).cloned().ok_or_else(|| {
-        CommandError::user_fixable(
-            "provider_not_found",
-            format!("Xero could not find provider `{profile_id}`."),
-        )
-    })?;
+    let profile = snapshot
+        .profile(profile_id)
+        .or_else(|| {
+            snapshot
+                .profiles()
+                .iter()
+                .find(|profile| profile.provider_id == profile_id)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "provider_not_found",
+                format!("Xero could not find provider `{profile_id}`."),
+            )
+        })?;
 
     let mut validation_checks = provider_validation_diagnostics(&snapshot, &profile)?;
     if let Some(check) = openai_codex_session_check(&app, state.inner(), &profile)? {
@@ -42,12 +53,26 @@ pub fn check_provider_profile<R: Runtime>(
     }
 
     let mut reachability_checks = Vec::new();
+    let mut capability_checks = Vec::new();
     let mut model_catalog = None;
+    let mut preflight = None;
     if request.include_network {
         match load_provider_model_catalog(&app, state.inner(), profile_id, true) {
             Ok(catalog) => {
                 reachability_checks.push(provider_model_catalog_diagnostic(&catalog)?);
+                capability_checks.extend(provider_capability_diagnostics(
+                    &catalog,
+                    request.model_id.as_deref(),
+                )?);
                 model_catalog = Some(map_provider_model_catalog(catalog));
+                preflight = Some(run_selected_provider_preflight(
+                    &app,
+                    state.inner(),
+                    profile_id,
+                    request.model_id.as_deref(),
+                    true,
+                    xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+                )?);
             }
             Err(error) => {
                 reachability_checks.push(command_error_to_model_catalog_check(&profile, error)?);
@@ -61,7 +86,9 @@ pub fn check_provider_profile<R: Runtime>(
         provider_id: profile.provider_id,
         validation_checks,
         reachability_checks,
+        capability_checks,
         model_catalog,
+        preflight,
     })
 }
 

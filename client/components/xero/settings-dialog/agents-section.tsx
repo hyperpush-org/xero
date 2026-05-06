@@ -87,6 +87,8 @@ function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {
       return Bug
     case "agent_builder":
       return Sparkles
+    case "harness_test":
+      return Bot
     case "observe_only":
     default:
       return MessageCircle

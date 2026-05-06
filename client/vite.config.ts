@@ -100,6 +100,15 @@ export default defineConfig({
             return undefined
           }
 
+          // Mermaid (~1MB) is dynamically imported on first diagram render — keep it
+          // (and its transitive d3 / dagre / cytoscape graph libs) in a dedicated chunk
+          // so cold start does not pay for it.
+          if (
+            /[/]node_modules[/](?:mermaid|@mermaid-js|d3|d3-[^/]+|dagre|dagre-d3-es|cytoscape|cytoscape-[^/]+|elkjs|katex|khroma|@braintree|dompurify|@iconify|roughjs|robust-predicates|delaunator|internmap|robust-orientation|robust-product|robust-sum|robust-scale|robust-compress|robust-add)[/]/.test(normalizedId)
+          ) {
+            return 'mermaid'
+          }
+
           return 'vendor'
         },
       },

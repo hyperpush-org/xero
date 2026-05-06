@@ -559,6 +559,197 @@ pub fn provider_model_catalog_diagnostic(
     }
 }
 
+pub fn provider_capability_diagnostics(
+    catalog: &ProviderModelCatalog,
+    selected_model_id: Option<&str>,
+) -> CommandResult<Vec<XeroDiagnosticCheck>> {
+    let selected_model_id = selected_model_id
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .unwrap_or(catalog.configured_model_id.as_str());
+    let selected_model = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == selected_model_id);
+    let capabilities = crate::provider_models::provider_capability_catalog_for_catalog(
+        catalog,
+        Some(selected_model_id),
+    );
+    let mut checks = Vec::new();
+
+    let model_status = if selected_model.is_some() {
+        if matches!(catalog.source, ProviderModelCatalogSource::Manual) {
+            (
+                XeroDiagnosticStatus::Warning,
+                XeroDiagnosticSeverity::Warning,
+                "provider_model_manual_unverified",
+            )
+        } else {
+            (
+                XeroDiagnosticStatus::Passed,
+                XeroDiagnosticSeverity::Info,
+                "provider_model_available",
+            )
+        }
+    } else if matches!(catalog.source, ProviderModelCatalogSource::Manual) {
+        (
+            XeroDiagnosticStatus::Warning,
+            XeroDiagnosticSeverity::Warning,
+            "provider_model_manual_unverified",
+        )
+    } else {
+        (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            "provider_model_unavailable",
+        )
+    };
+    checks.push(XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ModelCatalog,
+        status: model_status.0,
+        severity: model_status.1,
+        retryable: matches!(model_status.0, XeroDiagnosticStatus::Failed),
+        code: model_status.2.into(),
+        message: if selected_model.is_some() {
+            format!(
+                "Selected model `{selected_model_id}` is present in the {:?} catalog for provider `{}`.",
+                catalog.source, catalog.provider_id
+            )
+        } else {
+            format!(
+                "Selected model `{selected_model_id}` was not verified in the {:?} catalog for provider `{}`.",
+                catalog.source, catalog.provider_id
+            )
+        },
+        affected_profile_id: Some(catalog.profile_id.clone()),
+        affected_provider_id: Some(catalog.provider_id.clone()),
+        endpoint: None,
+        remediation: match model_status.0 {
+            XeroDiagnosticStatus::Passed => None,
+            XeroDiagnosticStatus::Warning => Some(
+                "Refresh the provider catalog or choose a model returned by live provider discovery."
+                    .into(),
+            ),
+            _ => Some(
+                "Choose another model, refresh the catalog, or repair provider credentials and endpoint metadata."
+                    .into(),
+            ),
+        },
+    })?);
+
+    checks.push(capability_check(
+        catalog,
+        "provider_streaming_capability",
+        "streaming",
+        &capabilities.capabilities.streaming.status,
+        &capabilities.capabilities.streaming.detail,
+        "Choose a provider or model path with streaming support if live progress is required.",
+    )?);
+    checks.push(capability_check(
+        catalog,
+        "provider_tool_call_capability",
+        "tool calls",
+        &capabilities.capabilities.tool_calls.status,
+        &format!(
+            "{}; schema={}; parallel={}",
+            capabilities.capabilities.tool_calls.strictness_behavior,
+            capabilities.capabilities.tool_calls.schema_dialect,
+            capabilities.capabilities.tool_calls.parallel_call_behavior
+        ),
+        "Choose a provider/model with tool-call support before starting an agent task.",
+    )?);
+    checks.push(capability_check(
+        catalog,
+        "provider_reasoning_capability",
+        "reasoning controls",
+        &capabilities.capabilities.reasoning.status,
+        &format!(
+            "{} effort option(s); fallback={}",
+            capabilities.capabilities.reasoning.effort_levels.len(),
+            capabilities.capabilities.reasoning.unsupported_model_fallback
+        ),
+        "Use a model with reasoning controls, or let Xero send the request without reasoning effort.",
+    )?);
+    checks.push(capability_check(
+        catalog,
+        "provider_attachment_capability",
+        "attachments",
+        &capabilities.capabilities.attachments.status,
+        &format!(
+            "image={}; document={}",
+            capabilities.capabilities.attachments.image_input,
+            capabilities.capabilities.attachments.document_input
+        ),
+        "Choose an attachment-capable provider before adding images or documents.",
+    )?);
+    checks.push(capability_check(
+        catalog,
+        "provider_context_limit_capability",
+        "context limits",
+        &capabilities.capabilities.context_limits.status,
+        &format!(
+            "source={}; confidence={}",
+            capabilities.capabilities.context_limits.source,
+            capabilities.capabilities.context_limits.confidence
+        ),
+        "Choose a model with known context limits or keep the prompt below conservative defaults.",
+    )?);
+
+    Ok(checks)
+}
+
+fn capability_check(
+    catalog: &ProviderModelCatalog,
+    code: &str,
+    label: &str,
+    status: &str,
+    detail: &str,
+    remediation: &str,
+) -> CommandResult<XeroDiagnosticCheck> {
+    let (diagnostic_status, severity, retryable) = match status {
+        "supported" | "probed" => (
+            XeroDiagnosticStatus::Passed,
+            XeroDiagnosticSeverity::Info,
+            false,
+        ),
+        "not_applicable" => (
+            XeroDiagnosticStatus::Skipped,
+            XeroDiagnosticSeverity::Info,
+            false,
+        ),
+        "unknown" => (
+            XeroDiagnosticStatus::Warning,
+            XeroDiagnosticSeverity::Warning,
+            false,
+        ),
+        _ => (
+            XeroDiagnosticStatus::Failed,
+            XeroDiagnosticSeverity::Error,
+            false,
+        ),
+    };
+
+    XeroDiagnosticCheck::new(XeroDiagnosticCheckInput {
+        subject: XeroDiagnosticSubject::ModelCatalog,
+        status: diagnostic_status,
+        severity,
+        retryable,
+        code: code.into(),
+        message: format!(
+            "Provider `{}` reports {label} as `{status}`. {detail}",
+            catalog.provider_id
+        ),
+        affected_profile_id: Some(catalog.profile_id.clone()),
+        affected_provider_id: Some(catalog.provider_id.clone()),
+        endpoint: None,
+        remediation: if diagnostic_status == XeroDiagnosticStatus::Passed {
+            None
+        } else {
+            Some(remediation.into())
+        },
+    })
+}
+
 pub fn provider_validation_diagnostics(
     snapshot: &ProviderCredentialsView,
     profile: &ProviderCredentialProfile,

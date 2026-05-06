@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Workflow as WorkflowIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
 import { cn } from '@/lib/utils'
 import type { WorkflowPaneView } from '@/src/features/xero/use-xero-desktop-state'
 
@@ -15,6 +16,7 @@ interface PhaseViewProps {
   onToggleWorkflows?: () => void
   workflowsOpen?: boolean
   onCreateWorkflow?: () => void
+  onCreateAgent?: () => void
 }
 
 const BASE_GRID_SIZE = 28
@@ -22,7 +24,12 @@ const MIN_ZOOM = 0.25
 const MAX_ZOOM = 4
 
 export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
-  const { onToggleWorkflows, workflowsOpen = false, onCreateWorkflow } = props
+  const {
+    onToggleWorkflows,
+    workflowsOpen = false,
+    onCreateWorkflow,
+    onCreateAgent,
+  } = props
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
@@ -117,14 +124,23 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       onPointerUp={endDrag}
       role="presentation"
       style={{
-        backgroundImage:
-          'radial-gradient(circle, color-mix(in oklab, var(--foreground) 14%, transparent) var(--workflow-dot-size), transparent calc(var(--workflow-dot-size) + 0.5px))',
-        backgroundSize: `${gridSize}px ${gridSize}px`,
-        backgroundPosition: `${bgX}px ${bgY}px`,
+        ['--workflow-grid-size' as string]: `${gridSize}px`,
+        ['--workflow-grid-x' as string]: `${bgX}px`,
+        ['--workflow-grid-y' as string]: `${bgY}px`,
         // CSS custom property for the dot radius so the gradient stops stay in sync.
         ['--workflow-dot-size' as string]: `${dotRadius}px`,
       }}
     >
+      <div aria-hidden="true" className="workflow-canvas-grid" />
+
+      <WorkflowCanvasEmptyState
+        onCreateWorkflow={onCreateWorkflow}
+        onCreateAgent={onCreateAgent}
+        onBrowseWorkflows={
+          onToggleWorkflows && !workflowsOpen ? onToggleWorkflows : undefined
+        }
+      />
+
       {onToggleWorkflows || onCreateWorkflow ? (
         <div
           className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"

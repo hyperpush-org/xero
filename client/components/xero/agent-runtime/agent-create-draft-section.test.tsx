@@ -16,6 +16,7 @@ function makeToolItem(overrides: Partial<RuntimeStreamToolItemView> = {}): Runti
     toolState: 'succeeded',
     detail: 'Drafted agent definition `team_research` for review.',
     toolSummary: null,
+    toolResultPreview: null,
     ...overrides,
   }
 }
@@ -72,6 +73,7 @@ describe('AgentCreateDraftSection', () => {
             toolState: 'succeeded',
             detail: 'Saved record',
             toolSummary: null,
+            toolResultPreview: null,
           },
         ]}
         pendingApprovalCount={0}

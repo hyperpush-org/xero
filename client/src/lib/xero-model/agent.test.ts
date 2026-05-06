@@ -16,6 +16,12 @@ function makeAgentRunDto(overrides: Record<string, unknown> = {}) {
     projectId: 'project-1',
     agentSessionId: 'agent-session-main',
     runId: 'run-agent-1',
+    traceId: '0123456789abcdef0123456789abcdef',
+    lineageKind: 'top_level',
+    parentRunId: null,
+    parentTraceId: null,
+    parentSubagentId: null,
+    subagentRole: null,
     providerId: 'openai_codex',
     modelId: 'openai_codex',
     status: 'completed',
@@ -67,6 +73,10 @@ function makeAgentRunDto(overrides: Record<string, unknown> = {}) {
         id: 1,
         projectId: 'project-1',
         runId: 'run-agent-1',
+        traceId: '0123456789abcdef0123456789abcdef',
+        topLevelRunId: 'run-agent-1',
+        subagentId: null,
+        subagentRole: null,
         path: 'src/main.rs',
         operation: 'edit',
         oldHash: '0'.repeat(64),
@@ -131,6 +141,29 @@ describe('owned agent run schemas', () => {
     )
 
     expect(parsed.events[0].eventKind).toBe('tool_registry_snapshot')
+  })
+
+  it('accepts durable environment lifecycle events', () => {
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        events: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'environment_lifecycle_update',
+            payload: {
+              environmentId: 'env-project-1-run-agent-1',
+              state: 'ready',
+              pendingMessageCount: 0,
+            },
+            createdAt: '2026-04-24T12:00:02Z',
+          },
+        ],
+      }),
+    )
+
+    expect(parsed.events[0].eventKind).toBe('environment_lifecycle_update')
   })
 
   it('accepts durable policy decision events', () => {

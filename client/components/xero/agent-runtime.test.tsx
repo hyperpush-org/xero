@@ -4,6 +4,10 @@ import type { ComponentProps } from 'react'
 
 afterEach(() => {
   window.localStorage.clear()
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: undefined,
+  })
 })
 
 if (!HTMLElement.prototype.hasPointerCapture) {
@@ -484,6 +488,7 @@ function makeToolItem(
     createdAt: `2026-04-29T00:48:${String(sequence).padStart(2, '0')}Z`,
     detail: null,
     toolSummary: null,
+    toolResultPreview: null,
     ...rest,
   }
 }
@@ -539,6 +544,15 @@ function renderRuntimeStreamItems(runtimeStreamItems: NonNullable<AgentPaneView[
   )
 }
 
+function installClipboardWriteMock() {
+  const writeText = vi.fn(async (_value: string) => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+  return writeText
+}
+
 describe('AgentRuntime current UI', () => {
   it('classifies conversation scroll positions near the bottom', () => {
     expect(
@@ -583,6 +597,31 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('heading', { name: 'Recent autonomous workers' })).not.toBeInTheDocument()
   })
 
+  it('does not expose run support controls when trace export is available', () => {
+    const dictation = createDictationAdapter()
+    const exportAgentTrace = vi.fn(async () => {
+      throw new Error('Run support should not load')
+    })
+    const desktopAdapter = {
+      ...dictation.adapter,
+      exportAgentTrace,
+    } as ComponentProps<typeof AgentRuntime>['desktopAdapter']
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Open run support' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Run support' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Run support')).not.toBeInTheDocument()
+    expect(exportAgentTrace).not.toHaveBeenCalled()
+  })
 
   it('does not render worker lifecycle cards on the Agent tab', () => {
     render(
@@ -835,6 +874,45 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText('Validation started')).not.toBeInTheDocument()
   })
 
+  it('allows text selection inside the agent conversation viewport', () => {
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Select this prompt.' }),
+      makeTranscriptItem({ sequence: 3, role: 'assistant', text: 'Select this response.' }),
+    ])
+
+    expect(screen.getByLabelText('Agent conversation viewport')).toHaveClass('select-text')
+    expect(screen.getByLabelText('Agent conversation', { selector: 'section' })).toHaveClass('select-text')
+  })
+
+  it('copies user prompts, agent responses, and the visible conversation', async () => {
+    const writeText = installClipboardWriteMock()
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Please inspect the renderer.' }),
+      makeTranscriptItem({
+        sequence: 3,
+        role: 'assistant',
+        text: '<think>Checking the transcript controls.</think>The renderer is selectable now.',
+      }),
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy your prompt' }))
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('Please inspect the renderer.'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy agent response' }))
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('The renderer is selectable now.'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy visible conversation' }))
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith(
+        [
+          'You:\nPlease inspect the renderer.',
+          'Thoughts:\nChecking the transcript controls.',
+          'Agent:\nThe renderer is selectable now.',
+        ].join('\n\n'),
+      ),
+    )
+  })
+
   it('shows an agent thinking row immediately while a submitted prompt is starting', () => {
     render(
       <AgentRuntime
@@ -850,6 +928,70 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByRole('status', { name: 'Agent is thinking' })).toBeVisible()
     expect(screen.getByText('Thinking')).toBeVisible()
     expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
+  })
+
+  it('renders a submitted prompt immediately while the runtime update is still in flight', async () => {
+    let resolveUpdate: ((run: RuntimeRunView) => void) | null = null
+    const onUpdateRuntimeRunControls = vi.fn(
+      () =>
+        new Promise<RuntimeRunView>((resolve) => {
+          resolveUpdate = resolve
+        }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Please inspect the flaky test.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(conversation).getByText('Please inspect the flaky test.')).toBeVisible()
+    expect(screen.getByText('You')).toBeVisible()
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        prompt: 'Please inspect the flaky test.',
+      }),
+    )
+
+    act(() => {
+      resolveUpdate?.(makeRuntimeRun())
+    })
+  })
+
+  it('renders the queued user prompt before the runtime stream echoes it', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [],
+          selectedPrompt: {
+            text: 'Review the diff before continuing.',
+            queuedAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Review the diff before continuing.')).toBeVisible()
+    expect(screen.getByText('You')).toBeVisible()
   })
 
   it('pauses auto-follow when the user scrolls away and resumes from the latest button', () => {
@@ -1023,8 +1165,7 @@ describe('AgentRuntime current UI', () => {
   it('renders streamed reasoning activity as an inline thoughts block', () => {
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'Why is the build failing?' }),
-      makeReasoningItem({ sequence: 3, text: 'I should inspect the latest build output' }),
-      makeReasoningItem({ sequence: 4, text: ' before suggesting a fix.' }),
+      makeReasoningItem({ sequence: 3, text: 'I should inspect the latest build output before suggesting a fix.' }),
       makeToolItem({
         sequence: 5,
         toolCallId: 'call-read-build-log',
@@ -1039,6 +1180,152 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('I should inspect the latest build output before suggesting a fix.')).toBeVisible()
     expect(screen.getByText('read')).toBeVisible()
     expect(screen.getByText('The build is failing because the generated type is stale.')).toBeVisible()
+  })
+
+  it('does not combine separate reasoning summaries before a tool burst', () => {
+    const toolBurst = Array.from({ length: 16 }, (_, index) =>
+      makeToolItem({
+        sequence: index + 5,
+        toolCallId: `call-read-${index}`,
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: `Read tool ${index}.`,
+        toolSummary: {
+          kind: 'file',
+          path: `client/src/tool-${index}.ts`,
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+      }),
+    )
+
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Walk me through this codebase.' }),
+      makeReasoningItem({ sequence: 3, text: 'Inspecting the repo' }),
+      makeReasoningItem({ sequence: 4, text: 'Inspecting files for details' }),
+      ...toolBurst,
+    ])
+
+    expect(screen.getAllByText('Thoughts')).toHaveLength(2)
+    expect(screen.getByText('Inspecting the repo')).toBeVisible()
+    expect(screen.getByText('Inspecting files for details')).toBeVisible()
+    expect(screen.getByText('16 tool calls')).toBeVisible()
+    expect(screen.queryByText('read tool-0.ts')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /show grouped tool details for 16 tool calls/i }))
+
+    expect(screen.getByText('read tool-0.ts')).toBeVisible()
+    expect(screen.getByText('read tool-15.ts')).toBeVisible()
+  })
+
+  it('groups adjacent tool calls between streamed thoughts separately', () => {
+    const firstToolBurst = Array.from({ length: 6 }, (_, index) =>
+      makeToolItem({
+        sequence: index + 4,
+        toolCallId: `call-project-context-${index}`,
+        toolName: 'project_context',
+        toolState: 'succeeded',
+        detail: `Loaded project context ${index}.`,
+      }),
+    )
+    const secondToolBurst = Array.from({ length: 6 }, (_, index) =>
+      makeToolItem({
+        sequence: index + 11,
+        toolCallId: `call-read-${index}`,
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: `Read file ${index}.`,
+      }),
+    )
+
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Walk me through this codebase.' }),
+      makeReasoningItem({ sequence: 3, text: 'Inspecting project details' }),
+      ...firstToolBurst,
+      makeReasoningItem({ sequence: 10, text: 'Structuring my research approach' }),
+      ...secondToolBurst,
+    ])
+
+    const conversationText =
+      screen.getByRole('list', { name: 'Agent conversation turns' }).textContent ?? ''
+    const firstThoughtIndex = conversationText.indexOf('Inspecting project details')
+    const firstToolIndex = conversationText.indexOf('6 tool calls')
+    const secondThoughtIndex = conversationText.indexOf('Structuring my research approach')
+    const secondToolIndex = conversationText.lastIndexOf('6 tool calls')
+
+    expect(screen.getAllByText('6 tool calls')).toHaveLength(2)
+    expect(firstThoughtIndex).toBeGreaterThanOrEqual(0)
+    expect(firstToolIndex).toBeGreaterThan(firstThoughtIndex)
+    expect(secondThoughtIndex).toBeGreaterThan(firstToolIndex)
+    expect(secondToolIndex).toBeGreaterThan(secondThoughtIndex)
+
+    const groupedToolButtons = screen.getAllByRole('button', {
+      name: /show grouped tool details for 6 tool calls/i,
+    })
+    fireEvent.click(groupedToolButtons[0]!)
+
+    expect(screen.getAllByText('project context')[0]).toBeVisible()
+    expect(screen.getByText('Loaded project context 0.')).toBeVisible()
+  })
+
+  it('splits tool groups around edit tool calls and shows the edit diff', () => {
+    renderRuntimeStreamItems([
+      makeToolItem({
+        sequence: 2,
+        toolCallId: 'call-read-before',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read before edit.',
+      }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-find-before',
+        toolName: 'find',
+        toolState: 'succeeded',
+        detail: 'Found before edit.',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-edit',
+        toolName: 'edit',
+        toolState: 'succeeded',
+        detail: 'Edited client/src/file.ts.',
+        toolSummary: {
+          kind: 'file',
+          path: 'client/src/file.ts',
+          scope: null,
+          lineCount: null,
+          matchCount: 1,
+          truncated: false,
+        },
+        toolResultPreview: 'diff --git a/client/src/file.ts b/client/src/file.ts\n-old\n+new',
+      }),
+      makeToolItem({
+        sequence: 5,
+        toolCallId: 'call-read-after',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read after edit.',
+      }),
+      makeToolItem({
+        sequence: 6,
+        toolCallId: 'call-find-after',
+        toolName: 'find',
+        toolState: 'succeeded',
+        detail: 'Found after edit.',
+      }),
+    ])
+
+    expect(screen.getAllByText('2 tool calls')).toHaveLength(2)
+    expect(screen.getByText('edit file.ts')).toBeVisible()
+    expect(screen.getByText(/diff --git a\/client\/src\/file\.ts/)).toBeVisible()
+    expect(screen.queryByText('Read before edit.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /show grouped tool details for 2 tool calls/i })[0]!)
+
+    expect(screen.getByText('Read before edit.')).toBeVisible()
   })
 
   it('keeps consecutive full user transcript items as separate prompts', () => {
@@ -1075,21 +1362,99 @@ describe('AgentRuntime current UI', () => {
           matchCount: null,
           truncated: false,
         },
+        toolResultPreview: '1  export function AgentRuntime() {\n2    return null\n3  }',
       }),
     ])
 
     expect(screen.getAllByText('read agent-runtime.tsx')).toHaveLength(1)
-    expect(screen.getByText('Succeeded')).toBeVisible()
+    expect(screen.queryByText('Succeeded')).not.toBeInTheDocument()
     expect(screen.queryByText('Running')).not.toBeInTheDocument()
     expect(screen.getByText('Read 80 line(s) from `client/components/xero/agent-runtime.tsx`.')).toBeVisible()
     expect(screen.queryByText('Tool activity recorded.')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /show tool details for read agent-runtime\.tsx/i }))
 
-    expect(screen.getByText('Input')).toBeVisible()
-    expect(screen.getByText('path: client/components/xero/agent-runtime.tsx, startLine: 1, lineCount: 80')).toBeVisible()
-    expect(screen.getByText('Result')).toBeVisible()
-    expect(screen.getByText('File result · path client/components/xero/agent-runtime.tsx · 80 lines')).toBeVisible()
+    expect(screen.queryByText('Input')).not.toBeInTheDocument()
+    expect(screen.queryByText('Result')).not.toBeInTheDocument()
+    expect(screen.queryByText('Output')).not.toBeInTheDocument()
+    expect(screen.getByText(/export function AgentRuntime/)).toBeVisible()
+  })
+
+  it('keeps running tool calls visibly active while streaming output chunks into one detail row', () => {
+    const { container } = renderRuntimeStreamItems([
+      makeToolItem({
+        sequence: 2,
+        toolCallId: 'call-command',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'argv: pnpm test',
+      }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-command',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'Command stdout streamed.',
+        toolResultPreview: 'stdout:\nfirst assertion passed',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-command',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'Command stdout streamed.',
+        toolResultPreview: 'stdout:\nsecond assertion passed',
+      }),
+    ])
+
+    expect(screen.queryByText('Running')).not.toBeInTheDocument()
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /show tool details/i }))
+
+    expect(screen.queryByText('Output')).not.toBeInTheDocument()
+    const output = screen.getByText((content) =>
+      content.includes('first assertion passed') && content.includes('second assertion passed'),
+    )
+    expect(output).toBeVisible()
+    expect(output.textContent?.match(/first assertion passed/g)).toHaveLength(1)
+  })
+
+  it('replaces streamed command chunks with an equivalent final output preview', () => {
+    renderRuntimeStreamItems([
+      makeToolItem({
+        sequence: 2,
+        toolCallId: 'call-command',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'Command stdout streamed.',
+        toolResultPreview: 'stdout:\nfirst assertion passed',
+      }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-command',
+        toolName: 'command',
+        toolState: 'running',
+        detail: 'Command stdout streamed.',
+        toolResultPreview: 'stdout:\nsecond assertion passed',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-command',
+        toolName: 'command',
+        toolState: 'succeeded',
+        detail: 'Command exited with status 0: pnpm test.',
+        toolResultPreview: 'stdout:\nfirst assertion passed\nsecond assertion passed',
+      }),
+    ])
+
+    fireEvent.click(screen.getByRole('button', { name: /show tool details/i }))
+
+    const output = screen.getByText((content) =>
+      content.includes('first assertion passed') && content.includes('second assertion passed'),
+    )
+    expect(output).toBeVisible()
+    expect(output.textContent?.match(/first assertion passed/g)).toHaveLength(1)
   })
 
   it('uses action plus target labels for search-oriented tool cards', () => {
@@ -1110,11 +1475,13 @@ describe('AgentRuntime current UI', () => {
       }),
     ])
 
+    fireEvent.click(screen.getByRole('button', { name: /show grouped tool details for 2 tool calls/i }))
+
     expect(screen.getByText('find appendTranscriptDelta')).toBeVisible()
     expect(screen.getByText('list client/components/xero')).toBeVisible()
   })
 
-  it('groups long tool bursts without evicting the surrounding transcript turns', () => {
+  it('renders long tool bursts without evicting the surrounding transcript turns', () => {
     const toolBurst = Array.from({ length: 30 }, (_, index) =>
       makeToolItem({
         sequence: index + 3,
@@ -1148,6 +1515,47 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('read tool-0.ts')).toBeVisible()
     expect(screen.getByText('read tool-29.ts')).toBeVisible()
+  })
+
+  it('keeps individual tool call details collapsed until the tool row is opened', () => {
+    const toolBurst = Array.from({ length: 6 }, (_, index) =>
+      makeToolItem({
+        sequence: index + 3,
+        toolCallId: `call-read-${index}`,
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: `Read tool ${index}.`,
+        toolSummary: {
+          kind: 'file',
+          path: `client/src/tool-${index}.ts`,
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+        toolResultPreview: `tool ${index} output preview`,
+      }),
+    )
+
+    renderRuntimeStreamItems([
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+      ...toolBurst,
+      makeTranscriptItem({ sequence: 20, role: 'assistant', text: 'Done.' }),
+    ])
+
+    expect(screen.queryByText('read tool-0.ts')).not.toBeInTheDocument()
+    expect(screen.queryByText('tool 0 output preview')).not.toBeInTheDocument()
+    expect(screen.queryByText('tool 1 output preview')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /show grouped tool details for 6 tool calls/i }))
+
+    expect(screen.getByText('read tool-0.ts')).toBeVisible()
+    expect(screen.getByText('read tool-1.ts')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: /show tool details for read tool-0\.ts/i }))
+
+    expect(screen.getByText('tool 0 output preview')).toBeVisible()
+    expect(screen.queryByText('tool 1 output preview')).not.toBeInTheDocument()
   })
 
   it('offers diagnostics from runtime startup failures', () => {
@@ -1200,6 +1608,36 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
     expect(screen.queryByRole('combobox', { name: 'Approval mode selector' })).not.toBeInTheDocument()
+  })
+
+  it('renders Test in the enabled built-in composer selector', async () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'test',
+          selectedRuntimeAgentLabel: 'Test',
+          selectedApprovalMode: 'suggest',
+        })}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    const agentSelector = screen.getByRole('combobox', { name: 'Agent selector' })
+
+    expect(agentSelector).toHaveTextContent('Test')
+    expect(agentSelector).toBeEnabled()
+    expect(screen.queryByRole('combobox', { name: 'Approval mode selector' })).not.toBeInTheDocument()
+
+    fireEvent.pointerDown(agentSelector, {
+      button: 0,
+      buttons: 1,
+      ctrlKey: false,
+      pointerType: 'mouse',
+    })
+
+    expect(await screen.findByRole('option', { name: /Ask/i })).toBeVisible()
+    expect(screen.getByRole('option', { name: /Test/i })).toBeVisible()
   })
 
   it('keeps model selectors available while a prompt is pending on an active run', async () => {
@@ -2062,6 +2500,105 @@ describe('AgentRuntime current UI', () => {
       await waitFor(() => expect(onComposerControlsChange).toHaveBeenCalledTimes(1))
     })
 
+    it('defers and dedupes foreground-only context meter refreshes', async () => {
+      vi.useFakeTimers()
+      const originalRequestAnimationFrame = window.requestAnimationFrame
+      const originalCancelAnimationFrame = window.cancelAnimationFrame
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        value: (callback: FrameRequestCallback) =>
+          window.setTimeout(() => callback(performance.now()), 0),
+      })
+      Object.defineProperty(window, 'cancelAnimationFrame', {
+        configurable: true,
+        value: (handle: number) => window.clearTimeout(handle),
+      })
+
+      try {
+        const dictation = createDictationAdapter()
+        const getSessionContextSnapshot = vi.fn(async () => ({} as never))
+        const agent = makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+          runtimeRun: makeRuntimeRun(),
+        })
+        const desktopAdapter = {
+          ...dictation.adapter,
+          getSessionContextSnapshot,
+        }
+
+        const { rerender } = render(
+          <AgentRuntime
+            active={false}
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+
+        await act(async () => {
+          vi.advanceTimersByTime(1_000)
+          await Promise.resolve()
+        })
+
+        expect(getSessionContextSnapshot).not.toHaveBeenCalled()
+
+        rerender(
+          <AgentRuntime
+            active
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+
+        await act(async () => {
+          vi.advanceTimersByTime(40)
+          await Promise.resolve()
+        })
+        await act(async () => {
+          vi.advanceTimersByTime(230)
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(getSessionContextSnapshot).toHaveBeenCalledTimes(1)
+
+        rerender(
+          <AgentRuntime
+            active={false}
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+        rerender(
+          <AgentRuntime
+            active
+            agent={agent}
+            desktopAdapter={desktopAdapter}
+          />,
+        )
+
+        await act(async () => {
+          vi.advanceTimersByTime(40)
+          await Promise.resolve()
+        })
+        await act(async () => {
+          vi.advanceTimersByTime(230)
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+
+        expect(getSessionContextSnapshot).toHaveBeenCalledTimes(1)
+      } finally {
+        Object.defineProperty(window, 'requestAnimationFrame', {
+          configurable: true,
+          value: originalRequestAnimationFrame,
+        })
+        Object.defineProperty(window, 'cancelAnimationFrame', {
+          configurable: true,
+          value: originalCancelAnimationFrame,
+        })
+      }
+    })
+
     it('disables the spawn-pane button when the workspace is at capacity', () => {
       const onSpawn = vi.fn()
       render(
@@ -2094,6 +2631,101 @@ describe('AgentRuntime current UI', () => {
       expect(screen.getByRole('button', { name: 'Composer settings' })).toBeVisible()
       // Comfortable-mode inline thinking selector is hidden in compact mode (lives inside gear popover).
       expect(screen.queryByLabelText('Thinking level selector')).not.toBeInTheDocument()
+    })
+
+    it('uses the condensed transcript font scale when density is compact', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: [
+              makeTranscriptItem({ sequence: 2, role: 'user', text: 'Summarize the repo.' }),
+              makeTranscriptItem({
+                sequence: 3,
+                role: 'assistant',
+                text: ['# Repo shape', '', 'This should sit at dense response scale.'].join('\n'),
+              }),
+            ],
+          })}
+          density="compact"
+          paneCount={3}
+          paneNumber={1}
+        />,
+      )
+
+      const conversation = screen.getByLabelText('Agent conversation', { selector: 'section' })
+
+      expect(conversation).toHaveClass('text-[12px]')
+      expect(screen.getByRole('list', { name: 'Agent conversation turns' })).toHaveClass('gap-2')
+      expect(conversation).not.toHaveClass('font-mono')
+      expect(within(conversation).getByText('Repo shape')).toHaveClass('text-[13.5px]')
+    })
+
+    it('omits textual tool status badges when density is compact', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: [
+              makeToolItem({
+                sequence: 2,
+                toolCallId: 'call-read',
+                toolName: 'read',
+                toolState: 'succeeded',
+                detail: 'Read client/components/xero/agent-runtime.tsx.',
+              }),
+            ],
+          })}
+          density="compact"
+          paneCount={3}
+          paneNumber={1}
+        />,
+      )
+
+      const conversation = screen.getByLabelText('Agent conversation', { selector: 'section' })
+
+      expect(within(conversation).getByText('read')).toBeVisible()
+      expect(within(conversation).queryByText('Succeeded')).not.toBeInTheDocument()
+    })
+
+    it('shows only the rendered markdown body when condensed thoughts are expanded', () => {
+      render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1' }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: [
+              makeReasoningItem({
+                sequence: 2,
+                text: [
+                  '**Crafting a walkthrough**',
+                  '',
+                  'I need to provide a concise yet thorough answer.',
+                ].join('\n'),
+              }),
+            ],
+          })}
+          density="compact"
+          paneCount={3}
+          paneNumber={1}
+        />,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show reasoning' }))
+
+      const conversation = screen.getByLabelText('Agent conversation', { selector: 'section' })
+
+      expect(within(conversation).getByText('Crafting a walkthrough').tagName).toBe('STRONG')
+      expect(within(conversation).getAllByText('I need to provide a concise yet thorough answer.')).toHaveLength(1)
+      expect(within(conversation).queryByText('**Crafting a walkthrough**')).not.toBeInTheDocument()
     })
 
     it('keeps a focused empty session condensed when exactly three panes are open', () => {

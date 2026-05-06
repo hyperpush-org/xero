@@ -36,6 +36,7 @@ pub enum AgentMessageRoleDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunEventKindDto {
+    RunStarted,
     MessageDelta,
     ReasoningSummary,
     ToolStarted,
@@ -50,7 +51,16 @@ pub enum AgentRunEventKindDto {
     StateTransition,
     PlanUpdated,
     VerificationGate,
+    ContextManifestRecorded,
+    RetrievalPerformed,
+    MemoryCandidateCaptured,
+    EnvironmentLifecycleUpdate,
+    SandboxLifecycleUpdate,
     ActionRequired,
+    ApprovalRequired,
+    ToolPermissionGrant,
+    ProviderModelChanged,
+    RuntimeSettingsChanged,
     RunPaused,
     RunCompleted,
     RunFailed,
@@ -135,6 +145,10 @@ pub struct AgentFileChangeDto {
     pub id: i64,
     pub project_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub top_level_run_id: String,
+    pub subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub path: String,
     pub operation: String,
     pub old_hash: Option<String>,
@@ -178,6 +192,12 @@ pub struct AgentRunDto {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub lineage_kind: String,
+    pub parent_run_id: Option<String>,
+    pub parent_trace_id: Option<String>,
+    pub parent_subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub provider_id: String,
     pub model_id: String,
     pub status: AgentRunStatusDto,
@@ -207,6 +227,12 @@ pub struct AgentRunSummaryDto {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub lineage_kind: String,
+    pub parent_run_id: Option<String>,
+    pub parent_trace_id: Option<String>,
+    pub parent_subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub provider_id: String,
     pub model_id: String,
     pub status: AgentRunStatusDto,
@@ -271,6 +297,28 @@ pub struct GetAgentRunRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportAgentTraceRequestDto {
+    pub run_id: String,
+    #[serde(default)]
+    pub include_support_bundle: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTraceExportDto {
+    pub trace: JsonValue,
+    pub timeline: JsonValue,
+    pub diagnostics: JsonValue,
+    pub quality_gates: JsonValue,
+    pub production_readiness: JsonValue,
+    pub markdown_summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_bundle: Option<JsonValue>,
+    pub canonical_trace: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListAgentRunsRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
@@ -305,6 +353,12 @@ pub fn agent_run_dto(snapshot: AgentRunSnapshotRecord) -> AgentRunDto {
         project_id: snapshot.run.project_id.clone(),
         agent_session_id: snapshot.run.agent_session_id.clone(),
         run_id: snapshot.run.run_id.clone(),
+        trace_id: snapshot.run.trace_id.clone(),
+        lineage_kind: snapshot.run.lineage_kind.clone(),
+        parent_run_id: snapshot.run.parent_run_id.clone(),
+        parent_trace_id: snapshot.run.parent_trace_id.clone(),
+        parent_subagent_id: snapshot.run.parent_subagent_id.clone(),
+        subagent_role: snapshot.run.subagent_role.clone(),
         provider_id: snapshot.run.provider_id.clone(),
         model_id: snapshot.run.model_id.clone(),
         status: agent_run_status_dto(&snapshot.run),
@@ -366,6 +420,12 @@ pub fn agent_run_summary_dto(run: AgentRunRecord) -> AgentRunSummaryDto {
         project_id: run.project_id,
         agent_session_id: run.agent_session_id,
         run_id: run.run_id,
+        trace_id: run.trace_id,
+        lineage_kind: run.lineage_kind,
+        parent_run_id: run.parent_run_id,
+        parent_trace_id: run.parent_trace_id,
+        parent_subagent_id: run.parent_subagent_id,
+        subagent_role: run.subagent_role,
         provider_id: run.provider_id,
         model_id: run.model_id,
         status,
@@ -470,6 +530,10 @@ fn agent_file_change_dto(file_change: AgentFileChangeRecord) -> AgentFileChangeD
         id: file_change.id,
         project_id: file_change.project_id,
         run_id: file_change.run_id,
+        trace_id: file_change.trace_id,
+        top_level_run_id: file_change.top_level_run_id,
+        subagent_id: file_change.subagent_id,
+        subagent_role: file_change.subagent_role,
         path: file_change.path,
         operation: file_change.operation,
         old_hash: file_change.old_hash,
@@ -536,6 +600,7 @@ pub enum AgentDefinitionBaseCapabilityProfileDto {
     Engineering,
     Debugging,
     AgentBuilder,
+    HarnessTest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -667,6 +732,7 @@ fn parse_agent_definition_base_capability_profile(
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,
         "agent_builder" => AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,
+        "harness_test" => AgentDefinitionBaseCapabilityProfileDto::HarnessTest,
         _ => AgentDefinitionBaseCapabilityProfileDto::ObserveOnly,
     }
 }

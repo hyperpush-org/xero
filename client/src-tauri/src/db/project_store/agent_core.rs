@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -36,6 +36,7 @@ pub enum AgentMessageRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunEventKind {
+    RunStarted,
     MessageDelta,
     ReasoningSummary,
     ToolStarted,
@@ -50,7 +51,16 @@ pub enum AgentRunEventKind {
     StateTransition,
     PlanUpdated,
     VerificationGate,
+    ContextManifestRecorded,
+    RetrievalPerformed,
+    MemoryCandidateCaptured,
+    EnvironmentLifecycleUpdate,
+    SandboxLifecycleUpdate,
     ActionRequired,
+    ApprovalRequired,
+    ToolPermissionGrant,
+    ProviderModelChanged,
+    RuntimeSettingsChanged,
     RunPaused,
     RunCompleted,
     RunFailed,
@@ -78,6 +88,12 @@ pub struct AgentRunRecord {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub lineage_kind: String,
+    pub parent_run_id: Option<String>,
+    pub parent_trace_id: Option<String>,
+    pub parent_subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub provider_id: String,
     pub model_id: String,
     pub status: AgentRunStatus,
@@ -170,6 +186,10 @@ pub struct AgentFileChangeRecord {
     pub id: i64,
     pub project_id: String,
     pub run_id: String,
+    pub trace_id: String,
+    pub top_level_run_id: String,
+    pub subagent_id: Option<String>,
+    pub subagent_role: Option<String>,
     pub path: String,
     pub operation: String,
     pub old_hash: Option<String>,
@@ -200,6 +220,47 @@ pub struct AgentActionRequestRecord {
     pub created_at: String,
     pub resolved_at: Option<String>,
     pub response: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEnvironmentLifecycleSnapshotRecord {
+    pub project_id: String,
+    pub run_id: String,
+    pub environment_id: String,
+    pub state: String,
+    pub previous_state: Option<String>,
+    pub pending_message_count: i64,
+    pub health_checks_json: String,
+    pub setup_steps_json: String,
+    pub diagnostic_json: Option<String>,
+    pub snapshot_json: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAgentEnvironmentLifecycleSnapshotRecord {
+    pub project_id: String,
+    pub run_id: String,
+    pub environment_id: String,
+    pub state: String,
+    pub previous_state: Option<String>,
+    pub pending_message_count: i64,
+    pub health_checks_json: String,
+    pub setup_steps_json: String,
+    pub diagnostic_json: Option<String>,
+    pub snapshot_json: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentEnvironmentPendingMessageRecord {
+    pub id: i64,
+    pub project_id: String,
+    pub run_id: String,
+    pub role: AgentMessageRole,
+    pub content: String,
+    pub submitted_at: String,
+    pub delivered_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,6 +304,17 @@ pub struct NewAgentRunRecord {
     pub prompt: String,
     pub system_prompt: String,
     pub now: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunLineageUpdateRecord {
+    pub project_id: String,
+    pub run_id: String,
+    pub parent_run_id: String,
+    pub parent_trace_id: String,
+    pub parent_subagent_id: String,
+    pub subagent_role: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,6 +431,7 @@ pub fn insert_agent_run(
         }
         (None, None) => resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?,
     };
+    let trace_id = xero_agent_core::runtime_trace_id_for_run(&record.project_id, &record.run_id);
     let connection = open_agent_database(repo_root)?;
     connection
         .execute(
@@ -370,6 +443,7 @@ pub fn insert_agent_run(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
                 provider_id,
                 model_id,
                 status,
@@ -379,7 +453,7 @@ pub fn insert_agent_run(
                 last_heartbeat_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'starting', ?9, ?10, ?11, ?11, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'starting', ?10, ?11, ?12, ?12, ?12)
             "#,
             params![
                 selection.runtime_agent_id.as_str(),
@@ -388,6 +462,7 @@ pub fn insert_agent_run(
                 record.project_id,
                 record.agent_session_id,
                 record.run_id,
+                trace_id,
                 record.provider_id,
                 record.model_id,
                 record.prompt,
@@ -511,6 +586,55 @@ pub fn append_agent_message(
     })
 }
 
+pub fn update_agent_run_lineage(
+    repo_root: &Path,
+    record: &AgentRunLineageUpdateRecord,
+) -> Result<AgentRunSnapshotRecord, CommandError> {
+    validate_non_empty_text(&record.project_id, "projectId")?;
+    validate_non_empty_text(&record.run_id, "runId")?;
+    validate_non_empty_text(&record.parent_run_id, "parentRunId")?;
+    validate_non_empty_text(&record.parent_trace_id, "parentTraceId")?;
+    validate_non_empty_text(&record.parent_subagent_id, "parentSubagentId")?;
+    validate_non_empty_text(&record.subagent_role, "subagentRole")?;
+    let connection = open_agent_database(repo_root)?;
+    let updated = connection
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET lineage_kind = 'subagent_child',
+                parent_run_id = ?3,
+                parent_trace_id = ?4,
+                parent_subagent_id = ?5,
+                subagent_role = ?6,
+                updated_at = ?7
+            WHERE project_id = ?1
+              AND run_id = ?2
+            "#,
+            params![
+                record.project_id,
+                record.run_id,
+                record.parent_run_id,
+                record.parent_trace_id,
+                record.parent_subagent_id,
+                record.subagent_role,
+                record.updated_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_lineage_update_failed", error)
+        })?;
+    if updated != 1 {
+        return Err(CommandError::system_fault(
+            "agent_run_lineage_run_missing",
+            format!(
+                "Xero could not attach subagent lineage to run `{}` in project `{}` because the run was not found.",
+                record.run_id, record.project_id
+            ),
+        ));
+    }
+    load_agent_run(repo_root, &record.project_id, &record.run_id)
+}
+
 pub fn append_agent_event(
     repo_root: &Path,
     record: &NewAgentEventRecord,
@@ -590,6 +714,377 @@ pub fn read_agent_events_after(
         })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
         map_agent_store_query_error(repo_root, "agent_events_after_decode_failed", error)
+    })
+}
+
+pub fn read_all_agent_events(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Vec<AgentEventRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    read_agent_events(&connection, project_id, run_id, repo_root)
+}
+
+pub fn read_latest_agent_events(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    limit: usize,
+) -> Result<Vec<AgentEventRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let limit = limit.clamp(1, 1_000) as i64;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, project_id, run_id, event_kind, payload_json, created_at
+            FROM agent_events
+            WHERE project_id = ?1
+              AND run_id = ?2
+            ORDER BY id DESC
+            LIMIT ?3
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_events_latest_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id, run_id, limit], |row| {
+            Ok(AgentEventRecord {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                run_id: row.get(2)?,
+                event_kind: parse_agent_event_kind(row.get::<_, String>(3)?.as_str()),
+                payload_json: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_events_latest_query_failed", error)
+        })?;
+    let mut events = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_agent_store_query_error(repo_root, "agent_events_latest_decode_failed", error)
+    })?;
+    events.reverse();
+    Ok(events)
+}
+
+pub fn upsert_agent_environment_lifecycle_snapshot(
+    repo_root: &Path,
+    record: &NewAgentEnvironmentLifecycleSnapshotRecord,
+) -> Result<AgentEnvironmentLifecycleSnapshotRecord, CommandError> {
+    validate_non_empty_text(&record.project_id, "projectId")?;
+    validate_non_empty_text(&record.run_id, "runId")?;
+    validate_non_empty_text(&record.environment_id, "environmentId")?;
+    validate_non_empty_text(&record.state, "state")?;
+    if let Some(previous_state) = record.previous_state.as_ref() {
+        validate_non_empty_text(previous_state, "previousState")?;
+    }
+    validate_json_payload(&record.health_checks_json, "healthChecksJson")?;
+    validate_json_payload(&record.setup_steps_json, "setupStepsJson")?;
+    if let Some(diagnostic_json) = record.diagnostic_json.as_ref() {
+        validate_json_payload(diagnostic_json, "diagnosticJson")?;
+    }
+    validate_json_payload(&record.snapshot_json, "snapshotJson")?;
+    validate_non_empty_text(&record.updated_at, "updatedAt")?;
+    if record.pending_message_count < 0 {
+        return Err(CommandError::user_fixable(
+            "agent_environment_lifecycle_pending_count_invalid",
+            "Environment lifecycle pending-message count must be zero or greater.",
+        ));
+    }
+
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO agent_environment_lifecycle_snapshots (
+                project_id,
+                run_id,
+                environment_id,
+                state,
+                previous_state,
+                pending_message_count,
+                health_checks_json,
+                setup_steps_json,
+                diagnostic_json,
+                snapshot_json,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(project_id, run_id) DO UPDATE SET
+                environment_id = excluded.environment_id,
+                state = excluded.state,
+                previous_state = excluded.previous_state,
+                pending_message_count = excluded.pending_message_count,
+                health_checks_json = excluded.health_checks_json,
+                setup_steps_json = excluded.setup_steps_json,
+                diagnostic_json = excluded.diagnostic_json,
+                snapshot_json = excluded.snapshot_json,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                record.project_id,
+                record.run_id,
+                record.environment_id,
+                record.state,
+                record.previous_state,
+                record.pending_message_count,
+                record.health_checks_json,
+                record.setup_steps_json,
+                record.diagnostic_json,
+                record.snapshot_json,
+                record.updated_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_environment_lifecycle_snapshot_upsert_failed",
+                error,
+            )
+        })?;
+
+    load_agent_environment_lifecycle_snapshot(repo_root, &record.project_id, &record.run_id)?
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_environment_lifecycle_snapshot_missing",
+                format!(
+                    "Xero could not reload the lifecycle snapshot for run `{}` after saving it.",
+                    record.run_id
+                ),
+            )
+        })
+}
+
+pub fn load_agent_environment_lifecycle_snapshot(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<AgentEnvironmentLifecycleSnapshotRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .query_row(
+            r#"
+            SELECT
+                project_id,
+                run_id,
+                environment_id,
+                state,
+                previous_state,
+                pending_message_count,
+                health_checks_json,
+                setup_steps_json,
+                diagnostic_json,
+                snapshot_json,
+                updated_at
+            FROM agent_environment_lifecycle_snapshots
+            WHERE project_id = ?1
+              AND run_id = ?2
+            "#,
+            params![project_id, run_id],
+            read_agent_environment_lifecycle_snapshot_row,
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(
+                repo_root,
+                "agent_environment_lifecycle_snapshot_read_failed",
+                error,
+            )
+        })
+}
+
+pub fn insert_agent_environment_pending_message(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    role: AgentMessageRole,
+    content: &str,
+    submitted_at: &str,
+) -> Result<AgentEnvironmentPendingMessageRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(content, "content")?;
+    validate_non_empty_text(submitted_at, "submittedAt")?;
+    if role != AgentMessageRole::User {
+        return Err(CommandError::user_fixable(
+            "agent_environment_pending_message_role_invalid",
+            "Environment pending messages currently accept only user messages.",
+        ));
+    }
+
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO agent_environment_pending_messages (
+                project_id,
+                run_id,
+                role,
+                content,
+                submitted_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                project_id,
+                run_id,
+                agent_message_role_sql_value(&role),
+                content,
+                submitted_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_environment_pending_message_insert_failed",
+                error,
+            )
+        })?;
+    let id = connection.last_insert_rowid();
+    Ok(AgentEnvironmentPendingMessageRecord {
+        id,
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        role,
+        content: content.into(),
+        submitted_at: submitted_at.into(),
+        delivered_at: None,
+    })
+}
+
+pub fn list_undelivered_agent_environment_pending_messages(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Vec<AgentEnvironmentPendingMessageRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, project_id, run_id, role, content, submitted_at, delivered_at
+            FROM agent_environment_pending_messages
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND delivered_at IS NULL
+            ORDER BY id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(
+                repo_root,
+                "agent_environment_pending_messages_prepare_failed",
+                error,
+            )
+        })?;
+    let rows = statement
+        .query_map(
+            params![project_id, run_id],
+            read_agent_environment_pending_message_row,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(
+                repo_root,
+                "agent_environment_pending_messages_query_failed",
+                error,
+            )
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_agent_store_query_error(
+            repo_root,
+            "agent_environment_pending_messages_decode_failed",
+            error,
+        )
+    })
+}
+
+pub fn count_undelivered_agent_environment_pending_messages(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<i64, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM agent_environment_pending_messages
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND delivered_at IS NULL
+            "#,
+            params![project_id, run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(
+                repo_root,
+                "agent_environment_pending_messages_count_failed",
+                error,
+            )
+        })
+}
+
+pub fn mark_agent_environment_pending_messages_delivered(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    message_ids: &[i64],
+    delivered_at: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(delivered_at, "deliveredAt")?;
+    if message_ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection.transaction().map_err(|error| {
+        map_agent_store_write_error(
+            repo_root,
+            "agent_environment_pending_messages_transaction_failed",
+            error,
+        )
+    })?;
+    for message_id in message_ids {
+        transaction
+            .execute(
+                r#"
+                UPDATE agent_environment_pending_messages
+                SET delivered_at = ?4
+                WHERE project_id = ?1
+                  AND run_id = ?2
+                  AND id = ?3
+                  AND delivered_at IS NULL
+                "#,
+                params![project_id, run_id, message_id, delivered_at],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(
+                    repo_root,
+                    "agent_environment_pending_message_deliver_failed",
+                    error,
+                )
+            })?;
+    }
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(
+            repo_root,
+            "agent_environment_pending_messages_commit_failed",
+            error,
+        )
     })
 }
 
@@ -693,19 +1188,37 @@ pub fn append_agent_file_change(
     validate_optional_sha256(record.new_hash.as_deref(), "newHash")?;
 
     let connection = open_agent_database(repo_root)?;
-    connection
+    let inserted = connection
         .execute(
             r#"
             INSERT INTO agent_file_changes (
                 project_id,
                 run_id,
+                trace_id,
+                top_level_run_id,
+                subagent_id,
+                subagent_role,
                 path,
                 operation,
                 old_hash,
                 new_hash,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            SELECT
+                ?1,
+                ?2,
+                agent_runs.trace_id,
+                COALESCE(agent_runs.parent_run_id, agent_runs.run_id),
+                agent_runs.parent_subagent_id,
+                agent_runs.subagent_role,
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7
+            FROM agent_runs
+            WHERE agent_runs.project_id = ?1
+              AND agent_runs.run_id = ?2
             "#,
             params![
                 record.project_id,
@@ -720,12 +1233,69 @@ pub fn append_agent_file_change(
         .map_err(|error| {
             map_agent_store_write_error(repo_root, "agent_file_change_insert_failed", error)
         })?;
+    if inserted != 1 {
+        return Err(CommandError::system_fault(
+            "agent_file_change_run_missing",
+            format!(
+                "Xero could not attribute a file change for run `{}` in project `{}` because the run was not found.",
+                record.run_id, record.project_id
+            ),
+        ));
+    }
 
     let id = connection.last_insert_rowid();
     Ok(AgentFileChangeRecord {
         id,
         project_id: record.project_id.clone(),
         run_id: record.run_id.clone(),
+        trace_id: connection
+            .query_row(
+                "SELECT trace_id FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_file_change_trace_query_failed",
+                    error,
+                )
+            })?,
+        top_level_run_id: connection
+            .query_row(
+                "SELECT top_level_run_id FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_file_change_top_level_query_failed",
+                    error,
+                )
+            })?,
+        subagent_id: connection
+            .query_row(
+                "SELECT subagent_id FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_file_change_subagent_query_failed",
+                    error,
+                )
+            })?,
+        subagent_role: connection
+            .query_row(
+                "SELECT subagent_role FROM agent_file_changes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(repo_root, "agent_file_change_role_query_failed", error)
+            })?,
         path: record.path.clone(),
         operation: record.operation.clone(),
         old_hash: record.old_hash.clone(),
@@ -878,6 +1448,69 @@ pub fn answer_pending_agent_action_requests(
     Ok(())
 }
 
+pub fn reject_pending_agent_action_request(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    action_id: &str,
+    response: Option<&str>,
+) -> Result<AgentActionRequestRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(action_id, "actionId")?;
+    if let Some(response) = response {
+        validate_non_empty_text(response, "response")?;
+    }
+
+    let connection = open_agent_database(repo_root)?;
+    let existing = read_agent_action_requests(&connection, project_id, run_id, repo_root)?
+        .into_iter()
+        .find(|action| action.action_id == action_id)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_action_request_not_found",
+                format!(
+                    "Xero could not find pending owned-agent action `{action_id}` for run `{run_id}`."
+                ),
+            )
+        })?;
+    if existing.status != "pending" {
+        return Err(CommandError::user_fixable(
+            "agent_action_request_already_resolved",
+            format!(
+                "Xero cannot reject owned-agent action `{action_id}` because it is already {}.",
+                existing.status
+            ),
+        ));
+    }
+
+    let now = crate::auth::now_timestamp();
+    connection
+        .execute(
+            r#"
+            UPDATE agent_action_requests
+            SET status = 'rejected',
+                resolved_at = ?4,
+                response = ?5
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND action_id = ?3
+              AND status = 'pending'
+            "#,
+            params![project_id, run_id, action_id, now, response],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_request_reject_failed", error)
+        })?;
+
+    Ok(AgentActionRequestRecord {
+        status: "rejected".into(),
+        resolved_at: Some(now),
+        response: response.map(ToOwned::to_owned),
+        ..existing
+    })
+}
+
 pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
@@ -1007,15 +1640,15 @@ pub fn touch_agent_run_heartbeat(
     Ok(())
 }
 
-pub fn load_agent_run(
+pub fn load_agent_run_record(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
-) -> Result<AgentRunSnapshotRecord, CommandError> {
+) -> Result<AgentRunRecord, CommandError> {
     validate_non_empty_text(project_id, "projectId")?;
     validate_non_empty_text(run_id, "runId")?;
     let connection = open_agent_database(repo_root)?;
-    let run = connection
+    connection
         .query_row(
             r#"
             SELECT
@@ -1025,6 +1658,12 @@ pub fn load_agent_run(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
+                lineage_kind,
+                parent_run_id,
+                parent_trace_id,
+                parent_subagent_id,
+                subagent_role,
                 provider_id,
                 model_id,
                 status,
@@ -1051,7 +1690,18 @@ pub fn load_agent_run(
                 "agent_run_not_found",
                 format!("Xero could not find owned agent run `{run_id}`."),
             )
-        })?;
+        })
+}
+
+pub fn load_agent_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<AgentRunSnapshotRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    let run = load_agent_run_record(repo_root, project_id, run_id)?;
 
     let messages = read_agent_messages(&connection, project_id, run_id, repo_root)?;
     let events = read_agent_events(&connection, project_id, run_id, repo_root)?;
@@ -1371,6 +2021,12 @@ pub fn list_agent_runs(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
+                lineage_kind,
+                parent_run_id,
+                parent_trace_id,
+                parent_subagent_id,
+                subagent_role,
                 provider_id,
                 model_id,
                 status,
@@ -1421,6 +2077,12 @@ fn list_agent_runs_for_session(
                 project_id,
                 agent_session_id,
                 run_id,
+                trace_id,
+                lineage_kind,
+                parent_run_id,
+                parent_trace_id,
+                parent_subagent_id,
+                subagent_role,
                 provider_id,
                 model_id,
                 status,
@@ -1707,7 +2369,19 @@ fn read_agent_file_changes(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, run_id, path, operation, old_hash, new_hash, created_at
+            SELECT
+                id,
+                project_id,
+                run_id,
+                trace_id,
+                top_level_run_id,
+                subagent_id,
+                subagent_role,
+                path,
+                operation,
+                old_hash,
+                new_hash,
+                created_at
             FROM agent_file_changes
             WHERE project_id = ?1
               AND run_id = ?2
@@ -1723,11 +2397,15 @@ fn read_agent_file_changes(
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 run_id: row.get(2)?,
-                path: row.get(3)?,
-                operation: row.get(4)?,
-                old_hash: row.get(5)?,
-                new_hash: row.get(6)?,
-                created_at: row.get(7)?,
+                trace_id: row.get(3)?,
+                top_level_run_id: row.get(4)?,
+                subagent_id: row.get(5)?,
+                subagent_role: row.get(6)?,
+                path: row.get(7)?,
+                operation: row.get(8)?,
+                old_hash: row.get(9)?,
+                new_hash: row.get(10)?,
+                created_at: row.get(11)?,
             })
         })
         .map_err(|error| {
@@ -1774,6 +2452,38 @@ fn read_agent_checkpoints(
         })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
         map_agent_store_query_error(repo_root, "agent_checkpoints_decode_failed", error)
+    })
+}
+
+fn read_agent_environment_lifecycle_snapshot_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<AgentEnvironmentLifecycleSnapshotRecord> {
+    Ok(AgentEnvironmentLifecycleSnapshotRecord {
+        project_id: row.get(0)?,
+        run_id: row.get(1)?,
+        environment_id: row.get(2)?,
+        state: row.get(3)?,
+        previous_state: row.get(4)?,
+        pending_message_count: row.get(5)?,
+        health_checks_json: row.get(6)?,
+        setup_steps_json: row.get(7)?,
+        diagnostic_json: row.get(8)?,
+        snapshot_json: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn read_agent_environment_pending_message_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<AgentEnvironmentPendingMessageRecord> {
+    Ok(AgentEnvironmentPendingMessageRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        run_id: row.get(2)?,
+        role: parse_agent_message_role(row.get::<_, String>(3)?.as_str()),
+        content: row.get(4)?,
+        submitted_at: row.get(5)?,
+        delivered_at: row.get(6)?,
     })
 }
 
@@ -1830,8 +2540,8 @@ fn read_agent_action_requests(
 }
 
 fn read_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecord> {
-    let last_error_code: Option<String> = row.get(15)?;
-    let last_error_message: Option<String> = row.get(16)?;
+    let last_error_code: Option<String> = row.get(21)?;
+    let last_error_message: Option<String> = row.get(22)?;
     Ok(AgentRunRecord {
         runtime_agent_id: parse_runtime_agent_id(row.get::<_, String>(0)?.as_str()),
         agent_definition_id: row.get(1)?,
@@ -1839,20 +2549,26 @@ fn read_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecor
         project_id: row.get(3)?,
         agent_session_id: row.get(4)?,
         run_id: row.get(5)?,
-        provider_id: row.get(6)?,
-        model_id: row.get(7)?,
-        status: parse_agent_run_status(row.get::<_, String>(8)?.as_str()),
-        prompt: row.get(9)?,
-        system_prompt: row.get(10)?,
-        started_at: row.get(11)?,
-        last_heartbeat_at: row.get(12)?,
-        completed_at: row.get(13)?,
-        cancelled_at: row.get(14)?,
+        trace_id: row.get(6)?,
+        lineage_kind: row.get(7)?,
+        parent_run_id: row.get(8)?,
+        parent_trace_id: row.get(9)?,
+        parent_subagent_id: row.get(10)?,
+        subagent_role: row.get(11)?,
+        provider_id: row.get(12)?,
+        model_id: row.get(13)?,
+        status: parse_agent_run_status(row.get::<_, String>(14)?.as_str()),
+        prompt: row.get(15)?,
+        system_prompt: row.get(16)?,
+        started_at: row.get(17)?,
+        last_heartbeat_at: row.get(18)?,
+        completed_at: row.get(19)?,
+        cancelled_at: row.get(20)?,
         last_error: match (last_error_code, last_error_message) {
             (Some(code), Some(message)) => Some(AgentRunDiagnosticRecord { code, message }),
             _ => None,
         },
-        updated_at: row.get(17)?,
+        updated_at: row.get(23)?,
     })
 }
 
@@ -1903,6 +2619,7 @@ pub fn runtime_agent_id_sql_value(runtime_agent_id: &RuntimeAgentIdDto) -> &'sta
 
 pub fn agent_event_kind_sql_value(kind: &AgentRunEventKind) -> &'static str {
     match kind {
+        AgentRunEventKind::RunStarted => "run_started",
         AgentRunEventKind::MessageDelta => "message_delta",
         AgentRunEventKind::ReasoningSummary => "reasoning_summary",
         AgentRunEventKind::ToolStarted => "tool_started",
@@ -1917,7 +2634,16 @@ pub fn agent_event_kind_sql_value(kind: &AgentRunEventKind) -> &'static str {
         AgentRunEventKind::StateTransition => "state_transition",
         AgentRunEventKind::PlanUpdated => "plan_updated",
         AgentRunEventKind::VerificationGate => "verification_gate",
+        AgentRunEventKind::ContextManifestRecorded => "context_manifest_recorded",
+        AgentRunEventKind::RetrievalPerformed => "retrieval_performed",
+        AgentRunEventKind::MemoryCandidateCaptured => "memory_candidate_captured",
+        AgentRunEventKind::EnvironmentLifecycleUpdate => "environment_lifecycle_update",
+        AgentRunEventKind::SandboxLifecycleUpdate => "sandbox_lifecycle_update",
         AgentRunEventKind::ActionRequired => "action_required",
+        AgentRunEventKind::ApprovalRequired => "approval_required",
+        AgentRunEventKind::ToolPermissionGrant => "tool_permission_grant",
+        AgentRunEventKind::ProviderModelChanged => "provider_model_changed",
+        AgentRunEventKind::RuntimeSettingsChanged => "runtime_settings_changed",
         AgentRunEventKind::RunPaused => "run_paused",
         AgentRunEventKind::RunCompleted => "run_completed",
         AgentRunEventKind::RunFailed => "run_failed",
@@ -1978,12 +2704,14 @@ fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
         "engineer" => RuntimeAgentIdDto::Engineer,
         "debug" => RuntimeAgentIdDto::Debug,
         "agent_create" => RuntimeAgentIdDto::AgentCreate,
+        "test" => RuntimeAgentIdDto::Test,
         _ => RuntimeAgentIdDto::Ask,
     }
 }
 
 fn parse_agent_event_kind(value: &str) -> AgentRunEventKind {
     match value {
+        "run_started" => AgentRunEventKind::RunStarted,
         "message_delta" => AgentRunEventKind::MessageDelta,
         "reasoning_summary" => AgentRunEventKind::ReasoningSummary,
         "tool_started" => AgentRunEventKind::ToolStarted,
@@ -1998,7 +2726,16 @@ fn parse_agent_event_kind(value: &str) -> AgentRunEventKind {
         "state_transition" => AgentRunEventKind::StateTransition,
         "plan_updated" => AgentRunEventKind::PlanUpdated,
         "verification_gate" => AgentRunEventKind::VerificationGate,
+        "context_manifest_recorded" => AgentRunEventKind::ContextManifestRecorded,
+        "retrieval_performed" => AgentRunEventKind::RetrievalPerformed,
+        "memory_candidate_captured" => AgentRunEventKind::MemoryCandidateCaptured,
+        "environment_lifecycle_update" => AgentRunEventKind::EnvironmentLifecycleUpdate,
+        "sandbox_lifecycle_update" => AgentRunEventKind::SandboxLifecycleUpdate,
         "action_required" => AgentRunEventKind::ActionRequired,
+        "approval_required" => AgentRunEventKind::ApprovalRequired,
+        "tool_permission_grant" => AgentRunEventKind::ToolPermissionGrant,
+        "provider_model_changed" => AgentRunEventKind::ProviderModelChanged,
+        "runtime_settings_changed" => AgentRunEventKind::RuntimeSettingsChanged,
         "run_paused" => AgentRunEventKind::RunPaused,
         "run_completed" => AgentRunEventKind::RunCompleted,
         "run_failed" => AgentRunEventKind::RunFailed,

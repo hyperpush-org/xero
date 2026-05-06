@@ -399,6 +399,116 @@ export const searchProjectResponseSchema = z
   })
   .strict()
 
+export const workspaceIndexStateSchema = z.enum(['empty', 'indexing', 'ready', 'stale', 'failed'])
+export const workspaceQueryModeSchema = z.enum(['auto', 'semantic', 'symbol', 'related_tests', 'impact'])
+
+export const workspaceIndexDiagnosticSchema = z
+  .object({
+    severity: z.string().trim().min(1),
+    code: z.string().trim().min(1),
+    message: z.string(),
+  })
+  .strict()
+
+export const workspaceIndexStatusSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    state: workspaceIndexStateSchema,
+    indexVersion: z.number().int().positive(),
+    rootPath: z.string().trim().min(1),
+    storagePath: z.string().trim().min(1),
+    totalFiles: z.number().int().nonnegative(),
+    indexedFiles: z.number().int().nonnegative(),
+    skippedFiles: z.number().int().nonnegative(),
+    staleFiles: z.number().int().nonnegative(),
+    symbolCount: z.number().int().nonnegative(),
+    indexedBytes: z.number().int().nonnegative(),
+    coveragePercent: z.number().min(0).max(100),
+    headSha: nullableTextSchema,
+    startedAt: nullableTextSchema,
+    completedAt: nullableTextSchema,
+    updatedAt: nullableTextSchema,
+    diagnostics: z.array(workspaceIndexDiagnosticSchema),
+  })
+  .strict()
+
+export const workspaceIndexRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    force: z.boolean().default(false),
+    maxFiles: z.number().int().positive().optional(),
+  })
+  .strict()
+
+export const workspaceIndexResponseSchema = z
+  .object({
+    status: workspaceIndexStatusSchema,
+    changedFiles: z.number().int().nonnegative(),
+    unchangedFiles: z.number().int().nonnegative(),
+    removedFiles: z.number().int().nonnegative(),
+    durationMs: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const workspaceQueryRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    query: z.string().trim().min(1),
+    mode: workspaceQueryModeSchema.default('auto'),
+    limit: z.number().int().positive().optional(),
+    paths: z.array(projectTreePathSchema).default([]),
+  })
+  .strict()
+
+export const workspaceQueryResultSchema = z
+  .object({
+    rank: z.number().int().positive(),
+    path: projectTreePathSchema,
+    score: z.number().min(0).max(1),
+    language: z.string().trim().min(1),
+    summary: z.string(),
+    snippet: z.string(),
+    symbols: z.array(z.string()),
+    imports: z.array(z.string()),
+    tests: z.array(z.string()),
+    diffs: z.array(z.string()),
+    failures: z.array(z.string()),
+    reasons: z.array(z.string()),
+    contentHash: z.string().trim().min(1),
+    indexedAt: z.string().trim().min(1),
+  })
+  .strict()
+
+export const workspaceQueryResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    query: z.string().trim().min(1),
+    mode: workspaceQueryModeSchema,
+    resultCount: z.number().int().nonnegative(),
+    stale: z.boolean(),
+    diagnostics: z.array(workspaceIndexDiagnosticSchema),
+    results: z.array(workspaceQueryResultSchema),
+  })
+  .strict()
+
+export const workspaceExplainRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    query: z.string().trim().min(1).optional(),
+    path: projectTreePathSchema.optional(),
+  })
+  .strict()
+
+export const workspaceExplainResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    summary: z.string(),
+    status: workspaceIndexStatusSchema,
+    topSignals: z.array(z.string()),
+    diagnostics: z.array(workspaceIndexDiagnosticSchema),
+  })
+  .strict()
+
 export const replaceInProjectRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -464,6 +574,17 @@ export type SearchProjectRequestDto = z.infer<typeof searchProjectRequestSchema>
 export type SearchMatchDto = z.infer<typeof searchMatchSchema>
 export type SearchFileResultDto = z.infer<typeof searchFileResultSchema>
 export type SearchProjectResponseDto = z.infer<typeof searchProjectResponseSchema>
+export type WorkspaceIndexStateDto = z.infer<typeof workspaceIndexStateSchema>
+export type WorkspaceQueryModeDto = z.infer<typeof workspaceQueryModeSchema>
+export type WorkspaceIndexDiagnosticDto = z.infer<typeof workspaceIndexDiagnosticSchema>
+export type WorkspaceIndexStatusDto = z.infer<typeof workspaceIndexStatusSchema>
+export type WorkspaceIndexRequestDto = z.infer<typeof workspaceIndexRequestSchema>
+export type WorkspaceIndexResponseDto = z.infer<typeof workspaceIndexResponseSchema>
+export type WorkspaceQueryRequestDto = z.infer<typeof workspaceQueryRequestSchema>
+export type WorkspaceQueryResultDto = z.infer<typeof workspaceQueryResultSchema>
+export type WorkspaceQueryResponseDto = z.infer<typeof workspaceQueryResponseSchema>
+export type WorkspaceExplainRequestDto = z.infer<typeof workspaceExplainRequestSchema>
+export type WorkspaceExplainResponseDto = z.infer<typeof workspaceExplainResponseSchema>
 export type ReplaceInProjectRequestDto = z.infer<typeof replaceInProjectRequestSchema>
 export type ReplaceInProjectResponseDto = z.infer<typeof replaceInProjectResponseSchema>
 export type GitPathsRequestDto = z.infer<typeof gitPathsRequestSchema>

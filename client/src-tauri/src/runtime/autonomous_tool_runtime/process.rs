@@ -2,10 +2,10 @@ use std::{
     collections::BTreeMap,
     env,
     io::Read,
-    process::{Child, Command, Stdio},
+    process::{Child, Command},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -14,8 +14,8 @@ use std::{
 use super::{
     policy::{CommandPolicyDecision, PreparedCommandRequest},
     repo_scope::display_relative_or_root,
-    AutonomousCommandOutput, AutonomousCommandPolicyOutcome, AutonomousCommandPolicyTrace,
-    AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
+    AutonomousCommandOutput, AutonomousCommandOutputChunk, AutonomousCommandPolicyOutcome,
+    AutonomousCommandPolicyTrace, AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
     AutonomousCommandSessionOutput, AutonomousCommandSessionReadRequest,
     AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
     AutonomousCommandSessionStream, AutonomousToolCommandResult, AutonomousToolOutput,
@@ -24,19 +24,25 @@ use super::{
     AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
 };
 
+use serde_json::json;
+
 use crate::{
     commands::{CommandError, CommandResult},
     runtime::{
         cancelled_error,
-        process_tree::{
-            cleanup_process_group_after_root_exit, configure_process_tree_root,
-            terminate_process_tree,
-        },
+        process_tree::{cleanup_process_group_after_root_exit, terminate_process_tree},
         redaction::{
             find_prohibited_persistence_content, redact_command_argv_for_persistence,
             render_command_for_persistence,
         },
     },
+};
+use xero_agent_core::{
+    PermissionProfileSandbox, ProjectTrustState, SandboxApprovalSource, SandboxExecutionContext,
+    SandboxExecutionMetadata, SandboxExitClassification, SandboxPlatform, SandboxedProcessRequest,
+    SandboxedProcessRunner, SandboxedProcessSpawnRequest, SandboxedProcessStdin,
+    ToolApprovalRequirement, ToolCallInput, ToolDescriptorV2, ToolEffectClass,
+    ToolExecutionContext, ToolMutability, ToolSandbox, ToolSandboxRequirement,
 };
 
 const REDACTED_COMMAND_OUTPUT_SUMMARY: &str =
@@ -170,10 +176,17 @@ struct ProcessSession {
     chunks: Mutex<Vec<AutonomousCommandSessionChunk>>,
     next_sequence: AtomicU64,
     exit_code: Mutex<Option<i32>>,
+    sandbox_metadata: Mutex<SandboxExecutionMetadata>,
 }
 
 impl ProcessSession {
-    fn new(session_id: String, argv: Vec<String>, cwd: String, child: Child) -> Self {
+    fn new(
+        session_id: String,
+        argv: Vec<String>,
+        cwd: String,
+        child: Child,
+        sandbox_metadata: SandboxExecutionMetadata,
+    ) -> Self {
         Self {
             session_id,
             argv,
@@ -182,6 +195,7 @@ impl ProcessSession {
             chunks: Mutex::new(Vec::new()),
             next_sequence: AtomicU64::new(1),
             exit_code: Mutex::new(None),
+            sandbox_metadata: Mutex::new(sandbox_metadata),
         }
     }
 
@@ -243,6 +257,32 @@ impl ProcessSession {
         self.next_sequence.load(Ordering::Relaxed)
     }
 
+    fn sandbox_metadata(&self) -> CommandResult<SandboxExecutionMetadata> {
+        self.sandbox_metadata
+            .lock()
+            .map_err(|_| {
+                CommandError::system_fault(
+                    "autonomous_tool_command_session_lock_failed",
+                    "Xero could not lock command session sandbox metadata.",
+                )
+            })
+            .map(|metadata| metadata.clone())
+    }
+
+    fn set_sandbox_exit_classification(
+        &self,
+        classification: SandboxExitClassification,
+    ) -> CommandResult<()> {
+        let mut metadata = self.sandbox_metadata.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_command_session_lock_failed",
+                "Xero could not lock command session sandbox metadata.",
+            )
+        })?;
+        metadata.exit_classification = classification;
+        Ok(())
+    }
+
     fn poll_exit(&self) -> CommandResult<Option<i32>> {
         if let Some(exit_code) = *self.exit_code.lock().map_err(|_| {
             CommandError::system_fault(
@@ -277,6 +317,7 @@ impl ProcessSession {
                         "Xero could not lock command session exit state.",
                     )
                 })? = exit_code;
+                self.set_sandbox_exit_classification(exit_classification_from_code(exit_code))?;
                 *child = None;
                 Ok(exit_code)
             }
@@ -316,6 +357,7 @@ impl ProcessSession {
                         "Xero could not lock command session exit state.",
                     )
                 })? = exit_code;
+                self.set_sandbox_exit_classification(exit_classification_from_code(exit_code))?;
                 *child = None;
                 Ok(exit_code)
             }
@@ -336,6 +378,7 @@ impl ProcessSession {
                         "Xero could not lock command session exit state.",
                     )
                 })? = exit_code;
+                self.set_sandbox_exit_classification(SandboxExitClassification::Cancelled)?;
                 *child = None;
                 Ok(exit_code)
             }
@@ -365,6 +408,22 @@ impl AutonomousToolRuntime {
         self.command_with_approval(request, true)
     }
 
+    pub(crate) fn command_with_output_callback(
+        &self,
+        request: super::AutonomousCommandRequest,
+        on_chunk: impl FnMut(&AutonomousCommandOutputChunk),
+    ) -> CommandResult<AutonomousToolResult> {
+        self.command_with_approval_and_output_callback(request, false, on_chunk)
+    }
+
+    pub(crate) fn command_with_operator_approval_and_output_callback(
+        &self,
+        request: super::AutonomousCommandRequest,
+        on_chunk: impl FnMut(&AutonomousCommandOutputChunk),
+    ) -> CommandResult<AutonomousToolResult> {
+        self.command_with_approval_and_output_callback(request, true, on_chunk)
+    }
+
     fn command_with_approval(
         &self,
         request: super::AutonomousCommandRequest,
@@ -386,127 +445,79 @@ impl AutonomousToolRuntime {
         }
     }
 
+    fn command_with_approval_and_output_callback(
+        &self,
+        request: super::AutonomousCommandRequest,
+        operator_approved: bool,
+        mut on_chunk: impl FnMut(&AutonomousCommandOutputChunk),
+    ) -> CommandResult<AutonomousToolResult> {
+        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+
+        match decision {
+            CommandPolicyDecision::Allow { prepared, policy } => {
+                self.spawn_command_streaming(prepared, policy, &mut on_chunk)
+            }
+            CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
+                let policy = operator_approved_policy(policy, &prepared.argv);
+                self.spawn_command_streaming(prepared, policy, &mut on_chunk)
+            }
+            CommandPolicyDecision::Escalate { prepared, policy } => {
+                self.unspawned_command_approval_result(prepared, policy)
+            }
+        }
+    }
+
     fn spawn_command(
         &self,
         prepared: PreparedCommandRequest,
         policy: AutonomousCommandPolicyTrace,
     ) -> CommandResult<AutonomousToolResult> {
-        let mut command = Command::new(&prepared.argv[0]);
-        command
-            .args(prepared.argv.iter().skip(1))
-            .current_dir(&prepared.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        configure_process_tree_root(&mut command);
-        apply_sanitized_command_environment(&mut command);
-
-        let mut child = command.spawn().map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => CommandError::user_fixable(
-                "autonomous_tool_command_not_found",
-                format!("Xero could not find command `{}`.", prepared.argv[0]),
-            ),
-            _ => CommandError::system_fault(
-                "autonomous_tool_command_spawn_failed",
-                format!(
-                    "Xero could not launch command `{}`: {error}",
-                    prepared.argv[0]
-                ),
-            ),
-        })?;
-
-        let stdout = child.stdout.take().ok_or_else(|| {
-            CommandError::system_fault(
-                "autonomous_tool_command_stdout_missing",
-                "Xero could not capture command stdout.",
+        let sandbox_metadata = self.command_sandbox_metadata(
+            AUTONOMOUS_TOOL_COMMAND,
+            &prepared,
+            sandbox_approval_source_for_policy(&policy),
+        )?;
+        let sandbox_output = SandboxedProcessRunner::new()
+            .run(
+                SandboxedProcessRequest {
+                    argv: prepared.argv.clone(),
+                    cwd: Some(prepared.cwd.to_string_lossy().into_owned()),
+                    timeout_ms: Some(prepared.timeout_ms),
+                    stdout_limit_bytes: self.limits.max_command_capture_bytes,
+                    stderr_limit_bytes: self.limits.max_command_capture_bytes,
+                    metadata: sandbox_metadata,
+                },
+                || self.is_cancelled(),
             )
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            CommandError::system_fault(
-                "autonomous_tool_command_stderr_missing",
-                "Xero could not capture command stderr.",
-            )
-        })?;
-
-        let stdout_handle = spawn_capture(stdout, self.limits.max_command_capture_bytes);
-        let stderr_handle = spawn_capture(stderr, self.limits.max_command_capture_bytes);
-        let started_at = Instant::now();
-        let timeout_duration = Duration::from_millis(prepared.timeout_ms);
-
-        let (status, timed_out, cancelled) = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    cleanup_process_group_after_root_exit(child.id());
-                    break (status, false, false);
-                }
-                Ok(None) if self.is_cancelled() => {
-                    let status = terminate_process_tree(&mut child).map_err(|error| {
-                        CommandError::system_fault(
-                            "autonomous_tool_command_wait_failed",
-                            format!(
-                                "Xero could not stop cancelled command `{}`: {error}",
-                                prepared.argv[0]
-                            ),
-                        )
-                    })?;
-                    break (status, false, true);
-                }
-                Ok(None) if started_at.elapsed() >= timeout_duration => {
-                    let status = terminate_process_tree(&mut child).map_err(|error| {
-                        CommandError::system_fault(
-                            "autonomous_tool_command_wait_failed",
-                            format!(
-                                "Xero could not stop timed-out command `{}`: {error}",
-                                prepared.argv[0]
-                            ),
-                        )
-                    })?;
-                    break (status, true, false);
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
-                Err(error) => {
-                    let _ = terminate_process_tree(&mut child);
-                    return Err(CommandError::system_fault(
-                        "autonomous_tool_command_wait_failed",
-                        format!(
-                            "Xero could not observe command `{}` while it was running: {error}",
-                            prepared.argv[0]
-                        ),
-                    ));
-                }
-            }
-        };
-
-        let stdout_capture = join_capture(stdout_handle)?;
-        let stderr_capture = join_capture(stderr_handle)?;
-
-        if cancelled {
-            return Err(cancelled_error());
-        }
-
-        if timed_out {
-            return Err(CommandError::retryable(
-                "autonomous_tool_command_timeout",
-                format!(
-                    "Xero timed out command `{}` after {}ms.",
-                    render_command_for_summary(&prepared.argv),
+            .map_err(|error| {
+                sandbox_runner_error_to_command_error(
+                    error,
+                    &prepared.argv,
                     prepared.timeout_ms,
-                ),
-            ));
-        }
+                    "autonomous_tool_command",
+                )
+            })?;
 
         let stdout_excerpt = sanitize_command_output(
-            stdout_capture.excerpt.as_slice(),
-            stdout_capture.truncated,
+            sandbox_output
+                .stdout
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+            sandbox_output.stdout_truncated,
             self.limits.max_command_excerpt_chars,
         );
         let stderr_excerpt = sanitize_command_output(
-            stderr_capture.excerpt.as_slice(),
-            stderr_capture.truncated,
+            sandbox_output
+                .stderr
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+            sandbox_output.stderr_truncated,
             self.limits.max_command_excerpt_chars,
         );
 
-        let exit_code = status.code();
+        let exit_code = sandbox_output.exit_code;
         let command_result = AutonomousToolCommandResult {
             exit_code,
             timed_out: false,
@@ -551,6 +562,208 @@ impl AutonomousToolRuntime {
                 timed_out: false,
                 spawned: true,
                 policy,
+                sandbox: Some(sandbox_output.metadata),
+            }),
+        })
+    }
+
+    fn spawn_command_streaming(
+        &self,
+        prepared: PreparedCommandRequest,
+        policy: AutonomousCommandPolicyTrace,
+        on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
+    ) -> CommandResult<AutonomousToolResult> {
+        let sandbox_metadata = self.command_sandbox_metadata(
+            AUTONOMOUS_TOOL_COMMAND,
+            &prepared,
+            sandbox_approval_source_for_policy(&policy),
+        )?;
+        let mut sandboxed_process = SandboxedProcessRunner::new()
+            .spawn(SandboxedProcessSpawnRequest {
+                argv: prepared.argv.clone(),
+                cwd: Some(prepared.cwd.to_string_lossy().into_owned()),
+                stdin: SandboxedProcessStdin::Null,
+                metadata: sandbox_metadata,
+            })
+            .map_err(|error| {
+                sandbox_runner_error_to_command_error(
+                    error,
+                    &prepared.argv,
+                    prepared.timeout_ms,
+                    "autonomous_tool_command",
+                )
+            })?;
+        let stdout = sandboxed_process.child.stdout.take().ok_or_else(|| {
+            CommandError::retryable(
+                "autonomous_tool_command_stdout_missing",
+                "Xero could not capture command stdout.",
+            )
+        })?;
+        let stderr = sandboxed_process.child.stderr.take().ok_or_else(|| {
+            CommandError::retryable(
+                "autonomous_tool_command_stderr_missing",
+                "Xero could not capture command stderr.",
+            )
+        })?;
+
+        let (output_sender, output_receiver) = mpsc::channel();
+        let stdout_handle = spawn_command_output_reader(
+            stdout,
+            AutonomousCommandSessionStream::Stdout,
+            output_sender.clone(),
+        );
+        let stderr_handle = spawn_command_output_reader(
+            stderr,
+            AutonomousCommandSessionStream::Stderr,
+            output_sender,
+        );
+        let mut stdout_capture = StreamingCommandCapture::default();
+        let mut stderr_capture = StreamingCommandCapture::default();
+        let started_at = Instant::now();
+        let timeout = Duration::from_millis(prepared.timeout_ms.max(1));
+
+        let status = loop {
+            drain_command_output_events(
+                &output_receiver,
+                &mut stdout_capture,
+                &mut stderr_capture,
+                self.limits.max_command_capture_bytes,
+                self.limits.max_command_excerpt_chars,
+                on_chunk,
+            );
+
+            match sandboxed_process.child.try_wait() {
+                Ok(Some(status)) => {
+                    cleanup_process_group_after_root_exit(sandboxed_process.child.id());
+                    break status;
+                }
+                Ok(None) if self.is_cancelled() => {
+                    let _ = terminate_process_tree(&mut sandboxed_process.child);
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    drain_command_output_events(
+                        &output_receiver,
+                        &mut stdout_capture,
+                        &mut stderr_capture,
+                        self.limits.max_command_capture_bytes,
+                        self.limits.max_command_excerpt_chars,
+                        on_chunk,
+                    );
+                    return Err(cancelled_error());
+                }
+                Ok(None) if started_at.elapsed() >= timeout => {
+                    let _ = terminate_process_tree(&mut sandboxed_process.child);
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    drain_command_output_events(
+                        &output_receiver,
+                        &mut stdout_capture,
+                        &mut stderr_capture,
+                        self.limits.max_command_capture_bytes,
+                        self.limits.max_command_excerpt_chars,
+                        on_chunk,
+                    );
+                    return Err(CommandError::retryable(
+                        "autonomous_tool_command_timeout",
+                        format!(
+                            "Xero timed out command `{}` after {}ms.",
+                            render_command_for_summary(&prepared.argv),
+                            prepared.timeout_ms
+                        ),
+                    ));
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    let _ = terminate_process_tree(&mut sandboxed_process.child);
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    drain_command_output_events(
+                        &output_receiver,
+                        &mut stdout_capture,
+                        &mut stderr_capture,
+                        self.limits.max_command_capture_bytes,
+                        self.limits.max_command_excerpt_chars,
+                        on_chunk,
+                    );
+                    return Err(CommandError::retryable(
+                        "autonomous_tool_command_wait_failed",
+                        format!(
+                            "Xero could not observe command `{}`: {error}",
+                            render_command_for_summary(&prepared.argv)
+                        ),
+                    ));
+                }
+            }
+        };
+
+        let _ = stdout_handle.join();
+        let _ = stderr_handle.join();
+        drain_command_output_events(
+            &output_receiver,
+            &mut stdout_capture,
+            &mut stderr_capture,
+            self.limits.max_command_capture_bytes,
+            self.limits.max_command_excerpt_chars,
+            on_chunk,
+        );
+
+        let exit_code = status.code();
+        sandboxed_process.metadata.exit_classification = exit_classification_from_code(exit_code);
+        let stdout_excerpt = sanitize_command_output(
+            &stdout_capture.bytes,
+            stdout_capture.truncated,
+            self.limits.max_command_excerpt_chars,
+        );
+        let stderr_excerpt = sanitize_command_output(
+            &stderr_capture.bytes,
+            stderr_capture.truncated,
+            self.limits.max_command_excerpt_chars,
+        );
+        let command_result = AutonomousToolCommandResult {
+            exit_code,
+            timed_out: false,
+            summary: command_result_summary(&prepared.argv, exit_code),
+            policy: policy.clone(),
+        };
+        let summary = match exit_code {
+            Some(0) => format!(
+                "Command `{}` exited successfully in `{}` under active `{}` policy.",
+                render_command_for_summary(&prepared.argv),
+                display_relative_or_root(&self.repo_root, &prepared.cwd),
+                approval_mode_label(&policy.approval_mode),
+            ),
+            Some(code) => format!(
+                "Command `{}` exited with code {code} in `{}` under active `{}` policy.",
+                render_command_for_summary(&prepared.argv),
+                display_relative_or_root(&self.repo_root, &prepared.cwd),
+                approval_mode_label(&policy.approval_mode),
+            ),
+            None => format!(
+                "Command `{}` terminated without an exit code in `{}` under active `{}` policy.",
+                render_command_for_summary(&prepared.argv),
+                display_relative_or_root(&self.repo_root, &prepared.cwd),
+                approval_mode_label(&policy.approval_mode),
+            ),
+        };
+
+        Ok(AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+            summary,
+            command_result: Some(command_result),
+            output: AutonomousToolOutput::Command(AutonomousCommandOutput {
+                argv: redact_command_argv_for_persistence(&prepared.argv),
+                cwd: display_relative_or_root(&self.repo_root, &prepared.cwd),
+                stdout: stdout_excerpt.text,
+                stderr: stderr_excerpt.text,
+                stdout_truncated: stdout_excerpt.truncated,
+                stderr_truncated: stderr_excerpt.truncated,
+                stdout_redacted: stdout_excerpt.redacted,
+                stderr_redacted: stderr_excerpt.redacted,
+                exit_code,
+                timed_out: false,
+                spawned: true,
+                policy,
+                sandbox: Some(sandboxed_process.metadata),
             }),
         })
     }
@@ -592,6 +805,7 @@ impl AutonomousToolRuntime {
                 timed_out: false,
                 spawned: false,
                 policy,
+                sandbox: None,
             }),
         })
     }
@@ -645,37 +859,34 @@ impl AutonomousToolRuntime {
         policy: AutonomousCommandPolicyTrace,
     ) -> CommandResult<AutonomousToolResult> {
         self.process_sessions.ensure_capacity()?;
-        let mut command = Command::new(&prepared.argv[0]);
-        command
-            .args(prepared.argv.iter().skip(1))
-            .current_dir(&prepared.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        configure_process_tree_root(&mut command);
-        apply_sanitized_command_environment(&mut command);
+        let sandbox_metadata = self.command_sandbox_metadata(
+            AUTONOMOUS_TOOL_COMMAND_SESSION_START,
+            &prepared,
+            sandbox_approval_source_for_policy(&policy),
+        )?;
+        let mut sandboxed_process = SandboxedProcessRunner::new()
+            .spawn(SandboxedProcessSpawnRequest {
+                argv: prepared.argv.clone(),
+                cwd: Some(prepared.cwd.to_string_lossy().into_owned()),
+                stdin: SandboxedProcessStdin::Null,
+                metadata: sandbox_metadata,
+            })
+            .map_err(|error| {
+                sandbox_runner_error_to_command_error(
+                    error,
+                    &prepared.argv,
+                    prepared.timeout_ms,
+                    "autonomous_tool_command_session",
+                )
+            })?;
 
-        let mut child = command.spawn().map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => CommandError::user_fixable(
-                "autonomous_tool_command_not_found",
-                format!("Xero could not find command `{}`.", prepared.argv[0]),
-            ),
-            _ => CommandError::system_fault(
-                "autonomous_tool_command_session_spawn_failed",
-                format!(
-                    "Xero could not launch command session `{}`: {error}",
-                    prepared.argv[0]
-                ),
-            ),
-        })?;
-
-        let stdout = child.stdout.take().ok_or_else(|| {
+        let stdout = sandboxed_process.child.stdout.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_command_stdout_missing",
                 "Xero could not capture command session stdout.",
             )
         })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
+        let stderr = sandboxed_process.child.stderr.take().ok_or_else(|| {
             CommandError::system_fault(
                 "autonomous_tool_command_stderr_missing",
                 "Xero could not capture command session stderr.",
@@ -688,7 +899,8 @@ impl AutonomousToolRuntime {
             session_id.clone(),
             redact_command_argv_for_persistence(&prepared.argv),
             cwd.clone(),
-            child,
+            sandboxed_process.child,
+            sandboxed_process.metadata,
         ));
         spawn_session_reader(
             Arc::clone(&session),
@@ -736,6 +948,7 @@ impl AutonomousToolRuntime {
                 chunks,
                 next_sequence: session.next_sequence_value(),
                 policy: Some(policy),
+                sandbox: Some(session.sandbox_metadata()?),
             }),
         })
     }
@@ -768,6 +981,7 @@ impl AutonomousToolRuntime {
                 chunks: Vec::new(),
                 next_sequence: 0,
                 policy: Some(policy),
+                sandbox: None,
             }),
         })
     }
@@ -813,6 +1027,7 @@ impl AutonomousToolRuntime {
                 chunks,
                 next_sequence: session.next_sequence_value(),
                 policy: None,
+                sandbox: Some(session.sandbox_metadata()?),
             }),
         })
     }
@@ -842,13 +1057,115 @@ impl AutonomousToolRuntime {
                 chunks,
                 next_sequence: session.next_sequence_value(),
                 policy: None,
+                sandbox: Some(session.sandbox_metadata()?),
             }),
         })
     }
 }
 
+impl AutonomousToolRuntime {
+    fn command_sandbox_metadata(
+        &self,
+        tool_name: &str,
+        prepared: &PreparedCommandRequest,
+        approval_source: SandboxApprovalSource,
+    ) -> CommandResult<SandboxExecutionMetadata> {
+        let descriptor = ToolDescriptorV2 {
+            name: tool_name.into(),
+            description: "Launch a repo-scoped subprocess through the production sandbox runner."
+                .into(),
+            input_schema: json!({ "type": "object" }),
+            capability_tags: vec!["subprocess".into(), "workspace".into()],
+            effect_class: ToolEffectClass::CommandExecution,
+            mutability: ToolMutability::Mutating,
+            sandbox_requirement: ToolSandboxRequirement::FullLocal,
+            approval_requirement: ToolApprovalRequirement::Policy,
+            telemetry_attributes: BTreeMap::from([
+                ("xero.tool.name".into(), tool_name.into()),
+                ("xero.sandbox.runner".into(), "production".into()),
+            ]),
+            result_truncation: Default::default(),
+        };
+        let app_data_roots = self
+            .environment_profile_database_path
+            .as_ref()
+            .and_then(|path| path.parent())
+            .map(|path| vec![path.to_string_lossy().into_owned()])
+            .unwrap_or_default();
+        let sandbox = PermissionProfileSandbox::new(SandboxExecutionContext {
+            workspace_root: self.repo_root.to_string_lossy().into_owned(),
+            app_data_roots,
+            project_trust: ProjectTrustState::Trusted,
+            approval_source,
+            platform: SandboxPlatform::current(),
+            explicit_git_mutation_allowed: false,
+            legacy_xero_migration_allowed: false,
+            preserved_environment_keys: SAFE_COMMAND_ENV_KEYS
+                .iter()
+                .map(|key| (*key).to_owned())
+                .collect(),
+        });
+        let call = ToolCallInput {
+            tool_call_id: format!("{tool_name}-subprocess"),
+            tool_name: tool_name.into(),
+            input: json!({
+                "argv": &prepared.argv,
+                "cwd": prepared.cwd.to_string_lossy(),
+                "timeoutMs": prepared.timeout_ms,
+            }),
+        };
+        sandbox
+            .evaluate(&descriptor, &call, &ToolExecutionContext::default())
+            .map_err(|denied| CommandError::user_fixable(denied.error.code, denied.error.message))
+    }
+}
+
 fn render_command_for_summary(argv: &[String]) -> String {
     render_command_for_persistence(argv)
+}
+
+fn sandbox_approval_source_for_policy(
+    policy: &AutonomousCommandPolicyTrace,
+) -> SandboxApprovalSource {
+    if policy.code == "policy_allowed_after_operator_approval" {
+        SandboxApprovalSource::Operator
+    } else {
+        SandboxApprovalSource::Policy
+    }
+}
+
+fn sandbox_runner_error_to_command_error(
+    error: xero_agent_core::SandboxedProcessError,
+    argv: &[String],
+    timeout_ms: u64,
+    timeout_code_prefix: &str,
+) -> CommandError {
+    match error.code.as_str() {
+        "sandboxed_process_cancelled" => cancelled_error(),
+        "sandboxed_process_timeout" => CommandError::retryable(
+            format!("{timeout_code_prefix}_timeout"),
+            format!(
+                "Xero timed out command `{}` after {}ms.",
+                render_command_for_summary(argv),
+                timeout_ms,
+            ),
+        ),
+        "sandboxed_process_not_found" => CommandError::user_fixable(
+            "autonomous_tool_command_not_found",
+            format!(
+                "Xero could not find command `{}`.",
+                argv.first().cloned().unwrap_or_else(|| "<empty>".into())
+            ),
+        ),
+        code if code.contains("unavailable")
+            || code.contains("sandbox")
+            || error.metadata.exit_classification == SandboxExitClassification::DeniedBySandbox =>
+        {
+            CommandError::user_fixable(error.code, error.message)
+        }
+        _ if error.retryable => CommandError::retryable(error.code, error.message),
+        _ => CommandError::system_fault(error.code, error.message),
+    }
 }
 
 pub(super) fn apply_sanitized_command_environment(command: &mut Command) {
@@ -924,6 +1241,110 @@ fn operator_approved_policy(
     policy
 }
 
+#[derive(Debug)]
+enum CommandOutputReadEvent {
+    Chunk {
+        stream: AutonomousCommandSessionStream,
+        bytes: Vec<u8>,
+    },
+    ReadFailed {
+        stream: AutonomousCommandSessionStream,
+        message: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct StreamingCommandCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl StreamingCommandCapture {
+    fn append(&mut self, bytes: &[u8], max_capture_bytes: usize) {
+        let remaining = max_capture_bytes.saturating_sub(self.bytes.len());
+        if remaining > 0 {
+            let to_copy = remaining.min(bytes.len());
+            self.bytes.extend_from_slice(&bytes[..to_copy]);
+            if to_copy < bytes.len() {
+                self.truncated = true;
+            }
+        } else if !bytes.is_empty() {
+            self.truncated = true;
+        }
+    }
+}
+
+fn spawn_command_output_reader(
+    mut reader: impl Read + Send + 'static,
+    stream: AutonomousCommandSessionStream,
+    sender: mpsc::Sender<CommandOutputReadEvent>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 4096];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if sender
+                        .send(CommandOutputReadEvent::Chunk {
+                            stream: stream.clone(),
+                            bytes: buffer[..read].to_vec(),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    let _ = sender.send(CommandOutputReadEvent::ReadFailed {
+                        stream: stream.clone(),
+                        message: format!("Command output read failed: {error}"),
+                    });
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn drain_command_output_events(
+    receiver: &mpsc::Receiver<CommandOutputReadEvent>,
+    stdout_capture: &mut StreamingCommandCapture,
+    stderr_capture: &mut StreamingCommandCapture,
+    max_capture_bytes: usize,
+    max_excerpt_chars: usize,
+    on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
+) {
+    while let Ok(event) = receiver.try_recv() {
+        let (stream, bytes) = match event {
+            CommandOutputReadEvent::Chunk { stream, bytes } => (stream, bytes),
+            CommandOutputReadEvent::ReadFailed { stream, message } => {
+                (stream, message.into_bytes())
+            }
+        };
+        match &stream {
+            AutonomousCommandSessionStream::Stdout => {
+                stdout_capture.append(&bytes, max_capture_bytes)
+            }
+            AutonomousCommandSessionStream::Stderr => {
+                stderr_capture.append(&bytes, max_capture_bytes)
+            }
+        }
+
+        let capture = sanitize_command_output(&bytes, false, max_excerpt_chars);
+        let chunk = AutonomousCommandOutputChunk {
+            stream,
+            text: capture.text,
+            truncated: capture.truncated,
+            redacted: capture.redacted,
+        };
+        if chunk.text.is_some() || chunk.truncated || chunk.redacted {
+            on_chunk(&chunk);
+        }
+    }
+}
+
 fn spawn_session_reader(
     session: Arc<ProcessSession>,
     mut reader: impl Read + Send + 'static,
@@ -980,56 +1401,10 @@ fn command_result_summary(argv: &[String], exit_code: Option<i32>) -> String {
     }
 }
 
-#[derive(Debug)]
-struct OutputCapture {
-    excerpt: Vec<u8>,
-    truncated: bool,
-}
-
-fn spawn_capture(
-    mut reader: impl Read + Send + 'static,
-    max_capture_bytes: usize,
-) -> thread::JoinHandle<std::io::Result<OutputCapture>> {
-    thread::spawn(move || {
-        let mut excerpt = Vec::new();
-        let mut truncated = false;
-        let mut buffer = [0_u8; 4096];
-
-        loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-
-            let remaining = max_capture_bytes.saturating_sub(excerpt.len());
-            if remaining > 0 {
-                let to_copy = remaining.min(read);
-                excerpt.extend_from_slice(&buffer[..to_copy]);
-                if to_copy < read {
-                    truncated = true;
-                }
-            } else {
-                truncated = true;
-            }
-        }
-
-        Ok(OutputCapture { excerpt, truncated })
-    })
-}
-
-fn join_capture(
-    handle: thread::JoinHandle<std::io::Result<OutputCapture>>,
-) -> CommandResult<OutputCapture> {
-    match handle.join() {
-        Ok(Ok(capture)) => Ok(capture),
-        Ok(Err(error)) => Err(CommandError::system_fault(
-            "autonomous_tool_command_output_failed",
-            format!("Xero could not capture command output: {error}"),
-        )),
-        Err(_) => Err(CommandError::system_fault(
-            "autonomous_tool_command_output_failed",
-            "Xero could not join the command output capture thread.",
-        )),
+fn exit_classification_from_code(exit_code: Option<i32>) -> SandboxExitClassification {
+    match exit_code {
+        Some(0) => SandboxExitClassification::Success,
+        Some(_) | None => SandboxExitClassification::Failed,
     }
 }
 

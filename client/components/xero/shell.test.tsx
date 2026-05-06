@@ -91,13 +91,12 @@ describe('XeroShell', () => {
     expect(logo.parentElement?.parentElement).toHaveClass('absolute', 'left-1/2')
   })
 
-  it.each(['macos', 'windows'] as const)('toggles the arcade from the %s titlebar', (platform) => {
-    const onToggleGames = vi.fn()
-
-    const { rerender } = render(
+  it.each(['macos', 'windows'] as const)('places the tools dropdown to the right of the avatar in %s', (platform) => {
+    render(
       <XeroShell
+        accountAvatarUrl="https://example.com/avatar.png"
+        accountLogin="sn0w"
         activeView="phases"
-        onToggleGames={onToggleGames}
         onViewChange={() => undefined}
         platformOverride={platform}
       >
@@ -105,32 +104,18 @@ describe('XeroShell', () => {
       </XeroShell>,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open arcade' }))
-    expect(onToggleGames).toHaveBeenCalledTimes(1)
+    const account = screen.getByRole('button', { name: /signed in as sn0w/i })
+    const tools = screen.getByRole('button', { name: 'Tools' })
+    const settings = screen.getByRole('button', { name: 'Settings' })
 
-    rerender(
-      <XeroShell
-        activeView="phases"
-        gamesOpen
-        onToggleGames={onToggleGames}
-        onViewChange={() => undefined}
-        platformOverride={platform}
-      >
-        <div>Body</div>
-      </XeroShell>,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close arcade' }))
-    expect(onToggleGames).toHaveBeenCalledTimes(2)
+    expect(account.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(tools.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it.each(['macos', 'windows'] as const)('toggles the Android emulator from the %s tools menu', async (platform) => {
-    const onToggleAndroid = vi.fn()
-
-    const { rerender } = render(
+  it.each(['macos', 'windows'] as const)('omits the Android emulator from the %s tools menu', (platform) => {
+    render(
       <XeroShell
         activeView="phases"
-        onToggleAndroid={onToggleAndroid}
         onViewChange={() => undefined}
         platformOverride={platform}
       >
@@ -139,24 +124,10 @@ describe('XeroShell', () => {
     )
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Open Android emulator' }))
-    await waitFor(() => expect(onToggleAndroid).toHaveBeenCalledTimes(1))
 
-    rerender(
-      <XeroShell
-        activeView="phases"
-        androidOpen
-        onToggleAndroid={onToggleAndroid}
-        onViewChange={() => undefined}
-        platformOverride={platform}
-      >
-        <div>Body</div>
-      </XeroShell>,
-    )
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Close Android emulator' }))
-    await waitFor(() => expect(onToggleAndroid).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('menuitem', { name: 'Open browser' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: /Android emulator/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('Android Emulator')).not.toBeInTheDocument()
   })
 
   it('flips the iOS menu item to an Install Xcode CTA when Xcode is missing', async () => {
@@ -188,31 +159,6 @@ describe('XeroShell', () => {
     // empty panel would just repeat the same "Install Xcode" message.
     expect(onToggleIos).not.toHaveBeenCalled()
     expect(screen.queryByRole('menuitem', { name: /Open iOS simulator/ })).toBeNull()
-  })
-
-  it('surfaces Android SDK setup context from the tools menu', async () => {
-    isTauriMock.mockReturnValue(true)
-    invokeMock.mockResolvedValue({
-      android: { present: false },
-      ios: { present: true, supported: true },
-    })
-
-    render(
-      <XeroShell
-        activeView="phases"
-        onToggleAndroid={vi.fn()}
-        onViewChange={() => undefined}
-        platformOverride="macos"
-      >
-        <div>Body</div>
-      </XeroShell>,
-    )
-
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-    const item = await screen.findByRole('menuitem', { name: 'Open Android emulator' })
-    await waitFor(() =>
-      expect(item.getAttribute('title')).toMatch(/Android SDK not installed/),
-    )
   })
 
   it('renders the iOS menu item only on macOS', async () => {

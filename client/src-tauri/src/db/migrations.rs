@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use rusqlite::Transaction;
 use rusqlite_migration::{Migrations, M};
 
 pub fn migrations() -> &'static Migrations<'static> {
@@ -7,6 +8,12 @@ pub fn migrations() -> &'static Migrations<'static> {
         Migrations::new(vec![
             M::up(BASELINE_SCHEMA_SQL),
             M::up(MIGRATION_001_AGENT_MESSAGE_ATTACHMENTS_SQL),
+            M::up(MIGRATION_002_WORKSPACE_INDEX_SQL),
+            M::up(MIGRATION_003_AGENT_COORDINATION_SQL),
+            M::up(MIGRATION_004_AGENT_MAILBOX_SQL),
+            M::up_with_hook("", migrate_agent_trace_columns),
+            M::up_with_hook("", migrate_environment_lifecycle_schema),
+            M::up_with_hook("", migrate_agent_events_current_event_kinds),
         ])
     });
 
@@ -40,6 +47,289 @@ const MIGRATION_001_AGENT_MESSAGE_ATTACHMENTS_SQL: &str = r#"
         ON agent_message_attachments(message_id);
     CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_run
         ON agent_message_attachments(project_id, run_id);
+"#;
+
+const MIGRATION_002_WORKSPACE_INDEX_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS workspace_index_metadata (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('empty', 'indexing', 'ready', 'stale', 'failed')),
+        index_version INTEGER NOT NULL CHECK (index_version > 0),
+        root_path TEXT NOT NULL CHECK (root_path <> ''),
+        storage_path TEXT NOT NULL CHECK (storage_path <> ''),
+        head_sha TEXT,
+        worktree_fingerprint TEXT,
+        total_files INTEGER NOT NULL DEFAULT 0 CHECK (total_files >= 0),
+        indexed_files INTEGER NOT NULL DEFAULT 0 CHECK (indexed_files >= 0),
+        skipped_files INTEGER NOT NULL DEFAULT 0 CHECK (skipped_files >= 0),
+        stale_files INTEGER NOT NULL DEFAULT 0 CHECK (stale_files >= 0),
+        symbol_count INTEGER NOT NULL DEFAULT 0 CHECK (symbol_count >= 0),
+        indexed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (indexed_bytes >= 0),
+        coverage_percent REAL NOT NULL DEFAULT 0 CHECK (coverage_percent >= 0 AND coverage_percent <= 100),
+        diagnostics_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(diagnostics_json)),
+        last_error_code TEXT,
+        last_error_message TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workspace_index_files (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        path TEXT NOT NULL CHECK (path <> ''),
+        language TEXT NOT NULL CHECK (language <> ''),
+        content_hash TEXT NOT NULL CHECK (content_hash <> ''),
+        modified_at TEXT NOT NULL CHECK (modified_at <> ''),
+        byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+        summary TEXT NOT NULL,
+        snippet TEXT NOT NULL,
+        symbols_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(symbols_json)),
+        imports_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(imports_json)),
+        tests_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tests_json)),
+        routes_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(routes_json)),
+        commands_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(commands_json)),
+        diffs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(diffs_json)),
+        failures_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(failures_json)),
+        embedding_json TEXT NOT NULL CHECK (embedding_json <> '' AND json_valid(embedding_json)),
+        embedding_model TEXT NOT NULL CHECK (embedding_model <> ''),
+        embedding_version TEXT NOT NULL CHECK (embedding_version <> ''),
+        indexed_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, path)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_index_files_project_language
+        ON workspace_index_files(project_id, language, path);
+    CREATE INDEX IF NOT EXISTS idx_workspace_index_files_project_hash
+        ON workspace_index_files(project_id, content_hash);
+"#;
+
+const MIGRATION_003_AGENT_COORDINATION_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_coordination_presence (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        lineage_kind TEXT NOT NULL,
+        parent_run_id TEXT,
+        parent_subagent_id TEXT,
+        role TEXT,
+        pane_id TEXT,
+        status TEXT NOT NULL,
+        current_phase TEXT NOT NULL,
+        activity_summary TEXT NOT NULL,
+        last_event_id INTEGER,
+        last_event_kind TEXT,
+        started_at TEXT NOT NULL,
+        last_heartbeat_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (length(trace_id) = 32 AND trace_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (lineage_kind IN ('top_level', 'subagent_child')),
+        CHECK (parent_run_id IS NULL OR parent_run_id <> ''),
+        CHECK (parent_subagent_id IS NULL OR parent_subagent_id <> ''),
+        CHECK (role IS NULL OR role <> ''),
+        CHECK (pane_id IS NULL OR pane_id <> ''),
+        CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'handed_off', 'completed', 'failed')),
+        CHECK (current_phase <> ''),
+        CHECK (activity_summary <> ''),
+        CHECK (last_event_kind IS NULL OR last_event_kind <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_coordination_presence_project_expires
+        ON agent_coordination_presence(project_id, expires_at, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_coordination_presence_session
+        ON agent_coordination_presence(project_id, agent_session_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_coordination_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        event_kind TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        CHECK (run_id <> ''),
+        CHECK (length(trace_id) = 32 AND trace_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (event_kind <> ''),
+        CHECK (summary <> ''),
+        CHECK (payload_json <> '' AND json_valid(payload_json)),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_coordination_events_project_created
+        ON agent_coordination_events(project_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_coordination_events_run_created
+        ON agent_coordination_events(project_id, run_id, created_at DESC, id DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_file_reservations (
+        reservation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        path_kind TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        owner_agent_session_id TEXT NOT NULL,
+        owner_run_id TEXT NOT NULL,
+        owner_child_run_id TEXT,
+        owner_role TEXT,
+        owner_pane_id TEXT,
+        owner_trace_id TEXT NOT NULL,
+        note TEXT,
+        override_reason TEXT,
+        claimed_at TEXT NOT NULL,
+        last_heartbeat_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        released_at TEXT,
+        release_reason TEXT,
+        PRIMARY KEY (project_id, reservation_id),
+        CHECK (reservation_id <> ''),
+        CHECK (path <> ''),
+        CHECK (path_kind IN ('path', 'prefix')),
+        CHECK (operation IN ('observing', 'editing', 'refactoring', 'testing', 'verifying', 'writing')),
+        CHECK (owner_agent_session_id <> ''),
+        CHECK (owner_run_id <> ''),
+        CHECK (owner_child_run_id IS NULL OR owner_child_run_id <> ''),
+        CHECK (owner_role IS NULL OR owner_role <> ''),
+        CHECK (owner_pane_id IS NULL OR owner_pane_id <> ''),
+        CHECK (length(owner_trace_id) = 32 AND owner_trace_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (note IS NULL OR note <> ''),
+        CHECK (override_reason IS NULL OR override_reason <> ''),
+        CHECK (
+            (released_at IS NULL AND release_reason IS NULL)
+            OR (released_at IS NOT NULL AND release_reason IS NOT NULL AND release_reason <> '')
+        ),
+        FOREIGN KEY (project_id, owner_agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, owner_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, owner_child_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_file_reservations_project_active
+        ON agent_file_reservations(project_id, released_at, expires_at, path);
+    CREATE INDEX IF NOT EXISTS idx_agent_file_reservations_owner
+        ON agent_file_reservations(project_id, owner_run_id, owner_child_run_id, released_at);
+"#;
+
+const MIGRATION_004_AGENT_MAILBOX_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_mailbox_items (
+        item_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        item_type TEXT NOT NULL,
+        parent_item_id TEXT,
+        sender_agent_session_id TEXT NOT NULL,
+        sender_run_id TEXT NOT NULL,
+        sender_parent_run_id TEXT,
+        sender_child_run_id TEXT,
+        sender_role TEXT,
+        sender_trace_id TEXT NOT NULL,
+        target_agent_session_id TEXT,
+        target_run_id TEXT,
+        target_role TEXT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        related_paths_json TEXT NOT NULL DEFAULT '[]',
+        priority TEXT NOT NULL DEFAULT 'normal',
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by_run_id TEXT,
+        resolve_reason TEXT,
+        promoted_record_id TEXT,
+        promoted_at TEXT,
+        PRIMARY KEY (project_id, item_id),
+        CHECK (item_id <> ''),
+        CHECK (item_type IN (
+            'heads_up',
+            'question',
+            'answer',
+            'blocker',
+            'file_ownership_note',
+            'finding_in_progress',
+            'verification_note',
+            'handoff_lite_summary'
+        )),
+        CHECK (parent_item_id IS NULL OR parent_item_id <> ''),
+        CHECK (sender_agent_session_id <> ''),
+        CHECK (sender_run_id <> ''),
+        CHECK (sender_parent_run_id IS NULL OR sender_parent_run_id <> ''),
+        CHECK (sender_child_run_id IS NULL OR sender_child_run_id <> ''),
+        CHECK (sender_role IS NULL OR sender_role <> ''),
+        CHECK (length(sender_trace_id) = 32 AND sender_trace_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (target_agent_session_id IS NULL OR target_agent_session_id <> ''),
+        CHECK (target_run_id IS NULL OR target_run_id <> ''),
+        CHECK (target_role IS NULL OR target_role <> ''),
+        CHECK (title <> ''),
+        CHECK (body <> ''),
+        CHECK (related_paths_json <> '' AND json_valid(related_paths_json)),
+        CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+        CHECK (status IN ('open', 'resolved', 'promoted')),
+        CHECK (
+            (resolved_at IS NULL AND resolved_by_run_id IS NULL AND resolve_reason IS NULL)
+            OR (resolved_at IS NOT NULL AND resolved_by_run_id IS NOT NULL AND resolve_reason IS NOT NULL AND resolve_reason <> '')
+        ),
+        CHECK (
+            (promoted_record_id IS NULL AND promoted_at IS NULL)
+            OR (promoted_record_id IS NOT NULL AND promoted_record_id <> '' AND promoted_at IS NOT NULL)
+        ),
+        FOREIGN KEY (project_id, parent_item_id)
+            REFERENCES agent_mailbox_items(project_id, item_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, sender_agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, sender_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, sender_parent_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, sender_child_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, target_agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, target_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_items_project_delivery
+        ON agent_mailbox_items(project_id, status, expires_at, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_items_sender
+        ON agent_mailbox_items(project_id, sender_run_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_items_target_run
+        ON agent_mailbox_items(project_id, target_run_id, status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_items_target_session
+        ON agent_mailbox_items(project_id, target_agent_session_id, status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_items_parent
+        ON agent_mailbox_items(project_id, parent_item_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS agent_mailbox_acknowledgements (
+        project_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        acknowledged_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, item_id, run_id),
+        CHECK (item_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (acknowledged_at <> ''),
+        FOREIGN KEY (project_id, item_id)
+            REFERENCES agent_mailbox_items(project_id, item_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_mailbox_acknowledgements_run
+        ON agent_mailbox_acknowledgements(project_id, run_id, acknowledged_at DESC);
 "#;
 
 const BASELINE_SCHEMA_SQL: &str = r#"
@@ -226,7 +516,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (short_label <> ''),
         CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
         CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
-        CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder'))
+        CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder', 'harness_test'))
     );
 
     CREATE TABLE IF NOT EXISTS agent_definition_versions (
@@ -273,7 +563,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
         ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
         ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
-        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
+        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z'),
+        ('test', 1, 'Test', 'Test', 'Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.', 'built_in', 'active', 'harness_test', '2026-05-01T00:00:00Z');
 
     INSERT OR IGNORE INTO agent_definition_versions (
         definition_id,
@@ -286,7 +577,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
-        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('test', 1, '{"schema":"xero.agent_definition.v1","id":"test","version":1,"displayName":"Test","shortLabel":"Test","description":"Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.","taskPurpose":"Trigger and report a deterministic internal harness validation run instead of fulfilling the user prompt as a normal task.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"harness_test","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"harness_test","toolPolicy":"harness_test","outputContract":"harness_test_report","workflowContract":"Use the built-in Xero harness runtime contract for this agent.","finalResponseContract":"Produce the built-in harness test report.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","plan","finding","verification","question","artifact","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1","xero.harness_test_report.v1"],"unstructuredScopes":["answer_note","session_summary","artifact_excerpt","troubleshooting_note"],"memoryCandidateKinds":["project_fact","decision","session_summary","troubleshooting"]}}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
 
     CREATE TABLE IF NOT EXISTS runtime_runs (
         project_id TEXT NOT NULL,
@@ -503,6 +795,12 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         agent_session_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        lineage_kind TEXT NOT NULL DEFAULT 'top_level',
+        parent_run_id TEXT,
+        parent_trace_id TEXT,
+        parent_subagent_id TEXT,
+        subagent_role TEXT,
         provider_id TEXT NOT NULL,
         model_id TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -522,6 +820,12 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (agent_definition_id <> ''),
         CHECK (agent_definition_version > 0),
         CHECK (run_id <> ''),
+        CHECK (length(trace_id) = 32 AND trace_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (lineage_kind IN ('top_level', 'subagent_child')),
+        CHECK (parent_run_id IS NULL OR parent_run_id <> ''),
+        CHECK (parent_trace_id IS NULL OR (length(parent_trace_id) = 32 AND parent_trace_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (parent_subagent_id IS NULL OR parent_subagent_id <> ''),
+        CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
         CHECK (provider_id <> ''),
         CHECK (model_id <> ''),
         CHECK (status IN ('starting', 'running', 'paused', 'cancelling', 'cancelled', 'handed_off', 'completed', 'failed')),
@@ -541,6 +845,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ON agent_runs(project_id, agent_session_id, updated_at DESC, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_runs_status_updated
         ON agent_runs(project_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_runs_parent_lineage
+        ON agent_runs(project_id, parent_run_id, parent_subagent_id);
 
     CREATE TABLE IF NOT EXISTS agent_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -548,9 +854,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         run_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        provider_metadata_json TEXT,
         created_at TEXT NOT NULL,
         CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
-        CHECK (content <> ''),
         FOREIGN KEY (project_id, run_id)
             REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
     );
@@ -566,6 +872,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         CHECK (event_kind IN (
+            'run_started',
             'message_delta',
             'reasoning_summary',
             'tool_started',
@@ -580,7 +887,16 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             'state_transition',
             'plan_updated',
             'verification_gate',
+            'context_manifest_recorded',
+            'retrieval_performed',
+            'memory_candidate_captured',
+            'environment_lifecycle_update',
+            'sandbox_lifecycle_update',
             'action_required',
+            'approval_required',
+            'tool_permission_grant',
+            'provider_model_changed',
+            'runtime_settings_changed',
             'run_paused',
             'run_completed',
             'run_failed'
@@ -593,6 +909,74 @@ const BASELINE_SCHEMA_SQL: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_agent_events_project_run_id
         ON agent_events(project_id, run_id, id ASC);
+
+    CREATE TABLE IF NOT EXISTS agent_environment_lifecycle_snapshots (
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        environment_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        previous_state TEXT,
+        pending_message_count INTEGER NOT NULL DEFAULT 0 CHECK (pending_message_count >= 0),
+        health_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (health_checks_json <> '' AND json_valid(health_checks_json)),
+        setup_steps_json TEXT NOT NULL DEFAULT '[]' CHECK (setup_steps_json <> '' AND json_valid(setup_steps_json)),
+        diagnostic_json TEXT CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        snapshot_json TEXT NOT NULL CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id),
+        CHECK (environment_id <> ''),
+        CHECK (state IN (
+            'created',
+            'waiting_for_sandbox',
+            'preparing_repository',
+            'loading_project_instructions',
+            'running_setup_scripts',
+            'setting_up_hooks',
+            'setting_up_skills_plugins',
+            'indexing_workspace',
+            'starting_conversation',
+            'ready',
+            'failed',
+            'paused',
+            'archived'
+        )),
+        CHECK (
+            previous_state IS NULL OR previous_state IN (
+                'created',
+                'waiting_for_sandbox',
+                'preparing_repository',
+                'loading_project_instructions',
+                'running_setup_scripts',
+                'setting_up_hooks',
+                'setting_up_skills_plugins',
+                'indexing_workspace',
+                'starting_conversation',
+                'ready',
+                'failed',
+                'paused',
+                'archived'
+            )
+        ),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_environment_pending_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        submitted_at TEXT NOT NULL,
+        delivered_at TEXT,
+        CHECK (role IN ('user')),
+        CHECK (content <> ''),
+        CHECK (delivered_at IS NULL OR delivered_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_environment_pending_messages_run
+        ON agent_environment_pending_messages(project_id, run_id, delivered_at, id ASC);
 
     CREATE TABLE IF NOT EXISTS agent_tool_calls (
         project_id TEXT NOT NULL,
@@ -628,11 +1012,19 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        top_level_run_id TEXT NOT NULL,
+        subagent_id TEXT,
+        subagent_role TEXT,
         path TEXT NOT NULL,
         operation TEXT NOT NULL,
         old_hash TEXT,
         new_hash TEXT,
         created_at TEXT NOT NULL,
+        CHECK (length(trace_id) = 32 AND trace_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (top_level_run_id <> ''),
+        CHECK (subagent_id IS NULL OR subagent_id <> ''),
+        CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
         CHECK (path <> ''),
         CHECK (operation IN ('create', 'write', 'edit', 'patch', 'delete', 'rename', 'mkdir', 'unknown')),
         CHECK (old_hash IS NULL OR (length(old_hash) = 64 AND old_hash NOT GLOB '*[^0-9a-f]*')),
@@ -1240,7 +1632,391 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         CHECK (project_id <> '')
     );
-"#;
+	"#;
+
+fn migrate_agent_trace_columns(transaction: &Transaction<'_>) -> rusqlite_migration::HookResult {
+    if table_exists(transaction, "agent_runs")? {
+        add_column_if_missing(
+            transaction,
+            "agent_runs",
+            "trace_id",
+            "TEXT NOT NULL DEFAULT '00000000000000000000000000000000'",
+        )?;
+        add_column_if_missing(
+            transaction,
+            "agent_runs",
+            "lineage_kind",
+            "TEXT NOT NULL DEFAULT 'top_level'",
+        )?;
+        add_column_if_missing(transaction, "agent_runs", "parent_run_id", "TEXT")?;
+        add_column_if_missing(transaction, "agent_runs", "parent_trace_id", "TEXT")?;
+        add_column_if_missing(transaction, "agent_runs", "parent_subagent_id", "TEXT")?;
+        add_column_if_missing(transaction, "agent_runs", "subagent_role", "TEXT")?;
+
+        if table_exists(transaction, "agent_coordination_presence")? {
+            transaction.execute_batch(
+                r#"
+                UPDATE agent_runs
+                SET trace_id = (
+                    SELECT agent_coordination_presence.trace_id
+                    FROM agent_coordination_presence
+                    WHERE agent_coordination_presence.project_id = agent_runs.project_id
+                      AND agent_coordination_presence.run_id = agent_runs.run_id
+                    LIMIT 1
+                )
+                WHERE (
+                    trace_id IS NULL
+                    OR trim(trace_id) = ''
+                    OR trace_id = '00000000000000000000000000000000'
+                )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM agent_coordination_presence
+                    WHERE agent_coordination_presence.project_id = agent_runs.project_id
+                      AND agent_coordination_presence.run_id = agent_runs.run_id
+                );
+                "#,
+            )?;
+        }
+
+        transaction.execute_batch(
+            r#"
+            UPDATE agent_runs
+            SET trace_id = lower(hex(randomblob(16)))
+            WHERE trace_id IS NULL
+               OR trim(trace_id) = ''
+               OR trace_id = '00000000000000000000000000000000';
+
+            UPDATE agent_runs
+            SET lineage_kind = 'top_level'
+            WHERE lineage_kind IS NULL
+               OR trim(lineage_kind) = '';
+
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_parent_lineage
+                ON agent_runs(project_id, parent_run_id, parent_subagent_id);
+            "#,
+        )?;
+    }
+
+    if table_exists(transaction, "agent_file_changes")? {
+        add_column_if_missing(
+            transaction,
+            "agent_file_changes",
+            "trace_id",
+            "TEXT NOT NULL DEFAULT '00000000000000000000000000000000'",
+        )?;
+        add_column_if_missing(
+            transaction,
+            "agent_file_changes",
+            "top_level_run_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        add_column_if_missing(transaction, "agent_file_changes", "subagent_id", "TEXT")?;
+        add_column_if_missing(transaction, "agent_file_changes", "subagent_role", "TEXT")?;
+
+        if table_exists(transaction, "agent_runs")? {
+            transaction.execute_batch(
+                r#"
+                UPDATE agent_file_changes
+                SET trace_id = COALESCE(
+                        (
+                            SELECT agent_runs.trace_id
+                            FROM agent_runs
+                            WHERE agent_runs.project_id = agent_file_changes.project_id
+                              AND agent_runs.run_id = agent_file_changes.run_id
+                        ),
+                        trace_id
+                    ),
+                    top_level_run_id = COALESCE(
+                        (
+                            SELECT COALESCE(agent_runs.parent_run_id, agent_runs.run_id)
+                            FROM agent_runs
+                            WHERE agent_runs.project_id = agent_file_changes.project_id
+                              AND agent_runs.run_id = agent_file_changes.run_id
+                        ),
+                        run_id
+                    ),
+                    subagent_id = (
+                        SELECT agent_runs.parent_subagent_id
+                        FROM agent_runs
+                        WHERE agent_runs.project_id = agent_file_changes.project_id
+                          AND agent_runs.run_id = agent_file_changes.run_id
+                    ),
+                    subagent_role = (
+                        SELECT agent_runs.subagent_role
+                        FROM agent_runs
+                        WHERE agent_runs.project_id = agent_file_changes.project_id
+                          AND agent_runs.run_id = agent_file_changes.run_id
+                    );
+                "#,
+            )?;
+        }
+
+        transaction.execute_batch(
+            r#"
+            UPDATE agent_file_changes
+            SET trace_id = lower(hex(randomblob(16)))
+            WHERE trace_id IS NULL
+               OR trim(trace_id) = ''
+               OR trace_id = '00000000000000000000000000000000';
+
+            UPDATE agent_file_changes
+            SET top_level_run_id = run_id
+            WHERE top_level_run_id IS NULL
+               OR trim(top_level_run_id) = '';
+            "#,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn migrate_environment_lifecycle_schema(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    transaction.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_environment_lifecycle_snapshots (
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            environment_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            previous_state TEXT,
+            pending_message_count INTEGER NOT NULL DEFAULT 0 CHECK (pending_message_count >= 0),
+            health_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (health_checks_json <> '' AND json_valid(health_checks_json)),
+            setup_steps_json TEXT NOT NULL DEFAULT '[]' CHECK (setup_steps_json <> '' AND json_valid(setup_steps_json)),
+            diagnostic_json TEXT CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+            snapshot_json TEXT NOT NULL CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, run_id),
+            CHECK (environment_id <> ''),
+            CHECK (state IN (
+                'created',
+                'waiting_for_sandbox',
+                'preparing_repository',
+                'loading_project_instructions',
+                'running_setup_scripts',
+                'setting_up_hooks',
+                'setting_up_skills_plugins',
+                'indexing_workspace',
+                'starting_conversation',
+                'ready',
+                'failed',
+                'paused',
+                'archived'
+            )),
+            CHECK (
+                previous_state IS NULL OR previous_state IN (
+                    'created',
+                    'waiting_for_sandbox',
+                    'preparing_repository',
+                    'loading_project_instructions',
+                    'running_setup_scripts',
+                    'setting_up_hooks',
+                    'setting_up_skills_plugins',
+                    'indexing_workspace',
+                    'starting_conversation',
+                    'ready',
+                    'failed',
+                    'paused',
+                    'archived'
+                )
+            ),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_environment_pending_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            submitted_at TEXT NOT NULL,
+            delivered_at TEXT,
+            CHECK (role IN ('user')),
+            CHECK (content <> ''),
+            CHECK (delivered_at IS NULL OR delivered_at <> ''),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_environment_pending_messages_run
+            ON agent_environment_pending_messages(project_id, run_id, delivered_at, id ASC);
+        "#,
+    )?;
+
+    if table_exists(transaction, "agent_events")?
+        && !agent_events_supports_current_event_kinds(transaction)?
+    {
+        rebuild_agent_events_with_current_event_kind_constraint(
+            transaction,
+            "agent_events_before_environment_lifecycle",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn migrate_agent_events_current_event_kinds(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    if table_exists(transaction, "agent_events")?
+        && !agent_events_supports_current_event_kinds(transaction)?
+    {
+        rebuild_agent_events_with_current_event_kind_constraint(
+            transaction,
+            "agent_events_before_current_event_kinds",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn table_exists(transaction: &Transaction<'_>, table: &str) -> rusqlite::Result<bool> {
+    transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get::<_, bool>(0),
+    )
+}
+
+fn agent_events_supports_current_event_kinds(
+    transaction: &Transaction<'_>,
+) -> rusqlite::Result<bool> {
+    let sql = transaction.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_events'",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(CURRENT_AGENT_EVENT_KIND_SQL_VALUES
+        .iter()
+        .all(|kind| sql.contains(&format!("'{kind}'"))))
+}
+
+const CURRENT_AGENT_EVENT_KIND_SQL_VALUES: &[&str] = &[
+    "run_started",
+    "message_delta",
+    "reasoning_summary",
+    "tool_started",
+    "tool_delta",
+    "tool_completed",
+    "file_changed",
+    "command_output",
+    "validation_started",
+    "validation_completed",
+    "tool_registry_snapshot",
+    "policy_decision",
+    "state_transition",
+    "plan_updated",
+    "verification_gate",
+    "context_manifest_recorded",
+    "retrieval_performed",
+    "memory_candidate_captured",
+    "environment_lifecycle_update",
+    "sandbox_lifecycle_update",
+    "action_required",
+    "approval_required",
+    "tool_permission_grant",
+    "provider_model_changed",
+    "runtime_settings_changed",
+    "run_paused",
+    "run_completed",
+    "run_failed",
+];
+
+fn rebuild_agent_events_with_current_event_kind_constraint(
+    transaction: &Transaction<'_>,
+    backup_table: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute_batch(&format!(
+        r#"
+        ALTER TABLE agent_events RENAME TO {backup_table};
+
+        CREATE TABLE agent_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            CHECK (event_kind IN (
+                'run_started',
+                'message_delta',
+                'reasoning_summary',
+                'tool_started',
+                'tool_delta',
+                'tool_completed',
+                'file_changed',
+                'command_output',
+                'validation_started',
+                'validation_completed',
+                'tool_registry_snapshot',
+                'policy_decision',
+                'state_transition',
+                'plan_updated',
+                'verification_gate',
+                'context_manifest_recorded',
+                'retrieval_performed',
+                'memory_candidate_captured',
+                'environment_lifecycle_update',
+                'sandbox_lifecycle_update',
+                'action_required',
+                'approval_required',
+                'tool_permission_grant',
+                'provider_model_changed',
+                'runtime_settings_changed',
+                'run_paused',
+                'run_completed',
+                'run_failed'
+            )),
+            CHECK (payload_json <> ''),
+            CHECK (json_valid(payload_json)),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        INSERT INTO agent_events (id, project_id, run_id, event_kind, payload_json, created_at)
+        SELECT id, project_id, run_id, event_kind, payload_json, created_at
+        FROM {backup_table};
+
+        DROP TABLE {backup_table};
+
+        CREATE INDEX IF NOT EXISTS idx_agent_events_project_run_id
+            ON agent_events(project_id, run_id, id ASC);
+        "#
+    ))
+}
+
+fn add_column_if_missing(
+    transaction: &Transaction<'_>,
+    table: &str,
+    column: &str,
+    column_definition: &str,
+) -> rusqlite::Result<()> {
+    if table_has_column(transaction, table, column)? {
+        return Ok(());
+    }
+
+    transaction.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {column_definition};"
+    ))
+}
+
+fn table_has_column(
+    transaction: &Transaction<'_>,
+    table: &str,
+    column: &str,
+) -> rusqlite::Result<bool> {
+    let mut statement = transaction.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1293,6 +2069,100 @@ mod tests {
     }
 
     #[test]
+    fn event_kind_repair_migration_updates_already_migrated_agent_events_tables() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE agent_runs (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    PRIMARY KEY (project_id, run_id)
+                );
+
+                CREATE TABLE agent_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    event_kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    CHECK (event_kind IN (
+                        'message_delta',
+                        'reasoning_summary',
+                        'tool_started',
+                        'tool_delta',
+                        'tool_completed',
+                        'file_changed',
+                        'command_output',
+                        'validation_started',
+                        'validation_completed',
+                        'tool_registry_snapshot',
+                        'policy_decision',
+                        'state_transition',
+                        'plan_updated',
+                        'verification_gate',
+                        'environment_lifecycle_update',
+                        'action_required',
+                        'run_paused',
+                        'run_completed',
+                        'run_failed'
+                    )),
+                    CHECK (payload_json <> ''),
+                    CHECK (json_valid(payload_json)),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO agent_runs (project_id, run_id)
+                VALUES ('project-1', 'run-1');
+
+                INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                VALUES ('project-1', 'run-1', 'message_delta', '{}', '2026-05-05T16:32:47Z');
+                "#,
+            )
+            .expect("create old constrained schema");
+
+        let transaction = connection.transaction().expect("start transaction");
+        migrate_agent_events_current_event_kinds(&transaction).expect("repair event kinds");
+        transaction.commit().expect("commit repair");
+
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "project-1",
+                    "run-1",
+                    "run_started",
+                    "{}",
+                    "2026-05-05T16:32:48Z"
+                ],
+            )
+            .expect("insert run_started after repair");
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "project-1",
+                    "run-1",
+                    "context_manifest_recorded",
+                    "{}",
+                    "2026-05-05T16:32:49Z"
+                ],
+            )
+            .expect("insert context_manifest_recorded after repair");
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM agent_events", [], |row| row.get(0))
+            .expect("count events");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
     fn baseline_contains_current_project_tables() {
         let connection = migrate_to_latest_in_memory();
         let tables = collect_strings(
@@ -1314,12 +2184,19 @@ mod tests {
                 "agent_compactions",
                 "agent_context_manifests",
                 "agent_context_policy_settings",
+                "agent_coordination_events",
+                "agent_coordination_presence",
                 "agent_definition_versions",
                 "agent_definitions",
                 "agent_embedding_backfill_jobs",
+                "agent_environment_lifecycle_snapshots",
+                "agent_environment_pending_messages",
                 "agent_events",
                 "agent_file_changes",
+                "agent_file_reservations",
                 "agent_handoff_lineage",
+                "agent_mailbox_acknowledgements",
+                "agent_mailbox_items",
                 "agent_message_attachments",
                 "agent_messages",
                 "agent_retrieval_queries",
@@ -1344,6 +2221,8 @@ mod tests {
                 "runtime_run_checkpoints",
                 "runtime_runs",
                 "runtime_sessions",
+                "workspace_index_files",
+                "workspace_index_metadata",
             ],
             "fresh project databases should start from the current baseline schema"
         );
@@ -1375,6 +2254,146 @@ mod tests {
         assert!(
             tables.is_empty(),
             "deprecated workflow/autonomous-unit/memory tables should not exist in the fresh baseline: {tables:?}"
+        );
+    }
+
+    #[test]
+    fn baseline_seeds_test_agent_definition_registry_entry() {
+        let connection = migrate_to_latest_in_memory();
+        let built_ins = {
+            let mut statement = connection
+                .prepare(
+                    r#"
+                    SELECT
+                        definition_id,
+                        current_version,
+                        display_name,
+                        short_label,
+                        scope,
+                        lifecycle_state,
+                        base_capability_profile
+                    FROM agent_definitions
+                    WHERE scope = 'built_in'
+                    ORDER BY definition_id
+                    "#,
+                )
+                .expect("prepare built-in definitions query");
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .expect("query built-in definitions");
+            rows.collect::<Result<Vec<_>, _>>()
+                .expect("collect built-in definitions")
+        };
+
+        assert_eq!(
+            built_ins,
+            vec![
+                (
+                    "agent_create".into(),
+                    1,
+                    "Agent Create".into(),
+                    "Create".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "agent_builder".into(),
+                ),
+                (
+                    "ask".into(),
+                    1,
+                    "Ask".into(),
+                    "Ask".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "observe_only".into(),
+                ),
+                (
+                    "debug".into(),
+                    1,
+                    "Debug".into(),
+                    "Debug".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "debugging".into(),
+                ),
+                (
+                    "engineer".into(),
+                    1,
+                    "Engineer".into(),
+                    "Build".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "engineering".into(),
+                ),
+                (
+                    "test".into(),
+                    1,
+                    "Test".into(),
+                    "Test".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "harness_test".into(),
+                ),
+            ],
+            "fresh project databases should seed every built-in agent definition"
+        );
+
+        let test_snapshot = connection
+            .query_row(
+                r#"
+                SELECT
+                    json_extract(snapshot_json, '$.id'),
+                    json_extract(snapshot_json, '$.displayName'),
+                    json_extract(snapshot_json, '$.scope'),
+                    json_extract(snapshot_json, '$.baseCapabilityProfile'),
+                    json_extract(snapshot_json, '$.defaultApprovalMode'),
+                    json_extract(snapshot_json, '$.promptPolicy'),
+                    json_extract(snapshot_json, '$.toolPolicy'),
+                    json_extract(snapshot_json, '$.outputContract'),
+                    json_extract(validation_report_json, '$.source')
+                FROM agent_definition_versions
+                WHERE definition_id = 'test'
+                  AND version = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .expect("load test agent definition version snapshot");
+
+        assert_eq!(
+            test_snapshot,
+            (
+                "test".into(),
+                "Test".into(),
+                "built_in".into(),
+                "harness_test".into(),
+                "suggest".into(),
+                "harness_test".into(),
+                "harness_test".into(),
+                "harness_test_report".into(),
+                "seed".into(),
+            )
         );
     }
 
@@ -1471,6 +2490,7 @@ mod tests {
                     project_id,
                     agent_session_id,
                     run_id,
+                    trace_id,
                     provider_id,
                     model_id,
                     status,
@@ -1479,12 +2499,13 @@ mod tests {
                     started_at,
                     updated_at
                 )
-                VALUES ('ask', 'ask', 1, ?1, ?2, ?3, 'fake_provider', 'fake-model', 'running', 'prompt', 'system', ?4, ?4)
+                VALUES ('ask', 'ask', 1, ?1, ?2, ?3, ?4, 'fake_provider', 'fake-model', 'running', 'prompt', 'system', ?5, ?5)
                 "#,
                 params![
                     "project-1",
                     "agent-session-main",
                     "run-1",
+                    "0123456789abcdef0123456789abcdef",
                     "2026-05-01T12:03:00Z"
                 ],
             )
@@ -1652,6 +2673,169 @@ mod tests {
             vec!["idx_operator_approvals_project_status_updated"],
             "operator approvals should not carry workflow-era indexes"
         );
+    }
+
+    #[test]
+    fn legacy_v5_project_state_migrates_agent_trace_columns() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE agent_runs (
+                    runtime_agent_id TEXT NOT NULL,
+                    agent_definition_id TEXT NOT NULL,
+                    agent_definition_version INTEGER NOT NULL,
+                    project_id TEXT NOT NULL,
+                    agent_session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    system_prompt TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    last_heartbeat_at TEXT,
+                    completed_at TEXT,
+                    cancelled_at TEXT,
+                    last_error_code TEXT,
+                    last_error_message TEXT,
+                    updated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (project_id, run_id)
+                );
+
+                CREATE TABLE agent_file_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    old_hash TEXT,
+                    new_hash TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE agent_coordination_presence (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    trace_id TEXT NOT NULL
+                );
+
+                INSERT INTO agent_runs (
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    provider_id,
+                    model_id,
+                    status,
+                    prompt,
+                    system_prompt,
+                    started_at,
+                    updated_at
+                )
+                VALUES (
+                    'ask',
+                    'ask',
+                    1,
+                    'project-legacy',
+                    'agent-session-legacy',
+                    'run-legacy',
+                    'openai_codex',
+                    'gpt-5.4',
+                    'completed',
+                    'prompt',
+                    'system',
+                    '2026-05-01T12:00:00Z',
+                    '2026-05-01T12:01:00Z'
+                );
+
+                INSERT INTO agent_file_changes (
+                    project_id,
+                    run_id,
+                    path,
+                    operation,
+                    created_at
+                )
+                VALUES (
+                    'project-legacy',
+                    'run-legacy',
+                    'src/lib.rs',
+                    'edit',
+                    '2026-05-01T12:02:00Z'
+                );
+
+                INSERT INTO agent_coordination_presence (
+                    project_id,
+                    run_id,
+                    trace_id
+                )
+                VALUES (
+                    'project-legacy',
+                    'run-legacy',
+                    '0123456789abcdef0123456789abcdef'
+                );
+
+                PRAGMA user_version = 5;
+                "#,
+            )
+            .expect("seed legacy v5 schema");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate legacy v5 schema");
+
+        let run_columns = table_columns(&connection, "agent_runs");
+        for column in [
+            "trace_id",
+            "lineage_kind",
+            "parent_run_id",
+            "parent_trace_id",
+            "parent_subagent_id",
+            "subagent_role",
+        ] {
+            assert!(
+                run_columns.contains(&column.to_string()),
+                "agent_runs should include {column}"
+            );
+        }
+
+        let file_change_columns = table_columns(&connection, "agent_file_changes");
+        for column in [
+            "trace_id",
+            "top_level_run_id",
+            "subagent_id",
+            "subagent_role",
+        ] {
+            assert!(
+                file_change_columns.contains(&column.to_string()),
+                "agent_file_changes should include {column}"
+            );
+        }
+
+        let (trace_id, lineage_kind): (String, String) = connection
+            .query_row(
+                "SELECT trace_id, lineage_kind FROM agent_runs WHERE project_id = 'project-legacy' AND run_id = 'run-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated agent run");
+        assert_eq!(trace_id, "0123456789abcdef0123456789abcdef");
+        assert_eq!(lineage_kind, "top_level");
+
+        let (change_trace_id, top_level_run_id): (String, String) = connection
+            .query_row(
+                "SELECT trace_id, top_level_run_id FROM agent_file_changes WHERE project_id = 'project-legacy' AND run_id = 'run-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated file change");
+        assert_eq!(change_trace_id, trace_id);
+        assert_eq!(top_level_run_id, "run-legacy");
     }
 
     #[test]

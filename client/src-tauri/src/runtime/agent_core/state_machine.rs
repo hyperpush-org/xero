@@ -659,6 +659,7 @@ fn is_execution_tool(tool_name: &str) -> bool {
             | AUTONOMOUS_TOOL_TOOL_ACCESS
             | AUTONOMOUS_TOOL_TOOL_SEARCH
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT
+            | AUTONOMOUS_TOOL_WORKSPACE_INDEX
             | AUTONOMOUS_TOOL_TODO
             | AUTONOMOUS_TOOL_WEB_SEARCH
             | AUTONOMOUS_TOOL_WEB_FETCH
@@ -774,6 +775,12 @@ mod tests {
                 project_id: "project-1".into(),
                 agent_session_id: "session-1".into(),
                 run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                lineage_kind: "top_level".into(),
+                parent_run_id: None,
+                parent_trace_id: None,
+                parent_subagent_id: None,
+                subagent_role: None,
                 provider_id: "fake".into(),
                 model_id: "fake".into(),
                 status: AgentRunStatus::Running,
@@ -862,6 +869,10 @@ mod tests {
                 id: 1,
                 project_id: "project-1".into(),
                 run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
                 path: "src/lib.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -891,6 +902,10 @@ mod tests {
                 id: 1,
                 project_id: "project-1".into(),
                 run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
                 path: "src/lib.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -932,6 +947,10 @@ mod tests {
                 id: 1,
                 project_id: "project-1".into(),
                 run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
                 path: "src/lib.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,

@@ -148,6 +148,7 @@ fn runtime_stream_items_share_the_transcript_contract() {
             tool_name: Some("read".into()),
             tool_state: Some(RuntimeToolCallState::Succeeded),
             tool_summary: None,
+            tool_result_preview: None,
             skill_id: None,
             skill_stage: None,
             skill_result: None,
@@ -176,6 +177,7 @@ fn runtime_stream_items_share_the_transcript_contract() {
             tool_name: None,
             tool_state: None,
             tool_summary: None,
+            tool_result_preview: None,
             skill_id: None,
             skill_stage: None,
             skill_result: None,
@@ -595,7 +597,15 @@ fn provider_context_budget_tokens_cover_known_model_families() {
     );
     assert_eq!(
         provider_context_budget_tokens("openrouter", "openai/gpt-5.4"),
-        Some(128_000)
+        Some(272_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("openai_codex", "gpt-5.2"),
+        Some(272_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("openai_codex", "gpt-5.5"),
+        Some(272_000)
     );
     assert_eq!(
         provider_context_budget_tokens("github_models", "openai/gpt-4.1"),
@@ -620,6 +630,12 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
             project_id: PROJECT_ID.into(),
             agent_session_id: SESSION_ID.into(),
             run_id: RUN_ID.into(),
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            lineage_kind: "top_level".into(),
+            parent_run_id: None,
+            parent_trace_id: None,
+            parent_subagent_id: None,
+            subagent_role: None,
             provider_id: PROVIDER_ID.into(),
             model_id: MODEL_ID.into(),
             status: AgentRunStatus::Completed,
@@ -704,6 +720,10 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
             id: 6,
             project_id: PROJECT_ID.into(),
             run_id: RUN_ID.into(),
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            top_level_run_id: RUN_ID.into(),
+            subagent_id: None,
+            subagent_role: None,
             path: "/Users/sn0w/.config/xero/credentials.json".into(),
             operation: "write".into(),
             old_hash: Some(sha()),

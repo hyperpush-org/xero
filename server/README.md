@@ -1,6 +1,6 @@
 # Xero Server
 
-Phoenix service used by the Xero desktop development workflow. It currently backs web callback/shared backend features such as GitHub auth sessions, arcade game stats, Oban jobs, rate limiting, and local service endpoints.
+Phoenix service used by the Xero desktop development workflow. It currently backs web callback/shared backend features such as GitHub auth sessions, Oban jobs, rate limiting, and local service endpoints.
 
 ## Local Setup
 

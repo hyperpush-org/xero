@@ -135,8 +135,11 @@ import type {
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
   ProjectUsageSummaryDto,
+  ProviderCapabilityCatalogDto,
   ProviderAuthSessionDto,
   ProviderModelCatalogDto,
+  ProviderPreflightRequiredFeaturesDto,
+  ProviderPreflightSnapshotDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
@@ -731,6 +734,130 @@ function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCa
     lastRefreshError,
     models,
   })
+}
+
+function buildProviderCapabilityCatalog(
+  profile: ProviderProfileDto,
+  modelId = profile.modelId,
+): ProviderCapabilityCatalogDto {
+  return {
+    contractVersion: 1,
+    providerId: profile.providerId,
+    providerLabel: profile.label,
+    defaultModelId: modelId,
+    runtimeFamily: profile.runtimeKind,
+    runtimeKind: profile.runtimeKind,
+    authMethod: profile.providerId === 'openai_codex' ? 'oauth' : 'api_key',
+    credentialProof: profile.readiness.ready ? (profile.readiness.proof ?? 'test_ready') : null,
+    transportMode: profile.providerId === 'openai_codex' ? 'external_agent' : 'hosted_api',
+    endpointShape: profile.providerId === 'openai_codex' ? 'codex_session' : 'openai_chat_completions',
+    catalogKind: 'model_provider',
+    modelListStrategy: 'test_fixture',
+    externalAgentAdapter: profile.providerId === 'openai_codex',
+    cache: {
+      source: 'test_fixture',
+      fetchedAt: '2026-04-21T12:00:00Z',
+      lastSuccessAt: '2026-04-21T12:00:00Z',
+      ageSeconds: 0,
+      ttlSeconds: 21_600,
+      stale: false,
+    },
+    requestPreview: {
+      route: 'POST /chat/completions',
+      modelId,
+      enabledFeatures: ['streaming', 'tool_calls'],
+      toolSchemaNames: ['xero_echo_probe'],
+      headers: [],
+      metadata: ['source=test_fixture'],
+    },
+    capabilities: {
+      streaming: {
+        status: 'supported',
+        source: 'test_fixture',
+        detail: 'Streaming provider requests are supported by this fixture.',
+      },
+      toolCalls: {
+        status: 'supported',
+        source: 'test_fixture',
+        strictnessBehavior: 'json_schema',
+        schemaDialect: 'json_schema_object',
+        parallelCallBehavior: 'provider_decides',
+        knownIncompatibilities: [],
+      },
+      reasoning: {
+        status: 'supported',
+        source: 'test_fixture',
+        effortLevels: ['low', 'medium', 'high'],
+        defaultEffort: 'medium',
+        summarySupport: 'provider_default',
+        clamping: 'unsupported_effort_dropped_before_request',
+        unsupportedModelFallback: 'disable_reasoning_control',
+      },
+      attachments: {
+        status: 'unavailable',
+        source: 'test_fixture',
+        imageInput: 'unsupported_in_fixture',
+        documentInput: 'unsupported_in_fixture',
+        supportedTypes: [],
+        limits: ['Attachments are not included in this test fixture.'],
+      },
+      contextLimits: {
+        status: 'supported',
+        source: 'test_fixture',
+        confidence: 'high',
+        contextWindowTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+      costHints: {
+        status: 'unavailable',
+        source: 'test_fixture',
+        detail: 'Cost hints are not included in this fixture.',
+      },
+    },
+    knownLimitations: [],
+    remediations: [],
+  }
+}
+
+function buildProviderPreflightSnapshot(
+  profile: ProviderProfileDto,
+  options: {
+    modelId?: string | null
+    requiredFeatures?: Partial<ProviderPreflightRequiredFeaturesDto>
+  } = {},
+): ProviderPreflightSnapshotDto {
+  const modelId = options.modelId ?? profile.modelId
+  const status = profile.readiness.ready || profile.providerId === 'openai_codex' ? 'passed' : 'warning'
+
+  return {
+    contractVersion: 1,
+    profileId: profile.profileId,
+    providerId: profile.providerId,
+    modelId,
+    source: 'static_manual',
+    checkedAt: '2026-04-21T12:00:00Z',
+    ageSeconds: 0,
+    ttlSeconds: 21_600,
+    stale: false,
+    requiredFeatures: {
+      streaming: options.requiredFeatures?.streaming ?? true,
+      toolCalls: options.requiredFeatures?.toolCalls ?? true,
+      reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
+      attachments: options.requiredFeatures?.attachments ?? false,
+    },
+    capabilities: buildProviderCapabilityCatalog(profile, modelId),
+    checks: [
+      {
+        checkId: `provider-preflight:test:${profile.profileId}`,
+        status,
+        code: 'provider_preflight_test_fixture',
+        message: 'Provider preflight satisfied by the test fixture.',
+        source: 'static_manual',
+        retryable: false,
+      },
+    ],
+    status,
+  }
 }
 
 function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
@@ -1536,6 +1663,103 @@ function createAdapter(options?: {
       filesChanged: 0,
       totalReplacements: 0,
     }),
+    workspaceIndex: async (request) => ({
+      status: {
+        projectId: request.projectId,
+        state: 'ready' as const,
+        indexVersion: 1,
+        rootPath: '/repo',
+        storagePath: '/app-data/projects/project-1',
+        totalFiles: 0,
+        indexedFiles: 0,
+        skippedFiles: 0,
+        staleFiles: 0,
+        symbolCount: 0,
+        indexedBytes: 0,
+        coveragePercent: 0,
+        headSha: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: null,
+        diagnostics: [],
+      },
+      changedFiles: 0,
+      unchangedFiles: 0,
+      removedFiles: 0,
+      durationMs: 0,
+    }),
+    workspaceStatus: async (projectId) => ({
+      projectId,
+      state: 'empty' as const,
+      indexVersion: 1,
+      rootPath: '/repo',
+      storagePath: '/app-data/projects/project-1',
+      totalFiles: 0,
+      indexedFiles: 0,
+      skippedFiles: 0,
+      staleFiles: 0,
+      symbolCount: 0,
+      indexedBytes: 0,
+      coveragePercent: 0,
+      headSha: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: null,
+      diagnostics: [],
+    }),
+    workspaceQuery: async (request) => ({
+      projectId: request.projectId,
+      query: request.query,
+      mode: request.mode,
+      resultCount: 0,
+      stale: false,
+      diagnostics: [],
+      results: [],
+    }),
+    workspaceExplain: async (request) => ({
+      projectId: request.projectId,
+      summary: 'Workspace index is empty.',
+      status: {
+        projectId: request.projectId,
+        state: 'empty' as const,
+        indexVersion: 1,
+        rootPath: '/repo',
+        storagePath: '/app-data/projects/project-1',
+        totalFiles: 0,
+        indexedFiles: 0,
+        skippedFiles: 0,
+        staleFiles: 0,
+        symbolCount: 0,
+        indexedBytes: 0,
+        coveragePercent: 0,
+        headSha: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: null,
+        diagnostics: [],
+      },
+      topSignals: [],
+      diagnostics: [],
+    }),
+    workspaceReset: async (projectId) => ({
+      projectId,
+      state: 'empty' as const,
+      indexVersion: 1,
+      rootPath: '/repo',
+      storagePath: '/app-data/projects/project-1',
+      totalFiles: 0,
+      indexedFiles: 0,
+      skippedFiles: 0,
+      staleFiles: 0,
+      symbolCount: 0,
+      indexedBytes: 0,
+      coveragePercent: 0,
+      headSha: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: null,
+      diagnostics: [],
+    }),
     listAgentDefinitions: async () => ({ definitions: [] }),
     archiveAgentDefinition: async () => {
       throw new Error('archiveAgentDefinition not stubbed in test adapter')
@@ -1716,6 +1940,17 @@ function createAdapter(options?: {
       currentProviderModelCatalogs[profileId] = nextCatalog
       return nextCatalog
     },
+    preflightProviderProfile: async (profileId, options) => {
+      const currentProfile = currentProviderProfiles.profiles.find((profile) => profile.profileId === profileId)
+      if (!currentProfile) {
+        throw new Error(`Missing provider profile ${profileId}`)
+      }
+
+      return buildProviderPreflightSnapshot(currentProfile, {
+        modelId: options?.modelId ?? null,
+        requiredFeatures: options?.requiredFeatures,
+      })
+    },
     checkProviderProfile: async (profileId) => {
       const currentProfile = currentProviderProfiles.profiles.find((profile) => profile.profileId === profileId)
       if (!currentProfile) {
@@ -1730,6 +1965,7 @@ function createAdapter(options?: {
         providerId: currentProfile.providerId,
         validationChecks: [],
         reachabilityChecks: [],
+        capabilityChecks: [],
         modelCatalog,
       }
     },
@@ -2076,14 +2312,14 @@ function ActivatedSurfaceProbe({
 }
 
 describe('useActivatedSurface', () => {
-  it('keeps a prewarmed surface mounted after the warmup window ends', () => {
+  it('mounts a prewarmed surface only during the warmup window', () => {
     const { rerender } = render(<ActivatedSurfaceProbe active={false} prewarm />)
 
     expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
 
     rerender(<ActivatedSurfaceProbe active={false} prewarm={false} />)
 
-    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'false')
   })
 
   it('keeps a user-opened surface mounted after it closes', () => {
@@ -2351,6 +2587,48 @@ describe('XeroApp current UI', () => {
     )
   })
 
+  it('keeps the app shell visible and avoids project reloads during runtime-run activity', async () => {
+    const initialRuntimeRun = makeRuntimeRun('project-1')
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      runtimeRun: initialRuntimeRun,
+    })
+    adapter.getProjectSnapshot = vi.fn(async () => makeSnapshot('project-1', 'Xero'))
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
+    expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-1', {
+          lastCheckpointSequence: 2,
+          lastCheckpointAt: '2026-04-15T20:00:10Z',
+          updatedAt: '2026-04-15T20:00:10Z',
+          checkpoints: [
+            ...initialRuntimeRun.checkpoints,
+            {
+              sequence: 2,
+              kind: 'state',
+              summary: 'Preparing tools and context.',
+              createdAt: '2026-04-15T20:00:10Z',
+            },
+          ],
+        }),
+      })
+    })
+
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+    expect(adapter.getProjectSnapshot).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(screen.getByLabelText('Agent conversation viewport')).toBeVisible()
+  })
+
 
 
 
@@ -2592,6 +2870,7 @@ describe('XeroApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     expect(await screen.findByRole('button', { name: 'Show sessions sidebar' })).toBeVisible()
+    expect(document.querySelector('[data-session-collapse-ghost="true"]')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
     await waitFor(() =>
@@ -2791,6 +3070,35 @@ describe('XeroApp current UI', () => {
     })
   })
 
+  it('opens the project usage sidebar from the footer spend button on the first click', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const statusBar = screen.getByRole('contentinfo', { name: 'Status bar' })
+    const spendButton = within(statusBar).getByRole('button', {
+      name: /Project spend: no usage recorded yet/i,
+    })
+
+    expect(spendButton).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(spendButton)
+
+    await waitFor(() => expect(spendButton).toHaveAttribute('aria-pressed', 'true'))
+
+    const panel = await screen.findByRole('complementary', {
+      name: 'Project usage statistics',
+    })
+    expect(panel).not.toHaveClass('invisible')
+    expect(panel.style.transform).toBe('')
+    expect(panel.style.transition).toBe('')
+    expect(screen.getByText('No agent runs recorded for this project yet.')).toBeVisible()
+  })
+
   it('collapses the project rail into a compact icon strip from the titlebar toggle', async () => {
     const { adapter } = createAdapter()
 
@@ -2807,6 +3115,21 @@ describe('XeroApp current UI', () => {
     expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Project actions for xero' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /xero/i })).toBeVisible()
+  })
+
+  it('keeps the project rail animated on the workflow canvas view', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    const rail = document.querySelector('aside[data-collapsed]') as HTMLElement
+
+    expect(screen.getByLabelText('Workflow canvas')).toBeInTheDocument()
+    expect(rail.style.transition).toContain('width')
   })
 
   it('opens the Solana workbench from the titlebar in the normal app shell', async () => {
@@ -2832,7 +3155,53 @@ describe('XeroApp current UI', () => {
     expect(within(breadcrumb).getByText('Cluster')).toBeVisible()
   })
 
-  it('keeps the project rail collapsed while a non-floating right sidebar is open', async () => {
+  it('opens the preloaded Solana workbench without waiting for an animation frame', async () => {
+    const { adapter } = createAdapter()
+    await import('@/components/xero/solana-workbench-sidebar')
+    const originalRequestAnimationFrame = window.requestAnimationFrame
+    const originalCancelAnimationFrame = window.cancelAnimationFrame
+    const frames: FrameRequestCallback[] = []
+
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        frames.push(callback)
+        return frames.length
+      },
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      value: vi.fn(),
+    })
+
+    try {
+      render(<XeroApp adapter={adapter} />)
+
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+      )
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Open Solana workbench' }))
+
+      const breadcrumb = screen.getByRole('navigation', {
+        name: 'Solana Workbench breadcrumb',
+      })
+      expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
+      expect(screen.queryByLabelText('Loading Solana Workbench')).not.toBeInTheDocument()
+    } finally {
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        value: originalRequestAnimationFrame,
+      })
+      Object.defineProperty(window, 'cancelAnimationFrame', {
+        configurable: true,
+        value: originalCancelAnimationFrame,
+      })
+    }
+  })
+
+  it('auto-collapses the project rail for a non-floating right sidebar but allows manual expansion', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -2850,7 +3219,8 @@ describe('XeroApp current UI', () => {
     expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand project sidebar' }))
-    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
+    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Close browser' }))

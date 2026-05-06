@@ -1,6 +1,18 @@
 import {
-  Cpu,
+  Bot,
+  Bug,
+  CheckCircle2,
+  ChevronRight,
+  CircleDot,
+  Code2,
   Database,
+  GitBranch,
+  GitFork,
+  Globe,
+  HelpCircle,
+  PauseCircle,
+  Sparkles,
+  Terminal,
   Workflow as WorkflowIcon,
 } from "lucide-react"
 
@@ -15,43 +27,43 @@ type Row = {
 
 const rows: Row[] = [
   {
-    tag: "Rust core",
-    icon: <Cpu className="h-3.5 w-3.5" />,
-    title: "A harness built from the ground up in Rust.",
+    tag: "Custom agents",
+    icon: <Bot className="h-3.5 w-3.5" />,
+    title: "Agents you actually design.",
     description:
-      "Agent loop, tool executor, sandbox, and persistence are a single Rust binary — not a web app pretending to be a desktop app. Sub-millisecond tool-call overhead and ~42MB idle memory.",
+      "Pick each agent's tools, memory, and where it has to stop and ask.",
     bullets: [
-      "Single static binary · no Electron, no Node runtime",
-      "Tokio work-stealing scheduler · dozens of parallel tool calls",
-      "Deterministic replays for every run",
+      "Per-agent tools, memory, approvals",
+      "Project or global scope",
+      "Visual builder, no YAML",
     ],
-    visual: <HarnessVisual />,
+    visual: <MultiPaneVisual />,
   },
   {
-    tag: "Persistence",
-    icon: <Database className="h-3.5 w-3.5" />,
-    title: "Pick up any run, days or weeks later.",
+    tag: "Workflows",
+    icon: <WorkflowIcon className="h-3.5 w-3.5" />,
+    title: "Chain agents. Ship whole projects.",
     description:
-      "Every plan, diff, tool call, and decision is journaled to a local SQLite database. Close your laptop mid-build, reopen tomorrow, and Xero resumes from the exact step it left on.",
+      "Compose agents into long workflows that drive a project end to end.",
     bullets: [
-      "Append-only journal per project",
-      "Branch and fork runs to explore alternatives",
-      "Nothing ever leaves your machine by default",
+      "Steps, branches, loops, gates",
+      "Long autonomous runs with handoffs",
+      "Human checkpoints only when it matters",
+    ],
+    visual: <ToolsVisual />,
+  },
+  {
+    tag: "Sessions",
+    icon: <Database className="h-3.5 w-3.5" />,
+    title: "Pick up weeks later.",
+    description:
+      "A local journal per project. Branch, rewind, or hand a thread to a different agent.",
+    bullets: [
+      "Branch and rewind without overwrites",
+      "Search, export, replay",
+      "Six panes per project",
     ],
     visual: <PersistenceVisual />,
-  },
-  {
-    tag: "Agentic workflow",
-    icon: <WorkflowIcon className="h-3.5 w-3.5" />,
-    title: "Planner, workers, critic — each with a job.",
-    description:
-      "A planner decomposes your brief into milestones. Workers execute in parallel on your machine. A critic reads every diff, runs the test suite, and sends work back when it isn't good enough.",
-    bullets: [
-      "Milestone tree you can edit before code is written",
-      "Dozens of workers in parallel via Tokio",
-      "A critic agent that actually fails PRs",
-    ],
-    visual: <WorkflowVisual />,
   }
 ]
 
@@ -61,16 +73,11 @@ export function Features() {
       <div className="mx-auto w-full max-w-7xl px-4 py-20 sm:px-6 lg:px-8 lg:py-28">
         <div className="mx-auto max-w-2xl text-center">
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">
-            What&apos;s inside
+            What's different
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            A real desktop app. Not a browser tab with ambitions.
+            Agents you design. Workflows that ship projects.
           </h2>
-          <p className="mt-4 text-pretty text-muted-foreground">
-            Every layer of Xero — the agent loop, the tool executor, persistence,
-            sandboxing — is written in Rust for speed, predictability, and a memory
-            footprint your laptop won&apos;t notice.
-          </p>
         </div>
 
         <div className="mt-20 flex flex-col gap-24 lg:gap-32">
@@ -128,158 +135,348 @@ function FeatureRow({ row, reverse }: { row: Row; reverse: boolean }) {
 
 /* -------- Visuals -------- */
 
-function HarnessVisual() {
-  const lines = [
-    { t: "spawn", c: "planner::decompose(&brief).await?;" },
-    { t: "spawn", c: "worker::scaffold(Framework::NextJs).await?;" },
-    { t: "await", c: "let diff = worker::implement(&task).await?;" },
-    { t: "check", c: "critic::review(&diff).await?;", ok: true },
-    { t: "spawn", c: "sandbox::run(\"pnpm test\", 30s).await?;" },
-    { t: "emit", c: "notify::discord(&decision).await?;", ok: true },
-    { t: "await", c: "journal::checkpoint(&state).await?;" },
+function PersistenceVisual() {
+  type Row =
+    | { t: string; msg: string; day: string; icon: React.ReactNode; active?: boolean }
+    | { t: string; msg: string; idle: true }
+  const rows: Row[] = [
+    {
+      t: "14:02",
+      msg: "checkpoint · spec parsed, plan accepted",
+      day: "Mon",
+      icon: <CheckCircle2 className="h-3 w-3" />,
+    },
+    {
+      t: "14:07",
+      msg: "checkpoint · context auto-compacted (42%)",
+      day: "Mon",
+      icon: <Sparkles className="h-3 w-3" />,
+    },
+    {
+      t: "14:19",
+      msg: "branch · forked main → try-pg",
+      day: "Mon",
+      icon: <GitFork className="h-3 w-3" />,
+    },
+    {
+      t: "—",
+      msg: "laptop closed · 17h 42m idle",
+      idle: true,
+    },
+    {
+      t: "08:01",
+      msg: "resume · awaiting approval on src/billing.ts",
+      day: "Tue",
+      icon: <PauseCircle className="h-3 w-3" />,
+      active: true,
+    },
   ]
   return (
-    <div className="rounded-lg border border-border/60 bg-background/70 p-4 font-mono text-[12px] leading-relaxed">
-      <div className="flex items-center justify-between border-b border-border/60 pb-2 text-[11px] text-muted-foreground">
-        <span>src/harness.rs</span>
-        <span className="text-primary">● running · 14 tasks</span>
+    <div className="rounded-lg border border-border/60 bg-background/70 p-4">
+      <div className="mb-3 flex items-center justify-between text-[11px]">
+        <span className="font-mono text-muted-foreground/80">
+          ~/Library/Application Support/xero/projects/acme.db
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary">
+          <Database className="h-2.5 w-2.5" />
+          local journal
+        </span>
       </div>
-      <div className="mt-3 space-y-1.5">
-        {lines.map((l, i) => (
-          <div key={i} className="flex items-start gap-2">
-            <span className="w-10 shrink-0 text-muted-foreground/60">{l.t}</span>
-            <span className="text-foreground/90">
-              {l.c}
-              {l.ok && <span className="ml-2 text-primary">// ok</span>}
-            </span>
-          </div>
-        ))}
-        <div className="flex items-center gap-2 pt-1">
-          <span className="w-10 shrink-0 text-muted-foreground/60">next</span>
-          <span className="h-3 w-2 animate-pulse bg-primary" />
-        </div>
-      </div>
+      <ol className="relative space-y-1.5 pl-5 text-[12px]">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-[7px] top-1.5 bottom-1.5 w-px bg-gradient-to-b from-border/60 via-border/40 to-border/60"
+        />
+        {rows.map((r, i) => {
+          const isIdle = "idle" in r
+          const isActive = !isIdle && r.active
+          return (
+            <li key={i} className="relative">
+              <span
+                aria-hidden
+                className={`absolute -left-[14px] top-2.5 inline-flex h-2 w-2 items-center justify-center rounded-full ring-4 ring-background ${
+                  isActive
+                    ? "bg-primary"
+                    : isIdle
+                      ? "bg-muted-foreground/30"
+                      : "bg-primary/40"
+                }`}
+              >
+                {isActive && (
+                  <span className="absolute inline-flex h-2 w-2 animate-ring-ping rounded-full bg-primary" />
+                )}
+              </span>
+              <div
+                className={`flex items-center gap-2 rounded-md border px-2.5 py-2 font-mono transition-colors ${
+                  isActive
+                    ? "border-primary/40 bg-primary/[0.06] text-foreground shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_15%,transparent)]"
+                    : isIdle
+                      ? "border-dashed border-border/60 bg-transparent text-muted-foreground/70"
+                      : "border-border/60 bg-background/40 text-muted-foreground"
+                }`}
+              >
+                <span className="w-10 shrink-0 text-[11px] tabular-nums opacity-70">{r.t}</span>
+                {!isIdle && (
+                  <span className="inline-flex items-center gap-1 rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {r.day}
+                  </span>
+                )}
+                {!isIdle && (
+                  <span
+                    className={`shrink-0 ${
+                      isActive ? "text-primary" : "text-primary/60"
+                    }`}
+                  >
+                    {r.icon}
+                  </span>
+                )}
+                <span className="truncate">{r.msg}</span>
+                {isActive && (
+                  <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+                    <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+                    you
+                  </span>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
     </div>
   )
 }
 
-function PersistenceVisual() {
-  const rows = [
-    { t: "14:02", msg: "checkpoint: migrations applied", day: "Mon" },
-    { t: "14:07", msg: "checkpoint: auth flow complete", day: "Mon" },
-    { t: "14:19", msg: "checkpoint: billing in progress", day: "Mon" },
-    { t: "—", msg: "laptop closed · 17h 42m idle", idle: true },
-    { t: "08:01", msg: "resume · billing → critic review", day: "Tue", active: true },
+function MultiPaneVisual() {
+  type Pane = {
+    role: string
+    model: string
+    task: string
+    state: "running" | "idle" | "decision"
+    icon: React.ReactNode
+  }
+  const panes: Pane[] = [
+    {
+      role: "Engineer",
+      model: "claude-opus-4.7",
+      task: "refactor billing module",
+      state: "running",
+      icon: <Code2 className="h-3 w-3" />,
+    },
+    {
+      role: "Debug",
+      model: "gpt-5",
+      task: "trace failing webhook test",
+      state: "running",
+      icon: <Bug className="h-3 w-3" />,
+    },
+    {
+      role: "Ask",
+      model: "gemini-2.5-pro",
+      task: "explain provider loop",
+      state: "idle",
+      icon: <HelpCircle className="h-3 w-3" />,
+    },
+    {
+      role: "Engineer",
+      model: "qwen3:32b · ollama",
+      task: "draft retry helper",
+      state: "running",
+      icon: <Code2 className="h-3 w-3" />,
+    },
+    {
+      role: "Engineer",
+      model: "anthropic via openrouter",
+      task: "wire MCP search tool",
+      state: "decision",
+      icon: <Code2 className="h-3 w-3" />,
+    },
+    {
+      role: "solana-ops",
+      model: "claude-sonnet-4.6",
+      task: "simulate proposal tx",
+      state: "idle",
+      icon: <Sparkles className="h-3 w-3" />,
+    },
   ]
   return (
     <div className="rounded-lg border border-border/60 bg-background/70 p-4">
       <div className="mb-3 flex items-center justify-between text-[11px] text-muted-foreground">
-        <span className="font-mono">~/.Xero/runs/acme-saas.db</span>
-        <span className="font-mono text-primary">SQLite · journal</span>
+        <span className="font-mono">
+          project · <span className="text-foreground/80">acme-saas</span>{" "}
+          <span className="text-muted-foreground/60">· 6 / 6 panes</span>
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary">
+          <span className="relative inline-flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+          </span>
+          live
+        </span>
       </div>
-      <ul className="space-y-1.5 text-[12px]">
-        {rows.map((r, i) => (
-          <li
-            key={i}
-            className={`flex items-center gap-2 rounded-md border px-2.5 py-2 font-mono ${
-              r.active
-                ? "border-primary/40 bg-primary/[0.06] text-foreground"
-                : r.idle
-                  ? "border-dashed border-border/60 bg-transparent text-muted-foreground/70"
-                  : "border-border/60 bg-background/40 text-muted-foreground"
-            }`}
-          >
-            <span className="w-10 text-[11px] opacity-70">{r.t}</span>
-            {r.day && (
-              <span className="rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-                {r.day}
-              </span>
-            )}
-            <span className="truncate">{r.msg}</span>
-            {r.active && (
-              <span className="ml-auto h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
-            )}
-          </li>
-        ))}
+      <ul className="grid grid-cols-2 gap-2 text-[11px]">
+        {panes.map((p, i) => {
+          const isDecision = p.state === "decision"
+          const isRunning = p.state === "running"
+          return (
+            <li
+              key={i}
+              className={`relative flex flex-col gap-1.5 overflow-hidden rounded-md border px-2.5 py-2 font-mono transition-colors ${
+                isDecision
+                  ? "border-primary/50 bg-primary/[0.06] shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_18%,transparent)]"
+                  : "border-border/60 bg-background/40"
+              }`}
+            >
+              {isRunning && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 top-0 h-px overflow-hidden"
+                >
+                  <span className="block h-full w-1/3 animate-shimmer-bar bg-gradient-to-r from-transparent via-primary/70 to-transparent" />
+                </span>
+              )}
+              <div className="flex items-center justify-between text-foreground">
+                <span className="flex items-center gap-1.5 text-[11px] font-medium">
+                  <span
+                    className={`inline-flex h-4 w-4 items-center justify-center rounded ${
+                      isRunning || isDecision
+                        ? "bg-primary/15 text-primary"
+                        : "bg-secondary/60 text-muted-foreground/80"
+                    }`}
+                  >
+                    {p.icon}
+                  </span>
+                  {p.role}
+                </span>
+                <StatePill state={p.state} />
+              </div>
+              <div className="truncate text-[10px] text-muted-foreground">{p.model}</div>
+              <div className="truncate text-[11px] text-foreground/85">{p.task}</div>
+            </li>
+          )
+        })}
       </ul>
+      <div className="mt-3 flex items-center gap-2 rounded-md border border-border/60 bg-secondary/20 px-2.5 py-2 font-mono text-[11px] text-muted-foreground">
+        <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-primary/15 text-primary">
+          <Sparkles className="h-2.5 w-2.5" />
+        </span>
+        <span className="text-foreground/80">swarm</span>
+        <span className="text-muted-foreground/50">·</span>
+        <span>file reservations · presence · shared notes</span>
+      </div>
     </div>
   )
 }
 
-function WorkflowVisual() {
+function StatePill({ state }: { state: "running" | "idle" | "decision" }) {
+  if (state === "running") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+        <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+        running
+      </span>
+    )
+  }
+  if (state === "decision") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+        <CircleDot className="h-2.5 w-2.5" />
+        decide
+      </span>
+    )
+  }
   return (
-    <div className="rounded-lg border border-border/60 bg-background/70 p-6">
-      <div className="mb-4 flex items-center justify-between text-[11px] text-muted-foreground">
-        <span className="font-mono">agent-graph · live</span>
-        <span className="font-mono text-primary">18 active tasks</span>
-      </div>
-      <svg viewBox="0 0 480 260" className="h-auto w-full">
-        <defs>
-          <marker
-            id="arr2"
-            viewBox="0 0 10 10"
-            refX="8"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto"
-          >
-            <path d="M0,0 L10,5 L0,10 z" fill="currentColor" className="text-border" />
-          </marker>
-        </defs>
-
-        {/* edges */}
-        <g stroke="currentColor" className="text-border" strokeWidth="1" fill="none">
-          <path d="M240,52 C180,85 130,110 115,128" markerEnd="url(#arr2)" />
-          <path d="M240,52 C215,85 200,110 195,128" markerEnd="url(#arr2)" />
-          <path d="M240,52 L240,128" markerEnd="url(#arr2)" />
-          <path d="M240,52 C265,85 280,110 285,128" markerEnd="url(#arr2)" />
-          <path d="M240,52 C300,85 350,110 365,128" markerEnd="url(#arr2)" />
-          <path d="M115,152 C145,185 200,200 212,208" markerEnd="url(#arr2)" />
-          <path d="M195,152 C205,180 225,200 230,208" markerEnd="url(#arr2)" />
-          <path d="M240,152 L240,208" markerEnd="url(#arr2)" />
-          <path d="M285,152 C275,180 255,200 250,208" markerEnd="url(#arr2)" />
-          <path d="M365,152 C335,185 280,200 268,208" markerEnd="url(#arr2)" />
-        </g>
-
-        {/* planner */}
-        <g>
-          <rect x="196" y="24" width="88" height="28" rx="8" className="fill-primary/10 stroke-primary/50" strokeWidth="1" />
-          <text x="240" y="42" textAnchor="middle" className="fill-primary font-mono text-[11px]">Planner</text>
-        </g>
-
-        {/* workers row */}
-        {[
-          { x: 115, label: "worker·a" },
-          { x: 195, label: "worker·b" },
-          { x: 240, label: "worker·c" },
-          { x: 285, label: "worker·d" },
-          { x: 365, label: "worker·e" },
-        ].map((n) => (
-          <g key={n.label}>
-            <rect x={n.x - 36} y={128} width="72" height="24" rx="6" className="fill-secondary stroke-border" strokeWidth="1" />
-            <text x={n.x} y={144} textAnchor="middle" className="fill-foreground font-mono text-[10px]">{n.label}</text>
-          </g>
-        ))}
-
-        {/* critic */}
-        <g>
-          <rect x="196" y="208" width="88" height="28" rx="8" className="fill-primary/10 stroke-primary/50" strokeWidth="1" />
-          <text x="240" y="226" textAnchor="middle" className="fill-primary font-mono text-[11px]">Critic</text>
-        </g>
-      </svg>
-      <div className="mt-4 grid grid-cols-3 gap-2 font-mono text-[11px]">
-        <div className="rounded-md border border-border/60 bg-secondary/30 px-2.5 py-1.5 text-muted-foreground">
-          <span className="text-primary">●</span> 1 planner
-        </div>
-        <div className="rounded-md border border-border/60 bg-secondary/30 px-2.5 py-1.5 text-muted-foreground">
-          <span className="text-primary">●</span> 5 workers
-        </div>
-        <div className="rounded-md border border-border/60 bg-secondary/30 px-2.5 py-1.5 text-muted-foreground">
-          <span className="text-primary">●</span> 1 critic
-        </div>
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-secondary/40 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground/70">
+      idle
+    </span>
   )
 }
 
+function ToolsVisual() {
+  type Call =
+    | { kind: "tool"; icon: React.ReactNode; ns: string; call: string; ok: true; pending?: never }
+    | { kind: "ask"; icon: React.ReactNode; ns: string; call: string; pending: true; ok?: never }
+  const calls: Call[] = [
+    { kind: "tool", icon: <Code2 className="h-3 w-3" />, ns: "repo", call: 'read("src/billing.ts")', ok: true },
+    { kind: "tool", icon: <Code2 className="h-3 w-3" />, ns: "repo", call: 'edit("src/billing.ts")', ok: true },
+    { kind: "tool", icon: <Terminal className="h-3 w-3" />, ns: "shell", call: '"cargo test billing"', ok: true },
+    { kind: "tool", icon: <GitBranch className="h-3 w-3" />, ns: "git", call: 'commit("refactor: retry helper")', ok: true },
+    { kind: "tool", icon: <Globe className="h-3 w-3" />, ns: "browser", call: 'navigate("localhost:3000/billing")', ok: true },
+    { kind: "tool", icon: <Sparkles className="h-3 w-3" />, ns: "mcp", call: 'search("stripe idempotency")', ok: true },
+    { kind: "tool", icon: <Sparkles className="h-3 w-3" />, ns: "solana", call: "simulate(tx)", ok: true },
+    { kind: "ask", icon: <PauseCircle className="h-3 w-3" />, ns: "ask", call: "approval · push branch → origin?", pending: true },
+  ]
+  return (
+    <div className="rounded-lg border border-border/60 bg-background/70 p-4 font-mono text-[12px] leading-relaxed">
+      <div className="flex items-center justify-between border-b border-border/60 pb-2 text-[11px] text-muted-foreground">
+        <span>
+          session · <span className="text-foreground/80">engineer</span> · run timeline
+        </span>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 text-[10px] uppercase tracking-wider text-primary">
+          <span className="relative inline-flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+          </span>
+          live · 8 events
+        </span>
+      </div>
+      <ol className="relative mt-3 space-y-1 pl-6">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-[10px] top-2 bottom-2 w-px bg-gradient-to-b from-border/30 via-border/70 to-primary/40"
+        />
+        {calls.map((l, i) => {
+          const isPending = l.kind === "ask"
+          return (
+            <li key={i} className="relative">
+              <span
+                aria-hidden
+                className={`absolute left-[-19px] top-[7px] inline-flex h-4 w-4 items-center justify-center rounded-full ring-4 ring-background ${
+                  isPending
+                    ? "bg-primary/20 text-primary"
+                    : "bg-primary/10 text-primary/80"
+                }`}
+              >
+                {isPending ? (
+                  <PauseCircle className="h-2.5 w-2.5" />
+                ) : (
+                  <CheckCircle2 className="h-2.5 w-2.5" />
+                )}
+              </span>
+              <div
+                className={`flex items-center gap-2 rounded-md border px-2 py-1.5 ${
+                  isPending
+                    ? "border-primary/40 bg-primary/[0.06]"
+                    : "border-transparent hover:border-border/40 hover:bg-secondary/20"
+                }`}
+              >
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${
+                    isPending
+                      ? "bg-primary/15 text-primary"
+                      : "bg-secondary/60 text-muted-foreground/80"
+                  }`}
+                >
+                  {l.icon}
+                  {l.ns}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-foreground/90">{l.call}</span>
+                {l.ok && (
+                  <span className="shrink-0 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-primary/80">
+                    ok
+                    <ChevronRight className="h-2.5 w-2.5" />
+                  </span>
+                )}
+                {isPending && (
+                  <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+                    <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+                    you
+                  </span>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}

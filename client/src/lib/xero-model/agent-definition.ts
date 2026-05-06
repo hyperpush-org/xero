@@ -19,6 +19,7 @@ export const agentDefinitionBaseCapabilityProfileSchema = z.enum([
   'engineering',
   'debugging',
   'agent_builder',
+  'harness_test',
 ])
 export type AgentDefinitionBaseCapabilityProfileDto = z.infer<
   typeof agentDefinitionBaseCapabilityProfileSchema
@@ -130,5 +131,7 @@ export function getAgentDefinitionBaseCapabilityLabel(
       return 'Debugging'
     case 'agent_builder':
       return 'Agent Builder'
+    case 'harness_test':
+      return 'Harness Test'
   }
 }

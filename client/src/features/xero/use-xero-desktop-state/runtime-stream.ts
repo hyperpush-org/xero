@@ -41,6 +41,7 @@ import type { RefreshSource } from './types'
 
 export const RUNTIME_STREAM_BATCH_WINDOW_MS = 6
 export const REPOSITORY_STATUS_BATCH_WINDOW_MS = 6
+const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT = 200
 
 export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
   'transcript',
@@ -89,7 +90,6 @@ interface BlockedNotificationSyncPollRefs {
 interface AttachDesktopRuntimeListenersRefs {
   activeProjectIdRef: MutableRefObject<string | null>
   runtimeSessionsRef: MutableRefObject<RuntimeSessionRecords>
-  runtimeRunRefreshKeyRef: MutableRefObject<Record<string, string>>
   repositoryStatusSyncKeyRef: MutableRefObject<string>
 }
 
@@ -116,7 +116,6 @@ interface AttachDesktopRuntimeListenersArgs {
   ) => RuntimeRunView | null
   loadProject: (projectId: string, source: ProjectLoadSource) => Promise<ProjectDetailView | null>
   resetRepositoryDiffs: (status: RepositoryStatusView | null) => void
-  scheduleRuntimeMetadataRefresh: (projectId: string, source: RuntimeMetadataRefreshSource) => void
 }
 
 interface AttachRuntimeStreamSubscriptionArgs {
@@ -261,26 +260,8 @@ export function mergeRuntimeStreamEvents(
   events: RuntimeStreamEventDto[],
 ): RuntimeStreamView | null {
   let nextStream = currentStream
-  let sequenceGapIssue: {
-    event: RuntimeStreamEventDto
-    expectedSequence: number
-    observedSequence: number
-  } | null = null
 
   for (const event of events) {
-    const previousSequence = nextStream?.lastSequence ?? null
-    if (
-      previousSequence !== null &&
-      event.item.sequence > previousSequence + 1 &&
-      !sequenceGapIssue
-    ) {
-      sequenceGapIssue = {
-        event,
-        expectedSequence: previousSequence + 1,
-        observedSequence: event.item.sequence,
-      }
-    }
-
     try {
       nextStream = mergeRuntimeStreamEvent(nextStream, event)
     } catch (error) {
@@ -292,14 +273,6 @@ export function mergeRuntimeStreamEvents(
 
       nextStream = applyRuntimeStreamEventIssue(nextStream, event, issue)
     }
-  }
-
-  if (sequenceGapIssue && nextStream && !nextStream.failure && !nextStream.completion) {
-    nextStream = applyRuntimeStreamEventIssue(nextStream, sequenceGapIssue.event, {
-      code: 'runtime_stream_sequence_gap',
-      message: `Xero detected a runtime stream sequence gap for run ${sequenceGapIssue.event.runId}: expected ${sequenceGapIssue.expectedSequence}, received ${sequenceGapIssue.observedSequence}.`,
-      retryable: true,
-    })
   }
 
   return nextStream
@@ -543,7 +516,6 @@ export async function attachDesktopRuntimeListeners({
   applyRuntimeRunUpdate,
   loadProject,
   resetRepositoryDiffs,
-  scheduleRuntimeMetadataRefresh,
 }: AttachDesktopRuntimeListenersArgs): Promise<() => void> {
   let projectUnlisten: (() => void) | null = null
   let repositoryUnlisten: (() => void) | null = null
@@ -742,14 +714,6 @@ export async function attachDesktopRuntimeListeners({
         return
       }
 
-      const refreshKey = payload.run
-        ? `${payload.run.runId}:${payload.run.lastCheckpointSequence}:${payload.run.updatedAt}:${payload.run.status}`
-        : 'none'
-      if (refs.runtimeRunRefreshKeyRef.current[payload.projectId] !== refreshKey) {
-        refs.runtimeRunRefreshKeyRef.current[payload.projectId] = refreshKey
-        scheduleRuntimeMetadataRefresh(payload.projectId, 'runtime_run:updated')
-      }
-
       setters.setRefreshSource('runtime_run:updated')
       setters.setErrorMessage(null)
     },
@@ -803,6 +767,7 @@ export function attachRuntimeStreamSubscription({
 
   let disposed = false
   let unsubscribe: () => void = () => {}
+  let replayAfterSequence: number | null = null
 
   if (typeof adapter.subscribeRuntimeStream !== 'function') {
     updateRuntimeStream(projectId, agentSessionId, (currentStream) =>
@@ -825,6 +790,7 @@ export function attachRuntimeStreamSubscription({
 
   updateRuntimeStream(projectId, agentSessionId, (currentStream) => {
     if (currentStream?.runId === runId && currentStream.agentSessionId === agentSessionId) {
+      replayAfterSequence = currentStream.lastSequence ?? null
       return {
         ...currentStream,
         agentSessionId,
@@ -836,6 +802,7 @@ export function attachRuntimeStreamSubscription({
       }
     }
 
+    replayAfterSequence = null
     return createRuntimeStreamView({
       projectId,
       agentSessionId,
@@ -883,6 +850,13 @@ export function attachRuntimeStreamSubscription({
           message: error.message,
           retryable: error.retryable,
         })
+      },
+      {
+        afterSequence: replayAfterSequence,
+        replayLimit:
+          replayAfterSequence == null
+            ? null
+            : INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT,
       },
     )
     .then((subscription) => {

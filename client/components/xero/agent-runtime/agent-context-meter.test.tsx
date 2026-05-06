@@ -202,10 +202,17 @@ describe('AgentContextMeter', () => {
       <AgentContextMeter
         status="error"
         snapshot={null}
+        error={{
+          message: 'Xero could not find agent session `agent-session-missing` for project `project-1`.',
+        }}
       />,
     )
 
-    expect(screen.getByRole('button', { name: /context meter: context unavailable/i })).toBeVisible()
+    expect(
+      screen.getByRole('button', {
+        name: /context meter: context unavailable: xero could not find agent session/i,
+      }),
+    ).toBeVisible()
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
   })
 })

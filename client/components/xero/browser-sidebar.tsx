@@ -218,7 +218,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
   const [showCookieBanner, setShowCookieBanner] = useState(false)
   const [toolMode, setToolMode] = useState<ToolMode>(null)
   const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
+  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
   const {
     browsers: cookieBrowsers,
     status: importStatus,
@@ -538,15 +538,6 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
     [activeTabId, resizeScheduler],
   )
 
-  const handleSidebarTransitionEnd = useCallback(
-    (event: React.TransitionEvent<HTMLElement>) => {
-      if (event.currentTarget !== event.target) return
-      if (event.propertyName !== "width") return
-      resizeScheduler.schedule({ force: true })
-    },
-    [resizeScheduler],
-  )
-
   const handleSubmit = useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
@@ -670,7 +661,6 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
         open ? "border-l border-border/80" : "border-l-0",
       )}
       inert={!open ? true : undefined}
-      onTransitionEnd={handleSidebarTransitionEnd}
       style={widthMotion.style}
     >
       <div

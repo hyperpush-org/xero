@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod notifications;
 pub mod provider_credentials;
 pub mod provider_models;
+pub mod provider_preflight;
 pub mod registry;
 pub mod runtime;
 pub mod state;
@@ -190,6 +191,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::agent_task::cancel_agent_run,
             commands::agent_task::resume_agent_run,
             commands::agent_task::get_agent_run,
+            commands::agent_task::export_agent_trace,
             commands::agent_task::list_agent_runs,
             commands::agent_task::subscribe_agent_stream,
             commands::session_history::get_session_transcript,
@@ -227,6 +229,11 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::project_files::delete_project_entry,
             commands::search_project::search_project,
             commands::search_project::replace_in_project,
+            commands::workspace_index::workspace_index,
+            commands::workspace_index::workspace_status,
+            commands::workspace_index::workspace_query,
+            commands::workspace_index::workspace_explain,
+            commands::workspace_index::workspace_reset,
             commands::get_autonomous_run::get_autonomous_run,
             commands::get_runtime_run::get_runtime_run,
             commands::get_runtime_session::get_runtime_session,
@@ -248,6 +255,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::skills::set_plugin_enabled,
             commands::skills::remove_plugin,
             commands::provider_model_catalog::get_provider_model_catalog,
+            commands::provider_preflight::preflight_provider_profile,
             commands::doctor_report::run_doctor_report,
             commands::environment_discovery::get_environment_discovery_status,
             commands::environment_discovery::get_environment_profile_summary,

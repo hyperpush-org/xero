@@ -523,7 +523,13 @@ fn validate_new_agent_definition(record: &NewAgentDefinitionRecord) -> Result<()
     validate_known_agent_definition_value(
         "baseCapabilityProfile",
         &record.base_capability_profile,
-        &["observe_only", "engineering", "debugging", "agent_builder"],
+        &[
+            "observe_only",
+            "engineering",
+            "debugging",
+            "agent_builder",
+            "harness_test",
+        ],
     )?;
     if record.version == 0 {
         return Err(CommandError::invalid_request("version"));
@@ -560,6 +566,7 @@ pub fn runtime_agent_id_for_base_capability_profile(profile: &str) -> RuntimeAge
         "engineering" => RuntimeAgentIdDto::Engineer,
         "debugging" => RuntimeAgentIdDto::Debug,
         "agent_builder" => RuntimeAgentIdDto::AgentCreate,
+        "harness_test" => RuntimeAgentIdDto::Test,
         _ => RuntimeAgentIdDto::Ask,
     }
 }
@@ -797,5 +804,41 @@ mod tests {
         assert!(immutable
             .to_string()
             .contains("agent definition versions are immutable"));
+    }
+
+    #[test]
+    fn built_in_test_agent_definition_resolves_to_harness_runtime_agent() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-test-definition");
+
+        let selection = resolve_agent_definition_for_run(&repo_root, None, RuntimeAgentIdDto::Test)
+            .expect("resolve built-in test definition");
+
+        assert_eq!(selection.definition_id, "test");
+        assert_eq!(selection.version, BUILTIN_AGENT_DEFINITION_VERSION);
+        assert_eq!(selection.display_name, "Test");
+        assert_eq!(selection.base_capability_profile, "harness_test");
+        assert_eq!(selection.runtime_agent_id, RuntimeAgentIdDto::Test);
+        assert_eq!(
+            selection.default_approval_mode,
+            RuntimeRunApprovalModeDto::Suggest
+        );
+        assert_eq!(
+            selection.allowed_approval_modes,
+            vec![RuntimeRunApprovalModeDto::Suggest]
+        );
+        assert_eq!(selection.snapshot["scope"], json!("built_in"));
+        assert_eq!(
+            selection.snapshot["baseCapabilityProfile"],
+            json!("harness_test")
+        );
+        assert_eq!(selection.snapshot["promptPolicy"], json!("harness_test"));
+        assert_eq!(selection.snapshot["toolPolicy"], json!("harness_test"));
+        assert_eq!(
+            selection.snapshot["outputContract"],
+            json!("harness_test_report")
+        );
     }
 }

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use xero_agent_core::{domain_tool_pack_manifest, domain_tool_pack_tools};
 
 use super::{
     tool_access_group_tools, tool_effect_class, AutonomousToolEffectClass, AutonomousToolOutput,
@@ -916,6 +917,37 @@ fn validate_tool_policy(
             )),
         }
     }
+    for pack_id in string_array(object.get("allowedToolPacks")) {
+        match domain_tool_pack_tools(&pack_id) {
+            Some(tools) => {
+                for tool in tools {
+                    if !tool_allowed_by_profile(base_profile, &tool) {
+                        diagnostics.push(diagnostic(
+                            "agent_definition_tool_pack_exceeds_profile",
+                            format!(
+                                "Tool pack `{pack_id}` includes `{tool}`, which is not allowed by `{base_profile}`."
+                            ),
+                            "toolPolicy.allowedToolPacks",
+                        ));
+                    }
+                }
+            }
+            None => diagnostics.push(diagnostic(
+                "agent_definition_tool_pack_unknown",
+                format!("Tool pack `{pack_id}` is not known to Xero."),
+                "toolPolicy.allowedToolPacks",
+            )),
+        }
+    }
+    for pack_id in string_array(object.get("deniedToolPacks")) {
+        if domain_tool_pack_manifest(&pack_id).is_none() {
+            diagnostics.push(diagnostic(
+                "agent_definition_tool_pack_unknown",
+                format!("Tool pack `{pack_id}` is not known to Xero."),
+                "toolPolicy.deniedToolPacks",
+            ));
+        }
+    }
     for tool in string_array(object.get("allowedTools")) {
         if !tool_allowed_by_profile(base_profile, &tool) {
             diagnostics.push(diagnostic(
@@ -1344,8 +1376,10 @@ fn default_tool_policy(profile: &str) -> JsonValue {
         "engineering" | "debugging" => json!({
             "allowedEffectClasses": ["observe", "runtime_state", "write", "destructive_write", "command", "process_control"],
             "allowedToolGroups": ["core", "mutation", "command_readonly"],
+            "allowedToolPacks": [],
             "allowedTools": [],
             "deniedTools": [],
+            "deniedToolPacks": [],
             "externalServiceAllowed": false,
             "browserControlAllowed": false,
             "skillRuntimeAllowed": false,
@@ -1356,8 +1390,10 @@ fn default_tool_policy(profile: &str) -> JsonValue {
         "agent_builder" => json!({
             "allowedEffectClasses": ["observe", "runtime_state"],
             "allowedToolGroups": ["core", "agent_builder"],
+            "allowedToolPacks": [],
             "allowedTools": [AUTONOMOUS_TOOL_AGENT_DEFINITION],
             "deniedTools": [],
+            "deniedToolPacks": [],
             "externalServiceAllowed": false,
             "browserControlAllowed": false,
             "skillRuntimeAllowed": false,
@@ -1368,6 +1404,7 @@ fn default_tool_policy(profile: &str) -> JsonValue {
         _ => json!({
             "allowedEffectClasses": ["observe"],
             "allowedToolGroups": [],
+            "allowedToolPacks": [],
             "allowedTools": [
                 AUTONOMOUS_TOOL_READ,
                 AUTONOMOUS_TOOL_SEARCH,
@@ -1383,6 +1420,7 @@ fn default_tool_policy(profile: &str) -> JsonValue {
                 AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
             ],
             "deniedTools": [],
+            "deniedToolPacks": [],
             "externalServiceAllowed": false,
             "browserControlAllowed": false,
             "skillRuntimeAllowed": false,

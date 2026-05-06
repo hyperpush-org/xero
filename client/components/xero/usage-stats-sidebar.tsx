@@ -2,11 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { RefreshCw, X } from "lucide-react"
-import { motion } from "motion/react"
 
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarMotion } from "@/lib/sidebar-motion"
 import {
   formatMicrosUsd,
   formatTokenCount,
@@ -97,7 +95,6 @@ export function UsageStatsSidebar(props: UsageStatsSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const { contentTransition, widthTransition } = useSidebarMotion(isResizing)
   const widthRef = useRef(width)
   widthRef.current = width
 
@@ -161,34 +158,25 @@ export function UsageStatsSidebar(props: UsageStatsSidebarProps) {
     }
   }
 
+  if (!open) {
+    return null
+  }
+
   return (
     <>
-      <motion.div
-        animate={{ opacity: open ? 1 : 0 }}
+      <div
         aria-hidden="true"
-        className={cn(
-          "fixed inset-0 z-40 bg-black/30",
-          open ? "pointer-events-auto" : "pointer-events-none",
-        )}
-        initial={false}
+        className="fixed inset-0 z-40 bg-black/30"
         onClick={() => onClose?.()}
-        transition={contentTransition}
       />
-      <motion.aside
-        animate={{ x: open ? 0 : width }}
-        aria-hidden={!open}
+      <aside
+        aria-hidden="false"
         aria-label="Project usage statistics"
-        className={cn(
-          "gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
-        )}
-        initial={false}
-        inert={!open ? true : undefined}
+        className="fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl"
         style={{
           width,
           contain: "layout paint style",
-          willChange: "transform",
         }}
-        transition={widthTransition}
       >
         <div
           aria-label="Resize usage panel"
@@ -203,102 +191,104 @@ export function UsageStatsSidebar(props: UsageStatsSidebarProps) {
           )}
           onPointerDown={handleResizeStart}
           role="separator"
-          tabIndex={0}
+          tabIndex={open ? 0 : -1}
         />
 
-        <header className="flex items-center justify-between gap-2 border-b border-border/60 px-2 py-1">
-          <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Project usage
-            </p>
-          </div>
-          <div className="flex items-center gap-1">
-            {onRefresh && projectId ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <header className="flex items-center justify-between gap-2 border-b border-border/60 px-2 py-1">
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Project usage
+              </p>
+            </div>
+            <div className="flex items-center gap-1">
+              {onRefresh && projectId ? (
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  aria-label="Refresh usage"
+                  disabled={isRefreshing}
+                  className={cn(
+                    "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
+                    "hover:bg-foreground/10 hover:text-foreground",
+                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    isRefreshing && "opacity-60",
+                  )}
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
+                </button>
+              ) : null}
               <button
                 type="button"
-                onClick={handleRefresh}
-                aria-label="Refresh usage"
-                disabled={isRefreshing}
-                className={cn(
-                  "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors",
-                  "hover:bg-foreground/10 hover:text-foreground",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  isRefreshing && "opacity-60",
-                )}
+                onClick={onClose}
+                aria-label="Close usage panel"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin")} />
+                <X className="h-3.5 w-3.5" />
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close usage panel"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </header>
-
-        <div className="flex-1 overflow-y-auto">
-          {!projectId ? (
-            <EmptyMessage>Select a project to see its usage.</EmptyMessage>
-          ) : loadError ? (
-            <ErrorMessage message={loadError} />
-          ) : !totals ? (
-            <EmptyMessage>Loading usage…</EmptyMessage>
-          ) : totals.runCount === 0 ? (
-            <EmptyMessage>No agent runs recorded for this project yet.</EmptyMessage>
-          ) : (
-            <div className="px-5 py-5">
-              {/* Totals — flat numbers, no card */}
-              <section>
-                <div className="grid grid-cols-2 gap-6">
-                  <Stat
-                    label="Total tokens"
-                    value={formatTokenCount(totals.totalTokens)}
-                    sublabel={`${totals.runCount} run${totals.runCount === 1 ? "" : "s"}`}
-                  />
-                  <Stat
-                    label="Estimated cost"
-                    value={formatMicrosUsd(totals.estimatedCostMicros)}
-                    sublabel={lastUpdated ? `Updated ${lastUpdated}` : undefined}
-                  />
-                </div>
-                <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-1.5 border-t border-border/40 pt-4 text-[11px]">
-                  <TokenBucket label="Input" value={totals.inputTokens} />
-                  <TokenBucket label="Output" value={totals.outputTokens} />
-                  <TokenBucket label="Cache read" value={totals.cacheReadTokens} />
-                  <TokenBucket label="Cache write" value={totals.cacheCreationTokens} />
-                </dl>
-              </section>
-
-              {/* Per-model breakdown — hairline-divided rows, no per-row cards */}
-              <section className="mt-6 border-t border-border/40 pt-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                    By model
-                  </h3>
-                  {topModelShare > 0 ? (
-                    <span className="text-[11px] text-muted-foreground/80">
-                      Top {topModelShare}%
-                    </span>
-                  ) : null}
-                </div>
-                <ul className="mt-1 divide-y divide-border/40">
-                  {breakdown.map((row) => (
-                    <ModelRow
-                      key={`${row.providerId}:${row.modelId}`}
-                      row={row}
-                      totalCostMicros={totals.estimatedCostMicros}
-                    />
-                  ))}
-                </ul>
-              </section>
             </div>
-          )}
+          </header>
+
+          <div className="flex-1 overflow-y-auto">
+            {!projectId ? (
+              <EmptyMessage>Select a project to see its usage.</EmptyMessage>
+            ) : loadError ? (
+              <ErrorMessage message={loadError} />
+            ) : !totals ? (
+              <EmptyMessage>Loading usage…</EmptyMessage>
+            ) : totals.runCount === 0 ? (
+              <EmptyMessage>No agent runs recorded for this project yet.</EmptyMessage>
+            ) : (
+              <div className="px-5 py-5">
+                {/* Totals — flat numbers, no card */}
+                <section>
+                  <div className="grid grid-cols-2 gap-6">
+                    <Stat
+                      label="Total tokens"
+                      value={formatTokenCount(totals.totalTokens)}
+                      sublabel={`${totals.runCount} run${totals.runCount === 1 ? "" : "s"}`}
+                    />
+                    <Stat
+                      label="Estimated cost"
+                      value={formatMicrosUsd(totals.estimatedCostMicros)}
+                      sublabel={lastUpdated ? `Updated ${lastUpdated}` : undefined}
+                    />
+                  </div>
+                  <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-1.5 border-t border-border/40 pt-4 text-[11px]">
+                    <TokenBucket label="Input" value={totals.inputTokens} />
+                    <TokenBucket label="Output" value={totals.outputTokens} />
+                    <TokenBucket label="Cache read" value={totals.cacheReadTokens} />
+                    <TokenBucket label="Cache write" value={totals.cacheCreationTokens} />
+                  </dl>
+                </section>
+
+                {/* Per-model breakdown — hairline-divided rows, no per-row cards */}
+                <section className="mt-6 border-t border-border/40 pt-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      By model
+                    </h3>
+                    {topModelShare > 0 ? (
+                      <span className="text-[11px] text-muted-foreground/80">
+                        Top {topModelShare}%
+                      </span>
+                    ) : null}
+                  </div>
+                  <ul className="mt-1 divide-y divide-border/40">
+                    {breakdown.map((row) => (
+                      <ModelRow
+                        key={`${row.providerId}:${row.modelId}`}
+                        row={row}
+                        totalCostMicros={totals.estimatedCostMicros}
+                      />
+                    ))}
+                  </ul>
+                </section>
+              </div>
+            )}
+          </div>
         </div>
-      </motion.aside>
+      </aside>
     </>
   )
 }

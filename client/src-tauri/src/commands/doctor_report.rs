@@ -22,10 +22,10 @@ use crate::{
     provider_models::load_provider_model_catalog,
     registry,
     runtime::{
-        provider_model_catalog_diagnostic, provider_validation_diagnostics, XeroDiagnosticCheck,
-        XeroDiagnosticCheckInput, XeroDiagnosticSeverity, XeroDiagnosticStatus,
-        XeroDiagnosticSubject, XeroDoctorReport, XeroDoctorReportInput, XeroDoctorReportMode,
-        XeroDoctorVersionInfo,
+        provider_capability_diagnostics, provider_model_catalog_diagnostic,
+        provider_validation_diagnostics, XeroDiagnosticCheck, XeroDiagnosticCheckInput,
+        XeroDiagnosticSeverity, XeroDiagnosticStatus, XeroDiagnosticSubject, XeroDoctorReport,
+        XeroDoctorReportInput, XeroDoctorReportMode, XeroDoctorVersionInfo,
     },
     state::DesktopState,
 };
@@ -555,6 +555,24 @@ fn collect_provider_checks<R: Runtime>(
                         &mut checks.model_catalog_checks,
                         provider_model_catalog_diagnostic(&catalog),
                     );
+                    match provider_capability_diagnostics(&catalog, None) {
+                        Ok(capability_checks) => {
+                            checks.model_catalog_checks.extend(capability_checks);
+                        }
+                        Err(error) => push_check(
+                            &mut checks.model_catalog_checks,
+                            command_error_check(
+                                XeroDiagnosticSubject::ModelCatalog,
+                                "provider_capability_probe_failed",
+                                format!(
+                                    "Xero could not evaluate provider capabilities for `{}`.",
+                                    profile.provider_id
+                                ),
+                                error,
+                                "Repair the provider catalog and run diagnostics again.",
+                            ),
+                        ),
+                    }
                 }
                 Err(error) => push_check(
                     &mut checks.model_catalog_checks,

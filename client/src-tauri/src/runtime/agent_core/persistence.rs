@@ -1,8 +1,24 @@
 use super::*;
-use crate::runtime::{AutonomousSubagentRole, AutonomousSubagentWriteScope};
+use crate::runtime::AutonomousSubagentWriteScope;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 const MAX_AUTOMATIC_MEMORY_CANDIDATES: u8 = 8;
 const MIN_AUTOMATIC_MEMORY_CONFIDENCE: u8 = 50;
+const REPO_FINGERPRINT_CACHE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
+struct RepoFingerprintCacheEntry {
+    value: JsonValue,
+    cached_at: Instant,
+}
+
+static REPO_FINGERPRINT_CACHE: OnceLock<Mutex<HashMap<PathBuf, RepoFingerprintCacheEntry>>> =
+    OnceLock::new();
 
 pub(crate) fn append_message(
     repo_root: &Path,
@@ -114,6 +130,7 @@ pub(crate) fn append_event(
         },
     )?;
     publish_agent_event(event.clone());
+    publish_coordination_for_agent_event(repo_root, &event)?;
     Ok(event)
 }
 
@@ -122,7 +139,194 @@ pub(crate) fn touch_agent_run_heartbeat(
     project_id: &str,
     run_id: &str,
 ) -> CommandResult<()> {
-    project_store::touch_agent_run_heartbeat(repo_root, project_id, run_id, &now_timestamp())
+    let timestamp = now_timestamp();
+    project_store::touch_agent_run_heartbeat(repo_root, project_id, run_id, &timestamp)?;
+    project_store::heartbeat_agent_coordination(repo_root, project_id, run_id, &timestamp)
+}
+
+fn publish_coordination_for_agent_event(
+    repo_root: &Path,
+    event: &AgentEventRecord,
+) -> CommandResult<()> {
+    let payload = serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null);
+    let Some((phase, summary)) = coordination_activity_for_event(&event.event_kind, &payload)
+    else {
+        return Ok(());
+    };
+    project_store::append_agent_coordination_event(
+        repo_root,
+        &project_store::NewAgentCoordinationEventRecord {
+            project_id: event.project_id.clone(),
+            run_id: event.run_id.clone(),
+            event_kind: project_store::agent_event_kind_sql_value(&event.event_kind).into(),
+            summary: summary.clone(),
+            payload: coordination_event_payload(&payload),
+            created_at: event.created_at.clone(),
+            lease_seconds: None,
+        },
+    )?;
+
+    if matches!(
+        event.event_kind,
+        AgentRunEventKind::RunCompleted | AgentRunEventKind::RunFailed
+    ) {
+        return project_store::cleanup_agent_coordination_for_run(
+            repo_root,
+            &event.project_id,
+            &event.run_id,
+            project_store::agent_event_kind_sql_value(&event.event_kind),
+            &event.created_at,
+        );
+    }
+
+    project_store::upsert_agent_coordination_presence(
+        repo_root,
+        &project_store::UpsertAgentCoordinationPresenceRecord {
+            project_id: event.project_id.clone(),
+            run_id: event.run_id.clone(),
+            pane_id: None,
+            status: coordination_status_for_event(&event.event_kind).into(),
+            current_phase: phase.into(),
+            activity_summary: summary,
+            last_event_id: Some(event.id),
+            last_event_kind: Some(
+                project_store::agent_event_kind_sql_value(&event.event_kind).into(),
+            ),
+            updated_at: event.created_at.clone(),
+            lease_seconds: None,
+        },
+    )
+    .map(|_| ())
+}
+
+fn coordination_activity_for_event(
+    event_kind: &AgentRunEventKind,
+    payload: &JsonValue,
+) -> Option<(&'static str, String)> {
+    match event_kind {
+        AgentRunEventKind::ToolStarted => {
+            let tool_name = payload_text(payload, "toolName")
+                .or_else(|| payload_text(payload, "tool_name"))
+                .unwrap_or_else(|| "tool".into());
+            let phase = if tool_name_is_file_observation(&tool_name) {
+                "file_observation"
+            } else if tool_name_is_file_write(&tool_name) {
+                "file_write_intent"
+            } else {
+                "tool_call_started"
+            };
+            Some((phase, format!("Started `{tool_name}`.")))
+        }
+        AgentRunEventKind::ToolCompleted => {
+            let tool_name = payload_text(payload, "toolName")
+                .or_else(|| payload_text(payload, "tool_name"))
+                .unwrap_or_else(|| "tool".into());
+            let ok = payload
+                .get("ok")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(true);
+            let outcome = if ok { "completed" } else { "failed" };
+            Some((
+                "tool_call_completed",
+                format!("Tool `{tool_name}` {outcome}."),
+            ))
+        }
+        AgentRunEventKind::FileChanged => {
+            let path = payload_text(payload, "path").unwrap_or_else(|| "unknown path".into());
+            let operation = payload_text(payload, "operation").unwrap_or_else(|| "changed".into());
+            Some(("file_changed", format!("{operation} `{path}`.")))
+        }
+        AgentRunEventKind::ValidationStarted => {
+            let label = payload_text(payload, "label").unwrap_or_else(|| "verification".into());
+            Some((
+                "verification_started",
+                format!("Started verification `{label}`."),
+            ))
+        }
+        AgentRunEventKind::ValidationCompleted => {
+            let label = payload_text(payload, "label").unwrap_or_else(|| "verification".into());
+            let outcome = payload_text(payload, "outcome").unwrap_or_else(|| "completed".into());
+            Some((
+                "verification_completed",
+                format!("Verification `{label}` {outcome}."),
+            ))
+        }
+        AgentRunEventKind::EnvironmentLifecycleUpdate => {
+            let state = payload_text(payload, "state").unwrap_or_else(|| "starting".into());
+            let detail = payload_text(payload, "detail")
+                .unwrap_or_else(|| format!("Environment lifecycle: {state}."));
+            Some(("environment_lifecycle", detail))
+        }
+        AgentRunEventKind::StateTransition => {
+            let to = payload_text(payload, "to").unwrap_or_else(|| "runtime".into());
+            Some(("state_transition", format!("Moved to `{to}`.")))
+        }
+        AgentRunEventKind::PlanUpdated => Some(("planning", "Updated the active plan.".into())),
+        AgentRunEventKind::ActionRequired => {
+            Some(("approval_wait", "Waiting for operator action.".into()))
+        }
+        AgentRunEventKind::RunPaused => Some(("paused", "Run paused.".into())),
+        AgentRunEventKind::RunCompleted => Some(("completed", "Run completed.".into())),
+        AgentRunEventKind::RunFailed => Some(("failed", "Run failed.".into())),
+        _ => None,
+    }
+}
+
+fn coordination_status_for_event(event_kind: &AgentRunEventKind) -> &'static str {
+    match event_kind {
+        AgentRunEventKind::ActionRequired | AgentRunEventKind::RunPaused => "paused",
+        AgentRunEventKind::RunCompleted => "completed",
+        AgentRunEventKind::RunFailed => "failed",
+        _ => "running",
+    }
+}
+
+fn coordination_event_payload(payload: &JsonValue) -> JsonValue {
+    json!({
+        "toolCallId": payload_text(payload, "toolCallId").or_else(|| payload_text(payload, "tool_call_id")),
+        "toolName": payload_text(payload, "toolName").or_else(|| payload_text(payload, "tool_name")),
+        "path": payload_text(payload, "path"),
+        "operation": payload_text(payload, "operation"),
+        "label": payload_text(payload, "label"),
+        "state": payload_text(payload, "state"),
+        "summary": payload_text(payload, "summary").or_else(|| payload_text(payload, "message")),
+    })
+}
+
+fn payload_text(payload: &JsonValue, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn tool_name_is_file_observation(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_READ
+            | AUTONOMOUS_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_FIND
+            | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_HASH
+            | AUTONOMOUS_TOOL_GIT_STATUS
+            | AUTONOMOUS_TOOL_GIT_DIFF
+            | AUTONOMOUS_TOOL_WORKSPACE_INDEX
+    )
+}
+
+fn tool_name_is_file_write(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_EDIT
+            | AUTONOMOUS_TOOL_WRITE
+            | AUTONOMOUS_TOOL_PATCH
+            | AUTONOMOUS_TOOL_DELETE
+            | AUTONOMOUS_TOOL_RENAME
+            | AUTONOMOUS_TOOL_MKDIR
+            | AUTONOMOUS_TOOL_NOTEBOOK_EDIT
+    )
 }
 
 pub(crate) fn capture_project_record_for_run(
@@ -1123,6 +1327,17 @@ fn agent_memory_kind_from_provider(value: &str) -> Option<project_store::AgentMe
 }
 
 pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
+    let started = Instant::now();
+    let fingerprint = cached_repo_fingerprint(repo_root, || build_repo_fingerprint(repo_root));
+    eprintln!(
+        "[runtime-latency] repo_fingerprint repo_root={} duration_ms={}",
+        repo_root.display(),
+        started.elapsed().as_millis()
+    );
+    fingerprint
+}
+
+fn build_repo_fingerprint(repo_root: &Path) -> JsonValue {
     match git2::Repository::discover(repo_root) {
         Ok(repository) => {
             let head = repository
@@ -1142,6 +1357,32 @@ pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
         }
         Err(_) => json!({ "kind": "filesystem" }),
     }
+}
+
+fn cached_repo_fingerprint(repo_root: &Path, build: impl FnOnce() -> JsonValue) -> JsonValue {
+    let key = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let cache = REPO_FINGERPRINT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.get(&key) {
+            if entry.cached_at.elapsed() <= REPO_FINGERPRINT_CACHE_TTL {
+                return entry.value.clone();
+            }
+        }
+    }
+
+    let value = build();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            key,
+            RepoFingerprintCacheEntry {
+                value: value.clone(),
+                cached_at: Instant::now(),
+            },
+        );
+    }
+    value
 }
 
 pub(crate) fn record_file_change_event(
@@ -1223,7 +1464,7 @@ fn record_single_file_change_event(
     run_id: &str,
     change: FileChangeEvent<'_>,
 ) -> CommandResult<()> {
-    project_store::append_agent_file_change(
+    let stored_change = project_store::append_agent_file_change(
         repo_root,
         &NewAgentFileChangeRecord {
             project_id: project_id.into(),
@@ -1264,6 +1505,10 @@ fn record_single_file_change_event(
             "toPath": change.to_path,
             "oldHash": change.old_hash,
             "newHash": change.new_hash,
+            "traceId": stored_change.trace_id,
+            "topLevelRunId": stored_change.top_level_run_id,
+            "subagentId": stored_change.subagent_id,
+            "subagentRole": stored_change.subagent_role,
         }),
     )?;
     Ok(())
@@ -1472,6 +1717,8 @@ pub(crate) fn record_command_output_event(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
     output: &AutonomousToolOutput,
 ) -> CommandResult<()> {
     match output {
@@ -1483,6 +1730,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "argv": argv.clone(),
                     "cwd": output.cwd.clone(),
                     "stdout": output.stdout.clone(),
@@ -1495,6 +1744,7 @@ pub(crate) fn record_command_output_event(
                     "timedOut": output.timed_out,
                     "spawned": output.spawned,
                     "policy": output.policy.clone(),
+                    "sandbox": output.sandbox.clone(),
                 }),
             )?;
 
@@ -1518,6 +1768,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.operation.clone(),
                     "sessionId": output.session_id.clone(),
                     "argv": argv.clone(),
@@ -1528,6 +1780,7 @@ pub(crate) fn record_command_output_event(
                     "chunks": output.chunks.clone(),
                     "nextSequence": output.next_sequence,
                     "policy": output.policy.clone(),
+                    "sandbox": output.sandbox.clone(),
                 }),
             )?;
 
@@ -1552,6 +1805,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "processId": output.process_id.clone(),
                     "spawned": output.spawned,
@@ -1593,6 +1848,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "performed": output.performed,
                     "platformSupported": output.platform_supported,
@@ -1617,6 +1874,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "performed": output.performed,
                     "platformSupported": output.platform_supported,
@@ -1636,6 +1895,32 @@ pub(crate) fn record_command_output_event(
     }
 
     Ok(())
+}
+
+pub(crate) fn record_command_output_chunk_event(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    chunk: &AutonomousCommandOutputChunk,
+) -> CommandResult<()> {
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::CommandOutput,
+        json!({
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "stream": chunk.stream.clone(),
+            "text": chunk.text.clone(),
+            "truncated": chunk.truncated,
+            "redacted": chunk.redacted,
+            "partial": true,
+        }),
+    )
+    .map(|_| ())
 }
 
 fn record_system_diagnostics_action_required(
@@ -1886,7 +2171,7 @@ impl AgentWorkspaceGuard {
         let Some(scope) = &self.subagent_write_scope else {
             return Ok(());
         };
-        if scope.role != AutonomousSubagentRole::Worker {
+        if !scope.role.allows_write_set() {
             return Err(CommandError::new(
                 "agent_subagent_readonly_write_denied",
                 CommandErrorClass::PolicyDenied,
@@ -1981,6 +2266,35 @@ fn planned_file_change_operations(request: &AutonomousToolRequest) -> Vec<(&str,
         AutonomousToolRequest::Rename(request) => vec![(request.from_path.as_str(), "rename")],
         _ => Vec::new(),
     }
+}
+
+pub(crate) fn planned_file_reservation_operations(
+    request: &AutonomousToolRequest,
+) -> CommandResult<Vec<(String, project_store::AgentCoordinationReservationOperation)>> {
+    let mut reservations = Vec::new();
+    for (path, operation) in planned_file_change_operations(request) {
+        let Some(path_key) = relative_path_key(path) else {
+            return Err(CommandError::new(
+                "agent_file_path_invalid",
+                CommandErrorClass::PolicyDenied,
+                format!(
+                    "Xero refused to reserve `{path}` because it is not a safe repo-relative path."
+                ),
+                false,
+            ));
+        };
+        let operation = match operation {
+            "edit" | "patch" | "notebook_edit" => {
+                project_store::AgentCoordinationReservationOperation::Editing
+            }
+            "delete" | "rename" | "write" => {
+                project_store::AgentCoordinationReservationOperation::Writing
+            }
+            _ => project_store::AgentCoordinationReservationOperation::Editing,
+        };
+        reservations.push((path_key, operation));
+    }
+    Ok(reservations)
 }
 
 fn old_hash_for_path(

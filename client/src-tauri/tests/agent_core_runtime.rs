@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -9,8 +11,20 @@ use std::{
 use git2::{IndexAddOption, Repository, Signature};
 use rusqlite::{params, Connection};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tauri::Manager;
 use tempfile::TempDir;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use xero_agent_core::{
+    provider_capability_catalog, provider_preflight_snapshot, AgentRuntimeFacade,
+    ApprovalDecisionRequest, CompactSessionRequest, ForkSessionRequest,
+    ProductionReadinessFocusedTestResult, ProductionReadinessFocusedTestStatus,
+    ProductionReadinessStatus, ProviderCapabilityCatalogInput, ProviderPreflightInput,
+    ProviderPreflightRequiredFeatures, ProviderPreflightSource, RuntimeEventKind,
+    StaticToolHandler, ToolBudget, ToolCallInput, ToolDispatchConfig, ToolErrorCategory,
+    ToolGroupExecutionMode, ToolHandlerOutput, ToolMutability, ToolRegistryV2,
+    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS, PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS,
+};
 use xero_desktop_lib::{
     commands::{
         archive_agent_session, cancel_agent_run, compact_session_history, start_agent_task,
@@ -24,12 +38,15 @@ use xero_desktop_lib::{
     git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
     runtime::{
-        continue_owned_agent_run, create_owned_agent_run, run_owned_agent_task,
-        AgentAutoCompactPreference, AgentProviderConfig, AgentToolCall, AutonomousCommandRequest,
+        continue_owned_agent_run, create_owned_agent_run, drive_owned_agent_run,
+        run_owned_agent_task, AgentAutoCompactPreference, AgentProviderConfig,
+        AgentRunCancellationToken, AgentRunSupervisor, AgentToolCall, AutonomousCommandRequest,
         AutonomousCommandSessionOperation, AutonomousCommandSessionStartRequest,
         AutonomousCommandSessionStopRequest, AutonomousToolOutput, AutonomousToolRuntime,
-        ContinueOwnedAgentRunRequest, OpenAiCompatibleProviderConfig, OwnedAgentRunRequest,
-        ToolRegistry, ToolRegistryOptions,
+        ContinueOwnedAgentRunRequest, DesktopAgentCoreRuntime, DesktopCompactSessionRequest,
+        DesktopForkSessionRequest, DesktopRejectActionRequest, DesktopRunDriveMode,
+        DesktopStartRunRequest, OpenAiCompatibleProviderConfig, OwnedAgentRunRequest, ToolRegistry,
+        ToolRegistryOptions,
     },
     state::DesktopState,
 };
@@ -140,6 +157,149 @@ fn commit_all(repository: &Repository, message: &str) {
         .expect("commit");
 }
 
+fn seed_workspace_index_ready(repo_root: &Path, project_id: &str) {
+    let indexed_file = repo_root.join("src").join("indexed.rs");
+    fs::write(
+        &indexed_file,
+        "pub fn semantic_workspace_index_ready() -> bool { true }\n",
+    )
+    .expect("write indexed source");
+
+    let database_path = db::database_path_for_repo(repo_root);
+    let connection = Connection::open(&database_path).expect("open project database");
+    let now = "2026-05-05T12:00:00Z";
+    let storage_path = database_path
+        .parent()
+        .expect("project database parent")
+        .to_string_lossy()
+        .into_owned();
+    let head_sha = current_head_sha(repo_root);
+    let indexed_paths = ["AGENTS.md", "src/indexed.rs"];
+
+    connection
+        .execute(
+            r#"
+            INSERT INTO workspace_index_metadata (
+                project_id, status, index_version, root_path, storage_path, head_sha,
+                worktree_fingerprint, total_files, indexed_files, skipped_files, stale_files,
+                symbol_count, indexed_bytes, coverage_percent, diagnostics_json,
+                started_at, completed_at, updated_at
+            )
+            VALUES (?1, 'ready', 1, ?2, ?3, ?4, 'test-fingerprint', ?5, ?5, 0, 0, 1, ?6, 100.0, '[]', ?7, ?7, ?7)
+            ON CONFLICT(project_id) DO UPDATE SET
+                status = excluded.status,
+                root_path = excluded.root_path,
+                storage_path = excluded.storage_path,
+                head_sha = excluded.head_sha,
+                worktree_fingerprint = excluded.worktree_fingerprint,
+                total_files = excluded.total_files,
+                indexed_files = excluded.indexed_files,
+                skipped_files = excluded.skipped_files,
+                stale_files = excluded.stale_files,
+                symbol_count = excluded.symbol_count,
+                indexed_bytes = excluded.indexed_bytes,
+                coverage_percent = excluded.coverage_percent,
+                diagnostics_json = excluded.diagnostics_json,
+                started_at = excluded.started_at,
+                completed_at = excluded.completed_at,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                project_id,
+                repo_root.to_string_lossy().as_ref(),
+                storage_path,
+                head_sha,
+                indexed_paths.len() as i64,
+                indexed_paths
+                    .iter()
+                    .map(|path| fs::metadata(repo_root.join(path)).expect("metadata").len())
+                    .sum::<u64>() as i64,
+                now,
+            ],
+        )
+        .expect("seed workspace index metadata");
+
+    for path in indexed_paths {
+        let absolute_path = repo_root.join(path);
+        let content = fs::read_to_string(&absolute_path).expect("read indexed file");
+        let metadata = fs::metadata(&absolute_path).expect("indexed file metadata");
+        let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let modified_at = metadata_modified_at(&metadata);
+        let virtual_path = format!("/{}", path.replace('\\', "/"));
+        let language = if path.ends_with(".md") {
+            "markdown"
+        } else {
+            "rust"
+        };
+        connection
+            .execute(
+                r#"
+                INSERT INTO workspace_index_files (
+                    project_id, path, language, content_hash, modified_at, byte_length,
+                    summary, snippet, symbols_json, imports_json, tests_json, routes_json,
+                    commands_json, diffs_json, failures_json, embedding_json, embedding_model,
+                    embedding_version, indexed_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '[]', '[]', '[]', '[]', '[]', '[]', '[]', '[0.0]', 'test-embedding', 'v1', ?9)
+                ON CONFLICT(project_id, path) DO UPDATE SET
+                    language = excluded.language,
+                    content_hash = excluded.content_hash,
+                    modified_at = excluded.modified_at,
+                    byte_length = excluded.byte_length,
+                    summary = excluded.summary,
+                    snippet = excluded.snippet,
+                    embedding_json = excluded.embedding_json,
+                    indexed_at = excluded.indexed_at
+                "#,
+                params![
+                    project_id,
+                    virtual_path,
+                    language,
+                    content_hash,
+                    modified_at,
+                    metadata.len() as i64,
+                    format!("Indexed {path}."),
+                    content,
+                    now,
+                ],
+            )
+            .expect("seed workspace index file row");
+    }
+}
+
+fn metadata_modified_at(metadata: &fs::Metadata) -> String {
+    metadata
+        .modified()
+        .ok()
+        .map(OffsetDateTime::from)
+        .and_then(|value| value.format(&Rfc3339).ok())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".into())
+}
+
+fn lifecycle_health_checks(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Vec<serde_json::Value> {
+    let snapshot =
+        db::project_store::load_agent_environment_lifecycle_snapshot(repo_root, project_id, run_id)
+            .expect("load lifecycle snapshot")
+            .expect("lifecycle snapshot");
+    serde_json::from_str::<Vec<serde_json::Value>>(&snapshot.health_checks_json)
+        .expect("health checks json")
+}
+
+fn semantic_lifecycle_health_check(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> serde_json::Value {
+    lifecycle_health_checks(repo_root, project_id, run_id)
+        .into_iter()
+        .find(|check| check["kind"] == "semantic_index_status")
+        .expect("semantic lifecycle health check")
+}
+
 fn current_branch_name(repo_root: &Path) -> Option<String> {
     Repository::open(repo_root).ok().and_then(|repository| {
         repository
@@ -200,13 +360,200 @@ fn suggest_controls_input() -> RuntimeRunControlInputDto {
     }
 }
 
+fn live_provider_preflight(
+    provider_id: &str,
+    model_id: &str,
+) -> xero_agent_core::ProviderPreflightSnapshot {
+    provider_preflight_snapshot(ProviderPreflightInput {
+        profile_id: provider_id.into(),
+        provider_id: provider_id.into(),
+        model_id: model_id.into(),
+        source: ProviderPreflightSource::LiveProbe,
+        checked_at: "unix:1770000000".into(),
+        age_seconds: Some(0),
+        ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+        required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        capabilities: provider_capability_catalog(ProviderCapabilityCatalogInput {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            catalog_source: "live".into(),
+            fetched_at: Some("unix:1770000000".into()),
+            last_success_at: Some("unix:1770000000".into()),
+            cache_age_seconds: Some(0),
+            cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+            credential_proof: Some("none_required".into()),
+            context_window_tokens: Some(128_000),
+            max_output_tokens: Some(16_384),
+            context_limit_source: Some("built_in_registry".into()),
+            context_limit_confidence: Some("high".into()),
+            thinking_supported: false,
+            thinking_efforts: Vec::new(),
+            thinking_default_effort: None,
+        }),
+        credential_ready: Some(true),
+        endpoint_reachable: Some(true),
+        model_available: Some(true),
+        streaming_route_available: Some(true),
+        tool_schema_accepted: Some(true),
+        reasoning_controls_accepted: None,
+        attachments_accepted: None,
+        context_limit_known: Some(true),
+        provider_error: None,
+    })
+}
+
+fn production_readiness_focused_tests(
+    status: ProductionReadinessFocusedTestStatus,
+) -> Vec<ProductionReadinessFocusedTestResult> {
+    PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS
+        .iter()
+        .map(|command| ProductionReadinessFocusedTestResult {
+            command: (*command).into(),
+            status,
+            summary: "focused test evidence fixture".into(),
+            checked_at: Some("2026-05-05T12:00:00Z".into()),
+        })
+        .collect()
+}
+
+struct MockOpenAiCompatibleSseServer {
+    base_url: String,
+    handle: thread::JoinHandle<()>,
+}
+
+impl MockOpenAiCompatibleSseServer {
+    fn start(responses: Vec<String>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
+        let address = listener.local_addr().expect("mock provider address");
+        let handle = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                read_http_request(&mut stream);
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream
+                    .write_all(reply.as_bytes())
+                    .expect("write provider response");
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            handle,
+        }
+    }
+
+    fn join(self) {
+        self.handle.join().expect("mock provider thread");
+    }
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) {
+    let mut buffer = [0_u8; 4096];
+    let mut request = Vec::new();
+    loop {
+        let read = stream.read(&mut buffer).expect("read provider request");
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+}
+
+fn openai_chat_sse(chunks: Vec<serde_json::Value>) -> String {
+    let mut lines = chunks
+        .into_iter()
+        .map(|chunk| format!("data: {chunk}\n\n"))
+        .collect::<Vec<_>>();
+    lines.push("data: [DONE]\n\n".into());
+    lines.join("")
+}
+
+#[test]
+fn tool_group_timeout_interrupts_hung_read_only_handler() {
+    let mut registry = ToolRegistryV2::new();
+    for name in ["slow_a", "slow_b"] {
+        registry
+            .register(StaticToolHandler::new(
+                xero_agent_core::ToolDescriptorV2 {
+                    name: name.into(),
+                    description: "Slow read-only fixture.".into(),
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": { "type": "string" }
+                        },
+                        "required": ["path"],
+                        "additionalProperties": false
+                    }),
+                    capability_tags: vec!["fixture".into()],
+                    effect_class: xero_agent_core::ToolEffectClass::FileRead,
+                    mutability: ToolMutability::ReadOnly,
+                    sandbox_requirement: xero_agent_core::ToolSandboxRequirement::None,
+                    approval_requirement: xero_agent_core::ToolApprovalRequirement::Never,
+                    telemetry_attributes: Default::default(),
+                    result_truncation: xero_agent_core::ToolResultTruncationContract::default(),
+                },
+                |_context, _call| {
+                    thread::sleep(Duration::from_millis(150));
+                    Ok(ToolHandlerOutput::new("late", json!({ "ok": true })))
+                },
+            ))
+            .expect("register slow read-only fixture");
+    }
+    let config = ToolDispatchConfig {
+        budget: ToolBudget {
+            max_wall_clock_time_per_tool_group_ms: 20,
+            ..ToolBudget::default()
+        },
+        ..ToolDispatchConfig::default()
+    };
+
+    let started = Instant::now();
+    let report = registry.dispatch_batch(
+        &[
+            ToolCallInput {
+                tool_call_id: "call-1".into(),
+                tool_name: "slow_a".into(),
+                input: json!({ "path": "a" }),
+            },
+            ToolCallInput {
+                tool_call_id: "call-2".into(),
+                tool_name: "slow_b".into(),
+                input: json!({ "path": "b" }),
+            },
+        ],
+        &config,
+    );
+
+    assert!(
+        started.elapsed() < Duration::from_millis(80),
+        "read-only group timeout should return before sleeping handlers complete"
+    );
+    assert_eq!(
+        report.groups[0].mode,
+        ToolGroupExecutionMode::ParallelReadOnly
+    );
+    assert!(report.groups[0].timeout_error.is_some());
+    assert!(report.groups[0].outcomes.iter().all(|outcome| {
+        outcome
+            .failure()
+            .is_some_and(|failure| failure.error.category == ToolErrorCategory::Timeout)
+    }));
+}
+
 fn wait_for_agent_run_status(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
     status: db::project_store::AgentRunStatus,
 ) -> db::project_store::AgentRunSnapshotRecord {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match db::project_store::load_agent_run(repo_root, project_id, run_id) {
             Ok(snapshot) if snapshot.run.status == status => return snapshot,
@@ -313,6 +660,503 @@ fn append_auto_compact_fixture_messages(
 }
 
 #[test]
+fn desktop_facade_reject_action_persists_decision_and_trace() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let state = app.state::<DesktopState>();
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "desktop-facade-reject-1";
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app.handle().clone(), state.inner(), &project_id)
+            .expect("build autonomous tool runtime");
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+
+    <DesktopAgentCoreRuntime as AgentRuntimeFacade>::start_run(
+        &runtime,
+        DesktopStartRunRequest {
+            request: OwnedAgentRunRequest {
+                repo_root: repo_root.clone(),
+                project_id: project_id.clone(),
+                agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                prompt: "Prepare a paused run for rejection.".into(),
+                attachments: Vec::new(),
+                controls: Some(yolo_controls_input()),
+                tool_runtime,
+                provider_config: AgentProviderConfig::Fake,
+                provider_preflight: None,
+            },
+            drive_mode: DesktopRunDriveMode::CreateOnly,
+        },
+    )
+    .expect("create desktop facade run");
+    db::project_store::append_agent_action_request(
+        &repo_root,
+        &db::project_store::NewAgentActionRequestRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.into(),
+            action_id: "tool-call-denied".into(),
+            action_type: "safety_boundary".into(),
+            title: "Action required".into(),
+            detail: "A mutating tool call needs operator input.".into(),
+            created_at: "2026-05-04T10:00:00Z".into(),
+        },
+    )
+    .expect("seed pending action");
+    db::project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        run_id,
+        db::project_store::AgentRunStatus::Paused,
+        None,
+        "2026-05-04T10:00:01Z",
+    )
+    .expect("pause run");
+
+    let subscription = xero_desktop_lib::runtime::subscribe_agent_events(&project_id, run_id);
+    let rejected = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::reject_action(
+        &runtime,
+        DesktopRejectActionRequest {
+            repo_root: repo_root.clone(),
+            request: ApprovalDecisionRequest {
+                project_id: project_id.clone(),
+                run_id: run_id.into(),
+                action_id: "tool-call-denied".into(),
+                response: Some("Do not run this tool.".into()),
+            },
+        },
+    )
+    .expect("reject pending action");
+
+    assert_eq!(
+        rejected.run.status,
+        db::project_store::AgentRunStatus::Failed
+    );
+    let action = rejected
+        .action_requests
+        .iter()
+        .find(|action| action.action_id == "tool-call-denied")
+        .expect("rejected action persisted");
+    assert_eq!(action.status, "rejected");
+    assert_eq!(action.response.as_deref(), Some("Do not run this tool."));
+
+    let mut saw_stream_rejection = false;
+    for _ in 0..3 {
+        let event = subscription
+            .recv_timeout(Duration::from_secs(1))
+            .expect("rejection event streamed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&event.payload_json).expect("event payload json");
+        if event.event_kind == db::project_store::AgentRunEventKind::PolicyDecision
+            && payload.get("decision").and_then(serde_json::Value::as_str) == Some("rejected")
+        {
+            saw_stream_rejection = true;
+            break;
+        }
+    }
+    assert!(saw_stream_rejection);
+
+    let trace = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::export_trace(
+        &runtime,
+        xero_desktop_lib::runtime::DesktopExportTraceRequest {
+            repo_root,
+            project_id,
+            run_id: run_id.into(),
+        },
+    )
+    .expect("export rejection trace");
+    assert_eq!(trace.snapshot.status, xero_agent_core::RunStatus::Failed);
+    assert!(trace.snapshot.events.iter().any(|event| {
+        event.event_kind == xero_agent_core::RuntimeEventKind::PolicyDecision
+            && event
+                .payload
+                .get("actionId")
+                .and_then(serde_json::Value::as_str)
+                == Some("tool-call-denied")
+            && event.trace.is_valid()
+    }));
+}
+
+#[test]
+fn desktop_facade_fork_session_copies_lineage_and_context_manifests() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let state = app.state::<DesktopState>();
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let source_run_id = "desktop-facade-fork-source-1";
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app.handle().clone(), state.inner(), &project_id)
+            .expect("build autonomous tool runtime");
+    let source = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: source_run_id.into(),
+        prompt: "Create durable context for a fork.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("source owned-agent run");
+    let source_manifests = db::project_store::list_agent_context_manifests_for_run(
+        &repo_root,
+        &project_id,
+        source_run_id,
+    )
+    .expect("source context manifests");
+    assert!(!source_manifests.is_empty());
+
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let forked = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::fork_session(
+        &runtime,
+        DesktopForkSessionRequest {
+            repo_root: repo_root.clone(),
+            request: ForkSessionRequest {
+                project_id: project_id.clone(),
+                source_agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                target_agent_session_id: "agent-session-facade-fork-target".into(),
+            },
+            source_run_id: Some(source_run_id.into()),
+            title: Some("Facade fork".into()),
+            selected: true,
+        },
+    )
+    .expect("fork desktop session");
+
+    assert_eq!(
+        forked.run.agent_session_id,
+        "agent-session-facade-fork-target"
+    );
+    assert_eq!(forked.run.parent_run_id.as_deref(), Some(source_run_id));
+    assert_eq!(
+        forked.run.parent_trace_id.as_deref(),
+        Some(source.run.trace_id.as_str())
+    );
+    assert!(forked.messages.iter().any(|message| {
+        message
+            .content
+            .contains("Create durable context for a fork")
+    }));
+
+    let fork_session = db::project_store::get_agent_session(
+        &repo_root,
+        &project_id,
+        "agent-session-facade-fork-target",
+    )
+    .expect("load forked session")
+    .expect("forked session exists");
+    let lineage = fork_session.lineage.expect("fork lineage");
+    assert_eq!(lineage.source_run_id.as_deref(), Some(source_run_id));
+    assert_eq!(lineage.replay_run_id, forked.run.run_id);
+
+    let fork_manifests = db::project_store::list_agent_context_manifests_for_run(
+        &repo_root,
+        &project_id,
+        &forked.run.run_id,
+    )
+    .expect("forked context manifests");
+    assert_eq!(fork_manifests.len(), source_manifests.len());
+    assert!(fork_manifests.iter().all(|manifest| {
+        manifest.agent_session_id == "agent-session-facade-fork-target"
+            && manifest.run_id.as_deref() == Some(forked.run.run_id.as_str())
+            && manifest
+                .manifest
+                .get("lineage")
+                .and_then(|lineage| lineage.get("sourceRunId"))
+                .and_then(serde_json::Value::as_str)
+                == Some(source_run_id)
+    }));
+
+    let trace = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::export_trace(
+        &runtime,
+        xero_desktop_lib::runtime::DesktopExportTraceRequest {
+            repo_root,
+            project_id,
+            run_id: forked.run.run_id.clone(),
+        },
+    )
+    .expect("export fork trace");
+    assert_eq!(trace.snapshot.context_manifests.len(), fork_manifests.len());
+    assert!(trace.snapshot.events.iter().any(|event| {
+        event.event_kind == xero_agent_core::RuntimeEventKind::StateTransition
+            && event
+                .payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("session_forked")
+            && event.trace.is_valid()
+    }));
+}
+
+#[test]
+fn provider_preflight_manifest_binding() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let preflight = live_provider_preflight("fake_provider", "test-model");
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "provider-preflight-manifest-binding".into(),
+        prompt: "Bind provider preflight to the context manifest.\ntool:read src/tracked.txt"
+            .into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: Some(preflight.clone()),
+    })
+    .expect("owned agent run with admitted provider preflight");
+
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
+    );
+    let manifests = db::project_store::list_agent_context_manifests_for_run(
+        &repo_root,
+        &project_id,
+        "provider-preflight-manifest-binding",
+    )
+    .expect("context manifests");
+    assert!(!manifests.is_empty());
+    let admitted_preflight = serde_json::to_value(&preflight).expect("serialize preflight");
+
+    assert!(manifests.iter().all(|manifest| {
+        manifest.manifest.get("providerPreflight") == Some(&admitted_preflight)
+            && manifest
+                .manifest
+                .get("admittedProviderPreflightHash")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|hash| !hash.is_empty())
+    }));
+}
+
+#[test]
+fn canonical_trace_passes_production_gates() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let provider_id = "openai_api";
+    let model_id = "test-model";
+    let preflight = live_provider_preflight(provider_id, model_id);
+    let server = MockOpenAiCompatibleSseServer::start(vec![
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-read",
+                        "function": {
+                            "name": "read",
+                            "arguments": "{\"path\":\"src/tracked.txt\"}"
+                        }
+                    }]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "content": "Read completed through Tool Registry V2."
+                }
+            }]
+        })]),
+    ]);
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "canonical-trace-production-gates".into(),
+        prompt: "Read the tracked file.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            base_url: server.base_url.clone(),
+            api_key: Some("test-key".into()),
+            api_version: None,
+            timeout_ms: 2_000,
+        }),
+        provider_preflight: Some(preflight),
+    })
+    .expect("real-provider mock run should complete");
+    server.join();
+
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
+    );
+
+    let runtime =
+        DesktopAgentCoreRuntime::new(app.state::<DesktopState>().agent_run_supervisor().clone());
+    let trace = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::export_trace(
+        &runtime,
+        xero_desktop_lib::runtime::DesktopExportTraceRequest {
+            repo_root,
+            project_id,
+            run_id: "canonical-trace-production-gates".into(),
+        },
+    )
+    .expect("export canonical trace");
+    let canonical = trace.canonical_snapshot().expect("canonical trace");
+    let support_bundle = trace.redacted_support_bundle().expect("support bundle");
+    let readiness = canonical.production_readiness_report(production_readiness_focused_tests(
+        ProductionReadinessFocusedTestStatus::Passed,
+    ));
+
+    assert!(
+        canonical.quality_gates.passed,
+        "canonical trace quality gates should pass: {:?}",
+        canonical
+            .quality_gates
+            .gates
+            .iter()
+            .filter(|gate| gate.status == xero_agent_core::TraceQualityGateStatus::Fail)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(readiness.status, ProductionReadinessStatus::Ready);
+    assert_eq!(canonical.trace_id, support_bundle.trace_id);
+    assert_eq!(
+        canonical
+            .timeline
+            .items
+            .iter()
+            .map(|item| item.event_id)
+            .collect::<Vec<_>>(),
+        support_bundle
+            .timeline
+            .items
+            .iter()
+            .map(|item| item.event_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn desktop_facade_compact_session_persists_artifact_and_trace() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let state = app.state::<DesktopState>();
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "desktop-facade-compact-1";
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app.handle().clone(), state.inner(), &project_id)
+            .expect("build autonomous tool runtime");
+    run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: run_id.into(),
+        prompt: "Create compactable history.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("source owned-agent run");
+    let manifest_count_before =
+        db::project_store::list_agent_context_manifests_for_run(&repo_root, &project_id, run_id)
+            .expect("context manifests before compact")
+            .len();
+
+    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+    let compacted = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::compact_session(
+        &runtime,
+        DesktopCompactSessionRequest {
+            repo_root: repo_root.clone(),
+            request: CompactSessionRequest {
+                project_id: project_id.clone(),
+                agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                reason: "manual_compact_requested".into(),
+            },
+            run_id: Some(run_id.into()),
+            raw_tail_message_count: Some(2),
+            trigger: db::project_store::AgentCompactionTrigger::Manual,
+            provider_config: AgentProviderConfig::Fake,
+        },
+    )
+    .expect("compact desktop session");
+
+    assert_eq!(
+        compacted.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
+    let active_compaction = db::project_store::load_active_agent_compaction(
+        &repo_root,
+        &project_id,
+        db::project_store::DEFAULT_AGENT_SESSION_ID,
+    )
+    .expect("load active compaction")
+    .expect("active compaction");
+    assert_eq!(active_compaction.raw_tail_message_count, 2);
+    assert_eq!(active_compaction.policy_reason, "manual_compact_requested");
+
+    let manifests =
+        db::project_store::list_agent_context_manifests_for_run(&repo_root, &project_id, run_id)
+            .expect("context manifests after compact");
+    assert_eq!(manifests.len(), manifest_count_before + 1);
+    let artifact = manifests
+        .iter()
+        .find(|manifest| {
+            manifest.compaction_id.as_deref() == Some(active_compaction.compaction_id.as_str())
+        })
+        .expect("compaction context artifact");
+    assert_eq!(
+        artifact
+            .manifest
+            .get("rawTailMessageCount")
+            .and_then(serde_json::Value::as_u64),
+        Some(2)
+    );
+
+    let trace = <DesktopAgentCoreRuntime as AgentRuntimeFacade>::export_trace(
+        &runtime,
+        xero_desktop_lib::runtime::DesktopExportTraceRequest {
+            repo_root,
+            project_id,
+            run_id: run_id.into(),
+        },
+    )
+    .expect("export compaction trace");
+    assert!(trace.snapshot.context_manifests.iter().any(|manifest| {
+        manifest.manifest_id == artifact.manifest_id && manifest.trace.is_valid()
+    }));
+    assert!(trace.snapshot.events.iter().any(|event| {
+        event.event_kind == xero_agent_core::RuntimeEventKind::PolicyDecision
+            && event
+                .payload
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("session_compaction")
+            && event.trace.is_valid()
+    }));
+}
+
+#[test]
 fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
     let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -331,6 +1175,8 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "git_diff",
         "tool_access",
         "project_context",
+        "workspace_index",
+        "agent_coordination",
         "edit",
         "write",
         "patch",
@@ -668,6 +1514,7 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent file tools should succeed");
 
@@ -744,6 +1591,7 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent priority tools should succeed");
 
@@ -796,6 +1644,30 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
         .run
         .prompt
         .contains("Explore priority one work"));
+    assert_eq!(snapshot.run.lineage_kind, "top_level");
+    assert_eq!(child_snapshot.run.lineage_kind, "subagent_child");
+    assert_eq!(
+        child_snapshot.run.agent_session_id,
+        snapshot.run.agent_session_id
+    );
+    assert_eq!(
+        child_snapshot.run.parent_run_id.as_deref(),
+        Some(snapshot.run.run_id.as_str())
+    );
+    assert_eq!(
+        child_snapshot.run.parent_trace_id.as_deref(),
+        Some(snapshot.run.trace_id.as_str())
+    );
+    assert_eq!(
+        child_snapshot.run.parent_subagent_id.as_deref(),
+        Some("subagent-1")
+    );
+    assert_eq!(
+        child_snapshot.run.subagent_role.as_deref(),
+        Some("researcher")
+    );
+    assert_eq!(snapshot.run.trace_id.len(), 32);
+    assert_eq!(child_snapshot.run.trace_id.len(), 32);
 }
 
 #[test]
@@ -846,6 +1718,7 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent task succeeds");
 
@@ -899,10 +1772,23 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
         .map(|event| event.event_kind.clone())
         .collect::<Vec<_>>();
     assert!(event_kinds.contains(&db::project_store::AgentRunEventKind::ValidationStarted));
+    assert!(event_kinds.contains(&db::project_store::AgentRunEventKind::EnvironmentLifecycleUpdate));
     assert!(event_kinds.contains(&db::project_store::AgentRunEventKind::ToolRegistrySnapshot));
     assert!(event_kinds.contains(&db::project_store::AgentRunEventKind::ToolStarted));
     assert!(event_kinds.contains(&db::project_store::AgentRunEventKind::ToolCompleted));
     assert!(event_kinds.contains(&db::project_store::AgentRunEventKind::RunCompleted));
+    let ready_lifecycle_event = snapshot
+        .events
+        .iter()
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::EnvironmentLifecycleUpdate
+                && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                    .ok()
+                    .and_then(|payload| payload["state"].as_str().map(ToOwned::to_owned))
+                    .as_deref()
+                    == Some("ready")
+        })
+        .expect("ready environment lifecycle event");
     let registry_event = snapshot
         .events
         .iter()
@@ -910,6 +1796,37 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
             event.event_kind == db::project_store::AgentRunEventKind::ToolRegistrySnapshot
         })
         .expect("tool registry event");
+    assert!(
+        ready_lifecycle_event.id < registry_event.id,
+        "environment readiness must be persisted before provider turn setup"
+    );
+    let lifecycle_snapshot = db::project_store::load_agent_environment_lifecycle_snapshot(
+        &repo_root,
+        &project_id,
+        &snapshot.run.run_id,
+    )
+    .expect("load environment lifecycle snapshot")
+    .expect("environment lifecycle snapshot should persist beside the run");
+    assert_eq!(lifecycle_snapshot.state, "ready");
+    let lifecycle_health: serde_json::Value =
+        serde_json::from_str(&lifecycle_snapshot.health_checks_json).expect("health checks json");
+    assert!(lifecycle_health
+        .as_array()
+        .expect("health check array")
+        .iter()
+        .any(|check| check["kind"] == "filesystem_accessible" && check["status"] == "passed"));
+    let trace = DesktopAgentCoreRuntime::new(AgentRunSupervisor::default())
+        .export_trace(
+            repo_root.clone(),
+            project_id.clone(),
+            snapshot.run.run_id.clone(),
+        )
+        .expect("export runtime trace");
+    assert!(trace
+        .snapshot
+        .events
+        .iter()
+        .any(|event| event.event_kind == RuntimeEventKind::EnvironmentLifecycleUpdate));
     let registry_payload: serde_json::Value =
         serde_json::from_str(&registry_event.payload_json).expect("registry payload");
     assert_eq!(registry_payload["kind"], "active_tool_registry");
@@ -960,6 +1877,326 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
 }
 
 #[test]
+fn workspace_index_required_blocks_lifecycle() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    let empty_required = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-workspace-index-empty".into(),
+        prompt: "Find related tests for the runtime lifecycle using semantic workspace search."
+            .into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime: AutonomousToolRuntime::for_project(
+            &app.handle().clone(),
+            app.state::<DesktopState>().inner(),
+            &project_id,
+        )
+        .expect("build empty-index runtime"),
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("empty required run should persist blocked snapshot");
+    assert_eq!(
+        empty_required.run.status,
+        db::project_store::AgentRunStatus::Failed
+    );
+    assert!(!empty_required.events.iter().any(
+        |event| event.event_kind == db::project_store::AgentRunEventKind::ToolRegistrySnapshot
+    ));
+    let empty_health =
+        semantic_lifecycle_health_check(&repo_root, &project_id, &empty_required.run.run_id);
+    assert_eq!(empty_health["status"], "failed");
+    assert_eq!(
+        empty_health["diagnostic"]["code"],
+        "agent_environment_workspace_index_empty"
+    );
+
+    let optional = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-workspace-index-optional".into(),
+        prompt: "Summarize the current project instructions.".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime: AutonomousToolRuntime::for_project(
+            &app.handle().clone(),
+            app.state::<DesktopState>().inner(),
+            &project_id,
+        )
+        .expect("build optional-index runtime"),
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("optional empty index run should proceed");
+    assert_eq!(
+        optional.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
+    let optional_health =
+        semantic_lifecycle_health_check(&repo_root, &project_id, &optional.run.run_id);
+    assert_eq!(optional_health["status"], "warning");
+
+    seed_workspace_index_ready(&repo_root, &project_id);
+    fs::write(
+        repo_root.join("src").join("indexed.rs"),
+        "pub fn semantic_workspace_index_stale() -> bool { true }\n",
+    )
+    .expect("make workspace index stale");
+    let stale_required = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-workspace-index-stale".into(),
+        prompt: "Use semantic workspace search to find related tests for lifecycle.".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime: AutonomousToolRuntime::for_project(
+            &app.handle().clone(),
+            app.state::<DesktopState>().inner(),
+            &project_id,
+        )
+        .expect("build stale-index runtime"),
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("stale required run should persist blocked snapshot");
+    assert_eq!(
+        stale_required.run.status,
+        db::project_store::AgentRunStatus::Failed
+    );
+    let stale_health =
+        semantic_lifecycle_health_check(&repo_root, &project_id, &stale_required.run.run_id);
+    assert_eq!(
+        stale_health["diagnostic"]["code"],
+        "agent_environment_workspace_index_stale"
+    );
+
+    seed_workspace_index_ready(&repo_root, &project_id);
+    let ready_required = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-workspace-index-ready".into(),
+        prompt: "Use semantic workspace search to find related tests for lifecycle.".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime: AutonomousToolRuntime::for_project(
+            &app.handle().clone(),
+            app.state::<DesktopState>().inner(),
+            &project_id,
+        )
+        .expect("build ready-index runtime"),
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("ready required run should proceed");
+    assert_eq!(
+        ready_required.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
+    let ready_health =
+        semantic_lifecycle_health_check(&repo_root, &project_id, &ready_required.run.run_id);
+    assert_eq!(ready_health["status"], "passed");
+    let ready_lifecycle_event = ready_required
+        .events
+        .iter()
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::EnvironmentLifecycleUpdate
+                && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                    .ok()
+                    .and_then(|payload| payload["state"].as_str().map(ToOwned::to_owned))
+                    .as_deref()
+                    == Some("ready")
+        })
+        .expect("ready lifecycle event");
+    let registry_event = ready_required
+        .events
+        .iter()
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::ToolRegistrySnapshot
+        })
+        .expect("tool registry event after readiness");
+    assert!(ready_lifecycle_event.id < registry_event.id);
+}
+
+#[test]
+fn owned_agent_provider_loop_dispatches_read_only_batches_through_tool_registry_v2() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::write(repo_root.join("src").join("second.txt"), "delta\nepsilon\n")
+        .expect("seed second file");
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build desktop autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-tool-registry-v2-read-batch".into(),
+        prompt: [
+            "Read both files in one provider turn.",
+            "tool:read src/tracked.txt",
+            "tool:read src/second.txt",
+        ]
+        .join("\n"),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("read-only batch run succeeds");
+
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
+    assert_eq!(
+        snapshot
+            .tool_calls
+            .iter()
+            .filter(|call| {
+                call.tool_name == "read"
+                    && call.state == db::project_store::AgentToolCallState::Succeeded
+            })
+            .count(),
+        2
+    );
+
+    let registry_payload: serde_json::Value = serde_json::from_str(
+        &snapshot
+            .events
+            .iter()
+            .find(|event| {
+                event.event_kind == db::project_store::AgentRunEventKind::ToolRegistrySnapshot
+            })
+            .expect("tool registry snapshot")
+            .payload_json,
+    )
+    .expect("registry payload json");
+    assert_eq!(registry_payload["executionRegistry"], "tool_registry_v2");
+    assert!(registry_payload["descriptorsV2"]
+        .as_array()
+        .expect("v2 descriptors")
+        .iter()
+        .any(|descriptor| descriptor["name"] == "read"
+            && descriptor["mutability"] == "read_only"
+            && descriptor["sandboxRequirement"] == "read_only"));
+
+    let read_completed_payloads = snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_kind == db::project_store::AgentRunEventKind::ToolCompleted)
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).ok())
+        .filter(|payload| payload["toolName"] == "read" && payload["ok"] == true)
+        .collect::<Vec<_>>();
+    assert_eq!(read_completed_payloads.len(), 2);
+    assert!(read_completed_payloads.iter().all(|payload| {
+        payload["dispatch"]["registryVersion"] == "tool_registry_v2"
+            && payload["dispatch"]["groupMode"] == "parallel_read_only"
+            && payload["dispatch"]["truncation"]["wasTruncated"] == false
+            && payload["dispatch"]["sandbox"]["profile"] == "read_only"
+            && payload["dispatch"]["budget"]["maxToolCallsPerTurn"].as_u64() == Some(128)
+    }));
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .filter(|message| {
+                message.role == db::project_store::AgentMessageRole::Tool
+                    && message.content.contains("\"toolName\":\"read\"")
+            })
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn tool_registry_v2_enforces_sandbox_denial() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::create_dir_all(repo_root.join(".xero")).expect("seed legacy state directory");
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build desktop autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-tool-registry-v2-sandbox-denial".into(),
+        prompt: "Try to write legacy state.\ntool:write .xero/blocked.txt forbidden\n".into(),
+        attachments: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("sandbox denial should persist a failed tool outcome");
+
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Paused
+    );
+    assert!(
+        !repo_root.join(".xero").join("blocked.txt").exists(),
+        "sandbox denial must prevent handler execution and file writes"
+    );
+    assert!(snapshot
+        .file_changes
+        .iter()
+        .all(|change| change.path != ".xero/blocked.txt"));
+
+    let write_call = snapshot
+        .tool_calls
+        .iter()
+        .find(|tool_call| tool_call.tool_name == "write")
+        .expect("write tool call");
+    assert_eq!(
+        write_call.state,
+        db::project_store::AgentToolCallState::Failed
+    );
+    assert!(write_call.error.as_ref().is_some_and(|error| {
+        error.code == "agent_sandbox_path_denied" && error.message.contains(".xero/")
+    }));
+
+    let completion_payload = snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_kind == db::project_store::AgentRunEventKind::ToolCompleted)
+        .filter_map(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).ok())
+        .find(|payload| payload["toolName"] == "write")
+        .expect("failed write completion payload");
+    assert_eq!(completion_payload["ok"], false);
+    assert_eq!(
+        completion_payload["dispatch"]["typedErrorCategory"],
+        "sandbox_denied"
+    );
+    assert_eq!(
+        completion_payload["dispatch"]["sandbox"]["exitClassification"],
+        "denied_by_sandbox"
+    );
+    assert!(completion_payload["dispatch"]["sandbox"]["blockedReason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains(".xero/")));
+}
+
+#[test]
 fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
@@ -982,6 +2219,7 @@ fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("create owned agent run");
 
@@ -992,6 +2230,131 @@ fn owned_agent_heartbeat_touch_updates_running_run_liveness() {
         db::project_store::load_agent_run(&repo_root, &project_id, run_id).expect("load run");
     assert_eq!(snapshot.run.last_heartbeat_at.as_deref(), Some(heartbeat));
     assert_eq!(snapshot.run.updated_at, heartbeat);
+}
+
+#[test]
+fn owned_agent_queues_user_messages_until_environment_ready() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "owned-run-environment-queue-1";
+    let request = OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: run_id.into(),
+        prompt: "Start the run after lifecycle.".into(),
+        attachments: Vec::new(),
+        controls: None,
+        tool_runtime: AutonomousToolRuntime::for_project(
+            &app.handle().clone(),
+            app.state::<DesktopState>().inner(),
+            &project_id,
+        )
+        .expect("build autonomous tool runtime"),
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    };
+    create_owned_agent_run(&request).expect("create owned agent run");
+    db::project_store::upsert_agent_environment_lifecycle_snapshot(
+        &repo_root,
+        &db::project_store::NewAgentEnvironmentLifecycleSnapshotRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.into(),
+            environment_id: format!("env-{project_id}-{run_id}"),
+            state: "preparing_repository".into(),
+            previous_state: Some("waiting_for_sandbox".into()),
+            pending_message_count: 0,
+            health_checks_json: "[]".into(),
+            setup_steps_json: "[]".into(),
+            diagnostic_json: None,
+            snapshot_json: json!({
+                "schema": "xero.environment_lifecycle.v1",
+                "environmentId": format!("env-{project_id}-{run_id}"),
+                "state": "preparing_repository",
+                "previousState": "waiting_for_sandbox",
+                "pendingMessageCount": 0,
+                "healthChecks": [],
+                "setupSteps": []
+            })
+            .to_string(),
+            updated_at: "2026-05-04T12:00:00Z".into(),
+        },
+    )
+    .expect("seed not-ready lifecycle snapshot");
+
+    let queued = continue_owned_agent_run(ContinueOwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        run_id: run_id.into(),
+        prompt: "Queued while setup finishes.".into(),
+        attachments: Vec::new(),
+        controls: None,
+        tool_runtime: AutonomousToolRuntime::for_project(
+            &app.handle().clone(),
+            app.state::<DesktopState>().inner(),
+            &project_id,
+        )
+        .expect("build continuation tool runtime"),
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+        answer_pending_actions: false,
+        auto_compact: None,
+    })
+    .expect("queue continuation while environment is not ready");
+
+    assert!(!queued
+        .messages
+        .iter()
+        .any(|message| message.content == "Queued while setup finishes."));
+    let pending = db::project_store::list_undelivered_agent_environment_pending_messages(
+        &repo_root,
+        &project_id,
+        run_id,
+    )
+    .expect("load pending environment messages");
+    assert_eq!(pending.len(), 1);
+
+    let driven =
+        drive_owned_agent_run(request, AgentRunCancellationToken::default()).expect("drive run");
+    assert_eq!(
+        driven.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
+    assert!(driven
+        .messages
+        .iter()
+        .any(|message| message.content == "Queued while setup finishes."));
+    assert!(
+        db::project_store::list_undelivered_agent_environment_pending_messages(
+            &repo_root,
+            &project_id,
+            run_id,
+        )
+        .expect("reload pending environment messages")
+        .is_empty()
+    );
+    let ready_event = driven
+        .events
+        .iter()
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::EnvironmentLifecycleUpdate
+                && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                    .ok()
+                    .and_then(|payload| payload["state"].as_str().map(ToOwned::to_owned))
+                    .as_deref()
+                    == Some("ready")
+        })
+        .expect("ready lifecycle event");
+    let queued_message_event = driven
+        .events
+        .iter()
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::MessageDelta
+                && event.payload_json.contains("Queued while setup finishes.")
+        })
+        .expect("queued message delivery event");
+    assert!(ready_event.id < queued_message_event.id);
 }
 
 #[test]
@@ -1024,6 +2387,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: provider_config.clone(),
+        provider_preflight: None,
     })
     .expect("create owned agent run");
     db::project_store::upsert_agent_context_policy_settings(
@@ -1061,6 +2425,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
     })
@@ -1103,6 +2468,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("initial owned-agent run");
     assert_eq!(
@@ -1143,6 +2509,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
     })
@@ -1156,6 +2523,79 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         message.role == db::project_store::AgentMessageRole::User
             && message.content == "Continue after compaction."
     }));
+}
+
+#[test]
+fn provider_history_replay_preserves_tool_call_ids() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "owned-run-provider-history-replay-1";
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+    let initial = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: run_id.into(),
+        prompt: "Inspect before resume.\ntool:read src/tracked.txt".into(),
+        attachments: Vec::new(),
+        controls: None,
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("initial owned-agent run with tool call");
+
+    let tool_message = initial
+        .messages
+        .iter()
+        .find(|message| message.role == db::project_store::AgentMessageRole::Tool)
+        .expect("tool result message should be persisted");
+    let tool_payload =
+        serde_json::from_str::<serde_json::Value>(&tool_message.content).expect("tool result json");
+    assert!(tool_payload
+        .get("toolCallId")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| !id.is_empty()));
+    assert!(tool_payload
+        .get("toolName")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| !name.is_empty()));
+    assert!(tool_payload
+        .get("parentAssistantMessageId")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| !id.is_empty()));
+
+    let continue_tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime for replay");
+    let continued = continue_owned_agent_run(ContinueOwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        run_id: run_id.into(),
+        prompt: "Continue from replayable provider history.".into(),
+        attachments: Vec::new(),
+        controls: None,
+        tool_runtime: continue_tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+        answer_pending_actions: false,
+        auto_compact: None,
+    })
+    .expect("continuation should rebuild valid tool-call history");
+
+    assert_eq!(
+        continued.run.status,
+        db::project_store::AgentRunStatus::Completed
+    );
 }
 
 #[test]
@@ -1180,6 +2620,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         controls: None,
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("initial owned-agent run");
     let compacted = compact_session_history(
@@ -1227,6 +2668,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
     })
@@ -1263,6 +2705,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("create auto-compact source run");
     append_auto_compact_fixture_messages(
@@ -1301,6 +2744,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: Some(AgentAutoCompactPreference {
             enabled: true,
@@ -1432,6 +2876,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             api_version: None,
             timeout_ms: 50,
         }),
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: Some(AgentAutoCompactPreference {
             enabled: true,
@@ -1489,6 +2934,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
         }),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("plan-mode read-only run should succeed");
 
@@ -1525,6 +2971,7 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent write task succeeds");
 
@@ -1597,6 +3044,7 @@ fn owned_agent_omits_sensitive_file_content_from_rollback_checkpoints() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent env write task succeeds");
 
@@ -1640,6 +3088,7 @@ fn owned_agent_refuses_unobserved_existing_file_writes() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent run should persist failed safety decision");
 
@@ -1687,6 +3136,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent run should persist failed safety decision");
     assert_eq!(failed.run.status, db::project_store::AgentRunStatus::Paused);
@@ -1711,6 +3161,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         controls: Some(yolo_controls_input()),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: true,
         auto_compact: None,
     })
@@ -1769,6 +3220,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent run should persist stale-write safety decision");
 
@@ -1817,6 +3269,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         controls: None,
         tool_runtime: create_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("create owned agent run");
 
@@ -1848,6 +3301,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         controls: None,
         tool_runtime: continue_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
     })
@@ -1902,20 +3356,48 @@ fn owned_agent_command_tools_emit_command_output_events() {
         controls: Some(yolo_controls_input()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent command task succeeds");
+
+    let partial_output = snapshot
+        .events
+        .iter()
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::CommandOutput
+                && event.payload_json.contains(r#""partial":true"#)
+        })
+        .expect("partial command output event");
+    let partial_payload: serde_json::Value = serde_json::from_str(&partial_output.payload_json)
+        .expect("partial command output payload JSON");
+    assert_eq!(partial_payload["toolCallId"], "tool-call-command-1");
+    assert_eq!(partial_payload["toolName"], "command");
+    assert_eq!(partial_payload["stream"], "stdout");
+    assert_eq!(partial_payload["text"], "hello-xero");
 
     let command_output = snapshot
         .events
         .iter()
-        .find(|event| event.event_kind == db::project_store::AgentRunEventKind::CommandOutput)
-        .expect("command_output event");
+        .find(|event| {
+            event.event_kind == db::project_store::AgentRunEventKind::CommandOutput
+                && event.payload_json.contains(r#""exitCode":0"#)
+        })
+        .expect("final command_output event");
     let payload: serde_json::Value =
         serde_json::from_str(&command_output.payload_json).expect("command output payload JSON");
+    assert_eq!(payload["toolCallId"], "tool-call-command-1");
+    assert_eq!(payload["toolName"], "command");
     assert_eq!(payload["argv"], json!(["echo", "hello-xero"]));
     assert_eq!(payload["stdout"], "hello-xero");
     assert_eq!(payload["spawned"], true);
     assert_eq!(payload["exitCode"], 0);
+    assert_eq!(payload["sandbox"]["profile"], "full_local_with_approval");
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        payload["sandbox"]["platformPlan"]["strategy"],
+        "macos_sandbox_exec"
+    );
+    assert_eq!(payload["sandbox"]["exitClassification"], "success");
 }
 
 #[test]
@@ -1941,6 +3423,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         controls: Some(controls.clone()),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("owned agent command approval run should complete with pending action");
 
@@ -1968,6 +3451,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         controls: Some(controls),
         tool_runtime: approved_tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: true,
         auto_compact: None,
     })

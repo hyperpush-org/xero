@@ -142,6 +142,7 @@ function EditorView({
   const pendingJumpRef = useRef<{ path: string; line: number; column: number } | null>(null)
   const assetPreviewUrlCacheRef = useRef<Map<string, Promise<string | null>>>(new Map())
   const previousProjectIdRef = useRef(projectId)
+  const editorViewRef = useRef<{ path: string; view: CodeMirrorView } | null>(null)
   const [editorModeByPath, setEditorModeByPath] = useState<Record<string, FileEditorMode>>({})
 
   const activeMode: FileEditorMode = activePath
@@ -180,15 +181,61 @@ function EditorView({
     [projectId, readProjectFile],
   )
 
+  const handleEditorViewReady = useCallback((path: string, view: CodeMirrorView | null) => {
+    if (view) {
+      editorViewRef.current = { path, view }
+      setEditorView(view)
+      return
+    }
+
+    if (editorViewRef.current?.path === path) {
+      editorViewRef.current = null
+      setEditorView(null)
+    }
+  }, [])
+
   const flushEditorSnapshot = useCallback(() => {
-    if (!editorView) {
+    const trackedEditor = editorViewRef.current
+    if (!trackedEditor) {
       return undefined
     }
 
-    const snapshot = editorView.state.doc.toString()
-    handleSnapshotChange(snapshot)
+    const snapshot = trackedEditor.view.state.doc.toString()
+    handleSnapshotChange(snapshot, trackedEditor.path)
     return snapshot
-  }, [editorView, handleSnapshotChange])
+  }, [handleSnapshotChange])
+
+  const handleActiveSnapshotChange = useCallback(
+    (value: string) => {
+      if (!activePath) return
+      handleSnapshotChange(value, activePath)
+    },
+    [activePath, handleSnapshotChange],
+  )
+
+  const handleActiveDirtyChange = useCallback(
+    (isDirty: boolean) => {
+      if (!activePath) return
+      handleDirtyChange(isDirty, activePath)
+    },
+    [activePath, handleDirtyChange],
+  )
+
+  const handleActiveDocumentStatsChange = useCallback(
+    (stats: { lineCount: number }) => {
+      if (!activePath) return
+      handleDocumentStatsChange(stats, activePath)
+    },
+    [activePath, handleDocumentStatsChange],
+  )
+
+  const handleActiveEditorViewReady = useCallback(
+    (view: CodeMirrorView | null) => {
+      if (!activePath) return
+      handleEditorViewReady(activePath, view)
+    },
+    [activePath, handleEditorViewReady],
+  )
 
   const handleModeChange = useCallback(
     (mode: FileEditorMode) => {
@@ -424,13 +471,13 @@ function EditorView({
                     textValue={activeContent}
                     textSavedValue={activeSavedContent}
                     textDocumentVersion={activeDocumentVersion}
-                    onSnapshotChange={handleSnapshotChange}
-                    onDirtyChange={handleDirtyChange}
-                    onDocumentStatsChange={handleDocumentStatsChange}
+                    onSnapshotChange={handleActiveSnapshotChange}
+                    onDirtyChange={handleActiveDirtyChange}
+                    onDocumentStatsChange={handleActiveDocumentStatsChange}
                     onSave={handleSaveActive}
                     onCursorChange={setCursor}
                     onOpenFind={handleOpenFind}
-                    onViewReady={setEditorView}
+                    onViewReady={handleActiveEditorViewReady}
                     onResolveAssetPreviewUrl={resolveAssetPreviewUrl}
                     onCopyPath={handleCopyPath}
                     onOpenExternal={openProjectFileExternal ? handleOpenExternal : undefined}

@@ -824,7 +824,6 @@ export function useXeroDesktopState(
     source: Extract<RefreshSource, 'runtime_run:updated' | 'runtime_stream:action_required'>
   } | null>(null)
   const runtimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
-  const runtimeRunRefreshKeyRef = useRef<Record<string, string>>({})
   const previousRuntimeAuthRef = useRef<Record<string, boolean>>({})
 
   const trimRuntimeStreamSessionCache = useCallback((protectedKey: string | null = null) => {
@@ -2017,6 +2016,14 @@ export function useXeroDesktopState(
             ...currentErrors,
             [trimmedProfileId]: null,
           }))
+          void adapter
+            .preflightProviderProfile(trimmedProfileId, {
+              forceRefresh: false,
+              modelId: response.configuredModelId || null,
+            })
+            .catch(() => {
+              // Proactive preflight warms the durable cache; diagnostics surfaces explicit failures.
+            })
           return response
         } catch (error) {
           if (providerModelCatalogLoadRequestRef.current[trimmedProfileId] === requestId) {
@@ -2054,11 +2061,12 @@ export function useXeroDesktopState(
   const checkProviderProfile = useCallback(
     async (
       profileId: string,
-      options: { includeNetwork?: boolean } = {},
+      options: { includeNetwork?: boolean; modelId?: string | null } = {},
     ): Promise<ProviderProfileDiagnosticsDto> => {
       const trimmedProfileId = profileId.trim()
       const response = await adapter.checkProviderProfile(trimmedProfileId, {
         includeNetwork: options.includeNetwork ?? true,
+        modelId: options.modelId ?? null,
       })
 
       const modelCatalog = response.modelCatalog
@@ -2240,7 +2248,6 @@ export function useXeroDesktopState(
       refs: {
         activeProjectIdRef,
         runtimeSessionsRef,
-        runtimeRunRefreshKeyRef,
         repositoryStatusSyncKeyRef,
       },
       setters: {
@@ -2257,7 +2264,6 @@ export function useXeroDesktopState(
       applyRuntimeRunUpdate,
       loadProject,
       resetRepositoryDiffs,
-      scheduleRuntimeMetadataRefresh,
     }).then((nextDispose) => {
       if (effectDisposed) {
         nextDispose()
@@ -2271,7 +2277,7 @@ export function useXeroDesktopState(
       effectDisposed = true
       disposeListeners()
     }
-  }, [adapter, applyRuntimeRunUpdate, bootstrap, handleAdapterEventError, loadProject, resetRepositoryDiffs, scheduleRuntimeMetadataRefresh])
+  }, [adapter, applyRuntimeRunUpdate, bootstrap, handleAdapterEventError, loadProject, resetRepositoryDiffs])
 
   useEffect(() => {
     if (!activeProjectId || typeof window === 'undefined' || typeof document === 'undefined') {
@@ -2447,7 +2453,6 @@ export function useXeroDesktopState(
     if (activeProjectIdRef.current) {
       const projectId = activeProjectIdRef.current
       delete runtimeActionRefreshKeysRef.current[projectId]
-      delete runtimeRunRefreshKeyRef.current[projectId]
       await loadProject(projectId, 'selection')
       setRuntimeStreamRetryToken((current) => current + 1)
       return
@@ -3160,11 +3165,15 @@ export function useXeroDesktopState(
     activeRuntimeStreamCandidate?.agentSessionId === activeAgentSessionId
       ? activeRuntimeStreamCandidate
       : null
-  const activeNotificationRoutes = activeProject
-    ? (notificationRoutes[activeProject.id] ?? []).filter(
-        (route) => route.projectId === activeProject.id && route.routeId.trim().length > 0,
-      )
-    : []
+  const activeNotificationRoutes = useMemo(
+    () =>
+      activeProject
+        ? (notificationRoutes[activeProject.id] ?? []).filter(
+            (route) => route.projectId === activeProject.id && route.routeId.trim().length > 0,
+          )
+        : [],
+    [activeProject, notificationRoutes],
+  )
   const activeNotificationRouteLoadStatus: NotificationRoutesLoadStatus = activeProject
     ? notificationRouteLoadStatuses[activeProject.id] ?? 'idle'
     : 'idle'

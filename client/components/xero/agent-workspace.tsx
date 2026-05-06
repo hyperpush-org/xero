@@ -5,6 +5,7 @@ import { useDroppable } from '@dnd-kit/core'
 
 import { PaneGrid, type PaneDragHandle, type PaneGridSlot } from '@/components/xero/agent-runtime/pane-grid'
 import { AGENT_WORKSPACE_DROP_TARGET_ID } from '@/components/xero/agent-runtime/agent-workspace-dnd-provider'
+import { isAgentPaneWorking } from '@/components/xero/agent-runtime/runtime-stream-helpers'
 import type { AgentPaneCloseState, AgentRuntimeProps } from '@/components/xero/agent-runtime'
 import { LiveAgentRuntimeView } from '@/components/xero/agent-runtime/live-agent-runtime'
 import type {
@@ -108,6 +109,7 @@ export interface AgentWorkspaceProps
   extends Omit<
       AgentRuntimeProps,
       | 'agent'
+      | 'active'
       | 'density'
       | 'paneId'
       | 'paneNumber'
@@ -135,6 +137,7 @@ export interface AgentWorkspaceProps
       | 'onUpsertNotificationRoute'
     >,
     PaneAwareRuntimeHandlers {
+  active?: boolean
   layout: AgentWorkspaceLayoutState | null
   panes: AgentWorkspacePaneView[]
   highChurnStore: XeroHighChurnStore
@@ -149,6 +152,7 @@ export interface AgentWorkspaceProps
 export const AgentWorkspace = memo(function AgentWorkspace({
   layout,
   panes,
+  active = true,
   highChurnStore,
   fallback = null,
   onSpawnPane,
@@ -192,6 +196,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
         paneId: pane.paneId,
         isFocused: pane.paneId === focusedPaneId,
         ariaLabel: getPaneAriaLabel(pane, index + 1),
+        isWorking: isAgentPaneWorking(pane.agent),
       })),
     [panes, focusedPaneId],
   )
@@ -218,6 +223,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
       return (
         <PaneRuntime
           pane={pane}
+          active={active}
           index={index}
           paneCount={paneCount}
           density={density}
@@ -249,6 +255,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
       )
     },
     [
+      active,
       density,
       highChurnStore,
       onCancelAutonomousRun,
@@ -297,6 +304,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
 
 interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
   pane: AgentWorkspacePaneView
+  active: boolean
   index: number
   paneCount: number
   density: 'comfortable' | 'compact'
@@ -309,6 +317,7 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
   dragHandle?: PaneDragHandle
   runtimeProps: Omit<AgentRuntimeProps,
     | 'agent'
+    | 'active'
     | 'density'
     | 'paneId'
     | 'paneNumber'
@@ -340,6 +349,7 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
 
 const PaneRuntime = memo(function PaneRuntime({
   pane,
+  active,
   index,
   paneCount,
   density,
@@ -476,6 +486,7 @@ const PaneRuntime = memo(function PaneRuntime({
     <LiveAgentRuntimeView
       {...runtimeProps}
       {...paneBoundHandlers}
+      active={active}
       agent={pane.agent}
       highChurnStore={highChurnStore}
       density={density}

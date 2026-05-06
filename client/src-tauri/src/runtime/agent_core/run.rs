@@ -1,6 +1,10 @@
 use super::*;
-use crate::runtime::AutonomousSubagentRole;
 use sha2::{Digest, Sha256};
+use std::time::Instant;
+use xero_agent_core::{
+    production_runtime_trace_metadata, validate_production_runtime_contract,
+    ProductionRuntimeContract, RuntimeStoreDescriptor,
+};
 
 #[derive(Debug, Clone)]
 pub struct PreparedOwnedAgentContinuation {
@@ -36,6 +40,7 @@ pub fn create_owned_agent_run(
     )?;
 
     let mut controls = runtime_controls_from_request(request.controls.as_ref());
+    ensure_runtime_agent_available(controls.active.runtime_agent_id)?;
     let definition_selection = project_store::resolve_agent_definition_for_run(
         &request.repo_root,
         request
@@ -56,7 +61,9 @@ pub fn create_owned_agent_run(
     }
     controls.active.plan_mode_required =
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
-    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_selection.snapshot);
+    let agent_tool_policy =
+        effective_agent_tool_policy(&definition_selection.snapshot, &request.tool_runtime);
+    let tool_registry_started = Instant::now();
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
@@ -68,6 +75,13 @@ pub fn create_owned_agent_run(
             agent_tool_policy: agent_tool_policy.clone(),
         },
     );
+    eprintln!(
+        "[runtime-latency] ToolRegistry::for_prompt_with_options project_id={} run_id={} duration_ms={}",
+        request.project_id,
+        request.run_id,
+        tool_registry_started.elapsed().as_millis()
+    );
+    let system_prompt_started = Instant::now();
     let system_prompt = assemble_system_prompt_for_session(
         &request.repo_root,
         Some(&request.project_id),
@@ -78,7 +92,22 @@ pub fn create_owned_agent_run(
         Some(&definition_selection.snapshot),
         Some(request.tool_runtime.soul_settings()),
     )?;
+    eprintln!(
+        "[runtime-latency] compile_system_prompt_for_session project_id={} run_id={} duration_ms={}",
+        request.project_id,
+        request.run_id,
+        system_prompt_started.elapsed().as_millis()
+    );
     let provider = create_provider_adapter(request.provider_config.clone())?;
+    let runtime_contract = if matches!(&request.provider_config, AgentProviderConfig::Fake) {
+        None
+    } else {
+        Some(owned_agent_production_runtime_contract(
+            request,
+            provider.provider_id(),
+            provider.model_id(),
+        )?)
+    };
     let now = now_timestamp();
 
     project_store::insert_agent_run(
@@ -97,6 +126,33 @@ pub fn create_owned_agent_run(
             now: now.clone(),
         },
     )?;
+    if let Some(runtime_contract) = runtime_contract.as_ref() {
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::StateTransition,
+            json!({
+                "kind": "production_runtime_contract",
+                "runtimeContract": production_runtime_trace_metadata(runtime_contract),
+            }),
+        )?;
+    }
+    if let Some(provider_preflight) = request.provider_preflight.as_ref() {
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::ValidationCompleted,
+            json!({
+                "label": "provider_preflight",
+                "outcome": provider_preflight.status.as_str(),
+                "providerId": &provider_preflight.provider_id,
+                "modelId": &provider_preflight.model_id,
+                "providerPreflight": provider_preflight,
+            }),
+        )?;
+    }
 
     append_message(
         &request.repo_root,
@@ -148,16 +204,71 @@ pub fn create_owned_agent_run(
         &controls,
     )?;
 
+    let started_at = now_timestamp();
     project_store::update_agent_run_status(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
         AgentRunStatus::Running,
         None,
-        &now_timestamp(),
+        &started_at,
+    )?;
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        AgentRunEventKind::RunStarted,
+        json!({
+            "message": "Owned agent run started.",
+            "state": AgentRunState::Intake.as_str(),
+            "runtimeAgentId": controls.active.runtime_agent_id.as_str(),
+            "runtimeAgentLabel": controls.active.runtime_agent_id.label(),
+        }),
+    )?;
+    project_store::upsert_agent_coordination_presence(
+        &request.repo_root,
+        &project_store::UpsertAgentCoordinationPresenceRecord {
+            project_id: request.project_id.clone(),
+            run_id: request.run_id.clone(),
+            pane_id: None,
+            status: "running".into(),
+            current_phase: "run_started".into(),
+            activity_summary: "Run started.".into(),
+            last_event_id: None,
+            last_event_kind: None,
+            updated_at: started_at,
+            lease_seconds: None,
+        },
     )?;
 
     project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)
+}
+
+fn owned_agent_production_runtime_contract(
+    request: &OwnedAgentRunRequest,
+    provider_id: &str,
+    model_id: &str,
+) -> CommandResult<ProductionRuntimeContract> {
+    let contract = ProductionRuntimeContract::real_provider(
+        "desktop_start",
+        request.project_id.clone(),
+        provider_id.to_owned(),
+        model_id.to_owned(),
+        RuntimeStoreDescriptor::app_data_project_state(
+            request.project_id.clone(),
+            crate::db::database_path_for_repo(&request.repo_root),
+        ),
+    );
+    validate_production_runtime_contract(&contract).map_err(|error| {
+        CommandError::user_fixable(
+            error.code,
+            format!(
+                "Xero refused to start owned-agent run `{}` because the production runtime contract is invalid: {}",
+                request.run_id, error.message
+            ),
+        )
+    })?;
+    Ok(contract)
 }
 
 pub fn drive_owned_agent_run(
@@ -180,7 +291,8 @@ pub fn drive_owned_agent_run(
         &allowed_approval_modes,
         default_approval_mode,
     );
-    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
+    let agent_tool_policy =
+        effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let skill_tool_enabled = request.tool_runtime.skill_tool_enabled();
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
@@ -227,6 +339,33 @@ pub fn drive_owned_agent_run(
         request.provider_config.clone(),
         cancellation.clone(),
     );
+    let environment = match start_owned_agent_environment(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.provider_config,
+        &tool_runtime,
+    ) {
+        Ok(environment) => environment,
+        Err(error) if error.code == "agent_environment_startup_failed" => {
+            return project_store::load_agent_run(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+            );
+        }
+        Err(error) => return Err(error),
+    };
+    if !environment.state.is_ready() {
+        return project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        );
+    }
+    deliver_environment_pending_messages(&request.repo_root, &request.project_id, &request.run_id)?;
+    let snapshot =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
     let messages = provider_messages_from_snapshot(&request.repo_root, &snapshot)?;
 
     match drive_provider_loop(
@@ -239,6 +378,7 @@ pub fn drive_owned_agent_run(
         &request.project_id,
         &request.run_id,
         &snapshot.run.agent_session_id,
+        request.provider_preflight.as_ref(),
         &cancellation,
     ) {
         Ok(()) => {
@@ -347,6 +487,27 @@ pub fn prepare_owned_agent_continuation_for_drive(
             ),
         ));
     }
+    ensure_runtime_agent_available(before.run.runtime_agent_id)?;
+    if matches!(before.run.status, AgentRunStatus::Starting)
+        || lifecycle_should_queue_user_message(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?
+    {
+        let snapshot = queue_environment_user_message(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            &request.prompt,
+        )?;
+        return Ok(PreparedOwnedAgentContinuation {
+            snapshot,
+            drive_request: request.clone(),
+            drive_required: false,
+            handoff: None,
+        });
+    }
 
     let provider = create_provider_adapter(request.provider_config.clone())?;
 
@@ -384,7 +545,8 @@ pub fn prepare_owned_agent_continuation_for_drive(
             &allowed_approval_modes,
             default_approval_mode,
         );
-        let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
+        let agent_tool_policy =
+            effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
         let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
             browser_control_preference: request.tool_runtime.browser_control_preference(),
@@ -438,13 +600,29 @@ pub fn prepare_owned_agent_continuation_for_drive(
         AgentRunEventKind::MessageDelta,
         json!({ "role": "user", "text": request.prompt }),
     )?;
+    let resumed_at = now_timestamp();
     let snapshot = project_store::update_agent_run_status(
         &request.repo_root,
         &request.project_id,
         &request.run_id,
         AgentRunStatus::Running,
         None,
-        &now_timestamp(),
+        &resumed_at,
+    )?;
+    project_store::upsert_agent_coordination_presence(
+        &request.repo_root,
+        &project_store::UpsertAgentCoordinationPresenceRecord {
+            project_id: request.project_id.clone(),
+            run_id: request.run_id.clone(),
+            pane_id: None,
+            status: "running".into(),
+            current_phase: "run_resumed".into(),
+            activity_summary: "Run resumed.".into(),
+            last_event_id: None,
+            last_event_kind: None,
+            updated_at: resumed_at,
+            lease_seconds: None,
+        },
     )?;
     Ok(PreparedOwnedAgentContinuation {
         snapshot,
@@ -820,10 +998,14 @@ fn estimate_continuation_context_tokens(
         &allowed_approval_modes,
         default_approval_mode,
     );
-    let tool_runtime = request
-        .tool_runtime
-        .clone()
-        .with_agent_tool_policy(agent_tool_policy_from_snapshot(&definition_snapshot));
+    let tool_runtime =
+        request
+            .tool_runtime
+            .clone()
+            .with_agent_tool_policy(effective_agent_tool_policy(
+                &definition_snapshot,
+                &request.tool_runtime,
+            ));
     let tool_registry = tool_registry_for_snapshot(
         &request.repo_root,
         snapshot,
@@ -1203,7 +1385,8 @@ fn create_or_load_handoff_target_run(
     let controls = handoff_controls_for_source(request, source_snapshot);
     let definition_snapshot =
         load_agent_definition_snapshot_for_run(&request.repo_root, &source_snapshot.run)?;
-    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
+    let agent_tool_policy =
+        effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let handoff_seed = render_handoff_seed_message(bundle)?;
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
@@ -1335,6 +1518,7 @@ fn request_for_handoff_target(
         controls: Some(handoff_control_input_for_source(request, source_snapshot)),
         tool_runtime: request.tool_runtime.clone(),
         provider_config: request.provider_config.clone(),
+        provider_preflight: request.provider_preflight.clone(),
         answer_pending_actions: false,
         auto_compact: None,
     }
@@ -1626,6 +1810,13 @@ fn agent_specific_handoff(
             "validationStatus": "available_through_agent_definition_tool",
             "followUpInformationNeeded": [],
         }),
+        RuntimeAgentIdDto::Test => json!({
+            "harnessTrigger": handoff_preview(pending_prompt, 700, redaction_count),
+            "stepOutcomes": completed_work,
+            "scratchChanges": recent_file_changes,
+            "verificationEvidence": verification_status,
+            "followUpInformationNeeded": [],
+        }),
     }
 }
 
@@ -1667,7 +1858,8 @@ pub fn drive_owned_agent_continuation(
         &allowed_approval_modes,
         default_approval_mode,
     );
-    let agent_tool_policy = agent_tool_policy_from_snapshot(&definition_snapshot);
+    let agent_tool_policy =
+        effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let skill_tool_enabled = request.tool_runtime.skill_tool_enabled();
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
@@ -1708,6 +1900,7 @@ pub fn drive_owned_agent_continuation(
         &request.project_id,
         &request.run_id,
         &snapshot.run.agent_session_id,
+        request.provider_preflight.as_ref(),
         &cancellation,
     ) {
         Ok(()) => {
@@ -1783,7 +1976,7 @@ fn replay_answered_tool_action_requests(
                 ),
             )
         })?;
-        let result = dispatch_tool_call_with_write_approval(
+        let mut result = dispatch_tool_call_with_write_approval(
             tool_registry,
             tool_runtime,
             repo_root,
@@ -1802,10 +1995,14 @@ fn replay_answered_tool_action_requests(
                     | AnsweredToolReplayKind::OperatorApprovedSystemRead
             ),
         )?;
+        result.parent_assistant_message_id =
+            Some(format!("provider-assistant-{run_id}-approval-replay"));
         let result_content = serde_json::to_string(&result).map_err(|error| {
             CommandError::system_fault(
                 "agent_tool_result_serialize_failed",
-                format!("Xero could not serialize approved owned-agent tool result: {error}"),
+                format!(
+                    "Xero could not serialize approved owned-agent tool result for transcript persistence: {error}"
+                ),
             )
         })?;
         append_message(
@@ -2204,6 +2401,14 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         self.cancellation.check_cancelled()?;
         let child_run_id =
             sanitize_action_id(&format!("{}-{}", self.parent_run_id, task.subagent_id));
+        let child_trace_id =
+            xero_agent_core::runtime_trace_id_for_run(&self.project_id, &child_run_id);
+        let parent_trace_id =
+            project_store::load_agent_run(&self.repo_root, &self.project_id, &self.parent_run_id)
+                .map(|snapshot| snapshot.run.trace_id)
+                .unwrap_or_else(|_| {
+                    xero_agent_core::runtime_trace_id_for_run(&self.project_id, &self.parent_run_id)
+                });
         let result_artifact = format!("owned-agent-run:{child_run_id}");
         let model_id = task
             .model_id
@@ -2213,6 +2418,11 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         let provider_config = route_provider_config_model(self.provider_config.clone(), &model_id);
         let prompt = subagent_prompt(&task, &self.parent_run_id);
         let child_token = self.cancellation.linked_child();
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            task.role,
+            self.tool_runtime.agent_tool_policy(),
+            self.tool_runtime.skill_tool_enabled(),
+        );
         let request = OwnedAgentRunRequest {
             repo_root: self.repo_root.clone(),
             project_id: self.project_id.clone(),
@@ -2232,11 +2442,17 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             tool_runtime: self
                 .tool_runtime
                 .clone()
+                .with_agent_tool_policy(Some(role_policy))
+                .with_delegated_tool_call_budget(task.subagent_id.clone(), task.max_tool_calls)
                 .with_subagent_write_scope(task.role, task.write_set.clone()),
             provider_config,
+            provider_preflight: None,
         };
 
         task.run_id = Some(child_run_id);
+        task.trace_id = Some(child_trace_id);
+        task.parent_run_id = Some(self.parent_run_id.clone());
+        task.parent_trace_id = Some(parent_trace_id);
         task.result_artifact = Some(result_artifact);
         task.status = "running".into();
         task.started_at.get_or_insert_with(now_timestamp);
@@ -2287,6 +2503,73 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         task.cancelled_at = Some(now_timestamp());
         Ok(task)
     }
+
+    fn send_subagent_input(
+        &self,
+        task: &AutonomousSubagentTask,
+        text: &str,
+    ) -> CommandResult<AutonomousSubagentTask> {
+        let Some(child_run_id) = task.run_id.as_deref() else {
+            return Ok(task.clone());
+        };
+        append_user_message(&self.repo_root, &self.project_id, child_run_id, text.into())?;
+        let _ = append_event(
+            &self.repo_root,
+            &self.project_id,
+            &self.parent_run_id,
+            AgentRunEventKind::ReasoningSummary,
+            json!({
+                "summary": format!("Input was sent to subagent task `{}`.", task.subagent_id),
+                "subagentId": task.subagent_id.clone(),
+                "childRunId": child_run_id,
+                "role": task.role.as_str(),
+                "status": task.status.clone(),
+            }),
+        );
+        Ok(task.clone())
+    }
+
+    fn export_subagent_trace(&self, task: &AutonomousSubagentTask) -> CommandResult<JsonValue> {
+        let Some(child_run_id) = task.run_id.as_deref() else {
+            return Ok(json!({
+                "subagentId": task.subagent_id.clone(),
+                "status": task.status.clone(),
+                "traceId": task.trace_id.clone(),
+                "events": [],
+                "fileChanges": [],
+            }));
+        };
+        let snapshot =
+            project_store::load_agent_run(&self.repo_root, &self.project_id, child_run_id)?;
+        Ok(json!({
+            "subagentId": task.subagent_id.clone(),
+            "role": task.role.as_str(),
+            "roleLabel": task.role_label.clone(),
+            "parentRunId": task.parent_run_id.clone(),
+            "parentTraceId": task.parent_trace_id.clone(),
+            "runId": child_run_id,
+            "traceId": snapshot.run.trace_id,
+            "status": format!("{:?}", snapshot.run.status).to_ascii_lowercase(),
+            "events": snapshot.events.iter().map(|event| {
+                json!({
+                    "id": event.id,
+                    "kind": project_store::agent_event_kind_sql_value(&event.event_kind),
+                    "payload": serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null),
+                    "createdAt": event.created_at.clone(),
+                })
+            }).collect::<Vec<_>>(),
+            "fileChanges": snapshot.file_changes.iter().map(|change| {
+                json!({
+                    "path": change.path.clone(),
+                    "operation": change.operation.clone(),
+                    "subagentId": change.subagent_id.clone(),
+                    "subagentRole": change.subagent_role.clone(),
+                    "traceId": change.trace_id.clone(),
+                    "topLevelRunId": change.top_level_run_id.clone(),
+                })
+            }).collect::<Vec<_>>(),
+        }))
+    }
 }
 
 impl OwnedAgentSubagentExecutor {
@@ -2299,6 +2582,24 @@ impl OwnedAgentSubagentExecutor {
     ) {
         let run_id = request.run_id.clone();
         let result = create_owned_agent_run(&request).and_then(|_| {
+            if let Some(parent_trace_id) = task.parent_trace_id.clone() {
+                let _ = project_store::update_agent_run_lineage(
+                    &self.repo_root,
+                    &project_store::AgentRunLineageUpdateRecord {
+                        project_id: self.project_id.clone(),
+                        run_id: run_id.clone(),
+                        parent_run_id: self.parent_run_id.clone(),
+                        parent_trace_id,
+                        parent_subagent_id: task.subagent_id.clone(),
+                        subagent_role: task.role.as_str().into(),
+                        updated_at: now_timestamp(),
+                    },
+                )
+                .map(|snapshot| {
+                    task.trace_id = Some(snapshot.run.trace_id);
+                    task.parent_trace_id = snapshot.run.parent_trace_id;
+                });
+            }
             let _ = append_event(
                 &self.repo_root,
                 &self.project_id,
@@ -2311,12 +2612,17 @@ impl OwnedAgentSubagentExecutor {
                     ),
                     "subagentId": task.subagent_id.clone(),
                     "childRunId": run_id.clone(),
+                    "traceId": task.trace_id.clone(),
+                    "parentRunId": task.parent_run_id.clone(),
+                    "parentTraceId": task.parent_trace_id.clone(),
+                    "role": task.role.as_str(),
                     "status": "running",
                 }),
             );
             drive_owned_agent_run(request, cancellation)
         });
 
+        let mut child_file_changes = Vec::new();
         match result {
             Ok(snapshot) => {
                 task.status = match snapshot.run.status {
@@ -2327,6 +2633,23 @@ impl OwnedAgentSubagentExecutor {
                     _ => format!("{:?}", snapshot.run.status).to_ascii_lowercase(),
                 };
                 task.result_summary = Some(subagent_result_summary(&snapshot));
+                task.trace_id = Some(snapshot.run.trace_id.clone());
+                task.parent_trace_id = snapshot.run.parent_trace_id.clone();
+                child_file_changes = snapshot
+                    .file_changes
+                    .iter()
+                    .map(|change| {
+                        json!({
+                            "path": change.path.clone(),
+                            "operation": change.operation.clone(),
+                            "traceId": change.trace_id.clone(),
+                            "topLevelRunId": change.top_level_run_id.clone(),
+                            "subagentId": change.subagent_id.clone(),
+                            "subagentRole": change.subagent_role.clone(),
+                            "createdAt": change.created_at.clone(),
+                        })
+                    })
+                    .collect();
             }
             Err(error) => {
                 task.status = if error.code == AGENT_RUN_CANCELLED_CODE {
@@ -2357,9 +2680,14 @@ impl OwnedAgentSubagentExecutor {
                 ),
                 "subagentId": task.subagent_id.clone(),
                 "childRunId": task.run_id.clone(),
+                "traceId": task.trace_id.clone(),
+                "parentRunId": task.parent_run_id.clone(),
+                "parentTraceId": task.parent_trace_id.clone(),
+                "role": task.role.as_str(),
                 "status": task.status.clone(),
                 "resultSummary": task.result_summary.clone(),
                 "resultArtifact": task.result_artifact.clone(),
+                "fileChanges": child_file_changes,
             }),
         );
     }
@@ -2398,21 +2726,35 @@ fn route_provider_config_model(
     provider_config
 }
 
+fn effective_agent_tool_policy(
+    definition_snapshot: &JsonValue,
+    tool_runtime: &AutonomousToolRuntime,
+) -> Option<AutonomousAgentToolPolicy> {
+    AutonomousAgentToolPolicy::intersect_optional(
+        agent_tool_policy_from_snapshot(definition_snapshot).as_ref(),
+        tool_runtime.agent_tool_policy(),
+        tool_runtime.skill_tool_enabled(),
+    )
+}
+
 fn subagent_prompt(task: &AutonomousSubagentTask, parent_run_id: &str) -> String {
-    let boundary = match task.role {
-        AutonomousSubagentRole::Worker => format!(
+    let boundary = if task.role.allows_write_set() && !task.write_set.is_empty() {
+        format!(
             "You may edit only these repo-relative writeSet paths: {}. Do not modify any other file.",
             task.write_set.join(", ")
-        ),
-        AutonomousSubagentRole::Explorer
-        | AutonomousSubagentRole::Verifier
-        | AutonomousSubagentRole::Reviewer => {
-            "This is a read-only role. Do not change files.".into()
-        }
+        )
+    } else if task.role.allows_write_set() {
+        "This role has no writeSet for this task, so it is read-only. Do not change files.".into()
+    } else {
+        "This is a read-only role. Do not change files.".into()
     };
     format!(
-        "You are a {:?} subagent for parent owned-agent run `{parent_run_id}`. Work only on this focused task, return concise findings, and respect the ownership boundary. {boundary}\n\n{}",
-        task.role,
+        "You are the {} subagent for parent owned-agent run `{parent_run_id}`. Work only on this focused task, stay inside the owning pane lineage, and respect the ownership boundary. {boundary}\nVerification contract: {}\nTool budget: at most {} delegated tool calls, {} tokens, and {} cost micros.\n\n{}",
+        task.role.label(),
+        task.verification_contract,
+        task.max_tool_calls,
+        task.max_tokens,
+        task.max_cost_micros,
         task.prompt
     )
 }
@@ -2625,6 +2967,7 @@ mod tests {
             )),
             tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("run custom engineering agent");
 
@@ -2678,6 +3021,7 @@ mod tests {
             )),
             tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("run custom observe-only agent");
 

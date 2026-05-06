@@ -6,7 +6,12 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use url::Url;
+use xero_agent_core::{
+    provider_capability_catalog, ProviderCapabilityCatalog, ProviderCapabilityCatalogInput,
+    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+};
 
 use crate::{
     auth::{
@@ -107,6 +112,50 @@ pub struct ProviderModelCatalog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refresh_error: Option<ProviderModelCatalogDiagnostic>,
     pub models: Vec<ProviderModelRecord>,
+}
+
+pub fn provider_capability_catalog_for_catalog(
+    catalog: &ProviderModelCatalog,
+    model_id: Option<&str>,
+) -> ProviderCapabilityCatalog {
+    let selected_model_id = model_id
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .unwrap_or(catalog.configured_model_id.as_str());
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.model_id == selected_model_id)
+        .or_else(|| {
+            catalog
+                .models
+                .iter()
+                .find(|model| model.model_id == catalog.configured_model_id)
+        });
+    provider_capability_catalog_for_parts(
+        catalog.provider_id.as_str(),
+        selected_model_id,
+        &catalog.source,
+        catalog.fetched_at.as_deref(),
+        catalog.last_success_at.as_deref(),
+        None,
+        model,
+    )
+}
+
+pub fn provider_capability_catalog_for_model(
+    catalog: &ProviderModelCatalog,
+    model: &ProviderModelRecord,
+) -> ProviderCapabilityCatalog {
+    provider_capability_catalog_for_parts(
+        catalog.provider_id.as_str(),
+        model.model_id.as_str(),
+        &catalog.source,
+        catalog.fetched_at.as_deref(),
+        catalog.last_success_at.as_deref(),
+        None,
+        Some(model),
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -591,6 +640,98 @@ fn provider_model_record(
         }),
         context_limit_fetched_at: None,
     }
+}
+
+fn provider_capability_catalog_for_parts(
+    provider_id: &str,
+    model_id: &str,
+    catalog_source: &ProviderModelCatalogSource,
+    fetched_at: Option<&str>,
+    last_success_at: Option<&str>,
+    credential_proof: Option<String>,
+    model: Option<&ProviderModelRecord>,
+) -> ProviderCapabilityCatalog {
+    let thinking = model.map(|model| &model.thinking);
+    provider_capability_catalog(ProviderCapabilityCatalogInput {
+        provider_id: provider_id.into(),
+        model_id: model_id.into(),
+        catalog_source: catalog_source_string(catalog_source).into(),
+        fetched_at: fetched_at.map(str::to_owned),
+        last_success_at: last_success_at.map(str::to_owned),
+        cache_age_seconds: fetched_at.and_then(catalog_age_seconds),
+        cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+        credential_proof,
+        context_window_tokens: model.and_then(|model| model.context_window_tokens),
+        max_output_tokens: model.and_then(|model| model.max_output_tokens),
+        context_limit_source: model
+            .and_then(|model| model.context_limit_source.as_ref())
+            .map(session_context_limit_source_string),
+        context_limit_confidence: model
+            .and_then(|model| model.context_limit_confidence.as_ref())
+            .map(session_context_limit_confidence_string),
+        thinking_supported: thinking.is_some_and(|thinking| thinking.supported),
+        thinking_efforts: thinking
+            .map(|thinking| {
+                thinking
+                    .effort_options
+                    .iter()
+                    .map(provider_model_thinking_effort_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        thinking_default_effort: thinking
+            .and_then(|thinking| thinking.default_effort.as_ref())
+            .map(provider_model_thinking_effort_string),
+    })
+}
+
+fn catalog_source_string(source: &ProviderModelCatalogSource) -> &'static str {
+    match source {
+        ProviderModelCatalogSource::Live => "live",
+        ProviderModelCatalogSource::Cache => "cache",
+        ProviderModelCatalogSource::Manual => "manual",
+        ProviderModelCatalogSource::Unavailable => "unavailable",
+    }
+}
+
+fn provider_model_thinking_effort_string(effort: &ProviderModelThinkingEffort) -> String {
+    match effort {
+        ProviderModelThinkingEffort::Minimal => "minimal",
+        ProviderModelThinkingEffort::Low => "low",
+        ProviderModelThinkingEffort::Medium => "medium",
+        ProviderModelThinkingEffort::High => "high",
+        ProviderModelThinkingEffort::XHigh => "x_high",
+    }
+    .into()
+}
+
+fn session_context_limit_source_string(source: &SessionContextLimitSourceDto) -> String {
+    match source {
+        SessionContextLimitSourceDto::LiveCatalog => "live_catalog",
+        SessionContextLimitSourceDto::AppProfile => "app_profile",
+        SessionContextLimitSourceDto::BuiltInRegistry => "built_in_registry",
+        SessionContextLimitSourceDto::Heuristic => "heuristic",
+        SessionContextLimitSourceDto::Unknown => "unknown",
+    }
+    .into()
+}
+
+fn session_context_limit_confidence_string(
+    confidence: &SessionContextLimitConfidenceDto,
+) -> String {
+    match confidence {
+        SessionContextLimitConfidenceDto::High => "high",
+        SessionContextLimitConfidenceDto::Medium => "medium",
+        SessionContextLimitConfidenceDto::Low => "low",
+        SessionContextLimitConfidenceDto::Unknown => "unknown",
+    }
+    .into()
+}
+
+pub fn catalog_age_seconds(fetched_at: &str) -> Option<i64> {
+    let fetched_at = OffsetDateTime::parse(fetched_at, &Rfc3339).ok()?;
+    let duration = OffsetDateTime::now_utc() - fetched_at;
+    Some(duration.whole_seconds().max(0))
 }
 
 fn normalize_openrouter_models(models: Vec<OpenRouterDiscoveredModel>) -> Vec<ProviderModelRecord> {
@@ -1353,6 +1494,12 @@ mod tests {
                     ProviderModelThinkingEffort::XHigh,
                 ],
                 "{} should expose GSD-style OpenAI Codex thinking levels",
+                model.model_id
+            );
+            assert_eq!(
+                model.context_window_tokens,
+                Some(272_000),
+                "{} should use Codex model-manager context-window metadata",
                 model.model_id
             );
         }

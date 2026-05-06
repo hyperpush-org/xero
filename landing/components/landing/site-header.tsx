@@ -8,11 +8,13 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 const nav = [
-  { label: "Product", href: "#product" },
-  { label: "Models", href: "#models" },
-  { label: "Workflow", href: "#workflow" },
-  { label: "Integrations", href: "#integrations" },
-  { label: "Pricing", href: "#pricing" },
+  { label: "Product", href: "/#product" },
+  { label: "Capabilities", href: "/#capabilities" },
+  { label: "Models", href: "/#models" },
+  { label: "Workflow", href: "/#workflow" },
+  { label: "Pricing", href: "/#pricing" },
+  { label: "Docs", href: "/docs" },
+  { label: "Changelog", href: "/changelog" },
 ]
 
 export function SiteHeader() {
@@ -70,18 +72,10 @@ export function SiteHeader() {
           </Link>
           <Button
             asChild
-            variant="ghost"
-            size="sm"
-            className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
-          >
-            <Link href="#">Sign in</Link>
-          </Button>
-          <Button
-            asChild
             size="sm"
             className="bg-primary text-primary-foreground shadow-[0_4px_14px_-6px_color-mix(in_oklab,var(--primary)_70%,transparent)] transition-all hover:bg-primary/90 hover:shadow-[0_6px_16px_-6px_color-mix(in_oklab,var(--primary)_75%,transparent)]"
           >
-            <Link href="#download">Download</Link>
+            <Link href="/#download">Download</Link>
           </Button>
 
           <button
@@ -114,13 +108,6 @@ export function SiteHeader() {
               {item.label}
             </Link>
           ))}
-          <Link
-            href="#"
-            onClick={() => setOpen(false)}
-            className="rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            Sign in
-          </Link>
         </nav>
       </div>
     </header>

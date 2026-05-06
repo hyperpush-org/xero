@@ -15,7 +15,6 @@ import {
   Sparkles,
   X,
 } from "lucide-react"
-import { motion } from "motion/react"
 import {
   createRepositoryStatusDiffRevision,
   type GitGenerateCommitMessageRequestDto,
@@ -48,7 +47,6 @@ import { useFixedVirtualizer } from "@/hooks/use-fixed-virtualizer"
 import { shouldVirtualizeRows } from "@/lib/virtual-list"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarMotion } from "@/lib/sidebar-motion"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
@@ -151,7 +149,6 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
   const shouldRenderDiffPane = (status?.entries.length ?? 0) > 0
   const [width, setWidth] = useState<number>(() => defaultViewportWidth())
   const [isResizing, setIsResizing] = useState(false)
-  const { contentTransition, widthTransition } = useSidebarMotion(isResizing)
   const diffPatchCacheRef = useDiffPatchCacheRef()
   const widthRef = useRef(width)
   widthRef.current = width
@@ -237,39 +234,29 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
     })
   }, [])
 
+  if (!open) {
+    return null
+  }
+
   // The panel overlays the main content area. `<main>` has `contain: paint`,
   // which makes it the containing block for fixed descendants, so `inset-y-0`
   // already fills exactly the area between the titlebar and the status footer.
   return (
     <>
       {/* Backdrop: dims the underlying app and dismisses the panel on click. */}
-      <motion.div
-        animate={{ opacity: open ? 1 : 0 }}
+      <div
         aria-hidden="true"
-        className={cn(
-          "fixed inset-0 z-40 bg-black/30",
-          open ? "pointer-events-auto" : "pointer-events-none",
-        )}
-        initial={false}
+        className="fixed inset-0 z-40 bg-black/30"
         onClick={handleClose}
-        transition={contentTransition}
       />
-      <motion.aside
-        animate={{ x: open ? 0 : renderedWidth }}
-        aria-hidden={!open}
+      <aside
+        aria-hidden="false"
         aria-label="Source control panel"
-        className={cn(
-          "gpu-layer fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl",
-          !open && "invisible",
-        )}
-        initial={false}
-        inert={!open ? true : undefined}
+        className="fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl"
         style={{
           width: renderedWidth,
           contain: "layout paint style",
-          willChange: "transform",
         }}
-        transition={widthTransition}
       >
         {shouldRenderDiffPane ? (
           <div
@@ -290,8 +277,10 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
           />
         ) : null}
 
-        {open ? <VcsSidebarBody {...props} diffPatchCacheRef={diffPatchCacheRef} /> : null}
-      </motion.aside>
+        <div className="flex h-full min-w-0 flex-1 flex-col">
+          <VcsSidebarBody {...props} diffPatchCacheRef={diffPatchCacheRef} />
+        </div>
+      </aside>
     </>
   )
 })

@@ -12,6 +12,32 @@ import {
   getRuntimeRunStatusLabel,
 } from '@/src/lib/xero-model'
 
+export function isAgentPaneWorking(agent: AgentPaneView): boolean {
+  const isQueueingRuntimePrompt =
+    agent.runtimeRunActionStatus === 'running' &&
+    (agent.pendingRuntimeRunAction === 'start' ||
+      agent.pendingRuntimeRunAction === 'update_controls')
+  if (isQueueingRuntimePrompt) {
+    return true
+  }
+
+  if (agent.selectedPrompt.hasQueuedPrompt) {
+    return true
+  }
+
+  const runtimeRun = agent.runtimeRun ?? null
+  const renderableRuntimeRun = hasUsableRuntimeRunId(runtimeRun) ? runtimeRun : null
+  const runtimeStream = agent.runtimeStream ?? null
+  const streamStatus = agent.runtimeStreamStatus ?? runtimeStream?.status ?? 'idle'
+
+  return Boolean(
+    renderableRuntimeRun?.isActive &&
+      streamStatus !== 'complete' &&
+      streamStatus !== 'error' &&
+      !runtimeStream?.failure,
+  )
+}
+
 import { type BadgeVariant, displayValue } from './shared-helpers'
 
 export function getStreamBadgeVariant(status: RuntimeStreamStatus): BadgeVariant {
@@ -334,6 +360,8 @@ function getToolActionLabel(item: RuntimeStreamToolItemView): string {
       return 'search web'
     case 'web_fetch':
       return 'fetch web page'
+    case 'project_context':
+      return 'project context'
     default:
       return humanizeToolName(item.toolName) || 'tool'
   }
@@ -395,6 +423,16 @@ function getToolTargetLabel(item: RuntimeStreamToolItemView): string | null {
       return summary?.kind === 'web'
         ? summary.finalUrl ?? summary.target
         : firstDetailValue(detailValues, ['url'])
+    case 'project_context':
+      return firstDetailValue(detailValues, [
+        'action',
+        'query',
+        'queryId',
+        'recordId',
+        'memoryId',
+        'manifestId',
+        'candidateId',
+      ])
     default:
       if (summary?.kind === 'file') {
         return summary.path ? compactFileTarget(summary.path) : summary.scope ?? null

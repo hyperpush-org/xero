@@ -531,6 +531,7 @@ fn lancedb_freshness_phase1_provider_turn_prompts_do_not_preload_raw_memory_or_r
         controls: Some(controls_for_agent(RuntimeAgentIdDto::Ask)),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("create run");
 
@@ -794,6 +795,7 @@ fn lancedb_freshness_phase1_tool_guidance_requires_read_before_prior_work_and_re
             controls: Some(controls_for_agent(runtime_agent_id)),
             tool_runtime,
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("create run");
         assert!(
@@ -977,6 +979,7 @@ fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshnes
         controls: Some(controls_for_agent(RuntimeAgentIdDto::Engineer)),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("run provider turn");
     let manifests = project_store::list_agent_context_manifests_for_run(
@@ -996,6 +999,70 @@ fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshnes
         .get("staleCount")
         .is_some());
     assert!(manifest["retrieval"]["toolAvailability"]["project_context"].is_boolean());
+}
+
+#[test]
+fn lancedb_freshness_phase1_context_manifest_explanation_is_compact_for_model_replay() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+
+    let tool_runtime = AutonomousToolRuntime::new(&repo_root).expect("tool runtime");
+    run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root: repo_root.clone(),
+        project_id: project_id.clone(),
+        agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "fresh-manifest-summary-run".into(),
+        prompt: "Explain the current durable context package.".into(),
+        attachments: Vec::new(),
+        controls: Some(controls_for_agent(RuntimeAgentIdDto::Engineer)),
+        tool_runtime,
+        provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
+    })
+    .expect("run provider turn");
+
+    let runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Engineer))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-manifest-summary-run",
+        );
+    let output = execute_project_context(
+        &runtime,
+        AutonomousProjectContextRequest::new(
+            AutonomousProjectContextAction::ExplainCurrentContextPackage,
+        ),
+    );
+    let manifest = output.manifest.expect("compact manifest summary");
+
+    assert_eq!(manifest["kind"], "provider_context_package_summary");
+    assert_eq!(manifest["omitted"]["fullManifestPersisted"], true);
+    assert!(
+        manifest["omitted"]["originalBytes"]
+            .as_u64()
+            .unwrap_or_default()
+            > manifest["omitted"]["returnedBytes"]
+                .as_u64()
+                .unwrap_or_default(),
+        "compact summary should be smaller than the persisted full manifest"
+    );
+    assert!(manifest["tools"]["names"].is_array());
+    assert!(manifest["promptFragments"]["items"]
+        .as_array()
+        .expect("prompt fragment summaries")
+        .iter()
+        .all(|fragment| fragment.get("body").is_none()));
+    assert!(manifest["messages"]["items"]
+        .as_array()
+        .expect("message summaries")
+        .iter()
+        .all(|message| message.get("body").is_none()));
+
+    let serialized = serde_json::to_string(&manifest).expect("manifest summary json");
+    assert!(!serialized.contains("\"inputSchema\""));
+    assert!(!serialized.contains("\"description\""));
 }
 
 #[test]
