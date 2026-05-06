@@ -16,10 +16,11 @@ use crate::{
         BrowserComputerUseToolResultSummaryDto, CommandError, CommandResult,
         CommandToolResultSummaryDto, FileToolResultSummaryDto, GitToolResultScopeDto,
         GitToolResultSummaryDto, McpCapabilityKindDto, McpCapabilityToolResultSummaryDto,
-        RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamPlanItemDto,
-        RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole, RuntimeToolCallState,
-        SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto,
-        WebToolResultContentKindDto, WebToolResultSummaryDto,
+        RuntimeActionAnswerShape, RuntimeActionRequiredOptionDto, RuntimeStreamItemDto,
+        RuntimeStreamItemKind, RuntimeStreamPlanItemDto, RuntimeStreamPlanItemStatus,
+        RuntimeStreamTranscriptRole, RuntimeToolCallState, SubscribeRuntimeStreamRequestDto,
+        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto, WebToolResultContentKindDto,
+        WebToolResultSummaryDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
@@ -287,6 +288,7 @@ fn owned_agent_event_runtime_item(
         tool_call_id: None,
         tool_name: None,
         tool_state: None,
+        code_change_group_id: None,
         tool_summary: None,
         tool_result_preview: None,
         skill_id: None,
@@ -311,6 +313,7 @@ fn owned_agent_event_runtime_item(
         retryable: None,
         created_at: event.created_at,
     };
+    item.code_change_group_id = code_change_group_id_from_payload(&payload);
 
     match event_kind {
         AgentRunEventKind::RunStarted => {
@@ -621,6 +624,13 @@ fn owned_agent_event_runtime_item(
                 .or_else(|| Some("Owned agent requires operator input before continuing.".into()));
             item.code = payload_string(&payload, "code");
             item.message = payload_string(&payload, "message");
+            item.answer_shape = payload_string(&payload, "answerShape")
+                .as_deref()
+                .and_then(runtime_action_answer_shape_from_str);
+            item.options = action_required_options_from_payload(&payload);
+            item.allow_multiple = payload
+                .get("allowMultiple")
+                .and_then(serde_json::Value::as_bool);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ToolPermissionGrant => {
@@ -1431,6 +1441,17 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn code_change_group_id_from_payload(payload: &serde_json::Value) -> Option<String> {
+    payload_string(payload, "codeChangeGroupId").or_else(|| {
+        payload
+            .pointer("/dispatch/telemetry/xero.code_change_group_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
 fn payload_verbatim_string(payload: &serde_json::Value, key: &str) -> Option<String> {
     payload
         .get(key)
@@ -1472,9 +1493,44 @@ fn plan_items_from_payload(payload: &serde_json::Value) -> Option<Vec<RuntimeStr
             notes,
             status,
             updated_at,
+            phase_id: payload_string(entry, "phaseId"),
+            phase_title: payload_string(entry, "phaseTitle"),
+            slice_id: payload_string(entry, "sliceId"),
+            handoff_note: payload_string(entry, "handoffNote"),
         });
     }
     Some(projected)
+}
+
+fn runtime_action_answer_shape_from_str(value: &str) -> Option<RuntimeActionAnswerShape> {
+    match value {
+        "plain_text" => Some(RuntimeActionAnswerShape::PlainText),
+        "terminal_input" => Some(RuntimeActionAnswerShape::TerminalInput),
+        "single_choice" => Some(RuntimeActionAnswerShape::SingleChoice),
+        "multi_choice" => Some(RuntimeActionAnswerShape::MultiChoice),
+        "short_text" => Some(RuntimeActionAnswerShape::ShortText),
+        "long_text" => Some(RuntimeActionAnswerShape::LongText),
+        "number" => Some(RuntimeActionAnswerShape::Number),
+        "date" => Some(RuntimeActionAnswerShape::Date),
+        _ => None,
+    }
+}
+
+fn action_required_options_from_payload(
+    payload: &serde_json::Value,
+) -> Option<Vec<RuntimeActionRequiredOptionDto>> {
+    let options = payload.get("options")?.as_array()?;
+    let mut projected = Vec::with_capacity(options.len());
+    for option in options {
+        let id = payload_string(option, "id")?;
+        let label = payload_string(option, "label").unwrap_or_else(|| id.clone());
+        projected.push(RuntimeActionRequiredOptionDto {
+            id,
+            label,
+            description: payload_string(option, "description"),
+        });
+    }
+    (!projected.is_empty()).then_some(projected)
 }
 
 fn command_output_result_preview(payload: &serde_json::Value) -> Option<String> {

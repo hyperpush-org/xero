@@ -1254,22 +1254,23 @@
     }
   }
 
-  /* Blinking caret rendered at the tail of the assistant's streaming response.
-   * Uses opacity steps (no transform) so it stays on its own composite layer
-   * without forcing a repaint of the surrounding markdown each frame. */
+  /* Caret rendered at the tail of the assistant's streaming response.
+   * Uses a smooth ease-in-out fade (rather than a hard step blink) plus a
+   * faint primary halo so the caret reads as "alive" instead of just toggling
+   * on/off. Opacity-only animation keeps it on its own composite layer. */
   .agent-stream-caret {
-    animation: agent-stream-caret-blink 900ms steps(2, end) infinite;
+    animation: agent-stream-caret-blink 1100ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    box-shadow: 0 0 5px color-mix(in oklab, var(--primary) 55%, transparent);
     will-change: opacity;
   }
 
   @keyframes agent-stream-caret-blink {
     0%,
-    50% {
+    100% {
       opacity: 0.95;
     }
-    50.01%,
-    100% {
-      opacity: 0.15;
+    50% {
+      opacity: 0.2;
     }
   }
 
@@ -1361,6 +1362,106 @@
     }
     to {
       background-position: -120% 0;
+    }
+  }
+
+  /* Conversation turn entrance — fades in with a small upward drift and a
+   * micro scale so each new message / tool call settles in rather than
+   * snapping into place. Used for assistant messages, tool rows, action
+   * groups and notice rows. The global reduced-motion handler at the bottom
+   * of this file collapses this to a 1ms tick when the user opts out. */
+  .agent-turn-soft-enter {
+    animation: agent-turn-soft-enter 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    will-change: transform, opacity;
+  }
+
+  @keyframes agent-turn-soft-enter {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 5px, 0) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  /* Staggered entrance for siblings inside an expanded action group, detail
+   * rows, etc. Pair with `style={{ ['--stagger-index']: i }}` per child;
+   * delay caps so very long lists don't feel sluggish. */
+  .agent-stagger-child {
+    animation: agent-turn-soft-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(min(var(--stagger-index, 0), 8) * 32ms);
+    will-change: transform, opacity;
+  }
+
+  /* One-shot soft halo replayed when a tool transitions to a terminal state.
+   * Renders absolutely-positioned around the status icon so the surrounding
+   * row layout is unaffected. `forwards` keeps the final faded-out frame
+   * once the animation completes. */
+  .agent-tool-flash {
+    position: absolute;
+    inset: -3px;
+    border-radius: 9999px;
+    pointer-events: none;
+    opacity: 0;
+    animation: agent-tool-flash 720ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    will-change: transform, opacity;
+  }
+
+  .agent-tool-flash[data-tone='success'] {
+    background: radial-gradient(
+      closest-side,
+      color-mix(in oklab, var(--success) 32%, transparent) 0%,
+      transparent 75%
+    );
+  }
+
+  .agent-tool-flash[data-tone='failure'] {
+    background: radial-gradient(
+      closest-side,
+      color-mix(in oklab, var(--destructive) 30%, transparent) 0%,
+      transparent 75%
+    );
+  }
+
+  @keyframes agent-tool-flash {
+    0% {
+      opacity: 0;
+      transform: scale(0.55);
+    }
+    35% {
+      opacity: 1;
+      transform: scale(1.1);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(1.45);
+    }
+  }
+
+  /* Subtle breathing tint on the row of a currently-running tool. Layered
+   * over the existing `bg-primary/[0.025]` so the row keeps its soft primary
+   * wash even when motion is disabled. */
+  .agent-tool-running-row {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in oklab, var(--primary) 4%, transparent) 50%,
+      transparent 100%
+    );
+    background-size: 220% 100%;
+    background-repeat: no-repeat;
+    animation: agent-tool-running-shimmer 2600ms ease-in-out infinite;
+  }
+
+  @keyframes agent-tool-running-shimmer {
+    0%,
+    100% {
+      background-position: 0% 0;
+    }
+    50% {
+      background-position: 100% 0;
     }
   }
 

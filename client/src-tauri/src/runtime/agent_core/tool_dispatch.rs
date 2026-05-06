@@ -178,12 +178,14 @@ fn dispatch_tool_batch_with_options(
         });
     }
 
+    let run_record = project_store::load_agent_run_record(repo_root, project_id, run_id)?;
     let shared = Arc::new(AutonomousToolHandlerShared {
         legacy_registry: tool_registry.clone(),
         tool_runtime: tool_runtime.clone(),
         repo_root: repo_root.to_path_buf(),
         project_id: project_id.to_owned(),
         run_id: run_id.to_owned(),
+        agent_session_id: run_record.agent_session_id,
         workspace_guard: Arc::new(Mutex::new(std::mem::take(workspace_guard))),
         write_preflight: Arc::new(Mutex::new(BTreeMap::new())),
         approved_existing_write_call_ids: options.approved_existing_write_call_ids,
@@ -306,6 +308,7 @@ struct AutonomousToolHandlerShared {
     repo_root: PathBuf,
     project_id: String,
     run_id: String,
+    agent_session_id: String,
     workspace_guard: Arc<Mutex<AgentWorkspaceGuard>>,
     write_preflight: Arc<Mutex<BTreeMap<String, AgentToolWritePreflight>>>,
     approved_existing_write_call_ids: BTreeSet<String>,
@@ -317,7 +320,43 @@ struct AgentToolWritePreflight {
     request: AutonomousToolRequest,
     write_observations: Vec<AgentWorkspaceWriteObservation>,
     rollback_checkpoints: Vec<AgentRollbackCheckpoint>,
+    code_capture: Option<AgentCodeCapturePreflight>,
     auto_file_reservations: Vec<project_store::AgentFileReservationRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentCodeCapturePreflight {
+    mode: AgentCodeCaptureMode,
+    handle: project_store::CodeRollbackCaptureHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentCodeCaptureMode {
+    ExactPath,
+    BroadAction,
+    RecoveredMutation,
+}
+
+impl AgentCodeCaptureMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactPath => "exact_path",
+            Self::BroadAction => "broad_action",
+            Self::RecoveredMutation => "recovered_mutation",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum AgentCodeCapturePlan {
+    ExactPath {
+        targets: Vec<project_store::CodeRollbackCaptureTarget>,
+    },
+    BroadAction {
+        mode: AgentCodeCaptureMode,
+        change_kind: project_store::CodeChangeKind,
+        restore_state: project_store::CodeChangeRestoreState,
+    },
 }
 
 impl AutonomousToolHandlerShared {
@@ -411,6 +450,16 @@ impl AutonomousToolHandlerShared {
             }
         };
 
+        let completed_code_change = match write_preflight
+            .as_ref()
+            .and_then(|preflight| preflight.code_capture.as_ref())
+        {
+            Some(code_capture) => match self.complete_code_capture(code_capture) {
+                Ok(completed) => Some(completed),
+                Err(error) => return Err(command_error_to_tool_execution_error(error)),
+            },
+            None => None,
+        };
         let write_observations = write_preflight
             .as_ref()
             .map(|preflight| preflight.write_observations.as_slice())
@@ -419,10 +468,26 @@ impl AutonomousToolHandlerShared {
             &self.repo_root,
             &self.project_id,
             &self.run_id,
+            &tool_call.tool_call_id,
+            &tool_call.tool_name,
             write_observations,
             &tool_result.output,
+            completed_code_change.as_ref(),
         )
         .map_err(command_error_to_tool_execution_error)?;
+        if let Some(completed) = completed_code_change.as_ref() {
+            if !output_records_own_file_change_event(&tool_result.output) {
+                record_code_change_group_file_change_events(
+                    &self.repo_root,
+                    &self.project_id,
+                    &self.run_id,
+                    &tool_call.tool_call_id,
+                    &tool_call.tool_name,
+                    completed,
+                )
+                .map_err(command_error_to_tool_execution_error)?;
+            }
+        }
         record_command_output_event(
             &self.repo_root,
             &self.project_id,
@@ -468,6 +533,16 @@ impl AutonomousToolHandlerShared {
         handler_output
             .telemetry_attributes
             .insert("xero.tool.handler".into(), "autonomous_tool_runtime".into());
+        if let Some(completed) = completed_code_change {
+            handler_output.telemetry_attributes.insert(
+                "xero.code_change_group_id".into(),
+                completed.change_group_id,
+            );
+            handler_output.telemetry_attributes.insert(
+                "xero.code_change_file_version_count".into(),
+                completed.file_version_count.to_string(),
+            );
+        }
         Ok(handler_output)
     }
 
@@ -477,13 +552,16 @@ impl AutonomousToolHandlerShared {
         request: AutonomousToolRequest,
     ) -> CommandResult<Option<JsonValue>> {
         let planned = planned_file_reservation_operations(&request)?;
-        if planned.is_empty() {
+        let code_capture_plan = code_capture_plan_for_request(&call.tool_name, &request);
+        if planned.is_empty() && code_capture_plan.is_none() {
             return Ok(None);
         }
         let approved_existing_write = self
             .approved_existing_write_call_ids
             .contains(&call.tool_call_id);
-        let write_observations = {
+        let write_observations = if planned.is_empty() {
+            Vec::new()
+        } else {
             let guard = self.workspace_guard.lock().map_err(|_| {
                 CommandError::system_fault(
                     "agent_workspace_guard_lock_failed",
@@ -500,12 +578,35 @@ impl AutonomousToolHandlerShared {
             &self.run_id,
             &request,
         )?;
+        let code_capture = match code_capture_plan {
+            Some(plan) => match self.begin_code_capture(call, &request, plan) {
+                Ok(capture) => Some(capture),
+                Err(error) => {
+                    let _ = release_auto_file_reservations(
+                        &self.repo_root,
+                        &self.project_id,
+                        &self.run_id,
+                        &auto_file_reservations,
+                        "code_capture_preflight_failed",
+                    );
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
         let reservation_ids = auto_file_reservations
             .iter()
             .map(|reservation| reservation.reservation_id.clone())
             .collect::<Vec<_>>();
         let checkpoint_count = rollback_checkpoints.len();
         let reservation_count = auto_file_reservations.len();
+        let code_capture_payload = code_capture.as_ref().map(|capture| {
+            json!({
+                "mode": capture.mode.as_str(),
+                "changeGroupId": capture.handle.change_group_id,
+                "beforeSnapshotId": capture.handle.before_snapshot_id,
+            })
+        });
         self.write_preflight
             .lock()
             .map_err(|_| {
@@ -520,6 +621,7 @@ impl AutonomousToolHandlerShared {
                     request,
                     write_observations,
                     rollback_checkpoints,
+                    code_capture,
                     auto_file_reservations,
                 },
             );
@@ -530,10 +632,91 @@ impl AutonomousToolHandlerShared {
             "projectId": self.project_id,
             "runId": self.run_id,
             "checkpointCount": checkpoint_count,
+            "codeCapture": code_capture_payload,
             "reservationCount": reservation_count,
             "reservationIds": reservation_ids,
             "checkpointedAt": now_timestamp(),
         })))
+    }
+
+    fn begin_code_capture(
+        &self,
+        call: &ToolCallInput,
+        request: &AutonomousToolRequest,
+        plan: AgentCodeCapturePlan,
+    ) -> CommandResult<AgentCodeCapturePreflight> {
+        let summary_label = code_capture_summary_label(&call.tool_name, request);
+        match plan {
+            AgentCodeCapturePlan::ExactPath { targets } => {
+                let input = self.code_change_group_input(
+                    call,
+                    project_store::CodeChangeKind::FileTool,
+                    project_store::CodeChangeRestoreState::SnapshotAvailable,
+                    summary_label,
+                );
+                let handle =
+                    project_store::begin_exact_path_capture(&self.repo_root, input, targets)?;
+                Ok(AgentCodeCapturePreflight {
+                    mode: AgentCodeCaptureMode::ExactPath,
+                    handle,
+                })
+            }
+            AgentCodeCapturePlan::BroadAction {
+                mode,
+                change_kind,
+                restore_state,
+            } => {
+                let input =
+                    self.code_change_group_input(call, change_kind, restore_state, summary_label);
+                let handle = project_store::begin_broad_capture(&self.repo_root, input)?;
+                Ok(AgentCodeCapturePreflight { mode, handle })
+            }
+        }
+    }
+
+    fn complete_code_capture(
+        &self,
+        preflight: &AgentCodeCapturePreflight,
+    ) -> CommandResult<project_store::CompletedCodeChangeGroup> {
+        match preflight.mode {
+            AgentCodeCaptureMode::ExactPath => project_store::complete_exact_path_capture(
+                &self.repo_root,
+                preflight.handle.clone(),
+            ),
+            AgentCodeCaptureMode::BroadAction | AgentCodeCaptureMode::RecoveredMutation => {
+                project_store::complete_broad_capture(&self.repo_root, preflight.handle.clone())
+            }
+        }
+    }
+
+    fn fail_code_capture(
+        &self,
+        preflight: &AgentCodeCapturePreflight,
+        error: &CommandError,
+    ) -> CommandResult<()> {
+        project_store::fail_code_change_capture(&self.repo_root, &preflight.handle, error)
+    }
+
+    fn code_change_group_input(
+        &self,
+        call: &ToolCallInput,
+        change_kind: project_store::CodeChangeKind,
+        restore_state: project_store::CodeChangeRestoreState,
+        summary_label: String,
+    ) -> project_store::CodeChangeGroupInput {
+        project_store::CodeChangeGroupInput {
+            project_id: self.project_id.clone(),
+            agent_session_id: self.agent_session_id.clone(),
+            run_id: self.run_id.clone(),
+            change_group_id: None,
+            parent_change_group_id: None,
+            tool_call_id: Some(call.tool_call_id.clone()),
+            runtime_event_id: None,
+            conversation_sequence: None,
+            change_kind,
+            summary_label,
+            restore_state,
+        }
     }
 
     fn get_write_preflight(
@@ -579,6 +762,121 @@ impl AutonomousToolHandlerShared {
             let _ = self.take_write_preflight(tool_call_id)?;
         }
         Ok(())
+    }
+}
+
+fn code_capture_plan_for_request(
+    tool_name: &str,
+    request: &AutonomousToolRequest,
+) -> Option<AgentCodeCapturePlan> {
+    match request {
+        AutonomousToolRequest::Edit(request) => Some(exact_code_capture(vec![same_path_target(
+            request.path.as_str(),
+        )])),
+        AutonomousToolRequest::Write(request) => Some(exact_code_capture(vec![same_path_target(
+            request.path.as_str(),
+        )])),
+        AutonomousToolRequest::Patch(request) => {
+            let mut targets = request
+                .operations
+                .iter()
+                .map(|operation| same_path_target(operation.path.as_str()))
+                .collect::<Vec<_>>();
+            if let Some(path) = request.path.as_deref() {
+                targets.push(same_path_target(path));
+            }
+            (!targets.is_empty()).then(|| exact_code_capture(targets))
+        }
+        AutonomousToolRequest::Delete(request) => Some(exact_code_capture(vec![
+            project_store::CodeRollbackCaptureTarget::delete(request.path.as_str()),
+        ])),
+        AutonomousToolRequest::Rename(request) => Some(exact_code_capture(vec![
+            project_store::CodeRollbackCaptureTarget::rename(
+                request.from_path.as_str(),
+                request.to_path.as_str(),
+            ),
+        ])),
+        AutonomousToolRequest::Mkdir(request) => Some(exact_code_capture(vec![
+            project_store::CodeRollbackCaptureTarget::create(request.path.as_str()),
+        ])),
+        AutonomousToolRequest::NotebookEdit(request) => {
+            Some(exact_code_capture(vec![same_path_target(
+                request.path.as_str(),
+            )]))
+        }
+        AutonomousToolRequest::Command(_)
+        | AutonomousToolRequest::CommandSessionStart(_)
+        | AutonomousToolRequest::PowerShell(_) => {
+            let mode = if matches!(
+                tool_name,
+                AUTONOMOUS_TOOL_COMMAND_PROBE | AUTONOMOUS_TOOL_COMMAND_VERIFY
+            ) {
+                AgentCodeCaptureMode::RecoveredMutation
+            } else {
+                AgentCodeCaptureMode::BroadAction
+            };
+            let change_kind = if mode == AgentCodeCaptureMode::RecoveredMutation {
+                project_store::CodeChangeKind::RecoveredMutation
+            } else {
+                project_store::CodeChangeKind::Command
+            };
+            Some(AgentCodeCapturePlan::BroadAction {
+                mode,
+                change_kind,
+                restore_state: project_store::CodeChangeRestoreState::SnapshotAvailable,
+            })
+        }
+        AutonomousToolRequest::Mcp(request)
+            if !matches!(
+                request.action,
+                AutonomousMcpAction::ListServers
+                    | AutonomousMcpAction::ListTools
+                    | AutonomousMcpAction::ListResources
+                    | AutonomousMcpAction::ListPrompts
+                    | AutonomousMcpAction::ReadResource
+                    | AutonomousMcpAction::GetPrompt
+            ) =>
+        {
+            Some(AgentCodeCapturePlan::BroadAction {
+                mode: AgentCodeCaptureMode::BroadAction,
+                change_kind: project_store::CodeChangeKind::Mcp,
+                restore_state: project_store::CodeChangeRestoreState::ExternalEffectsUntracked,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn exact_code_capture(
+    targets: Vec<project_store::CodeRollbackCaptureTarget>,
+) -> AgentCodeCapturePlan {
+    AgentCodeCapturePlan::ExactPath { targets }
+}
+
+fn same_path_target(path: &str) -> project_store::CodeRollbackCaptureTarget {
+    project_store::CodeRollbackCaptureTarget {
+        path_before: Some(path.to_owned()),
+        path_after: Some(path.to_owned()),
+        operation: None,
+        explicitly_edited: true,
+    }
+}
+
+fn code_capture_summary_label(tool_name: &str, request: &AutonomousToolRequest) -> String {
+    match request {
+        AutonomousToolRequest::Command(request) => {
+            format!("Command: {}", request.argv.join(" "))
+        }
+        AutonomousToolRequest::CommandSessionStart(request) => {
+            format!("Command session: {}", request.argv.join(" "))
+        }
+        AutonomousToolRequest::PowerShell(_) => "PowerShell command".into(),
+        AutonomousToolRequest::Mcp(request) => request
+            .name
+            .as_deref()
+            .map(|name| format!("MCP tool: {name}"))
+            .unwrap_or_else(|| "MCP mutation".into()),
+        _ => format!("Tool `{tool_name}`"),
     }
 }
 
@@ -807,6 +1105,26 @@ impl ToolRollback for AgentToolRollback {
                 "workspaceRollback": "not_applicable",
             }));
         };
+        let code_capture_record = if let Some(code_capture) = preflight.code_capture.as_ref() {
+            let command_error = tool_execution_error_ref_to_command_error(error);
+            self.shared
+                .fail_code_capture(code_capture, &command_error)
+                .map(|()| {
+                    json!({
+                        "recorded": true,
+                        "changeGroupId": code_capture.handle.change_group_id,
+                    })
+                })
+                .unwrap_or_else(|error| {
+                    json!({
+                        "recorded": false,
+                        "code": error.code,
+                        "message": error.message,
+                    })
+                })
+        } else {
+            json!({ "recorded": false, "reason": "not_applicable" })
+        };
         let checkpoint_record = record_rollback_checkpoints(
             &self.shared.repo_root,
             &self.shared.project_id,
@@ -839,6 +1157,7 @@ impl ToolRollback for AgentToolRollback {
             "toolName": call.tool_name,
             "checkpoint": checkpoint,
             "failure": tool_execution_error_json(error),
+            "codeCapture": code_capture_record,
             "checkpointRecord": checkpoint_record,
             "workspaceRollback": rollback_outcome,
         }))

@@ -160,6 +160,8 @@ export function runtimeAgentIdForCustomBaseCapability(
   profile: AgentDefinitionBaseCapabilityProfileDto,
 ): RuntimeAgentIdDto {
   switch (profile) {
+    case 'planning':
+      return 'plan'
     case 'engineering':
       return 'engineer'
     case 'debugging':
@@ -434,6 +436,7 @@ export function getComposerPlaceholder(
   options: {
     selectedProviderId: string
     agentRuntimeBlocked: boolean
+    selectedRuntimeAgentId?: RuntimeAgentIdDto | null
   },
 ): string {
   const providerLabel = getCloudProviderLabel(options.selectedProviderId)
@@ -443,6 +446,9 @@ export function getComposerPlaceholder(
   }
 
   if (!runtimeSession) {
+    if (options.selectedRuntimeAgentId === 'plan') {
+      return `Describe what you want planned with ${providerLabel}.`
+    }
     return `Ask anything to get started with ${providerLabel}.`
   }
 
@@ -450,10 +456,16 @@ export function getComposerPlaceholder(
     if (runtimeSession.isLoginInProgress) {
       return `Finish signing in with ${providerLabel} to continue.`
     }
+    if (options.selectedRuntimeAgentId === 'plan') {
+      return `Describe what you want planned with ${providerLabel}.`
+    }
     return `Ask anything to get started with ${providerLabel}.`
   }
 
   if (!hasUsableRuntimeRunId(runtimeRun)) {
+    if (options.selectedRuntimeAgentId === 'plan') {
+      return 'Describe the goal, constraints, and what "done" should mean.'
+    }
     return 'Prompt the agent'
   }
 
@@ -475,6 +487,9 @@ export function getComposerPlaceholder(
     case 'complete':
     case 'idle':
     case 'live':
+      if (options.selectedRuntimeAgentId === 'plan') {
+        return 'Answer the next planning question or revise the plan…'
+      }
       return 'Ask the agent anything…'
   }
 }

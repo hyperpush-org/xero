@@ -2952,6 +2952,7 @@ fn eval_snapshot_with_file_change() -> AgentRunSnapshotRecord {
             top_level_run_id: "eval-run".into(),
             subagent_id: None,
             subagent_role: None,
+            change_group_id: None,
             path: "src/lib.rs".into(),
             operation: "edit".into(),
             old_hash: None,

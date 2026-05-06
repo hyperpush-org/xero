@@ -135,6 +135,36 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
                                     project_db_path.display()
                                 );
                             }
+
+                            match db::project_store::maintain_code_rollback_storage(
+                                root,
+                                &record.project_id,
+                            ) {
+                                Ok(report) => {
+                                    for diagnostic in report
+                                        .diagnostics
+                                        .iter()
+                                        .chain(report.prune.diagnostics.iter())
+                                    {
+                                        eprintln!(
+                                            "[storage] code rollback diagnostic for {}: {} - {}",
+                                            record.root_path, diagnostic.code, diagnostic.message
+                                        );
+                                    }
+                                    if report.prune.pruned_blob_count > 0 {
+                                        eprintln!(
+                                            "[storage] pruned {} unreferenced code rollback blob(s) for {}",
+                                            report.prune.pruned_blob_count, record.root_path
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "[storage] code rollback maintenance skipped for {}: {error}",
+                                        record.root_path
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -210,6 +240,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::get_project_usage_summary::get_project_usage_summary,
             commands::get_repository_status::get_repository_status,
             commands::get_repository_diff::get_repository_diff,
+            commands::code_rollback::apply_code_rollback,
             commands::git_operations::git_stage_paths,
             commands::git_operations::git_unstage_paths,
             commands::git_operations::git_discard_changes,

@@ -44,7 +44,7 @@ export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'op
 export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
-export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'engineer', 'debug', 'crawl', 'agent_create', 'test'] as const
+export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create', 'test'] as const
 export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
 export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'ask'
 export const TEST_RUNTIME_AGENT_ENABLE_ENV = 'VITE_XERO_ENABLE_TEST_AGENT'
@@ -73,6 +73,7 @@ export interface RuntimeAgentDescriptor {
   lifecycleState: 'draft' | 'active' | 'archived'
   baseCapabilityProfile:
     | 'observe_only'
+    | 'planning'
     | 'repository_recon'
     | 'engineering'
     | 'debugging'
@@ -80,10 +81,11 @@ export interface RuntimeAgentDescriptor {
     | 'harness_test'
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'engineer' | 'debug' | 'crawl' | 'agent_create' | 'harness_test'
-  toolPolicy: 'observe_only' | 'repository_recon' | 'engineering' | 'agent_builder' | 'harness_test'
+  promptPolicy: 'ask' | 'plan' | 'engineer' | 'debug' | 'crawl' | 'agent_create' | 'harness_test'
+  toolPolicy: 'observe_only' | 'planning' | 'repository_recon' | 'engineering' | 'agent_builder' | 'harness_test'
   outputContract:
     | 'answer'
+    | 'plan_pack'
     | 'crawl_report'
     | 'engineering_summary'
     | 'debug_summary'
@@ -169,6 +171,44 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
       required: true,
       recordKinds: ['agent_handoff', 'project_fact', 'constraint', 'question', 'context_note', 'diagnostic'],
       structuredSchemas: ['xero.project_record.v1'],
+      unstructuredScopes: ['answer_note', 'session_summary', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: false,
+    allowVerificationGate: false,
+    allowAutoCompact: true,
+  },
+  {
+    id: 'plan',
+    version: 1,
+    label: 'Plan',
+    shortLabel: 'Plan',
+    description:
+      'Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.',
+    taskPurpose:
+      'Interview the user, inspect project context when useful, draft a reproducible Plan Pack, and prepare Engineer handoff.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'planning',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest'],
+    promptPolicy: 'plan',
+    toolPolicy: 'planning',
+    outputContract: 'plan_pack',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'agent_handoff',
+        'project_fact',
+        'decision',
+        'constraint',
+        'plan',
+        'question',
+        'context_note',
+        'diagnostic',
+      ],
+      structuredSchemas: ['xero.project_record.v1', 'xero.plan_pack.v1'],
       unstructuredScopes: ['answer_note', 'session_summary', 'troubleshooting_note'],
       memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
     },

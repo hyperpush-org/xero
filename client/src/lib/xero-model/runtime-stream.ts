@@ -55,6 +55,10 @@ export const runtimeActionAnswerShapeSchema = z.enum([
   'terminal_input',
   'single_choice',
   'multi_choice',
+  'short_text',
+  'long_text',
+  'number',
+  'date',
 ])
 export const runtimeActionRequiredOptionSchema = z
   .object({
@@ -71,6 +75,10 @@ export const runtimeStreamPlanItemSchema = z
     notes: nonEmptyOptionalTextSchema,
     status: runtimeStreamPlanItemStatusSchema,
     updatedAt: z.string().min(1),
+    phaseId: nonEmptyOptionalTextSchema,
+    phaseTitle: nonEmptyOptionalTextSchema,
+    sliceId: nonEmptyOptionalTextSchema,
+    handoffNote: nonEmptyOptionalTextSchema,
   })
   .strict()
 export const runtimeStreamTranscriptRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
@@ -87,6 +95,7 @@ export const runtimeStreamItemSchema = z
     toolCallId: nonEmptyOptionalTextSchema,
     toolName: nonEmptyOptionalTextSchema,
     toolState: runtimeToolCallStateSchema.nullable().optional(),
+    codeChangeGroupId: nonEmptyOptionalTextSchema,
     toolSummary: toolResultSummarySchema.nullable().optional(),
     toolResultPreview: z.string().nullable().optional(),
     skillId: nonEmptyOptionalTextSchema,
@@ -406,6 +415,7 @@ interface RuntimeStreamBaseItemView {
   sequence: number
   updatedSequence?: number
   createdAt: string
+  codeChangeGroupId?: string | null
 }
 
 export interface RuntimeStreamTranscriptItemView extends RuntimeStreamBaseItemView {
@@ -835,6 +845,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
         text,
         role: event.item.transcriptRole ?? 'assistant',
       }
@@ -853,6 +864,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
         toolCallId,
         toolName,
         toolState,
@@ -884,6 +896,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
         skillId,
         stage,
         result,
@@ -909,6 +922,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
         code: isReasoningBoundary ? OWNED_AGENT_REASONING_BOUNDARY_CODE : code,
         title,
         text,
@@ -960,6 +974,10 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
           notes: planItem.notes ?? null,
           status: planItem.status,
           updatedAt: planItem.updatedAt,
+          phaseId: planItem.phaseId ?? null,
+          phaseTitle: planItem.phaseTitle ?? null,
+          sliceId: planItem.sliceId ?? null,
+          handoffNote: planItem.handoffNote ?? null,
         })),
         lastChangedId: normalizeOptionalText(event.item.planLastChangedId),
       }
@@ -1247,6 +1265,7 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
   bytes += estimateUtf16Bytes(item.runId)
   bytes += estimateUtf16Bytes(item.createdAt)
   bytes += estimateUtf16Bytes(item.kind)
+  bytes += estimateOptionalTextBytes(item.codeChangeGroupId)
 
   switch (item.kind) {
     case 'transcript':
@@ -1338,6 +1357,10 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
         bytes += estimateOptionalTextBytes(planItem.notes)
         bytes += estimateUtf16Bytes(planItem.status)
         bytes += estimateUtf16Bytes(planItem.updatedAt)
+        bytes += estimateOptionalTextBytes(planItem.phaseId)
+        bytes += estimateOptionalTextBytes(planItem.phaseTitle)
+        bytes += estimateOptionalTextBytes(planItem.sliceId)
+        bytes += estimateOptionalTextBytes(planItem.handoffNote)
       }
       return bytes
     case 'complete':

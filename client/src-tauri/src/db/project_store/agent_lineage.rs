@@ -1334,10 +1334,10 @@ fn file_change_summary(
         })
         .count();
     if changes == 0 && checkpoints == 0 {
-        return "No file-change or checkpoint metadata was before the branch point.".into();
+        return "No file-change or checkpoint metadata was before the conversation branch point. Code rollback is a separate workspace restore action.".into();
     }
     format!(
-        "{changes} file-change record(s) and {checkpoints} checkpoint(s) were before the branch point. Branching does not roll files back automatically."
+        "{changes} file-change record(s) and {checkpoints} checkpoint(s) were before the conversation branch point. Branching and rewind copy conversation state only; code rollback is a separate workspace restore action."
     )
 }
 
@@ -1353,14 +1353,14 @@ fn default_branch_title(source_title: &str, boundary: &ResolvedBranchBoundary) -
 fn branch_summary(source_title: &str, boundary: &ResolvedBranchBoundary) -> String {
     match boundary.kind {
         AgentSessionLineageBoundaryKind::Run => {
-            format!("Branched from `{source_title}` without mutating the original session.")
+            format!("Branched conversation history from `{source_title}` without changing project files.")
         }
         AgentSessionLineageBoundaryKind::Message => format!(
-            "Rewound from `{source_title}` at message boundary {}. File rollback remains manual.",
+            "Rewound conversation history from `{source_title}` at message boundary {}. Project files stay at the current workspace state unless code rollback is applied separately.",
             boundary.source_message_id.unwrap_or_default()
         ),
         AgentSessionLineageBoundaryKind::Checkpoint => format!(
-            "Rewound from `{source_title}` at checkpoint boundary {}. File rollback remains manual.",
+            "Rewound conversation history from `{source_title}` at checkpoint boundary {}. Project files stay at the current workspace state unless code rollback is applied separately.",
             boundary.source_checkpoint_id.unwrap_or_default()
         ),
     }

@@ -201,6 +201,50 @@ export const repositoryDiffResponseSchema = z.object({
   payloadBudget: payloadBudgetDiagnosticSchema.nullable().optional(),
 })
 
+export const codeRollbackFileOperationSchema = z.enum([
+  'create',
+  'modify',
+  'delete',
+  'rename',
+  'mode_change',
+  'symlink_change',
+])
+
+export const applyCodeRollbackRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    targetChangeGroupId: z.string().trim().min(1),
+  })
+  .strict()
+
+export const codeRollbackAffectedFileSchema = z
+  .object({
+    pathBefore: nullableTextSchema.optional(),
+    pathAfter: nullableTextSchema.optional(),
+    operation: codeRollbackFileOperationSchema,
+    beforeHash: nullableTextSchema.optional(),
+    afterHash: nullableTextSchema.optional(),
+    explicitlyEdited: z.boolean(),
+  })
+  .strict()
+
+export const applyCodeRollbackResponseSchema = z
+  .object({
+    projectId: z.string().min(1),
+    agentSessionId: z.string().min(1),
+    runId: z.string().min(1),
+    operationId: z.string().min(1),
+    targetChangeGroupId: z.string().min(1),
+    targetSnapshotId: z.string().min(1),
+    preRollbackSnapshotId: z.string().min(1),
+    resultChangeGroupId: z.string().min(1),
+    restoredPaths: z.array(z.string().min(1)),
+    removedPaths: z.array(z.string().min(1)),
+    affectedFiles: z.array(codeRollbackAffectedFileSchema),
+    repositoryStatus: repositoryStatusResponseSchema,
+  })
+  .strict()
+
 export const gitPathsRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -554,6 +598,9 @@ export type ImportRepositoryResponseDto = z.infer<typeof importRepositoryRespons
 export type ListProjectsResponseDto = z.infer<typeof listProjectsResponseSchema>
 export type RepositoryStatusResponseDto = z.infer<typeof repositoryStatusResponseSchema>
 export type RepositoryDiffResponseDto = z.infer<typeof repositoryDiffResponseSchema>
+export type ApplyCodeRollbackRequestDto = z.infer<typeof applyCodeRollbackRequestSchema>
+export type CodeRollbackAffectedFileDto = z.infer<typeof codeRollbackAffectedFileSchema>
+export type ApplyCodeRollbackResponseDto = z.infer<typeof applyCodeRollbackResponseSchema>
 export type ProjectEntryKindDto = z.infer<typeof projectEntryKindSchema>
 export type ProjectTextRendererKindDto = z.infer<typeof projectTextRendererKindSchema>
 export type ProjectRenderableRendererKindDto = z.infer<typeof projectRenderableRendererKindSchema>

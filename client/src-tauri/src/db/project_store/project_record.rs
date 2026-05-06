@@ -1062,6 +1062,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-record-source".into(),
+                change_group_id: None,
                 path: "src/main.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -1114,6 +1115,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-distinct-record-old".into(),
+                change_group_id: None,
                 path: "src/alpha.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,
@@ -1140,6 +1142,7 @@ mod tests {
             &NewAgentFileChangeRecord {
                 project_id: project_id.into(),
                 run_id: "run-distinct-record-new".into(),
+                change_group_id: None,
                 path: "src/beta.rs".into(),
                 operation: "edit".into(),
                 old_hash: None,

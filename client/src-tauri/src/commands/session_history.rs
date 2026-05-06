@@ -35,11 +35,12 @@ use crate::{
         SessionContextDependencyManifestDto, SessionContextDispositionDto,
         SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDiffDto,
         SessionContextSnapshotDto, SessionContextTaskPhaseDto, SessionMemoryDiagnosticDto,
-        SessionMemoryRecordDto, SessionMemoryReviewStateDto, SessionTranscriptDto,
-        SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
-        SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptScopeDto,
-        SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
-        UpdateSessionMemoryRequestDto, XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        SessionMemoryRecordDto, SessionMemoryReviewStateDto, SessionTranscriptActorDto,
+        SessionTranscriptDto, SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
+        SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptItemKindDto,
+        SessionTranscriptScopeDto, SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto,
+        SessionUsageTotalsDto, UpdateSessionMemoryRequestDto,
+        XERO_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
         self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
@@ -587,20 +588,21 @@ fn build_session_transcript(
 ) -> CommandResult<SessionTranscriptDto> {
     let session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
         .ok_or_else(|| missing_session_error(project_id, agent_session_id))?;
-    let runs = if let Some(run_id) = run_id {
+    let snapshots = if let Some(run_id) = run_id {
         let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
         ensure_run_belongs_to_session(&snapshot, project_id, agent_session_id)?;
         let usage = project_store::load_agent_usage(repo_root, project_id, run_id)?;
-        vec![run_transcript_from_agent_snapshot(
-            &snapshot,
-            usage.as_ref(),
-        )]
+        vec![(snapshot, usage)]
     } else {
         project_store::load_agent_session_run_snapshots(repo_root, project_id, agent_session_id)?
-            .into_iter()
-            .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(&snapshot, usage.as_ref()))
-            .collect()
     };
+    let runs = run_transcripts_with_rollback_events(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+        &snapshots,
+    )?;
 
     let transcript = session_transcript_from_runs(&session, runs);
     validate_session_transcript_contract(&transcript).map_err(|details| {
@@ -610,6 +612,174 @@ fn build_session_transcript(
         )
     })?;
     Ok(transcript)
+}
+
+fn run_transcripts_with_rollback_events(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    snapshots: &[(
+        AgentRunSnapshotRecord,
+        Option<project_store::AgentUsageRecord>,
+    )],
+) -> CommandResult<Vec<crate::commands::RunTranscriptDto>> {
+    let mut runs = snapshots
+        .iter()
+        .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
+        .collect::<Vec<_>>();
+    append_rollback_transcript_items(repo_root, project_id, agent_session_id, run_id, &mut runs)?;
+    Ok(runs)
+}
+
+fn append_rollback_transcript_items(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    runs: &mut [crate::commands::RunTranscriptDto],
+) -> CommandResult<()> {
+    let operations = project_store::list_code_rollback_operations_for_session(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+    )?;
+    for operation in operations {
+        let Some(run) = runs.iter_mut().find(|run| run.run_id == operation.run_id) else {
+            continue;
+        };
+        let item = rollback_transcript_item(&operation, run);
+        run.items.push(item);
+    }
+    Ok(())
+}
+
+fn rollback_transcript_item(
+    operation: &project_store::CodeRollbackOperationRecord,
+    run: &crate::commands::RunTranscriptDto,
+) -> SessionTranscriptItemDto {
+    let raw_text = rollback_operation_text(operation);
+    let (text, text_redaction) = redact_session_context_text(&raw_text);
+    let file_path = rollback_operation_primary_path(operation)
+        .map(|path| redact_session_context_text(path).0)
+        .filter(|path| !path.trim().is_empty());
+    SessionTranscriptItemDto {
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        item_id: format!("code_rollback:{}", operation.operation_id),
+        project_id: operation.project_id.clone(),
+        agent_session_id: operation.agent_session_id.clone(),
+        run_id: operation.run_id.clone(),
+        provider_id: run.provider_id.clone(),
+        model_id: run.model_id.clone(),
+        source_kind: crate::commands::SessionTranscriptSourceKindDto::OwnedAgent,
+        source_table: "code_rollback_operations".into(),
+        source_id: operation.operation_id.clone(),
+        sequence: run.items.len() as u64 + 1,
+        created_at: operation
+            .completed_at
+            .clone()
+            .unwrap_or_else(|| operation.created_at.clone()),
+        kind: SessionTranscriptItemKindDto::CodeRollback,
+        actor: SessionTranscriptActorDto::Xero,
+        title: Some(rollback_operation_title(operation)),
+        text: Some(text),
+        summary: Some(rollback_operation_summary(operation)),
+        tool_call_id: None,
+        tool_name: None,
+        tool_state: None,
+        file_path,
+        code_change_group_id: operation
+            .result_change_group_id
+            .clone()
+            .or_else(|| Some(operation.target_change_group_id.clone())),
+        checkpoint_kind: None,
+        action_id: None,
+        redaction: text_redaction,
+    }
+}
+
+fn rollback_operation_title(operation: &project_store::CodeRollbackOperationRecord) -> String {
+    match operation.status.as_str() {
+        "completed" => "Code rollback applied".into(),
+        "failed" => "Code rollback failed".into(),
+        "pending" => "Code rollback pending".into(),
+        _ => "Code rollback".into(),
+    }
+}
+
+fn rollback_operation_summary(operation: &project_store::CodeRollbackOperationRecord) -> String {
+    let target_summary = operation
+        .target_summary_label
+        .as_deref()
+        .unwrap_or(operation.target_change_group_id.as_str());
+    format!(
+        "{} `{}` restored target `{}` to snapshot `{}`.",
+        rollback_operation_title(operation),
+        operation.operation_id,
+        target_summary,
+        operation.target_snapshot_id
+    )
+}
+
+fn rollback_operation_text(operation: &project_store::CodeRollbackOperationRecord) -> String {
+    let paths = rollback_operation_paths(operation);
+    let path_text = if paths.is_empty() {
+        "No affected paths were recorded.".into()
+    } else {
+        format!("Affected paths: {}.", paths.join(", "))
+    };
+    let status_text = match operation.status.as_str() {
+        "failed" => format!(
+            "Rollback failed with {}: {}.",
+            operation.failure_code.as_deref().unwrap_or("unknown_error"),
+            operation
+                .failure_message
+                .as_deref()
+                .unwrap_or("No failure message recorded")
+        ),
+        status => format!("Rollback status: {status}."),
+    };
+    let target_summary = operation
+        .target_summary_label
+        .as_deref()
+        .unwrap_or(operation.target_change_group_id.as_str());
+    [
+        format!("Operation id: {}.", operation.operation_id),
+        format!("Target change group: {} ({target_summary}).", operation.target_change_group_id),
+        format!("Target snapshot: {}.", operation.target_snapshot_id),
+        operation
+            .result_change_group_id
+            .as_ref()
+            .map(|id| format!("Result change group: {id}."))
+            .unwrap_or_else(|| "Result change group was not recorded.".into()),
+        status_text,
+        path_text,
+        "Conversation history was preserved. Project files were restored independently, so later transcript turns may describe code that is no longer present.".into(),
+    ]
+    .join(" ")
+}
+
+fn rollback_operation_paths(operation: &project_store::CodeRollbackOperationRecord) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for file in &operation.affected_files {
+        if let Some(path) = file.path_before.as_deref().or(file.path_after.as_deref()) {
+            paths.insert(path.to_string());
+        }
+        if let Some(path) = file.path_after.as_deref() {
+            paths.insert(path.to_string());
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn rollback_operation_primary_path(
+    operation: &project_store::CodeRollbackOperationRecord,
+) -> Option<&str> {
+    operation
+        .affected_files
+        .iter()
+        .find_map(|file| file.path_after.as_deref().or(file.path_before.as_deref()))
 }
 
 fn build_session_context_snapshot(
@@ -704,6 +874,18 @@ fn build_session_context_snapshot(
         project_id,
         agent_session_id,
         &snapshots,
+    );
+    let rollback_operations = project_store::list_code_rollback_operations_for_session(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+    )?;
+    append_code_rollback_contributors(
+        &mut contributors,
+        project_id,
+        agent_session_id,
+        &rollback_operations,
     );
     append_usage_contributors(&mut contributors, project_id, agent_session_id, &snapshots);
     append_pending_prompt_contributor(
@@ -971,7 +1153,13 @@ fn extract_session_memory_candidates_with_provider(
         ));
     }
 
-    let source = build_memory_extraction_source(&completed_snapshots)?;
+    let source = build_memory_extraction_source(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+        &completed_snapshots,
+    )?;
     let existing_memories = project_store::list_agent_memories(
         repo_root,
         project_id,
@@ -1080,19 +1268,29 @@ struct MemoryExtractionSource {
 }
 
 fn build_memory_extraction_source(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
     snapshots: &[(
         AgentRunSnapshotRecord,
         Option<project_store::AgentUsageRecord>,
     )],
 ) -> CommandResult<MemoryExtractionSource> {
-    let run_transcripts = snapshots
-        .iter()
-        .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
-        .collect::<Vec<_>>();
+    let run_transcripts = run_transcripts_with_rollback_events(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+        snapshots,
+    )?;
     let source_run_id = run_transcripts.last().map(|run| run.run_id.clone());
     let mut source_item_ids = Vec::new();
     let mut transcript = String::from(
         "Review this completed Xero session transcript for durable memory candidates.\n",
+    );
+    transcript.push_str(
+        "Code rollback rows are provenance: do not promote implementation details from turns before a rollback as durable facts unless the memory text explicitly notes the rollback state and cites rollback provenance.\n",
     );
     for run in &run_transcripts {
         transcript.push_str(&format!(
@@ -1615,6 +1813,8 @@ fn prompt_fragment_contributor_kind(fragment: &PromptFragment) -> SessionContext
         SessionContextContributorKindDto::SkillContext
     } else if fragment.id == "xero.approved_memory" {
         SessionContextContributorKindDto::ApprovedMemory
+    } else if fragment.id == "xero.code_rollback_state" {
+        SessionContextContributorKindDto::CodeRollback
     } else {
         SessionContextContributorKindDto::SystemPrompt
     }
@@ -2011,6 +2211,38 @@ fn append_file_observation_contributors(
     }
 }
 
+fn append_code_rollback_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    operations: &[project_store::CodeRollbackOperationRecord],
+) {
+    for operation in operations {
+        let text = rollback_operation_text(operation);
+        append_context_contributor(
+            contributors,
+            ContextContributorParts {
+                contributor_id: format!("code_rollback:{}", operation.operation_id),
+                kind: SessionContextContributorKindDto::CodeRollback,
+                label: rollback_operation_title(operation),
+                prompt_fragment_id: None,
+                prompt_fragment_priority: None,
+                prompt_fragment_hash: None,
+                prompt_fragment_provenance: None,
+                project_id: Some(project_id),
+                agent_session_id: Some(agent_session_id),
+                run_id: Some(operation.run_id.as_str()),
+                source_id: Some(operation.operation_id.as_str()),
+                raw_text: Some(text.as_str()),
+                estimate_text: Some(text.as_str()),
+                estimated_tokens: None,
+                included: true,
+                model_visible: true,
+            },
+        );
+    }
+}
+
 fn append_code_map_contributors(
     contributors: &mut Vec<SessionContextContributorDto>,
     project_id: &str,
@@ -2215,6 +2447,7 @@ fn authority_score(kind: &SessionContextContributorKindDto) -> u8 {
         SessionContextContributorKindDto::ApprovedMemory => 82,
         SessionContextContributorKindDto::CompactionSummary => 78,
         SessionContextContributorKindDto::FileObservation => 76,
+        SessionContextContributorKindDto::CodeRollback => 76,
         SessionContextContributorKindDto::DependencyMetadata => 70,
         SessionContextContributorKindDto::CodeSymbol => 66,
         SessionContextContributorKindDto::ConversationTail => 62,
@@ -2275,6 +2508,7 @@ fn task_phase_for_kind(kind: &SessionContextContributorKindDto) -> SessionContex
         | SessionContextContributorKindDto::DependencyMetadata
         | SessionContextContributorKindDto::CodeSymbol => SessionContextTaskPhaseDto::ContextGather,
         SessionContextContributorKindDto::FileObservation
+        | SessionContextContributorKindDto::CodeRollback
         | SessionContextContributorKindDto::ToolResult
         | SessionContextContributorKindDto::ToolSummary => SessionContextTaskPhaseDto::Execute,
         SessionContextContributorKindDto::CompactionSummary
@@ -2293,6 +2527,7 @@ fn is_required_context(kind: &SessionContextContributorKindDto) -> bool {
             | SessionContextContributorKindDto::ApprovedMemory
             | SessionContextContributorKindDto::CompactionSummary
             | SessionContextContributorKindDto::FileObservation
+            | SessionContextContributorKindDto::CodeRollback
     )
 }
 
@@ -2950,6 +3185,7 @@ fn item_kind_label(item: &SessionTranscriptItemDto) -> &'static str {
         crate::commands::SessionTranscriptItemKindDto::ToolCall => "Tool call",
         crate::commands::SessionTranscriptItemKindDto::ToolResult => "Tool result",
         crate::commands::SessionTranscriptItemKindDto::FileChange => "File change",
+        crate::commands::SessionTranscriptItemKindDto::CodeRollback => "Code rollback",
         crate::commands::SessionTranscriptItemKindDto::Checkpoint => "Checkpoint",
         crate::commands::SessionTranscriptItemKindDto::ActionRequest => "Action request",
         crate::commands::SessionTranscriptItemKindDto::Activity => "Activity",
@@ -3037,10 +3273,13 @@ fn build_search_rows(
             &session,
             request.run_id.as_deref(),
         )?;
-        let run_transcripts = snapshots
-            .iter()
-            .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
-            .collect::<Vec<_>>();
+        let run_transcripts = run_transcripts_with_rollback_events(
+            repo_root,
+            &request.project_id,
+            &session.agent_session_id,
+            request.run_id.as_deref(),
+            &snapshots,
+        )?;
         let transcript = session_transcript_from_runs(&session, run_transcripts);
         append_session_search_rows(&mut rows, &session, &transcript);
     }

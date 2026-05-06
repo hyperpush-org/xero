@@ -11,10 +11,12 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_002_WORKSPACE_INDEX_SQL),
             M::up(MIGRATION_003_AGENT_COORDINATION_SQL),
             M::up(MIGRATION_004_AGENT_MAILBOX_SQL),
+            M::up(MIGRATION_005_AGENT_PLAN_PACKS_SQL),
             M::up_with_hook("", migrate_agent_trace_columns),
             M::up_with_hook("", migrate_environment_lifecycle_schema),
             M::up_with_hook("", migrate_agent_events_current_event_kinds),
             M::up_with_hook("", migrate_project_origin_column),
+            M::up(MIGRATION_010_CODE_ROLLBACK_STORAGE_SQL),
         ])
     });
 
@@ -333,6 +335,399 @@ const MIGRATION_004_AGENT_MAILBOX_SQL: &str = r#"
         ON agent_mailbox_acknowledgements(project_id, run_id, acknowledged_at DESC);
 "#;
 
+const MIGRATION_005_AGENT_PLAN_PACKS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_plan_sessions (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        plan_session_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        source_run_id TEXT,
+        status TEXT NOT NULL,
+        title TEXT NOT NULL,
+        goal TEXT NOT NULL DEFAULT '',
+        selected INTEGER NOT NULL DEFAULT 0 CHECK (selected IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        accepted_at TEXT,
+        PRIMARY KEY (project_id, plan_session_id),
+        CHECK (plan_session_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (source_run_id IS NULL OR source_run_id <> ''),
+        CHECK (status IN ('intake', 'draft', 'accepted', 'building', 'completed', 'cancelled', 'superseded')),
+        CHECK (title <> ''),
+        CHECK (accepted_at IS NULL OR status IN ('accepted', 'building', 'completed', 'superseded')),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, source_run_id)
+            REFERENCES agent_runs(project_id, run_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_sessions_project_selected
+        ON agent_plan_sessions(project_id, selected, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_sessions_source_run
+        ON agent_plan_sessions(project_id, source_run_id)
+        WHERE source_run_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_plan_packs (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        plan_id TEXT NOT NULL,
+        plan_session_id TEXT NOT NULL,
+        schema_name TEXT NOT NULL DEFAULT 'xero.plan_pack.v1',
+        status TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        source_run_id TEXT,
+        source_agent_session_id TEXT,
+        title TEXT NOT NULL,
+        goal TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        pack_json TEXT NOT NULL,
+        accepted_revision INTEGER NOT NULL DEFAULT 0 CHECK (accepted_revision >= 0),
+        lance_record_id TEXT,
+        supersedes_plan_id TEXT,
+        superseded_by_plan_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        accepted_at TEXT,
+        PRIMARY KEY (project_id, plan_id),
+        CHECK (plan_id <> ''),
+        CHECK (schema_name = 'xero.plan_pack.v1'),
+        CHECK (status IN ('draft', 'accepted', 'building', 'completed', 'superseded')),
+        CHECK (agent_session_id <> ''),
+        CHECK (source_run_id IS NULL OR source_run_id <> ''),
+        CHECK (source_agent_session_id IS NULL OR source_agent_session_id <> ''),
+        CHECK (title <> ''),
+        CHECK (goal <> ''),
+        CHECK (markdown <> ''),
+        CHECK (pack_json <> '' AND json_valid(pack_json)),
+        CHECK (lance_record_id IS NULL OR lance_record_id <> ''),
+        CHECK (supersedes_plan_id IS NULL OR supersedes_plan_id <> ''),
+        CHECK (superseded_by_plan_id IS NULL OR superseded_by_plan_id <> ''),
+        CHECK (accepted_at IS NULL OR status IN ('accepted', 'building', 'completed', 'superseded')),
+        FOREIGN KEY (project_id, plan_session_id)
+            REFERENCES agent_plan_sessions(project_id, plan_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, source_run_id)
+            REFERENCES agent_runs(project_id, run_id),
+        FOREIGN KEY (project_id, source_agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id),
+        FOREIGN KEY (project_id, supersedes_plan_id)
+            REFERENCES agent_plan_packs(project_id, plan_id),
+        FOREIGN KEY (project_id, superseded_by_plan_id)
+            REFERENCES agent_plan_packs(project_id, plan_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_packs_session_status
+        ON agent_plan_packs(project_id, plan_session_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_packs_lance_record
+        ON agent_plan_packs(project_id, lance_record_id)
+        WHERE lance_record_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_plan_slices (
+        project_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        slice_id TEXT NOT NULL,
+        phase_id TEXT NOT NULL,
+        phase_title TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        purpose TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL DEFAULT '',
+        dependencies_json TEXT NOT NULL DEFAULT '[]',
+        implementation_json TEXT NOT NULL DEFAULT '[]',
+        acceptance_json TEXT NOT NULL DEFAULT '[]',
+        verification_json TEXT NOT NULL DEFAULT '[]',
+        handoff_notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, plan_id, slice_id),
+        CHECK (slice_id <> ''),
+        CHECK (phase_id <> ''),
+        CHECK (phase_title <> ''),
+        CHECK (title <> ''),
+        CHECK (status IN ('pending', 'in_progress', 'completed', 'blocked', 'skipped')),
+        CHECK (dependencies_json <> '' AND json_valid(dependencies_json)),
+        CHECK (implementation_json <> '' AND json_valid(implementation_json)),
+        CHECK (acceptance_json <> '' AND json_valid(acceptance_json)),
+        CHECK (verification_json <> '' AND json_valid(verification_json)),
+        FOREIGN KEY (project_id, plan_id)
+            REFERENCES agent_plan_packs(project_id, plan_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_slices_plan_order
+        ON agent_plan_slices(project_id, plan_id, ordinal, slice_id);
+
+    CREATE TABLE IF NOT EXISTS agent_plan_responses (
+        project_id TEXT NOT NULL,
+        plan_session_id TEXT NOT NULL,
+        action_id TEXT NOT NULL,
+        question_id TEXT NOT NULL,
+        answer_shape TEXT NOT NULL,
+        raw_answer TEXT NOT NULL DEFAULT '',
+        normalized_answer_json TEXT NOT NULL DEFAULT 'null',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        PRIMARY KEY (project_id, plan_session_id, action_id),
+        CHECK (action_id <> ''),
+        CHECK (question_id <> ''),
+        CHECK (answer_shape IN ('plain_text', 'terminal_input', 'single_choice', 'multi_choice', 'short_text', 'long_text', 'number', 'date')),
+        CHECK (normalized_answer_json <> '' AND json_valid(normalized_answer_json)),
+        FOREIGN KEY (project_id, plan_session_id)
+            REFERENCES agent_plan_sessions(project_id, plan_session_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_responses_question
+        ON agent_plan_responses(project_id, plan_session_id, question_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS agent_plan_handoffs (
+        project_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        target_runtime_agent_id TEXT NOT NULL,
+        target_agent_session_id TEXT,
+        target_run_id TEXT,
+        start_slice_id TEXT,
+        handoff_status TEXT NOT NULL DEFAULT 'pending',
+        engineer_prompt TEXT NOT NULL,
+        seed_todo_items_json TEXT NOT NULL DEFAULT '[]',
+        plan_mode_satisfied INTEGER NOT NULL DEFAULT 0 CHECK (plan_mode_satisfied IN (0, 1)),
+        diagnostic TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, idempotency_key),
+        CHECK (idempotency_key <> ''),
+        CHECK (target_runtime_agent_id <> ''),
+        CHECK (target_agent_session_id IS NULL OR target_agent_session_id <> ''),
+        CHECK (target_run_id IS NULL OR target_run_id <> ''),
+        CHECK (start_slice_id IS NULL OR start_slice_id <> ''),
+        CHECK (handoff_status IN ('pending', 'started', 'completed', 'failed', 'cancelled')),
+        CHECK (engineer_prompt <> ''),
+        CHECK (seed_todo_items_json <> '' AND json_valid(seed_todo_items_json)),
+        FOREIGN KEY (project_id, plan_id)
+            REFERENCES agent_plan_packs(project_id, plan_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, target_agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id),
+        FOREIGN KEY (project_id, target_run_id)
+            REFERENCES agent_runs(project_id, run_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_plan_handoffs_plan
+        ON agent_plan_handoffs(project_id, plan_id, handoff_status, updated_at DESC);
+"#;
+
+const MIGRATION_010_CODE_ROLLBACK_STORAGE_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS code_blobs (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        blob_id TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+        storage_path TEXT NOT NULL,
+        compression TEXT NOT NULL DEFAULT 'none',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, blob_id),
+        CHECK (length(blob_id) = 64 AND blob_id NOT GLOB '*[^0-9a-f]*'),
+        CHECK (sha256 = blob_id),
+        CHECK (storage_path <> ''),
+        CHECK (compression IN ('none'))
+    );
+
+    CREATE TABLE IF NOT EXISTS code_snapshots (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        snapshot_id TEXT NOT NULL,
+        change_group_id TEXT,
+        boundary_kind TEXT NOT NULL,
+        root_path TEXT NOT NULL,
+        manifest_json TEXT NOT NULL DEFAULT '{}',
+        write_state TEXT NOT NULL,
+        entry_count INTEGER NOT NULL DEFAULT 0 CHECK (entry_count >= 0),
+        total_file_bytes INTEGER NOT NULL DEFAULT 0 CHECK (total_file_bytes >= 0),
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (project_id, snapshot_id),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (snapshot_id <> ''),
+        CHECK (change_group_id IS NULL OR change_group_id <> ''),
+        CHECK (boundary_kind IN ('before', 'after', 'baseline', 'pre_rollback', 'post_rollback', 'manual')),
+        CHECK (root_path <> ''),
+        CHECK (manifest_json <> '' AND json_valid(manifest_json)),
+        CHECK (write_state IN ('pending', 'completed', 'failed')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (
+            (write_state = 'pending' AND completed_at IS NULL)
+            OR (write_state IN ('completed', 'failed') AND completed_at IS NOT NULL)
+        ),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_snapshots_project_run
+        ON code_snapshots(project_id, run_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_snapshots_change_group
+        ON code_snapshots(project_id, change_group_id, boundary_kind);
+
+    CREATE TABLE IF NOT EXISTS code_change_groups (
+        project_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        change_group_id TEXT NOT NULL,
+        parent_change_group_id TEXT,
+        tool_call_id TEXT,
+        runtime_event_id INTEGER,
+        conversation_sequence INTEGER,
+        change_kind TEXT NOT NULL,
+        summary_label TEXT NOT NULL,
+        before_snapshot_id TEXT,
+        after_snapshot_id TEXT,
+        restore_state TEXT NOT NULL,
+        status TEXT NOT NULL,
+        diagnostic_json TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (project_id, change_group_id),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (change_group_id <> ''),
+        CHECK (parent_change_group_id IS NULL OR parent_change_group_id <> ''),
+        CHECK (tool_call_id IS NULL OR tool_call_id <> ''),
+        CHECK (runtime_event_id IS NULL OR runtime_event_id > 0),
+        CHECK (conversation_sequence IS NULL OR conversation_sequence >= 0),
+        CHECK (change_kind IN ('file_tool', 'command', 'mcp', 'rollback', 'recovered_mutation', 'imported_baseline')),
+        CHECK (summary_label <> ''),
+        CHECK (before_snapshot_id IS NULL OR before_snapshot_id <> ''),
+        CHECK (after_snapshot_id IS NULL OR after_snapshot_id <> ''),
+        CHECK (restore_state IN ('snapshot_available', 'snapshot_missing', 'external_effects_untracked')),
+        CHECK (status IN ('open', 'completed', 'superseded', 'rolled_back', 'failed')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (
+            (status = 'open' AND completed_at IS NULL)
+            OR (status <> 'open' AND completed_at IS NOT NULL)
+        ),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, before_snapshot_id)
+            REFERENCES code_snapshots(project_id, snapshot_id) ON DELETE SET NULL,
+        FOREIGN KEY (project_id, after_snapshot_id)
+            REFERENCES code_snapshots(project_id, snapshot_id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_change_groups_session
+        ON code_change_groups(project_id, agent_session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_change_groups_run
+        ON code_change_groups(project_id, run_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_change_groups_tool_call
+        ON code_change_groups(project_id, run_id, tool_call_id)
+        WHERE tool_call_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS code_file_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        change_group_id TEXT NOT NULL,
+        path_before TEXT,
+        path_after TEXT,
+        operation TEXT NOT NULL,
+        before_file_kind TEXT,
+        after_file_kind TEXT,
+        before_hash TEXT,
+        after_hash TEXT,
+        before_blob_id TEXT,
+        after_blob_id TEXT,
+        before_size INTEGER,
+        after_size INTEGER,
+        before_mode INTEGER,
+        after_mode INTEGER,
+        before_symlink_target TEXT,
+        after_symlink_target TEXT,
+        explicitly_edited INTEGER NOT NULL DEFAULT 1 CHECK (explicitly_edited IN (0, 1)),
+        generated INTEGER NOT NULL DEFAULT 0 CHECK (generated IN (0, 1)),
+        created_at TEXT NOT NULL,
+        CHECK (path_before IS NOT NULL OR path_after IS NOT NULL),
+        CHECK (path_before IS NULL OR path_before <> ''),
+        CHECK (path_after IS NULL OR path_after <> ''),
+        CHECK (operation IN ('create', 'modify', 'delete', 'rename', 'mode_change', 'symlink_change')),
+        CHECK (before_file_kind IS NULL OR before_file_kind IN ('file', 'directory', 'symlink')),
+        CHECK (after_file_kind IS NULL OR after_file_kind IN ('file', 'directory', 'symlink')),
+        CHECK (before_hash IS NULL OR (length(before_hash) = 64 AND before_hash NOT GLOB '*[^0-9a-f]*')),
+        CHECK (after_hash IS NULL OR (length(after_hash) = 64 AND after_hash NOT GLOB '*[^0-9a-f]*')),
+        CHECK (before_blob_id IS NULL OR (length(before_blob_id) = 64 AND before_blob_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (after_blob_id IS NULL OR (length(after_blob_id) = 64 AND after_blob_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (before_size IS NULL OR before_size >= 0),
+        CHECK (after_size IS NULL OR after_size >= 0),
+        FOREIGN KEY (project_id, change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, before_blob_id)
+            REFERENCES code_blobs(project_id, blob_id) ON DELETE RESTRICT,
+        FOREIGN KEY (project_id, after_blob_id)
+            REFERENCES code_blobs(project_id, blob_id) ON DELETE RESTRICT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_file_versions_change_group
+        ON code_file_versions(project_id, change_group_id, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_code_file_versions_paths
+        ON code_file_versions(project_id, path_before, path_after);
+
+    CREATE TABLE IF NOT EXISTS code_rollback_operations (
+        project_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        agent_session_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        target_change_group_id TEXT NOT NULL,
+        target_snapshot_id TEXT NOT NULL,
+        pre_rollback_snapshot_id TEXT,
+        result_change_group_id TEXT,
+        status TEXT NOT NULL,
+        failure_code TEXT,
+        failure_message TEXT,
+        affected_files_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (project_id, operation_id),
+        CHECK (operation_id <> ''),
+        CHECK (agent_session_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (target_change_group_id <> ''),
+        CHECK (target_snapshot_id <> ''),
+        CHECK (pre_rollback_snapshot_id IS NULL OR pre_rollback_snapshot_id <> ''),
+        CHECK (result_change_group_id IS NULL OR result_change_group_id <> ''),
+        CHECK (status IN ('pending', 'completed', 'failed')),
+        CHECK (failure_code IS NULL OR failure_code <> ''),
+        CHECK (failure_message IS NULL OR failure_message <> ''),
+        CHECK (affected_files_json <> '' AND json_valid(affected_files_json)),
+        CHECK (
+            (status = 'pending' AND completed_at IS NULL)
+            OR (status IN ('completed', 'failed') AND completed_at IS NOT NULL)
+        ),
+        CHECK (
+            (status = 'failed' AND failure_code IS NOT NULL AND failure_message IS NOT NULL)
+            OR (status <> 'failed' AND failure_code IS NULL AND failure_message IS NULL)
+        ),
+        FOREIGN KEY (project_id, agent_session_id)
+            REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, target_change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, target_snapshot_id)
+            REFERENCES code_snapshots(project_id, snapshot_id) ON DELETE RESTRICT,
+        FOREIGN KEY (project_id, pre_rollback_snapshot_id)
+            REFERENCES code_snapshots(project_id, snapshot_id) ON DELETE SET NULL,
+        FOREIGN KEY (project_id, result_change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_rollback_operations_session
+        ON code_rollback_operations(project_id, agent_session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_rollback_operations_target
+        ON code_rollback_operations(project_id, target_change_group_id, created_at DESC);
+"#;
+
 const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
@@ -517,7 +912,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (short_label <> ''),
         CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
         CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
-        CHECK (base_capability_profile IN ('observe_only', 'repository_recon', 'engineering', 'debugging', 'agent_builder', 'harness_test'))
+        CHECK (base_capability_profile IN ('observe_only', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder', 'harness_test'))
     );
 
     CREATE TABLE IF NOT EXISTS agent_definition_versions (
@@ -562,6 +957,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     )
     VALUES
         ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
+        ('plan', 1, 'Plan', 'Plan', 'Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.', 'built_in', 'active', 'planning', '2026-05-06T00:00:00Z'),
         ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
         ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
         ('crawl', 1, 'Crawl', 'Crawl', 'Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.', 'built_in', 'active', 'repository_recon', '2026-05-06T00:00:00Z'),
@@ -577,6 +973,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     )
     VALUES
         ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('plan', 1, '{"schema":"xero.agent_definition.v1","id":"plan","version":1,"displayName":"Plan","shortLabel":"Plan","description":"Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.","taskPurpose":"Interview the user, inspect project context when useful, draft a reproducible Plan Pack, and prepare Engineer handoff.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"planning","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"plan","toolPolicy":"planning","outputContract":"plan_pack","workflowContract":"Guide a user from vague task intent to an accepted xero.plan_pack.v1 without repository mutation.","finalResponseContract":"Produce the canonical Plan Pack summary and deterministic Engineer handoff prompt after acceptance.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","plan","question","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1","xero.plan_pack.v1"],"unstructuredScopes":["answer_note","session_summary","troubleshooting_note"],"memoryCandidateKinds":["project_fact","user_preference","decision","session_summary","troubleshooting"]}}', '{"status":"valid","source":"seed"}', '2026-05-06T00:00:00Z'),
         ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('crawl', 1, '{"schema":"xero.agent_definition.v1","id":"crawl","version":1,"displayName":"Crawl","shortLabel":"Crawl","description":"Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.","taskPurpose":"Read brownfield repository context and produce a structured crawl report for durable project memory.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"repository_recon","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"crawl","toolPolicy":"repository_recon","outputContract":"crawl_report","workflowContract":"Map the brownfield repository without mutating files or app state; use manifests, instructions, workspace index, safe git metadata, and read-only discovery.","finalResponseContract":"Produce a short summary plus a valid JSON crawl report payload using schema xero.project_crawl.report.v1.","projectDataPolicy":{"required":true,"recordKinds":["project_fact","constraint","finding","verification","artifact","context_note","diagnostic","question"],"structuredSchemas":["xero.project_record.v1","xero.project_crawl.report.v1","xero.project_crawl.project_overview.v1","xero.project_crawl.tech_stack.v1","xero.project_crawl.command_map.v1","xero.project_crawl.test_map.v1","xero.project_crawl.architecture_map.v1","xero.project_crawl.hotspots.v1","xero.project_crawl.constraints.v1","xero.project_crawl.unknowns.v1","xero.project_crawl.freshness.v1"],"unstructuredScopes":["answer_note","session_summary","artifact_excerpt","troubleshooting_note"],"memoryCandidateKinds":["project_fact","decision","session_summary","troubleshooting"]}}', '{"status":"valid","source":"seed"}', '2026-05-06T00:00:00Z'),
@@ -1019,6 +1416,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         top_level_run_id TEXT NOT NULL,
         subagent_id TEXT,
         subagent_role TEXT,
+        change_group_id TEXT,
         path TEXT NOT NULL,
         operation TEXT NOT NULL,
         old_hash TEXT,
@@ -1028,6 +1426,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (top_level_run_id <> ''),
         CHECK (subagent_id IS NULL OR subagent_id <> ''),
         CHECK (subagent_role IS NULL OR subagent_role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
+        CHECK (change_group_id IS NULL OR change_group_id <> ''),
         CHECK (path <> ''),
         CHECK (operation IN ('create', 'write', 'edit', 'patch', 'delete', 'rename', 'mkdir', 'unknown')),
         CHECK (old_hash IS NULL OR (length(old_hash) = 64 AND old_hash NOT GLOB '*[^0-9a-f]*')),
@@ -1726,6 +2125,7 @@ fn migrate_agent_trace_columns(transaction: &Transaction<'_>) -> rusqlite_migrat
         )?;
         add_column_if_missing(transaction, "agent_file_changes", "subagent_id", "TEXT")?;
         add_column_if_missing(transaction, "agent_file_changes", "subagent_role", "TEXT")?;
+        add_column_if_missing(transaction, "agent_file_changes", "change_group_id", "TEXT")?;
 
         if table_exists(transaction, "agent_runs")? {
             transaction.execute_batch(
@@ -2212,6 +2612,11 @@ mod tests {
                 "agent_mailbox_items",
                 "agent_message_attachments",
                 "agent_messages",
+                "agent_plan_handoffs",
+                "agent_plan_packs",
+                "agent_plan_responses",
+                "agent_plan_sessions",
+                "agent_plan_slices",
                 "agent_retrieval_queries",
                 "agent_retrieval_results",
                 "agent_runs",
@@ -2220,6 +2625,11 @@ mod tests {
                 "agent_tool_calls",
                 "agent_usage",
                 "autonomous_runs",
+                "code_blobs",
+                "code_change_groups",
+                "code_file_versions",
+                "code_rollback_operations",
+                "code_snapshots",
                 "installed_plugin_records",
                 "installed_skill_records",
                 "meta",
@@ -2357,6 +2767,15 @@ mod tests {
                     "engineering".into(),
                 ),
                 (
+                    "plan".into(),
+                    1,
+                    "Plan".into(),
+                    "Plan".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "planning".into(),
+                ),
+                (
                     "test".into(),
                     1,
                     "Test".into(),
@@ -2416,6 +2835,101 @@ mod tests {
                 "harness_test_report".into(),
                 "seed".into(),
             )
+        );
+
+        let plan_snapshot = connection
+            .query_row(
+                r#"
+                SELECT
+                    json_extract(snapshot_json, '$.id'),
+                    json_extract(snapshot_json, '$.displayName'),
+                    json_extract(snapshot_json, '$.scope'),
+                    json_extract(snapshot_json, '$.baseCapabilityProfile'),
+                    json_extract(snapshot_json, '$.defaultApprovalMode'),
+                    json_extract(snapshot_json, '$.promptPolicy'),
+                    json_extract(snapshot_json, '$.toolPolicy'),
+                    json_extract(snapshot_json, '$.outputContract'),
+                    json_extract(validation_report_json, '$.source')
+                FROM agent_definition_versions
+                WHERE definition_id = 'plan'
+                  AND version = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .expect("load plan agent definition version snapshot");
+
+        assert_eq!(
+            plan_snapshot,
+            (
+                "plan".into(),
+                "Plan".into(),
+                "built_in".into(),
+                "planning".into(),
+                "suggest".into(),
+                "plan".into(),
+                "planning".into(),
+                "plan_pack".into(),
+                "seed".into(),
+            )
+        );
+    }
+
+    #[test]
+    fn plan_pack_schema_uses_app_data_tables() {
+        let connection = migrate_to_latest_in_memory();
+
+        assert_eq!(
+            table_columns(&connection, "agent_plan_packs"),
+            vec![
+                "project_id",
+                "plan_id",
+                "plan_session_id",
+                "schema_name",
+                "status",
+                "agent_session_id",
+                "source_run_id",
+                "source_agent_session_id",
+                "title",
+                "goal",
+                "markdown",
+                "pack_json",
+                "accepted_revision",
+                "lance_record_id",
+                "supersedes_plan_id",
+                "superseded_by_plan_id",
+                "created_at",
+                "updated_at",
+                "accepted_at",
+            ],
+            "accepted Plan Packs should persist in app-data SQLite, not repo-local state"
+        );
+        assert_eq!(
+            table_columns(&connection, "agent_plan_responses"),
+            vec![
+                "project_id",
+                "plan_session_id",
+                "action_id",
+                "question_id",
+                "answer_shape",
+                "raw_answer",
+                "normalized_answer_json",
+                "created_at",
+                "resolved_at",
+            ],
+            "structured planning responses should be linked to the planning session"
         );
     }
 
@@ -2832,6 +3346,7 @@ mod tests {
             "top_level_run_id",
             "subagent_id",
             "subagent_role",
+            "change_group_id",
         ] {
             assert!(
                 file_change_columns.contains(&column.to_string()),

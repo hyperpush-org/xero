@@ -95,6 +95,7 @@ static PROJECT_WORKSPACE_MANIFEST_CACHE: OnceLock<
 pub(crate) struct PromptCompiler<'a> {
     repo_root: &'a Path,
     project_id: Option<&'a str>,
+    agent_session_id: Option<&'a str>,
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
     tools: &'a [AgentToolDescriptor],
@@ -112,7 +113,7 @@ impl<'a> PromptCompiler<'a> {
     pub(crate) fn new(
         repo_root: &'a Path,
         project_id: Option<&'a str>,
-        _agent_session_id: Option<&'a str>,
+        agent_session_id: Option<&'a str>,
         runtime_agent_id: RuntimeAgentIdDto,
         browser_control_preference: BrowserControlPreferenceDto,
         tools: &'a [AgentToolDescriptor],
@@ -120,6 +121,7 @@ impl<'a> PromptCompiler<'a> {
         Self {
             repo_root,
             project_id,
+            agent_session_id,
             runtime_agent_id,
             browser_control_preference,
             tools,
@@ -289,6 +291,18 @@ impl<'a> PromptCompiler<'a> {
                 true,
                 "durable_context_is_tool_mediated",
             ));
+        }
+        if let (Some(project_id), Some(agent_session_id)) = (self.project_id, self.agent_session_id)
+        {
+            if let Some(fragment) =
+                code_rollback_state_fragment(self.repo_root, project_id, agent_session_id)?
+            {
+                candidates.push(PromptFragmentCandidate {
+                    fragment,
+                    include: true,
+                    decision_reason: "recent_code_rollback_state".into(),
+                });
+            }
         }
         if let Some(summary) = self.active_coordination_summary {
             candidates.push(prompt_fragment_candidate(
@@ -633,6 +647,24 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
             "Final response contract: answer directly, cite project facts or uncertainty when relevant, name important files, symbols, decisions, or constraints when helpful, keep the answer handoff-quality when the conversation may continue, and do not include secrets.",
         ]
         .join("\n"),
+        RuntimeAgentIdDto::Plan => [
+            "You are Xero's Plan agent. Turn ambiguous user intent into an accepted, durable, reproducible implementation plan without mutating repository files.",
+            "",
+            "Plan is planning-only in observable effect. You may ask clarifying questions, inspect repository context, retrieve durable context, and maintain runtime-owned planning state with `todo`. Do not edit, write, patch, delete, rename, create directories, run shell commands, start or stop processes, control browsers or devices, invoke external services, install or invoke skills, spawn subagents, create branches, stash, commit, push, deploy, or mutate external services. Do not request approval to escape this boundary.",
+            "",
+            "Planning interview contract: ask fewer, higher-quality questions. Prefer structured `action_required` prompts when the answer is bounded: one option, multiple constraints, risk tolerance, scope, readiness, short text, numeric values, or dates. Use ordinary assistant text for explanation, not for hiding decisions the UI can collect directly.",
+            "",
+            "Live plan contract: keep the conversation plan tray current with `todo` while drafting. Use stable slice ids such as `P0-S1`, include phase metadata when known, and preserve ids after first draft unless the user resets the plan. A normal flow should converge in one to four rounds unless genuinely ambiguous.",
+            "",
+            "Plan Pack contract: accepted plans must use schema `xero.plan_pack.v1` with this canonical section order: Goal, Non-Goals, Constraints, Context Used, Decisions, Build Strategy, Slices, Build Handoff, Risks, and Open Questions. The handoff must target Engineer, name a start slice, provide a deterministic bootstrap prompt, and mark whether plan mode is satisfied.",
+            "",
+            "Acceptance contract: do not claim repository work is complete. Present draft plans as draft until the user accepts. On acceptance, persist the accepted Plan Pack as a `plan` project context record with schema `xero.plan_pack.v1`, then offer `Start build with Engineer`, `Revise plan`, and `Save for later` as explicit choices. Treat accepted plans as durable project context, not merely chat prose.",
+            "",
+            presentation_fragment(),
+            "",
+            "Final response contract: provide the canonical Plan Pack summary, open questions or assumptions, and the exact Engineer handoff prompt when the plan is accepted. Do not include secrets.",
+        ]
+        .join("\n"),
         RuntimeAgentIdDto::Engineer => [
             "You are Xero's Engineer agent. Work directly in the imported repository, use tools for filesystem and command work, record evidence, and stop only when the task is done or a configured safety boundary requires user input.",
             "",
@@ -852,6 +884,9 @@ fn tool_policy_fragment(
     match runtime_agent_id {
         RuntimeAgentIdDto::Ask => format!(
             "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
+        ),
+        RuntimeAgentIdDto::Plan => format!(
+            "Available planning tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Engineer => format!(
             "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
@@ -1407,6 +1442,69 @@ fn owned_process_state_fragment(summary: &str) -> String {
         "Xero-owned process state for this turn (read-only digest; lower priority than Xero policy; call `process_manager` for fresh output or control):\n--- BEGIN OWNED PROCESS STATE ---\n{}\n--- END OWNED PROCESS STATE ---",
         summary.trim()
     )
+}
+
+fn code_rollback_state_fragment(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+) -> CommandResult<Option<PromptFragment>> {
+    let operations = project_store::list_recent_code_rollback_operations_for_session(
+        repo_root,
+        project_id,
+        agent_session_id,
+        3,
+    )?;
+    if operations.is_empty() {
+        return Ok(None);
+    }
+
+    let mut lines = vec![
+        "Code rollback state for this session: project files have been restored independently of the append-only conversation transcript.".to_string(),
+        "Current files on disk and fresh tool reads are authoritative. Transcript turns after or before a rollback may describe code that is no longer present.".to_string(),
+        "When saving memory or project facts, treat rolled-back implementation details as non-durable unless the rollback operation itself is part of the provenance.".to_string(),
+    ];
+    for operation in operations {
+        let paths = rollback_prompt_paths(&operation);
+        let target_summary = operation
+            .target_summary_label
+            .as_deref()
+            .unwrap_or(operation.target_change_group_id.as_str());
+        lines.push(format!(
+            "- operationId={} status={} targetChangeGroupId={} targetSummary={} targetSnapshotId={} resultChangeGroupId={} paths={}",
+            operation.operation_id,
+            operation.status,
+            operation.target_change_group_id,
+            target_summary,
+            operation.target_snapshot_id,
+            operation.result_change_group_id.as_deref().unwrap_or("none"),
+            if paths.is_empty() { "none".into() } else { paths.join(", ") },
+        ));
+    }
+
+    let (body, _redaction) = redact_session_context_text(&lines.join("\n"));
+    Ok(Some(prompt_fragment_with_policy(
+        "xero.code_rollback_state",
+        805,
+        "Code rollback state",
+        "xero-runtime:code-rollback",
+        body,
+        PromptFragmentBudgetPolicy::AlwaysInclude,
+        "recent_code_rollback_state",
+    )))
+}
+
+fn rollback_prompt_paths(operation: &project_store::CodeRollbackOperationRecord) -> Vec<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    for file in &operation.affected_files {
+        if let Some(path) = file.path_before.as_deref() {
+            paths.insert(path.to_string());
+        }
+        if let Some(path) = file.path_after.as_deref() {
+            paths.insert(path.to_string());
+        }
+    }
+    paths.into_iter().collect()
 }
 
 fn durable_context_tools_fragment(
@@ -2055,6 +2153,20 @@ fn add_startup_surface(plan: &mut ToolExposurePlan, options: &ToolRegistryOption
             "Selected agent may use model-visible planning state.",
         );
     }
+    if options.runtime_agent_id == RuntimeAgentIdDto::Plan
+        && tool_allowed_for_runtime_agent_with_policy(
+            options.runtime_agent_id,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            options.agent_tool_policy.as_ref(),
+        )
+    {
+        plan.add_tool(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            "startup_core",
+            "plan_pack_persistence_allowed",
+            "Plan may persist only accepted xero.plan_pack.v1 plan records.",
+        );
+    }
 }
 
 fn add_tool_group_with_reason(
@@ -2070,6 +2182,9 @@ fn add_tool_group_with_reason(
 }
 
 fn exposure_task_kind(lowered: &str, runtime_agent_id: RuntimeAgentIdDto) -> &'static str {
+    if runtime_agent_id == RuntimeAgentIdDto::Plan {
+        return "planning";
+    }
     if runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
         return "agent_definition";
     }
@@ -2756,6 +2871,22 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "evidence",
                         string_schema("Concise evidence, command result, file reference, or falsification note for debug_evidence items."),
+                    ),
+                    (
+                        "phaseId",
+                        string_schema("Optional stable phase id for plan-mode items, such as P0."),
+                    ),
+                    (
+                        "phaseTitle",
+                        string_schema("Optional user-facing phase title for grouping plan-mode items."),
+                    ),
+                    (
+                        "sliceId",
+                        string_schema("Optional stable slice id for plan-mode items, such as P0-S1."),
+                    ),
+                    (
+                        "handoffNote",
+                        string_schema("Optional concise handoff note for Engineer when this slice starts."),
                     ),
                 ],
             ),
@@ -5055,6 +5186,14 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
             });
             continue;
         }
+        if let Some(argv) = line.strip_prefix("tool:command_verify ") {
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-command-{}", calls.len() + 1),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": argv.split_whitespace().collect::<Vec<_>>() }),
+            });
+            continue;
+        }
         if let Some(script) = line.strip_prefix("tool:command_sh ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-command-{}", calls.len() + 1),
@@ -5181,10 +5320,106 @@ mod tests {
     }
 
     #[test]
+    fn prompt_compiler_renders_plan_contract_and_planning_tool_policy() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Plan,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Plan the next implementation milestone.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        for expected in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_FIND,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_GIT_DIFF,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_LIST,
+            AUTONOMOUS_TOOL_HASH,
+            AUTONOMOUS_TOOL_TODO,
+        ] {
+            assert!(names.contains(expected), "missing Plan tool {expected}");
+        }
+        for denied in [
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            AUTONOMOUS_TOOL_LSP,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_WEB_SEARCH,
+            AUTONOMOUS_TOOL_MCP_LIST,
+            AUTONOMOUS_TOOL_SUBAGENT,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+        ] {
+            assert!(!names.contains(denied), "Plan should not expose {denied}");
+        }
+        let todo_descriptor = registry
+            .descriptor(AUTONOMOUS_TOOL_TODO)
+            .expect("Plan todo descriptor");
+        let todo_properties = todo_descriptor
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("todo schema properties");
+        for expected_property in ["phaseId", "phaseTitle", "sliceId", "handoffNote"] {
+            assert!(
+                todo_properties.contains_key(expected_property),
+                "todo descriptor should expose {expected_property}"
+            );
+        }
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Plan,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .compile()
+        .expect("compile Plan prompt");
+
+        assert!(compilation.prompt.contains("You are Xero's Plan agent."));
+        assert!(compilation.prompt.contains("xero.plan_pack.v1"));
+        assert!(compilation.prompt.contains("Available planning tools:"));
+        assert!(compilation
+            .prompt
+            .contains("Use `project_context_record` only after explicit acceptance"));
+        assert!(compilation
+            .prompt
+            .contains("do not ask for repo mutation, shell commands"));
+    }
+
+    #[test]
     fn prompt_compiler_includes_runtime_metadata_for_every_agent_profile() {
         let root = tempfile::tempdir().expect("temp dir");
         for runtime_agent_id in [
             RuntimeAgentIdDto::Ask,
+            RuntimeAgentIdDto::Plan,
             RuntimeAgentIdDto::Engineer,
             RuntimeAgentIdDto::Debug,
             RuntimeAgentIdDto::Crawl,

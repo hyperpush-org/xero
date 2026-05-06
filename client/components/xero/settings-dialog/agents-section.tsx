@@ -5,6 +5,7 @@ import {
   Bot,
   Bug,
   History,
+  ListChecks,
   Loader2,
   MessageCircle,
   RefreshCw,
@@ -86,6 +87,8 @@ function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {
       return Wrench
     case "debugging":
       return Bug
+    case "planning":
+      return ListChecks
     case "repository_recon":
       return Search
     case "agent_builder":

@@ -416,6 +416,7 @@ fn lancedb_freshness_phase1_marks_approved_memory_stale_after_source_file_change
         &project_store::NewAgentFileChangeRecord {
             project_id: project_id.clone(),
             run_id: "fresh-memory-source-run".into(),
+            change_group_id: None,
             path: source_path.into(),
             operation: "write".into(),
             old_hash: None,
@@ -1353,6 +1354,7 @@ fn lancedb_freshness_phase8_embedding_backfill_skips_stale_approved_memory() {
         &project_store::NewAgentFileChangeRecord {
             project_id: project_id.clone(),
             run_id: "fresh-backfill-memory-run".into(),
+            change_group_id: None,
             path: source_path.into(),
             operation: "write".into(),
             old_hash: None,
@@ -1723,6 +1725,7 @@ fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_anno
         &project_store::NewAgentFileChangeRecord {
             project_id: project_id.clone(),
             run_id: "fresh-phase9-memory-source-run".into(),
+            change_group_id: None,
             path: source_path.into(),
             operation: "write".into(),
             old_hash: None,

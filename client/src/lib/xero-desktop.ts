@@ -133,6 +133,8 @@ import {
   createProjectEntryRequestSchema,
   createProjectEntryResponseSchema,
   deleteProjectEntryResponseSchema,
+  applyCodeRollbackRequestSchema,
+  applyCodeRollbackResponseSchema,
   importRepositoryResponseSchema,
   listProjectFilesRequestSchema,
   listProjectFilesResponseSchema,
@@ -170,6 +172,7 @@ import {
   gitPullResponseSchema,
   gitPushResponseSchema,
   gitRemoteRequestSchema,
+  type ApplyCodeRollbackResponseDto,
   type CreateProjectEntryRequestDto,
   type CreateProjectEntryResponseDto,
   type DeleteProjectEntryResponseDto,
@@ -394,6 +397,7 @@ const COMMANDS = {
   getProjectUsageSummary: 'get_project_usage_summary',
   getRepositoryStatus: 'get_repository_status',
   getRepositoryDiff: 'get_repository_diff',
+  applyCodeRollback: 'apply_code_rollback',
   gitStagePaths: 'git_stage_paths',
   gitUnstagePaths: 'git_unstage_paths',
   gitDiscardChanges: 'git_discard_changes',
@@ -717,6 +721,7 @@ export interface XeroDesktopAdapter {
   getProjectUsageSummary(projectId: string): Promise<ProjectUsageSummaryDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
+  applyCodeRollback(projectId: string, targetChangeGroupId: string): Promise<ApplyCodeRollbackResponseDto>
   gitStagePaths(projectId: string, paths: string[]): Promise<void>
   gitUnstagePaths(projectId: string, paths: string[]): Promise<void>
   gitDiscardChanges(projectId: string, paths: string[]): Promise<void>
@@ -1570,6 +1575,11 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTypedDeduped(COMMANDS.getRepositoryDiff, repositoryDiffResponseSchema, {
       request: { projectId, scope },
     })
+  },
+
+  applyCodeRollback(projectId, targetChangeGroupId) {
+    const request = applyCodeRollbackRequestSchema.parse({ projectId, targetChangeGroupId })
+    return invokeTyped(COMMANDS.applyCodeRollback, applyCodeRollbackResponseSchema, { request })
   },
 
   async gitStagePaths(projectId, paths) {

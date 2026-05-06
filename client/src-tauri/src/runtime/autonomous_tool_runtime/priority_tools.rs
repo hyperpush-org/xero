@@ -208,6 +208,18 @@ impl AutonomousToolRuntime {
                     mode,
                     debug_stage: request.debug_stage,
                     evidence: normalize_optional_text(request.evidence),
+                    phase_id: request
+                        .phase_id
+                        .as_deref()
+                        .map(normalize_todo_id)
+                        .transpose()?,
+                    phase_title: normalize_optional_text(request.phase_title),
+                    slice_id: request
+                        .slice_id
+                        .as_deref()
+                        .map(normalize_todo_id)
+                        .transpose()?,
+                    handoff_note: normalize_optional_text(request.handoff_note),
                     updated_at: now_timestamp(),
                 };
                 todos.insert(id, item.clone());

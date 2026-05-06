@@ -259,6 +259,22 @@ const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
     AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
 ];
+const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_READ,
+    AUTONOMOUS_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_FIND,
+    AUTONOMOUS_TOOL_GIT_STATUS,
+    AUTONOMOUS_TOOL_GIT_DIFF,
+    AUTONOMOUS_TOOL_TOOL_ACCESS,
+    AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_LIST,
+    AUTONOMOUS_TOOL_HASH,
+    AUTONOMOUS_TOOL_TODO,
+];
 const TOOL_ACCESS_EMULATOR_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_EMULATOR];
 const TOOL_ACCESS_SOLANA_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SOLANA_CLUSTER,
@@ -795,6 +811,22 @@ impl AutonomousAgentToolPolicy {
                 command_allowed: true,
                 destructive_write_allowed: false,
             },
+            "planning" => Self {
+                allowed_effect_classes: BTreeSet::new(),
+                allowed_tools: TOOL_ACCESS_PLANNING_TOOLS
+                    .iter()
+                    .map(|tool| (*tool).to_owned())
+                    .collect(),
+                denied_tools: BTreeSet::new(),
+                allowed_tool_packs: BTreeSet::new(),
+                denied_tool_packs: BTreeSet::new(),
+                external_service_allowed: false,
+                browser_control_allowed: false,
+                skill_runtime_allowed: false,
+                subagent_allowed: false,
+                command_allowed: false,
+                destructive_write_allowed: false,
+            },
             _ => Self {
                 allowed_effect_classes: ["observe"].into_iter().map(ToOwned::to_owned).collect(),
                 allowed_tools: BTreeSet::new(),
@@ -1197,6 +1229,7 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
     }
     match agent_id {
         RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => true,
+        RuntimeAgentIdDto::Plan => TOOL_ACCESS_PLANNING_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Crawl => TOOL_ACCESS_REPOSITORY_RECON_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
@@ -1220,6 +1253,9 @@ fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     let mut agents = Vec::new();
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Ask, tool_name) {
         agents.push(RuntimeAgentIdDto::Ask.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Plan, tool_name) {
+        agents.push(RuntimeAgentIdDto::Plan.as_str());
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Engineer, tool_name) {
         agents.push(RuntimeAgentIdDto::Engineer.as_str());
@@ -1514,7 +1550,20 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "core",
             "Maintain model-visible planning state for the current owned-agent run, including Debug evidence ledgers.",
             &["plan", "todo", "task", "state", "debug", "evidence"],
-            &["action", "id", "title", "notes", "status", "mode", "debugStage", "evidence"],
+            &[
+                "action",
+                "id",
+                "title",
+                "notes",
+                "status",
+                "mode",
+                "debugStage",
+                "evidence",
+                "phaseId",
+                "phaseTitle",
+                "sliceId",
+                "handoffNote",
+            ],
             &[
                 "Track inspect, edit, verify steps for a multi-file change.",
                 "Record Debug symptom, hypothesis, experiment, root_cause, fix, and verification evidence.",
@@ -4015,6 +4064,14 @@ pub struct AutonomousTodoRequest {
     pub debug_stage: Option<AutonomousDebugEvidenceStage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4029,6 +4086,14 @@ pub struct AutonomousTodoItem {
     pub debug_stage: Option<AutonomousDebugEvidenceStage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_note: Option<String>,
     pub updated_at: String,
 }
 
@@ -5400,6 +5465,49 @@ mod tests {
     }
 
     #[test]
+    fn plan_runtime_agent_uses_exact_planning_tool_allowlist() {
+        let expected: BTreeSet<&str> = TOOL_ACCESS_PLANNING_TOOLS.iter().copied().collect();
+        let observed: BTreeSet<&str> = deferred_tool_catalog(true)
+            .into_iter()
+            .filter(|entry| {
+                tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Plan, entry.tool_name)
+            })
+            .map(|entry| entry.tool_name)
+            .collect();
+
+        assert_eq!(observed, expected);
+        for blocked_tool in [
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_RENAME,
+            AUTONOMOUS_TOOL_MKDIR,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_WEB_SEARCH,
+            AUTONOMOUS_TOOL_WEB_FETCH,
+            AUTONOMOUS_TOOL_MCP_LIST,
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_SUBAGENT,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_AGENT_DEFINITION,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+        ] {
+            assert!(
+                !tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Plan, blocked_tool),
+                "Plan should not be allowed to use {blocked_tool}"
+            );
+        }
+    }
+
+    #[test]
     fn crawl_repository_recon_policy_keeps_readonly_command_access_but_blocks_mutation() {
         let policy = AutonomousAgentToolPolicy::from_policy_label("repository_recon");
 
@@ -5442,6 +5550,58 @@ mod tests {
                     Some(&policy),
                 ),
                 "repository_recon should block {blocked_tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn planning_policy_allows_todo_but_blocks_mutation_and_commands() {
+        let policy = AutonomousAgentToolPolicy::from_policy_label("planning");
+
+        for allowed_tool in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_TODO,
+        ] {
+            assert!(
+                tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::Plan,
+                    allowed_tool,
+                    Some(&policy),
+                ),
+                "planning should allow {allowed_tool}"
+            );
+        }
+
+        for blocked_tool in [
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_WEB_SEARCH,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            AUTONOMOUS_TOOL_LSP,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+        ] {
+            assert!(
+                !tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::Plan,
+                    blocked_tool,
+                    Some(&policy),
+                ),
+                "planning should block {blocked_tool}"
             );
         }
     }

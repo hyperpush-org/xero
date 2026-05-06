@@ -29,8 +29,10 @@ import type {
 import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import type {
   AgentDefinitionSummaryDto,
+  ApplyCodeRollbackResponseDto,
   AgentSessionView,
   RuntimeRunView,
+  RuntimeAgentProjectOrigin,
   RuntimeAutoCompactPreferenceDto,
   ProviderAuthSessionView,
   RuntimeSessionView,
@@ -73,7 +75,12 @@ import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/co
 import { PlanTray } from './agent-runtime/plan-tray'
 import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
 import { AgentCreateDraftSection } from './agent-runtime/agent-create-draft-section'
-import { ConversationSection, type ConversationTurn } from './agent-runtime/conversation-section'
+import {
+  ConversationSection,
+  type CodeRollbackRequest,
+  type CodeRollbackUiState,
+  type ConversationTurn,
+} from './agent-runtime/conversation-section'
 import { EmptySessionState } from './agent-runtime/empty-session-state'
 import {
   getToolCardTitle,
@@ -90,7 +97,10 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
   Partial<
     Pick<
       XeroDesktopAdapter,
-      'getSessionContextSnapshot' | 'stageAgentAttachment' | 'discardAgentAttachment'
+      | 'applyCodeRollback'
+      | 'getSessionContextSnapshot'
+      | 'stageAgentAttachment'
+      | 'discardAgentAttachment'
     >
   >
 
@@ -119,6 +129,7 @@ export interface AgentRuntimeProps {
   onSubmitManualCallback?: (flowId: string, manualInput: string) => Promise<ProviderAuthSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
   onRetryStream?: () => Promise<void>
+  onCodeRollbackApplied?: () => Promise<unknown> | unknown
   onResolveOperatorAction?: (
     actionId: string,
     decision: 'approve' | 'reject',
@@ -219,8 +230,56 @@ function isReasoningActivityItem(item: RuntimeStreamViewItem): item is RuntimeSt
   return item.kind === 'activity' && item.code === 'owned_agent_reasoning'
 }
 
+function isFileChangeActivityItem(item: RuntimeStreamViewItem): item is RuntimeStreamActivityItemView {
+  return item.kind === 'activity' && item.code === 'owned_agent_file_changed'
+}
+
 function getReasoningActivityText(item: RuntimeStreamActivityItemView): string {
   return item.text ?? item.detail ?? ''
+}
+
+function parseFileChangeActivityDetail(detail: string | null): {
+  operation: string
+  path: string
+  toPath: string | null
+} {
+  const fallback = {
+    operation: 'changed',
+    path: 'unknown path',
+    toPath: null,
+  }
+  if (!detail) {
+    return fallback
+  }
+
+  const summary = detail.split(' · ')[0]?.trim() ?? ''
+  const match = /^([^:]+):\s*(.+)$/.exec(summary)
+  if (!match) {
+    return {
+      ...fallback,
+      path: summary || fallback.path,
+    }
+  }
+
+  const operation = match[1]?.trim() || fallback.operation
+  const pathSegment = match[2]?.trim() || fallback.path
+  const renameSeparator = ' -> '
+  const renameIndex = pathSegment.indexOf(renameSeparator)
+  if (renameIndex >= 0) {
+    const path = pathSegment.slice(0, renameIndex).trim()
+    const toPath = pathSegment.slice(renameIndex + renameSeparator.length).trim()
+    return {
+      operation,
+      path: path || fallback.path,
+      toPath: toPath || null,
+    }
+  }
+
+  return {
+    operation,
+    path: pathSegment,
+    toPath: null,
+  }
 }
 
 function isCodeEditToolName(toolName: string): boolean {
@@ -259,6 +318,23 @@ function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
     detailRows: getActionDetailRows(item, summary),
     state: item.toolState,
     defaultOpen: isCodeEditToolName(item.toolName),
+  }
+}
+
+function fileChangeTurnFromItem(item: RuntimeStreamActivityItemView): ConversationTurn {
+  const detail = item.detail ?? item.text ?? 'File changed.'
+  const parsed = parseFileChangeActivityDetail(detail)
+
+  return {
+    id: item.id,
+    kind: 'file_change',
+    sequence: item.sequence,
+    title: item.title,
+    detail,
+    operation: parsed.operation,
+    path: parsed.path,
+    toPath: parsed.toPath,
+    changeGroupId: item.codeChangeGroupId ?? null,
   }
 }
 
@@ -610,6 +686,11 @@ function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamV
       continue
     }
 
+    if (isFileChangeActivityItem(item)) {
+      turns.push(fileChangeTurnFromItem(item))
+      continue
+    }
+
     if (item.kind === 'action_required') {
       turns.push(actionPromptTurnFromItem(item))
       continue
@@ -809,6 +890,44 @@ function toContextMeterError(error: unknown): {
   }
 }
 
+function getCodeRollbackErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message
+  }
+
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return error
+  }
+
+  const maybeError = error as { message?: unknown } | null
+  if (typeof maybeError?.message === 'string' && maybeError.message.trim().length > 0) {
+    return maybeError.message
+  }
+
+  return 'Xero could not roll back this change.'
+}
+
+function getAgentProjectOrigin(project: AgentPaneView['project']): RuntimeAgentProjectOrigin {
+  return (project as AgentPaneView['project'] & { projectOrigin?: RuntimeAgentProjectOrigin })
+    .projectOrigin ?? 'unknown'
+}
+
+function formatCodeRollbackSuccess(response: ApplyCodeRollbackResponseDto): string {
+  const restoredCount = response.restoredPaths.length
+  const removedCount = response.removedPaths.length
+  const affectedCount = response.affectedFiles.length
+  if (restoredCount > 0 && removedCount > 0) {
+    return `Rolled back ${restoredCount} restored and ${removedCount} removed paths.`
+  }
+  if (restoredCount > 0) {
+    return `Rolled back ${restoredCount} restored ${restoredCount === 1 ? 'path' : 'paths'}.`
+  }
+  if (removedCount > 0) {
+    return `Rolled back ${removedCount} removed ${removedCount === 1 ? 'path' : 'paths'}.`
+  }
+  return `Rolled back ${affectedCount || 1} ${affectedCount === 1 ? 'file' : 'files'}.`
+}
+
 function useAgentContextMeterSnapshot(options: {
   enabled?: boolean
   adapter?: AgentRuntimeDesktopAdapter
@@ -968,6 +1087,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   onResolveOperatorAction,
   onResumeOperatorRun,
   desktopAdapter,
+  onCodeRollbackApplied,
   accountAvatarUrl = null,
   accountLogin = null,
   onCreateSession,
@@ -1071,6 +1191,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
   const hasSelectedAgentSession = Boolean(selectedAgentSessionId?.trim())
+  const [codeRollbackStates, setCodeRollbackStates] = useState<Record<string, CodeRollbackUiState>>({})
 
   const selectedProviderId =
     agent.selectedModel?.providerId ?? agent.selectedProviderId ?? runtimeSession?.providerId ?? 'openai_codex'
@@ -1325,12 +1446,13 @@ export const AgentRuntime = memo(function AgentRuntime({
     () => getComposerApprovalOptions(controller.composerRuntimeAgentId),
     [controller.composerRuntimeAgentId],
   )
+  const agentProjectOrigin = getAgentProjectOrigin(agent.project)
   const availableRuntimeAgentIds = useMemo(
     () =>
-      getRuntimeAgentDescriptorsForProjectOrigin(agent.project.projectOrigin ?? 'unknown').map(
+      getRuntimeAgentDescriptorsForProjectOrigin(agentProjectOrigin).map(
         (descriptor) => descriptor.id,
       ),
-    [agent.project.projectOrigin],
+    [agentProjectOrigin],
   )
   useEffect(() => {
     if (
@@ -1512,6 +1634,87 @@ export const AgentRuntime = memo(function AgentRuntime({
     shouldAutoFollowRef.current = false
     setShowJumpToLatest(true)
   }, [hasConversationViewportContent])
+  const preserveConversationScrollPosition = useCallback(() => {
+    const viewport = scrollViewportRef.current
+    if (!viewport) {
+      return () => {}
+    }
+
+    const scrollTop = viewport.scrollTop
+    const wasAutoFollowing = shouldAutoFollowRef.current
+    shouldAutoFollowRef.current = false
+
+    return () => {
+      const restore = () => {
+        const nextViewport = scrollViewportRef.current
+        if (!nextViewport) {
+          return
+        }
+
+        const maxScrollTop = Math.max(0, nextViewport.scrollHeight - nextViewport.clientHeight)
+        nextViewport.scrollTop = Math.min(scrollTop, maxScrollTop)
+        const isNearBottom = isRuntimeConversationNearBottom(nextViewport)
+        shouldAutoFollowRef.current = wasAutoFollowing && isNearBottom
+        setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
+      }
+
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(restore)
+        return
+      }
+
+      restore()
+    }
+  }, [hasConversationViewportContent])
+  const handleRollbackChangeGroup = useCallback(async ({ changeGroupId }: CodeRollbackRequest) => {
+    const applyCodeRollback = desktopAdapter?.applyCodeRollback
+    if (!applyCodeRollback) {
+      setCodeRollbackStates((current) => ({
+        ...current,
+        [changeGroupId]: {
+          status: 'failed',
+          message: 'Rollback is unavailable in this runtime.',
+        },
+      }))
+      return
+    }
+
+    const restoreScrollPosition = preserveConversationScrollPosition()
+    setCodeRollbackStates((current) => ({
+      ...current,
+      [changeGroupId]: {
+        status: 'pending',
+        message: 'Rolling back code change...',
+      },
+    }))
+
+    try {
+      const response = await applyCodeRollback(agent.project.id, changeGroupId)
+      setCodeRollbackStates((current) => ({
+        ...current,
+        [changeGroupId]: {
+          status: 'succeeded',
+          message: formatCodeRollbackSuccess(response),
+        },
+      }))
+      await onCodeRollbackApplied?.()
+    } catch (error) {
+      setCodeRollbackStates((current) => ({
+        ...current,
+        [changeGroupId]: {
+          status: 'failed',
+          message: getCodeRollbackErrorMessage(error),
+        },
+      }))
+    } finally {
+      restoreScrollPosition()
+    }
+  }, [
+    agent.project.id,
+    desktopAdapter,
+    onCodeRollbackApplied,
+    preserveConversationScrollPosition,
+  ])
   const handleConversationWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     const viewport = scrollViewportRef.current
     if (event.deltaY < 0 && viewport && viewport.scrollHeight > viewport.clientHeight) {
@@ -1805,6 +2008,10 @@ export const AgentRuntime = memo(function AgentRuntime({
                     accountAvatarUrl={accountAvatarUrl}
                     accountLogin={accountLogin}
                     variant={isDense ? 'dense' : 'default'}
+                    codeRollbackStates={codeRollbackStates}
+                    onRollbackChangeGroup={
+                      desktopAdapter?.applyCodeRollback ? handleRollbackChangeGroup : undefined
+                    }
                   />
                 </ActionPromptDispatchProvider>
                 {controller.composerRuntimeAgentId === 'agent_create' ? (

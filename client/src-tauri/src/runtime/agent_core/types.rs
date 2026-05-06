@@ -1193,11 +1193,11 @@ pub trait ProviderAdapter {
                 .join("\n")
         };
         let prompt = format!(
-            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
+            "Extract durable memory candidates from this Xero coding-agent transcript. Return only a JSON array. Each item must contain scope, kind, text, confidence, and sourceItemIds. scope must be project or session. kind must be project_fact, user_preference, decision, session_summary, or troubleshooting. Do not include secrets. Do not include duplicates of existing approved or candidate memories. If the transcript includes code rollback events, do not promote implementation details from reverted turns as durable facts unless the candidate explicitly includes rollback provenance.\n\nExisting memories:\n{existing}\n\nTranscript:\n{}",
             request.transcript
         );
         let turn = ProviderTurnRequest {
-            system_prompt: "You propose durable context candidates for a coding-agent desktop app. Return strict JSON only, never markdown. Capture stable project facts, user preferences, decisions, session summaries, and troubleshooting facts. Prefer no item over a weak item. Never include secrets.".into(),
+            system_prompt: "You propose durable context candidates for a coding-agent desktop app. Return strict JSON only, never markdown. Capture stable project facts, user preferences, decisions, session summaries, and troubleshooting facts. Treat code rollback events as provenance; reverted implementation details are not durable project facts unless the memory explicitly mentions the rollback. Prefer no item over a weak item. Never include secrets.".into(),
             messages: vec![ProviderMessage::User {
                 content: prompt,
                 attachments: Vec::new(),
@@ -1399,7 +1399,7 @@ impl ProviderAdapter for FakeProviderAdapter {
                 tool_calls: vec![AgentToolCall {
                     tool_call_id: format!("fake-tool-call-verify-{}", request.turn_index),
                     tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
-                    input: json!({ "argv": ["echo", "xero-verification-ok"] }),
+                    input: json!({ "argv": ["cargo", "test", "--help"] }),
                 }],
                 usage: Some(ProviderUsage::default()),
             });

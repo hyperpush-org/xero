@@ -6,6 +6,25 @@ import {
 } from './agent-definition'
 
 describe('agent definition contracts', () => {
+  it('accepts the built-in planning profile in registry summaries', () => {
+    const summary = agentDefinitionSummarySchema.parse({
+      definitionId: 'plan',
+      currentVersion: 1,
+      displayName: 'Plan',
+      shortLabel: 'Plan',
+      description: 'Draft accepted implementation plans without mutating repository files.',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'planning',
+      createdAt: '2026-05-06T00:00:00Z',
+      updatedAt: '2026-05-06T00:00:00Z',
+      isBuiltIn: true,
+    })
+
+    expect(summary.baseCapabilityProfile).toBe('planning')
+    expect(getAgentDefinitionBaseCapabilityLabel('planning')).toBe('Planning')
+  })
+
   it('accepts the built-in harness test profile in registry summaries', () => {
     const summary = agentDefinitionSummarySchema.parse({
       definitionId: 'test',

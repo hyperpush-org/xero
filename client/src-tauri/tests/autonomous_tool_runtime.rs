@@ -983,6 +983,13 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
             title: Some("Inspect symbols".into()),
             notes: None,
             status: None,
+            mode: None,
+            debug_stage: None,
+            phase_id: None,
+            phase_title: None,
+            slice_id: None,
+            handoff_note: None,
+            evidence: None,
         })
         .expect("todo upsert");
     match todo.output {
@@ -1516,6 +1523,13 @@ fn tool_runtime_todo_generated_ids_do_not_collide_after_deletes() {
                 title: Some(title.into()),
                 notes: None,
                 status: None,
+                mode: None,
+                debug_stage: None,
+                phase_id: None,
+                phase_title: None,
+                slice_id: None,
+                handoff_note: None,
+                evidence: None,
             })
             .expect("auto todo upsert");
     }
@@ -1526,6 +1540,13 @@ fn tool_runtime_todo_generated_ids_do_not_collide_after_deletes() {
             title: None,
             notes: None,
             status: None,
+            mode: None,
+            debug_stage: None,
+            phase_id: None,
+            phase_title: None,
+            slice_id: None,
+            handoff_note: None,
+            evidence: None,
         })
         .expect("delete first generated todo");
 
@@ -1536,6 +1557,13 @@ fn tool_runtime_todo_generated_ids_do_not_collide_after_deletes() {
             title: Some("Third task".into()),
             notes: None,
             status: None,
+            mode: None,
+            debug_stage: None,
+            phase_id: None,
+            phase_title: None,
+            slice_id: None,
+            handoff_note: None,
+            evidence: None,
         })
         .expect("third generated todo should not overwrite todo-2");
 

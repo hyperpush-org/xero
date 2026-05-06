@@ -25,6 +25,7 @@ import {
   Info,
   Loader2,
   Terminal,
+  Undo2,
   User,
   XCircle,
 } from 'lucide-react'
@@ -111,6 +112,17 @@ export type ConversationTurn =
     }
   | {
       id: string
+      kind: 'file_change'
+      sequence: number
+      title: string
+      detail: string
+      operation: string
+      path: string
+      toPath: string | null
+      changeGroupId: string | null
+    }
+  | {
+      id: string
       kind: 'failure'
       sequence: number
       message: string
@@ -131,6 +143,16 @@ export type ConversationTurn =
       isResolved: boolean
     }
 
+export interface CodeRollbackRequest {
+  changeGroupId: string
+  path: string
+}
+
+export interface CodeRollbackUiState {
+  status: 'pending' | 'succeeded' | 'failed'
+  message: string
+}
+
 interface ConversationSectionProps {
   runtimeRun: RuntimeRunView | null
   visibleTurns: ConversationTurn[]
@@ -145,6 +167,8 @@ interface ConversationSectionProps {
   accountLogin?: string | null
   /** Visual density. `dense` collapses each turn into a single PTY-style line. */
   variant?: 'default' | 'dense'
+  codeRollbackStates?: Record<string, CodeRollbackUiState>
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
 }
 
 /**
@@ -171,6 +195,8 @@ export const ConversationSection = memo(function ConversationSection({
   accountAvatarUrl = null,
   accountLogin = null,
   variant = 'default',
+  codeRollbackStates = {},
+  onRollbackChangeGroup,
 }: ConversationSectionProps) {
   const runFailureCode = runtimeRun?.lastError?.code ?? runtimeRun?.lastErrorCode ?? null
   const runFailureMessage =
@@ -215,7 +241,12 @@ export const ConversationSection = memo(function ConversationSection({
         {showAnyTurn ? (
           <ol aria-label="Agent conversation turns" className="flex flex-col gap-2">
             {visibleTurns.map((turn) => (
-              <DenseTurnItem key={turn.id} turn={turn} />
+              <DenseTurnItem
+                key={turn.id}
+                turn={turn}
+                codeRollbackStates={codeRollbackStates}
+                onRollbackChangeGroup={onRollbackChangeGroup}
+              />
             ))}
           </ol>
         ) : null}
@@ -280,6 +311,8 @@ export const ConversationSection = memo(function ConversationSection({
                 isStreaming={index === visibleTurns.length - 1 && isLastTurnStreamingAssistant}
                 connectsTop={isToolTurnKind(prev)}
                 connectsBottom={isToolTurnKind(next)}
+                codeRollbackStates={codeRollbackStates}
+                onRollbackChangeGroup={onRollbackChangeGroup}
               />
             )
           })}
@@ -393,6 +426,8 @@ function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
           ]
           return groupLines.filter(Boolean).join('\n\n')
         }
+        case 'file_change':
+          return formatActionForCopy('File change', turn.title, turn.detail, [])
         case 'failure':
           return `Agent run failed:\n${turn.message}${turn.code.trim().length > 0 ? `\nCode: ${turn.code}` : ''}`
         case 'action_prompt':
@@ -534,12 +569,16 @@ interface ConversationTurnItemProps {
   connectsTop: boolean
   /** Next visible turn is also a tool call; render a connector down to it. */
   connectsBottom: boolean
+  codeRollbackStates: Record<string, CodeRollbackUiState>
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
 }
 
-const TURN_ENTRY_CLASS = cn(
-  'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1',
-  'motion-safe:duration-200 motion-safe:ease-out',
-)
+// Custom keyframes (see globals.css `.agent-turn-soft-enter`) give each new
+// turn a softer landing — a small upward drift, micro scale, longer ease —
+// than tailwind's stock `animate-in fade-in-0 slide-in-from-bottom-1`.
+// Reduced motion is honoured globally by the `prefers-reduced-motion` rule
+// at the bottom of globals.css.
+const TURN_ENTRY_CLASS = 'agent-turn-soft-enter'
 
 function ConversationTurnItem({
   turn,
@@ -548,6 +587,8 @@ function ConversationTurnItem({
   isStreaming,
   connectsTop,
   connectsBottom,
+  codeRollbackStates,
+  onRollbackChangeGroup,
 }: ConversationTurnItemProps) {
   return (
     <li className={TURN_ENTRY_CLASS}>
@@ -558,6 +599,8 @@ function ConversationTurnItem({
         isStreaming={isStreaming}
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
+        codeRollbackStates={codeRollbackStates}
+        onRollbackChangeGroup={onRollbackChangeGroup}
       />
     </li>
   )
@@ -570,6 +613,8 @@ interface ConversationTurnRowProps {
   isStreaming: boolean
   connectsTop: boolean
   connectsBottom: boolean
+  codeRollbackStates: Record<string, CodeRollbackUiState>
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
 }
 
 function ConversationTurnRow({
@@ -579,6 +624,8 @@ function ConversationTurnRow({
   isStreaming,
   connectsTop,
   connectsBottom,
+  codeRollbackStates,
+  onRollbackChangeGroup,
 }: ConversationTurnRowProps) {
   if (turn.kind === 'message') {
     return turn.role === 'user' ? (
@@ -607,6 +654,16 @@ function ConversationTurnRow({
 
   if (turn.kind === 'failure') {
     return <FailureCard message={turn.message} code={turn.code} />
+  }
+
+  if (turn.kind === 'file_change') {
+    return (
+      <FileChangeRow
+        turn={turn}
+        rollbackState={turn.changeGroupId ? codeRollbackStates[turn.changeGroupId] : undefined}
+        onRollbackChangeGroup={onRollbackChangeGroup}
+      />
+    )
   }
 
   if (turn.kind === 'action_group') {
@@ -650,6 +707,141 @@ function ConversationTurnRow({
   )
 }
 
+function humanizeFileChangeOperation(operation: string): string {
+  return operation
+    .trim()
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase() || 'changed'
+}
+
+function fileChangeTargetLabel(turn: Extract<ConversationTurn, { kind: 'file_change' }>): string {
+  return turn.toPath ? `${turn.path} -> ${turn.toPath}` : turn.path
+}
+
+function FileChangeRow({
+  turn,
+  rollbackState,
+  onRollbackChangeGroup,
+}: {
+  turn: Extract<ConversationTurn, { kind: 'file_change' }>
+  rollbackState?: CodeRollbackUiState
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+}) {
+  const operationLabel = humanizeFileChangeOperation(turn.operation)
+  const targetLabel = fileChangeTargetLabel(turn)
+  const canRollback = Boolean(turn.changeGroupId && onRollbackChangeGroup)
+  const statusTone =
+    rollbackState?.status === 'failed'
+      ? 'text-destructive'
+      : rollbackState?.status === 'succeeded'
+        ? 'text-success'
+        : 'text-muted-foreground'
+
+  return (
+    <div
+      className={cn(
+        'group/file-change flex items-start gap-2 rounded-md px-1 py-1 text-left transition-colors',
+        'hover:bg-foreground/[0.03]',
+      )}
+    >
+      <FileText className="mt-[3px] h-3.5 w-3.5 shrink-0 text-primary/70" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0 text-[12.5px] font-medium text-foreground">
+            {operationLabel}
+          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground/80" title={targetLabel}>
+            {targetLabel}
+          </span>
+        </div>
+        <p className="mt-0.5 min-w-0 truncate text-[11.5px] text-muted-foreground/75" title={turn.detail}>
+          {turn.detail}
+        </p>
+        {rollbackState ? (
+          <p
+            className={cn('mt-1 text-[11.5px]', statusTone)}
+            role="status"
+            aria-live="polite"
+          >
+            {rollbackState.message}
+          </p>
+        ) : null}
+      </div>
+      <CodeRollbackButton
+        path={targetLabel}
+        changeGroupId={turn.changeGroupId}
+        state={rollbackState}
+        enabled={canRollback}
+        onRollbackChangeGroup={onRollbackChangeGroup}
+      />
+    </div>
+  )
+}
+
+function CodeRollbackButton({
+  path,
+  changeGroupId,
+  state,
+  enabled,
+  onRollbackChangeGroup,
+  dense = false,
+}: {
+  path: string
+  changeGroupId: string | null
+  state?: CodeRollbackUiState
+  enabled: boolean
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  dense?: boolean
+}) {
+  const isPending = state?.status === 'pending'
+  const isSucceeded = state?.status === 'succeeded'
+  const canClick = enabled && Boolean(changeGroupId) && !isPending && !isSucceeded
+  const label = (() => {
+    if (!enabled || !changeGroupId) return `Rollback unavailable for ${path}`
+    if (isPending) return `Rolling back ${path}`
+    if (isSucceeded) return `Rolled back ${path}`
+    if (state?.status === 'failed') return `Retry rollback for ${path}`
+    return `Rollback ${path}`
+  })()
+  const tooltip = (() => {
+    if (!changeGroupId) return 'Snapshot unavailable'
+    if (!enabled) return 'Rollback unavailable'
+    if (isPending) return 'Rolling back'
+    if (isSucceeded) return 'Rolled back'
+    if (state?.status === 'failed') return 'Retry rollback'
+    return 'Rollback file change'
+  })()
+  const Icon = isPending ? Loader2 : isSucceeded ? CheckCircle2 : Undo2
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={label}
+          disabled={!canClick}
+          onClick={() => {
+            if (!changeGroupId || !canClick) return
+            onRollbackChangeGroup?.({ changeGroupId, path })
+          }}
+          className={cn(
+            'mt-[1px] shrink-0 rounded-md text-muted-foreground/70 hover:text-foreground',
+            dense ? 'h-5 w-5 [&_svg]:size-[11px]' : 'h-6 w-6 [&_svg]:size-3',
+            state?.status === 'failed' && 'text-destructive hover:text-destructive',
+            isSucceeded && 'text-success',
+          )}
+        >
+          <Icon aria-hidden="true" className={cn(isPending && 'animate-spin')} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{tooltip}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Action / tool row — cardless, inline row with a leading status icon. The
 // running state gets a thin primary-colored left rail; the failed state gets
@@ -683,7 +875,7 @@ function ActionCard({
   const rowClass = cn(
     'flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors',
     'hover:bg-foreground/[0.03]',
-    isRunning && 'bg-primary/[0.025]',
+    isRunning && 'bg-primary/[0.025] agent-tool-running-row',
     isFailed && 'bg-destructive/[0.04]',
   )
 
@@ -939,7 +1131,7 @@ function ActionGroupCard({
           className={cn(
             'flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors',
             'hover:bg-foreground/[0.03]',
-            isRunning && 'bg-primary/[0.025]',
+            isRunning && 'bg-primary/[0.025] agent-tool-running-row',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
           )}
         >
@@ -979,8 +1171,8 @@ function ActionGroupCard({
         )}
       >
         <ol className="ml-[22px] mt-0.5 flex flex-col gap-px border-l border-border/25 pl-2">
-          {actions.map((action) => (
-            <ActionGroupItem key={action.id} action={action} />
+          {actions.map((action, index) => (
+            <ActionGroupItem key={action.id} action={action} index={index} />
           ))}
         </ol>
       </CollapsibleContent>
@@ -990,20 +1182,25 @@ function ActionGroupCard({
 
 function ActionGroupItem({
   action,
+  index = 0,
 }: {
   action: ActionGroupCardProps['actions'][number]
+  index?: number
 }) {
   const [open, setOpen] = useState(false)
   const hasDetails = action.detailRows.length > 0
   const rowClass = cn(
     'flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors',
     'hover:bg-foreground/[0.03]',
-    action.state === 'running' && 'bg-primary/[0.025]',
+    action.state === 'running' && 'bg-primary/[0.025] agent-tool-running-row',
     action.state === 'failed' && 'bg-destructive/[0.04]',
   )
 
   return (
-    <li className="group/sub motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150 motion-safe:ease-out">
+    <li
+      className="group/sub agent-stagger-child"
+      style={{ ['--stagger-index' as string]: index }}
+    >
       <Collapsible open={open} onOpenChange={setOpen}>
         {hasDetails ? (
           <CollapsibleTrigger asChild>
@@ -1563,22 +1760,41 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
 
   const pop = state === 'succeeded' || state === 'failed'
   const iconSize = state === 'pending' || state === null ? 'h-3 w-3' : 'h-3.5 w-3.5'
+  // Replays a soft halo only when the tool finishes — keyed on `state` so a
+  // re-render with the same terminal state doesn't restart the animation,
+  // but a transition (running → succeeded) does.
+  const flashTone =
+    state === 'succeeded' ? 'success' : state === 'failed' ? 'failure' : null
 
   return (
-    <Icon
-      key={key}
+    <span
       aria-hidden="true"
       className={cn(
-        iconSize,
-        'shrink-0',
-        tone,
-        state === 'running' && 'animate-spin',
-        state === 'succeeded' && 'drop-shadow-[0_0_4px_rgba(34,197,94,0.25)]',
-        'motion-safe:animate-in motion-safe:fade-in-0',
-        pop ? 'tool-status-icon-pop' : 'motion-safe:zoom-in-95 motion-safe:duration-150',
+        'relative inline-flex items-center justify-center shrink-0',
         className,
       )}
-    />
+    >
+      <Icon
+        key={key}
+        aria-hidden="true"
+        className={cn(
+          iconSize,
+          'shrink-0',
+          tone,
+          state === 'running' && 'animate-spin',
+          state === 'succeeded' && 'drop-shadow-[0_0_4px_rgba(34,197,94,0.25)]',
+          'motion-safe:animate-in motion-safe:fade-in-0',
+          pop ? 'tool-status-icon-pop' : 'motion-safe:zoom-in-95 motion-safe:duration-150',
+        )}
+      />
+      {flashTone ? (
+        <span
+          key={`${key}-flash`}
+          className="agent-tool-flash"
+          data-tone={flashTone}
+        />
+      ) : null}
+    </span>
   )
 }
 
@@ -1590,9 +1806,15 @@ function truncateForLine(text: string, max = 240): string {
 
 interface DenseTurnItemProps {
   turn: ConversationTurn
+  codeRollbackStates: Record<string, CodeRollbackUiState>
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
 }
 
-function DenseTurnItem({ turn }: DenseTurnItemProps) {
+function DenseTurnItem({
+  turn,
+  codeRollbackStates,
+  onRollbackChangeGroup,
+}: DenseTurnItemProps) {
   if (turn.kind === 'message') {
     return (
       <DenseMessageItem
@@ -1616,6 +1838,16 @@ function DenseTurnItem({ turn }: DenseTurnItemProps) {
           {truncateForLine(turn.message)}
         </span>
       </li>
+    )
+  }
+
+  if (turn.kind === 'file_change') {
+    return (
+      <DenseFileChangeItem
+        turn={turn}
+        rollbackState={turn.changeGroupId ? codeRollbackStates[turn.changeGroupId] : undefined}
+        onRollbackChangeGroup={onRollbackChangeGroup}
+      />
     )
   }
 
@@ -1653,6 +1885,55 @@ function DenseTurnItem({ turn }: DenseTurnItemProps) {
   }
 
   return null
+}
+
+function DenseFileChangeItem({
+  turn,
+  rollbackState,
+  onRollbackChangeGroup,
+}: {
+  turn: Extract<ConversationTurn, { kind: 'file_change' }>
+  rollbackState?: CodeRollbackUiState
+  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+}) {
+  const targetLabel = fileChangeTargetLabel(turn)
+  const canRollback = Boolean(turn.changeGroupId && onRollbackChangeGroup)
+  const statusTone =
+    rollbackState?.status === 'failed'
+      ? 'text-destructive'
+      : rollbackState?.status === 'succeeded'
+        ? 'text-success'
+        : 'text-muted-foreground'
+
+  return (
+    <li className="px-1">
+      <div className="flex items-start gap-2 text-foreground/85">
+        <FileText className="mt-[2px] h-3 w-3 shrink-0 text-primary/70" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <span className="block truncate" title={turn.detail}>
+            {truncateForLine(`${humanizeFileChangeOperation(turn.operation)} ${targetLabel}`)}
+          </span>
+          {rollbackState ? (
+            <span
+              className={cn('mt-0.5 block truncate text-[11px]', statusTone)}
+              role="status"
+              aria-live="polite"
+            >
+              {rollbackState.message}
+            </span>
+          ) : null}
+        </div>
+        <CodeRollbackButton
+          path={targetLabel}
+          changeGroupId={turn.changeGroupId}
+          state={rollbackState}
+          enabled={canRollback}
+          onRollbackChangeGroup={onRollbackChangeGroup}
+          dense
+        />
+      </div>
+    </li>
+  )
 }
 
 interface DenseMessageItemProps {

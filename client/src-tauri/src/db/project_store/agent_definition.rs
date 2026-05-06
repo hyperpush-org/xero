@@ -525,6 +525,7 @@ fn validate_new_agent_definition(record: &NewAgentDefinitionRecord) -> Result<()
         &record.base_capability_profile,
         &[
             "observe_only",
+            "planning",
             "repository_recon",
             "engineering",
             "debugging",
@@ -566,6 +567,7 @@ pub fn runtime_agent_id_for_base_capability_profile(profile: &str) -> RuntimeAge
     match profile {
         "engineering" => RuntimeAgentIdDto::Engineer,
         "debugging" => RuntimeAgentIdDto::Debug,
+        "planning" => RuntimeAgentIdDto::Plan,
         "repository_recon" => RuntimeAgentIdDto::Crawl,
         "agent_builder" => RuntimeAgentIdDto::AgentCreate,
         "harness_test" => RuntimeAgentIdDto::Test,
