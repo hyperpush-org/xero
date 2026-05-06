@@ -123,7 +123,7 @@ function BentoCard({
 }) {
   return (
     <article
-      className={`group relative flex flex-col overflow-hidden rounded-2xl border border-border/70 bg-card transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[0_24px_60px_-30px_color-mix(in_oklab,var(--primary)_45%,transparent)] ${
+      className={`relative flex flex-col overflow-hidden rounded-2xl border border-border/70 bg-card ${
         className ?? ""
       }`}
     >
@@ -162,12 +162,6 @@ function CustomAgentsMock() {
     <div className="grid w-full max-w-[520px] grid-cols-12 gap-3">
       {/* Agent header */}
       <div className="relative col-span-12 flex items-center justify-between overflow-hidden rounded-lg border border-primary/40 bg-primary/[0.06] px-3 py-2">
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 top-0 h-px overflow-hidden"
-        >
-          <span className="block h-full w-1/3 animate-shimmer-bar bg-gradient-to-r from-transparent via-primary/80 to-transparent" />
-        </span>
         <div className="flex items-center gap-2">
           <span className="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/15 text-primary ring-1 ring-inset ring-primary/30">
             <Bot className="h-4 w-4" />
@@ -184,10 +178,7 @@ function CustomAgentsMock() {
           </div>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-primary">
-          <span className="relative inline-flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-          </span>
+          <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
           live
         </span>
       </div>
@@ -323,8 +314,8 @@ function WorkflowGraphMock() {
         d="M 232 140 C 200 156, 90 156, 74 140"
         stroke="color-mix(in oklab, var(--primary) 70%, transparent)"
         strokeWidth="1.2"
+        strokeDasharray="3 3"
         fill="none"
-        className="animate-flow-dash"
       />
 
       {/* node A — ask */}
@@ -373,14 +364,6 @@ function WorkflowGraphMock() {
         </text>
       </g>
 
-      {/* travelling pulse on top edge */}
-      <circle r="2.5" fill="var(--primary)">
-        <animateMotion
-          dur="3.2s"
-          repeatCount="indefinite"
-          path="M 74 40 C 110 40, 120 90, 138 90 L 176 90 C 200 90, 210 40, 232 40"
-        />
-      </circle>
     </svg>
   )
 }
@@ -418,7 +401,7 @@ function MobileApprovalsMock() {
                 #xero-approvals
               </span>
               <span className="ml-auto inline-flex items-center gap-1 font-mono text-[9px] text-muted-foreground/70">
-                <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
+                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
                 now
               </span>
             </div>
@@ -488,20 +471,12 @@ function SixPanesMock() {
         return (
           <div
             key={i}
-            className={`relative flex aspect-[4/3] flex-col justify-between overflow-hidden rounded-md border p-2 transition-colors ${
+            className={`relative flex aspect-[4/3] flex-col justify-between overflow-hidden rounded-md border p-2 ${
               isDecision
                 ? "border-primary/45 bg-primary/[0.08] shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_18%,transparent)]"
                 : "border-border/60 bg-background/40"
             }`}
           >
-            {isRunning && (
-              <span
-                aria-hidden
-                className="pointer-events-none absolute inset-x-0 top-0 h-px overflow-hidden"
-              >
-                <span className="block h-full w-1/3 animate-shimmer-bar bg-gradient-to-r from-transparent via-primary/70 to-transparent" />
-              </span>
-            )}
             <div className="flex items-center gap-1">
               <span
                 className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded ${
@@ -524,14 +499,8 @@ function SixPanesMock() {
               >
                 {p.state}
               </span>
-              {isDecision && (
-                <span className="relative inline-flex h-1.5 w-1.5">
-                  <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
-                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-                </span>
-              )}
-              {isRunning && (
-                <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
+              {(isDecision || isRunning) && (
+                <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
               )}
             </div>
           </div>
@@ -595,11 +564,8 @@ function BranchRewindMock() {
         />
       ))}
 
-      {/* HEAD pulse on main */}
-      <circle cx="200" cy="40" r="8" fill="none" stroke="var(--primary)" strokeWidth="1" opacity="0.5">
-        <animate attributeName="r" values="5;10;5" dur="2.4s" repeatCount="indefinite" />
-        <animate attributeName="opacity" values="0.6;0;0.6" dur="2.4s" repeatCount="indefinite" />
-      </circle>
+      {/* HEAD ring on main */}
+      <circle cx="200" cy="40" r="8" fill="none" stroke="var(--primary)" strokeWidth="1" opacity="0.5" />
 
       {/* labels */}
       <g>
@@ -617,7 +583,7 @@ function BranchRewindMock() {
 
       {/* rewind marker */}
       <g>
-        <circle cx="110" cy="40" r="10" fill="none" stroke="var(--primary)" strokeWidth="1.2" className="animate-flow-dash" />
+        <circle cx="110" cy="40" r="10" fill="none" stroke="var(--primary)" strokeWidth="1.2" strokeDasharray="3 3" />
         <text x="110" y="68" fontSize="8" fill="var(--primary)" textAnchor="middle" fontFamily="var(--font-mono)" fontWeight="600">
           rewind
         </text>
@@ -653,7 +619,7 @@ function RunTimelineMock() {
             }`}
           >
             {e.state === "done" && <CheckCircle2 className="h-2.5 w-2.5" />}
-            {e.state === "running" && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
+            {e.state === "running" && <Loader2 className="h-2.5 w-2.5" />}
             {e.state === "paused" && <PauseCircle className="h-2.5 w-2.5" />}
           </span>
           <div
@@ -693,9 +659,9 @@ function IntegrationsMock() {
       {tiles.map((t) => (
         <div
           key={t.label}
-          className="group/tile flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-2.5 py-2 transition-colors hover:border-primary/40 hover:bg-primary/[0.04]"
+          className="flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-2.5 py-2"
         >
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary ring-1 ring-inset ring-primary/20 transition-colors group-hover/tile:bg-primary/15">
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary ring-1 ring-inset ring-primary/20">
             {t.icon}
           </span>
           <div className="min-w-0 flex flex-col">
@@ -734,17 +700,11 @@ function KeysDirectMock() {
         </span>
       </div>
 
-      {/* Lines with traveling pulses */}
+      {/* Direct lines */}
       <div className="relative flex flex-1 flex-col justify-center gap-2.5 py-2">
         {[0, 1, 2, 3].map((i) => (
           <div key={i} className="relative flex items-center">
-            <div className="relative h-px flex-1 overflow-hidden bg-gradient-to-r from-primary/30 to-primary/80">
-              <span
-                aria-hidden
-                className="absolute inset-y-[-1px] left-0 w-6 bg-gradient-to-r from-transparent via-white/80 to-transparent opacity-70 animate-travel-x"
-                style={{ animationDelay: `${i * 0.45}s` }}
-              />
-            </div>
+            <div className="relative h-px flex-1 bg-gradient-to-r from-primary/30 to-primary/80" />
             <span className="absolute right-0 top-1/2 -translate-y-1/2">
               <span className="block h-0 w-0 border-y-[4px] border-l-[6px] border-y-transparent border-l-primary" />
             </span>
@@ -765,7 +725,7 @@ function KeysDirectMock() {
         ].map((p, i) => (
           <div
             key={i}
-            className="flex items-center gap-1.5 rounded-md border border-border/60 bg-background/40 px-2 py-1 transition-colors hover:border-primary/30"
+            className="flex items-center gap-1.5 rounded-md border border-border/60 bg-background/40 px-2 py-1"
           >
             <span
               className={`inline-flex h-4 w-4 items-center justify-center rounded text-white ${p.bg}`}

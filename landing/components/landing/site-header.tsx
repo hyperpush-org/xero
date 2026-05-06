@@ -3,7 +3,7 @@
 import Link from "next/link"
 import Image from "next/image"
 import { useEffect, useState } from "react"
-import { Menu, X, Github } from "lucide-react"
+import { Menu, X, Github, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -71,11 +71,13 @@ export function SiteHeader() {
             <Github className="h-4 w-4" />
           </Link>
           <Button
-            asChild
             size="sm"
-            className="bg-primary text-primary-foreground shadow-[0_4px_14px_-6px_color-mix(in_oklab,var(--primary)_70%,transparent)] transition-all hover:bg-primary/90 hover:shadow-[0_6px_16px_-6px_color-mix(in_oklab,var(--primary)_75%,transparent)]"
+            disabled
+            aria-disabled
+            className="gap-1.5 bg-secondary/60 text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
           >
-            <Link href="/#download">Download</Link>
+            <Clock className="h-3.5 w-3.5" />
+            Coming soon
           </Button>
 
           <button

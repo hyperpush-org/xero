@@ -77,7 +77,7 @@ export function Workflow() {
         <ol className="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 lg:gap-5">
           {stages.map((s, i) => (
             <li key={s.n} className="relative flex">
-              <article className="group relative flex w-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-[0_24px_60px_-30px_color-mix(in_oklab,var(--primary)_45%,transparent)]">
+              <article className="relative flex w-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card">
                 {/* Card header: stage label */}
                 <header className="flex items-center justify-between border-b border-border/60 bg-secondary/20 px-4 py-2.5">
                   <div className="flex items-center gap-2">
@@ -226,14 +226,6 @@ function ChainVisual() {
           <text x="200" y="113" textAnchor="end" fontSize="8" fill="var(--muted-foreground)" fontFamily="var(--font-mono)">retry</text>
         </g>
 
-        {/* travelling pulse */}
-        <circle r="2.5" fill="var(--primary)">
-          <animateMotion
-            dur="3s"
-            repeatCount="indefinite"
-            path="M 38 35 C 88 35, 96 65, 116 65 L 144 65 C 168 65, 178 35, 202 35"
-          />
-        </circle>
       </svg>
       <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
         <Sparkles className="h-2.5 w-2.5 text-primary/70" />
@@ -264,7 +256,7 @@ function ApproveVisual() {
               #xero-approvals
             </span>
             <span className="ml-auto inline-flex items-center gap-1 font-mono text-[9px] text-muted-foreground/70">
-              <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+              <span className="h-1 w-1 rounded-full bg-primary" />
               now
             </span>
           </div>
@@ -332,12 +324,6 @@ function ShipVisual() {
             style={{ width: "72%" }}
           />
         </div>
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-x-0 bottom-1.5 h-1 overflow-hidden rounded-full"
-        >
-          <span className="block h-full w-1/3 animate-shimmer-bar bg-gradient-to-r from-transparent via-white/40 to-transparent" />
-        </span>
       </div>
       <div className="flex items-center gap-2 rounded-md border border-dashed border-border/60 bg-transparent px-2.5 py-2">
         <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-secondary/40 text-muted-foreground/70">

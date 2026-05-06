@@ -186,7 +186,7 @@ function ChatMock({
           <span className="text-[11px] text-muted-foreground">{channelLabel}</span>
         </div>
         <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
-          <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
+          <span className="h-1.5 w-1.5 rounded-full bg-primary" />
           live
         </span>
       </div>

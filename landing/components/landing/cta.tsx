@@ -1,6 +1,5 @@
-import Link from "next/link"
+import { Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { AppleIcon, WindowsIcon } from "@/components/landing/brand-icons"
 
 export function CTA() {
   return (
@@ -23,32 +22,20 @@ export function CTA() {
           Gemini, OpenRouter, GitHub, Azure, Bedrock, Vertex, or a local Ollama.
         </p>
 
-        <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+        <div className="mt-8 flex justify-center">
           <Button
-            asChild
             size="lg"
-            className="h-11 gap-2 bg-primary px-5 text-primary-foreground shadow-[0_10px_30px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] transition-all hover:bg-primary/90 hover:shadow-[0_12px_36px_-10px_color-mix(in_oklab,var(--primary)_75%,transparent)]"
+            disabled
+            aria-disabled
+            className="h-11 gap-2 bg-secondary/60 px-5 text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
           >
-            <Link href="#">
-              <AppleIcon className="h-4 w-4" />
-              Download for macOS · Universal
-            </Link>
-          </Button>
-          <Button
-            asChild
-            size="lg"
-            variant="outline"
-            className="h-11 gap-2 border-border/80 bg-secondary/40 px-5 text-foreground hover:bg-secondary"
-          >
-            <Link href="#">
-              <WindowsIcon className="h-4 w-4" aria-hidden />
-              Windows · Linux (.deb / .rpm)
-            </Link>
+            <Clock className="h-4 w-4" />
+            Coming soon
           </Button>
         </div>
 
         <p className="mt-6 font-mono text-[11px] text-muted-foreground/70">
-          macOS 13+ · Windows 10+ · Universal binary · Apple silicon &amp; Intel
+          Desktop apps for macOS, Windows, and Linux are on the way.
         </p>
       </div>
     </section>

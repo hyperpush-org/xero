@@ -119,12 +119,12 @@ function FeatureRow({ row, reverse }: { row: Row; reverse: boolean }) {
       </div>
 
       <div className={`lg:col-span-7 ${reverse ? "lg:order-1" : "lg:order-2"}`}>
-        <div className="group relative">
+        <div className="relative">
           <div
             aria-hidden
-            className="pointer-events-none absolute -inset-6 -z-10 rounded-[2rem] bg-gradient-to-br from-primary/10 via-transparent to-transparent blur-2xl transition-opacity duration-500 group-hover:opacity-80"
+            className="pointer-events-none absolute -inset-6 -z-10 rounded-[2rem] bg-gradient-to-br from-primary/10 via-transparent to-transparent blur-2xl"
           />
-          <div className="overflow-hidden rounded-2xl border border-border/70 bg-card p-4 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.5)] transition-colors group-hover:border-border">
+          <div className="overflow-hidden rounded-2xl border border-border/70 bg-card p-4 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.5)]">
             {row.visual}
           </div>
         </div>
@@ -201,11 +201,7 @@ function PersistenceVisual() {
                       ? "bg-muted-foreground/30"
                       : "bg-primary/40"
                 }`}
-              >
-                {isActive && (
-                  <span className="absolute inline-flex h-2 w-2 animate-ring-ping rounded-full bg-primary" />
-                )}
-              </span>
+              />
               <div
                 className={`flex items-center gap-2 rounded-md border px-2.5 py-2 font-mono transition-colors ${
                   isActive
@@ -233,7 +229,7 @@ function PersistenceVisual() {
                 <span className="truncate">{r.msg}</span>
                 {isActive && (
                   <span className="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
-                    <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+                    <span className="h-1 w-1 rounded-full bg-primary" />
                     you
                   </span>
                 )}
@@ -306,10 +302,7 @@ function MultiPaneVisual() {
           <span className="text-muted-foreground/60">· 6 / 6 panes</span>
         </span>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary">
-          <span className="relative inline-flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-          </span>
+          <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
           live
         </span>
       </div>
@@ -320,20 +313,12 @@ function MultiPaneVisual() {
           return (
             <li
               key={i}
-              className={`relative flex flex-col gap-1.5 overflow-hidden rounded-md border px-2.5 py-2 font-mono transition-colors ${
+              className={`relative flex flex-col gap-1.5 overflow-hidden rounded-md border px-2.5 py-2 font-mono ${
                 isDecision
                   ? "border-primary/50 bg-primary/[0.06] shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_18%,transparent)]"
                   : "border-border/60 bg-background/40"
               }`}
             >
-              {isRunning && (
-                <span
-                  aria-hidden
-                  className="pointer-events-none absolute inset-x-0 top-0 h-px overflow-hidden"
-                >
-                  <span className="block h-full w-1/3 animate-shimmer-bar bg-gradient-to-r from-transparent via-primary/70 to-transparent" />
-                </span>
-              )}
               <div className="flex items-center justify-between text-foreground">
                 <span className="flex items-center gap-1.5 text-[11px] font-medium">
                   <span
@@ -371,7 +356,7 @@ function StatePill({ state }: { state: "running" | "idle" | "decision" }) {
   if (state === "running") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
-        <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+        <span className="h-1 w-1 rounded-full bg-primary" />
         running
       </span>
     )
@@ -412,10 +397,7 @@ function ToolsVisual() {
           session · <span className="text-foreground/80">engineer</span> · run timeline
         </span>
         <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 text-[10px] uppercase tracking-wider text-primary">
-          <span className="relative inline-flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-          </span>
+          <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
           live · 8 events
         </span>
       </div>
@@ -468,7 +450,7 @@ function ToolsVisual() {
                 )}
                 {isPending && (
                   <span className="shrink-0 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
-                    <span className="h-1 w-1 animate-pulse-dot rounded-full bg-primary" />
+                    <span className="h-1 w-1 rounded-full bg-primary" />
                     you
                   </span>
                 )}

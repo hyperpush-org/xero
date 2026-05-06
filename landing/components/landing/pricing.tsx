@@ -24,7 +24,7 @@ type PricingTier = {
   features: string[]
 }
 
-const waitlistHref = "mailto:team@xero.sh?subject=Xero%20paid%20plan%20waitlist"
+const waitlistHref = "mailto:team@xeroshell.com?subject=Xero%20paid%20plan%20waitlist"
 
 const tiers: PricingTier[] = [
   {
@@ -33,10 +33,11 @@ const tiers: PricingTier[] = [
     period: "forever",
     icon: Laptop,
     description: "The desktop app. Build your own agents, bring your own keys, run as much as your machine handles.",
-    cta: "Download Xero",
+    cta: "Coming soon",
     ctaHref: "#download",
     highlight: true,
-    badge: "Available now",
+    badge: "Coming soon",
+    comingSoon: true,
     features: [
       "Custom agents with per-agent tools, memory, and approval rules",
       "Built-in Ask, Engineer, Debug, Agent Create",
@@ -116,12 +117,12 @@ export function Pricing() {
               <Card
                 key={t.name}
                 className={cn(
-                  "relative flex flex-col overflow-hidden rounded-2xl px-1 py-1 transition-all hover:-translate-y-0.5",
+                  "relative flex flex-col overflow-hidden rounded-2xl px-1 py-1",
                   t.highlight
                     ? "border-primary/40 shadow-[0_30px_80px_-30px_color-mix(in_oklab,var(--primary)_35%,transparent)] ring-1 ring-primary/25"
                     : t.comingSoon
-                      ? "border-dashed border-border/70 hover:border-border"
-                      : "border-border/60 hover:border-border",
+                      ? "border-dashed border-border/70"
+                      : "border-border/60",
                 )}
               >
                 {t.highlight && (
@@ -140,7 +141,7 @@ export function Pricing() {
                     )}
                   >
                     {t.comingSoon ? (
-                      <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary" />
                     ) : null}
                     {t.badge}
                   </span>
@@ -174,18 +175,29 @@ export function Pricing() {
                 </CardHeader>
 
                 <CardContent className="flex flex-1 flex-col px-6 pb-6">
-                  <Button
-                    asChild
-                    size="lg"
-                    className={cn(
-                      "mt-1 w-full",
-                      t.highlight
-                        ? "bg-primary text-primary-foreground shadow-[0_8px_24px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] hover:bg-primary/90"
-                        : "bg-secondary text-foreground hover:bg-secondary/80",
-                    )}
-                  >
-                    <Link href={t.ctaHref}>{t.cta}</Link>
-                  </Button>
+                  {t.name === "Free" ? (
+                    <Button
+                      size="lg"
+                      disabled
+                      aria-disabled
+                      className="mt-1 w-full bg-secondary text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
+                    >
+                      {t.cta}
+                    </Button>
+                  ) : (
+                    <Button
+                      asChild
+                      size="lg"
+                      className={cn(
+                        "mt-1 w-full",
+                        t.highlight
+                          ? "bg-primary text-primary-foreground shadow-[0_8px_24px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] hover:bg-primary/90"
+                          : "bg-secondary text-foreground hover:bg-secondary/80",
+                      )}
+                    >
+                      <Link href={t.ctaHref}>{t.cta}</Link>
+                    </Button>
+                  )}
 
                   <ul className="mt-6 flex flex-1 flex-col gap-2.5 border-t border-border/50 pt-6">
                     {t.features.map((f) => {
@@ -225,7 +237,7 @@ export function Pricing() {
 
         <p className="mt-8 text-center text-xs text-muted-foreground/60">
           Need team seats or larger Solana infrastructure?{" "}
-          <Link href="mailto:team@xero.sh" className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
+          <Link href="mailto:team@xeroshell.com" className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
             Talk to us
           </Link>
           .

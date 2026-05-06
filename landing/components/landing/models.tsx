@@ -124,7 +124,7 @@ export function Models() {
               {providers.map((p) => (
                 <li
                   key={p.name}
-                  className="group relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card p-4 transition-all hover:-translate-y-0.5 hover:border-border hover:shadow-[0_10px_30px_-18px_rgba(0,0,0,0.6)]"
+                  className="relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card p-4"
                 >
                   <span
                     className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${p.badgeClass}`}
@@ -165,18 +165,9 @@ export function Models() {
 function DirectConnectionVisual() {
   return (
     <div className="relative mt-6 overflow-hidden rounded-xl border border-border/70 bg-background/40 p-4">
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-px overflow-hidden"
-      >
-        <span className="block h-full w-1/3 animate-shimmer-bar bg-gradient-to-r from-transparent via-primary/70 to-transparent" />
-      </span>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
-          <span className="relative inline-flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ring-ping rounded-full bg-primary" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-          </span>
+          <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
           no relay · no markup
         </div>
         <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-primary">
@@ -206,13 +197,8 @@ function DirectConnectionVisual() {
         <div className="relative flex h-12 flex-1 items-center">
           <div
             aria-hidden
-            className="relative h-px w-full overflow-hidden bg-gradient-to-r from-primary/30 via-primary/70 to-primary"
-          >
-            <span
-              aria-hidden
-              className="absolute inset-y-[-1px] left-0 w-10 bg-gradient-to-r from-transparent via-white/85 to-transparent opacity-80 animate-travel-x"
-            />
-          </div>
+            className="relative h-px w-full bg-gradient-to-r from-primary/30 via-primary/70 to-primary"
+          />
           {/* arrowhead */}
           <span
             aria-hidden
