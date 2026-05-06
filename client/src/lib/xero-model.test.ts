@@ -1717,7 +1717,8 @@ describe('xero-model', () => {
 
     expect(stream.items.filter((item) => item.kind === 'tool' && item.toolCallId === 'read-runtime')).toHaveLength(1)
     expect(stream.items.find((item) => item.kind === 'tool' && item.toolCallId === 'read-runtime')).toMatchObject({
-      sequence: 4,
+      sequence: 3,
+      updatedSequence: 4,
       toolState: 'succeeded',
     })
 
@@ -1750,7 +1751,9 @@ describe('xero-model', () => {
       'Please inspect the runtime.',
       'Reading the relevant files.',
     ])
-    expect(stream.items.filter((item) => item.kind !== 'transcript')).toHaveLength(MAX_RUNTIME_STREAM_ITEMS)
+    expect(stream.items.filter((item) => item.kind !== 'transcript')).toHaveLength(
+      MAX_RUNTIME_STREAM_ITEMS + 6,
+    )
   })
 
   it('preserves whitespace-bearing assistant transcript deltas while compacting the live turn', () => {
@@ -1822,9 +1825,18 @@ describe('xero-model', () => {
     )
     expect(reasoningItems).toHaveLength(1)
     expect(reasoningItems[0]).toMatchObject({
-      text: 'I should inspect the failing test\n\n',
+      text: 'I should inspect the failing test',
       detail: 'I should inspect the failing test',
     })
+    expect(stream.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'activity',
+          code: 'owned_agent_reasoning_boundary',
+          sequence: 3,
+        }),
+      ]),
+    )
   })
 
   it('projects browser/computer-use summaries through runtime tool rows and rejects malformed follow-up payloads', () => {

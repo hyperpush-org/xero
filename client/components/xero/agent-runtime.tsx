@@ -42,6 +42,7 @@ import type {
 } from '@/src/lib/xero-model'
 import type { SessionContextSnapshotDto } from '@/src/lib/xero-model/session-context'
 import {
+  getRuntimeAgentDescriptorsForProjectOrigin,
   getRuntimeAgentLabel,
   getRuntimeRunThinkingEffortLabel,
   type RuntimeRunControlInputDto,
@@ -172,14 +173,16 @@ export interface AgentRuntimeProps {
 
 const EMPTY_RUNTIME_STREAM_ITEMS: RuntimeStreamViewItem[] = []
 const EMPTY_ACTION_REQUIRED_ITEMS: NonNullable<AgentPaneView['actionRequiredItems']> = []
-const MAX_VISIBLE_RUNTIME_ACTION_TURNS = 16
-const COMPACT_TOOL_BURST_THRESHOLD = 5
+const MAX_VISIBLE_RUNTIME_ACTION_TURNS = Number.POSITIVE_INFINITY
+const COMPACT_TOOL_BURST_THRESHOLD = 2
 const CONVERSATION_NEAR_BOTTOM_THRESHOLD_PX = 96
 const BACKGROUND_PANE_STREAM_ITEM_LIMIT = 160
 const BACKGROUND_PANE_VISIBLE_TURN_LIMIT = 48
 const FOREGROUND_WORK_DEFER_MS = 32
+const STREAMING_TOOL_OUTPUT_MAX_CHARS = 24_000
 const CONTEXT_METER_REFRESH_IDLE_TIMEOUT_MS = 1200
 const CONTEXT_METER_REFRESH_FALLBACK_DELAY_MS = 220
+const CODE_EDIT_TOOL_NAMES = new Set(['edit', 'patch', 'write', 'apply_patch', 'notebook_edit'])
 
 export interface AgentPaneCloseState {
   hasRunningRun: boolean
@@ -214,8 +217,8 @@ function getReasoningActivityText(item: RuntimeStreamActivityItemView): string {
   return item.text ?? item.detail ?? ''
 }
 
-function appendThinkingDelta(current: string, delta: string): string {
-  return `${current}${delta}`
+function isCodeEditToolName(toolName: string): boolean {
+  return CODE_EDIT_TOOL_NAMES.has(toolName)
 }
 
 function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
@@ -231,6 +234,7 @@ function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
     detail,
     detailRows: getActionDetailRows(item, summary),
     state: item.toolState,
+    defaultOpen: isCodeEditToolName(item.toolName),
   }
 }
 
@@ -271,18 +275,54 @@ function getActionDetailRows(
     })
   }
 
+  if (item.toolResultPreview && item.toolResultPreview !== item.detail && item.toolResultPreview !== summary) {
+    rows.push({
+      label: 'Output',
+      value: item.toolResultPreview,
+    })
+  }
+
   return rows
+}
+
+function normalizeStreamOutputPreview(value: string): string {
+  return value
+    .replace(/(^|\n)(stdout|stderr|output):\n/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+}
+
+function outputPreviewContains(container: string, contained: string): boolean {
+  const normalizedContainer = normalizeStreamOutputPreview(container)
+  const normalizedContained = normalizeStreamOutputPreview(contained)
+  return normalizedContained.length > 0 && normalizedContainer.includes(normalizedContained)
 }
 
 function mergeActionRows(
   existing: Array<{ label: string; value: string }>,
   incoming: Array<{ label: string; value: string }>,
 ): Array<{ label: string; value: string }> {
-  const seen = new Set(existing.map((row) => `${row.label}\u0000${row.value}`))
-  const merged = [...existing]
+  const merged = existing.map((row) => ({ ...row }))
+  const seen = new Set(merged.map((row) => `${row.label}\u0000${row.value}`))
 
   for (const row of incoming) {
     const key = `${row.label}\u0000${row.value}`
+    if (/output/i.test(row.label)) {
+      const outputRow = merged.find((existingRow) => /output/i.test(existingRow.label))
+      if (outputRow) {
+        if (outputPreviewContains(row.value, outputRow.value)) {
+          outputRow.value = row.value
+        } else if (!outputPreviewContains(outputRow.value, row.value) && !outputRow.value.includes(row.value)) {
+          const nextValue = `${outputRow.value}\n${row.value}`.trim()
+          outputRow.value =
+            nextValue.length > STREAMING_TOOL_OUTPUT_MAX_CHARS
+              ? nextValue.slice(nextValue.length - STREAMING_TOOL_OUTPUT_MAX_CHARS)
+              : nextValue
+        }
+        continue
+      }
+    }
+
     if (!seen.has(key)) {
       seen.add(key)
       merged.push(row)
@@ -301,6 +341,7 @@ function mergeActionTurn(existing: ConversationTurn, incoming: ConversationTurn)
   existing.state = incoming.state
   existing.detail = incoming.detail
   existing.detailRows = mergeActionRows(existing.detailRows, incoming.detailRows)
+  existing.defaultOpen = Boolean(existing.defaultOpen || incoming.defaultOpen)
 
   if (incoming.title.length >= existing.title.length) {
     existing.title = incoming.title
@@ -384,6 +425,10 @@ function actionGroupState(
   return null
 }
 
+function isCodeEditAction(turn: Extract<ConversationTurn, { kind: 'action' }>): boolean {
+  return isCodeEditToolName(turn.toolName)
+}
+
 function summarizeActionGroup(
   actions: Extract<ConversationTurn, { kind: 'action' }>[],
 ): string {
@@ -428,6 +473,7 @@ function actionGroupTurnFromActions(
       id: action.id,
       title: action.title,
       detail: action.detail,
+      detailRows: action.detailRows,
       state: action.state ?? null,
     })),
   }
@@ -448,6 +494,11 @@ function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
 
   for (const turn of turns) {
     if (turn.kind === 'action') {
+      if (isCodeEditAction(turn)) {
+        flushActionBuffer()
+        compactedTurns.push(turn)
+        continue
+      }
       actionBuffer.push(turn)
       continue
     }
@@ -478,6 +529,12 @@ function limitActionTurns(turns: ConversationTurn[]): ConversationTurn[] {
 interface ConversationProjection {
   visibleTurns: ConversationTurn[]
   hasUserMessage: boolean
+}
+
+interface PendingPromptTurn {
+  id: string
+  text: string
+  queuedAt: string | null
 }
 
 const conversationProjectionCache = new WeakMap<readonly RuntimeStreamViewItem[], ConversationProjection>()
@@ -517,18 +574,6 @@ function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamV
     if (isReasoningActivityItem(item)) {
       const text = getReasoningActivityText(item)
       if (text.trim().length === 0) {
-        const previousThinking = turns.at(-1)
-        if (previousThinking?.kind === 'thinking') {
-          previousThinking.text = appendThinkingDelta(previousThinking.text, text)
-          previousThinking.sequence = item.sequence
-        }
-        continue
-      }
-
-      const previous = turns.at(-1)
-      if (previous?.kind === 'thinking') {
-        previous.text = appendThinkingDelta(previous.text, text)
-        previous.sequence = item.sequence
         continue
       }
 
@@ -603,6 +648,62 @@ function sliceBackgroundPaneTurns(visibleTurns: ConversationTurn[]): Conversatio
     return visibleTurns
   }
   return visibleTurns.slice(-BACKGROUND_PANE_VISIBLE_TURN_LIMIT)
+}
+
+function hasTranscriptForPendingPrompt(
+  runtimeStreamItems: readonly RuntimeStreamViewItem[],
+  pendingPrompt: PendingPromptTurn | null,
+): boolean {
+  if (!pendingPrompt) {
+    return false
+  }
+
+  const promptText = pendingPrompt.text.trim()
+  if (!promptText) {
+    return false
+  }
+
+  const queuedAtMs = Date.parse(pendingPrompt.queuedAt ?? '')
+  const hasQueuedTimestamp = Number.isFinite(queuedAtMs)
+
+  return runtimeStreamItems.some((item) => {
+    if (item.kind !== 'transcript' || item.role !== 'user' || item.text.trim() !== promptText) {
+      return false
+    }
+
+    if (!hasQueuedTimestamp) {
+      return true
+    }
+
+    const itemCreatedAtMs = Date.parse(item.createdAt)
+    return Number.isFinite(itemCreatedAtMs) && itemCreatedAtMs >= queuedAtMs - 5_000
+  })
+}
+
+function appendPendingPromptTurn(
+  turns: ConversationTurn[],
+  pendingPrompt: PendingPromptTurn | null,
+): ConversationTurn[] {
+  if (!pendingPrompt) {
+    return turns
+  }
+
+  const text = pendingPrompt.text.trim()
+  if (!text) {
+    return turns
+  }
+
+  const latestSequence = turns.reduce((current, turn) => Math.max(current, turn.sequence), 0)
+  return [
+    ...turns,
+    {
+      id: `pending-prompt:${pendingPrompt.id}`,
+      kind: 'message',
+      role: 'user',
+      sequence: latestSequence + 0.5,
+      text,
+    },
+  ]
 }
 
 function getContextMeterRequestKey(options: {
@@ -873,7 +974,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const streamIssue = agent.runtimeStreamError ?? runtimeStream?.lastIssue ?? null
   const isFocusedPane = paneCount <= 1 || isPaneFocused !== false
   const foregroundWorkReady = useDeferredForegroundWork(active)
-  const useBackgroundPaneFastPath = !foregroundWorkReady || (paneCount >= 3 && !isFocusedPane)
+  const useBackgroundPaneFastPath = paneCount >= 3 && !isFocusedPane
   const runtimeStreamItemsForTurns = useMemo(
     () =>
       useBackgroundPaneFastPath
@@ -893,6 +994,34 @@ export const AgentRuntime = memo(function AgentRuntime({
         : visibleTurns,
     [useBackgroundPaneFastPath, visibleTurns],
   )
+  const [optimisticPromptTurn, setOptimisticPromptTurn] = useState<PendingPromptTurn | null>(null)
+  const selectedQueuedPromptTurn = useMemo<PendingPromptTurn | null>(() => {
+    const text = agent.selectedPrompt.text?.trim()
+    if (!agent.selectedPrompt.hasQueuedPrompt || !text) {
+      return null
+    }
+
+    return {
+      id: `queued:${agent.selectedPrompt.queuedAt ?? text}`,
+      text,
+      queuedAt: agent.selectedPrompt.queuedAt ?? null,
+    }
+  }, [agent.selectedPrompt.hasQueuedPrompt, agent.selectedPrompt.queuedAt, agent.selectedPrompt.text])
+  const pendingPromptTurn = useMemo<PendingPromptTurn | null>(() => {
+    if (optimisticPromptTurn && !hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn)) {
+      return optimisticPromptTurn
+    }
+
+    if (selectedQueuedPromptTurn && !hasTranscriptForPendingPrompt(runtimeStreamItems, selectedQueuedPromptTurn)) {
+      return selectedQueuedPromptTurn
+    }
+
+    return null
+  }, [optimisticPromptTurn, runtimeStreamItems, selectedQueuedPromptTurn])
+  const visibleTurnsWithPendingPrompt = useMemo(
+    () => appendPendingPromptTurn(visibleTurnsForDisplay, pendingPromptTurn),
+    [pendingPromptTurn, visibleTurnsForDisplay],
+  )
   const pendingRuntimeRunAction = agent.pendingRuntimeRunAction ?? null
   const runtimeRunActionStatus = agent.runtimeRunActionStatus
   const isQueueingRuntimePrompt =
@@ -908,7 +1037,7 @@ export const AgentRuntime = memo(function AgentRuntime({
         !runtimeStream?.failure
       ),
   )
-  const hasUserMessage = conversationProjection.hasUserMessage
+  const hasUserMessage = conversationProjection.hasUserMessage || Boolean(pendingPromptTurn)
   const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
@@ -1137,6 +1266,20 @@ export const AgentRuntime = memo(function AgentRuntime({
     onSubmitAttachmentsSettled: handleSubmitAttachmentsSettled,
   })
 
+  useEffect(() => {
+    if (!optimisticPromptTurn) {
+      return
+    }
+
+    const selectedQueuedText = selectedQueuedPromptTurn?.text.trim() ?? null
+    if (
+      hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn) ||
+      selectedQueuedText === optimisticPromptTurn.text.trim()
+    ) {
+      setOptimisticPromptTurn(null)
+    }
+  }, [optimisticPromptTurn, runtimeStreamItems, selectedQueuedPromptTurn])
+
   const selectedComposerModel = useMemo(
     () => getComposerModelOption(availableModels, controller.composerModelId),
     [availableModels, controller.composerModelId],
@@ -1153,9 +1296,29 @@ export const AgentRuntime = memo(function AgentRuntime({
     () => getComposerApprovalOptions(controller.composerRuntimeAgentId),
     [controller.composerRuntimeAgentId],
   )
+  const availableRuntimeAgentIds = useMemo(
+    () =>
+      getRuntimeAgentDescriptorsForProjectOrigin(agent.project.projectOrigin ?? 'unknown').map(
+        (descriptor) => descriptor.id,
+      ),
+    [agent.project.projectOrigin],
+  )
+  useEffect(() => {
+    if (
+      !controller.isRuntimeAgentSwitchDisabled &&
+      !availableRuntimeAgentIds.includes(controller.composerRuntimeAgentId)
+    ) {
+      controller.handleComposerRuntimeAgentChange('ask')
+    }
+  }, [
+    availableRuntimeAgentIds,
+    controller.composerRuntimeAgentId,
+    controller.isRuntimeAgentSwitchDisabled,
+    controller.handleComposerRuntimeAgentChange,
+  ])
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const contextMeterState = useAgentContextMeterSnapshot({
-    enabled: foregroundWorkReady && isFocusedPane,
+    enabled: foregroundWorkReady && isFocusedPane && runtimeRunActionStatus !== 'running',
     adapter: desktopAdapter,
     projectId: agent.project.id,
     agentSessionId: selectedAgentSessionId,
@@ -1206,6 +1369,11 @@ export const AgentRuntime = memo(function AgentRuntime({
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
         ? 'Describe the agent you want to create...'
+      : controller.composerRuntimeAgentId === 'crawl' &&
+          !agentRuntimeBlocked &&
+          runtimeSession?.isAuthenticated &&
+          !renderableRuntimeRun?.isTerminal
+        ? 'Map this existing repository...'
       : baseComposerPlaceholder
   const showAgentSetupEmptyState = Boolean(
     agentRuntimeBlocked &&
@@ -1215,6 +1383,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     hasIncompleteRuntimeRunPayload ||
       renderableRuntimeRun ||
       controller.recentRunReplacement ||
+      pendingPromptTurn ||
       streamIssue ||
       showAgentActivityIndicator ||
       transcriptItems.length > 0 ||
@@ -1244,7 +1413,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   const shouldAutoFollowRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
-  const latestVisibleTurn = visibleTurnsForDisplay.at(-1)
+  const latestVisibleTurn = visibleTurnsWithPendingPrompt.at(-1)
   const conversationScrollKey = [
     latestVisibleTurn?.id ?? 'none',
     latestVisibleTurn?.sequence ?? 'none',
@@ -1296,10 +1465,29 @@ export const AgentRuntime = memo(function AgentRuntime({
     scrollToLatest('smooth')
   }, [scrollToLatest])
   const handleSubmitDraftPrompt = useCallback(() => {
+    const submittedText = controller.draftPrompt.trim()
+    const optimisticPrompt = submittedText.length > 0
+      ? {
+          id: `${Date.now()}:${submittedText}`,
+          text: submittedText,
+          queuedAt: new Date().toISOString(),
+        }
+      : null
+
+    if (optimisticPrompt) {
+      setOptimisticPromptTurn(optimisticPrompt)
+    }
+
     shouldAutoFollowRef.current = true
     setShowJumpToLatest(false)
     scrollToLatest('auto')
-    void controller.handleSubmitDraftPrompt().finally(() => {
+    void controller.handleSubmitDraftPrompt().then((submitted) => {
+      if (!submitted && optimisticPrompt) {
+        setOptimisticPromptTurn((current) =>
+          current?.id === optimisticPrompt.id ? null : current,
+        )
+      }
+    }).finally(() => {
       scrollToLatest('auto')
     })
   }, [controller, scrollToLatest])
@@ -1361,7 +1549,8 @@ export const AgentRuntime = memo(function AgentRuntime({
             {...(dragHandleAttributes ?? {})}
             {...(dragHandle?.listeners ?? {})}
             className={cn(
-              'flex items-center justify-between gap-1.5 px-3.5 py-2',
+              'flex items-center justify-between gap-1.5 px-3.5',
+              isDense ? 'py-1.5' : 'py-2',
               inSidebar ? 'bg-sidebar' : 'bg-background',
               dragHandle ? 'pointer-events-auto cursor-grab active:cursor-grabbing select-none' : null,
             )}
@@ -1502,7 +1691,8 @@ export const AgentRuntime = memo(function AgentRuntime({
           <div
             aria-hidden="true"
             className={cn(
-              'h-7 bg-gradient-to-b',
+              'bg-gradient-to-b',
+              isDense ? 'h-2' : 'h-7',
               inSidebar ? 'from-sidebar to-sidebar/0' : 'from-background to-background/0',
             )}
           />
@@ -1514,6 +1704,7 @@ export const AgentRuntime = memo(function AgentRuntime({
             onScroll={handleConversationScroll}
             onWheel={handleConversationWheel}
             className={cn(
+              'select-text',
               showAgentSetupEmptyState || showEmptySessionState
                 ? 'flex h-full items-center justify-center overflow-y-auto scrollbar-thin'
                 : 'flex h-full overflow-y-auto scrollbar-thin',
@@ -1546,7 +1737,7 @@ export const AgentRuntime = memo(function AgentRuntime({
               >
                 <ConversationSection
                   runtimeRun={renderableRuntimeRun}
-                  visibleTurns={visibleTurnsForDisplay}
+                  visibleTurns={visibleTurnsWithPendingPrompt}
                   streamIssue={streamIssue}
                   streamFailure={runtimeStream?.failure ?? null}
                   showActivityIndicator={showAgentActivityIndicator}
@@ -1588,6 +1779,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           density={density}
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}
+          availableRuntimeAgentIds={availableRuntimeAgentIds}
           composerAgentDefinitionId={controller.composerAgentDefinitionId}
           composerAgentSelectionKey={controller.composerAgentSelectionKey}
           customAgentDefinitions={customAgentDefinitions}

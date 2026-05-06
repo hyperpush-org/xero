@@ -8,6 +8,7 @@ import {
   Loader2,
   MessageCircle,
   RefreshCw,
+  Search,
   Sparkles,
   Wrench,
   X,
@@ -85,8 +86,12 @@ function profileIcon(profile: AgentDefinitionBaseCapabilityProfileDto) {
       return Wrench
     case "debugging":
       return Bug
+    case "repository_recon":
+      return Search
     case "agent_builder":
       return Sparkles
+    case "harness_test":
+      return Bot
     case "observe_only":
     default:
       return MessageCircle

@@ -1,8 +1,25 @@
 use super::*;
 use crate::runtime::AutonomousSubagentWriteScope;
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 const MAX_AUTOMATIC_MEMORY_CANDIDATES: u8 = 8;
 const MIN_AUTOMATIC_MEMORY_CONFIDENCE: u8 = 50;
+const REPO_FINGERPRINT_CACHE_TTL: Duration = Duration::from_secs(5);
+const CRAWL_REPORT_SCHEMA: &str = "xero.project_crawl.report.v1";
+
+#[derive(Debug, Clone)]
+struct RepoFingerprintCacheEntry {
+    value: JsonValue,
+    cached_at: Instant,
+}
+
+static REPO_FINGERPRINT_CACHE: OnceLock<Mutex<HashMap<PathBuf, RepoFingerprintCacheEntry>>> =
+    OnceLock::new();
 
 pub(crate) fn append_message(
     repo_root: &Path,
@@ -235,6 +252,12 @@ fn coordination_activity_for_event(
                 format!("Verification `{label}` {outcome}."),
             ))
         }
+        AgentRunEventKind::EnvironmentLifecycleUpdate => {
+            let state = payload_text(payload, "state").unwrap_or_else(|| "starting".into());
+            let detail = payload_text(payload, "detail")
+                .unwrap_or_else(|| format!("Environment lifecycle: {state}."));
+            Some(("environment_lifecycle", detail))
+        }
         AgentRunEventKind::StateTransition => {
             let to = payload_text(payload, "to").unwrap_or_else(|| "runtime".into());
             Some(("state_transition", format!("Moved to `{to}`.")))
@@ -311,6 +334,15 @@ pub(crate) fn capture_project_record_for_run(
     repo_root: &Path,
     snapshot: &AgentRunSnapshotRecord,
 ) -> CommandResult<()> {
+    if snapshot.run.runtime_agent_id == RuntimeAgentIdDto::Crawl {
+        if snapshot.run.status != AgentRunStatus::Completed {
+            capture_diagnostic_record(repo_root, snapshot)?;
+            return Ok(());
+        }
+        capture_crawl_report_records(repo_root, snapshot)?;
+        capture_diagnostic_record(repo_root, snapshot)?;
+        return Ok(());
+    }
     capture_terminal_summary_record(repo_root, snapshot)?;
     capture_final_answer_record(repo_root, snapshot)?;
     capture_latest_plan_record(repo_root, snapshot)?;
@@ -319,6 +351,507 @@ pub(crate) fn capture_project_record_for_run(
     capture_diagnostic_record(repo_root, snapshot)?;
     capture_debug_finding_record(repo_root, snapshot)?;
     Ok(())
+}
+
+fn capture_crawl_report_records(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let message = snapshot
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == AgentMessageRole::Assistant)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "crawl_report_missing",
+                "Crawl completed without a final assistant message containing a structured crawl report.",
+            )
+        })?;
+    let report = parse_crawl_report_payload(&message.content)?;
+    validate_crawl_report_payload(&report)?;
+    let source_item_ids = vec![format!("agent_messages:{}", message.id)];
+    let source_fingerprints = report
+        .get("freshness")
+        .and_then(|freshness| freshness.get("sourceFingerprints"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let report_related_paths = collect_crawl_related_paths(&report, 80);
+    let report_text = serde_json::to_string_pretty(&report).map_err(|error| {
+        CommandError::system_fault(
+            "crawl_report_serialize_failed",
+            format!("Xero could not serialize the Crawl report for persistence: {error}"),
+        )
+    })?;
+    let confidence = crawl_confidence(report.get("coverage")).or(Some(0.75));
+
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::Artifact,
+            title: "crawl:report".into(),
+            summary: crawl_report_summary(&report),
+            text: report_text,
+            content_json: json!({
+                "schema": CRAWL_REPORT_SCHEMA,
+                "projectId": snapshot.run.project_id.as_str(),
+                "report": report.clone(),
+            }),
+            schema_name: CRAWL_REPORT_SCHEMA,
+            importance: project_store::ProjectRecordImportance::Critical,
+            confidence,
+            tags: crawl_tags(&["brownfield", "report"]),
+            source_item_ids: source_item_ids.clone(),
+            related_paths: report_related_paths,
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+        },
+    )?;
+
+    for topic in crawl_report_topics(&report, &source_fingerprints, confidence) {
+        insert_runtime_project_record(
+            repo_root,
+            snapshot,
+            RuntimeProjectRecordDraft {
+                record_kind: topic.record_kind,
+                title: topic.title,
+                summary: topic.summary,
+                text: topic.text,
+                content_json: topic.content_json,
+                schema_name: topic.schema_name,
+                importance: topic.importance,
+                confidence: topic.confidence,
+                tags: topic.tags,
+                source_item_ids: source_item_ids.clone(),
+                related_paths: Vec::new(),
+                visibility: topic.visibility,
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+struct CrawlTopicRecordDraft {
+    record_kind: project_store::ProjectRecordKind,
+    title: String,
+    summary: String,
+    text: String,
+    content_json: JsonValue,
+    schema_name: &'static str,
+    importance: project_store::ProjectRecordImportance,
+    confidence: Option<f64>,
+    tags: Vec<String>,
+    visibility: project_store::ProjectRecordVisibility,
+}
+
+fn crawl_report_topics(
+    report: &JsonValue,
+    source_fingerprints: &JsonValue,
+    default_confidence: Option<f64>,
+) -> Vec<CrawlTopicRecordDraft> {
+    [
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "overview",
+            "crawl:project-overview",
+            "xero.project_crawl.project_overview.v1",
+            project_store::ProjectRecordKind::ProjectFact,
+            project_store::ProjectRecordImportance::High,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "overview"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "techStack",
+            "crawl:tech-stack",
+            "xero.project_crawl.tech_stack.v1",
+            project_store::ProjectRecordKind::ProjectFact,
+            project_store::ProjectRecordImportance::High,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "tech-stack"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "commands",
+            "crawl:command-map",
+            "xero.project_crawl.command_map.v1",
+            project_store::ProjectRecordKind::ContextNote,
+            project_store::ProjectRecordImportance::High,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "commands"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "tests",
+            "crawl:test-map",
+            "xero.project_crawl.test_map.v1",
+            project_store::ProjectRecordKind::Verification,
+            project_store::ProjectRecordImportance::High,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "tests"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "architecture",
+            "crawl:architecture-map",
+            "xero.project_crawl.architecture_map.v1",
+            project_store::ProjectRecordKind::ContextNote,
+            project_store::ProjectRecordImportance::High,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "architecture"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "hotspots",
+            "crawl:hotspots",
+            "xero.project_crawl.hotspots.v1",
+            project_store::ProjectRecordKind::Finding,
+            project_store::ProjectRecordImportance::Normal,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "hotspots"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "constraints",
+            "crawl:constraints",
+            "xero.project_crawl.constraints.v1",
+            project_store::ProjectRecordKind::Constraint,
+            project_store::ProjectRecordImportance::High,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "constraints"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "unknowns",
+            "crawl:unknowns",
+            "xero.project_crawl.unknowns.v1",
+            project_store::ProjectRecordKind::Question,
+            project_store::ProjectRecordImportance::Normal,
+            project_store::ProjectRecordVisibility::Retrieval,
+            &["brownfield", "unknowns"],
+            default_confidence,
+        ),
+        crawl_topic(
+            report,
+            source_fingerprints,
+            "freshness",
+            "crawl:freshness",
+            "xero.project_crawl.freshness.v1",
+            project_store::ProjectRecordKind::Diagnostic,
+            project_store::ProjectRecordImportance::Normal,
+            project_store::ProjectRecordVisibility::Diagnostic,
+            &["brownfield", "freshness"],
+            default_confidence,
+        ),
+    ]
+    .into_iter()
+    .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn crawl_topic(
+    report: &JsonValue,
+    source_fingerprints: &JsonValue,
+    field: &'static str,
+    title: &'static str,
+    schema_name: &'static str,
+    record_kind: project_store::ProjectRecordKind,
+    importance: project_store::ProjectRecordImportance,
+    visibility: project_store::ProjectRecordVisibility,
+    tags: &[&str],
+    default_confidence: Option<f64>,
+) -> CrawlTopicRecordDraft {
+    let value = report.get(field).cloned().unwrap_or(JsonValue::Null);
+    let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    let confidence = crawl_confidence(Some(&value)).or(default_confidence);
+    CrawlTopicRecordDraft {
+        record_kind,
+        title: title.into(),
+        summary: crawl_topic_summary(field, &value),
+        text,
+        content_json: json!({
+            "schema": schema_name,
+            "topic": field,
+            "reportSchema": CRAWL_REPORT_SCHEMA,
+            "sourceFingerprints": source_fingerprints,
+            "data": value,
+        }),
+        schema_name,
+        importance,
+        confidence,
+        tags: crawl_tags(tags),
+        visibility,
+    }
+}
+
+fn parse_crawl_report_payload(message: &str) -> CommandResult<JsonValue> {
+    for candidate in crawl_report_json_candidates(message) {
+        let Ok(value) = serde_json::from_str::<JsonValue>(&candidate) else {
+            continue;
+        };
+        if value
+            .get("schema")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|schema| schema == CRAWL_REPORT_SCHEMA)
+        {
+            return Ok(value);
+        }
+    }
+    Err(CommandError::user_fixable(
+        "crawl_report_invalid",
+        format!(
+            "Crawl final response must include a valid JSON object with schema `{CRAWL_REPORT_SCHEMA}`."
+        ),
+    ))
+}
+
+fn crawl_report_json_candidates(message: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let trimmed = message.trim();
+    if trimmed.starts_with('{') {
+        candidates.push(trimmed.to_string());
+    }
+
+    let mut search_from = 0;
+    while let Some(start) = message[search_from..].find("```") {
+        let fence_start = search_from + start + 3;
+        let Some(line_end_offset) = message[fence_start..].find('\n') else {
+            break;
+        };
+        let body_start = fence_start + line_end_offset + 1;
+        let Some(end_offset) = message[body_start..].find("```") else {
+            break;
+        };
+        let body_end = body_start + end_offset;
+        candidates.push(message[body_start..body_end].trim().to_string());
+        search_from = body_end + 3;
+    }
+
+    if let Some(candidate) = balanced_json_object_candidate(message) {
+        candidates.push(candidate);
+    }
+    candidates
+}
+
+fn balanced_json_object_candidate(message: &str) -> Option<String> {
+    for (start, ch) in message.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+        let mut depth = 0_i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (offset, ch) in message[start..].char_indices() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match ch {
+                    '\\' => escaped = true,
+                    '"' => in_string = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_string = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(message[start..=start + offset].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn validate_crawl_report_payload(report: &JsonValue) -> CommandResult<()> {
+    let Some(object) = report.as_object() else {
+        return Err(CommandError::user_fixable(
+            "crawl_report_invalid",
+            "Crawl report must be a JSON object.",
+        ));
+    };
+    if object
+        .get("schema")
+        .and_then(JsonValue::as_str)
+        .filter(|schema| *schema == CRAWL_REPORT_SCHEMA)
+        .is_none()
+    {
+        return Err(CommandError::user_fixable(
+            "crawl_report_schema_invalid",
+            format!("Crawl report schema must be `{CRAWL_REPORT_SCHEMA}`."),
+        ));
+    }
+    for field in [
+        "coverage",
+        "overview",
+        "techStack",
+        "commands",
+        "tests",
+        "architecture",
+        "hotspots",
+        "constraints",
+        "unknowns",
+        "freshness",
+    ] {
+        if !object.contains_key(field) {
+            return Err(CommandError::user_fixable(
+                "crawl_report_field_missing",
+                format!("Crawl report is missing required field `{field}`."),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn crawl_report_summary(report: &JsonValue) -> String {
+    report
+        .get("overview")
+        .and_then(|overview| {
+            overview
+                .get("summary")
+                .or_else(|| overview.get("description"))
+                .and_then(JsonValue::as_str)
+        })
+        .map(trim_project_record_summary)
+        .unwrap_or_else(|| "Structured repository crawl report captured.".into())
+}
+
+fn crawl_topic_summary(field: &str, value: &JsonValue) -> String {
+    match value {
+        JsonValue::Array(items) => format!(
+            "{} crawl item{} captured.",
+            items.len(),
+            if items.len() == 1 { "" } else { "s" }
+        ),
+        JsonValue::Object(object) => object
+            .get("summary")
+            .or_else(|| object.get("description"))
+            .or_else(|| object.get("name"))
+            .and_then(JsonValue::as_str)
+            .map(trim_project_record_summary)
+            .unwrap_or_else(|| format!("{field} crawl facts captured.")),
+        JsonValue::String(text) => trim_project_record_summary(text),
+        JsonValue::Null => format!("{field} crawl facts were not reported."),
+        _ => format!("{field} crawl facts captured."),
+    }
+}
+
+fn crawl_confidence(value: Option<&JsonValue>) -> Option<f64> {
+    let value = value?;
+    if let Some(confidence) = value.get("confidence").and_then(JsonValue::as_f64) {
+        return Some(confidence.clamp(0.0, 1.0));
+    }
+    if let Some(items) = value.as_array() {
+        let confidences = items
+            .iter()
+            .filter_map(|item| item.get("confidence").and_then(JsonValue::as_f64))
+            .map(|confidence| confidence.clamp(0.0, 1.0))
+            .collect::<Vec<_>>();
+        if !confidences.is_empty() {
+            let sum = confidences.iter().sum::<f64>();
+            return Some(sum / confidences.len() as f64);
+        }
+    }
+    None
+}
+
+fn crawl_tags(extra: &[&str]) -> Vec<String> {
+    let mut tags = vec!["crawl".to_string()];
+    tags.extend(extra.iter().map(|tag| (*tag).to_owned()));
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+fn collect_crawl_related_paths(value: &JsonValue, limit: usize) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    collect_crawl_related_paths_inner(value, None, &mut paths);
+    paths.into_iter().take(limit).collect()
+}
+
+fn collect_crawl_related_paths_inner(
+    value: &JsonValue,
+    parent_key: Option<&str>,
+    paths: &mut BTreeSet<String>,
+) {
+    match value {
+        JsonValue::String(text) => {
+            if parent_key.is_some_and(is_crawl_path_key) {
+                if let Some(path) = normalize_crawl_related_path(text) {
+                    paths.insert(path);
+                }
+            }
+        }
+        JsonValue::Array(items) => {
+            for item in items {
+                collect_crawl_related_paths_inner(item, parent_key, paths);
+            }
+        }
+        JsonValue::Object(object) => {
+            for (key, item) in object {
+                collect_crawl_related_paths_inner(item, Some(key), paths);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_crawl_path_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().replace(['_', '-'], "").as_str(),
+        "path"
+            | "paths"
+            | "filepath"
+            | "filepaths"
+            | "sourcepath"
+            | "sourcepaths"
+            | "relatedpath"
+            | "relatedpaths"
+            | "manifestpath"
+            | "manifestpaths"
+            | "testpath"
+            | "testpaths"
+            | "file"
+            | "files"
+    )
+}
+
+fn normalize_crawl_related_path(value: &str) -> Option<String> {
+    let path = value.trim().trim_start_matches("./");
+    if path.is_empty()
+        || path.len() > 240
+        || path.starts_with('/')
+        || path.starts_with("..")
+        || path.contains('\0')
+        || path.contains('\n')
+        || path.contains("://")
+    {
+        return None;
+    }
+    Some(path.replace('\\', "/"))
 }
 
 fn capture_terminal_summary_record(
@@ -1305,6 +1838,17 @@ fn agent_memory_kind_from_provider(value: &str) -> Option<project_store::AgentMe
 }
 
 pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
+    let started = Instant::now();
+    let fingerprint = cached_repo_fingerprint(repo_root, || build_repo_fingerprint(repo_root));
+    eprintln!(
+        "[runtime-latency] repo_fingerprint repo_root={} duration_ms={}",
+        repo_root.display(),
+        started.elapsed().as_millis()
+    );
+    fingerprint
+}
+
+fn build_repo_fingerprint(repo_root: &Path) -> JsonValue {
     match git2::Repository::discover(repo_root) {
         Ok(repository) => {
             let head = repository
@@ -1324,6 +1868,32 @@ pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
         }
         Err(_) => json!({ "kind": "filesystem" }),
     }
+}
+
+fn cached_repo_fingerprint(repo_root: &Path, build: impl FnOnce() -> JsonValue) -> JsonValue {
+    let key = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let cache = REPO_FINGERPRINT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.get(&key) {
+            if entry.cached_at.elapsed() <= REPO_FINGERPRINT_CACHE_TTL {
+                return entry.value.clone();
+            }
+        }
+    }
+
+    let value = build();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            key,
+            RepoFingerprintCacheEntry {
+                value: value.clone(),
+                cached_at: Instant::now(),
+            },
+        );
+    }
+    value
 }
 
 pub(crate) fn record_file_change_event(
@@ -1658,6 +2228,8 @@ pub(crate) fn record_command_output_event(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
     output: &AutonomousToolOutput,
 ) -> CommandResult<()> {
     match output {
@@ -1669,6 +2241,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "argv": argv.clone(),
                     "cwd": output.cwd.clone(),
                     "stdout": output.stdout.clone(),
@@ -1681,6 +2255,7 @@ pub(crate) fn record_command_output_event(
                     "timedOut": output.timed_out,
                     "spawned": output.spawned,
                     "policy": output.policy.clone(),
+                    "sandbox": output.sandbox.clone(),
                 }),
             )?;
 
@@ -1704,6 +2279,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.operation.clone(),
                     "sessionId": output.session_id.clone(),
                     "argv": argv.clone(),
@@ -1714,6 +2291,7 @@ pub(crate) fn record_command_output_event(
                     "chunks": output.chunks.clone(),
                     "nextSequence": output.next_sequence,
                     "policy": output.policy.clone(),
+                    "sandbox": output.sandbox.clone(),
                 }),
             )?;
 
@@ -1738,6 +2316,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "processId": output.process_id.clone(),
                     "spawned": output.spawned,
@@ -1779,6 +2359,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "performed": output.performed,
                     "platformSupported": output.platform_supported,
@@ -1803,6 +2385,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "performed": output.performed,
                     "platformSupported": output.platform_supported,
@@ -1822,6 +2406,32 @@ pub(crate) fn record_command_output_event(
     }
 
     Ok(())
+}
+
+pub(crate) fn record_command_output_chunk_event(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    chunk: &AutonomousCommandOutputChunk,
+) -> CommandResult<()> {
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::CommandOutput,
+        json!({
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "stream": chunk.stream.clone(),
+            "text": chunk.text.clone(),
+            "truncated": chunk.truncated,
+            "redacted": chunk.redacted,
+            "partial": true,
+        }),
+    )
+    .map(|_| ())
 }
 
 fn record_system_diagnostics_action_required(
@@ -2329,6 +2939,52 @@ mod tests {
         AutonomousSearchOutput,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn parses_fenced_crawl_report_payload() {
+        let message = r#"
+Repository map captured.
+
+```json
+{
+  "schema": "xero.project_crawl.report.v1",
+  "projectId": "project-1",
+  "generatedAt": "2026-05-06T00:00:00Z",
+  "coverage": { "confidence": 0.91 },
+  "overview": { "summary": "Tauri desktop app.", "sourcePaths": ["README.md"] },
+  "techStack": [{ "name": "Rust", "sourcePaths": ["client/src-tauri/Cargo.toml"], "confidence": 0.95 }],
+  "commands": [{ "command": "pnpm test", "sourcePaths": ["client/package.json"] }],
+  "tests": [],
+  "architecture": [],
+  "hotspots": [],
+  "constraints": [],
+  "unknowns": [],
+  "freshness": { "sourceFingerprints": [{ "path": "README.md", "confidence": 0.9 }] }
+}
+```
+"#;
+
+        let report = parse_crawl_report_payload(message).expect("parse crawl report");
+
+        assert_eq!(report["schema"], CRAWL_REPORT_SCHEMA);
+        assert_eq!(crawl_confidence(report.get("coverage")), Some(0.91));
+        assert_eq!(
+            collect_crawl_related_paths(&report, 8),
+            vec![
+                "README.md".to_string(),
+                "client/package.json".to_string(),
+                "client/src-tauri/Cargo.toml".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_crawl_report_without_required_schema() {
+        let error = parse_crawl_report_payload(r#"{"schema":"xero.other","overview":{}}"#)
+            .expect_err("invalid report should be rejected");
+
+        assert_eq!(error.code, "crawl_report_invalid");
+    }
 
     #[test]
     fn workspace_guard_treats_search_results_as_file_observations() {

@@ -40,7 +40,7 @@ It combines:
 
 - `client/`: production desktop app (`productName: Xero`, `identifier: dev.sn0w.xero`)
 - `landing/`: separate website, run on port `3001` in root dev workflow
-- `server/`: Phoenix 1.8 service, local Postgres, GitHub auth callback/session support, game stats, Oban jobs
+- `server/`: Phoenix 1.8 service, local Postgres, GitHub auth callback/session support, Oban jobs
 
 ### Non-runtime/reference content
 
@@ -79,7 +79,6 @@ Main shell views:
 Sidebar tools:
 
 - In-app browser
-- Games sidebar
 - iOS emulator sidebar (macOS only)
 - Android emulator sidebar
 - Solana workbench sidebar
@@ -382,7 +381,7 @@ Solana stores also use OS data dirs under `xero/solana/...` for personas/snapsho
 
 ### Server state
 
-The Phoenix service uses the local Postgres database from `server/docker-compose.yml` (`xero_dev` by default). Current migrations cover Oban jobs, GitHub auth sessions, and arcade game stats.
+The Phoenix service uses the local Postgres database from `server/docker-compose.yml` (`xero_dev` by default). Current migrations cover Oban jobs and GitHub auth sessions.
 
 ---
 

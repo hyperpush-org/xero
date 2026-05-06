@@ -32,6 +32,7 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub tools: &'a [AgentToolDescriptor],
     pub messages: &'a [ProviderMessage],
     pub owned_process_summary: Option<&'a str>,
+    pub provider_preflight: Option<&'a xero_agent_core::ProviderPreflightSnapshot>,
 }
 
 pub(crate) fn assemble_provider_context_package(
@@ -137,7 +138,10 @@ pub(crate) fn assemble_provider_context_package(
         "sourceMissingContextRowsAvailable": source_missing_context_rows_available,
         "supersededContextRowsAvailable": superseded_context_rows_available,
         "toolAvailability": {
-            "project_context": input.tools.iter().any(|tool| tool.name == AUTONOMOUS_TOOL_PROJECT_CONTEXT),
+            "project_context": input.tools.iter().any(|tool| matches!(
+                tool.name.as_str(),
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+            )),
         },
         "resultCount": retrieved_project_context.results.len(),
         "results": retrieved_project_context.results.iter().map(retrieval_result_manifest_json).collect::<Vec<_>>(),
@@ -151,6 +155,25 @@ pub(crate) fn assemble_provider_context_package(
     } else {
         project_store::AgentContextRedactionState::Clean
     };
+    let mut required_provider_features =
+        xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+    required_provider_features.attachments = input.messages.iter().any(|message| match message {
+        ProviderMessage::User { attachments, .. } => attachments.iter().any(|attachment| {
+            matches!(
+                attachment.kind,
+                MessageAttachmentKind::Image | MessageAttachmentKind::Document
+            )
+        }),
+        ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => false,
+    });
+    let provider_preflight = input.provider_preflight.cloned().unwrap_or_else(|| {
+        crate::provider_preflight::static_provider_preflight_snapshot(
+            input.provider_id,
+            input.model_id,
+            required_provider_features,
+        )
+    });
+    let admitted_provider_preflight_hash = stable_provider_preflight_hash(&provider_preflight);
     let manifest_json = json!({
         "kind": "provider_context_package",
         "schema": CONTEXT_PACKAGE_SCHEMA,
@@ -176,6 +199,8 @@ pub(crate) fn assemble_provider_context_package(
         "limitConfidence": context_limit.confidence,
         "limitDiagnostic": context_limit.diagnostic,
         "limitFetchedAt": context_limit.fetched_at,
+        "providerPreflight": provider_preflight,
+        "admittedProviderPreflightHash": admitted_provider_preflight_hash,
         "estimatedTokens": estimated_tokens,
         "policy": {
             "action": context_policy_action_label(&policy_decision.action),
@@ -602,6 +627,11 @@ fn provider_context_hash(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn stable_provider_preflight_hash(snapshot: &xero_agent_core::ProviderPreflightSnapshot) -> String {
+    let serialized = serde_json::to_string(snapshot).unwrap_or_else(|_| "unserializable".into());
+    xero_agent_core::runtime_trace_id("provider-preflight", &[&serialized])
+}
+
 fn context_retrieval_query_text(
     runtime_agent_id: RuntimeAgentIdDto,
     messages: &[ProviderMessage],
@@ -1018,6 +1048,7 @@ mod tests {
             tools: &[],
             messages: &messages,
             owned_process_summary: None,
+            provider_preflight: None,
         };
 
         let first = assemble_provider_context_package(input, Vec::new()).expect("first package");
@@ -1160,6 +1191,7 @@ mod tests {
                 tools: &tools,
                 messages: &messages,
                 owned_process_summary: None,
+                provider_preflight: None,
             },
             Vec::new(),
         )
@@ -1269,6 +1301,7 @@ mod tests {
                 tools: &tools,
                 messages: &messages,
                 owned_process_summary: None,
+                provider_preflight: None,
             },
             Vec::new(),
         )

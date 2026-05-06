@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, OptionalExtension, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -671,6 +671,156 @@ pub fn list_agent_context_manifests_for_run(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn copy_agent_context_manifests_for_branch(
+    transaction: &Transaction<'_>,
+    database_path: &Path,
+    project_id: &str,
+    source_agent_session_id: &str,
+    source_run_id: &str,
+    target_agent_session_id: &str,
+    target_run_id: &str,
+    copied_compaction: Option<(&str, &str)>,
+    created_at: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_context_manifest_project_required",
+    )?;
+    validate_non_empty_text(
+        source_agent_session_id,
+        "sourceAgentSessionId",
+        "agent_context_manifest_session_required",
+    )?;
+    validate_non_empty_text(
+        source_run_id,
+        "sourceRunId",
+        "agent_context_manifest_run_required",
+    )?;
+    validate_non_empty_text(
+        target_agent_session_id,
+        "targetAgentSessionId",
+        "agent_context_manifest_session_required",
+    )?;
+    validate_non_empty_text(
+        target_run_id,
+        "targetRunId",
+        "agent_context_manifest_run_required",
+    )?;
+
+    let manifests = {
+        let mut statement = transaction
+            .prepare(
+                manifest_select_sql(
+                    r#"
+                    WHERE project_id = ?1
+                      AND agent_session_id = ?2
+                      AND run_id = ?3
+                    ORDER BY created_at ASC, id ASC
+                    "#,
+                )
+                .as_str(),
+            )
+            .map_err(map_continuity_read_error)?;
+        let rows = statement
+            .query_map(
+                params![project_id, source_agent_session_id, source_run_id],
+                read_manifest_row,
+            )
+            .map_err(map_continuity_read_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(map_continuity_read_error)?
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    for manifest in manifests {
+        let manifest_id = branch_manifest_id(&manifest.manifest_id, target_run_id, manifest.id);
+        let compaction_id =
+            remap_branch_compaction_id(manifest.compaction_id.as_deref(), copied_compaction);
+        let manifest_json = branch_manifest_json(
+            manifest.manifest,
+            project_id,
+            source_agent_session_id,
+            source_run_id,
+            &manifest.manifest_id,
+            target_agent_session_id,
+            target_run_id,
+            compaction_id.as_deref(),
+        );
+        transaction
+            .execute(
+                r#"
+                INSERT INTO agent_context_manifests (
+                    manifest_id,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    provider_id,
+                    model_id,
+                    request_kind,
+                    policy_action,
+                    policy_reason_code,
+                    budget_tokens,
+                    estimated_tokens,
+                    pressure,
+                    context_hash,
+                    included_contributors_json,
+                    excluded_contributors_json,
+                    retrieval_query_ids_json,
+                    retrieval_result_ids_json,
+                    compaction_id,
+                    handoff_id,
+                    redaction_state,
+                    manifest_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                "#,
+                params![
+                    manifest_id,
+                    project_id,
+                    target_agent_session_id,
+                    target_run_id,
+                    runtime_agent_id_sql_value(&manifest.runtime_agent_id),
+                    manifest.agent_definition_id,
+                    manifest.agent_definition_version,
+                    manifest.provider_id,
+                    manifest.model_id,
+                    manifest_request_kind_sql_value(&manifest.request_kind),
+                    context_policy_action_sql_value(&manifest.policy_action),
+                    manifest.policy_reason_code,
+                    manifest.budget_tokens,
+                    manifest.estimated_tokens,
+                    context_pressure_sql_value(&manifest.pressure),
+                    manifest.context_hash,
+                    json_string(&manifest.included_contributors, "includedContributors")?,
+                    json_string(&manifest.excluded_contributors, "excludedContributors")?,
+                    json_string(&manifest.retrieval_query_ids, "retrievalQueryIds")?,
+                    json_string(&manifest.retrieval_result_ids, "retrievalResultIds")?,
+                    compaction_id,
+                    manifest.handoff_id,
+                    redaction_state_sql_value(&manifest.redaction_state),
+                    json_string(&manifest_json, "manifest")?,
+                    created_at,
+                ],
+            )
+            .map_err(|error| {
+                map_continuity_write_error(
+                    database_path,
+                    "agent_context_manifest_branch_copy_failed",
+                    error,
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
 pub fn insert_agent_handoff_lineage(
     repo_root: &Path,
     record: &NewAgentHandoffLineageRecord,
@@ -1323,6 +1473,69 @@ fn read_agent_context_manifest_by_row_id(
                 "Xero wrote a context manifest but could not load it back.",
             )
         })
+}
+
+fn branch_manifest_id(source_manifest_id: &str, target_run_id: &str, source_row_id: i64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source_manifest_id.as_bytes());
+    hasher.update(target_run_id.as_bytes());
+    hasher.update(source_row_id.to_string().as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!("context-manifest:{}:fork:{}", target_run_id, &digest[..12])
+}
+
+fn remap_branch_compaction_id(
+    source_compaction_id: Option<&str>,
+    copied_compaction: Option<(&str, &str)>,
+) -> Option<String> {
+    match (source_compaction_id, copied_compaction) {
+        (Some(source), Some((old_id, new_id))) if source == old_id => Some(new_id.to_string()),
+        (Some(source), _) => Some(source.to_string()),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn branch_manifest_json(
+    mut manifest: JsonValue,
+    project_id: &str,
+    source_agent_session_id: &str,
+    source_run_id: &str,
+    source_manifest_id: &str,
+    target_agent_session_id: &str,
+    target_run_id: &str,
+    compaction_id: Option<&str>,
+) -> JsonValue {
+    if let JsonValue::Object(object) = &mut manifest {
+        object.insert("projectId".into(), JsonValue::String(project_id.into()));
+        object.insert(
+            "agentSessionId".into(),
+            JsonValue::String(target_agent_session_id.into()),
+        );
+        object.insert("runId".into(), JsonValue::String(target_run_id.into()));
+        object.insert(
+            "compactionId".into(),
+            compaction_id
+                .map(|value| JsonValue::String(value.into()))
+                .unwrap_or(JsonValue::Null),
+        );
+        let mut lineage = serde_json::Map::new();
+        lineage.insert("kind".into(), JsonValue::String("forked_session".into()));
+        lineage.insert(
+            "sourceAgentSessionId".into(),
+            JsonValue::String(source_agent_session_id.into()),
+        );
+        lineage.insert(
+            "sourceRunId".into(),
+            JsonValue::String(source_run_id.into()),
+        );
+        lineage.insert(
+            "sourceManifestId".into(),
+            JsonValue::String(source_manifest_id.into()),
+        );
+        object.insert("lineage".into(), JsonValue::Object(lineage));
+    }
+    manifest
 }
 
 fn manifest_select_sql(where_clause: &str) -> String {
@@ -2062,7 +2275,9 @@ fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "engineer" => RuntimeAgentIdDto::Engineer,
         "debug" => RuntimeAgentIdDto::Debug,
+        "crawl" => RuntimeAgentIdDto::Crawl,
         "agent_create" => RuntimeAgentIdDto::AgentCreate,
+        "test" => RuntimeAgentIdDto::Test,
         _ => RuntimeAgentIdDto::Ask,
     }
 }

@@ -37,6 +37,7 @@ pub mod project_files;
 pub mod provider_credentials;
 pub mod provider_diagnostics;
 pub mod provider_model_catalog;
+pub mod provider_preflight;
 pub mod record_notification_dispatch_outcome;
 pub mod remove_mcp_server;
 pub mod remove_project;
@@ -145,6 +146,7 @@ pub use provider_credentials::{
 };
 pub use provider_diagnostics::check_provider_profile;
 pub use provider_model_catalog::get_provider_model_catalog;
+pub use provider_preflight::preflight_provider_profile;
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
 pub use remove_mcp_server::remove_mcp_server;
 pub use remove_project::remove_project;

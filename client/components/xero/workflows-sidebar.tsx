@@ -2,15 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  Bot,
   Copy,
+  FileText,
   MoreHorizontal,
   Pencil,
   Play,
   Plus,
   Search,
+  ShieldCheck,
   Sparkles,
   Trash2,
-  Workflow as WorkflowIcon,
+  Wrench,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -29,6 +32,9 @@ const MIN_WIDTH = 280
 const MAX_WIDTH = 1200
 const DEFAULT_WIDTH = 380
 const WIDTH_STORAGE_KEY = "xero.workflows.width"
+const TAB_STORAGE_KEY = "xero.library.tab"
+
+type LibraryTab = "workflows" | "agents"
 
 type WorkflowStatus = "idle" | "running" | "succeeded" | "failed"
 
@@ -41,6 +47,18 @@ interface Workflow {
   status: WorkflowStatus
   lastRunLabel: string | null
   runCount: number
+}
+
+type AgentKind = "reviewer" | "writer" | "fixer" | "planner" | "verifier" | "general"
+
+interface Agent {
+  id: string
+  name: string
+  description: string
+  kind: AgentKind
+  isDefault: boolean
+  lastUsedLabel: string | null
+  useCount: number
 }
 
 interface WorkflowsSidebarProps {
@@ -100,6 +118,63 @@ const DEFAULT_WORKFLOWS: Workflow[] = [
   },
 ]
 
+const DEFAULT_AGENTS: Agent[] = [
+  {
+    id: "reviewer",
+    name: "Reviewer",
+    description: "Reads diffs and flags bugs, regressions, and code smell.",
+    kind: "reviewer",
+    isDefault: true,
+    lastUsedLabel: "2h ago",
+    useCount: 41,
+  },
+  {
+    id: "test-writer",
+    name: "Test Writer",
+    description: "Generates unit and integration tests for the active diff.",
+    kind: "writer",
+    isDefault: true,
+    lastUsedLabel: "yesterday",
+    useCount: 17,
+  },
+  {
+    id: "refactor",
+    name: "Refactor",
+    description: "Tightens implementation while preserving the public API.",
+    kind: "fixer",
+    isDefault: true,
+    lastUsedLabel: "3d ago",
+    useCount: 9,
+  },
+  {
+    id: "docs",
+    name: "Docs",
+    description: "Documents public surfaces and rewrites stale inline comments.",
+    kind: "writer",
+    isDefault: true,
+    lastUsedLabel: null,
+    useCount: 0,
+  },
+  {
+    id: "security",
+    name: "Security",
+    description: "Threat-models the diff and proposes mitigations.",
+    kind: "verifier",
+    isDefault: true,
+    lastUsedLabel: "12m ago",
+    useCount: 6,
+  },
+  {
+    id: "planner",
+    name: "Planner",
+    description: "Decomposes a goal into ordered agent steps.",
+    kind: "planner",
+    isDefault: true,
+    lastUsedLabel: "1h ago",
+    useCount: 22,
+  },
+]
+
 const STATUS_STYLES: Record<WorkflowStatus, { label: string; className: string; dotClassName: string }> = {
   idle: {
     label: "Idle",
@@ -123,7 +198,17 @@ const STATUS_STYLES: Record<WorkflowStatus, { label: string; className: string; 
   },
 }
 
+const AGENT_KIND_ICON: Record<AgentKind, typeof Bot> = {
+  reviewer: ShieldCheck,
+  writer: FileText,
+  fixer: Wrench,
+  planner: Sparkles,
+  verifier: ShieldCheck,
+  general: Bot,
+}
+
 export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
+  const [tab, setTabState] = useState<LibraryTab>(() => readPersistedTab() ?? "workflows")
   const [query, setQuery] = useState("")
   const [searchOpen, setSearchOpen] = useState(false)
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
@@ -135,8 +220,19 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
   const deferredQuery = useDeferredFilterQuery(query)
 
   const workflows = DEFAULT_WORKFLOWS
+  const agents = DEFAULT_AGENTS
 
-  const filtered = useMemo(() => {
+  const setTab = useCallback((next: LibraryTab) => {
+    setTabState((current) => {
+      if (current === next) return current
+      writePersistedTab(next)
+      return next
+    })
+    setQuery("")
+  }, [])
+
+  const filteredWorkflows = useMemo(() => {
+    if (tab !== "workflows") return workflows
     const q = deferredQuery
     if (!q) return workflows
     return workflows.filter(
@@ -145,7 +241,19 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
         workflow.description.toLowerCase().includes(q) ||
         workflow.agents.some((agent) => agent.toLowerCase().includes(q)),
     )
-  }, [deferredQuery, workflows])
+  }, [deferredQuery, tab, workflows])
+
+  const filteredAgents = useMemo(() => {
+    if (tab !== "agents") return agents
+    const q = deferredQuery
+    if (!q) return agents
+    return agents.filter(
+      (agent) =>
+        agent.name.toLowerCase().includes(q) ||
+        agent.description.toLowerCase().includes(q) ||
+        agent.kind.toLowerCase().includes(q),
+    )
+  }, [agents, deferredQuery, tab])
 
   const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
@@ -196,10 +304,15 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
     })
   }, [])
 
+  const activeCount = tab === "workflows" ? filteredWorkflows.length : filteredAgents.length
+  const totalCount = tab === "workflows" ? workflows.length : agents.length
+  const hasQuery = deferredQuery.length > 0
+  const searchPlaceholder = tab === "workflows" ? "Search workflows" : "Search agents"
+
   return (
     <aside
       aria-hidden={!open}
-      aria-label="Workflows"
+      aria-label="Library"
       className={cn(
         widthMotion.islandClassName,
         "relative flex shrink-0 flex-col overflow-hidden bg-sidebar",
@@ -209,7 +322,7 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
       style={widthMotion.style}
     >
       <div
-        aria-label="Resize workflows sidebar"
+        aria-label="Resize library sidebar"
         aria-orientation="vertical"
         aria-valuemax={MAX_WIDTH}
         aria-valuemin={MIN_WIDTH}
@@ -228,7 +341,10 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
       <div className="flex h-full min-w-0 shrink-0 flex-col" style={{ width }}>
         <div className="flex min-h-0 flex-1 flex-col">
           <Header
-            total={workflows.length}
+            tab={tab}
+            workflowsCount={workflows.length}
+            agentsCount={agents.length}
+            onTabChange={setTab}
             searchOpen={searchOpen}
             onToggleSearch={() => {
               setSearchOpen((current) => {
@@ -241,6 +357,7 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
           {searchOpen ? (
             <Toolbar
               query={query}
+              placeholder={searchPlaceholder}
               onQueryChange={setQuery}
               onClose={() => {
                 setQuery("")
@@ -248,7 +365,14 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
               }}
             />
           ) : null}
-          <WorkflowsTable workflows={filtered} />
+          <LibraryList
+            tab={tab}
+            workflows={filteredWorkflows}
+            agents={filteredAgents}
+            activeCount={activeCount}
+            totalCount={totalCount}
+            hasQuery={hasQuery}
+          />
         </div>
       </div>
     </aside>
@@ -260,38 +384,62 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
 // ---------------------------------------------------------------------------
 
 function Header({
-  total,
+  tab,
+  workflowsCount,
+  agentsCount,
+  onTabChange,
   searchOpen,
   onToggleSearch,
 }: {
-  total: number
+  tab: LibraryTab
+  workflowsCount: number
+  agentsCount: number
+  onTabChange: (next: LibraryTab) => void
   searchOpen: boolean
   onToggleSearch: () => void
 }) {
+  const newLabel = tab === "workflows" ? "New workflow" : "New agent"
+  const searchLabel = searchOpen
+    ? "Close search"
+    : tab === "workflows"
+      ? "Search workflows"
+      : "Search agents"
+
   return (
-    <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 px-3">
-      <div className="flex items-center gap-1.5">
-        <WorkflowIcon className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-          Workflows
-        </span>
-        <span className="rounded-full bg-muted/80 px-1.5 py-[1px] font-mono text-[10px] leading-none tabular-nums text-muted-foreground">
-          {total}
-        </span>
+    <div
+      className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 px-2"
+      role="tablist"
+      aria-label="Library sections"
+    >
+      <div className="flex items-center gap-0.5">
+        <TabPill
+          active={tab === "workflows"}
+          count={workflowsCount}
+          label="Workflows"
+          onSelect={() => onTabChange("workflows")}
+        />
+        <TabPill
+          active={tab === "agents"}
+          count={agentsCount}
+          label="Agents"
+          onSelect={() => onTabChange("agents")}
+        />
       </div>
       <div className="flex items-center gap-0.5">
         <button
-          aria-label="New workflow"
+          aria-label={newLabel}
           className={cn(
             "flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors",
             "hover:bg-primary/10 hover:text-primary",
           )}
+          title={newLabel}
           type="button"
+          // mock — wire up create flow later
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
         <button
-          aria-label={searchOpen ? "Close search" : "Search workflows"}
+          aria-label={searchLabel}
           aria-pressed={searchOpen}
           className={cn(
             "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
@@ -300,6 +448,7 @@ function Header({
               : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
           )}
           onClick={onToggleSearch}
+          title={searchLabel}
           type="button"
         >
           <Search className="h-3.5 w-3.5" />
@@ -309,12 +458,49 @@ function Header({
   )
 }
 
+function TabPill({
+  active,
+  count,
+  label,
+  onSelect,
+}: {
+  active: boolean
+  count: number
+  label: string
+  onSelect: () => void
+}) {
+  return (
+    <button
+      aria-selected={active}
+      className={cn(
+        "flex h-6 items-center gap-1.5 rounded-md px-2 text-[10.5px] font-semibold uppercase tracking-[0.1em] transition-colors",
+        active
+          ? "bg-secondary/70 text-foreground"
+          : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground",
+      )}
+      onClick={onSelect}
+      role="tab"
+      tabIndex={active ? 0 : -1}
+      type="button"
+    >
+      {label}
+      {active ? (
+        <span className="rounded-full bg-muted/80 px-1.5 py-[1px] font-mono text-[10px] leading-none tabular-nums text-muted-foreground">
+          {count}
+        </span>
+      ) : null}
+    </button>
+  )
+}
+
 function Toolbar({
   query,
+  placeholder,
   onQueryChange,
   onClose,
 }: {
   query: string
+  placeholder: string
   onQueryChange: (value: string) => void
   onClose: () => void
 }) {
@@ -330,7 +516,7 @@ function Toolbar({
           className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground"
         />
         <input
-          aria-label="Search workflows"
+          aria-label={placeholder}
           className="h-7 w-full rounded-md border border-border/70 bg-background/40 pl-7 pr-2 text-[11.5px] text-foreground placeholder:text-muted-foreground/70 focus:border-primary/50 focus:outline-none"
           onChange={(e) => onQueryChange(e.target.value)}
           onKeyDown={(e) => {
@@ -350,27 +536,58 @@ function Toolbar({
 }
 
 // ---------------------------------------------------------------------------
-// Table
+// List
 // ---------------------------------------------------------------------------
 
-function WorkflowsTable({ workflows }: { workflows: Workflow[] }) {
-  if (workflows.length === 0) {
+function LibraryList({
+  tab,
+  workflows,
+  agents,
+  activeCount,
+  totalCount,
+  hasQuery,
+}: {
+  tab: LibraryTab
+  workflows: Workflow[]
+  agents: Agent[]
+  activeCount: number
+  totalCount: number
+  hasQuery: boolean
+}) {
+  if (activeCount === 0) {
+    const message = emptyStateMessage(tab, hasQuery, totalCount)
     return (
       <div className="flex flex-1 items-center justify-center px-3 py-8 text-center text-[11px] leading-relaxed text-muted-foreground/80">
-        No workflows match.
+        {message}
       </div>
     )
   }
 
   return (
     <ul className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin py-1">
-      {workflows.map((workflow) => (
-        <li key={workflow.id}>
-          <WorkflowRow workflow={workflow} />
-        </li>
-      ))}
+      {tab === "workflows"
+        ? workflows.map((workflow) => (
+            <li key={workflow.id}>
+              <WorkflowRow workflow={workflow} />
+            </li>
+          ))
+        : agents.map((agent) => (
+            <li key={agent.id}>
+              <AgentRow agent={agent} />
+            </li>
+          ))}
     </ul>
   )
+}
+
+function emptyStateMessage(tab: LibraryTab, hasQuery: boolean, totalCount: number): string {
+  if (hasQuery) {
+    return tab === "workflows" ? "No workflows match." : "No agents match."
+  }
+  if (totalCount === 0) {
+    return tab === "workflows" ? "No workflows yet." : "No agents yet."
+  }
+  return tab === "workflows" ? "No workflows match." : "No agents match."
 }
 
 function WorkflowRow({ workflow }: { workflow: Workflow }) {
@@ -405,38 +622,11 @@ function WorkflowRow({ workflow }: { workflow: Workflow }) {
       </div>
 
       <div className="flex shrink-0 items-center gap-0.5 self-center">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              aria-label={`More actions for ${workflow.name}`}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-secondary/70 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:bg-secondary/70 data-[state=open]:text-foreground data-[state=open]:opacity-100"
-              title="More"
-              type="button"
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={4}>
-            {showEdit ? (
-              <DropdownMenuItem className="cursor-pointer text-[12px]">
-                <Pencil className="mr-2 h-3.5 w-3.5" />
-                Edit
-              </DropdownMenuItem>
-            ) : null}
-            <DropdownMenuItem className="cursor-pointer text-[12px]">
-              <Copy className="mr-2 h-3.5 w-3.5" />
-              Duplicate
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="cursor-pointer text-[12px] text-destructive focus:text-destructive"
-              disabled={workflow.isDefault}
-            >
-              <Trash2 className="mr-2 h-3.5 w-3.5" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <RowMenu
+          name={workflow.name}
+          showEdit={showEdit}
+          deleteDisabled={workflow.isDefault}
+        />
         <button
           aria-label={`Run ${workflow.name}`}
           className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary"
@@ -450,8 +640,93 @@ function WorkflowRow({ workflow }: { workflow: Workflow }) {
   )
 }
 
+function AgentRow({ agent }: { agent: Agent }) {
+  const Icon = AGENT_KIND_ICON[agent.kind]
+  // Edit only when the agent is a built-in default — same convention as workflows.
+  const showEdit = agent.isDefault
+
+  return (
+    <div className="group relative flex items-start gap-3 px-3 py-3 transition-colors hover:bg-secondary/30">
+      <Icon
+        aria-hidden="true"
+        className="mt-[3px] h-3.5 w-3.5 shrink-0 text-muted-foreground/70"
+      />
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-[13px] font-medium leading-tight text-foreground">
+            {agent.name}
+          </span>
+          {agent.isDefault ? (
+            <Sparkles
+              aria-hidden="true"
+              className="h-2.5 w-2.5 shrink-0 text-muted-foreground/45"
+            />
+          ) : null}
+        </div>
+        <p className="mt-0.5 line-clamp-1 text-[11.5px] leading-snug text-muted-foreground">
+          {agent.description}
+        </p>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-0.5 self-center">
+        <RowMenu
+          name={agent.name}
+          showEdit={showEdit}
+          deleteDisabled={agent.isDefault}
+        />
+      </div>
+    </div>
+  )
+}
+
+function RowMenu({
+  name,
+  showEdit,
+  deleteDisabled,
+}: {
+  name: string
+  showEdit: boolean
+  deleteDisabled: boolean
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={`More actions for ${name}`}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[background-color,color,opacity] hover:bg-secondary/70 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:bg-secondary/70 data-[state=open]:text-foreground data-[state=open]:opacity-100"
+          title="More"
+          type="button"
+        >
+          <MoreHorizontal className="h-3.5 w-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={4}>
+        {showEdit ? (
+          <DropdownMenuItem className="cursor-pointer text-[12px]">
+            <Pencil className="mr-2 h-3.5 w-3.5" />
+            Edit
+          </DropdownMenuItem>
+        ) : null}
+        <DropdownMenuItem className="cursor-pointer text-[12px]">
+          <Copy className="mr-2 h-3.5 w-3.5" />
+          Duplicate
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="cursor-pointer text-[12px] text-destructive focus:text-destructive"
+          disabled={deleteDisabled}
+        >
+          <Trash2 className="mr-2 h-3.5 w-3.5" />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 // ---------------------------------------------------------------------------
-// Width persistence
+// Persistence
 // ---------------------------------------------------------------------------
 
 function readPersistedWidth(): number | null {
@@ -471,6 +746,26 @@ function writePersistedWidth(width: number): void {
   if (typeof window === "undefined") return
   try {
     window.localStorage.setItem(WIDTH_STORAGE_KEY, String(Math.round(width)))
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function readPersistedTab(): LibraryTab | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(TAB_STORAGE_KEY)
+    if (raw === "workflows" || raw === "agents") return raw
+    return null
+  } catch {
+    return null
+  }
+}
+
+function writePersistedTab(tab: LibraryTab): void {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(TAB_STORAGE_KEY, tab)
   } catch {
     /* storage unavailable */
   }

@@ -7,8 +7,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use crate::{
     commands::{
         default_runtime_agent_approval_mode, default_runtime_agent_id,
-        runtime_agent_allows_approval_mode, CommandError, OperatorApprovalDto,
-        ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeAuthPhase,
+        runtime_agent_allows_approval_mode, AgentAttachmentKindDto, CommandError,
+        OperatorApprovalDto, ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeAuthPhase,
         RuntimeRunApprovalModeDto,
     },
     db::database_path_for_repo,
@@ -120,6 +120,22 @@ pub struct RuntimeRunPendingControlSnapshotRecord {
     pub queued_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_prompt_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued_attachments: Vec<RuntimeRunQueuedAttachmentRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeRunQueuedAttachmentRecord {
+    pub kind: AgentAttachmentKindDto,
+    pub absolute_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1768,6 +1784,30 @@ fn validate_runtime_run_pending_control_snapshot(
         }
     }
 
+    for attachment in &pending.queued_attachments {
+        validate_non_empty_text(
+            &attachment.absolute_path,
+            "control_state.pending.queued_attachments.absolute_path",
+            "runtime_run_request_invalid",
+        )?;
+        validate_non_empty_text(
+            &attachment.media_type,
+            "control_state.pending.queued_attachments.media_type",
+            "runtime_run_request_invalid",
+        )?;
+        validate_non_empty_text(
+            &attachment.original_name,
+            "control_state.pending.queued_attachments.original_name",
+            "runtime_run_request_invalid",
+        )?;
+        if attachment.size_bytes < 0 {
+            return Err(CommandError::system_fault(
+                "runtime_run_request_invalid",
+                "Xero requires queued attachment sizes to be non-negative.",
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -1912,6 +1952,7 @@ pub fn build_runtime_run_control_state_with_profile(
             queued_at: timestamp.to_owned(),
             queued_prompt: Some(prompt.to_owned()),
             queued_prompt_at: Some(timestamp.to_owned()),
+            queued_attachments: Vec::new(),
         }),
         Some(_) => return Err(CommandError::invalid_request("initialPrompt")),
         None => None,

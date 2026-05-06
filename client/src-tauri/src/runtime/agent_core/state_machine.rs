@@ -658,11 +658,18 @@ fn is_execution_tool(tool_name: &str) -> bool {
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_TOOL_ACCESS
             | AUTONOMOUS_TOOL_TOOL_SEARCH
-            | AUTONOMOUS_TOOL_PROJECT_CONTEXT
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
             | AUTONOMOUS_TOOL_WORKSPACE_INDEX
             | AUTONOMOUS_TOOL_TODO
             | AUTONOMOUS_TOOL_WEB_SEARCH
             | AUTONOMOUS_TOOL_WEB_FETCH
+            | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+            | AUTONOMOUS_TOOL_MCP_LIST
+            | AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+            | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+            | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
+            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
             | AUTONOMOUS_TOOL_CODE_INTEL
             | AUTONOMOUS_TOOL_LSP
     )
@@ -834,6 +841,30 @@ mod tests {
             }],
         );
 
+        assert!(matches!(gate, ToolBatchGate::RequirePlan { .. }));
+    }
+
+    #[test]
+    fn debug_agent_uses_engineering_plan_gate() {
+        let snapshot = empty_snapshot();
+        let mut debug_controls = controls(true);
+        debug_controls.active.runtime_agent_id = RuntimeAgentIdDto::Debug;
+        let classification = classify_agent_task(
+            "Debug the failing runtime state machine test",
+            &debug_controls,
+        );
+        let gate = evaluate_tool_batch_gate(
+            &snapshot,
+            &debug_controls,
+            &classification,
+            &[AgentToolCall {
+                tool_call_id: "call-1".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["pnpm", "test"] }),
+            }],
+        );
+
+        assert!(classification.requires_plan);
         assert!(matches!(gate, ToolBatchGate::RequirePlan { .. }));
     }
 

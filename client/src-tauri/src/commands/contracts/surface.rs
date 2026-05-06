@@ -64,6 +64,7 @@ pub const REMOVE_PLUGIN_ROOT_COMMAND: &str = "remove_plugin_root";
 pub const SET_PLUGIN_ENABLED_COMMAND: &str = "set_plugin_enabled";
 pub const REMOVE_PLUGIN_COMMAND: &str = "remove_plugin";
 pub const GET_PROVIDER_MODEL_CATALOG_COMMAND: &str = "get_provider_model_catalog";
+pub const PREFLIGHT_PROVIDER_PROFILE_COMMAND: &str = "preflight_provider_profile";
 pub const RUN_DOCTOR_REPORT_COMMAND: &str = "run_doctor_report";
 pub const START_AUTONOMOUS_RUN_COMMAND: &str = "start_autonomous_run";
 pub const START_OPENAI_LOGIN_COMMAND: &str = "start_openai_login";
@@ -485,11 +486,27 @@ pub struct PayloadBudgetDiagnosticDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProjectOriginDto {
+    Brownfield,
+    Greenfield,
+    Unknown,
+}
+
+impl Default for ProjectOriginDto {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectSummaryDto {
     pub id: String,
     pub name: String,
     pub description: String,
     pub milestone: String,
+    #[serde(default)]
+    pub project_origin: ProjectOriginDto,
     pub total_phases: u32,
     pub completed_phases: u32,
     pub active_phase: u32,

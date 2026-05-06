@@ -36,6 +36,7 @@ pub enum AgentMessageRoleDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunEventKindDto {
+    RunStarted,
     MessageDelta,
     ReasoningSummary,
     ToolStarted,
@@ -50,7 +51,16 @@ pub enum AgentRunEventKindDto {
     StateTransition,
     PlanUpdated,
     VerificationGate,
+    ContextManifestRecorded,
+    RetrievalPerformed,
+    MemoryCandidateCaptured,
+    EnvironmentLifecycleUpdate,
+    SandboxLifecycleUpdate,
     ActionRequired,
+    ApprovalRequired,
+    ToolPermissionGrant,
+    ProviderModelChanged,
+    RuntimeSettingsChanged,
     RunPaused,
     RunCompleted,
     RunFailed,
@@ -300,6 +310,7 @@ pub struct AgentTraceExportDto {
     pub timeline: JsonValue,
     pub diagnostics: JsonValue,
     pub quality_gates: JsonValue,
+    pub production_readiness: JsonValue,
     pub markdown_summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_bundle: Option<JsonValue>,
@@ -589,6 +600,7 @@ pub enum AgentDefinitionBaseCapabilityProfileDto {
     Engineering,
     Debugging,
     AgentBuilder,
+    HarnessTest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -720,6 +732,7 @@ fn parse_agent_definition_base_capability_profile(
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,
         "agent_builder" => AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,
+        "harness_test" => AgentDefinitionBaseCapabilityProfileDto::HarnessTest,
         _ => AgentDefinitionBaseCapabilityProfileDto::ObserveOnly,
     }
 }

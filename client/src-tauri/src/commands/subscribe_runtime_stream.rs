@@ -1,4 +1,9 @@
-use std::{path::Path, str::FromStr, thread, time::Duration};
+use std::{
+    path::Path,
+    str::FromStr,
+    thread,
+    time::{Duration, Instant},
+};
 
 use tauri::{
     ipc::{Channel, JavaScriptChannelId},
@@ -19,11 +24,16 @@ use crate::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
         RuntimeRunStatus,
     },
-    runtime::{subscribe_agent_events, AgentEventSubscription, OWNED_AGENT_SUPERVISOR_KIND},
+    runtime::{
+        agent_core::serialize_model_visible_tool_result, subscribe_agent_events,
+        AgentEventSubscription, AgentToolResult, OWNED_AGENT_SUPERVISOR_KIND,
+    },
     state::DesktopState,
 };
 
 use super::runtime_support::{load_persisted_runtime_run, resolve_project_root};
+
+const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT: usize = 200;
 
 #[tauri::command]
 pub fn subscribe_runtime_stream<R: Runtime>(
@@ -111,6 +121,8 @@ fn subscribe_owned_runtime_stream(
         &session_id,
         &item_kinds,
         &channel,
+        request.after_sequence,
+        request.replay_limit,
     )?;
 
     if !terminal && !runtime_terminal {
@@ -149,22 +161,43 @@ fn replay_owned_agent_events(
     session_id: &str,
     item_kinds: &[RuntimeStreamItemKind],
     channel: &Channel<RuntimeStreamItemDto>,
+    after_sequence: Option<u64>,
+    replay_limit: Option<u16>,
 ) -> CommandResult<(i64, bool)> {
-    let snapshot = match project_store::load_agent_run(repo_root, project_id, run_id) {
-        Ok(snapshot) => snapshot,
+    let started = Instant::now();
+    let run = match project_store::load_agent_run_record(repo_root, project_id, run_id) {
+        Ok(run) => run,
         Err(error) if error.code == "agent_run_not_found" => return Ok((0, false)),
         Err(error) => return Err(error),
     };
     let terminal = matches!(
-        snapshot.run.status,
+        run.status,
         AgentRunStatus::Paused
             | AgentRunStatus::Cancelled
             | AgentRunStatus::HandedOff
             | AgentRunStatus::Completed
             | AgentRunStatus::Failed
     );
-    let mut last_event_id = 0;
-    for event in snapshot.events {
+    let incremental_replay_limit = replay_limit
+        .map(usize::from)
+        .unwrap_or(INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT);
+    let after_event_id = after_sequence
+        .and_then(|sequence| i64::try_from(sequence).ok())
+        .unwrap_or(0);
+    let events = if after_event_id > 0 {
+        project_store::read_agent_events_after(
+            repo_root,
+            project_id,
+            run_id,
+            after_event_id,
+            incremental_replay_limit,
+        )?
+    } else {
+        project_store::read_all_agent_events(repo_root, project_id, run_id)?
+    };
+    let mut last_event_id = after_event_id;
+    let replayed_count = events.len();
+    for event in events {
         last_event_id = last_event_id.max(event.id);
         if let Some(item) = owned_agent_event_runtime_item(event, session_id, None) {
             if should_emit_owned_runtime_item(item_kinds, &item.kind) {
@@ -179,6 +212,10 @@ fn replay_owned_agent_events(
             }
         }
     }
+    eprintln!(
+        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} last_event_id={last_event_id} duration_ms={}",
+        started.elapsed().as_millis()
+    );
     Ok((last_event_id, terminal))
 }
 
@@ -249,6 +286,7 @@ fn owned_agent_event_runtime_item(
         tool_name: None,
         tool_state: None,
         tool_summary: None,
+        tool_result_preview: None,
         skill_id: None,
         skill_stage: None,
         skill_result: None,
@@ -267,6 +305,14 @@ fn owned_agent_event_runtime_item(
     };
 
     match event_kind {
+        AgentRunEventKind::RunStarted => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_run_started".into());
+            item.title = Some("Run started".into());
+            item.detail = payload_string(&payload, "message")
+                .or_else(|| Some("Owned agent run started.".into()));
+            item.text = item.detail.clone();
+        }
         AgentRunEventKind::MessageDelta => {
             item.kind = RuntimeStreamItemKind::Transcript;
             item.text = payload_verbatim_string(&payload, "text");
@@ -335,9 +381,17 @@ fn owned_agent_event_runtime_item(
                 });
             item.text = item.detail.clone();
             if ok {
-                item.tool_summary = payload
-                    .get("output")
-                    .and_then(|output| tool_result_summary_from_output(output, ok));
+                if let Some(output) = payload.get("output") {
+                    let model_visible_result =
+                        model_visible_tool_result_from_completed_payload(&payload);
+                    let model_visible_output = model_visible_result
+                        .as_deref()
+                        .and_then(model_visible_tool_result_output);
+                    let summary_output = model_visible_output.as_ref().unwrap_or(output);
+                    item.tool_summary = tool_result_summary_from_output(summary_output, ok);
+                    item.tool_result_preview =
+                        model_visible_result.or_else(|| tool_result_preview_from_output(output));
+                }
             }
             item.code = payload_string(&payload, "code");
             item.message = payload_string(&payload, "message");
@@ -362,11 +416,29 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::CommandOutput => {
-            item.kind = RuntimeStreamItemKind::Activity;
-            item.code = Some("owned_agent_command_output".into());
-            item.title = Some("Command output".into());
-            item.detail = Some(command_output_summary(&payload));
-            item.text = item.detail.clone();
+            item.tool_call_id = payload_string(&payload, "toolCallId");
+            item.tool_name = payload_string(&payload, "toolName");
+            if item.tool_call_id.is_some() {
+                item.kind = RuntimeStreamItemKind::Tool;
+                item.tool_state = Some(if payload_bool(&payload, "partial").unwrap_or(false) {
+                    RuntimeToolCallState::Running
+                } else if payload_bool(&payload, "spawned").unwrap_or(false)
+                    && payload.get("exitCode").is_some()
+                {
+                    RuntimeToolCallState::Succeeded
+                } else {
+                    RuntimeToolCallState::Running
+                });
+                item.detail = Some(command_output_summary(&payload));
+                item.tool_result_preview = command_output_result_preview(&payload);
+                item.text = item.detail.clone();
+            } else {
+                item.kind = RuntimeStreamItemKind::Activity;
+                item.code = Some("owned_agent_command_output".into());
+                item.title = Some("Command output".into());
+                item.detail = Some(command_output_summary(&payload));
+                item.text = item.detail.clone();
+            }
         }
         AgentRunEventKind::ValidationStarted => {
             item.kind = RuntimeStreamItemKind::Activity;
@@ -451,7 +523,75 @@ fn owned_agent_event_runtime_item(
                 .or_else(|| Some("Completion verification gate evaluated.".into()));
             item.text = item.detail.clone();
         }
-        AgentRunEventKind::ActionRequired => {
+        AgentRunEventKind::ContextManifestRecorded => {
+            item.kind = RuntimeStreamItemKind::Tool;
+            item.code = Some("owned_agent_context_manifest_recorded".into());
+            item.tool_call_id = Some(format!("runtime-project-context:{event_id}:manifest"));
+            item.tool_name = Some("project_context".into());
+            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.detail = context_event_tool_detail(
+                &payload,
+                "context_manifest",
+                "Context manifest recorded.",
+            );
+            item.tool_result_preview = context_event_tool_result_preview(&payload);
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::RetrievalPerformed => {
+            item.kind = RuntimeStreamItemKind::Tool;
+            item.code = Some("owned_agent_retrieval_performed".into());
+            item.tool_call_id = Some(format!("runtime-project-context:{event_id}:retrieval"));
+            item.tool_name = Some("project_context".into());
+            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.detail = context_event_tool_detail(
+                &payload,
+                "retrieval",
+                "Durable context retrieval performed.",
+            );
+            item.tool_result_preview = context_event_tool_result_preview(&payload);
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::MemoryCandidateCaptured => {
+            item.kind = RuntimeStreamItemKind::Tool;
+            item.code = Some("owned_agent_memory_candidate_captured".into());
+            item.tool_call_id = Some(format!(
+                "runtime-project-context:{event_id}:memory-candidate"
+            ));
+            item.tool_name = Some("project_context".into());
+            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.detail = context_event_tool_detail(
+                &payload,
+                "memory_candidate",
+                "Memory candidate captured.",
+            );
+            item.tool_result_preview = context_event_tool_result_preview(&payload);
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::EnvironmentLifecycleUpdate => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = payload
+                .get("diagnostic")
+                .and_then(|diagnostic| payload_string(diagnostic, "code"))
+                .or_else(|| Some("owned_agent_environment_lifecycle".into()));
+            item.title = Some("Environment".into());
+            let state = payload_string(&payload, "state").unwrap_or_else(|| "starting".into());
+            item.detail = payload_string(&payload, "detail")
+                .or_else(|| Some(format!("Environment lifecycle: {state}.")));
+            item.message = payload
+                .get("diagnostic")
+                .and_then(|diagnostic| payload_string(diagnostic, "message"));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::SandboxLifecycleUpdate => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_sandbox_lifecycle".into());
+            item.title = Some("Sandbox".into());
+            let state = payload_string(&payload, "state").unwrap_or_else(|| "updated".into());
+            item.detail = payload_string(&payload, "detail")
+                .or_else(|| Some(format!("Sandbox lifecycle: {state}.")));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
             item.kind = RuntimeStreamItemKind::ActionRequired;
             item.action_id = payload_string(&payload, "actionId")
                 .or_else(|| Some(format!("owned-agent-action-{event_id}")));
@@ -466,6 +606,30 @@ fn owned_agent_event_runtime_item(
                 .or_else(|| Some("Owned agent requires operator input before continuing.".into()));
             item.code = payload_string(&payload, "code");
             item.message = payload_string(&payload, "message");
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ToolPermissionGrant => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_tool_permission_grant".into());
+            item.title = Some("Tool permission".into());
+            item.detail = payload_string(&payload, "summary")
+                .or_else(|| Some("Tool permission grant changed.".into()));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::ProviderModelChanged => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_provider_model_changed".into());
+            item.title = Some("Provider model".into());
+            item.detail = payload_string(&payload, "summary")
+                .or_else(|| Some("Provider model changed.".into()));
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::RuntimeSettingsChanged => {
+            item.kind = RuntimeStreamItemKind::Activity;
+            item.code = Some("owned_agent_runtime_settings_changed".into());
+            item.title = Some("Runtime settings".into());
+            item.detail = payload_string(&payload, "summary")
+                .or_else(|| Some("Runtime settings changed.".into()));
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RunPaused => {
@@ -613,6 +777,70 @@ fn render_tool_detail_parts(parts: Vec<String>) -> Option<String> {
     Some(truncate_chars(&parts.join(", "), 240))
 }
 
+fn context_event_tool_detail(
+    payload: &serde_json::Value,
+    action: &str,
+    fallback: &str,
+) -> Option<String> {
+    let mut parts = vec![format!("action: {action}")];
+
+    for (label, key) in [
+        ("queryId", "queryId"),
+        ("manifestId", "manifestId"),
+        ("candidateId", "candidateId"),
+        ("candidateKind", "candidateKind"),
+        ("memoryId", "memoryId"),
+        ("recordId", "recordId"),
+        ("turnIndex", "turnIndex"),
+        ("resultCount", "resultCount"),
+        ("contextHash", "contextHash"),
+    ] {
+        push_value_part(&mut parts, label, payload, key);
+    }
+
+    payload_string(payload, "summary")
+        .or_else(|| payload_string(payload, "message"))
+        .or_else(|| Some(fallback.into()))
+        .map(|summary| {
+            let mut detail = render_tool_detail_parts(parts).unwrap_or_default();
+            if detail.is_empty() {
+                detail = summary;
+            } else {
+                detail.push_str(" · ");
+                detail.push_str(&truncate_chars(&summary, 180));
+            }
+            truncate_chars(&detail, 320)
+        })
+}
+
+fn context_event_tool_result_preview(payload: &serde_json::Value) -> Option<String> {
+    serde_json::to_string_pretty(payload)
+        .ok()
+        .and_then(truncate_result_preview)
+}
+
+fn model_visible_tool_result_from_completed_payload(payload: &serde_json::Value) -> Option<String> {
+    let result = AgentToolResult {
+        tool_call_id: payload_string(payload, "toolCallId")?,
+        tool_name: payload_string(payload, "toolName")?,
+        ok: payload_bool(payload, "ok").unwrap_or(false),
+        summary: payload_string(payload, "summary")
+            .or_else(|| payload_string(payload, "message"))
+            .unwrap_or_default(),
+        output: payload.get("output")?.clone(),
+        parent_assistant_message_id: None,
+    };
+
+    serialize_model_visible_tool_result(&result).ok()
+}
+
+fn model_visible_tool_result_output(serialized: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(serialized)
+        .ok()?
+        .get("output")
+        .cloned()
+}
+
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_owned();
@@ -622,10 +850,337 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     format!("{}...", value.chars().take(keep_chars).collect::<String>())
 }
 
+const TOOL_RESULT_PREVIEW_MAX_CHARS: usize = 24_000;
+
+fn normalized_tool_output(output: &serde_json::Value) -> &serde_json::Value {
+    if output.get("kind").is_some() {
+        return output;
+    }
+
+    output
+        .get("output")
+        .filter(|nested| nested.get("kind").is_some())
+        .unwrap_or(output)
+}
+
+fn truncate_result_preview(value: String) -> Option<String> {
+    let trimmed = value.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(truncate_chars(trimmed, TOOL_RESULT_PREVIEW_MAX_CHARS))
+}
+
+fn tool_result_preview_from_output(output: &serde_json::Value) -> Option<String> {
+    let output = normalized_tool_output(output);
+    match payload_string(output, "kind")?.as_str() {
+        "read" => payload_verbatim_string(output, "content").and_then(truncate_result_preview),
+        "command" => command_result_preview(output),
+        "command_session" => command_session_result_preview(output),
+        "git_diff" => payload_verbatim_string(output, "patch").and_then(truncate_result_preview),
+        "web_fetch" => payload_verbatim_string(output, "content").and_then(truncate_result_preview),
+        "search" => search_result_preview(output),
+        "find" => find_result_preview(output),
+        "list" => list_result_preview(output),
+        "project_context" => project_context_result_preview(output),
+        "edit" | "patch" => {
+            payload_verbatim_string(output, "diff").and_then(truncate_result_preview)
+        }
+        _ => serde_json::to_string_pretty(output)
+            .ok()
+            .and_then(truncate_result_preview),
+    }
+}
+
+fn command_result_preview(output: &serde_json::Value) -> Option<String> {
+    let mut parts = Vec::new();
+
+    if payload_bool(output, "stdoutRedacted").unwrap_or(false) {
+        parts.push("[stdout redacted]".to_owned());
+    } else if let Some(stdout) = payload_verbatim_string(output, "stdout") {
+        parts.push(format!("stdout:\n{stdout}"));
+    }
+
+    if payload_bool(output, "stderrRedacted").unwrap_or(false) {
+        parts.push("[stderr redacted]".to_owned());
+    } else if let Some(stderr) = payload_verbatim_string(output, "stderr") {
+        parts.push(format!("stderr:\n{stderr}"));
+    }
+
+    truncate_result_preview(parts.join("\n\n"))
+}
+
+fn command_session_result_preview(output: &serde_json::Value) -> Option<String> {
+    let chunks = output.get("chunks")?.as_array()?;
+    let mut parts = Vec::new();
+
+    for chunk in chunks {
+        let stream = payload_string(chunk, "stream").unwrap_or_else(|| "output".into());
+        if payload_bool(chunk, "redacted").unwrap_or(false) {
+            parts.push(format!("[{stream} redacted]"));
+            continue;
+        }
+
+        if let Some(text) = payload_verbatim_string(chunk, "text") {
+            parts.push(format!("{stream}:\n{text}"));
+        }
+    }
+
+    truncate_result_preview(parts.join("\n\n"))
+}
+
+fn search_result_preview(output: &serde_json::Value) -> Option<String> {
+    let matches = output.get("matches")?.as_array()?;
+    let mut rows = Vec::new();
+
+    for item in matches {
+        let has_path = item.get("path").is_some();
+        let preview = payload_verbatim_string(item, "preview").unwrap_or_default();
+        if !has_path && preview.trim().is_empty() {
+            continue;
+        }
+
+        let path = payload_string(item, "path").unwrap_or_else(|| "unknown path".into());
+        let line = payload_usize(item, "line").unwrap_or_default();
+        let column = payload_usize(item, "column").unwrap_or_default();
+        rows.push(format!("{path}:{line}:{column}: {preview}"));
+    }
+
+    truncate_result_preview(rows.join("\n"))
+}
+
+fn find_result_preview(output: &serde_json::Value) -> Option<String> {
+    let matches = output.get("matches")?.as_array()?;
+    let rows = matches
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    truncate_result_preview(rows)
+}
+
+fn list_result_preview(output: &serde_json::Value) -> Option<String> {
+    let entries = output.get("entries")?.as_array()?;
+    let mut rows = Vec::new();
+
+    for entry in entries {
+        let kind = payload_string(entry, "kind").unwrap_or_else(|| "entry".into());
+        let path = payload_string(entry, "path").unwrap_or_else(|| "unknown path".into());
+        let bytes = payload_usize(entry, "bytes")
+            .map(|value| format!(" · {value} bytes"))
+            .unwrap_or_default();
+        rows.push(format!("{kind} {path}{bytes}"));
+    }
+
+    truncate_result_preview(rows.join("\n"))
+}
+
+fn project_context_result_preview(output: &serde_json::Value) -> Option<String> {
+    let mut sections = Vec::new();
+
+    if let Some(message) = payload_verbatim_string(output, "message") {
+        sections.push(message);
+    }
+
+    if let Some(results) = output.get("results").and_then(serde_json::Value::as_array) {
+        let rows = results
+            .iter()
+            .map(|result| {
+                let rank = payload_usize(result, "rank")
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".into());
+                let source_kind =
+                    payload_string(result, "sourceKind").unwrap_or_else(|| "context".into());
+                let source_id =
+                    payload_string(result, "sourceId").unwrap_or_else(|| "unknown".into());
+                let score = payload_string(result, "score")
+                    .map(|score| format!(" · score {score}"))
+                    .unwrap_or_default();
+                let snippet = payload_verbatim_string(result, "snippet").unwrap_or_default();
+                let citation = payload_string(result, "citation")
+                    .map(|citation| format!("\n  citation: {citation}"))
+                    .unwrap_or_default();
+
+                format!("#{rank} {source_kind} {source_id}{score}\n  {snippet}{citation}")
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !rows.trim().is_empty() {
+            sections.push(format!("results:\n{rows}"));
+        }
+    }
+
+    if let Some(record) = output.get("record").filter(|value| value.is_object()) {
+        sections.push(format!(
+            "record: {}\n{}\n{}",
+            payload_string(record, "title").unwrap_or_else(|| "Untitled record".into()),
+            payload_verbatim_string(record, "summary").unwrap_or_default(),
+            payload_verbatim_string(record, "text").unwrap_or_default()
+        ));
+    }
+
+    if let Some(memory) = output.get("memory").filter(|value| value.is_object()) {
+        sections.push(format!(
+            "memory: {}\n{}",
+            payload_string(memory, "memoryKind").unwrap_or_else(|| "approved_memory".into()),
+            payload_verbatim_string(memory, "text").unwrap_or_default()
+        ));
+    }
+
+    if let Some(candidate) = output
+        .get("candidateRecord")
+        .filter(|value| value.is_object())
+    {
+        sections.push(format!(
+            "candidate record: {}\n{}\n{}",
+            payload_string(candidate, "title").unwrap_or_else(|| "Untitled candidate".into()),
+            payload_verbatim_string(candidate, "summary").unwrap_or_default(),
+            payload_verbatim_string(candidate, "text").unwrap_or_default()
+        ));
+    }
+
+    if let Some(manifest) = output.get("manifest").filter(|value| !value.is_null()) {
+        if let Some(preview) = project_context_manifest_result_preview(manifest) {
+            sections.push(preview);
+        } else if let Ok(serialized) = serde_json::to_string_pretty(manifest) {
+            sections.push(format!("manifest:\n{serialized}"));
+        }
+    }
+
+    if sections.is_empty() {
+        return serde_json::to_string_pretty(output)
+            .ok()
+            .and_then(truncate_result_preview);
+    }
+
+    truncate_result_preview(sections.join("\n\n"))
+}
+
+fn project_context_manifest_result_preview(manifest: &serde_json::Value) -> Option<String> {
+    if payload_string(manifest, "kind").as_deref() != Some("provider_context_package_summary") {
+        return None;
+    }
+
+    let budget = manifest.get("budget").unwrap_or(&serde_json::Value::Null);
+    let policy = manifest.get("policy").unwrap_or(&serde_json::Value::Null);
+    let contributors = manifest
+        .get("contributors")
+        .unwrap_or(&serde_json::Value::Null);
+    let retrieval = manifest
+        .get("retrieval")
+        .unwrap_or(&serde_json::Value::Null);
+    let tools = manifest.get("tools").unwrap_or(&serde_json::Value::Null);
+    let fragments = manifest
+        .get("promptFragments")
+        .unwrap_or(&serde_json::Value::Null);
+    let omitted = manifest.get("omitted").unwrap_or(&serde_json::Value::Null);
+
+    let manifest_id = payload_string(manifest, "manifestId").unwrap_or_else(|| "unknown".into());
+    let estimated_tokens = payload_usize(budget, "estimatedTokens")
+        .map(|tokens| format!("{tokens} token(s)"))
+        .unwrap_or_else(|| "unknown token count".into());
+    let pressure = payload_string(policy, "pressure").unwrap_or_else(|| "unknown".into());
+    let action = payload_string(policy, "action").unwrap_or_else(|| "unknown".into());
+
+    let mut rows = vec![format!(
+        "manifest: {manifest_id} · {estimated_tokens} · pressure {pressure} · action {action}"
+    )];
+
+    if let Some(context_hash) = payload_string(manifest, "contextHash") {
+        rows.push(format!("contextHash: {context_hash}"));
+    }
+
+    rows.push(format!(
+        "contributors: {} included, {} excluded",
+        payload_usize(contributors, "includedCount").unwrap_or_default(),
+        payload_usize(contributors, "excludedCount").unwrap_or_default()
+    ));
+
+    let raw_context_injected = payload_bool(retrieval, "rawContextInjected")
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    rows.push(format!(
+        "retrieval: {} · rawContextInjected={} · results={}",
+        payload_string(retrieval, "deliveryModel").unwrap_or_else(|| "unknown".into()),
+        raw_context_injected,
+        payload_usize(retrieval, "resultCount").unwrap_or_default()
+    ));
+
+    let tool_names = json_string_array_preview(tools.get("names"), 10).unwrap_or_default();
+    rows.push(format!(
+        "tools: {} active{}",
+        payload_usize(tools, "count").unwrap_or_default(),
+        if tool_names.is_empty() {
+            String::new()
+        } else {
+            format!(" ({tool_names})")
+        }
+    ));
+
+    let fragment_ids = fragments
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| payload_string(item, "id"))
+                .take(8)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    rows.push(format!(
+        "prompt fragments: {}{}",
+        payload_usize(fragments, "count").unwrap_or_default(),
+        if fragment_ids.is_empty() {
+            String::new()
+        } else {
+            format!(" ({fragment_ids})")
+        }
+    ));
+
+    let original_bytes = payload_usize(omitted, "originalBytes").unwrap_or_default();
+    let returned_bytes = payload_usize(omitted, "returnedBytes").unwrap_or_default();
+    if original_bytes > 0 || returned_bytes > 0 {
+        rows.push(format!(
+            "compacted: {original_bytes} -> {returned_bytes} bytes; full manifest remains persisted"
+        ));
+    }
+
+    if let Some(citation) = payload_string(manifest, "citation") {
+        rows.push(format!("citation: {citation}"));
+    }
+
+    Some(rows.join("\n"))
+}
+
+fn json_string_array_preview(
+    value: Option<&serde_json::Value>,
+    max_items: usize,
+) -> Option<String> {
+    let values = value.as_ref()?.as_array()?;
+    let mut items = values
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .take(max_items)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return None;
+    }
+    if values.len() > max_items {
+        items.push("...".into());
+    }
+    Some(items.join(", "))
+}
+
 fn tool_result_summary_from_output(
     output: &serde_json::Value,
     ok: bool,
 ) -> Option<ToolResultSummaryDto> {
+    let output = normalized_tool_output(output);
     match payload_string(output, "kind")?.as_str() {
         "read" => Some(file_tool_summary(
             payload_string(output, "path"),
@@ -883,7 +1438,35 @@ fn payload_transcript_role(payload: &serde_json::Value) -> Option<RuntimeStreamT
     }
 }
 
+fn command_output_result_preview(payload: &serde_json::Value) -> Option<String> {
+    if payload_bool(payload, "partial").unwrap_or(false) {
+        let stream = payload_string(payload, "stream").unwrap_or_else(|| "output".into());
+        if payload_bool(payload, "redacted").unwrap_or(false) {
+            return truncate_result_preview(format!("[{stream} redacted]"));
+        }
+        if let Some(text) = payload_verbatim_string(payload, "text") {
+            return truncate_result_preview(format!("{stream}:\n{text}"));
+        }
+        return None;
+    }
+
+    if payload.get("stdout").is_some()
+        || payload.get("stderr").is_some()
+        || payload_bool(payload, "stdoutRedacted").unwrap_or(false)
+        || payload_bool(payload, "stderrRedacted").unwrap_or(false)
+    {
+        return command_result_preview(payload);
+    }
+
+    None
+}
+
 fn command_output_summary(payload: &serde_json::Value) -> String {
+    if payload_bool(payload, "partial").unwrap_or(false) {
+        let stream = payload_string(payload, "stream").unwrap_or_else(|| "output".into());
+        return format!("Command {stream} streamed.");
+    }
+
     let argv = payload
         .get("argv")
         .and_then(|value| value.as_array())
@@ -985,6 +1568,29 @@ mod tests {
         assert_eq!(
             fallback_action.detail.as_deref(),
             Some("Owned agent requires operator input before continuing.")
+        );
+    }
+
+    #[test]
+    fn owned_agent_command_output_projection_streams_partial_chunks_as_running_tools() {
+        let output = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::CommandOutput,
+                r#"{"toolCallId":"call-command","toolName":"command","stream":"stdout","text":"running test 1\n","partial":true}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("command output item");
+
+        assert_eq!(output.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(output.tool_call_id.as_deref(), Some("call-command"));
+        assert_eq!(output.tool_name.as_deref(), Some("command"));
+        assert_eq!(output.tool_state, Some(RuntimeToolCallState::Running));
+        assert_eq!(output.detail.as_deref(), Some("Command stdout streamed."));
+        assert_eq!(
+            output.tool_result_preview.as_deref(),
+            Some("stdout:\nrunning test 1")
         );
     }
 
@@ -1095,11 +1701,33 @@ mod tests {
     }
 
     #[test]
+    fn owned_agent_tool_completed_projection_uses_model_visible_result_preview() {
+        let payload = r#"{"toolCallId":"call-command","toolName":"command","ok":true,"summary":"command","output":{"kind":"command","argv":["pnpm","test"],"cwd":"client","stdout":"ok","stderr":"","exitCode":0,"timedOut":false,"stdoutTruncated":false,"stderrTruncated":false,"stdoutRedacted":false,"stderrRedacted":false,"spawned":false,"policy":{"approvalRequired":false},"sandbox":{"profile":"danger-full-access"}}}"#;
+        let tool = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ToolCompleted, payload),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("tool item");
+        let payload_json =
+            serde_json::from_str::<serde_json::Value>(payload).expect("decode fixture payload");
+        let expected = model_visible_tool_result_from_completed_payload(&payload_json)
+            .expect("model visible fixture result");
+
+        assert_eq!(tool.tool_result_preview.as_deref(), Some(expected.as_str()));
+        assert!(!expected.contains("\"policy\""));
+        assert!(!expected.contains("\"sandbox\""));
+        assert!(expected.contains("[BEGIN stdout]\nok\n[END stdout]"));
+        assert!(expected.contains("xeroCompact: schema=xero.model_visible_tool_result.v1"));
+        assert!(serde_json::from_str::<serde_json::Value>(&expected).is_err());
+    }
+
+    #[test]
     fn owned_agent_tool_completed_projection_derives_file_summaries() {
         let read = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::ToolCompleted,
-                r#"{"toolCallId":"call-read","toolName":"read","ok":true,"summary":"read","output":{"kind":"read","path":"client/src/lib.rs","lineCount":2,"truncated":false}}"#,
+                r#"{"toolCallId":"call-read","toolName":"read","ok":true,"summary":"read","output":{"kind":"read","path":"client/src/lib.rs","lineCount":2,"truncated":false,"content":"pub fn run() {}\n"}}"#,
             ),
             "owned-agent:run-1",
             None,
@@ -1115,11 +1743,19 @@ mod tests {
                 truncated: false,
             }))
         );
+        let read_preview = read
+            .tool_result_preview
+            .as_deref()
+            .expect("model-visible read preview");
+        assert!(read_preview.contains("tool result: read call call-read ok=true"));
+        assert!(read_preview.contains("[BEGIN read content: client/src/lib.rs]\npub fn run() {}\n"));
+        assert!(read_preview.contains("xeroCompact: schema=xero.model_visible_tool_result.v1"));
+        assert!(!read_preview.contains("\\n"));
 
         let search = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::ToolCompleted,
-                r#"{"toolCallId":"call-search","toolName":"search","ok":true,"summary":"search","output":{"kind":"search","query":"appendTranscriptDelta","scope":"client","matches":[{},{}],"totalMatches":4,"truncated":true}}"#,
+                r#"{"toolCallId":"call-search","toolName":"search","ok":true,"summary":"search","output":{"kind":"search","query":"appendTranscriptDelta","scope":"client","matches":[{"path":"client/a.ts","line":4,"column":2,"preview":"appendTranscriptDelta()"},{}],"totalMatches":4,"truncated":true}}"#,
             ),
             "owned-agent:run-1",
             None,
@@ -1134,6 +1770,25 @@ mod tests {
                 match_count: Some(4),
                 truncated: true,
             }))
+        );
+        let search_preview = serde_json::from_str::<serde_json::Value>(
+            search
+                .tool_result_preview
+                .as_deref()
+                .expect("model-visible search preview"),
+        )
+        .expect("decode search preview");
+        assert_eq!(
+            search_preview["toolCallId"],
+            serde_json::json!("call-search")
+        );
+        assert_eq!(
+            search_preview["output"]["kind"],
+            serde_json::json!("search")
+        );
+        assert_eq!(
+            search_preview["output"]["matches"][0]["preview"],
+            serde_json::json!("appendTranscriptDelta()")
         );
 
         let find = owned_agent_event_runtime_item(
@@ -1219,6 +1874,167 @@ mod tests {
                 truncated: false,
             }))
         );
+    }
+
+    #[test]
+    fn owned_agent_tool_completed_projection_previews_project_context_results() {
+        let context = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-context","toolName":"project_context","ok":true,"summary":"project_context returned 1 source-cited result(s).","output":{"kind":"project_context","action":"search_approved_memory","message":"project_context returned 1 source-cited result(s) for `lancedb memory`.","queryId":"query-1","resultCount":1,"results":[{"sourceKind":"approved_memory","sourceId":"memory-1","rank":1,"score":"0.9132","snippet":"LanceDB stores approved memory for later retrieval.","redactionState":"clean","citation":"agent_retrieval_results:query-1:1:memory-1"}]}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("project_context tool item");
+
+        assert_eq!(context.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(context.tool_name.as_deref(), Some("project_context"));
+        let preview = serde_json::from_str::<serde_json::Value>(
+            context
+                .tool_result_preview
+                .as_deref()
+                .expect("model-visible project_context preview"),
+        )
+        .expect("decode project_context preview");
+        assert_eq!(preview["toolCallId"], serde_json::json!("call-context"));
+        assert_eq!(
+            preview["output"]["kind"],
+            serde_json::json!("project_context")
+        );
+        assert_eq!(
+            preview["output"]["results"][0]["snippet"],
+            serde_json::json!("LanceDB stores approved memory for later retrieval.")
+        );
+    }
+
+    #[test]
+    fn owned_agent_tool_completed_projection_previews_project_context_manifest_summary() {
+        let context = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-context","toolName":"project_context","ok":true,"summary":"project_context returned the latest source-cited context manifest.","output":{"kind":"project_context","action":"explain_current_context_package","message":"project_context returned the latest source-cited context manifest.","resultCount":1,"manifest":{"kind":"provider_context_package_summary","manifestId":"manifest-1","contextHash":"abc123","citation":"agent_context_manifests:7","budget":{"estimatedTokens":4323},"policy":{"pressure":"low","action":"continue_now"},"contributors":{"includedCount":18,"excludedCount":1},"retrieval":{"deliveryModel":"tool_mediated","rawContextInjected":false,"resultCount":0},"tools":{"count":3,"names":["read","search","project_context"]},"promptFragments":{"count":2,"items":[{"id":"xero.soul"},{"id":"project.code_map"}]},"omitted":{"originalBytes":50000,"returnedBytes":2000,"fullManifestPersisted":true}}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("project_context manifest tool item");
+
+        let preview_text = context
+            .tool_result_preview
+            .as_deref()
+            .expect("model-visible manifest preview");
+        assert!(preview_text.contains("tool result: project_context call call-context ok=true"));
+        assert!(preview_text.contains("action: explain_current_context_package"));
+        assert!(preview_text.contains("estimated 4323 token(s)"));
+        assert!(preview_text.contains("Active tools: read, search, project_context"));
+        assert!(preview_text.contains("xeroCompact: schema=xero.model_visible_tool_result.v1"));
+        assert!(serde_json::from_str::<serde_json::Value>(preview_text).is_err());
+        assert!(!preview_text.contains("inputSchema"));
+        assert!(!preview_text.contains("\\nBudget:"));
+    }
+
+    #[test]
+    fn owned_agent_tool_completed_projection_previews_workspace_index_status() {
+        let workspace_index = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-index","toolName":"workspace_index","ok":true,"summary":"Workspace index is Empty with 0 of 159 files indexed.","output":{"kind":"workspace_index","action":"status","message":"Workspace index is Empty with 0 of 159 files indexed.","status":{"projectId":"project_e77f0b6c2a26c565a4e5d4508f03ea51","state":"empty","indexVersion":1,"rootPath":"/Users/sn0w/Documents/dev/ahoy","storagePath":"/Users/sn0w/Library/Application Support/dev.sn0w.xero/projects/project_e77f0b6c2a26c565a4e5d4508f03ea51","totalFiles":159,"indexedFiles":0,"skippedFiles":34,"staleFiles":159,"symbolCount":0,"indexedBytes":0,"coveragePercent":0.0,"headSha":"88fd5bd86f9946771c2598bc62c9da6c969bc008","diagnostics":[{"severity":"warning","code":"workspace_index_empty","message":"Index is empty."}]},"results":[],"signals":[]}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("workspace index tool item");
+
+        assert_eq!(workspace_index.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(
+            workspace_index.tool_name.as_deref(),
+            Some("workspace_index")
+        );
+        let preview_text = workspace_index
+            .tool_result_preview
+            .as_deref()
+            .expect("model-visible workspace index preview");
+        assert!(preview_text.contains("tool result: workspace_index call call-index ok=true"));
+        assert!(preview_text.contains("action: status"));
+        assert!(preview_text.contains("status: state=empty; indexedFiles=0/159; skippedFiles=34; staleFiles=159; symbolCount=0; indexedBytes=0; coverage=0.0%; indexVersion=1"));
+        assert!(preview_text.contains("root: /Users/sn0w/Documents/dev/ahoy"));
+        assert!(
+            preview_text.contains("diagnostics:\n- warning workspace_index_empty: Index is empty.")
+        );
+        assert!(preview_text.contains("xeroCompact: schema=xero.model_visible_tool_result.v1"));
+        assert!(serde_json::from_str::<serde_json::Value>(preview_text).is_err());
+        assert!(!preview_text.contains("storagePath"));
+        assert!(!preview_text.contains("project_e77f0b6c2a26c565a4e5d4508f03ea51"));
+    }
+
+    #[test]
+    fn owned_agent_context_events_project_as_project_context_tools() {
+        let retrieval = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::RetrievalPerformed,
+                r#"{"queryId":"query-1","resultCount":2,"summary":"Retrieved durable context from LanceDB."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("retrieval tool item");
+
+        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(retrieval.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(
+            retrieval.tool_call_id.as_deref(),
+            Some("runtime-project-context:42:retrieval")
+        );
+        assert_eq!(retrieval.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert_eq!(
+            retrieval.detail.as_deref(),
+            Some("action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB.")
+        );
+        assert!(retrieval
+            .tool_result_preview
+            .as_deref()
+            .is_some_and(|preview| preview.contains("\"queryId\": \"query-1\"")));
+
+        let manifest = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ContextManifestRecorded,
+                r#"{"manifestId":"manifest-1","turnIndex":3,"contextHash":"abc123"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("manifest tool item");
+        assert_eq!(manifest.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(manifest.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(
+            manifest.tool_call_id.as_deref(),
+            Some("runtime-project-context:42:manifest")
+        );
+        assert!(manifest
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: context_manifest")));
+
+        let memory = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MemoryCandidateCaptured,
+                r#"{"candidateId":"candidate-1","candidateKind":"project_fact","summary":"Captured a project memory candidate."}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("memory candidate tool item");
+        assert_eq!(memory.kind, RuntimeStreamItemKind::Tool);
+        assert_eq!(memory.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(
+            memory.tool_call_id.as_deref(),
+            Some("runtime-project-context:42:memory-candidate")
+        );
+        assert!(memory
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("action: memory_candidate")));
     }
 
     #[test]

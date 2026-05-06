@@ -143,6 +143,29 @@ describe('owned agent run schemas', () => {
     expect(parsed.events[0].eventKind).toBe('tool_registry_snapshot')
   })
 
+  it('accepts durable environment lifecycle events', () => {
+    const parsed = agentRunSchema.parse(
+      makeAgentRunDto({
+        events: [
+          {
+            id: 1,
+            projectId: 'project-1',
+            runId: 'run-agent-1',
+            eventKind: 'environment_lifecycle_update',
+            payload: {
+              environmentId: 'env-project-1-run-agent-1',
+              state: 'ready',
+              pendingMessageCount: 0,
+            },
+            createdAt: '2026-04-24T12:00:02Z',
+          },
+        ],
+      }),
+    )
+
+    expect(parsed.events[0].eventKind).toBe('environment_lifecycle_update')
+  })
+
   it('accepts durable policy decision events', () => {
     const parsed = agentRunSchema.parse(
       makeAgentRunDto({

@@ -13,33 +13,32 @@ export function Integrations() {
       <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-10 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:gap-16 lg:px-8 lg:py-28">
         <div className="flex flex-col justify-center">
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-primary">
-            Human approval loop
+            Mobile approvals
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Pauses for real decisions. Pings the channel you actually read.
+            Step away. Approve from your phone.
           </h2>
           <p className="mt-4 max-w-xl text-pretty text-muted-foreground">
-            When an agent hits a tradeoff or wants to take an action you flagged
-            for approval, it pauses cleanly and notifies you on{" "}
+            When an agent needs a call, it posts to{" "}
             <span className="text-foreground">Discord</span> or{" "}
-            <span className="text-foreground">Telegram</span> with the relevant
-            diff, command, or context. Reply in a sentence — the session picks
-            up where it left off.
+            <span className="text-foreground">Telegram</span> with the diff,
+            command, or tradeoff inline. Reply in a sentence and the session
+            keeps going.
           </p>
 
           <ul className="mt-8 space-y-3">
             {[
               {
-                title: "Rich, contextual approvals",
-                copy: "Notifications include the exact diff, command, or tradeoff — not a vague \"need your input\".",
+                title: "Diff in the message",
+                copy: "Notifications carry the actual change or command, not a generic \"need input\".",
               },
               {
-                title: "Reply from anywhere",
-                copy: "Approve, reject, or redirect from Discord or Telegram on your phone or laptop.",
+                title: "Approve from anywhere",
+                copy: "Phone, laptop, watch — wherever Discord or Telegram already lives.",
               },
               {
-                title: "You decide what gets escalated",
-                copy: "Per-tool and per-session rules for which actions auto-run and which ones wait for a human.",
+                title: "Per-tool rules",
+                copy: "Decide which actions auto-run and which wait for you, per session and per tool.",
               },
             ].map((f) => (
               <li key={f.title} className="flex gap-3">
@@ -165,37 +164,52 @@ function ChatMock({
   messages: Message[]
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-border/70 bg-card shadow-xl">
+    <div className="group/chat relative overflow-hidden rounded-xl border border-border/70 bg-card shadow-[0_30px_60px_-30px_rgba(0,0,0,0.6)] transition-colors hover:border-border">
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px"
+        style={{
+          background: `linear-gradient(to right, transparent, ${accent}80, transparent)`,
+        }}
+      />
       <div className="flex items-center justify-between border-b border-border/60 bg-secondary/40 px-3 py-2">
         <div className="flex items-center gap-2">
           <span
-            className="inline-flex h-5 w-5 items-center justify-center rounded-md text-white"
+            className="inline-flex h-5 w-5 items-center justify-center rounded-md text-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.6)]"
             style={{ backgroundColor: accent }}
             aria-hidden
           >
             {platformIcon}
           </span>
           <span className="text-xs font-medium">{platform}</span>
+          <span className="text-muted-foreground/40">·</span>
           <span className="text-[11px] text-muted-foreground">{channelLabel}</span>
         </div>
-        <Send className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
+          <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+          live
+        </span>
       </div>
       <div className="space-y-3 p-3">
         {messages.map((m, i) =>
           m.kind === "bot" ? (
             <div key={i} className="flex gap-2.5">
               <span
-                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                className="relative mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white shadow-[0_4px_12px_-4px_rgba(0,0,0,0.6)]"
                 style={{ backgroundColor: accent }}
                 aria-hidden
               >
                 C
+                <span
+                  aria-hidden
+                  className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-card bg-primary"
+                />
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs font-medium">{username}</span>
                   <span
-                    className="rounded px-1 py-0.5 text-[9px] font-bold text-white"
+                    className="rounded px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white"
                     style={{ backgroundColor: accent }}
                   >
                     {tag}
@@ -207,7 +221,7 @@ function ChatMock({
             </div>
           ) : (
             <div key={i} className="flex gap-2.5">
-              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground shadow-[0_4px_12px_-4px_color-mix(in_oklab,var(--primary)_50%,transparent)]">
                 You
               </span>
               <div className="min-w-0 flex-1">
@@ -220,6 +234,11 @@ function ChatMock({
             </div>
           ),
         )}
+        {/* composer */}
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-3 py-1.5 text-xs text-muted-foreground/60">
+          <span className="flex-1 truncate font-mono text-[11px]">type a reply…</span>
+          <Send className="h-3 w-3" />
+        </div>
       </div>
     </div>
   )

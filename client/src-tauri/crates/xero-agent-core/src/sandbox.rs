@@ -1,6 +1,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
+    io::{self, Read},
     path::Path,
+    process::{Child, Command, ExitStatus, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -319,6 +324,786 @@ impl ToolSandbox for NoopToolSandbox {
     }
 }
 
+const DEFAULT_SANDBOX_RUNNER_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxedProcessStdin {
+    Null,
+    Piped,
+}
+
+#[derive(Debug, Clone)]
+pub struct SandboxedProcessRequest {
+    pub argv: Vec<String>,
+    pub cwd: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub stdout_limit_bytes: usize,
+    pub stderr_limit_bytes: usize,
+    pub metadata: SandboxExecutionMetadata,
+}
+
+impl SandboxedProcessRequest {
+    pub fn new(argv: Vec<String>, metadata: SandboxExecutionMetadata) -> Self {
+        Self {
+            argv,
+            cwd: None,
+            timeout_ms: Some(DEFAULT_SANDBOX_RUNNER_TIMEOUT_MS),
+            stdout_limit_bytes: DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES,
+            stderr_limit_bytes: DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES,
+            metadata,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SandboxedProcessSpawnRequest {
+    pub argv: Vec<String>,
+    pub cwd: Option<String>,
+    pub stdin: SandboxedProcessStdin,
+    pub metadata: SandboxExecutionMetadata,
+}
+
+impl SandboxedProcessSpawnRequest {
+    pub fn new(argv: Vec<String>, metadata: SandboxExecutionMetadata) -> Self {
+        Self {
+            argv,
+            cwd: None,
+            stdin: SandboxedProcessStdin::Null,
+            metadata,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SandboxedProcess {
+    pub child: Child,
+    pub original_argv: Vec<String>,
+    pub applied_argv: Vec<String>,
+    pub cwd: Option<String>,
+    pub metadata: SandboxExecutionMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SandboxedProcessOutput {
+    pub original_argv: Vec<String>,
+    pub applied_argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub metadata: SandboxExecutionMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SandboxedProcessError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    pub metadata: SandboxExecutionMetadata,
+}
+
+impl SandboxedProcessError {
+    fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        retryable: bool,
+        mut metadata: SandboxExecutionMetadata,
+        classification: SandboxExitClassification,
+    ) -> Self {
+        metadata.exit_classification = classification;
+        if classification == SandboxExitClassification::DeniedBySandbox
+            && metadata.blocked_reason.is_none()
+        {
+            metadata.blocked_reason = Some(message.into());
+            let message = metadata.blocked_reason.clone().unwrap_or_default();
+            return Self {
+                code: code.into(),
+                message,
+                retryable,
+                metadata,
+            };
+        }
+        Self {
+            code: code.into(),
+            message: message.into(),
+            retryable,
+            metadata,
+        }
+    }
+}
+
+impl std::fmt::Display for SandboxedProcessError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for SandboxedProcessError {}
+
+#[derive(Debug, Clone, Default)]
+pub struct SandboxedProcessRunner;
+
+impl SandboxedProcessRunner {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn spawn(
+        &self,
+        request: SandboxedProcessSpawnRequest,
+    ) -> Result<SandboxedProcess, SandboxedProcessError> {
+        let mut prepared =
+            prepare_sandboxed_spawn(request.argv, request.cwd, request.stdin, request.metadata)?;
+        let mut command = Command::new(&prepared.applied_argv[0]);
+        command
+            .args(prepared.applied_argv.iter().skip(1))
+            .stdin(match prepared.stdin {
+                SandboxedProcessStdin::Null => Stdio::null(),
+                SandboxedProcessStdin::Piped => Stdio::piped(),
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(cwd) = prepared.cwd.as_deref() {
+            command.current_dir(cwd);
+        }
+        configure_sandboxed_process_group(&mut command);
+        apply_sandboxed_environment(&mut command, &mut prepared.metadata);
+
+        let child = command.spawn().map_err(|error| {
+            sandbox_spawn_error(&prepared.original_argv, error, prepared.metadata.clone())
+        })?;
+
+        Ok(SandboxedProcess {
+            child,
+            original_argv: prepared.original_argv,
+            applied_argv: prepared.applied_argv,
+            cwd: prepared.cwd,
+            metadata: prepared.metadata,
+        })
+    }
+
+    pub fn run(
+        &self,
+        request: SandboxedProcessRequest,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<SandboxedProcessOutput, SandboxedProcessError> {
+        let timeout_ms = request
+            .timeout_ms
+            .unwrap_or(DEFAULT_SANDBOX_RUNNER_TIMEOUT_MS)
+            .max(1);
+        let mut process = self.spawn(SandboxedProcessSpawnRequest {
+            argv: request.argv,
+            cwd: request.cwd,
+            stdin: SandboxedProcessStdin::Null,
+            metadata: request.metadata,
+        })?;
+        let stdout = process.child.stdout.take().ok_or_else(|| {
+            SandboxedProcessError::new(
+                "sandboxed_process_stdout_missing",
+                "Sandbox runner could not capture process stdout.",
+                true,
+                process.metadata.clone(),
+                SandboxExitClassification::Unknown,
+            )
+        })?;
+        let stderr = process.child.stderr.take().ok_or_else(|| {
+            SandboxedProcessError::new(
+                "sandboxed_process_stderr_missing",
+                "Sandbox runner could not capture process stderr.",
+                true,
+                process.metadata.clone(),
+                SandboxExitClassification::Unknown,
+            )
+        })?;
+        let stdout_handle = spawn_sandbox_capture(stdout, request.stdout_limit_bytes);
+        let stderr_handle = spawn_sandbox_capture(stderr, request.stderr_limit_bytes);
+        let started_at = Instant::now();
+        let timeout = Duration::from_millis(timeout_ms);
+        let mut timed_out = false;
+        let mut cancelled = false;
+
+        let status = loop {
+            match process.child.try_wait() {
+                Ok(Some(status)) => {
+                    cleanup_sandboxed_process_group(process.child.id());
+                    break status;
+                }
+                Ok(None) if is_cancelled() => {
+                    cancelled = true;
+                    let status =
+                        terminate_sandboxed_process_tree(&mut process.child).map_err(|error| {
+                            SandboxedProcessError::new(
+                                "sandboxed_process_cancel_failed",
+                                format!(
+                                    "Sandbox runner could not stop a cancelled process: {error}"
+                                ),
+                                true,
+                                process.metadata.clone(),
+                                SandboxExitClassification::Cancelled,
+                            )
+                        })?;
+                    break status;
+                }
+                Ok(None) if started_at.elapsed() >= timeout => {
+                    timed_out = true;
+                    let status =
+                        terminate_sandboxed_process_tree(&mut process.child).map_err(|error| {
+                            SandboxedProcessError::new(
+                                "sandboxed_process_timeout_cleanup_failed",
+                                format!(
+                                    "Sandbox runner could not stop a timed-out process: {error}"
+                                ),
+                                true,
+                                process.metadata.clone(),
+                                SandboxExitClassification::Timeout,
+                            )
+                        })?;
+                    break status;
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    let _ = terminate_sandboxed_process_tree(&mut process.child);
+                    return Err(SandboxedProcessError::new(
+                        "sandboxed_process_wait_failed",
+                        format!("Sandbox runner could not observe the process: {error}"),
+                        true,
+                        process.metadata,
+                        SandboxExitClassification::Unknown,
+                    ));
+                }
+            }
+        };
+
+        let stdout = join_sandbox_capture(stdout_handle, process.metadata.clone())?;
+        let stderr = join_sandbox_capture(stderr_handle, process.metadata.clone())?;
+        let stdout_text = decode_optional_output(&stdout.excerpt);
+        let stderr_text = decode_optional_output(&stderr.excerpt);
+        process.metadata.exit_classification =
+            classify_sandbox_exit(status, timed_out, cancelled, stderr_text.as_deref());
+
+        if timed_out {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_timeout",
+                format!("Sandbox runner timed out the process after {timeout_ms}ms."),
+                true,
+                process.metadata,
+                SandboxExitClassification::Timeout,
+            ));
+        }
+        if cancelled {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_cancelled",
+                "Sandbox runner cancelled the process.",
+                true,
+                process.metadata,
+                SandboxExitClassification::Cancelled,
+            ));
+        }
+
+        Ok(SandboxedProcessOutput {
+            original_argv: process.original_argv,
+            applied_argv: process.applied_argv,
+            cwd: process.cwd,
+            stdout: stdout_text,
+            stderr: stderr_text,
+            stdout_truncated: stdout.truncated,
+            stderr_truncated: stderr.truncated,
+            exit_code: status.code(),
+            timed_out,
+            cancelled,
+            metadata: process.metadata,
+        })
+    }
+}
+
+struct PreparedSandboxedSpawn {
+    original_argv: Vec<String>,
+    applied_argv: Vec<String>,
+    cwd: Option<String>,
+    stdin: SandboxedProcessStdin,
+    metadata: SandboxExecutionMetadata,
+}
+
+fn prepare_sandboxed_spawn(
+    argv: Vec<String>,
+    cwd: Option<String>,
+    stdin: SandboxedProcessStdin,
+    metadata: SandboxExecutionMetadata,
+) -> Result<PreparedSandboxedSpawn, SandboxedProcessError> {
+    if argv.is_empty() || argv[0].trim().is_empty() {
+        return Err(SandboxedProcessError::new(
+            "sandboxed_process_invalid_argv",
+            "Sandbox runner requires a non-empty argv[0].",
+            false,
+            metadata,
+            SandboxExitClassification::NotRun,
+        ));
+    }
+    if argv.iter().any(|argument| argument.contains('\0')) {
+        return Err(SandboxedProcessError::new(
+            "sandboxed_process_invalid_argv",
+            "Sandbox runner refused an argv containing a NUL byte.",
+            false,
+            metadata,
+            SandboxExitClassification::NotRun,
+        ));
+    }
+
+    let mut applied_argv = match metadata.platform_plan.strategy {
+        SandboxPlatformStrategy::DangerousUnrestricted => argv.clone(),
+        SandboxPlatformStrategy::MacosSandboxExec => {
+            if !command_available("sandbox-exec") {
+                return Err(SandboxedProcessError::new(
+                    "sandboxed_process_macos_unavailable",
+                    "macOS sandbox-exec is not available on PATH, so Xero cannot launch this subprocess safely.",
+                    false,
+                    metadata,
+                    SandboxExitClassification::DeniedBySandbox,
+                ));
+            }
+            let profile_text = metadata
+                .platform_plan
+                .profile_text
+                .clone()
+                .or_else(|| metadata.platform_plan.argv_prefix.get(2).cloned())
+                .ok_or_else(|| {
+                    SandboxedProcessError::new(
+                        "sandboxed_process_profile_missing",
+                        "macOS sandbox metadata did not include a sandbox-exec profile.",
+                        false,
+                        metadata.clone(),
+                        SandboxExitClassification::DeniedBySandbox,
+                    )
+                })?;
+            let mut wrapped = vec!["sandbox-exec".into(), "-p".into(), profile_text];
+            wrapped.extend(argv.iter().cloned());
+            wrapped
+        }
+        SandboxPlatformStrategy::LinuxBubblewrap => {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_linux_unavailable",
+                "Linux sandbox execution requires bubblewrap support, which is not enabled for this subprocess runner yet.",
+                false,
+                metadata,
+                SandboxExitClassification::DeniedBySandbox,
+            ));
+        }
+        SandboxPlatformStrategy::WindowsRestrictedToken => {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_windows_unavailable",
+                "Windows restricted subprocess execution is not enabled for this subprocess runner yet.",
+                false,
+                metadata,
+                SandboxExitClassification::DeniedBySandbox,
+            ));
+        }
+        SandboxPlatformStrategy::PortablePreflightOnly => {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_platform_unavailable",
+                "This platform has no OS sandbox runner available for subprocess execution.",
+                false,
+                metadata,
+                SandboxExitClassification::DeniedBySandbox,
+            ));
+        }
+    };
+    if applied_argv.is_empty() {
+        applied_argv = argv.clone();
+    }
+
+    Ok(PreparedSandboxedSpawn {
+        original_argv: argv,
+        applied_argv,
+        cwd,
+        stdin,
+        metadata,
+    })
+}
+
+fn sandbox_spawn_error(
+    argv: &[String],
+    error: io::Error,
+    metadata: SandboxExecutionMetadata,
+) -> SandboxedProcessError {
+    let command = argv.first().cloned().unwrap_or_else(|| "<empty>".into());
+    let (code, retryable, classification) = match error.kind() {
+        io::ErrorKind::NotFound => (
+            "sandboxed_process_not_found",
+            false,
+            SandboxExitClassification::NotRun,
+        ),
+        io::ErrorKind::PermissionDenied => (
+            "sandboxed_process_spawn_denied",
+            false,
+            SandboxExitClassification::DeniedBySandbox,
+        ),
+        _ => (
+            "sandboxed_process_spawn_failed",
+            true,
+            SandboxExitClassification::Unknown,
+        ),
+    };
+    SandboxedProcessError::new(
+        code,
+        format!("Sandbox runner could not launch `{command}`: {error}"),
+        retryable,
+        metadata,
+        classification,
+    )
+}
+
+fn apply_sandboxed_environment(command: &mut Command, metadata: &mut SandboxExecutionMetadata) {
+    let approved = metadata
+        .environment_redaction
+        .preserved_keys
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut preserved_keys = Vec::new();
+    let mut redacted_key_count = 0_usize;
+    let mut secret_like_key_count = 0_usize;
+
+    command.env_clear();
+    for (key, value) in env::vars_os() {
+        let Some(key_text) = key.to_str().map(str::to_owned) else {
+            redacted_key_count += 1;
+            continue;
+        };
+        if secret_like_environment_key(&key_text) {
+            secret_like_key_count += 1;
+        }
+        if approved.contains(&key_text) {
+            preserved_keys.push(key_text);
+            command.env(key, value);
+        } else {
+            redacted_key_count += 1;
+        }
+    }
+
+    if approved.contains("PATH") && env::var_os("PATH").is_none() {
+        preserved_keys.push("PATH".into());
+        command.env("PATH", default_sandboxed_path());
+    }
+    command.env("XERO_AGENT_SANITIZED_ENV", "1");
+    preserved_keys.push("XERO_AGENT_SANITIZED_ENV".into());
+    preserved_keys.sort();
+    preserved_keys.dedup();
+
+    metadata.environment_redaction = SandboxEnvironmentRedactionSummary {
+        sanitized_environment: true,
+        preserved_keys,
+        redacted_key_count,
+        secret_like_key_count,
+    };
+}
+
+fn secret_like_environment_key(key: &str) -> bool {
+    let normalized = key.to_ascii_uppercase();
+    normalized.contains("TOKEN")
+        || normalized.contains("SECRET")
+        || normalized.contains("PASSWORD")
+        || normalized.contains("CREDENTIAL")
+        || normalized.contains("AUTH")
+        || normalized.contains("COOKIE")
+        || normalized.contains("SESSION")
+        || normalized.ends_with("_KEY")
+}
+
+fn command_available(command: &str) -> bool {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        return command_path.is_file();
+    }
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    for directory in env::split_paths(&paths) {
+        let candidate = directory.join(command);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            let candidate = directory.join(format!("{command}.exe"));
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn default_sandboxed_path() -> &'static str {
+    #[cfg(windows)]
+    {
+        r"C:\Windows\System32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0"
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        ""
+    }
+}
+
+#[derive(Debug)]
+struct SandboxOutputCapture {
+    excerpt: Vec<u8>,
+    truncated: bool,
+}
+
+fn spawn_sandbox_capture(
+    mut reader: impl Read + Send + 'static,
+    max_capture_bytes: usize,
+) -> thread::JoinHandle<io::Result<SandboxOutputCapture>> {
+    thread::spawn(move || {
+        let mut excerpt = Vec::new();
+        let mut truncated = false;
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            let remaining = max_capture_bytes.saturating_sub(excerpt.len());
+            if remaining > 0 {
+                let to_copy = remaining.min(read);
+                excerpt.extend_from_slice(&buffer[..to_copy]);
+                if to_copy < read {
+                    truncated = true;
+                }
+            } else {
+                truncated = true;
+            }
+        }
+        Ok(SandboxOutputCapture { excerpt, truncated })
+    })
+}
+
+fn join_sandbox_capture(
+    handle: thread::JoinHandle<io::Result<SandboxOutputCapture>>,
+    metadata: SandboxExecutionMetadata,
+) -> Result<SandboxOutputCapture, SandboxedProcessError> {
+    match handle.join() {
+        Ok(Ok(capture)) => Ok(capture),
+        Ok(Err(error)) => Err(SandboxedProcessError::new(
+            "sandboxed_process_output_failed",
+            format!("Sandbox runner could not capture process output: {error}"),
+            true,
+            metadata,
+            SandboxExitClassification::Unknown,
+        )),
+        Err(_) => Err(SandboxedProcessError::new(
+            "sandboxed_process_output_failed",
+            "Sandbox runner could not join the process output capture thread.",
+            true,
+            metadata,
+            SandboxExitClassification::Unknown,
+        )),
+    }
+}
+
+fn decode_optional_output(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn classify_sandbox_exit(
+    status: ExitStatus,
+    timed_out: bool,
+    cancelled: bool,
+    stderr: Option<&str>,
+) -> SandboxExitClassification {
+    if cancelled {
+        return SandboxExitClassification::Cancelled;
+    }
+    if timed_out {
+        return SandboxExitClassification::Timeout;
+    }
+    if status.success() {
+        return SandboxExitClassification::Success;
+    }
+    if stderr.is_some_and(sandbox_denial_output) || exit_status_looks_like_sandbox_abort(status) {
+        return SandboxExitClassification::DeniedBySandbox;
+    }
+    SandboxExitClassification::Failed
+}
+
+fn sandbox_denial_output(stderr: &str) -> bool {
+    let normalized = stderr.to_ascii_lowercase();
+    normalized.contains("operation not permitted")
+        || normalized.contains("deny")
+        || normalized.contains("sandbox")
+}
+
+#[cfg(unix)]
+fn exit_status_looks_like_sandbox_abort(status: ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal() == Some(libc::SIGABRT)
+}
+
+#[cfg(not(unix))]
+fn exit_status_looks_like_sandbox_abort(_status: ExitStatus) -> bool {
+    false
+}
+
+fn configure_sandboxed_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+}
+
+fn terminate_sandboxed_process_tree(child: &mut Child) -> io::Result<ExitStatus> {
+    let child_id = child.id();
+    if let Some(status) = child.try_wait()? {
+        cleanup_sandboxed_process_group(child_id);
+        return Ok(status);
+    }
+    terminate_sandboxed_process_gracefully(child)?;
+    if let Some(status) = wait_for_sandboxed_exit(child, Duration::from_millis(500))? {
+        cleanup_sandboxed_process_group(child_id);
+        return Ok(status);
+    }
+    terminate_sandboxed_process_forcefully(child)?;
+    let status = child.wait()?;
+    cleanup_sandboxed_process_group(child_id);
+    Ok(status)
+}
+
+fn wait_for_sandboxed_exit(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn cleanup_sandboxed_process_group(child_id: u32) {
+    #[cfg(unix)]
+    {
+        let _ = signal_sandboxed_process_group(child_id, libc::SIGTERM);
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while sandboxed_process_group_exists(child_id) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if sandboxed_process_group_exists(child_id) {
+            let _ = signal_sandboxed_process_group(child_id, libc::SIGKILL);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = child_id;
+    }
+}
+
+#[cfg(unix)]
+fn terminate_sandboxed_process_gracefully(child: &mut Child) -> io::Result<()> {
+    signal_sandboxed_process_group(child.id(), libc::SIGTERM)
+}
+
+#[cfg(unix)]
+fn terminate_sandboxed_process_forcefully(child: &mut Child) -> io::Result<()> {
+    if let Err(error) = signal_sandboxed_process_group(child.id(), libc::SIGKILL) {
+        child.kill().or(Err(error))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn signal_sandboxed_process_group(child_id: u32, signal: libc::c_int) -> io::Result<()> {
+    let process_group_id = -(child_id as libc::pid_t);
+    let result = unsafe { libc::kill(process_group_id, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+fn sandboxed_process_group_exists(child_id: u32) -> bool {
+    let process_group_id = -(child_id as libc::pid_t);
+    let result = unsafe { libc::kill(process_group_id, 0) };
+    if result == 0 {
+        return true;
+    }
+    let error = io::Error::last_os_error();
+    error.raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(windows)]
+fn terminate_sandboxed_process_gracefully(child: &mut Child) -> io::Result<()> {
+    taskkill_sandboxed_process_tree(child, false)
+}
+
+#[cfg(windows)]
+fn terminate_sandboxed_process_forcefully(child: &mut Child) -> io::Result<()> {
+    if let Err(error) = taskkill_sandboxed_process_tree(child, true) {
+        child.kill().or(Err(error))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn taskkill_sandboxed_process_tree(child: &Child, force: bool) -> io::Result<()> {
+    let mut command = Command::new("taskkill");
+    command.arg("/PID").arg(child.id().to_string()).arg("/T");
+    if force {
+        command.arg("/F");
+    }
+    let status = command.status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("taskkill exited with status {status}"),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PermissionProfileSandbox {
     context: SandboxExecutionContext,
@@ -516,26 +1301,25 @@ fn macos_sandbox_exec_profile(
     context: &SandboxExecutionContext,
 ) -> String {
     let workspace = escape_sandbox_string(&context.workspace_root);
-    let mut lines = vec![
-        "(version 1)".to_string(),
-        "(deny default)".to_string(),
-        "(allow process*)".to_string(),
-        "(allow sysctl-read)".to_string(),
-        "(allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/System\") (subpath \"/Library\"))".to_string(),
-        format!("(allow file-read* (subpath \"{workspace}\"))"),
-        format!("(deny file-write* (subpath \"{workspace}/.git\"))"),
-        format!("(deny file-write* (subpath \"{workspace}/.xero\"))"),
-    ];
-
-    for root in &context.app_data_roots {
-        lines.push(format!(
-            "(deny file-write* (subpath \"{}\"))",
-            escape_sandbox_string(root)
-        ));
-    }
+    let mut lines = vec!["(version 1)".to_string(), "(allow default)".to_string()];
 
     if profile.allows_workspace_write() {
-        lines.push(format!("(allow file-write* (subpath \"{workspace}\"))"));
+        lines.push(format!(
+            "(deny file-write* (require-not (subpath \"{workspace}\")))"
+        ));
+        lines.push(format!("(deny file-write* (subpath \"{workspace}/.git\"))"));
+        lines.push(format!(
+            "(deny file-write* (subpath \"{workspace}/.xero\"))"
+        ));
+        for root in &context.app_data_roots {
+            lines.push(format!(
+                "(deny file-write* (subpath \"{}\"))",
+                escape_sandbox_string(root)
+            ));
+        }
+        lines.push("(allow file-read* file-write* (literal \"/dev/null\"))".to_string());
+    } else {
+        lines.push("(deny file-write*)".to_string());
     }
 
     if profile.network_mode() == SandboxNetworkMode::Allowed {
@@ -974,6 +1758,198 @@ mod tests {
         let profile = metadata.platform_plan.profile_text.expect("macOS profile");
         assert!(profile.contains("(deny network*)"));
         assert!(profile.contains("(deny file-write* (subpath \"/repo/.git\"))"));
-        assert!(profile.contains("(allow file-write* (subpath \"/repo\"))"));
+        assert!(profile.contains("(deny file-write* (require-not (subpath \"/repo\")))"));
+        assert!(profile.contains("(allow file-read* file-write* (literal \"/dev/null\"))"));
+    }
+
+    #[test]
+    fn sandbox_runner_reports_explicit_unavailable_on_non_macos_strategies() {
+        let mut metadata = SandboxExecutionMetadata::unrestricted();
+        metadata.profile = SandboxPermissionProfile::WorkspaceWrite;
+        metadata.platform_plan = OsSandboxPlan {
+            platform: SandboxPlatform::Linux,
+            strategy: SandboxPlatformStrategy::LinuxBubblewrap,
+            argv_prefix: Vec::new(),
+            profile_text: None,
+            explanation: "test linux plan".into(),
+        };
+
+        let error = SandboxedProcessRunner::new()
+            .run(
+                SandboxedProcessRequest::new(vec!["true".into()], metadata),
+                || false,
+            )
+            .expect_err("linux plan should fail explicitly until bubblewrap is wired");
+
+        assert_eq!(error.code, "sandboxed_process_linux_unavailable");
+        assert_eq!(
+            error.metadata.exit_classification,
+            SandboxExitClassification::DeniedBySandbox
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_runner_cleans_up_process_group_on_timeout() {
+        let workspace = unique_test_dir("timeout-cleanup");
+        let marker = Path::new(&workspace).join("leaked-after-timeout.txt");
+        let error = SandboxedProcessRunner::new()
+            .run(
+                SandboxedProcessRequest {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        format!(
+                            "sleep 1; printf leaked > {}",
+                            shell_quote(&marker.display().to_string())
+                        ),
+                    ],
+                    cwd: Some(workspace.clone()),
+                    timeout_ms: Some(30),
+                    stdout_limit_bytes: 1024,
+                    stderr_limit_bytes: 1024,
+                    metadata: SandboxExecutionMetadata::unrestricted(),
+                },
+                || false,
+            )
+            .expect_err("sandbox runner should time out the subprocess");
+
+        assert_eq!(error.code, "sandboxed_process_timeout");
+        assert_eq!(
+            error.metadata.exit_classification,
+            SandboxExitClassification::Timeout
+        );
+        std::thread::sleep(Duration::from_millis(1_200));
+        assert!(
+            !marker.exists(),
+            "timeout cleanup must kill the subprocess group before it can keep running"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_runner_enforces_workspace_write_boundary_on_macos() {
+        let workspace = unique_test_dir("workspace-boundary");
+        let outside = unique_test_path("outside-write");
+        let metadata = runner_metadata(
+            &workspace,
+            SandboxPermissionProfile::FullLocalWithApproval,
+            SandboxNetworkMode::Allowed,
+        );
+
+        let output = SandboxedProcessRunner::new()
+            .run(
+                SandboxedProcessRequest {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        format!("printf escaped > {}", shell_quote(&outside)),
+                    ],
+                    cwd: Some(workspace.clone()),
+                    timeout_ms: Some(2_000),
+                    stdout_limit_bytes: 1024,
+                    stderr_limit_bytes: 1024,
+                    metadata,
+                },
+                || false,
+            )
+            .expect("sandboxed command should launch and be denied by the OS sandbox");
+
+        assert_ne!(output.exit_code, Some(0));
+        assert!(!Path::new(&outside).exists());
+        assert_eq!(
+            output.metadata.exit_classification,
+            SandboxExitClassification::DeniedBySandbox
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_runner_enforces_network_denied_profile_on_macos() {
+        if !command_available("/usr/bin/curl") {
+            return;
+        }
+        let workspace = unique_test_dir("network-denied");
+        let metadata = runner_metadata(
+            &workspace,
+            SandboxPermissionProfile::WorkspaceWriteNetworkDenied,
+            SandboxNetworkMode::Denied,
+        );
+
+        let output = SandboxedProcessRunner::new()
+            .run(
+                SandboxedProcessRequest {
+                    argv: vec![
+                        "/usr/bin/curl".into(),
+                        "--max-time".into(),
+                        "1".into(),
+                        "https://example.com".into(),
+                    ],
+                    cwd: Some(workspace.clone()),
+                    timeout_ms: Some(3_000),
+                    stdout_limit_bytes: 1024,
+                    stderr_limit_bytes: 2048,
+                    metadata,
+                },
+                || false,
+            )
+            .expect("sandboxed curl should launch and fail under network denial");
+
+        assert_ne!(output.exit_code, Some(0));
+        assert_eq!(output.metadata.network_mode, SandboxNetworkMode::Denied);
+        assert!(matches!(
+            output.metadata.exit_classification,
+            SandboxExitClassification::DeniedBySandbox | SandboxExitClassification::Failed
+        ));
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn runner_metadata(
+        workspace: &str,
+        profile: SandboxPermissionProfile,
+        network_mode: SandboxNetworkMode,
+    ) -> SandboxExecutionMetadata {
+        let context = SandboxExecutionContext {
+            workspace_root: workspace.into(),
+            project_trust: ProjectTrustState::Trusted,
+            approval_source: SandboxApprovalSource::Operator,
+            platform: SandboxPlatform::Macos,
+            preserved_environment_keys: vec!["PATH".into()],
+            ..SandboxExecutionContext::default()
+        };
+        let mut metadata = sandbox_metadata(profile, &context, &SandboxPathAccess::default());
+        metadata.network_mode = network_mode;
+        metadata.platform_plan = platform_plan(profile, &context);
+        metadata
+    }
+
+    #[cfg(target_os = "macos")]
+    fn unique_test_dir(label: &str) -> String {
+        let path = unique_test_path(label);
+        std::fs::create_dir_all(&path).expect("create temp workspace");
+        std::fs::canonicalize(&path)
+            .expect("canonical temp workspace")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn unique_test_path(label: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir()
+            .join(format!("xero-sandbox-{label}-{nanos}"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn shell_quote(path: &str) -> String {
+        format!("'{}'", path.replace('\'', "'\\''"))
     }
 }

@@ -30,7 +30,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use xero_agent_core::{
     domain_tool_pack_health_report, domain_tool_pack_ids_for_tool, domain_tool_pack_manifests,
     domain_tool_pack_tools, DomainToolPackHealthInput, DomainToolPackHealthReport,
-    DomainToolPackManifest,
+    DomainToolPackManifest, SandboxExecutionMetadata,
 };
 
 use super::autonomous_web_runtime::{
@@ -134,10 +134,20 @@ pub const AUTONOMOUS_TOOL_COMMAND: &str = "command";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_START: &str = "command_session_start";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_READ: &str = "command_session_read";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_STOP: &str = "command_session_stop";
+pub const AUTONOMOUS_TOOL_COMMAND_PROBE: &str = "command_probe";
+pub const AUTONOMOUS_TOOL_COMMAND_VERIFY: &str = "command_verify";
+pub const AUTONOMOUS_TOOL_COMMAND_RUN: &str = "command_run";
+pub const AUTONOMOUS_TOOL_COMMAND_SESSION: &str = "command_session";
 pub const AUTONOMOUS_TOOL_PROCESS_MANAGER: &str = "process_manager";
 pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS: &str = "system_diagnostics";
+pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE: &str = "system_diagnostics_observe";
+pub const AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED: &str = "system_diagnostics_privileged";
 pub const AUTONOMOUS_TOOL_MACOS_AUTOMATION: &str = "macos_automation";
 pub const AUTONOMOUS_TOOL_MCP: &str = "mcp";
+pub const AUTONOMOUS_TOOL_MCP_LIST: &str = "mcp_list";
+pub const AUTONOMOUS_TOOL_MCP_READ_RESOURCE: &str = "mcp_read_resource";
+pub const AUTONOMOUS_TOOL_MCP_GET_PROMPT: &str = "mcp_get_prompt";
+pub const AUTONOMOUS_TOOL_MCP_CALL_TOOL: &str = "mcp_call_tool";
 pub const AUTONOMOUS_TOOL_SUBAGENT: &str = "subagent";
 pub const AUTONOMOUS_TOOL_TODO: &str = "todo";
 pub const AUTONOMOUS_TOOL_NOTEBOOK_EDIT: &str = "notebook_edit";
@@ -147,9 +157,16 @@ pub const AUTONOMOUS_TOOL_POWERSHELL: &str = "powershell";
 pub const AUTONOMOUS_TOOL_TOOL_SEARCH: &str = "tool_search";
 pub const AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT: &str = "environment_context";
 pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT: &str = "project_context";
+pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH: &str = "project_context_search";
+pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET: &str = "project_context_get";
+pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD: &str = "project_context_record";
+pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE: &str = "project_context_update";
+pub const AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH: &str = "project_context_refresh";
 pub const AUTONOMOUS_TOOL_WORKSPACE_INDEX: &str = "workspace_index";
 pub const AUTONOMOUS_TOOL_AGENT_COORDINATION: &str = "agent_coordination";
 pub const AUTONOMOUS_TOOL_SKILL: &str = "skill";
+pub const AUTONOMOUS_TOOL_BROWSER_OBSERVE: &str = "browser_observe";
+pub const AUTONOMOUS_TOOL_BROWSER_CONTROL: &str = "browser_control";
 pub const AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX: &str = "mcp__";
 
 const DEFAULT_READ_LINE_COUNT: usize = 200;
@@ -177,7 +194,8 @@ const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_GIT_DIFF,
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
     AUTONOMOUS_TOOL_AGENT_COORDINATION,
     AUTONOMOUS_TOOL_TODO,
@@ -193,34 +211,52 @@ const TOOL_ACCESS_MUTATION_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_MKDIR,
 ];
 const TOOL_ACCESS_COMMAND_TOOLS: &[&str] = &[
-    AUTONOMOUS_TOOL_COMMAND,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+    AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY,
+    AUTONOMOUS_TOOL_COMMAND_RUN,
+    AUTONOMOUS_TOOL_COMMAND_SESSION,
 ];
 const TOOL_ACCESS_PROCESS_MANAGER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_PROCESS_MANAGER];
-const TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS];
+const TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+];
 const TOOL_ACCESS_MACOS_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MACOS_AUTOMATION];
 const TOOL_ACCESS_WEB_SEARCH_ONLY_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_WEB_SEARCH];
 const TOOL_ACCESS_WEB_FETCH_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_WEB_FETCH];
-const TOOL_ACCESS_BROWSER_OBSERVE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_BROWSER];
-const TOOL_ACCESS_BROWSER_CONTROL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_BROWSER];
+const TOOL_ACCESS_BROWSER_OBSERVE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_BROWSER_OBSERVE];
+const TOOL_ACCESS_BROWSER_CONTROL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_BROWSER_CONTROL];
 const TOOL_ACCESS_WEB_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_WEB_SEARCH,
     AUTONOMOUS_TOOL_WEB_FETCH,
-    AUTONOMOUS_TOOL_BROWSER,
+    AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+    AUTONOMOUS_TOOL_BROWSER_CONTROL,
 ];
-const TOOL_ACCESS_COMMAND_READONLY_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_COMMAND];
-const TOOL_ACCESS_COMMAND_MUTATING_TOOLS: &[&str] = &[
-    AUTONOMOUS_TOOL_COMMAND,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+const TOOL_ACCESS_COMMAND_READONLY_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_COMMAND_VERIFY,
 ];
-const TOOL_ACCESS_COMMAND_SESSION_TOOLS: &[&str] = &[
-    AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-    AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+const TOOL_ACCESS_COMMAND_MUTATING_TOOLS: &[&str] =
+    &[AUTONOMOUS_TOOL_COMMAND_RUN, AUTONOMOUS_TOOL_COMMAND_SESSION];
+const TOOL_ACCESS_COMMAND_SESSION_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_COMMAND_SESSION];
+const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_READ,
+    AUTONOMOUS_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_FIND,
+    AUTONOMOUS_TOOL_GIT_STATUS,
+    AUTONOMOUS_TOOL_GIT_DIFF,
+    AUTONOMOUS_TOOL_TOOL_ACCESS,
+    AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_LIST,
+    AUTONOMOUS_TOOL_HASH,
+    AUTONOMOUS_TOOL_COMMAND_PROBE,
+    AUTONOMOUS_TOOL_CODE_INTEL,
+    AUTONOMOUS_TOOL_LSP,
+    AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
 ];
 const TOOL_ACCESS_EMULATOR_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_EMULATOR];
 const TOOL_ACCESS_SOLANA_TOOLS: &[&str] = &[
@@ -250,13 +286,27 @@ const TOOL_ACCESS_SOLANA_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_SOLANA_DOCS,
 ];
 const TOOL_ACCESS_AGENT_OPS_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SUBAGENT];
-const TOOL_ACCESS_MCP_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MCP];
-const TOOL_ACCESS_MCP_LIST_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MCP];
-const TOOL_ACCESS_MCP_INVOKE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MCP];
+const TOOL_ACCESS_MCP_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_MCP_LIST,
+    AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+    AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+    AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+];
+const TOOL_ACCESS_MCP_LIST_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_MCP_LIST];
+const TOOL_ACCESS_MCP_INVOKE_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+    AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+    AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+];
 const TOOL_ACCESS_INTELLIGENCE_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP];
 const TOOL_ACCESS_NOTEBOOK_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_NOTEBOOK_EDIT];
 const TOOL_ACCESS_POWERSHELL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_POWERSHELL];
 const TOOL_ACCESS_ENVIRONMENT_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT];
+const TOOL_ACCESS_PROJECT_CONTEXT_WRITE_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+];
 const TOOL_ACCESS_SKILL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SKILL];
 const TOOL_ACCESS_AGENT_DEFINITION_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_AGENT_DEFINITION];
 
@@ -294,7 +344,7 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     },
     ToolAccessGroupDefinition {
         name: "command_readonly",
-        description: "Short repo-scoped commands for tests, builds, linting, and diagnostics.",
+        description: "Short repo-scoped probe and verification commands with narrowed argv policy.",
         tools: TOOL_ACCESS_COMMAND_READONLY_TOOLS,
         risk_class: "command",
     },
@@ -327,6 +377,18 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         description: "Typed, bounded system diagnostics for process open files, resources, threads, logs, sampling, accessibility snapshots, and diagnostic bundles.",
         tools: TOOL_ACCESS_SYSTEM_DIAGNOSTICS_TOOLS,
         risk_class: "system_read",
+    },
+    ToolAccessGroupDefinition {
+        name: "system_diagnostics_observe",
+        description: "Read-only typed diagnostics for process open files, resources, threads, logs, and bounded bundles.",
+        tools: &[AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE],
+        risk_class: "system_read",
+    },
+    ToolAccessGroupDefinition {
+        name: "system_diagnostics_privileged",
+        description: "Approval-gated diagnostics actions such as process sampling and macOS accessibility snapshots.",
+        tools: &[AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED],
+        risk_class: "system_privileged",
     },
     ToolAccessGroupDefinition {
         name: "macos",
@@ -399,6 +461,12 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         description: "Full MCP bundle for listing and invoking connected server capabilities.",
         tools: TOOL_ACCESS_MCP_TOOLS,
         risk_class: "external_capability",
+    },
+    ToolAccessGroupDefinition {
+        name: "project_context_write",
+        description: "Runtime-owned app-data durable-context record, update, and freshness mutation actions.",
+        tools: TOOL_ACCESS_PROJECT_CONTEXT_WRITE_TOOLS,
+        risk_class: "runtime_state",
     },
     ToolAccessGroupDefinition {
         name: "intelligence",
@@ -692,6 +760,22 @@ impl AutonomousAgentToolPolicy {
                 command_allowed: false,
                 destructive_write_allowed: false,
             },
+            "repository_recon" => Self {
+                allowed_effect_classes: BTreeSet::new(),
+                allowed_tools: TOOL_ACCESS_REPOSITORY_RECON_TOOLS
+                    .iter()
+                    .map(|tool| (*tool).to_owned())
+                    .collect(),
+                denied_tools: BTreeSet::new(),
+                allowed_tool_packs: BTreeSet::new(),
+                denied_tool_packs: BTreeSet::new(),
+                external_service_allowed: false,
+                browser_control_allowed: false,
+                skill_runtime_allowed: false,
+                subagent_allowed: false,
+                command_allowed: true,
+                destructive_write_allowed: false,
+            },
             _ => Self {
                 allowed_effect_classes: ["observe"].into_iter().map(ToOwned::to_owned).collect(),
                 allowed_tools: BTreeSet::new(),
@@ -971,13 +1055,20 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_CODE_INTEL
         | AUTONOMOUS_TOOL_LSP
         | AUTONOMOUS_TOOL_TOOL_SEARCH
-        | AUTONOMOUS_TOOL_PROJECT_CONTEXT
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
         | AUTONOMOUS_TOOL_WORKSPACE_INDEX
-        | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT => AutonomousToolEffectClass::Observe,
+        | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
+        | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+        | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE => AutonomousToolEffectClass::Observe,
         AUTONOMOUS_TOOL_TOOL_ACCESS
         | AUTONOMOUS_TOOL_TODO
         | AUTONOMOUS_TOOL_AGENT_COORDINATION
-        | AUTONOMOUS_TOOL_AGENT_DEFINITION => AutonomousToolEffectClass::RuntimeState,
+        | AUTONOMOUS_TOOL_AGENT_DEFINITION
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH => AutonomousToolEffectClass::RuntimeState,
         AUTONOMOUS_TOOL_WRITE
         | AUTONOMOUS_TOOL_EDIT
         | AUTONOMOUS_TOOL_PATCH
@@ -986,17 +1077,28 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_NOTEBOOK_EDIT => AutonomousToolEffectClass::Write,
         AUTONOMOUS_TOOL_DELETE => AutonomousToolEffectClass::DestructiveWrite,
         AUTONOMOUS_TOOL_COMMAND
+        | AUTONOMOUS_TOOL_COMMAND_PROBE
+        | AUTONOMOUS_TOOL_COMMAND_VERIFY
+        | AUTONOMOUS_TOOL_COMMAND_RUN
+        | AUTONOMOUS_TOOL_COMMAND_SESSION
         | AUTONOMOUS_TOOL_COMMAND_SESSION_START
         | AUTONOMOUS_TOOL_COMMAND_SESSION_READ
         | AUTONOMOUS_TOOL_COMMAND_SESSION_STOP
         | AUTONOMOUS_TOOL_POWERSHELL => AutonomousToolEffectClass::Command,
         AUTONOMOUS_TOOL_PROCESS_MANAGER
         | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS
+        | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED
         | AUTONOMOUS_TOOL_MACOS_AUTOMATION => AutonomousToolEffectClass::ProcessControl,
-        AUTONOMOUS_TOOL_WEB_SEARCH | AUTONOMOUS_TOOL_WEB_FETCH | AUTONOMOUS_TOOL_MCP => {
-            AutonomousToolEffectClass::ExternalService
+        AUTONOMOUS_TOOL_WEB_SEARCH
+        | AUTONOMOUS_TOOL_WEB_FETCH
+        | AUTONOMOUS_TOOL_MCP
+        | AUTONOMOUS_TOOL_MCP_LIST
+        | AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+        | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+        | AUTONOMOUS_TOOL_MCP_CALL_TOOL => AutonomousToolEffectClass::ExternalService,
+        AUTONOMOUS_TOOL_BROWSER | AUTONOMOUS_TOOL_BROWSER_CONTROL => {
+            AutonomousToolEffectClass::BrowserControl
         }
-        AUTONOMOUS_TOOL_BROWSER => AutonomousToolEffectClass::BrowserControl,
         AUTONOMOUS_TOOL_EMULATOR => AutonomousToolEffectClass::DeviceControl,
         AUTONOMOUS_TOOL_SUBAGENT => AutonomousToolEffectClass::AgentDelegation,
         AUTONOMOUS_TOOL_SKILL => AutonomousToolEffectClass::SkillRuntime,
@@ -1033,7 +1135,8 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
     match agent_id {
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => true,
+        RuntimeAgentIdDto::Crawl => TOOL_ACCESS_REPOSITORY_RECON_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
                 || tool_effect_class(tool_name).is_ask_observe_only()
@@ -1063,8 +1166,14 @@ fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Debug, tool_name) {
         agents.push(RuntimeAgentIdDto::Debug.as_str());
     }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Crawl, tool_name) {
+        agents.push(RuntimeAgentIdDto::Crawl.as_str());
+    }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::AgentCreate, tool_name) {
         agents.push(RuntimeAgentIdDto::AgentCreate.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Test, tool_name) {
+        agents.push(RuntimeAgentIdDto::Test.as_str());
     }
     agents
 }
@@ -1117,29 +1226,82 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "observe",
         ),
         catalog_entry(
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
             "core",
-            "Search, read, record, update, and refresh source-cited durable project context, approved memory, handoffs, and current context manifests with freshness evidence.",
+            "Search source-cited durable project records, approved memory, handoffs, decisions, constraints, questions, blockers, and current context manifests with freshness evidence.",
             &["context", "memory", "records", "handoff", "retrieval", "citations"],
             &[
                 "action",
                 "query",
-                "recordId",
-                "memoryId",
                 "recordKinds",
                 "memoryKinds",
                 "tags",
                 "relatedPaths",
                 "limit",
+            ],
+            &["Search project records before prior-work-sensitive tasks."],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            "core",
+            "Read one source-cited durable project record or approved memory item by id.",
+            &["context", "memory", "records", "read", "citations"],
+            &["action", "recordId", "memoryId"],
+            &["Read a cited prior decision by project record id."],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            "project_context_write",
+            "Record or propose runtime-owned durable project context in OS app-data state.",
+            &["context", "memory", "record", "app_data", "runtime_state"],
+            &[
+                "action",
                 "title",
                 "summary",
                 "text",
+                "recordKind",
+                "importance",
+                "confidence",
+                "tags",
+                "relatedPaths",
+                "sourceItemIds",
+                "contentJson",
             ],
+            &["Record a durable finding after verification."],
+            "runtime_state",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+            "project_context_write",
+            "Update runtime-owned durable project context or approved memory in OS app-data state.",
+            &["context", "memory", "update", "app_data", "runtime_state"],
             &[
-                "Search project records before prior-work-sensitive tasks.",
-                "Record or update durable context after a durable finding.",
+                "recordId",
+                "memoryId",
+                "title",
+                "summary",
+                "text",
+                "recordKind",
+                "importance",
+                "confidence",
+                "tags",
+                "relatedPaths",
+                "sourceItemIds",
+                "contentJson",
             ],
-            "observe",
+            &["Update stale context after checking current file evidence."],
+            "runtime_state",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+            "project_context_write",
+            "Refresh durable-context freshness evidence for specific project records or approved memory ids.",
+            &["context", "freshness", "app_data", "runtime_state"],
+            &["recordId", "memoryId", "recordIds", "memoryIds"],
+            &["Refresh stale project-context evidence after inspecting files."],
+            "runtime_state",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_WORKSPACE_INDEX,
@@ -1222,6 +1384,31 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &["query", "limit"],
             &["Search for address lookup table tools.", "Find the smallest browser observation capability."],
             "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_AGENT_DEFINITION,
+            "agent_builder",
+            "Draft, validate, list, save, update, archive, and clone registry-backed custom agent definitions in app-data-backed state.",
+            &[
+                "agent",
+                "definition",
+                "custom_agent",
+                "registry",
+                "validation",
+                "app_data",
+            ],
+            &[
+                "action",
+                "definitionId",
+                "sourceDefinitionId",
+                "includeArchived",
+                "definition",
+            ],
+            &[
+                "Validate a least-privilege custom agent definition.",
+                "Save an approved custom agent definition after operator approval.",
+            ],
+            "agent_definition_state",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
@@ -1331,40 +1518,40 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "write",
         ),
         catalog_entry(
-            AUTONOMOUS_TOOL_COMMAND,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
             "command",
-            "Run a repo-scoped command.",
-            &["command", "shell", "test", "lint", "build", "cargo", "npm", "pnpm"],
+            "Run a narrowly allowlisted repo-scoped discovery command.",
+            &["command", "probe", "diagnostic", "git", "rg", "metadata"],
             &["argv", "cwd", "timeoutMs"],
-            &["Run npm test.", "Run cargo test for the changed crate."],
+            &["Run git status or cargo metadata for local discovery."],
+            "command_probe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            "command",
+            "Run a narrowly allowlisted repo-scoped verification command for tests, checks, lint, build, or formatting verification.",
+            &["command", "verify", "test", "lint", "build", "cargo", "npm", "pnpm"],
+            &["argv", "cwd", "timeoutMs"],
+            &["Run cargo test for the changed crate.", "Run pnpm test for a scoped package."],
+            "command_verify",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            "command",
+            "Run a repo-scoped command that is not covered by probe or verification policy.",
+            &["command", "shell", "run", "script"],
+            &["argv", "cwd", "timeoutMs"],
+            &["Run a one-off repo-scoped helper after approval policy allows it."],
             "command",
         ),
         catalog_entry(
-            AUTONOMOUS_TOOL_COMMAND_SESSION_START,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
             "command",
-            "Start a repo-scoped long-running command session and capture live output chunks.",
+            "Start, read, or stop a repo-scoped long-running command session.",
             &["command", "session", "long_running", "dev_server", "watch"],
-            &["argv", "cwd", "timeoutMs"],
-            &["Start a dev server or watcher."],
+            &["action", "argv", "cwd", "timeoutMs", "sessionId", "afterSequence", "maxBytes"],
+            &["Start a dev server or watcher, then read and stop it."],
             "long_running_process",
-        ),
-        catalog_entry(
-            AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-            "command",
-            "Read new output chunks and exit state from a command session.",
-            &["command", "session", "output", "read"],
-            &["sessionId", "afterSequence", "maxBytes"],
-            &["Read new output from a running test watcher."],
-            "observe",
-        ),
-        catalog_entry(
-            AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
-            "command",
-            "Stop a command session and return final captured output chunks.",
-            &["command", "session", "stop", "cleanup"],
-            &["sessionId"],
-            &["Stop a dev server after verification."],
-            "process_control",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
@@ -1376,9 +1563,9 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "process_control",
         ),
         catalog_entry(
-            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
-            "system_diagnostics",
-            "Run typed, policy-aware advanced diagnostics including process open-file inspection, process resource snapshots, thread lists, sampling, unified logs, accessibility snapshots, and diagnostic bundles.",
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+            "system_diagnostics_observe",
+            "Run read-only typed diagnostics including process open-file inspection, resource snapshots, thread lists, unified logs, and bounded diagnostic bundles.",
             &[
                 "diagnostics",
                 "process",
@@ -1389,11 +1576,9 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "threads",
                 "sample",
                 "unified log",
-                "accessibility",
                 "hung process",
                 "port conflict",
                 "tauri",
-                "macos focus",
                 "high cpu",
             ],
             &[
@@ -1412,9 +1597,31 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             ],
             &[
                 "Inspect open files for a PID without raw shell text.",
-                "Request a bounded diagnostics bundle for a hung process.",
+                "Request a bounded read-only diagnostics bundle for a hung process.",
             ],
             "system_read",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+            "system_diagnostics_privileged",
+            "Run approval-gated diagnostics that may capture sensitive runtime or UI state, such as process samples and macOS accessibility snapshots.",
+            &["diagnostics", "process", "sample", "accessibility", "macos", "approval"],
+            &[
+                "action",
+                "pid",
+                "processName",
+                "bundleId",
+                "appName",
+                "windowId",
+                "durationMs",
+                "intervalMs",
+                "sampleCount",
+                "maxDepth",
+                "focusedOnly",
+                "attributes",
+            ],
+            &["Sample a hung process after operator approval."],
+            "system_privileged",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
@@ -1444,12 +1651,21 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "network",
         ),
         catalog_entry(
-            AUTONOMOUS_TOOL_BROWSER,
-            "web",
-            "Drive the in-app browser with navigation, DOM actions, screenshots, diagnostics, accessibility snapshots, and state save/restore.",
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            "browser_observe",
+            "Observe the in-app browser with page text, URL, screenshots, console, network, accessibility, tabs, and safe state reads.",
             &["browser", "frontend", "ui", "dom", "screenshot", "accessibility", "console", "network", "storage", "cookies"],
             &["action", "url", "selector", "text", "timeoutMs", "tabId", "area", "key"],
-            &["Observe current URL and page text.", "Click and type into a local app after activation."],
+            &["Observe current URL and page text.", "Capture an accessibility tree."],
+            "browser_observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            "browser_control",
+            "Control the in-app browser with navigation, clicks, typing, key presses, scroll, cookie/storage writes, tab focus/close, and state restore.",
+            &["browser", "frontend", "ui", "dom", "click", "type", "navigation", "storage", "cookies"],
+            &["action", "url", "selector", "text", "timeoutMs", "tabId", "area", "key"],
+            &["Click and type into a local app after activation."],
             "browser_control",
         ),
         catalog_entry(
@@ -1462,13 +1678,40 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             "device_control",
         ),
         catalog_entry(
-            AUTONOMOUS_TOOL_MCP,
-            "mcp",
-            "List and invoke connected MCP tools, resources, and prompts over stdio, HTTP, or SSE.",
+            AUTONOMOUS_TOOL_MCP_LIST,
+            "mcp_list",
+            "List connected MCP servers, tools, resources, and prompts over stdio, HTTP, or SSE without invoking capabilities.",
             &["mcp", "model_context_protocol", "tool", "resource", "prompt", "external"],
-            &["action", "serverId", "name", "uri", "arguments", "timeoutMs"],
-            &["List MCP server tools.", "Invoke a named MCP tool after activation."],
-            "external_capability",
+            &["action", "serverId", "timeoutMs"],
+            &["List MCP server tools."],
+            "external_capability_observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+            "mcp_invoke",
+            "Read a resource from a connected MCP server.",
+            &["mcp", "model_context_protocol", "resource", "external"],
+            &["serverId", "uri", "timeoutMs"],
+            &["Read a named MCP resource after activation."],
+            "external_capability_observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+            "mcp_invoke",
+            "Get a prompt from a connected MCP server.",
+            &["mcp", "model_context_protocol", "prompt", "external"],
+            &["serverId", "name", "arguments", "timeoutMs"],
+            &["Get a named MCP prompt after activation."],
+            "external_capability_observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            "mcp_invoke",
+            "Call a tool on a connected MCP server.",
+            &["mcp", "model_context_protocol", "tool", "external"],
+            &["serverId", "name", "arguments", "timeoutMs"],
+            &["Invoke a named MCP tool after activation."],
+            "external_capability_invoke",
         ),
         catalog_entry(
             AUTONOMOUS_TOOL_SUBAGENT,
@@ -4107,6 +4350,8 @@ pub struct AutonomousCommandOutput {
     pub timed_out: bool,
     pub spawned: bool,
     pub policy: AutonomousCommandPolicyTrace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4122,6 +4367,15 @@ pub enum AutonomousCommandSessionOperation {
 pub enum AutonomousCommandSessionStream {
     Stdout,
     Stderr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCommandOutputChunk {
+    pub stream: AutonomousCommandSessionStream,
+    pub text: Option<String>,
+    pub truncated: bool,
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4147,6 +4401,8 @@ pub struct AutonomousCommandSessionOutput {
     pub chunks: Vec<AutonomousCommandSessionChunk>,
     pub next_sequence: u64,
     pub policy: Option<AutonomousCommandPolicyTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4891,4 +5147,97 @@ pub struct AutonomousSkillToolOutput {
     #[serde(default)]
     pub diagnostics: Vec<XeroSkillToolDiagnostic>,
     pub truncated: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::commands::RuntimeAgentIdDto;
+
+    #[test]
+    fn crawl_runtime_agent_uses_exact_repository_recon_tool_allowlist() {
+        let expected: BTreeSet<&str> = TOOL_ACCESS_REPOSITORY_RECON_TOOLS.iter().copied().collect();
+        let observed: BTreeSet<&str> = deferred_tool_catalog(true)
+            .into_iter()
+            .filter(|entry| {
+                tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Crawl, entry.tool_name)
+            })
+            .map(|entry| entry.tool_name)
+            .collect();
+
+        assert_eq!(observed, expected);
+        for blocked_tool in [
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_RENAME,
+            AUTONOMOUS_TOOL_MKDIR,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_WEB_FETCH,
+            AUTONOMOUS_TOOL_MCP_LIST,
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_SUBAGENT,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_AGENT_DEFINITION,
+        ] {
+            assert!(
+                !tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Crawl, blocked_tool),
+                "Crawl should not be allowed to use {blocked_tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn crawl_repository_recon_policy_keeps_readonly_command_access_but_blocks_mutation() {
+        let policy = AutonomousAgentToolPolicy::from_policy_label("repository_recon");
+
+        for allowed_tool in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+        ] {
+            assert!(
+                tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::Crawl,
+                    allowed_tool,
+                    Some(&policy),
+                ),
+                "repository_recon should allow {allowed_tool}"
+            );
+        }
+
+        for blocked_tool in [
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_WEB_SEARCH,
+            AUTONOMOUS_TOOL_SKILL,
+        ] {
+            assert!(
+                !tool_allowed_for_runtime_agent_with_policy(
+                    RuntimeAgentIdDto::Crawl,
+                    blocked_tool,
+                    Some(&policy),
+                ),
+                "repository_recon should block {blocked_tool}"
+            );
+        }
+    }
 }

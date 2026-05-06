@@ -1,6 +1,6 @@
-import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, LoaderCircle, MessageCircle, Mic, Paperclip, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
-import { forwardRef, Fragment, useMemo, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { forwardRef, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
 import type {
   OperatorActionErrorView,
@@ -89,6 +89,7 @@ interface ComposerDockProps {
   isSendDisabled: boolean
   composerRuntimeAgentId: RuntimeAgentIdDto
   composerRuntimeAgentLabel: string
+  availableRuntimeAgentIds?: readonly RuntimeAgentIdDto[]
   composerAgentDefinitionId?: string | null
   composerAgentSelectionKey?: string
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
@@ -128,6 +129,35 @@ const composerInlineTriggerClassName =
 const composerInlineSelectContentClassName =
   'max-h-72 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90'
 
+function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
+  switch (agentId) {
+    case 'ask':
+      return MessageCircle
+    case 'debug':
+      return Bug
+    case 'crawl':
+      return Search
+    case 'agent_create':
+      return Sparkles
+    case 'test':
+      return FlaskConical
+    case 'engineer':
+      return Wrench
+  }
+}
+
+function useStableCallback<TArgs extends unknown[], TResult>(
+  callback: (...args: TArgs) => TResult,
+): (...args: TArgs) => TResult {
+  const callbackRef = useRef(callback)
+
+  useEffect(() => {
+    callbackRef.current = callback
+  }, [callback])
+
+  return useCallback((...args: TArgs) => callbackRef.current(...args), [])
+}
+
 interface ComposerInlineTriggerProps extends ComponentPropsWithoutRef<'button'> {
   icon: ReactNode
   label: ReactNode
@@ -161,6 +191,7 @@ export function ComposerDock({
   isSendDisabled,
   composerRuntimeAgentId,
   composerRuntimeAgentLabel,
+  availableRuntimeAgentIds,
   composerAgentDefinitionId = null,
   composerAgentSelectionKey,
   customAgentDefinitions = [],
@@ -202,6 +233,7 @@ export function ComposerDock({
     ) : null
   const hasComposerModelOptions = composerModelGroups.length > 0
   const hasThinkingOptions = composerThinkingOptions.length > 0
+  const handleComposerModelChange = useStableCallback(onComposerModelChange)
   const composerRuntimeAgentDescriptor = getRuntimeAgentDescriptor(composerRuntimeAgentId)
   const showApprovalSelector = composerRuntimeAgentDescriptor.allowedApprovalModes.length > 1
   const isAgentSelectorDisabled = runtimeAgentSwitchDisabled || controlsDisabled
@@ -221,12 +253,23 @@ export function ComposerDock({
   const agentSelectorValue =
     composerAgentSelectionKey ??
     buildComposerAgentSelectionKey(composerRuntimeAgentId, composerAgentDefinitionId)
+  const availableRuntimeAgentIdSet = useMemo(
+    () => (availableRuntimeAgentIds ? new Set(availableRuntimeAgentIds) : null),
+    [availableRuntimeAgentIds],
+  )
+  const selectableRuntimeAgents = useMemo(() => {
+    if (!availableRuntimeAgentIdSet) return RUNTIME_AGENT_DESCRIPTORS
+    return RUNTIME_AGENT_DESCRIPTORS.filter((agent) => availableRuntimeAgentIdSet.has(agent.id))
+  }, [availableRuntimeAgentIdSet])
   const visibleCustomAgents = useMemo(
     () =>
       customAgentDefinitions.filter(
-        (agent) => agent.lifecycleState === 'active' || agent.definitionId === composerAgentDefinitionId,
+        (agent) =>
+          (agent.lifecycleState === 'active' || agent.definitionId === composerAgentDefinitionId) &&
+          (!availableRuntimeAgentIdSet ||
+            availableRuntimeAgentIdSet.has(runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile))),
       ),
-    [composerAgentDefinitionId, customAgentDefinitions],
+    [availableRuntimeAgentIdSet, composerAgentDefinitionId, customAgentDefinitions],
   )
   const projectCustomAgents = useMemo(
     () => visibleCustomAgents.filter((agent) => agent.scope === 'project_custom'),
@@ -236,15 +279,7 @@ export function ComposerDock({
     () => visibleCustomAgents.filter((agent) => agent.scope === 'global_custom'),
     [visibleCustomAgents],
   )
-  const AgentTriggerIcon = isCustomAgent
-    ? Users
-    : composerRuntimeAgentId === 'ask'
-      ? MessageCircle
-      : composerRuntimeAgentId === 'debug'
-        ? Bug
-        : composerRuntimeAgentId === 'agent_create'
-          ? Sparkles
-          : Wrench
+  const AgentTriggerIcon = isCustomAgent ? Users : getBuiltinAgentIcon(composerRuntimeAgentId)
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey) {
@@ -271,7 +306,7 @@ export function ComposerDock({
         }
         if (value.startsWith('builtin:')) {
           const builtinId = value.slice('builtin:'.length) as RuntimeAgentIdDto
-          if (RUNTIME_AGENT_DESCRIPTORS.some((agent) => agent.id === builtinId)) {
+          if (selectableRuntimeAgents.some((agent) => agent.id === builtinId)) {
             onComposerRuntimeAgentChange(builtinId)
           }
         }
@@ -296,14 +331,20 @@ export function ComposerDock({
         </TooltipContent>
       </Tooltip>
       <SelectContent className={composerInlineSelectContentClassName}>
-        {RUNTIME_AGENT_DESCRIPTORS.map((agent) => (
-          <SelectItem
-            key={agent.id}
-            value={buildComposerAgentSelectionKey(agent.id, null)}
-          >
-            {agent.label}
-          </SelectItem>
-        ))}
+        {selectableRuntimeAgents.map((agent) => {
+          const BuiltinAgentIcon = getBuiltinAgentIcon(agent.id)
+          return (
+            <SelectItem
+              key={agent.id}
+              value={buildComposerAgentSelectionKey(agent.id, null)}
+            >
+              <span className="flex items-center gap-1.5">
+                <BuiltinAgentIcon aria-hidden="true" className="size-3 text-muted-foreground" />
+                {agent.label}
+              </span>
+            </SelectItem>
+          )
+        })}
         {projectCustomAgents.length > 0 ? (
           <>
             <SelectPrimitive.Separator className="my-1 h-px bg-border/60" />
@@ -367,7 +408,7 @@ export function ComposerDock({
       disabled={!hasComposerModelOptions || controlsDisabled}
       groups={composerModelGroups}
       value={composerModelId}
-      onChange={onComposerModelChange}
+      onChange={handleComposerModelChange}
     />
   )
 
@@ -697,7 +738,7 @@ interface ModelSelectorComboboxProps {
   onChange: (value: string) => void
 }
 
-function ModelSelectorCombobox({ disabled, groups, value, onChange }: ModelSelectorComboboxProps) {
+const ModelSelectorCombobox = memo(function ModelSelectorCombobox({ disabled, groups, value, onChange }: ModelSelectorComboboxProps) {
   const [open, setOpen] = useState(false)
   const selectedLabel = useMemo(() => {
     for (const group of groups) {
@@ -720,42 +761,44 @@ function ModelSelectorCombobox({ disabled, groups, value, onChange }: ModelSelec
           label={selectedLabel ?? 'Model not configured'}
         />
       </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className={cn('w-72 p-0', composerInlineSelectContentClassName)}
-      >
-        <Command>
-          <CommandInput placeholder="Search models..." />
-          <CommandList>
-            <CommandEmpty>No models found.</CommandEmpty>
-            {groups.map((group, index) => (
-              <Fragment key={group.id}>
-                {index > 0 ? <CommandSeparator /> : null}
-                <CommandGroup heading={group.label}>
-                  {group.items.map((item) => (
-                    <CommandItem
-                      key={item.value}
-                      value={`${group.label} ${item.label}`}
-                      onSelect={() => {
-                        onChange(item.value)
-                        setOpen(false)
-                      }}
-                    >
-                      <span className="line-clamp-1 truncate">{item.label}</span>
-                      {value === item.value ? (
-                        <CheckIcon aria-hidden="true" className="ml-auto size-3.5" />
-                      ) : null}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </Fragment>
-            ))}
-          </CommandList>
-        </Command>
-      </PopoverContent>
+      {open ? (
+        <PopoverContent
+          align="start"
+          className={cn('w-72 p-0', composerInlineSelectContentClassName)}
+        >
+          <Command>
+            <CommandInput placeholder="Search models..." />
+            <CommandList>
+              <CommandEmpty>No models found.</CommandEmpty>
+              {groups.map((group, index) => (
+                <Fragment key={group.id}>
+                  {index > 0 ? <CommandSeparator /> : null}
+                  <CommandGroup heading={group.label}>
+                    {group.items.map((item) => (
+                      <CommandItem
+                        key={item.value}
+                        value={`${group.label} ${item.label}`}
+                        onSelect={() => {
+                          onChange(item.value)
+                          setOpen(false)
+                        }}
+                      >
+                        <span className="line-clamp-1 truncate">{item.label}</span>
+                        {value === item.value ? (
+                          <CheckIcon aria-hidden="true" className="ml-auto size-3.5" />
+                        ) : null}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </Fragment>
+              ))}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      ) : null}
     </Popover>
   )
-}
+})
 
 interface ComposerAttachmentChipsProps {
   attachments: ComposerPendingAttachment[]

@@ -4,10 +4,11 @@ use std::{
 };
 
 use super::{
-    repo_scope::normalize_relative_path, AutonomousCommandPolicyOutcome,
-    AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousProcessActionRiskLevel,
-    AutonomousProcessManagerAction, AutonomousProcessManagerPolicyTrace,
-    AutonomousProcessOwnershipScope, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
+    repo_scope::normalize_relative_path, AutonomousBrowserAction, AutonomousCommandPolicyOutcome,
+    AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousMcpAction,
+    AutonomousProcessActionRiskLevel, AutonomousProcessManagerAction,
+    AutonomousProcessManagerPolicyTrace, AutonomousProcessOwnershipScope,
+    AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
     AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
     AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
     DEFAULT_COMMAND_TIMEOUT_MS,
@@ -87,6 +88,20 @@ impl AutonomousToolRuntime {
                 AutonomousSafetyPolicyAction::Deny,
                 "policy_denied_destructive_system_operation",
                 "Xero denied the tool call because it targets destructive system-level operations that are not allowed in autonomous runs.",
+                &context,
+            ));
+        }
+
+        if project_context_action_mutates_app_state(request)
+            && !self.active_runtime_agent_id().allows_engineering_tools()
+        {
+            return Ok(safety_decision(
+                AutonomousSafetyPolicyAction::Deny,
+                "policy_denied_project_context_mutation_for_agent",
+                format!(
+                    "The {} agent cannot mutate durable project context.",
+                    self.active_runtime_agent_id().label()
+                ),
                 &context,
             ));
         }
@@ -226,6 +241,31 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             require_approval_code: "policy_requires_approval_system_read",
             require_approval_reason: "Reading an absolute system path outside the imported repository requires operator approval.",
         },
+        AutonomousToolRequest::ProjectContext(request) => {
+            if project_context_action_is_read(request.action) {
+                SafetyPolicyMetadata {
+                    risk_class: "project_context_read",
+                    network_intent: "none",
+                    credential_sensitivity: "low",
+                    os_target: None,
+                    prior_observation_required: false,
+                    requires_approval: false,
+                    require_approval_code: "policy_requires_approval_project_context_read",
+                    require_approval_reason: "Project-context reads do not require operator approval.",
+                }
+            } else {
+                SafetyPolicyMetadata {
+                    risk_class: "runtime_state",
+                    network_intent: "none",
+                    credential_sensitivity: "possible",
+                    os_target: None,
+                    prior_observation_required: false,
+                    requires_approval: false,
+                    require_approval_code: "policy_requires_approval_project_context_mutation",
+                    require_approval_reason: "Durable project-context mutations require runtime-agent authority.",
+                }
+            }
+        }
         AutonomousToolRequest::WebSearch(_) | AutonomousToolRequest::WebFetch(_) => {
             SafetyPolicyMetadata {
                 risk_class: "network",
@@ -238,16 +278,31 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
                 require_approval_reason: "External network reads require operator approval.",
             }
         }
-        AutonomousToolRequest::Browser(_) => SafetyPolicyMetadata {
-            risk_class: "browser_control",
-            network_intent: "browser",
-            credential_sensitivity: "possible",
-            os_target: Some("browser"),
-            prior_observation_required: false,
-            requires_approval: false,
-            require_approval_code: "policy_requires_approval_browser_control",
-            require_approval_reason: "Browser control requires operator approval.",
-        },
+        AutonomousToolRequest::Browser(request) => {
+            if browser_action_is_observe(&request.action) {
+                SafetyPolicyMetadata {
+                    risk_class: "browser_observe",
+                    network_intent: "browser",
+                    credential_sensitivity: "possible",
+                    os_target: Some("browser"),
+                    prior_observation_required: false,
+                    requires_approval: false,
+                    require_approval_code: "policy_requires_approval_browser_observe",
+                    require_approval_reason: "Browser observation does not require operator approval.",
+                }
+            } else {
+                SafetyPolicyMetadata {
+                    risk_class: "browser_control",
+                    network_intent: "browser",
+                    credential_sensitivity: "possible",
+                    os_target: Some("browser"),
+                    prior_observation_required: false,
+                    requires_approval: false,
+                    require_approval_code: "policy_requires_approval_browser_control",
+                    require_approval_reason: "Browser control requires operator approval.",
+                }
+            }
+        }
         AutonomousToolRequest::MacosAutomation(_) => SafetyPolicyMetadata {
             risk_class: "os_control",
             network_intent: "none",
@@ -324,6 +379,18 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             require_approval_code: "policy_requires_approval_write",
             require_approval_reason: "Repository writes require operator approval.",
         },
+        AutonomousToolRequest::Mcp(request) if mcp_action_is_observe(request.action) => {
+            SafetyPolicyMetadata {
+                risk_class: "external_capability_observe",
+                network_intent: "external_capability_dependent",
+                credential_sensitivity: "possible",
+                os_target: None,
+                prior_observation_required: false,
+                requires_approval: false,
+                require_approval_code: "policy_requires_approval_external_capability_observe",
+                require_approval_reason: "External capability observation does not require operator approval.",
+            }
+        }
         AutonomousToolRequest::Mcp(_) | AutonomousToolRequest::Skill(_) => SafetyPolicyMetadata {
             risk_class: "external_capability",
             network_intent: "external_capability_dependent",
@@ -388,6 +455,61 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
             require_approval_reason: "This tool call requires operator approval.",
         },
     }
+}
+
+fn project_context_action_mutates_app_state(request: &AutonomousToolRequest) -> bool {
+    matches!(
+        request,
+        AutonomousToolRequest::ProjectContext(request)
+            if !project_context_action_is_read(request.action)
+    )
+}
+
+fn project_context_action_is_read(action: AutonomousProjectContextAction) -> bool {
+    matches!(
+        action,
+        AutonomousProjectContextAction::SearchProjectRecords
+            | AutonomousProjectContextAction::SearchApprovedMemory
+            | AutonomousProjectContextAction::GetProjectRecord
+            | AutonomousProjectContextAction::GetMemory
+            | AutonomousProjectContextAction::ListRecentHandoffs
+            | AutonomousProjectContextAction::ListActiveDecisionsConstraints
+            | AutonomousProjectContextAction::ListOpenQuestionsBlockers
+            | AutonomousProjectContextAction::ExplainCurrentContextPackage
+    )
+}
+
+fn browser_action_is_observe(action: &AutonomousBrowserAction) -> bool {
+    matches!(
+        action,
+        AutonomousBrowserAction::ReadText { .. }
+            | AutonomousBrowserAction::Query { .. }
+            | AutonomousBrowserAction::WaitForSelector { .. }
+            | AutonomousBrowserAction::WaitForLoad { .. }
+            | AutonomousBrowserAction::CurrentUrl
+            | AutonomousBrowserAction::HistoryState
+            | AutonomousBrowserAction::Screenshot
+            | AutonomousBrowserAction::CookiesGet
+            | AutonomousBrowserAction::StorageRead { .. }
+            | AutonomousBrowserAction::ConsoleLogs { .. }
+            | AutonomousBrowserAction::NetworkSummary { .. }
+            | AutonomousBrowserAction::AccessibilityTree { .. }
+            | AutonomousBrowserAction::StateSnapshot { .. }
+            | AutonomousBrowserAction::HarnessExtensionContract
+            | AutonomousBrowserAction::TabList
+    )
+}
+
+fn mcp_action_is_observe(action: AutonomousMcpAction) -> bool {
+    matches!(
+        action,
+        AutonomousMcpAction::ListServers
+            | AutonomousMcpAction::ListTools
+            | AutonomousMcpAction::ListResources
+            | AutonomousMcpAction::ListPrompts
+            | AutonomousMcpAction::ReadResource
+            | AutonomousMcpAction::GetPrompt
+    )
 }
 
 fn command_family_policy_decision(

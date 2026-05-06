@@ -3,16 +3,18 @@
 import Link from "next/link"
 import Image from "next/image"
 import { useEffect, useState } from "react"
-import { Menu, X, Github } from "lucide-react"
+import { Menu, X, Github, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 const nav = [
-  { label: "Product", href: "#product" },
-  { label: "Capabilities", href: "#capabilities" },
-  { label: "Models", href: "#models" },
-  { label: "Workflow", href: "#workflow" },
-  { label: "Pricing", href: "#pricing" },
+  { label: "Product", href: "/#product" },
+  { label: "Capabilities", href: "/#capabilities" },
+  { label: "Models", href: "/#models" },
+  { label: "Workflow", href: "/#workflow" },
+  { label: "Pricing", href: "/#pricing" },
+  { label: "Docs", href: "/docs" },
+  { label: "Changelog", href: "/changelog" },
 ]
 
 export function SiteHeader() {
@@ -69,19 +71,13 @@ export function SiteHeader() {
             <Github className="h-4 w-4" />
           </Link>
           <Button
-            asChild
-            variant="ghost"
             size="sm"
-            className="hidden text-muted-foreground hover:text-foreground md:inline-flex"
+            disabled
+            aria-disabled
+            className="gap-1.5 bg-secondary/60 text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
           >
-            <Link href="#">Sign in</Link>
-          </Button>
-          <Button
-            asChild
-            size="sm"
-            className="bg-primary text-primary-foreground shadow-[0_4px_14px_-6px_color-mix(in_oklab,var(--primary)_70%,transparent)] transition-all hover:bg-primary/90 hover:shadow-[0_6px_16px_-6px_color-mix(in_oklab,var(--primary)_75%,transparent)]"
-          >
-            <Link href="#download">Download</Link>
+            <Clock className="h-3.5 w-3.5" />
+            Coming soon
           </Button>
 
           <button
@@ -114,13 +110,6 @@ export function SiteHeader() {
               {item.label}
             </Link>
           ))}
-          <Link
-            href="#"
-            onClick={() => setOpen(false)}
-            className="rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            Sign in
-          </Link>
         </nav>
       </div>
     </header>

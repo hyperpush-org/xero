@@ -11,6 +11,7 @@ pub struct OwnedAgentRunRequest {
     pub controls: Option<RuntimeRunControlInputDto>,
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
+    pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ pub struct ContinueOwnedAgentRunRequest {
     pub controls: Option<RuntimeRunControlInputDto>,
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
+    pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
     pub answer_pending_actions: bool,
     pub auto_compact: Option<AgentAutoCompactPreference>,
 }
@@ -405,6 +407,10 @@ impl ToolRegistry {
             };
         }
 
+        if let Some(request) = decode_action_level_tool_call(tool_call) {
+            return request;
+        }
+
         let request_value = json!({
             "tool": tool_call.tool_name,
             "input": tool_call.input,
@@ -427,6 +433,342 @@ impl ToolRegistry {
     pub(crate) fn runtime_agent_id(&self) -> RuntimeAgentIdDto {
         self.options.runtime_agent_id
     }
+}
+
+fn decode_action_level_tool_call(
+    tool_call: &AgentToolCall,
+) -> Option<CommandResult<AutonomousToolRequest>> {
+    Some(match tool_call.tool_name.as_str() {
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH => validate_action_value(
+            &tool_call.input,
+            &[
+                "search_project_records",
+                "search_approved_memory",
+                "list_recent_handoffs",
+                "list_active_decisions_constraints",
+                "list_open_questions_blockers",
+                "explain_current_context_package",
+            ],
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+        )
+        .and_then(|()| {
+            decode_legacy_tool_request(AUTONOMOUS_TOOL_PROJECT_CONTEXT, tool_call.input.clone())
+        }),
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET => validate_action_value(
+            &tool_call.input,
+            &["get_project_record", "get_memory"],
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+        )
+        .and_then(|()| {
+            decode_legacy_tool_request(AUTONOMOUS_TOOL_PROJECT_CONTEXT, tool_call.input.clone())
+        }),
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD => {
+            let input = input_with_default_action(&tool_call.input, "record_context");
+            validate_action_value(
+                &input,
+                &["record_context", "propose_record_candidate"],
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            )
+            .and_then(|()| decode_legacy_tool_request(AUTONOMOUS_TOOL_PROJECT_CONTEXT, input))
+        }
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE => decode_legacy_tool_request(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            input_with_forced_action(&tool_call.input, "update_context"),
+        ),
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH => decode_legacy_tool_request(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            input_with_forced_action(&tool_call.input, "refresh_freshness"),
+        ),
+        AUTONOMOUS_TOOL_BROWSER_OBSERVE => validate_action_value(
+            &tool_call.input,
+            &[
+                "read_text",
+                "query",
+                "wait_for_selector",
+                "wait_for_load",
+                "current_url",
+                "history_state",
+                "screenshot",
+                "cookies_get",
+                "storage_read",
+                "console_logs",
+                "network_summary",
+                "accessibility_tree",
+                "state_snapshot",
+                "harness_extension_contract",
+                "tab_list",
+            ],
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+        )
+        .and_then(|()| {
+            decode_legacy_tool_request(AUTONOMOUS_TOOL_BROWSER, tool_call.input.clone())
+        }),
+        AUTONOMOUS_TOOL_BROWSER_CONTROL => validate_action_value(
+            &tool_call.input,
+            &[
+                "open",
+                "tab_open",
+                "navigate",
+                "back",
+                "forward",
+                "reload",
+                "stop",
+                "click",
+                "type",
+                "scroll",
+                "press_key",
+                "cookies_set",
+                "storage_write",
+                "storage_clear",
+                "state_restore",
+                "tab_close",
+                "tab_focus",
+            ],
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+        )
+        .and_then(|()| {
+            decode_legacy_tool_request(AUTONOMOUS_TOOL_BROWSER, tool_call.input.clone())
+        }),
+        AUTONOMOUS_TOOL_MCP_LIST => validate_action_value(
+            &tool_call.input,
+            &[
+                "list_servers",
+                "list_tools",
+                "list_resources",
+                "list_prompts",
+            ],
+            AUTONOMOUS_TOOL_MCP_LIST,
+        )
+        .and_then(|()| decode_legacy_tool_request(AUTONOMOUS_TOOL_MCP, tool_call.input.clone())),
+        AUTONOMOUS_TOOL_MCP_READ_RESOURCE => decode_legacy_tool_request(
+            AUTONOMOUS_TOOL_MCP,
+            input_with_forced_action(&tool_call.input, "read_resource"),
+        ),
+        AUTONOMOUS_TOOL_MCP_GET_PROMPT => decode_legacy_tool_request(
+            AUTONOMOUS_TOOL_MCP,
+            input_with_forced_action(&tool_call.input, "get_prompt"),
+        ),
+        AUTONOMOUS_TOOL_MCP_CALL_TOOL => decode_legacy_tool_request(
+            AUTONOMOUS_TOOL_MCP,
+            input_with_forced_action(&tool_call.input, "invoke_tool"),
+        ),
+        AUTONOMOUS_TOOL_COMMAND_PROBE => {
+            decode_command_wrapper(tool_call, CommandWrapperKind::Probe)
+        }
+        AUTONOMOUS_TOOL_COMMAND_VERIFY => {
+            decode_command_wrapper(tool_call, CommandWrapperKind::Verify)
+        }
+        AUTONOMOUS_TOOL_COMMAND_RUN => decode_command_wrapper(tool_call, CommandWrapperKind::Run),
+        AUTONOMOUS_TOOL_COMMAND_SESSION => decode_command_session_wrapper(tool_call),
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE => validate_action_value(
+            &tool_call.input,
+            &[
+                "process_open_files",
+                "process_resource_snapshot",
+                "process_threads",
+                "system_log_query",
+                "diagnostics_bundle",
+            ],
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+        )
+        .and_then(|()| {
+            decode_legacy_tool_request(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS, tool_call.input.clone())
+        }),
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => validate_action_value(
+            &tool_call.input,
+            &["process_sample", "macos_accessibility_snapshot"],
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+        )
+        .and_then(|()| {
+            decode_legacy_tool_request(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS, tool_call.input.clone())
+        }),
+        _ => return None,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CommandWrapperKind {
+    Probe,
+    Verify,
+    Run,
+}
+
+fn decode_command_wrapper(
+    tool_call: &AgentToolCall,
+    kind: CommandWrapperKind,
+) -> CommandResult<AutonomousToolRequest> {
+    let request = decode_legacy_tool_request(AUTONOMOUS_TOOL_COMMAND, tool_call.input.clone())?;
+    let AutonomousToolRequest::Command(command) = &request else {
+        return Err(action_tool_decode_fault(&tool_call.tool_name));
+    };
+    match kind {
+        CommandWrapperKind::Probe if !command_probe_allowed(&command.argv) => {
+            Err(action_tool_invalid_input(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                "command_probe only accepts bounded discovery commands such as pwd, ls, rg, find without delete, git status/diff/log/show/rev-parse/grep/ls-files, cargo metadata/tree, and echo.",
+            ))
+        }
+        CommandWrapperKind::Verify if !command_verify_allowed(&command.argv) => {
+            Err(action_tool_invalid_input(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                "command_verify only accepts verification commands such as cargo test/check/clippy/fmt/build or package-manager test/lint/typecheck/build scripts.",
+            ))
+        }
+        _ => Ok(request),
+    }
+}
+
+fn decode_command_session_wrapper(
+    tool_call: &AgentToolCall,
+) -> CommandResult<AutonomousToolRequest> {
+    let action = required_action(&tool_call.input, AUTONOMOUS_TOOL_COMMAND_SESSION)?;
+    let input = input_without_field(&tool_call.input, "action");
+    match action {
+        "start" => decode_legacy_tool_request(AUTONOMOUS_TOOL_COMMAND_SESSION_START, input),
+        "read" => decode_legacy_tool_request(AUTONOMOUS_TOOL_COMMAND_SESSION_READ, input),
+        "stop" => decode_legacy_tool_request(AUTONOMOUS_TOOL_COMMAND_SESSION_STOP, input),
+        _ => Err(action_tool_invalid_input(
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            "command_session action must be start, read, or stop.",
+        )),
+    }
+}
+
+fn decode_legacy_tool_request(
+    tool: &str,
+    input: JsonValue,
+) -> CommandResult<AutonomousToolRequest> {
+    let request_value = json!({
+        "tool": tool,
+        "input": input,
+    });
+    serde_json::from_value::<AutonomousToolRequest>(request_value).map_err(|error| {
+        CommandError::user_fixable(
+            "agent_tool_call_invalid",
+            format!("Xero could not decode action-level tool `{tool}`: {error}"),
+        )
+    })
+}
+
+fn validate_action_value(
+    input: &JsonValue,
+    allowed: &[&str],
+    tool_name: &str,
+) -> CommandResult<()> {
+    let action = required_action(input, tool_name)?;
+    if allowed.contains(&action) {
+        Ok(())
+    } else {
+        Err(action_tool_invalid_input(
+            tool_name,
+            format!("{tool_name} action `{action}` is outside this action-level descriptor."),
+        ))
+    }
+}
+
+fn required_action<'a>(input: &'a JsonValue, tool_name: &str) -> CommandResult<&'a str> {
+    input
+        .get("action")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| action_tool_invalid_input(tool_name, "missing required field `action`."))
+}
+
+fn input_with_default_action(input: &JsonValue, action: &str) -> JsonValue {
+    if input.get("action").is_some() {
+        input.clone()
+    } else {
+        input_with_forced_action(input, action)
+    }
+}
+
+fn input_with_forced_action(input: &JsonValue, action: &str) -> JsonValue {
+    let mut object = input.as_object().cloned().unwrap_or_else(JsonMap::new);
+    object.insert("action".into(), JsonValue::String(action.into()));
+    JsonValue::Object(object)
+}
+
+fn input_without_field(input: &JsonValue, field: &str) -> JsonValue {
+    let Some(object) = input.as_object() else {
+        return input.clone();
+    };
+    let mut object = object.clone();
+    object.remove(field);
+    JsonValue::Object(object)
+}
+
+fn command_probe_allowed(argv: &[String]) -> bool {
+    let Some(program) = argv.first().map(|value| executable_name_for_policy(value)) else {
+        return false;
+    };
+    match program.as_str() {
+        "pwd" | "ls" | "dir" | "echo" | "cat" | "type" | "head" | "tail" | "grep" | "rg" => true,
+        "find" => !argv.iter().any(|argument| argument == "-delete"),
+        "git" => argv
+            .iter()
+            .skip(1)
+            .find(|argument| !argument.starts_with('-'))
+            .is_some_and(|subcommand| {
+                matches!(
+                    subcommand.as_str(),
+                    "status" | "diff" | "log" | "show" | "rev-parse" | "grep" | "ls-files"
+                )
+            }),
+        "cargo" => argv
+            .iter()
+            .skip(1)
+            .find(|argument| !argument.starts_with('-'))
+            .is_some_and(|subcommand| matches!(subcommand.as_str(), "metadata" | "tree")),
+        _ => false,
+    }
+}
+
+fn command_verify_allowed(argv: &[String]) -> bool {
+    let Some(program) = argv.first().map(|value| executable_name_for_policy(value)) else {
+        return false;
+    };
+    match program.as_str() {
+        "cargo" => argv
+            .iter()
+            .skip(1)
+            .find(|argument| !argument.starts_with('-'))
+            .is_some_and(|subcommand| {
+                matches!(
+                    subcommand.as_str(),
+                    "test" | "check" | "clippy" | "fmt" | "build" | "doc"
+                )
+            }),
+        "npm" | "pnpm" | "yarn" | "bun" => argv.iter().skip(1).any(|argument| {
+            matches!(
+                argument.as_str(),
+                "test" | "tests" | "lint" | "typecheck" | "check" | "build"
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn executable_name_for_policy(value: &str) -> String {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(value)
+        .to_ascii_lowercase()
+}
+
+fn action_tool_invalid_input(tool_name: &str, message: impl Into<String>) -> CommandError {
+    CommandError::user_fixable(
+        "agent_action_tool_input_invalid",
+        format!("Invalid `{tool_name}` input: {}", message.into()),
+    )
+}
+
+fn action_tool_decode_fault(tool_name: &str) -> CommandError {
+    CommandError::system_fault(
+        "agent_action_tool_decode_fault",
+        format!("Xero decoded `{tool_name}` into an unexpected internal request."),
+    )
 }
 
 fn agent_tool_boundary_violation(
@@ -458,6 +800,8 @@ pub struct AgentToolResult {
     pub ok: bool,
     pub summary: String,
     pub output: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_assistant_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -737,12 +1081,12 @@ impl ProviderAdapter for FakeProviderAdapter {
             && request
                 .tools
                 .iter()
-                .any(|descriptor| descriptor.name == AUTONOMOUS_TOOL_COMMAND)
+                .any(|descriptor| descriptor.name == AUTONOMOUS_TOOL_COMMAND_VERIFY)
             && !request.messages.iter().any(|message| {
                 matches!(
                     message,
                     ProviderMessage::Tool { tool_name, .. }
-                        if tool_name == AUTONOMOUS_TOOL_COMMAND
+                        if tool_name == AUTONOMOUS_TOOL_COMMAND_VERIFY
                 )
             })
         {
@@ -752,7 +1096,7 @@ impl ProviderAdapter for FakeProviderAdapter {
                 message,
                 tool_calls: vec![AgentToolCall {
                     tool_call_id: format!("fake-tool-call-verify-{}", request.turn_index),
-                    tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+                    tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
                     input: json!({ "argv": ["echo", "xero-verification-ok"] }),
                 }],
                 usage: Some(ProviderUsage::default()),
@@ -978,6 +1322,12 @@ fn text_after_marker<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
 }
 
 fn core_effect_class_for_tool(tool_name: &str) -> xero_agent_core::ToolEffectClass {
+    if matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED
+    ) {
+        return xero_agent_core::ToolEffectClass::Diagnostics;
+    }
     match tool_effect_class(tool_name).as_str() {
         "observe" => xero_agent_core::ToolEffectClass::Observe,
         "runtime_state" => xero_agent_core::ToolEffectClass::AppStateMutation,
@@ -993,6 +1343,22 @@ fn core_effect_class_for_tool(tool_name: &str) -> xero_agent_core::ToolEffectCla
 }
 
 fn core_mutability_for_tool(tool_name: &str) -> xero_agent_core::ToolMutability {
+    if matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_MCP_LIST
+            | AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+            | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+    ) {
+        return xero_agent_core::ToolMutability::ReadOnly;
+    }
+    if matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_COMMAND_PROBE
+            | AUTONOMOUS_TOOL_COMMAND_VERIFY
+            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED
+    ) {
+        return xero_agent_core::ToolMutability::Mutating;
+    }
     match tool_effect_class(tool_name).as_str() {
         "observe" => xero_agent_core::ToolMutability::ReadOnly,
         _ => xero_agent_core::ToolMutability::Mutating,
@@ -1000,6 +1366,35 @@ fn core_mutability_for_tool(tool_name: &str) -> xero_agent_core::ToolMutability 
 }
 
 fn core_sandbox_requirement_for_tool(tool_name: &str) -> xero_agent_core::ToolSandboxRequirement {
+    match tool_name {
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+        | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+        | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE => {
+            return xero_agent_core::ToolSandboxRequirement::ReadOnly;
+        }
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH => {
+            return xero_agent_core::ToolSandboxRequirement::None;
+        }
+        AUTONOMOUS_TOOL_MCP_LIST
+        | AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+        | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+        | AUTONOMOUS_TOOL_MCP_CALL_TOOL => {
+            return xero_agent_core::ToolSandboxRequirement::Network;
+        }
+        AUTONOMOUS_TOOL_COMMAND_PROBE | AUTONOMOUS_TOOL_COMMAND_VERIFY => {
+            return xero_agent_core::ToolSandboxRequirement::WorkspaceWrite;
+        }
+        AUTONOMOUS_TOOL_COMMAND_RUN
+        | AUTONOMOUS_TOOL_COMMAND_SESSION
+        | AUTONOMOUS_TOOL_BROWSER_CONTROL
+        | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => {
+            return xero_agent_core::ToolSandboxRequirement::FullLocal;
+        }
+        _ => {}
+    }
     match tool_effect_class(tool_name).as_str() {
         "observe" => xero_agent_core::ToolSandboxRequirement::ReadOnly,
         "runtime_state" => xero_agent_core::ToolSandboxRequirement::None,
@@ -1010,6 +1405,20 @@ fn core_sandbox_requirement_for_tool(tool_name: &str) -> xero_agent_core::ToolSa
 }
 
 fn core_approval_requirement_for_tool(tool_name: &str) -> xero_agent_core::ToolApprovalRequirement {
+    if matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_MCP_LIST
+            | AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+            | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+    ) {
+        return xero_agent_core::ToolApprovalRequirement::Never;
+    }
+    if matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED | AUTONOMOUS_TOOL_BROWSER_CONTROL
+    ) {
+        return xero_agent_core::ToolApprovalRequirement::Policy;
+    }
     match tool_effect_class(tool_name).as_str() {
         "observe" => xero_agent_core::ToolApprovalRequirement::Never,
         "destructive_write" => xero_agent_core::ToolApprovalRequirement::Always,
@@ -1086,7 +1495,7 @@ mod tests {
         let registry = ToolRegistry::for_tool_names_with_options(
             BTreeSet::from([
                 AUTONOMOUS_TOOL_READ.to_string(),
-                AUTONOMOUS_TOOL_COMMAND.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_RUN.to_string(),
                 AUTONOMOUS_TOOL_SUBAGENT.to_string(),
             ]),
             ToolRegistryOptions {
@@ -1096,13 +1505,13 @@ mod tests {
         );
 
         assert!(registry.descriptor(AUTONOMOUS_TOOL_READ).is_some());
-        assert!(registry.descriptor(AUTONOMOUS_TOOL_COMMAND).is_none());
+        assert!(registry.descriptor(AUTONOMOUS_TOOL_COMMAND_RUN).is_none());
         assert!(registry.descriptor(AUTONOMOUS_TOOL_SUBAGENT).is_none());
 
         let error = registry
             .decode_call(&AgentToolCall {
                 tool_call_id: "call-command".into(),
-                tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_RUN.into(),
                 input: json!({"argv": ["echo", "hello"]}),
             })
             .expect_err("Ask must reject command calls even if the provider emits one");
@@ -1111,12 +1520,182 @@ mod tests {
     }
 
     #[test]
+    fn ask_registry_exposes_project_context_reads_but_not_writes() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH.to_string(),
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Ask,
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        assert!(registry
+            .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH)
+            .is_some());
+        assert!(registry
+            .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD)
+            .is_none());
+
+        let error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-project-context-record".into(),
+                tool_name: AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD.into(),
+                input: json!({
+                    "title": "Ask should not write context",
+                    "summary": "Ask should not write context",
+                    "text": "Ask should not write context"
+                }),
+            })
+            .expect_err("Ask must reject write-capable durable context actions");
+
+        assert_eq!(error.code, "agent_tool_boundary_violation");
+    }
+
+    #[test]
+    fn action_level_wrappers_reject_actions_outside_their_surface() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_BROWSER_OBSERVE.to_string(),
+                AUTONOMOUS_TOOL_MCP_LIST.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_PROBE.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_VERIFY.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_RUN.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        let browser_error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-browser-click".into(),
+                tool_name: AUTONOMOUS_TOOL_BROWSER_OBSERVE.into(),
+                input: json!({ "action": "click", "selector": "#submit" }),
+            })
+            .expect_err("browser_observe must not control the page");
+        assert_eq!(browser_error.code, "agent_action_tool_input_invalid");
+
+        let mcp_error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-mcp-invoke".into(),
+                tool_name: AUTONOMOUS_TOOL_MCP_LIST.into(),
+                input: json!({ "action": "invoke_tool", "serverId": "fixture", "name": "echo" }),
+            })
+            .expect_err("mcp_list must not invoke tools");
+        assert_eq!(mcp_error.code, "agent_action_tool_input_invalid");
+
+        let probe_error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-probe-test".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_PROBE.into(),
+                input: json!({ "argv": ["cargo", "test"] }),
+            })
+            .expect_err("command_probe must be narrower than test execution");
+        assert_eq!(probe_error.code, "agent_action_tool_input_invalid");
+
+        let verify_error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-verify-echo".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                input: json!({ "argv": ["echo", "hello"] }),
+            })
+            .expect_err("command_verify must be narrower than general commands");
+        assert_eq!(verify_error.code, "agent_action_tool_input_invalid");
+
+        registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-run-echo".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_RUN.into(),
+                input: json!({ "argv": ["echo", "hello"] }),
+            })
+            .expect("command_run keeps the broader command surface");
+    }
+
+    #[test]
+    fn test_registry_exposes_harness_surface_without_agent_definition_mutation() {
+        let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+            runtime_agent_id: RuntimeAgentIdDto::Test,
+            skill_tool_enabled: true,
+            ..ToolRegistryOptions::default()
+        });
+        let names = registry.descriptor_names();
+
+        for expected in [
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_GIT_DIFF,
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_HASH,
+            AUTONOMOUS_TOOL_TODO,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+            AUTONOMOUS_TOOL_MKDIR,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_RENAME,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_MCP_LIST,
+            AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+            AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+        ] {
+            assert!(
+                names.contains(expected),
+                "Test harness registry should expose `{expected}` when active"
+            );
+        }
+        assert!(
+            !names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION),
+            "Test must not inherit Agent Create's definition-registry mutation tool"
+        );
+
+        let agent_create_registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_AGENT_DEFINITION.to_string(),
+                AUTONOMOUS_TOOL_WRITE.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_RUN.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::AgentCreate,
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let agent_create_names = agent_create_registry.descriptor_names();
+
+        assert!(agent_create_names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION));
+        assert!(!agent_create_names.contains(AUTONOMOUS_TOOL_WRITE));
+        assert!(!agent_create_names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+    }
+
+    #[test]
     fn descriptors_v2_preserve_policy_metadata_for_existing_tools() {
         let registry = ToolRegistry::for_tool_names_with_options(
             BTreeSet::from([
                 AUTONOMOUS_TOOL_READ.to_string(),
                 AUTONOMOUS_TOOL_PATCH.to_string(),
-                AUTONOMOUS_TOOL_COMMAND.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_VERIFY.to_string(),
             ]),
             ToolRegistryOptions {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -1135,7 +1714,7 @@ mod tests {
             .expect("patch descriptor");
         let command = descriptors
             .iter()
-            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_COMMAND)
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_COMMAND_VERIFY)
             .expect("command descriptor");
 
         assert_eq!(read.mutability, xero_agent_core::ToolMutability::ReadOnly);
@@ -1143,6 +1722,10 @@ mod tests {
         assert_eq!(
             command.effect_class,
             xero_agent_core::ToolEffectClass::CommandExecution
+        );
+        assert_eq!(
+            command.sandbox_requirement,
+            xero_agent_core::ToolSandboxRequirement::WorkspaceWrite
         );
         assert!(read.capability_tags.iter().any(|tag| tag == "file"));
         assert_eq!(

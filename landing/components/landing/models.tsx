@@ -1,4 +1,4 @@
-import { Check, Cloud, Github, KeyRound, Route, Server, Sparkles, Webhook } from "lucide-react"
+import { Check, Cloud, Github, KeyRound, Laptop, Route, Server, Sparkles, Webhook } from "lucide-react"
 import {
   AnthropicIcon,
   GoogleIcon,
@@ -15,7 +15,7 @@ type Provider = {
 const providers: Provider[] = [
   {
     name: "OpenAI / Codex",
-    plan: "API key, Codex CLI auth, or ChatGPT plan",
+    plan: "API key, Codex CLI, or ChatGPT plan",
     icon: <OpenAIIcon className="h-4 w-4" />,
     badgeClass: "bg-[#10a37f] text-white",
   },
@@ -27,7 +27,7 @@ const providers: Provider[] = [
   },
   {
     name: "Google Gemini",
-    plan: "AI Studio API keys",
+    plan: "AI Studio API key",
     icon: <GoogleIcon className="h-4 w-4" />,
     badgeClass: "bg-[#4285f4] text-white",
   },
@@ -39,13 +39,13 @@ const providers: Provider[] = [
   },
   {
     name: "GitHub Models",
-    plan: "Sign in with your GitHub account",
+    plan: "Sign in with GitHub",
     icon: <Github className="h-4 w-4" />,
     badgeClass: "bg-foreground text-background",
   },
   {
     name: "Ollama",
-    plan: "Local models · zero round trips",
+    plan: "Local models, no network",
     icon: <Server className="h-4 w-4" />,
     badgeClass: "border border-primary/30 bg-primary/15 text-primary",
   },
@@ -63,13 +63,13 @@ const providers: Provider[] = [
   },
   {
     name: "Google Vertex AI",
-    plan: "Gemini and partner models on GCP",
+    plan: "Gemini and partners on GCP",
     icon: <GoogleIcon className="h-4 w-4" />,
     badgeClass: "bg-[#1a73e8] text-white",
   },
   {
-    name: "Any OpenAI-compatible API",
-    plan: "Groq · xAI · Together · vLLM · LM Studio",
+    name: "OpenAI-compatible",
+    plan: "Groq, xAI, Together, vLLM, LM Studio",
     icon: <Webhook className="h-4 w-4" />,
     badgeClass: "border border-border bg-secondary text-foreground",
   },
@@ -88,14 +88,10 @@ export function Models() {
               Bring your own model
             </p>
             <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-4xl lg:text-5xl">
-              Ten provider integrations. No middle layer.
+              Ten providers. Direct from your machine.
             </h2>
-            <p className="mt-5 text-pretty leading-relaxed text-muted-foreground">
-              Xero is model-agnostic. Add an API key, sign in with the CLI auth
-              flow you already use, or point a session at a local Ollama or
-              OpenAI-compatible endpoint. Credentials stay on your machine,
-              keychain-backed where the OS supports it.
-            </p>
+
+            <DirectConnectionVisual />
 
             <ul className="mt-6 flex flex-col gap-3">
               <li className="flex items-start gap-3 text-sm">
@@ -103,9 +99,9 @@ export function Models() {
                   <KeyRound className="h-3 w-3" />
                 </span>
                 <span className="text-foreground/90">
-                  <span className="font-medium">No relay servers.</span>{" "}
+                  <span className="font-medium">Keys in the OS keychain.</span>{" "}
                   <span className="text-muted-foreground">
-                    Requests go directly from your machine to the provider.
+                    Redacted in exports.
                   </span>
                 </span>
               </li>
@@ -114,10 +110,9 @@ export function Models() {
                   <Sparkles className="h-3 w-3" />
                 </span>
                 <span className="text-foreground/90">
-                  <span className="font-medium">Mix models per session.</span>{" "}
+                  <span className="font-medium">Mix models per pane.</span>{" "}
                   <span className="text-muted-foreground">
-                    Run an Anthropic engineer next to a Gemini ask agent next to
-                    a local Ollama coder.
+                    Claude, Gemini, local Ollama, side by side.
                   </span>
                 </span>
               </li>
@@ -129,7 +124,7 @@ export function Models() {
               {providers.map((p) => (
                 <li
                   key={p.name}
-                  className="group relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card p-4 transition-all hover:-translate-y-0.5 hover:border-border hover:shadow-[0_10px_30px_-18px_rgba(0,0,0,0.6)]"
+                  className="relative flex items-center gap-3 overflow-hidden rounded-xl border border-border/70 bg-card p-4"
                 >
                   <span
                     className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${p.badgeClass}`}
@@ -164,5 +159,86 @@ export function Models() {
         </div>
       </div>
     </section>
+  )
+}
+
+function DirectConnectionVisual() {
+  return (
+    <div className="relative mt-6 overflow-hidden rounded-xl border border-border/70 bg-background/40 p-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+          <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+          no relay · no markup
+        </div>
+        <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/[0.08] px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-primary">
+          <KeyRound className="h-2.5 w-2.5" />
+          your keys
+        </span>
+      </div>
+
+      <div className="mt-5 flex items-center gap-3">
+        {/* You */}
+        <div className="flex shrink-0 flex-col items-center gap-1.5">
+          <span className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg border border-primary/40 bg-primary/[0.08] text-primary shadow-[0_0_0_4px_color-mix(in_oklab,var(--primary)_8%,transparent)]">
+            <Laptop className="h-4 w-4" />
+            <span
+              aria-hidden
+              className="absolute -bottom-1 -right-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-primary/40 bg-card text-primary"
+            >
+              <KeyRound className="h-2.5 w-2.5" />
+            </span>
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground">
+            your machine
+          </span>
+        </div>
+
+        {/* Direct line with traveling pulse */}
+        <div className="relative flex h-12 flex-1 items-center">
+          <div
+            aria-hidden
+            className="relative h-px w-full bg-gradient-to-r from-primary/30 via-primary/70 to-primary"
+          />
+          {/* arrowhead */}
+          <span
+            aria-hidden
+            className="absolute right-0 top-1/2 -translate-y-1/2"
+          >
+            <span className="block h-0 w-0 border-y-[5px] border-l-[7px] border-y-transparent border-l-primary" />
+          </span>
+          {/* label */}
+          <span className="absolute left-1/2 top-0 -translate-x-1/2 rounded-full border border-border/70 bg-background px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">
+            direct
+          </span>
+          {/* sub label */}
+          <span className="absolute left-1/2 bottom-0 -translate-x-1/2 font-mono text-[9px] tracking-wider text-muted-foreground/60">
+            tls · streaming
+          </span>
+        </div>
+
+        {/* Providers cluster */}
+        <div className="flex shrink-0 flex-col items-center gap-1.5">
+          <div className="grid grid-cols-3 gap-1 rounded-lg border border-border/60 bg-card p-1.5 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)]">
+            {[
+              "bg-[#10a37f]",
+              "bg-[#cc785c]",
+              "bg-[#4285f4]",
+              "bg-foreground",
+              "bg-[#0078d4]",
+              "bg-[#ff9900]",
+            ].map((c, i) => (
+              <span
+                key={i}
+                className={`h-2.5 w-2.5 rounded-sm ${c} opacity-90`}
+                aria-hidden
+              />
+            ))}
+          </div>
+          <span className="font-mono text-[10px] text-muted-foreground">
+            10 providers
+          </span>
+        </div>
+      </div>
+    </div>
   )
 }

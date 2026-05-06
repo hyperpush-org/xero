@@ -133,10 +133,7 @@ export function AppWindowMock() {
         <div className="col-span-12 p-4 md:col-span-6">
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-70" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-              </div>
+              <span className="inline-flex h-2 w-2 rounded-full bg-primary" />
               <span className="text-sm font-medium">Engineer · refactor billing module</span>
             </div>
             <span className="rounded-md border border-border/70 bg-secondary/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
@@ -159,7 +156,7 @@ export function AppWindowMock() {
                     <CheckCircle2 className="h-4 w-4 text-primary" />
                   )}
                   {s.state === "running" && (
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    <Loader2 className="h-4 w-4 text-primary" />
                   )}
                   {s.state === "paused" && (
                     <PauseCircle className="h-4 w-4 text-primary" />
@@ -190,7 +187,7 @@ export function AppWindowMock() {
         <div className="col-span-12 flex flex-col gap-3 border-t border-border/60 p-4 md:col-span-3 md:border-t-0">
           <div className="rounded-lg border border-primary/30 bg-primary/[0.06] p-3">
             <div className="flex items-center gap-2 text-xs font-medium text-primary">
-              <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-primary" />
+              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
               Decision needed
             </div>
             <p className="mt-1.5 text-sm text-foreground">

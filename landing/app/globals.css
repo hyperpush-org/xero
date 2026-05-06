@@ -162,10 +162,96 @@
   }
 }
 
+@keyframes flow-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+@keyframes travel-x {
+  0% {
+    transform: translateX(-12%);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(112%);
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+@keyframes ring-ping {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.55;
+  }
+  80%,
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
 .animate-marquee {
   animation: marquee 40s linear infinite;
 }
 
 .animate-pulse-dot {
   animation: pulse-dot 2.2s ease-in-out infinite;
+}
+
+.animate-flow-dash {
+  stroke-dasharray: 4 4;
+  animation: flow-dash 1.4s linear infinite;
+}
+
+.animate-travel-x {
+  animation: travel-x 3.6s cubic-bezier(0.6, 0, 0.4, 1) infinite;
+}
+
+.animate-shimmer-bar {
+  animation: shimmer-bar 2.4s ease-in-out infinite;
+}
+
+.animate-ring-ping {
+  animation: ring-ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.prose-doc ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.prose-doc ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.prose-doc li::marker {
+  color: color-mix(in oklab, var(--primary) 70%, transparent);
+}
+.prose-doc p + p {
+  margin-top: 0.75rem;
+}
+.prose-doc strong {
+  color: var(--foreground);
+  font-weight: 500;
 }

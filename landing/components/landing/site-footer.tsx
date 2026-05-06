@@ -3,10 +3,10 @@ import { Github } from "lucide-react"
 import { DiscordIcon, XBrandIcon } from "@/components/landing/brand-icons"
 
 const links = [
-  { label: "Docs", href: "#" },
-  { label: "Changelog", href: "#" },
-  { label: "Privacy", href: "#" },
-  { label: "Terms", href: "#" },
+  { label: "Docs", href: "/docs" },
+  { label: "Changelog", href: "/changelog" },
+  { label: "Privacy", href: "/privacy" },
+  { label: "Terms", href: "/terms" },
 ]
 
 const social = [
@@ -32,7 +32,7 @@ export function SiteFooter() {
               X
             </span>
             <span className="text-xs text-muted-foreground/70">
-              © {new Date().getFullYear()} Xero Labs · Local-first, built in Rust
+              © {new Date().getFullYear()} Xero Labs · Built in Rust, runs on your machine
             </span>
           </div>
 

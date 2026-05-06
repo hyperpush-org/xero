@@ -10,15 +10,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 mod environment_lifecycle;
+mod headless_runtime;
+mod production_runtime;
 mod protocol;
 mod provider_capabilities;
+mod provider_preflight;
 mod sandbox;
 mod tool_packs;
 mod tool_registry;
 
 pub use environment_lifecycle::*;
+pub use headless_runtime::*;
+pub use production_runtime::*;
 pub use protocol::*;
 pub use provider_capabilities::*;
+pub use provider_preflight::*;
 pub use sandbox::*;
 pub use tool_packs::*;
 pub use tool_registry::*;
@@ -107,6 +113,14 @@ pub trait AgentRuntimeFacade {
 }
 
 pub trait AgentCoreStore: Clone + Send + Sync + 'static {
+    fn runtime_store_descriptor(&self, project_id: &str) -> RuntimeStoreDescriptor {
+        RuntimeStoreDescriptor::in_memory_harness(project_id)
+    }
+
+    fn semantic_workspace_index_state(&self, _project_id: &str) -> EnvironmentSemanticIndexState {
+        EnvironmentSemanticIndexState::Unavailable
+    }
+
     fn insert_run(&self, run: NewRunRecord) -> CoreResult<RunSnapshot>;
     fn load_run(&self, project_id: &str, run_id: &str) -> CoreResult<RunSnapshot>;
     fn append_message(&self, message: NewMessageRecord) -> CoreResult<RunSnapshot>;
@@ -119,6 +133,15 @@ pub trait AgentCoreStore: Clone + Send + Sync + 'static {
         status: RunStatus,
     ) -> CoreResult<RunSnapshot>;
     fn export_trace(&self, project_id: &str, run_id: &str) -> CoreResult<RuntimeTrace>;
+
+    fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> CoreResult<RunSnapshot> {
+        let _ = (project_id, agent_session_id);
+        Err(CoreError::unsupported("latest_run_for_session"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -274,7 +297,66 @@ pub struct RuntimeMessage {
     pub run_id: String,
     pub role: MessageRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<RuntimeMessageProviderMetadata>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeMessageProviderMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assistant_tool_calls: Vec<RuntimeProviderToolCallMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<RuntimeProviderToolResultMetadata>,
+}
+
+impl RuntimeMessageProviderMetadata {
+    pub fn assistant_tool_calls(
+        provider_message_id: impl Into<String>,
+        tool_calls: Vec<RuntimeProviderToolCallMetadata>,
+    ) -> Self {
+        Self {
+            provider_message_id: Some(provider_message_id.into()),
+            assistant_tool_calls: tool_calls,
+            tool_result: None,
+        }
+    }
+
+    pub fn tool_result(
+        provider_message_id: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        provider_tool_name: impl Into<String>,
+        parent_assistant_message_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider_message_id: Some(provider_message_id.into()),
+            assistant_tool_calls: Vec::new(),
+            tool_result: Some(RuntimeProviderToolResultMetadata {
+                tool_call_id: tool_call_id.into(),
+                provider_tool_name: provider_tool_name.into(),
+                parent_assistant_message_id: parent_assistant_message_id.into(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeProviderToolCallMetadata {
+    pub tool_call_id: String,
+    pub provider_tool_name: String,
+    pub arguments: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeProviderToolResultMetadata {
+    pub tool_call_id: String,
+    pub provider_tool_name: String,
+    pub parent_assistant_message_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -342,12 +424,13 @@ pub struct NewRunRecord {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewMessageRecord {
     pub project_id: String,
     pub run_id: String,
     pub role: MessageRole,
     pub content: String,
+    pub provider_metadata: Option<RuntimeMessageProviderMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -481,6 +564,7 @@ impl AgentCoreStore for InMemoryAgentCoreStore {
             run_id: message.run_id,
             role: message.role,
             content: message.content,
+            provider_metadata: message.provider_metadata,
             created_at: now_timestamp(),
         });
         state.snapshot_for_key(&key)
@@ -566,6 +650,37 @@ impl AgentCoreStore for InMemoryAgentCoreStore {
 
     fn export_trace(&self, project_id: &str, run_id: &str) -> CoreResult<RuntimeTrace> {
         RuntimeTrace::from_snapshot(self.load_run(project_id, run_id)?)
+    }
+
+    fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> CoreResult<RunSnapshot> {
+        validate_required(project_id, "projectId")?;
+        validate_required(agent_session_id, "agentSessionId")?;
+        let state = self.lock_state()?;
+        let mut matches = state
+            .runs
+            .values()
+            .filter(|run| run.project_id == project_id && run.agent_session_id == agent_session_id)
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right
+                .summary()
+                .updated_at
+                .cmp(&left.summary().updated_at)
+                .then_with(|| right.summary().started_at.cmp(&left.summary().started_at))
+                .then_with(|| right.run_id.cmp(&left.run_id))
+        });
+        matches.first().map(|run| run.snapshot()).ok_or_else(|| {
+            CoreError::invalid_request(
+                "agent_core_session_run_not_found",
+                format!(
+                    "No run was found for session `{agent_session_id}` in project `{project_id}`."
+                ),
+            )
+        })
     }
 }
 
@@ -660,7 +775,7 @@ struct PersistedAgentCoreState {
     runs: Vec<StoredRun>,
 }
 
-const FILE_AGENT_CORE_STORE_SCHEMA_VERSION: u32 = 1;
+const FILE_AGENT_CORE_STORE_SCHEMA_VERSION: u32 = 2;
 
 impl FileAgentCoreStore {
     pub fn open(path: impl Into<PathBuf>) -> CoreResult<Self> {
@@ -704,6 +819,37 @@ impl FileAgentCoreStore {
             .into_iter()
             .filter(|summary| summary.project_id == project_id)
             .collect())
+    }
+
+    pub fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> CoreResult<RunSnapshot> {
+        validate_required(project_id, "projectId")?;
+        validate_required(agent_session_id, "agentSessionId")?;
+        let state = self.lock_state()?;
+        let mut matches = state
+            .runs
+            .values()
+            .filter(|run| run.project_id == project_id && run.agent_session_id == agent_session_id)
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right
+                .summary()
+                .updated_at
+                .cmp(&left.summary().updated_at)
+                .then_with(|| right.summary().started_at.cmp(&left.summary().started_at))
+                .then_with(|| right.run_id.cmp(&left.run_id))
+        });
+        matches.first().map(|run| run.snapshot()).ok_or_else(|| {
+            CoreError::invalid_request(
+                "agent_core_session_run_not_found",
+                format!(
+                    "No run was found for session `{agent_session_id}` in project `{project_id}`."
+                ),
+            )
+        })
     }
 
     pub fn load_run_by_id(&self, run_id: &str) -> CoreResult<RunSnapshot> {
@@ -804,6 +950,10 @@ impl FileAgentCoreStore {
 }
 
 impl AgentCoreStore for FileAgentCoreStore {
+    fn runtime_store_descriptor(&self, project_id: &str) -> RuntimeStoreDescriptor {
+        RuntimeStoreDescriptor::file_backed_headless_json(project_id, self.path.as_ref().clone())
+    }
+
     fn insert_run(&self, run: NewRunRecord) -> CoreResult<RunSnapshot> {
         validate_required(&run.project_id, "projectId")?;
         validate_required(&run.agent_session_id, "agentSessionId")?;
@@ -865,6 +1015,7 @@ impl AgentCoreStore for FileAgentCoreStore {
             run_id: message.run_id,
             role: message.role,
             content: message.content,
+            provider_metadata: message.provider_metadata,
             created_at: now_timestamp(),
         });
         let snapshot = state.snapshot_for_key(&key)?;
@@ -957,6 +1108,14 @@ impl AgentCoreStore for FileAgentCoreStore {
     fn export_trace(&self, project_id: &str, run_id: &str) -> CoreResult<RuntimeTrace> {
         RuntimeTrace::from_snapshot(self.load_run(project_id, run_id)?)
     }
+
+    fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> CoreResult<RunSnapshot> {
+        self.latest_run_for_session(project_id, agent_session_id)
+    }
 }
 
 fn read_file_agent_core_state(path: &Path) -> CoreResult<InMemoryAgentCoreState> {
@@ -1018,6 +1177,45 @@ pub struct FakeProviderRuntime<S = InMemoryAgentCoreStore> {
     store: S,
 }
 
+fn fake_provider_preflight_snapshot() -> ProviderPreflightSnapshot {
+    provider_preflight_snapshot(ProviderPreflightInput {
+        profile_id: "fake_provider".into(),
+        provider_id: "fake_provider".into(),
+        model_id: "fake-model".into(),
+        source: ProviderPreflightSource::LiveProbe,
+        checked_at: now_timestamp(),
+        age_seconds: Some(0),
+        ttl_seconds: None,
+        required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        capabilities: provider_capability_catalog(ProviderCapabilityCatalogInput {
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            catalog_source: "live".into(),
+            fetched_at: Some(now_timestamp()),
+            last_success_at: Some(now_timestamp()),
+            cache_age_seconds: Some(0),
+            cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+            credential_proof: Some("none_required".into()),
+            context_window_tokens: Some(128_000),
+            max_output_tokens: Some(16_384),
+            context_limit_source: Some("built_in_registry".into()),
+            context_limit_confidence: Some("high".into()),
+            thinking_supported: false,
+            thinking_efforts: Vec::new(),
+            thinking_default_effort: None,
+        }),
+        credential_ready: Some(true),
+        endpoint_reachable: Some(true),
+        model_available: Some(true),
+        streaming_route_available: Some(true),
+        tool_schema_accepted: Some(true),
+        reasoning_controls_accepted: None,
+        attachments_accepted: None,
+        context_limit_known: Some(true),
+        provider_error: None,
+    })
+}
+
 impl Default for FakeProviderRuntime<InMemoryAgentCoreStore> {
     fn default() -> Self {
         Self {
@@ -1044,6 +1242,7 @@ where
         prompt: &str,
         turn_index: usize,
     ) -> CoreResult<()> {
+        let provider_preflight = fake_provider_preflight_snapshot();
         self.store.record_context_manifest(NewContextManifest {
             manifest_id: format!("context-manifest-{}-{turn_index}", snapshot.run_id),
             project_id: snapshot.project_id.clone(),
@@ -1071,6 +1270,7 @@ where
                 "turnIndex": turn_index,
                 "rawContextInjected": false,
                 "promptChars": prompt.len(),
+                "providerPreflight": provider_preflight,
             }),
         })?;
         self.store.append_event(NewRuntimeEvent {
@@ -1107,6 +1307,7 @@ where
             run_id: snapshot.run_id.clone(),
             role: MessageRole::Assistant,
             content: "Owned agent run completed through the reusable Xero core facade.".into(),
+            provider_metadata: None,
         })?;
         self.store.append_event(NewRuntimeEvent {
             project_id: snapshot.project_id.clone(),
@@ -1164,6 +1365,23 @@ where
     type Error = CoreError;
 
     fn start_run(&self, request: StartRunRequest) -> CoreResult<RunSnapshot> {
+        if request.provider.provider_id != FAKE_PROVIDER_ID {
+            return Err(CoreError::invalid_request(
+                "agent_core_fake_provider_explicit_required",
+                format!(
+                    "Harness execution requires provider `{FAKE_PROVIDER_ID}`, got `{}`.",
+                    request.provider.provider_id
+                ),
+            ));
+        }
+        let runtime_contract = ProductionRuntimeContract::fake_provider_harness(
+            "headless_harness",
+            request.project_id.clone(),
+            request.provider.model_id.clone(),
+            self.store.runtime_store_descriptor(&request.project_id),
+        );
+        validate_production_runtime_contract(&runtime_contract)?;
+        let provider_preflight = fake_provider_preflight_snapshot();
         let snapshot = self.store.insert_run(NewRunRecord {
             trace_id: None,
             project_id: request.project_id,
@@ -1186,6 +1404,8 @@ where
                 "status": "starting",
                 "providerId": snapshot.provider_id,
                 "modelId": snapshot.model_id,
+                "runtimeContract": production_runtime_trace_metadata(&runtime_contract),
+                "providerPreflight": provider_preflight,
             }),
         })?;
         let lifecycle = EnvironmentLifecycleService::new(self.store.clone());
@@ -1206,12 +1426,14 @@ where
             run_id: snapshot.run_id.clone(),
             role: MessageRole::System,
             content: "Reusable Xero fake-provider system prompt.".into(),
+            provider_metadata: None,
         })?;
         self.store.append_message(NewMessageRecord {
             project_id: snapshot.project_id.clone(),
             run_id: snapshot.run_id.clone(),
             role: MessageRole::User,
             content: request.prompt.clone(),
+            provider_metadata: None,
         })?;
         self.store.append_event(NewRuntimeEvent {
             project_id: snapshot.project_id.clone(),
@@ -1262,6 +1484,7 @@ where
             run_id: request.run_id.clone(),
             role: MessageRole::User,
             content: request.prompt.clone(),
+            provider_metadata: None,
         })?;
         self.store.append_event(NewRuntimeEvent {
             project_id: request.project_id.clone(),

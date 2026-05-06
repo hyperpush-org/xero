@@ -11,9 +11,12 @@ import {
   type McpRegistryDto,
   type ProjectSnapshotResponseDto,
   type ProjectUpdatedPayloadDto,
+  type ProviderCapabilityCatalogDto,
   type ProviderCredentialDto,
   type ProviderAuthSessionDto,
   type ProviderModelCatalogDto,
+  type ProviderPreflightRequiredFeaturesDto,
+  type ProviderPreflightSnapshotDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
@@ -379,6 +382,130 @@ function makeProviderModelCatalog(
               },
             },
           ]),
+  }
+}
+
+function makeProviderCapabilityCatalog(
+  profile: ProviderProfilesDto['profiles'][number],
+  modelId = profile.modelId,
+): ProviderCapabilityCatalogDto {
+  return {
+    contractVersion: 1,
+    providerId: profile.providerId,
+    providerLabel: profile.label,
+    defaultModelId: modelId,
+    runtimeFamily: profile.runtimeKind,
+    runtimeKind: profile.runtimeKind,
+    authMethod: profile.providerId === 'openai_codex' ? 'oauth' : 'api_key',
+    credentialProof: profile.readiness.ready ? (profile.readiness.proof ?? 'test_ready') : null,
+    transportMode: profile.providerId === 'openai_codex' ? 'external_agent' : 'hosted_api',
+    endpointShape: profile.providerId === 'openai_codex' ? 'codex_session' : 'openai_chat_completions',
+    catalogKind: 'model_provider',
+    modelListStrategy: 'test_fixture',
+    externalAgentAdapter: profile.providerId === 'openai_codex',
+    cache: {
+      source: 'test_fixture',
+      fetchedAt: '2026-04-21T12:00:00Z',
+      lastSuccessAt: '2026-04-21T12:00:00Z',
+      ageSeconds: 0,
+      ttlSeconds: 21_600,
+      stale: false,
+    },
+    requestPreview: {
+      route: 'POST /chat/completions',
+      modelId,
+      enabledFeatures: ['streaming', 'tool_calls'],
+      toolSchemaNames: ['xero_echo_probe'],
+      headers: [],
+      metadata: ['source=test_fixture'],
+    },
+    capabilities: {
+      streaming: {
+        status: 'supported',
+        source: 'test_fixture',
+        detail: 'Streaming provider requests are supported by this fixture.',
+      },
+      toolCalls: {
+        status: 'supported',
+        source: 'test_fixture',
+        strictnessBehavior: 'json_schema',
+        schemaDialect: 'json_schema_object',
+        parallelCallBehavior: 'provider_decides',
+        knownIncompatibilities: [],
+      },
+      reasoning: {
+        status: 'supported',
+        source: 'test_fixture',
+        effortLevels: ['low', 'medium', 'high'],
+        defaultEffort: 'medium',
+        summarySupport: 'provider_default',
+        clamping: 'unsupported_effort_dropped_before_request',
+        unsupportedModelFallback: 'disable_reasoning_control',
+      },
+      attachments: {
+        status: 'unavailable',
+        source: 'test_fixture',
+        imageInput: 'unsupported_in_fixture',
+        documentInput: 'unsupported_in_fixture',
+        supportedTypes: [],
+        limits: ['Attachments are not included in this test fixture.'],
+      },
+      contextLimits: {
+        status: 'supported',
+        source: 'test_fixture',
+        confidence: 'high',
+        contextWindowTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+      costHints: {
+        status: 'unavailable',
+        source: 'test_fixture',
+        detail: 'Cost hints are not included in this fixture.',
+      },
+    },
+    knownLimitations: [],
+    remediations: [],
+  }
+}
+
+function makeProviderPreflightSnapshot(
+  profile: ProviderProfilesDto['profiles'][number],
+  options: {
+    modelId?: string | null
+    requiredFeatures?: Partial<ProviderPreflightRequiredFeaturesDto>
+  } = {},
+): ProviderPreflightSnapshotDto {
+  const modelId = options.modelId ?? profile.modelId
+  const status = profile.readiness.ready || profile.providerId === 'openai_codex' ? 'passed' : 'warning'
+
+  return {
+    contractVersion: 1,
+    profileId: profile.profileId,
+    providerId: profile.providerId,
+    modelId,
+    source: 'static_manual',
+    checkedAt: '2026-04-21T12:00:00Z',
+    ageSeconds: 0,
+    ttlSeconds: 21_600,
+    stale: false,
+    requiredFeatures: {
+      streaming: options.requiredFeatures?.streaming ?? true,
+      toolCalls: options.requiredFeatures?.toolCalls ?? true,
+      reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
+      attachments: options.requiredFeatures?.attachments ?? false,
+    },
+    capabilities: makeProviderCapabilityCatalog(profile, modelId),
+    checks: [
+      {
+        checkId: `provider-preflight:test:${profile.profileId}`,
+        status,
+        code: 'provider_preflight_test_fixture',
+        message: 'Provider preflight satisfied by the test fixture.',
+        source: 'static_manual',
+        retryable: false,
+      },
+    ],
+    status,
   }
 }
 
@@ -1247,6 +1374,30 @@ function createMockAdapter(options?: {
       return nextCatalog
     },
   )
+  const preflightProviderProfile = vi.fn(
+    async (
+      profileId: string,
+      options?: {
+        forceRefresh?: boolean
+        modelId?: string | null
+        requiredFeatures?: Partial<ProviderPreflightRequiredFeaturesDto>
+      },
+    ): Promise<ProviderPreflightSnapshotDto> => {
+      const currentProfile = currentProviderProfiles.value.profiles.find((profile) => profile.profileId === profileId)
+      if (!currentProfile) {
+        throw new XeroDesktopError({
+          code: 'provider_profile_not_found',
+          errorClass: 'user_fixable',
+          message: `Xero could not find provider profile \`${profileId}\`.`,
+        })
+      }
+
+      return makeProviderPreflightSnapshot(currentProfile, {
+        modelId: options?.modelId ?? null,
+        requiredFeatures: options?.requiredFeatures,
+      })
+    },
+  )
   const checkProviderProfile = vi.fn(async (profileId: string) => {
     const currentProfile = currentProviderProfiles.value.profiles.find((profile) => profile.profileId === profileId)
     if (!currentProfile) {
@@ -1893,6 +2044,7 @@ function createMockAdapter(options?: {
     setPluginEnabled,
     removePlugin,
     getProviderModelCatalog,
+    preflightProviderProfile,
     checkProviderProfile,
     runDoctorReport: vi.fn(async (request) =>
       createXeroDoctorReport({
@@ -2045,6 +2197,7 @@ function createMockAdapter(options?: {
     setPluginEnabled,
     removePlugin,
     getProviderModelCatalog,
+    preflightProviderProfile,
     checkProviderProfile,
     getProviderProfiles,
     listProjectFiles,

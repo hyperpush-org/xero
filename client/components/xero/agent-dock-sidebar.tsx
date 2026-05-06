@@ -187,9 +187,10 @@ export function AgentDockSidebar({
         style={{ width }}
       >
         <div className="flex min-h-0 flex-1 flex-col">
-          {agent ? (
+          {open && agent ? (
             <LiveAgentRuntimeView
               {...runtimeProps}
+              active={open}
               agent={agent}
               highChurnStore={highChurnStore}
               density="compact"
@@ -200,12 +201,12 @@ export function AgentDockSidebar({
               onSelectSidebarSession={onSelectSession}
               onCloseSidebar={onClose}
             />
-          ) : (
+          ) : open ? (
             <DockEmptyState
               isCreatingSession={isCreatingSession}
               onCreateSession={onCreateSession}
             />
-          )}
+          ) : null}
         </div>
       </div>
     </aside>

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { isoTimestampSchema, nonEmptyOptionalTextSchema } from './shared'
-import { providerModelCatalogSchema } from './provider-models'
+import { providerModelCatalogSchema, providerPreflightSnapshotSchema } from './provider-models'
 import { runtimeProviderIdSchema } from './runtime'
 
 export const XERO_DIAGNOSTIC_CONTRACT_VERSION = 1
@@ -202,6 +202,7 @@ export const providerProfileDiagnosticsSchema = z
     reachabilityChecks: z.array(xeroDiagnosticCheckSchema).default([]),
     capabilityChecks: z.array(xeroDiagnosticCheckSchema).default([]),
     modelCatalog: providerModelCatalogSchema.nullable().optional(),
+    preflight: providerPreflightSnapshotSchema.nullable().optional(),
   })
   .strict()
   .superRefine((diagnostics, ctx) => {

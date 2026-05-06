@@ -9,6 +9,7 @@ import {
   getProviderModelThinkingEffortLabel,
   hasProviderModelCatalogSnapshot,
   providerCapabilityCatalogSchema,
+  providerPreflightSnapshotSchema,
   providerModelCatalogSchema,
 } from './provider-models'
 
@@ -152,6 +153,41 @@ describe('provider-models', () => {
     expect(capabilities.catalogKind).toBe('model_provider')
     expect(capabilities.capabilities.toolCalls.status).toBe('supported')
     expect(capabilities.requestPreview.toolSchemaNames).toEqual(['xero_echo_probe'])
+  })
+
+  it('parses provider preflight snapshots without treating static metadata as a live probe', () => {
+    const snapshot = providerPreflightSnapshotSchema.parse({
+      contractVersion: 1,
+      profileId: 'openrouter-default',
+      providerId: 'openrouter',
+      modelId: 'openai/o4-mini',
+      source: 'static_manual',
+      checkedAt: '2026-05-04T12:00:00Z',
+      ageSeconds: 0,
+      ttlSeconds: 21_600,
+      stale: false,
+      requiredFeatures: {
+        streaming: true,
+        toolCalls: true,
+        reasoningControls: false,
+        attachments: false,
+      },
+      capabilities: makeOpenRouterCapabilities(),
+      checks: [
+        {
+          checkId: 'provider-preflight:v1:openrouter-default:openrouter:openai-o4-mini:tool',
+          status: 'warning',
+          code: 'provider_preflight_tool_schema',
+          message: 'Minimal tool-call schema is known from capability metadata but was not proven by a live preflight probe.',
+          source: 'static_manual',
+          retryable: false,
+        },
+      ],
+      status: 'warning',
+    })
+
+    expect(snapshot.checks[0]?.status).toBe('warning')
+    expect(snapshot.source).toBe('static_manual')
   })
 
   it('rejects unknown providers and malformed thinking capability payloads', () => {

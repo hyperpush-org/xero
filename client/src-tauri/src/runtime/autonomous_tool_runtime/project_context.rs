@@ -17,6 +17,8 @@ use crate::{
 const DEFAULT_CONTEXT_LIMIT: u32 = 6;
 const MAX_CONTEXT_LIMIT: u32 = 10;
 const MAX_CONTEXT_TEXT_CHARS: usize = 4_000;
+const CONTEXT_MANIFEST_SUMMARY_SCHEMA: &str = "xero.provider_context_package.summary.v1";
+const MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS: usize = 32;
 const PROJECT_CONTEXT_RECORD_SCHEMA: &str = "xero.project_context_tool.record.v1";
 const PROJECT_CONTEXT_UPDATE_SCHEMA: &str = "xero.project_context_tool.record_update.v1";
 const PROJECT_CONTEXT_RECORD_CANDIDATE_SCHEMA: &str =
@@ -523,6 +525,7 @@ impl AutonomousToolRuntime {
             )
         })?;
         let redacted_manifest = redact_json_value(&manifest.manifest);
+        let compact_manifest = compact_context_manifest_for_tool(&manifest, &redacted_manifest);
         let query_id = log_manual_retrieval(
             &self.repo_root,
             run_context,
@@ -554,7 +557,7 @@ impl AutonomousToolRuntime {
             results: Vec::new(),
             record: None,
             memory: None,
-            manifest: Some(redacted_manifest),
+            manifest: Some(compact_manifest),
             candidate_record: None,
         })
     }
@@ -1389,6 +1392,12 @@ fn ensure_context_write_allowed(runtime_agent_id: RuntimeAgentIdDto) -> CommandR
             "Agent Create can search and read durable project context, but records agent definitions through the agent_definition tool.",
         ));
     }
+    if runtime_agent_id == RuntimeAgentIdDto::Crawl {
+        return Err(CommandError::user_fixable(
+            "project_context_write_forbidden_for_crawl",
+            "Crawl can search and read durable project context, but persists repository reconnaissance through its structured crawl report.",
+        ));
+    }
     Ok(())
 }
 
@@ -1423,6 +1432,365 @@ fn selected_ids(single: Option<&str>, many: &[String]) -> Vec<String> {
         values.push(value);
     }
     dedupe_strings(values)
+}
+
+fn compact_context_manifest_for_tool(
+    record: &project_store::AgentContextManifestRecord,
+    redacted_manifest: &JsonValue,
+) -> JsonValue {
+    let original_bytes = serde_json::to_string(redacted_manifest)
+        .map(|serialized| serialized.len())
+        .unwrap_or_default();
+    let mut summary = json!({
+        "kind": "provider_context_package_summary",
+        "schema": CONTEXT_MANIFEST_SUMMARY_SCHEMA,
+        "sourceSchema": redacted_manifest.get("schema").cloned().unwrap_or(JsonValue::Null),
+        "manifestId": record.manifest_id,
+        "citation": format!("agent_context_manifests:{}", record.id),
+        "createdAt": record.created_at,
+        "projectId": record.project_id,
+        "agentSessionId": record.agent_session_id,
+        "runId": record.run_id,
+        "runtimeAgentId": record.runtime_agent_id.as_str(),
+        "agentDefinitionId": record.agent_definition_id,
+        "agentDefinitionVersion": record.agent_definition_version,
+        "providerId": record.provider_id,
+        "modelId": record.model_id,
+        "requestKind": context_manifest_request_kind_label(&record.request_kind),
+        "contextHash": record.context_hash,
+        "compactionId": record.compaction_id,
+        "handoffId": record.handoff_id,
+        "redactionState": context_redaction_state_label(&record.redaction_state),
+        "budget": {
+            "estimatedTokens": record.estimated_tokens,
+            "budgetTokens": record.budget_tokens,
+            "contextWindowTokens": redacted_manifest.get("contextWindowTokens").cloned().unwrap_or(JsonValue::Null),
+            "effectiveInputBudgetTokens": redacted_manifest.get("effectiveInputBudgetTokens").cloned().unwrap_or(JsonValue::Null),
+            "outputReserveTokens": redacted_manifest.get("outputReserveTokens").cloned().unwrap_or(JsonValue::Null),
+            "maxOutputTokens": redacted_manifest.get("maxOutputTokens").cloned().unwrap_or(JsonValue::Null),
+            "safetyReserveTokens": redacted_manifest.get("safetyReserveTokens").cloned().unwrap_or(JsonValue::Null),
+            "limitConfidence": redacted_manifest.get("limitConfidence").cloned().unwrap_or(JsonValue::Null),
+            "limitSource": redacted_manifest.get("limitSource").cloned().unwrap_or(JsonValue::Null),
+        },
+        "policy": {
+            "action": context_policy_action_label(&record.policy_action),
+            "reasonCode": record.policy_reason_code,
+            "pressure": context_pressure_label(&record.pressure),
+            "pressurePercent": redacted_manifest
+                .get("policy")
+                .and_then(|policy| policy.get("pressurePercent"))
+                .cloned()
+                .unwrap_or(JsonValue::Null),
+            "targetRuntimeAgentId": redacted_manifest
+                .get("policy")
+                .and_then(|policy| policy.get("targetRuntimeAgentId"))
+                .cloned()
+                .unwrap_or(JsonValue::Null),
+        },
+        "contributors": compact_manifest_contributors(record),
+        "retrieval": compact_manifest_object_field(
+            redacted_manifest,
+            "retrieval",
+            &[
+                "deliveryModel",
+                "method",
+                "rawContextInjected",
+                "resultCount",
+                "queryIds",
+                "resultIds",
+                "sourceMissingContextRowsAvailable",
+                "staleContextRowsAvailable",
+                "supersededContextRowsAvailable",
+                "freshnessDiagnostics",
+                "toolAvailability",
+            ],
+        ),
+        "coordination": compact_manifest_object_field(
+            redacted_manifest,
+            "coordination",
+            &[
+                "deliveryModel",
+                "eventCount",
+                "mailboxCount",
+                "presenceCount",
+                "reservationCount",
+                "promptFragmentId",
+                "rawDurableMemoryInjected",
+                "toolAvailability",
+            ],
+        ),
+        "promptFragments": compact_manifest_prompt_fragments(redacted_manifest),
+        "messages": compact_manifest_messages(redacted_manifest),
+        "tools": compact_manifest_tool_descriptors(redacted_manifest),
+        "providerPreflight": compact_manifest_provider_preflight(redacted_manifest),
+        "omitted": {
+            "reason": "mechanical_compaction_for_model_visible_tool_result",
+            "fullManifestPersisted": true,
+            "originalBytes": original_bytes,
+            "removedFields": [
+                "promptFragments[].body",
+                "messages[].body",
+                "toolDescriptors[].description",
+                "toolDescriptors[].inputSchema",
+                "providerPreflight.capabilities",
+                "providerPreflight.requestPreview.headers",
+                "providerPreflight.requestPreview.metadata"
+            ],
+        },
+    });
+
+    let mut returned_bytes = serde_json::to_string(&summary)
+        .map(|serialized| serialized.len())
+        .unwrap_or_default();
+    if let Some(omitted) = summary
+        .get_mut("omitted")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        omitted.insert("returnedBytes".into(), json!(returned_bytes));
+        omitted.insert(
+            "omittedBytes".into(),
+            json!(original_bytes.saturating_sub(returned_bytes)),
+        );
+    }
+    returned_bytes = serde_json::to_string(&summary)
+        .map(|serialized| serialized.len())
+        .unwrap_or_default();
+    if let Some(omitted) = summary
+        .get_mut("omitted")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        omitted.insert("returnedBytes".into(), json!(returned_bytes));
+        omitted.insert(
+            "omittedBytes".into(),
+            json!(original_bytes.saturating_sub(returned_bytes)),
+        );
+    }
+
+    summary
+}
+
+fn compact_manifest_contributors(record: &project_store::AgentContextManifestRecord) -> JsonValue {
+    json!({
+        "includedCount": record.included_contributors.len(),
+        "includedTruncated": record.included_contributors.len() > MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS,
+        "included": record
+            .included_contributors
+            .iter()
+            .take(MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS)
+            .map(compact_manifest_contributor)
+            .collect::<Vec<_>>(),
+        "excludedCount": record.excluded_contributors.len(),
+        "excludedTruncated": record.excluded_contributors.len() > MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS,
+        "excluded": record
+            .excluded_contributors
+            .iter()
+            .take(MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS)
+            .map(compact_manifest_contributor)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn compact_manifest_contributor(
+    contributor: &project_store::AgentContextManifestContributorRecord,
+) -> JsonValue {
+    json!({
+        "contributorId": contributor.contributor_id,
+        "kind": contributor.kind,
+        "sourceId": contributor.source_id,
+        "estimatedTokens": contributor.estimated_tokens,
+        "reason": contributor.reason,
+    })
+}
+
+fn compact_manifest_object_field(
+    manifest: &JsonValue,
+    field_name: &str,
+    keys: &[&str],
+) -> JsonValue {
+    copy_json_fields(manifest.get(field_name), keys)
+}
+
+fn compact_manifest_prompt_fragments(manifest: &JsonValue) -> JsonValue {
+    let fragments = manifest
+        .get("promptFragments")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    json!({
+        "count": fragments.len(),
+        "truncated": fragments.len() > MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS,
+        "items": fragments
+            .iter()
+            .take(MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS)
+            .map(|fragment| {
+                json!({
+                    "id": fragment.get("id").cloned().unwrap_or(JsonValue::Null),
+                    "title": fragment.get("title").cloned().unwrap_or(JsonValue::Null),
+                    "priority": fragment.get("priority").cloned().unwrap_or(JsonValue::Null),
+                    "provenance": fragment.get("provenance").cloned().unwrap_or(JsonValue::Null),
+                    "sha256": fragment.get("sha256").cloned().unwrap_or(JsonValue::Null),
+                    "tokenEstimate": fragment.get("tokenEstimate").cloned().unwrap_or(JsonValue::Null),
+                    "bodyRedacted": fragment.get("bodyRedacted").cloned().unwrap_or(JsonValue::Null),
+                    "bodyChars": fragment
+                        .get("body")
+                        .and_then(JsonValue::as_str)
+                        .map(|body| body.chars().count())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn compact_manifest_messages(manifest: &JsonValue) -> JsonValue {
+    let messages = manifest
+        .get("messages")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    json!({
+        "count": messages.len(),
+        "truncated": messages.len() > MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS,
+        "items": messages
+            .iter()
+            .take(MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS)
+            .map(|message| {
+                json!({
+                    "index": message.get("index").cloned().unwrap_or(JsonValue::Null),
+                    "role": message.get("role").cloned().unwrap_or(JsonValue::Null),
+                    "tokenEstimate": message.get("tokenEstimate").cloned().unwrap_or(JsonValue::Null),
+                    "bodyRedacted": message.get("bodyRedacted").cloned().unwrap_or(JsonValue::Null),
+                    "bodyChars": message
+                        .get("body")
+                        .and_then(JsonValue::as_str)
+                        .map(|body| body.chars().count())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn compact_manifest_tool_descriptors(manifest: &JsonValue) -> JsonValue {
+    let descriptors = manifest
+        .get("toolDescriptors")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    json!({
+        "count": descriptors.len(),
+        "truncated": descriptors.len() > MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS,
+        "names": descriptors
+            .iter()
+            .filter_map(|descriptor| descriptor.get("name").and_then(JsonValue::as_str))
+            .take(MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS)
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn compact_manifest_provider_preflight(manifest: &JsonValue) -> JsonValue {
+    let Some(preflight) = manifest.get("providerPreflight") else {
+        return JsonValue::Null;
+    };
+    let mut output = copy_json_fields(
+        Some(preflight),
+        &[
+            "status",
+            "source",
+            "stale",
+            "ageSeconds",
+            "ttlSeconds",
+            "checkedAt",
+            "providerId",
+            "profileId",
+            "modelId",
+        ],
+    );
+
+    if let Some(fields) = output.as_object_mut() {
+        fields.insert(
+            "requiredFeatures".into(),
+            preflight
+                .get("requiredFeatures")
+                .cloned()
+                .unwrap_or(JsonValue::Null),
+        );
+        fields.insert(
+            "checks".into(),
+            JsonValue::Array(compact_manifest_preflight_checks(preflight)),
+        );
+        fields.insert(
+            "capabilities".into(),
+            compact_manifest_provider_capabilities(preflight),
+        );
+    }
+
+    output
+}
+
+fn compact_manifest_preflight_checks(preflight: &JsonValue) -> Vec<JsonValue> {
+    preflight
+        .get("checks")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .take(MAX_CONTEXT_MANIFEST_SUMMARY_ITEMS)
+        .map(|check| {
+            copy_json_fields(
+                Some(check),
+                &["code", "status", "source", "retryable", "message"],
+            )
+        })
+        .collect()
+}
+
+fn compact_manifest_provider_capabilities(preflight: &JsonValue) -> JsonValue {
+    let Some(provider) = preflight.get("capabilities") else {
+        return JsonValue::Null;
+    };
+    let nested = provider.get("capabilities");
+    json!({
+        "runtimeKind": provider.get("runtimeKind").cloned().unwrap_or(JsonValue::Null),
+        "runtimeFamily": provider.get("runtimeFamily").cloned().unwrap_or(JsonValue::Null),
+        "endpointShape": provider.get("endpointShape").cloned().unwrap_or(JsonValue::Null),
+        "transportMode": provider.get("transportMode").cloned().unwrap_or(JsonValue::Null),
+        "defaultModelId": provider.get("defaultModelId").cloned().unwrap_or(JsonValue::Null),
+        "knownLimitations": provider.get("knownLimitations").cloned().unwrap_or(JsonValue::Null),
+        "attachments": nested
+            .and_then(|capabilities| capabilities.get("attachments"))
+            .map(|attachments| copy_json_fields(Some(attachments), &["status", "source", "supportedTypes", "limits"]))
+            .unwrap_or(JsonValue::Null),
+        "contextLimits": nested
+            .and_then(|capabilities| capabilities.get("contextLimits"))
+            .cloned()
+            .unwrap_or(JsonValue::Null),
+        "reasoning": nested
+            .and_then(|capabilities| capabilities.get("reasoning"))
+            .map(|reasoning| copy_json_fields(Some(reasoning), &["status", "defaultEffort", "effortLevels", "summarySupport", "source"]))
+            .unwrap_or(JsonValue::Null),
+        "streaming": nested
+            .and_then(|capabilities| capabilities.get("streaming"))
+            .map(|streaming| copy_json_fields(Some(streaming), &["status", "source"]))
+            .unwrap_or(JsonValue::Null),
+        "toolCalls": nested
+            .and_then(|capabilities| capabilities.get("toolCalls"))
+            .map(|tool_calls| copy_json_fields(Some(tool_calls), &["status", "schemaDialect", "parallelCallBehavior", "strictnessBehavior", "source"]))
+            .unwrap_or(JsonValue::Null),
+    })
+}
+
+fn copy_json_fields(source: Option<&JsonValue>, keys: &[&str]) -> JsonValue {
+    let mut output = JsonMap::new();
+    if let Some(JsonValue::Object(fields)) = source {
+        for key in keys {
+            if let Some(value) = fields.get(*key) {
+                output.insert((*key).into(), value.clone());
+            }
+        }
+    }
+    JsonValue::Object(output)
 }
 
 fn update_record_content_json(
@@ -1666,5 +2034,26 @@ fn context_pressure_label(pressure: &project_store::AgentContextBudgetPressure) 
         project_store::AgentContextBudgetPressure::Medium => "medium",
         project_store::AgentContextBudgetPressure::High => "high",
         project_store::AgentContextBudgetPressure::Over => "over",
+    }
+}
+
+fn context_policy_action_label(action: &project_store::AgentContextPolicyAction) -> &'static str {
+    match action {
+        project_store::AgentContextPolicyAction::ContinueNow => "continue_now",
+        project_store::AgentContextPolicyAction::CompactNow => "compact_now",
+        project_store::AgentContextPolicyAction::RecompactNow => "recompact_now",
+        project_store::AgentContextPolicyAction::HandoffNow => "handoff_now",
+        project_store::AgentContextPolicyAction::Blocked => "blocked",
+    }
+}
+
+fn context_manifest_request_kind_label(
+    kind: &project_store::AgentContextManifestRequestKind,
+) -> &'static str {
+    match kind {
+        project_store::AgentContextManifestRequestKind::ProviderTurn => "provider_turn",
+        project_store::AgentContextManifestRequestKind::HandoffSource => "handoff_source",
+        project_store::AgentContextManifestRequestKind::Diagnostic => "diagnostic",
+        project_store::AgentContextManifestRequestKind::Test => "test",
     }
 }

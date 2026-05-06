@@ -9,7 +9,6 @@ import {
   Bot,
   ChevronDown,
   GitCompareArrows,
-  Gamepad2,
   Github,
   Globe,
   Maximize2,
@@ -41,7 +40,6 @@ export type PlatformVariant = "macos" | "windows" | "linux"
 
 export type SurfacePreloadTarget =
   | "browser"
-  | "games"
   | "ios"
   | "settings"
   | "solana"
@@ -107,8 +105,6 @@ interface XeroShellProps {
   /** When provided, the account button shows the GitHub avatar + signed-in state. */
   accountAvatarUrl?: string | null
   accountLogin?: string | null
-  onToggleGames?: () => void
-  gamesOpen?: boolean
   onToggleBrowser?: () => void
   browserOpen?: boolean
   onToggleIos?: () => void
@@ -241,8 +237,6 @@ export function XeroShell({
   accountAuthenticating = false,
   accountAvatarUrl = null,
   accountLogin = null,
-  onToggleGames,
-  gamesOpen = false,
   onToggleBrowser,
   browserOpen = false,
   onToggleIos,
@@ -418,25 +412,6 @@ export function XeroShell({
       type="button"
     >
       <Settings className="h-4 w-4" />
-    </button>
-  )
-
-  const GamesBtn = (
-    <button
-      aria-label={gamesOpen ? "Close arcade" : "Open arcade"}
-      aria-pressed={gamesOpen}
-      className={cn(
-        "rounded-md p-1.5 transition-colors",
-        gamesOpen
-          ? "bg-primary/15 text-primary"
-          : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-      )}
-      onFocus={() => queueSurfacePreload("games")}
-      onClick={onToggleGames}
-      onPointerEnter={() => queueSurfacePreload("games")}
-      type="button"
-    >
-      <Gamepad2 className="h-4 w-4" />
     </button>
   )
 
@@ -749,7 +724,7 @@ export function XeroShell({
   let titlebar: React.ReactNode
 
   if (platform === "macos") {
-    // macOS: [traffic-lights] [sidebar-toggle] [|] [nav] ··· (centered logo) ··· [vcs] [games] [account] [tools] [settings]
+    // macOS: [traffic-lights] [sidebar-toggle] [|] [nav] ··· (centered logo) ··· [vcs] [account] [tools] [settings]
     titlebar = (
       <header className="relative flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3 pr-3">
         {TrafficLights}
@@ -778,7 +753,6 @@ export function XeroShell({
           >
             {WorkflowsBtn}
             {VcsBtn}
-            {GamesBtn}
             {AgentDockBtn}
             {AccountBtn}
             {ToolsMenu}
@@ -788,7 +762,7 @@ export function XeroShell({
       </header>
     )
   } else {
-    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [games] [account] [tools] [settings] [|] [min][max][close]
+    // Windows / Linux: [logo] [|] [sidebar-toggle] [|] [nav] ← drag zone → [account] [tools] [settings] [|] [min][max][close]
     titlebar = (
       <header className="flex h-11 items-center border-b border-border bg-sidebar shrink-0 pl-3">
         <div
@@ -818,7 +792,6 @@ export function XeroShell({
             <>
               {WorkflowsBtn}
               {VcsBtn}
-              {GamesBtn}
               {AgentDockBtn}
               {AccountBtn}
               {ToolsMenu}
