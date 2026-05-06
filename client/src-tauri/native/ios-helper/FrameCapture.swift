@@ -32,11 +32,14 @@ class FrameCapture: NSObject, SCStreamOutput {
     }
 
     func start(fps: Int, completion: @escaping (Result<Dimensions, HelperError>) -> Void) {
+        fputs("[FrameCapture] start called, fps=\(fps)\n", stderr)
         guard !isCapturing else {
+            fputs("[FrameCapture] already capturing\n", stderr)
             completion(.failure(.captureError("already capturing")))
             return
         }
 
+        fputs("[FrameCapture] finding simulator window...\n", stderr)
         findSimulatorWindow { [weak self] result in
             guard let self = self else { return }
             switch result {
@@ -64,8 +67,10 @@ class FrameCapture: NSObject, SCStreamOutput {
     private func findSimulatorWindow(
         completion: @escaping (Result<SCWindow, HelperError>) -> Void
     ) {
+        fputs("[FrameCapture] calling SCShareableContent.get...\n", stderr)
         SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { [weak self] content, error in
-            guard let self = self else { return }
+            fputs("[FrameCapture] SCShareableContent callback fired, error=\(error?.localizedDescription ?? "nil")\n", stderr)
+            guard let self = self else { fputs("[FrameCapture] self is nil\n", stderr); return }
 
             if let error = error {
                 let nsError = error as NSError
@@ -94,23 +99,27 @@ class FrameCapture: NSObject, SCStreamOutput {
                 return
             }
 
-            // Find the window whose title contains the device name.
-            // Simulator window titles look like "iPhone 17 Pro — iOS 26.0".
-            // We match against the UDID device name resolved by the Rust side.
+            // Find Simulator windows. Don't filter by isOnScreen — the
+            // window may be minimized or hidden but still capturable.
             let simWindows = content.windows.filter { window in
                 window.owningApplication?.bundleIdentifier == simApp.bundleIdentifier
-                    && window.isOnScreen
             }
 
-            // Prefer the largest on-screen window (the device viewport).
+            fputs("[FrameCapture] found \(simWindows.count) Simulator window(s)\n", stderr)
+            for (i, w) in simWindows.enumerated() {
+                fputs("[FrameCapture]   [\(i)] \(w.frame.width)x\(w.frame.height) onScreen=\(w.isOnScreen) title=\(w.title ?? "nil")\n", stderr)
+            }
+
+            // Prefer the largest window (the device viewport).
             let window = simWindows.max(by: { a, b in
                 (a.frame.width * a.frame.height) < (b.frame.width * b.frame.height)
             })
 
             guard let window = window else {
-                completion(.failure(.captureError("no Simulator window found for \(self.udid)")))
+                completion(.failure(.captureError("no Simulator window found (\(simWindows.count) candidates, \(content.windows.count) total windows)")))
                 return
             }
+            fputs("[FrameCapture] selected window: \(window.frame.width)x\(window.frame.height)\n", stderr)
 
             completion(.success(window))
         }

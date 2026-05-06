@@ -416,10 +416,11 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<IosSession, Com
         Some("attaching input pipeline".to_string()),
     );
 
-    // --- Try Swift helper (ScreenCaptureKit + IndigoHID) ---
-    // The helper is preferred over idb_companion: it gives us 30 FPS
-    // frames via ScreenCaptureKit and reliable touch/swipe via Indigo.
-    eprintln!("[ios-session] looking for helper binary...");
+    // Spawn the Swift helper for AX inspection (Phase 3). Frame capture
+    // is NOT routed through the helper (ScreenCaptureKit crashes as a
+    // sidecar without window-server connection). The helper is used for:
+    //   - accessibility_tree / accessibility_element_at queries
+    //   - HID input via IndigoHID (fallback after CG)
     let (ios_helper, ios_helper_client) = match helper::resolve_helper_binary(&app) {
         Some(binary) => {
             match helper::HelperLaunch::new(binary, device_id.clone())
@@ -428,19 +429,11 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<IosSession, Com
                 Ok(h) => {
                     match super::helper_client::HelperClient::connect(
                         &h.socket_path,
-                        Duration::from_secs(5),
+                        Duration::from_secs(3),
                     ) {
-                        Ok(c) => {
-                            emit_status(
-                                &app,
-                                StatusPhase::Connecting,
-                                &device_id,
-                                Some("Swift helper connected (ScreenCaptureKit + IndigoHID)".into()),
-                            );
-                            (Some(h), Some(Arc::new(c)))
-                        }
+                        Ok(c) => (Some(h), Some(Arc::new(c))),
                         Err(e) => {
-                            eprintln!("xero: helper UDS connect failed: {e}");
+                            eprintln!("xero: helper connect failed: {e}");
                             (None, None)
                         }
                     }
@@ -453,6 +446,7 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<IosSession, Com
         }
         None => (None, None),
     };
+    eprintln!("[ios-session] helper result: helper={}, client={}", ios_helper.is_some(), ios_helper_client.is_some());
 
     eprintln!("[ios-session] helper result: helper={}, client={}", ios_helper.is_some(), ios_helper_client.is_some());
 
@@ -503,24 +497,6 @@ pub fn spawn<R: Runtime + 'static>(args: SpawnArgs<R>) -> Result<IosSession, Com
 
     eprintln!("[ios-session] frame pump started: {width}x{height}");
 
-    // Minimize the Simulator.app window now that the frame pump is
-    // capturing it. The window must exist (ScreenCaptureKit / simctl
-    // needs it) but the user only needs the Xero sidebar view.
-    // Miniaturize via AppleScript — best effort, requires Accessibility.
-    let _ = std::process::Command::new("osascript")
-        .args(["-e", r#"
-            tell application "System Events"
-                tell process "Simulator"
-                    try
-                        click (first button of first window whose subrole is "AXMinimizeButton")
-                    end try
-                end tell
-            end tell
-        "#])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
     emit_status(
         &app,
         StatusPhase::Streaming,
@@ -555,38 +531,10 @@ fn start_frame_pump<R: Runtime + 'static>(
 ) -> Result<FramePumpStart, CommandError> {
     eprintln!("[frame-pump] helper={}, idb={}", helper_client.is_some(), idb_client.is_some());
 
-    // If the Swift helper is connected, try ScreenCaptureKit frames.
-    // On failure (e.g., Screen Recording permission denied), fall through
-    // to the idb/screenshot path instead of hard-failing the session.
-    if let Some(hc) = helper_client {
-        match hc.start_capture(30) {
-            Ok((w, h)) => {
-                if let Some(frame_rx) = hc.take_frame_rx() {
-                    let bus2 = Arc::clone(bus);
-                    let app2 = app.clone();
-                    let flag = Arc::clone(&shutdown);
-                    let thread = thread::spawn(move || {
-                        while !flag.load(Ordering::Relaxed) {
-                            match frame_rx.recv_timeout(Duration::from_secs(2)) {
-                                Ok(frame) => {
-                                    publish_and_emit(
-                                        &app2, &bus2, frame.width, frame.height, frame.jpeg,
-                                    );
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                                Err(_) => break,
-                            }
-                        }
-                    });
-                    return Ok((w, h, None, Some(thread)));
-                }
-            }
-            Err(e) => {
-                eprintln!("xero: ScreenCaptureKit capture failed, falling back: {e}");
-                // Fall through to idb/screenshot path.
-            }
-        }
-    }
+    // NOTE: ScreenCaptureKit requires a window-server connection that
+    // sidecar binaries don't have (CGS_REQUIRE_INIT crash). The helper
+    // is still used for HID input (IndigoHID) and AX inspection, but
+    // frame capture always uses the screenshot fallback or idb H.264.
 
     // Fallback: H.264 stream via idb_companion or screenshot polling.
     let client = idb_client;
@@ -724,42 +672,29 @@ fn spawn_screenshot_fallback<R: Runtime + 'static>(
     publish_png(&app, &bus, png, width, height);
 
     let handle = thread::spawn(move || {
-        // Tolerate transient screenshot failures — a single simctl hiccup
-        // shouldn't kill the whole frame pump. Exit only after the shutdown
-        // flag is set or the failure streak clearly means the simulator is
-        // gone.
-        // iOS 26 cold boot can take 30+ seconds during which simctl
-        // screenshots fail with ScreenshotError code=2. Be very tolerant.
-        const MAX_CONSECUTIVE_FAILURES: u32 = 60;
-        let mut consecutive_failures = 0u32;
+        eprintln!("[screenshot-poll] thread started for {device_id}");
+        let mut frame_count = 0u64;
         loop {
             if shutdown.load(Ordering::Relaxed) {
+                eprintln!("[screenshot-poll] shutdown requested, exiting");
                 break;
             }
-            std::thread::sleep(Duration::from_millis(600));
+            std::thread::sleep(Duration::from_millis(250));
             if shutdown.load(Ordering::Relaxed) {
+                eprintln!("[screenshot-poll] shutdown requested, exiting");
                 break;
             }
             match xcrun::screenshot(&device_id) {
                 Ok(png) => {
-                    consecutive_failures = 0;
+                    frame_count += 1;
+                    if frame_count <= 3 || frame_count % 20 == 0 {
+                        eprintln!("[screenshot-poll] frame #{frame_count}, {} bytes", png.len());
+                    }
                     publish_png(&app, &bus, png, width, height);
                 }
-                Err(err) => {
-                    consecutive_failures += 1;
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                        emit_error(
-                            &app,
-                            &device_id,
-                            format!(
-                                "simctl screenshot failed {consecutive_failures} times in a row: {err}"
-                            ),
-                        );
-                        break;
-                    }
-                    // Back off a little so we don't spin on a transient
-                    // issue (e.g. simctl contending during a boot step).
-                    std::thread::sleep(Duration::from_millis(400));
+                Err(e) => {
+                    eprintln!("[screenshot-poll] error: {e}");
+                    std::thread::sleep(Duration::from_millis(500));
                 }
             }
         }

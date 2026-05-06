@@ -38,7 +38,9 @@ struct XeroIosHelper {
 
             case "start_capture":
                 let fps = (request.params?["fps"] as? Int) ?? 30
+                fputs("[helper] start_capture request received, fps=\(fps)\n", stderr)
                 frameCapture.start(fps: fps) { result in
+                    fputs("[helper] start_capture completion: \(result)\n", stderr)
                     switch result {
                     case .success(let dims):
                         respond(.success([

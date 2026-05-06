@@ -136,7 +136,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
   const frameCoalescerRef = useRef<FrameCoalescer<EmulatorFrameInfo> | null>(null)
   if (!frameCoalescerRef.current) {
     frameCoalescerRef.current = createFrameCoalescer<EmulatorFrameInfo>({
-      getEnabled: () => activeRef.current && !isDocumentHidden(),
+      getEnabled: () => activeRef.current,
       onFlush: (nextFrame) => setFrame(nextFrame),
     })
   }
@@ -182,7 +182,7 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
 
     void listen<EmulatorFrameInfo>(EMULATOR_FRAME_EVENT, (event) => {
       if (cancelled) return
-      frameCoalescerRef.current?.schedule(event.payload)
+      setFrame(event.payload)
     }).then((unsub) => {
       if (cancelled) {
         unsub()

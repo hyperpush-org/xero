@@ -646,6 +646,9 @@ function EmulatorViewport({
     )
   }
 
+  // DEBUG: log every render to find why frames don't show
+  console.log("[viewport] isStreaming:", isStreaming, "frameSrc:", frameSrc?.slice(0, 50), "currentDevice:", !!currentDevice, "frameSeq:", frameSeq, "status:", status.phase)
+
   if (!isStreaming || frameSrc === null || !currentDevice) {
     const headline =
       status.phase === "booting" || status.phase === "connecting"
