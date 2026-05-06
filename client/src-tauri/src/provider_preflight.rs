@@ -19,16 +19,19 @@ use crate::{
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile, CommandError,
         CommandResult, SessionContextLimitConfidenceDto, SessionContextLimitSourceDto,
     },
-    provider_credentials::{ProviderCredentialProfile, ProviderCredentialsView},
+    provider_credentials::{
+        ProviderCredentialLink, ProviderCredentialProfile, ProviderCredentialsView,
+    },
     provider_models::{
         catalog_age_seconds, load_provider_model_catalog, provider_capability_catalog_for_catalog,
         ProviderModelCatalog, ProviderModelCatalogSource, ProviderModelRecord,
         ProviderModelThinkingEffort,
     },
     runtime::{
-        AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID,
-        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
-        OPENROUTER_PROVIDER_ID,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
+        OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
+        VERTEX_PROVIDER_ID,
     },
     state::DesktopState,
 };
@@ -91,7 +94,12 @@ pub(crate) fn run_selected_provider_preflight<R: Runtime>(
             &catalog,
         )?,
     };
-    let snapshot = live_snapshot.unwrap_or(catalog_snapshot);
+    let snapshot = bind_provider_preflight_cache_for_profile(
+        state,
+        &provider_profiles,
+        profile,
+        live_snapshot.unwrap_or(catalog_snapshot),
+    )?;
     persist_provider_preflight_snapshot(&state.global_db_path(app)?, &snapshot)?;
     eprintln!(
         "[runtime-latency] run_selected_provider_preflight profile_id={profile_id} provider_id={} model_id={} source={:?} duration_ms={}",
@@ -101,6 +109,44 @@ pub(crate) fn run_selected_provider_preflight<R: Runtime>(
         started.elapsed().as_millis()
     );
     Ok(snapshot)
+}
+
+pub(crate) fn current_provider_preflight_cache_binding<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    profile_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    required_features: &ProviderPreflightRequiredFeatures,
+) -> CommandResult<Option<xero_agent_core::ProviderPreflightCacheBinding>> {
+    let provider_profiles =
+        crate::commands::provider_credentials::load_provider_credentials_view(app, state)?;
+    let profile = provider_profiles
+        .profile(profile_id)
+        .or_else(|| {
+            provider_profiles
+                .profiles()
+                .iter()
+                .find(|profile| profile.provider_id == profile_id)
+        })
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "provider_not_found",
+                format!("Xero could not find provider `{profile_id}` for preflight cache reuse."),
+            )
+        })?;
+    if profile.provider_id != provider_id {
+        return Ok(None);
+    }
+    let (endpoint_fingerprint, account_class) =
+        provider_preflight_cache_binding_parts(state, &provider_profiles, profile)?;
+    Ok(Some(xero_agent_core::provider_preflight_cache_binding(
+        provider_id,
+        model_id,
+        &endpoint_fingerprint,
+        &account_class,
+        required_features,
+    )))
 }
 
 pub(crate) fn latest_provider_preflight_snapshot<R: Runtime>(
@@ -116,6 +162,111 @@ pub(crate) fn latest_provider_preflight_snapshot<R: Runtime>(
         provider_id,
         model_id,
     )
+}
+
+fn bind_provider_preflight_cache_for_profile(
+    state: &DesktopState,
+    provider_profiles: &ProviderCredentialsView,
+    profile: &ProviderCredentialProfile,
+    snapshot: ProviderPreflightSnapshot,
+) -> CommandResult<ProviderPreflightSnapshot> {
+    let (endpoint_fingerprint, account_class) =
+        provider_preflight_cache_binding_parts(state, provider_profiles, profile)?;
+    Ok(xero_agent_core::bind_provider_preflight_cache(
+        snapshot,
+        &endpoint_fingerprint,
+        &account_class,
+    ))
+}
+
+fn provider_preflight_cache_binding_parts(
+    state: &DesktopState,
+    provider_profiles: &ProviderCredentialsView,
+    profile: &ProviderCredentialProfile,
+) -> CommandResult<(String, String)> {
+    let endpoint_fingerprint = match profile.provider_id.as_str() {
+        OPENAI_CODEX_PROVIDER_ID => "https://chatgpt.com/backend-api/codex/responses".into(),
+        OPENAI_API_PROVIDER_ID
+        | GITHUB_MODELS_PROVIDER_ID
+        | AZURE_OPENAI_PROVIDER_ID
+        | GEMINI_AI_STUDIO_PROVIDER_ID
+        | OLLAMA_PROVIDER_ID => {
+            let endpoint = resolve_openai_compatible_endpoint_for_profile(
+                profile,
+                &state.openai_compatible_auth_config(),
+            )
+            .map_err(|error| {
+                CommandError::user_fixable(
+                    error.code,
+                    format!(
+                        "Xero could not resolve provider preflight cache endpoint: {}",
+                        error.message
+                    ),
+                )
+            })?;
+            match endpoint.api_version.as_deref() {
+                Some(api_version) if !api_version.trim().is_empty() => {
+                    format!("{}?api-version={api_version}", endpoint.effective_base_url)
+                }
+                _ => endpoint.effective_base_url,
+            }
+        }
+        OPENROUTER_PROVIDER_ID => OPENROUTER_BASE_URL.into(),
+        ANTHROPIC_PROVIDER_ID => profile
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.anthropic.com".into()),
+        BEDROCK_PROVIDER_ID => format!(
+            "bedrock:{}",
+            profile
+                .region
+                .as_deref()
+                .map(str::trim)
+                .filter(|region| !region.is_empty())
+                .unwrap_or("unknown-region")
+        ),
+        VERTEX_PROVIDER_ID => format!(
+            "vertex:{}:{}",
+            profile
+                .project_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|project_id| !project_id.is_empty())
+                .unwrap_or("unknown-project"),
+            profile
+                .region
+                .as_deref()
+                .map(str::trim)
+                .filter(|region| !region.is_empty())
+                .unwrap_or("unknown-region")
+        ),
+        _ => format!("{}:{}", profile.runtime_kind, profile.provider_id),
+    };
+
+    let account_class = match profile.credential_link.as_ref() {
+        Some(ProviderCredentialLink::OpenAiCodex {
+            account_id,
+            updated_at,
+            ..
+        }) => format!(
+            "openai_codex:{}:{updated_at}",
+            xero_agent_core::runtime_trace_id("provider-account", &[account_id])
+        ),
+        Some(ProviderCredentialLink::ApiKey { updated_at }) => format!("api_key:{updated_at}"),
+        Some(ProviderCredentialLink::Local { updated_at }) => format!("local:{updated_at}"),
+        Some(ProviderCredentialLink::Ambient { updated_at }) => format!("ambient:{updated_at}"),
+        None => {
+            let runtime_settings =
+                runtime_settings_snapshot_for_provider_profile(provider_profiles, profile)?;
+            if runtime_settings.provider_api_key.is_some() {
+                "api_key:unlinked".into()
+            } else {
+                "none".into()
+            }
+        }
+    };
+
+    Ok((endpoint_fingerprint, account_class))
 }
 
 pub(crate) fn static_provider_preflight_snapshot(

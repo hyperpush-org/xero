@@ -6,11 +6,11 @@ use super::{
     tool_access_group_tools, tool_effect_class, AutonomousToolEffectClass, AutonomousToolOutput,
     AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_CODE_INTEL,
     AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND,
-    AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH,
-    AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE, AUTONOMOUS_TOOL_TOOL_ACCESS,
-    AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER,
+    AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LSP,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+    AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+    AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
 };
 use crate::{
     auth::now_timestamp,
@@ -104,6 +104,14 @@ pub struct AutonomousAgentDefinitionValidationDiagnostic {
     pub code: String,
     pub message: String,
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_effect_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_capability_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl AutonomousToolRuntime {
@@ -897,12 +905,15 @@ fn validate_tool_policy(
 
     for effect_class in string_array(object.get("allowedEffectClasses")) {
         if !effect_allowed_by_profile(base_profile, &effect_class) {
-            diagnostics.push(diagnostic(
+            diagnostics.push(denied_effect_diagnostic(
                 "agent_definition_effect_class_exceeds_profile",
                 format!(
                     "Effect class `{effect_class}` is not allowed by base profile `{base_profile}`."
                 ),
                 "toolPolicy.allowedEffectClasses",
+                base_profile,
+                &effect_class,
+                "allowedEffectClasses cannot expand beyond the base capability profile",
             ));
         }
     }
@@ -911,12 +922,15 @@ fn validate_tool_policy(
             Some(tools) => {
                 for tool in tools {
                     if !tool_allowed_by_profile(base_profile, tool) {
-                        diagnostics.push(diagnostic(
+                        diagnostics.push(denied_tool_diagnostic(
                             "agent_definition_tool_group_exceeds_profile",
                             format!(
                                 "Tool group `{group}` includes `{tool}`, which is not allowed by `{base_profile}`."
                             ),
                             "toolPolicy.allowedToolGroups",
+                            base_profile,
+                            tool,
+                            format!("requested group `{group}` includes a denied tool"),
                         ));
                     }
                 }
@@ -933,12 +947,15 @@ fn validate_tool_policy(
             Some(tools) => {
                 for tool in tools {
                     if !tool_allowed_by_profile(base_profile, &tool) {
-                        diagnostics.push(diagnostic(
+                        diagnostics.push(denied_tool_diagnostic(
                             "agent_definition_tool_pack_exceeds_profile",
                             format!(
                                 "Tool pack `{pack_id}` includes `{tool}`, which is not allowed by `{base_profile}`."
                             ),
                             "toolPolicy.allowedToolPacks",
+                            base_profile,
+                            &tool,
+                            format!("requested tool pack `{pack_id}` includes a denied tool"),
                         ));
                     }
                 }
@@ -961,10 +978,13 @@ fn validate_tool_policy(
     }
     for tool in string_array(object.get("allowedTools")) {
         if !tool_allowed_by_profile(base_profile, &tool) {
-            diagnostics.push(diagnostic(
+            diagnostics.push(denied_tool_diagnostic(
                 "agent_definition_tool_exceeds_profile",
                 format!("Tool `{tool}` is not allowed by base profile `{base_profile}`."),
                 "toolPolicy.allowedTools",
+                base_profile,
+                &tool,
+                "allowedTools cannot expand beyond the base capability profile",
             ));
         }
     }
@@ -982,10 +1002,13 @@ fn validate_tool_policy(
             .unwrap_or(false)
             && !effect_allowed_by_profile(base_profile, effect_class)
         {
-            diagnostics.push(diagnostic(
+            diagnostics.push(denied_effect_diagnostic(
                 "agent_definition_tool_policy_flag_exceeds_profile",
                 format!("{field} is not allowed by base profile `{base_profile}`."),
                 format!("toolPolicy.{field}"),
+                base_profile,
+                effect_class,
+                "boolean capability flags cannot expand beyond the base capability profile",
             ));
         }
     }
@@ -1127,6 +1150,9 @@ fn validate_instruction_hierarchy(
 }
 
 fn tool_allowed_by_profile(base_profile: &str, tool: &str) -> bool {
+    if tool == AUTONOMOUS_TOOL_HARNESS_RUNNER {
+        return false;
+    }
     if tool == AUTONOMOUS_TOOL_AGENT_DEFINITION {
         return base_profile == "agent_builder";
     }
@@ -1362,6 +1388,49 @@ fn diagnostic(
         code: code.into(),
         message: message.into(),
         path: path.into(),
+        denied_tool: None,
+        denied_effect_class: None,
+        base_capability_profile: None,
+        reason: None,
+    }
+}
+
+fn denied_tool_diagnostic(
+    code: impl Into<String>,
+    message: impl Into<String>,
+    path: impl Into<String>,
+    base_profile: &str,
+    tool: &str,
+    reason: impl Into<String>,
+) -> AutonomousAgentDefinitionValidationDiagnostic {
+    let effect_class = tool_effect_class(tool).as_str().to_string();
+    AutonomousAgentDefinitionValidationDiagnostic {
+        code: code.into(),
+        message: message.into(),
+        path: path.into(),
+        denied_tool: Some(tool.into()),
+        denied_effect_class: Some(effect_class),
+        base_capability_profile: Some(base_profile.into()),
+        reason: Some(reason.into()),
+    }
+}
+
+fn denied_effect_diagnostic(
+    code: impl Into<String>,
+    message: impl Into<String>,
+    path: impl Into<String>,
+    base_profile: &str,
+    effect_class: &str,
+    reason: impl Into<String>,
+) -> AutonomousAgentDefinitionValidationDiagnostic {
+    AutonomousAgentDefinitionValidationDiagnostic {
+        code: code.into(),
+        message: message.into(),
+        path: path.into(),
+        denied_tool: None,
+        denied_effect_class: Some(effect_class.into()),
+        base_capability_profile: Some(base_profile.into()),
+        reason: Some(reason.into()),
     }
 }
 
@@ -1824,10 +1893,24 @@ mod tests {
             report.status,
             AutonomousAgentDefinitionValidationStatus::Invalid
         );
-        assert!(report
+        let tool_diagnostic = report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "agent_definition_tool_exceeds_profile"));
+            .find(|diagnostic| diagnostic.code == "agent_definition_tool_exceeds_profile")
+            .expect("denied tool diagnostic");
+        assert_eq!(tool_diagnostic.denied_tool.as_deref(), Some("write"));
+        assert_eq!(
+            tool_diagnostic.denied_effect_class.as_deref(),
+            Some("write")
+        );
+        assert_eq!(
+            tool_diagnostic.base_capability_profile.as_deref(),
+            Some("observe_only")
+        );
+        assert_eq!(
+            tool_diagnostic.reason.as_deref(),
+            Some("allowedTools cannot expand beyond the base capability profile")
+        );
         assert!(
             project_store::load_agent_definition(&repo_root, "release_notes_helper")
                 .expect("load definition")

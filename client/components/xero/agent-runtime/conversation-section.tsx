@@ -42,6 +42,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import type {
+  RuntimeActionAnswerShapeDto,
+  RuntimeActionRequiredOptionDto,
   RuntimeRunView,
   RuntimeStreamCompleteItemView,
   RuntimeStreamFailureItemView,
@@ -50,6 +52,7 @@ import type {
 } from '@/src/lib/xero-model'
 
 import { AppLogo } from '../app-logo'
+import { ActionPromptCard } from './action-prompt-card'
 import { Markdown } from './conversation-markdown'
 
 export interface ConversationMessageAttachment {
@@ -112,6 +115,20 @@ export type ConversationTurn =
       sequence: number
       message: string
       code: string
+    }
+  | {
+      id: string
+      kind: 'action_prompt'
+      sequence: number
+      actionId: string
+      actionType: string
+      title: string
+      detail: string
+      shape: RuntimeActionAnswerShapeDto
+      options: RuntimeActionRequiredOptionDto[] | null
+      allowMultiple: boolean
+      pendingDecision: 'approve' | 'reject' | 'resume' | null
+      isResolved: boolean
     }
 
 interface ConversationSectionProps {
@@ -378,6 +395,8 @@ function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
         }
         case 'failure':
           return `Agent run failed:\n${turn.message}${turn.code.trim().length > 0 ? `\nCode: ${turn.code}` : ''}`
+        case 'action_prompt':
+          return `Agent prompt:\n${turn.title}${turn.detail.trim().length > 0 ? `\n${turn.detail}` : ''}`
         default:
           return ''
       }
@@ -599,6 +618,21 @@ function ConversationTurnRow({
         actions={turn.actions}
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
+      />
+    )
+  }
+
+  if (turn.kind === 'action_prompt') {
+    return (
+      <ActionPromptCard
+        actionId={turn.actionId}
+        actionType={turn.actionType}
+        title={turn.title}
+        detail={turn.detail}
+        shape={turn.shape}
+        options={turn.options}
+        allowMultiple={turn.allowMultiple}
+        resolved={turn.isResolved}
       />
     )
   }
@@ -1604,6 +1638,17 @@ function DenseTurnItem({ turn }: DenseTurnItemProps) {
         state={turn.state ?? null}
         actions={turn.actions}
       />
+    )
+  }
+
+  if (turn.kind === 'action_prompt') {
+    return (
+      <li className="flex items-start gap-1.5 px-1 text-foreground/90">
+        <span className="shrink-0 select-none text-primary/80">?</span>
+        <span className="min-w-0 flex-1 truncate" title={`${turn.title}: ${turn.detail}`}>
+          {truncateForLine(turn.title)}
+        </span>
+      </li>
     )
   }
 

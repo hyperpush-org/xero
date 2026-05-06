@@ -630,6 +630,7 @@ fn openai_chat_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
+    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert(
@@ -727,6 +728,7 @@ fn openai_responses_request_body(
     model_id: &str,
     request: &ProviderTurnRequest,
 ) -> CommandResult<JsonValue> {
+    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("instructions".into(), json!(request.system_prompt));
@@ -758,6 +760,7 @@ fn openai_codex_responses_request_body(
     request: &ProviderTurnRequest,
     prompt_cache_key: Option<&str>,
 ) -> CommandResult<JsonValue> {
+    ensure_openai_request_has_no_attachments(provider_id, request)?;
     let mut body = JsonMap::new();
     body.insert("model".into(), json!(model_id));
     body.insert("store".into(), json!(false));
@@ -802,6 +805,26 @@ fn openai_codex_responses_request_body(
         );
     }
     Ok(JsonValue::Object(body))
+}
+
+fn ensure_openai_request_has_no_attachments(
+    provider_id: &str,
+    request: &ProviderTurnRequest,
+) -> CommandResult<()> {
+    let attachment = request.messages.iter().find_map(|message| match message {
+        ProviderMessage::User { attachments, .. } => attachments.first(),
+        ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => None,
+    });
+    if let Some(attachment) = attachment {
+        return Err(CommandError::user_fixable(
+            "provider_attachment_unsupported",
+            format!(
+                "Xero cannot send attachment `{}` to provider `{provider_id}` because this owned OpenAI-style adapter does not serialize attachments yet.",
+                attachment.original_name
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
@@ -2371,6 +2394,41 @@ mod tests {
                 .expect("gemini body");
         assert_eq!(gemini["stream"], true);
         assert!(gemini.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn openai_style_adapters_fail_closed_when_user_attachments_are_present() {
+        let mut request = test_request();
+        request.messages = vec![ProviderMessage::User {
+            content: "read the attachment".into(),
+            attachments: vec![MessageAttachment {
+                kind: MessageAttachmentKind::Text,
+                absolute_path: std::path::PathBuf::from("/tmp/note.md"),
+                media_type: "text/markdown".into(),
+                original_name: "note.md".into(),
+                size_bytes: 12,
+                width: None,
+                height: None,
+            }],
+        }];
+
+        let chat_error = openai_chat_request_body(OPENAI_API_PROVIDER_ID, "gpt-4.1", &request)
+            .expect_err("chat adapter should deny attachments");
+        assert_eq!(chat_error.code, "provider_attachment_unsupported");
+
+        let responses_error =
+            openai_responses_request_body(OPENAI_API_PROVIDER_ID, "gpt-5.4", &request)
+                .expect_err("responses adapter should deny attachments");
+        assert_eq!(responses_error.code, "provider_attachment_unsupported");
+
+        let codex_error = openai_codex_responses_request_body(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.4",
+            &request,
+            None,
+        )
+        .expect_err("codex responses adapter should deny attachments");
+        assert_eq!(codex_error.code, "provider_attachment_unsupported");
     }
 
     #[test]

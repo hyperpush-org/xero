@@ -11,7 +11,11 @@ export const verificationRecordStatusSchema = z.enum(['pending', 'passed', 'fail
 export const resumeHistoryStatusSchema = z.enum(['started', 'failed'])
 
 export type OperatorApprovalAnswerRequirementReason = 'optional' | 'runtime_resumable'
-export type OperatorApprovalAnswerShapeKind = 'plain_text' | 'terminal_input'
+export type OperatorApprovalAnswerShapeKind =
+  | 'plain_text'
+  | 'terminal_input'
+  | 'single_choice'
+  | 'multi_choice'
 type OperatorRuntimeResumableClassification = 'not_runtime_scoped' | 'runtime_resumable' | 'runtime_malformed'
 
 export interface OperatorApprovalAnswerShapeMeta {
@@ -73,6 +77,20 @@ const OPERATOR_ACTION_ANSWER_SHAPES: Record<string, OperatorApprovalAnswerShapeM
     guidance:
       'Provide optional plain-text confirmation context for this resume-related operator decision.',
     placeholder: 'Optional plain-text context for this resume confirmation.',
+  },
+  single_choice_required: {
+    kind: 'single_choice',
+    label: 'Single-choice selection',
+    guidance:
+      'Pick exactly one option from the list provided by the agent. Xero submits the chosen option id as the user answer.',
+    placeholder: 'Choose one option to resume the agent run.',
+  },
+  multi_choice_required: {
+    kind: 'multi_choice',
+    label: 'Multi-choice selection',
+    guidance:
+      'Pick one or more options from the list provided by the agent. Xero submits the chosen option ids as a JSON array.',
+    placeholder: 'Choose one or more options to resume the agent run.',
   },
 }
 

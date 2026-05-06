@@ -93,6 +93,8 @@ pub struct HarnessPromptFragmentSnapshot {
     pub priority: u16,
     pub title: String,
     pub provenance: String,
+    pub budget_policy: String,
+    pub inclusion_reason: String,
     pub content: String,
     pub sha256: String,
     pub token_estimate: u64,
@@ -348,6 +350,7 @@ fn prompt_snapshot_for_agent(
     .with_skill_contexts(skill_contexts)
     .with_owned_process_summary(owned_process_summary)
     .with_active_coordination_summary(active_coordination_summary)
+    .with_runtime_metadata(contract_snapshot_runtime_metadata())
     .compile()?;
 
     let fragment_ids = compilation
@@ -377,9 +380,30 @@ fn prompt_fragment_snapshot(fragment: &PromptFragment) -> HarnessPromptFragmentS
         priority: fragment.priority,
         title: fragment.title.clone(),
         provenance: fragment.provenance.clone(),
+        budget_policy: fragment.budget_policy.as_str().into(),
+        inclusion_reason: fragment.inclusion_reason.clone(),
         content: fragment.body.clone(),
         sha256: fragment.sha256.clone(),
         token_estimate: fragment.token_estimate,
+    }
+}
+
+fn contract_snapshot_runtime_metadata() -> RuntimeHostMetadata {
+    RuntimeHostMetadata {
+        timestamp_utc: "2026-05-01T00:00:00Z".into(),
+        date_utc: "2026-05-01".into(),
+        operating_system: std::env::consts::OS.into(),
+        operating_system_label: match std::env::consts::OS {
+            "macos" => "macOS",
+            "windows" => "Windows",
+            "linux" => "Linux",
+            "ios" => "iOS",
+            "android" => "Android",
+            _ => "Other",
+        }
+        .into(),
+        architecture: std::env::consts::ARCH.into(),
+        family: std::env::consts::FAMILY.into(),
     }
 }
 
@@ -598,51 +622,51 @@ mod tests {
         let expected = vec![
             (
                 "ask:base".to_string(),
-                "2fd40cf5cb22f407b2992509513eb68f40064609a80956b509a22d01150cd4ce",
+                "f69a8487f53ea2184952ea3f86c628c337088a6b784df5810e7d37f028be94f5",
             ),
             (
                 "ask:custom_policy_skill_process_coordination".to_string(),
-                "cc91e7075c7d08be6a94300cc32ab24121f4217e8597f4971f3514663a7371ec",
+                "8a8e35cfc7d356499da44f64d5126cef3df670ec81b5a803f7c5ad4163d8188b",
             ),
             (
                 "engineer:base".to_string(),
-                "4bef5f89665922dded2fdf68a4e7dab45937418418403c9b5ce256bac03dae34",
+                "ec520e3aa481dd7b1e269c2176ce7dd7e6003e292829dfe53cb371f941670378",
             ),
             (
                 "engineer:custom_policy_skill_process_coordination".to_string(),
-                "aa61171e42f4525b6a3ba54ab5901fb10b93f9918b0b3ad492e8b1c3183a7fac",
+                "b23a13892d262116b174a923b0d69f2a196f99d806e6f251084038d39e9504d2",
             ),
             (
                 "debug:base".to_string(),
-                "4e048e83c179c11c5f2e1a40a4bba442e8ab92c7b1c193b757d24cc119fbec39",
+                "6bbd965748812d5be70430576785c5305b3759710de127e72c54e8fc74e97ce6",
             ),
             (
                 "debug:custom_policy_skill_process_coordination".to_string(),
-                "014e89499b9efa32633c0961cb255663663573983b02c797af50aef6da790b84",
+                "05cf5542821e539c7d6117c21f87e1c2551650528b5bcf713d7dd11cf5180eb1",
             ),
             (
                 "crawl:base".to_string(),
-                "eeee248316373d33b422a64586fe336cd11a82a9ed7f6c6d0a216617050f63fe",
+                "f3162b44dbe8c5276d12c02d148c2fdac4c514545d260e67c307c238c4033bbb",
             ),
             (
                 "crawl:custom_policy_skill_process_coordination".to_string(),
-                "83ebe815d10402504325683146abe43d804b87d488f5e156cd59bb3483ba8f35",
+                "92a855d65fdef836aafc4635c010a1cb5310040b4700308059601f71a30550fd",
             ),
             (
                 "agent_create:base".to_string(),
-                "c49a44949f8bdf77434e3250e4a2008e6a6044090337db4b11c88ffd04dd93a4",
+                "9ac58d038f40a02f42ce4854df64c67c62c4a503dcef78b63718787dd3fd6d5e",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "2623a904e241aaf9fdd7ff6201db6000e11bc8d0f51927f79e4486fd79b953d4",
+                "c2fe07307eab376695f10eeb18677008e00dbcd99bae9882d81ff356d10a9e06",
             ),
             (
                 "test:base".to_string(),
-                "4e724f8b85ab236a90e1c30fdaa54586ea9e02e3a08b75d76f8af34910320e37",
+                "d776ab1bdf91255473f42227f119a4be11af1f3a963382499544bd90b4142213",
             ),
             (
                 "test:custom_policy_skill_process_coordination".to_string(),
-                "6d75bc738cf6828cd87d6877dd68074831edaa5bbece73f96565340d91f25025",
+                "552305fcc26503af7829ef70beb8fecdd597297752333b277b793402e2c9fa0f",
             ),
         ];
 
@@ -672,27 +696,27 @@ mod tests {
         let expected = vec![
             (
                 "ask:builtin_full".to_string(),
-                "7afa9bfd6ba1ea14d462dc17cdddd3da781046f03a74363d8b7726ca98870eca",
+                "b656398224cc28950a3e8062a45480267041fc8c6f9346a3ac7446139b9d5302",
             ),
             (
                 "engineer:builtin_full".to_string(),
-                "aff21e9bfa817718e8fc0344de8ece83554260f9d48a9bebc70a15ca87e0187f",
+                "42a4703628eab572689c4c206fced66b5404ca86c5c8aeb7bfc6778c89ed6e97",
             ),
             (
                 "debug:builtin_full".to_string(),
-                "aff21e9bfa817718e8fc0344de8ece83554260f9d48a9bebc70a15ca87e0187f",
+                "42a4703628eab572689c4c206fced66b5404ca86c5c8aeb7bfc6778c89ed6e97",
             ),
             (
                 "crawl:builtin_full".to_string(),
-                "fbd3c6481d2afccd5d7b8331111ea1952766a02ea1d0b2ab64090d7a2478df20",
+                "e89a3792ecd4b13ed9c74e584676c2fbe8a88efaf17881d6f41e84558df41d1c",
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "816baa5a61ca04bb6355481417bb705e436090b312cc84bf1f9f100827e90ec7",
+                "66d6f25f3176f8a013e19835db5b7507ea1319596d30fc03ef74d6cd1fe4d122",
             ),
             (
                 "test:builtin_full".to_string(),
-                "aff21e9bfa817718e8fc0344de8ece83554260f9d48a9bebc70a15ca87e0187f",
+                "12467b98072d19f41ce091770861b41c591265a649320c473bdf30070c9a2e8a",
             ),
             (
                 "engineer:custom_observe_only".to_string(),
@@ -700,11 +724,11 @@ mod tests {
             ),
             (
                 "engineer:custom_engineering".to_string(),
-                "99507d2cf64aa44ff2325610b4f4e31e8adb298213309da2c25b034bc4debe01",
+                "6149a0df3575bb66c52778f18d4a73f2e1327a8cb8979a1e7453ebb3bbe769f5",
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "816baa5a61ca04bb6355481417bb705e436090b312cc84bf1f9f100827e90ec7",
+                "66d6f25f3176f8a013e19835db5b7507ea1319596d30fc03ef74d6cd1fe4d122",
             ),
         ];
 

@@ -122,6 +122,7 @@ pub const AUTONOMOUS_TOOL_FIND: &str = "find";
 pub const AUTONOMOUS_TOOL_GIT_STATUS: &str = "git_status";
 pub const AUTONOMOUS_TOOL_GIT_DIFF: &str = "git_diff";
 pub const AUTONOMOUS_TOOL_TOOL_ACCESS: &str = "tool_access";
+pub const AUTONOMOUS_TOOL_HARNESS_RUNNER: &str = "harness_runner";
 pub const AUTONOMOUS_TOOL_EDIT: &str = "edit";
 pub const AUTONOMOUS_TOOL_WRITE: &str = "write";
 pub const AUTONOMOUS_TOOL_PATCH: &str = "patch";
@@ -309,6 +310,7 @@ const TOOL_ACCESS_PROJECT_CONTEXT_WRITE_TOOLS: &[&str] = &[
 ];
 const TOOL_ACCESS_SKILL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SKILL];
 const TOOL_ACCESS_AGENT_DEFINITION_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_AGENT_DEFINITION];
+const TOOL_ACCESS_HARNESS_RUNNER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_HARNESS_RUNNER];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ToolAccessGroupDefinition {
@@ -329,12 +331,29 @@ pub struct AutonomousToolCatalogEntry {
     pub risk_class: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeHostMetadata {
+    pub timestamp_utc: String,
+    pub date_utc: String,
+    pub operating_system: String,
+    pub operating_system_label: String,
+    pub architecture: String,
+    pub family: String,
+}
+
 const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
     ToolAccessGroupDefinition {
         name: "core",
         description: "Always-on repository inspection, git status, tool discovery, and planning tools.",
         tools: TOOL_ACCESS_CORE_TOOLS,
         risk_class: "observe",
+    },
+    ToolAccessGroupDefinition {
+        name: "harness_runner",
+        description: "Deterministic Test-agent manifest export and report comparison.",
+        tools: TOOL_ACCESS_HARNESS_RUNNER_TOOLS,
+        risk_class: "harness_test",
     },
     ToolAccessGroupDefinition {
         name: "mutation",
@@ -581,7 +600,7 @@ pub fn tool_catalog_metadata_for_tool(
                 "riskClass": entry.risk_class,
                 "effectClass": tool_effect_class(entry.tool_name).as_str(),
                 "allowedRuntimeAgents": allowed_runtime_agent_labels(entry.tool_name),
-                "runtimeAvailable": true,
+                "runtimeAvailable": tool_available_on_current_host(entry.tool_name),
             })
         })
 }
@@ -1040,6 +1059,44 @@ fn executable_on_path(command: &str) -> bool {
     false
 }
 
+pub fn runtime_host_metadata() -> RuntimeHostMetadata {
+    let timestamp_utc = crate::auth::now_timestamp();
+    let date_utc = timestamp_utc
+        .split_once('T')
+        .map(|(date, _)| date)
+        .unwrap_or(timestamp_utc.as_str())
+        .to_owned();
+    RuntimeHostMetadata {
+        timestamp_utc,
+        date_utc,
+        operating_system: env::consts::OS.into(),
+        operating_system_label: current_host_os_label().into(),
+        architecture: env::consts::ARCH.into(),
+        family: env::consts::FAMILY.into(),
+    }
+}
+
+fn current_host_os_label() -> &'static str {
+    match env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        "ios" => "iOS",
+        "android" => "Android",
+        _ => "Other",
+    }
+}
+
+pub fn tool_available_on_current_host(tool: &str) -> bool {
+    match tool {
+        AUTONOMOUS_TOOL_MACOS_AUTOMATION | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED => {
+            cfg!(target_os = "macos")
+        }
+        AUTONOMOUS_TOOL_POWERSHELL => cfg!(target_os = "windows"),
+        _ => true,
+    }
+}
+
 pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
     if tool_name.starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX) {
         return AutonomousToolEffectClass::ExternalService;
@@ -1052,6 +1109,7 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         | AUTONOMOUS_TOOL_GIT_DIFF
         | AUTONOMOUS_TOOL_LIST
         | AUTONOMOUS_TOOL_HASH
+        | AUTONOMOUS_TOOL_HARNESS_RUNNER
         | AUTONOMOUS_TOOL_CODE_INTEL
         | AUTONOMOUS_TOOL_LSP
         | AUTONOMOUS_TOOL_TOOL_SEARCH
@@ -1131,6 +1189,9 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
 }
 
 pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &str) -> bool {
+    if tool_name == AUTONOMOUS_TOOL_HARNESS_RUNNER {
+        return agent_id == RuntimeAgentIdDto::Test;
+    }
     if tool_name == AUTONOMOUS_TOOL_AGENT_DEFINITION {
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
@@ -1223,6 +1284,18 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &["git", "diff", "changes", "review"],
             &["scope"],
             &["Review unstaged changes before final summary."],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
+            "harness_runner",
+            "Run deterministic Test-agent harness manifest checks and compare model-driven reports.",
+            &["harness", "test_agent", "manifest", "deterministic", "ci"],
+            &["action", "finalReport"],
+            &[
+                "Export the canonical Test-agent manifest before exercising tools.",
+                "Compare a drafted Harness Test Report against the machine manifest.",
+            ],
             "observe",
         ),
         catalog_entry(
@@ -1439,10 +1512,13 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_TODO,
             "core",
-            "Maintain model-visible planning state for the current owned-agent run.",
-            &["plan", "todo", "task", "state"],
-            &["action", "id", "title", "notes", "status"],
-            &["Track inspect, edit, verify steps for a multi-file change."],
+            "Maintain model-visible planning state for the current owned-agent run, including Debug evidence ledgers.",
+            &["plan", "todo", "task", "state", "debug", "evidence"],
+            &["action", "id", "title", "notes", "status", "mode", "debugStage", "evidence"],
+            &[
+                "Track inspect, edit, verify steps for a multi-file change.",
+                "Record Debug symptom, hypothesis, experiment, root_cause, fix, and verification evidence.",
+            ],
             "observe",
         ),
         catalog_entry(
@@ -2057,6 +2133,7 @@ pub struct AutonomousToolRuntime {
     pub(super) emulator_executor: Option<Arc<dyn EmulatorExecutor>>,
     pub(super) solana_executor: Option<Arc<dyn SolanaExecutor>>,
     pub(super) cancellation_token: Option<AgentRunCancellationToken>,
+    pub(super) tool_execution_cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     pub(super) mcp_registry_path: Option<PathBuf>,
     pub(super) environment_profile_database_path: Option<PathBuf>,
     pub(super) todo_items: Arc<Mutex<BTreeMap<String, AutonomousTodoItem>>>,
@@ -2085,6 +2162,10 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             )
             .field("soul_settings", &self.soul_settings)
             .field("mcp_registry_path", &self.mcp_registry_path)
+            .field(
+                "tool_execution_cancelled",
+                &self.tool_execution_cancelled.is_some(),
+            )
             .field("subagent_execution_depth", &self.subagent_execution_depth)
             .field("subagent_write_scope", &self.subagent_write_scope)
             .field("subagent_limits", &self.subagent_limits)
@@ -2212,6 +2293,7 @@ impl AutonomousToolRuntime {
             emulator_executor: None,
             solana_executor: None,
             cancellation_token: None,
+            tool_execution_cancelled: None,
             mcp_registry_path: None,
             environment_profile_database_path: None,
             todo_items: Arc::new(Mutex::new(BTreeMap::new())),
@@ -2396,6 +2478,14 @@ impl AutonomousToolRuntime {
         self
     }
 
+    pub fn with_tool_execution_cancellation(
+        mut self,
+        is_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        self.tool_execution_cancelled = Some(is_cancelled);
+        self
+    }
+
     pub fn with_mcp_registry_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.mcp_registry_path = Some(path.into());
         self
@@ -2508,8 +2598,11 @@ impl AutonomousToolRuntime {
     }
 
     fn check_cancelled(&self) -> CommandResult<()> {
-        if let Some(token) = &self.cancellation_token {
-            token.check_cancelled()?;
+        if self.is_cancelled() {
+            if let Some(token) = &self.cancellation_token {
+                token.check_cancelled()?;
+            }
+            return Err(crate::runtime::cancelled_error());
         }
         Ok(())
     }
@@ -2518,6 +2611,20 @@ impl AutonomousToolRuntime {
         self.cancellation_token
             .as_ref()
             .is_some_and(AgentRunCancellationToken::is_cancelled)
+            || self
+                .tool_execution_cancelled
+                .as_ref()
+                .is_some_and(|is_cancelled| is_cancelled())
+    }
+
+    pub fn harness_runner(
+        &self,
+        _request: AutonomousHarnessRunnerRequest,
+    ) -> CommandResult<AutonomousToolResult> {
+        Err(CommandError::user_fixable(
+            "autonomous_harness_runner_requires_agent_core",
+            "The harness_runner tool needs the active Tool Registry V2 manifest and can only run through the owned-agent provider loop.",
+        ))
     }
 
     pub fn execute(&self, request: AutonomousToolRequest) -> CommandResult<AutonomousToolResult> {
@@ -2530,6 +2637,7 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::GitStatus(request) => self.git_status(request),
             AutonomousToolRequest::GitDiff(request) => self.git_diff(request),
             AutonomousToolRequest::ToolAccess(request) => self.tool_access(request),
+            AutonomousToolRequest::HarnessRunner(request) => self.harness_runner(request),
             AutonomousToolRequest::WebSearch(request) => self.web_search(request),
             AutonomousToolRequest::WebFetch(request) => self.web_fetch(request),
             AutonomousToolRequest::Edit(request) => self.edit(request),
@@ -2806,6 +2914,7 @@ impl AutonomousToolRuntime {
                 available_groups: self.available_tool_access_groups(),
                 available_tool_packs: self.available_tool_pack_manifests(),
                 tool_pack_health: self.tool_pack_health_reports(),
+                exposure_diagnostics: Some(Self::tool_access_exposure_diagnostics(None)),
                 message:
                     "Available tool groups returned. Request a group or specific tool by name."
                         .into(),
@@ -2859,6 +2968,9 @@ impl AutonomousToolRuntime {
                     available_groups: self.available_tool_access_groups(),
                     available_tool_packs: self.available_tool_pack_manifests(),
                     tool_pack_health: self.tool_pack_health_reports(),
+                    exposure_diagnostics: Some(Self::tool_access_exposure_diagnostics(
+                        request.reason.as_deref(),
+                    )),
                     message: "Requested tools will be exposed on the next provider turn.".into(),
                 }
             }
@@ -2893,6 +3005,24 @@ impl AutonomousToolRuntime {
                 Some(group)
             })
             .collect()
+    }
+
+    fn tool_access_exposure_diagnostics(reason: Option<&str>) -> JsonValue {
+        json!({
+            "schema": "xero.tool_exposure_diagnostics.v1",
+            "planner": "capability_planner_v1",
+            "requestReason": reason,
+            "traceLocation": "ToolRegistrySnapshot.exposurePlan",
+            "activationTraceEvent": "PolicyDecision(kind=tool_exposure_activation)",
+            "reasonSources": [
+                "startup_core",
+                "planner_classification",
+                "user_explicit_tool_marker",
+                "custom_policy",
+                "tool_access_request",
+                "verification_gate"
+            ],
+        })
     }
 
     fn available_tool_pack_manifests(&self) -> Vec<DomainToolPackManifest> {
@@ -2984,6 +3114,9 @@ impl AutonomousToolRuntime {
     }
 
     fn tool_available_by_runtime(&self, tool: &str) -> bool {
+        if !tool_available_on_current_host(tool) {
+            return false;
+        }
         if tool == AUTONOMOUS_TOOL_SKILL {
             return self.skill_tool_enabled();
         }
@@ -2996,9 +3129,6 @@ impl AutonomousToolRuntime {
         }
         if pack_ids.iter().any(|pack_id| pack_id == "solana") {
             return self.solana_executor.is_some();
-        }
-        if tool == AUTONOMOUS_TOOL_MACOS_AUTOMATION {
-            return cfg!(target_os = "macos");
         }
         true
     }
@@ -3061,6 +3191,7 @@ pub enum AutonomousToolRequest {
     GitStatus(AutonomousGitStatusRequest),
     GitDiff(AutonomousGitDiffRequest),
     ToolAccess(AutonomousToolAccessRequest),
+    HarnessRunner(AutonomousHarnessRunnerRequest),
     WebSearch(AutonomousWebSearchRequest),
     WebFetch(AutonomousWebFetchRequest),
     Edit(AutonomousEditRequest),
@@ -3818,6 +3949,54 @@ pub enum AutonomousTodoStatus {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousHarnessRunnerAction {
+    Manifest,
+    CompareReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHarnessRunnerRequest {
+    pub action: AutonomousHarnessRunnerAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_report: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHarnessRunnerOutput {
+    pub schema: String,
+    pub action: AutonomousHarnessRunnerAction,
+    pub passed: bool,
+    pub summary: String,
+    pub manifest_version: String,
+    pub manifest_signature: String,
+    pub item_count: usize,
+    pub comparison: JsonValue,
+    pub items: Vec<JsonValue>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousTodoMode {
+    Plan,
+    DebugEvidence,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousDebugEvidenceStage {
+    Symptom,
+    Reproduction,
+    Hypothesis,
+    Experiment,
+    RootCause,
+    Fix,
+    Verification,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousTodoRequest {
@@ -3830,6 +4009,12 @@ pub struct AutonomousTodoRequest {
     pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<AutonomousTodoStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AutonomousTodoMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_stage: Option<AutonomousDebugEvidenceStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3839,6 +4024,11 @@ pub struct AutonomousTodoItem {
     pub title: String,
     pub notes: Option<String>,
     pub status: AutonomousTodoStatus,
+    pub mode: AutonomousTodoMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debug_stage: Option<AutonomousDebugEvidenceStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
     pub updated_at: String,
 }
 
@@ -3920,6 +4110,17 @@ pub enum AutonomousCommandPolicyOutcome {
     Escalated,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousCommandPolicyProfile {
+    ReadOnlyVerification,
+    GeneratedFileMutation,
+    DependencyInstallation,
+    ExternalNetwork,
+    DestructiveOperation,
+    GeneralExecution,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomousSafetyPolicyAction {
@@ -3969,6 +4170,7 @@ pub struct AutonomousSafetyPolicyDecision {
 pub struct AutonomousCommandPolicyTrace {
     pub outcome: AutonomousCommandPolicyOutcome,
     pub approval_mode: RuntimeRunApprovalModeDto,
+    pub profile: AutonomousCommandPolicyProfile,
     pub code: String,
     pub reason: String,
 }
@@ -4004,6 +4206,7 @@ pub enum AutonomousToolOutput {
     GitStatus(AutonomousGitStatusOutput),
     GitDiff(AutonomousGitDiffOutput),
     ToolAccess(AutonomousToolAccessOutput),
+    HarnessRunner(AutonomousHarnessRunnerOutput),
     WebSearch(AutonomousWebSearchOutput),
     WebFetch(AutonomousWebFetchOutput),
     Edit(AutonomousEditOutput),
@@ -4210,6 +4413,8 @@ pub struct AutonomousToolAccessOutput {
     pub available_tool_packs: Vec<DomainToolPackManifest>,
     #[serde(default)]
     pub tool_pack_health: Vec<DomainToolPackHealthReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_diagnostics: Option<JsonValue>,
     pub message: String,
 }
 

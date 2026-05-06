@@ -16,6 +16,8 @@ export const MAX_RUNTIME_STREAM_TOOL_CALLS = 20
 export const MAX_RUNTIME_STREAM_SKILLS = 20
 export const MAX_RUNTIME_STREAM_ACTIVITY = 20
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED = 10
+export const MAX_RUNTIME_STREAM_PLAN_ITEMS = 50
+export const MAX_RUNTIME_STREAM_ACTION_REQUIRED_OPTIONS = 20
 const OWNED_AGENT_REASONING_ACTIVITY_CODE = 'owned_agent_reasoning'
 const OWNED_AGENT_REASONING_BOUNDARY_CODE = 'owned_agent_reasoning_boundary'
 
@@ -44,9 +46,33 @@ export const runtimeStreamItemKindSchema = z.enum([
   'skill',
   'activity',
   'action_required',
+  'plan',
   'complete',
   'failure',
 ])
+export const runtimeActionAnswerShapeSchema = z.enum([
+  'plain_text',
+  'terminal_input',
+  'single_choice',
+  'multi_choice',
+])
+export const runtimeActionRequiredOptionSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    description: nonEmptyOptionalTextSchema,
+  })
+  .strict()
+export const runtimeStreamPlanItemStatusSchema = z.enum(['pending', 'in_progress', 'completed'])
+export const runtimeStreamPlanItemSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    title: z.string().trim().min(1),
+    notes: nonEmptyOptionalTextSchema,
+    status: runtimeStreamPlanItemStatusSchema,
+    updatedAt: z.string().min(1),
+  })
+  .strict()
 export const runtimeStreamTranscriptRoleSchema = z.enum(['user', 'assistant', 'system', 'tool'])
 
 export const runtimeStreamItemSchema = z
@@ -72,8 +98,23 @@ export const runtimeStreamItemSchema = z
     actionId: nonEmptyOptionalTextSchema,
     boundaryId: nonEmptyOptionalTextSchema,
     actionType: nonEmptyOptionalTextSchema,
+    answerShape: runtimeActionAnswerShapeSchema.nullable().optional(),
+    options: z
+      .array(runtimeActionRequiredOptionSchema)
+      .min(1)
+      .max(MAX_RUNTIME_STREAM_ACTION_REQUIRED_OPTIONS)
+      .nullable()
+      .optional(),
+    allowMultiple: z.boolean().nullable().optional(),
     title: nonEmptyOptionalTextSchema,
     detail: nonEmptyOptionalTextSchema,
+    planId: nonEmptyOptionalTextSchema,
+    planItems: z
+      .array(runtimeStreamPlanItemSchema)
+      .max(MAX_RUNTIME_STREAM_PLAN_ITEMS)
+      .nullable()
+      .optional(),
+    planLastChangedId: nonEmptyOptionalTextSchema,
     code: nonEmptyOptionalTextSchema,
     message: nonEmptyOptionalTextSchema,
     retryable: z.boolean().nullable().optional(),
@@ -240,6 +281,50 @@ export const runtimeStreamItemSchema = z
             message: 'Xero received a runtime action-required item without a non-empty detail field.',
           })
         }
+        if (item.answerShape === 'single_choice' || item.answerShape === 'multi_choice') {
+          if (!item.options || item.options.length === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['options'],
+              message: 'Xero received a runtime choice action-required item without a non-empty options array.',
+            })
+          }
+          if (item.answerShape === 'multi_choice' && item.allowMultiple === false) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['allowMultiple'],
+              message: 'Multi-choice action-required items must have allowMultiple unset or true.',
+            })
+          }
+        }
+        if (
+          item.answerShape != null &&
+          item.answerShape !== 'single_choice' &&
+          item.answerShape !== 'multi_choice' &&
+          item.options
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['options'],
+            message: 'Only single_choice and multi_choice action-required items may include options.',
+          })
+        }
+        return
+      case 'plan':
+        if (!item.planId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['planId'],
+            message: 'Xero received a runtime plan item without a non-empty planId field.',
+          })
+        }
+        if (!Array.isArray(item.planItems)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['planItems'],
+            message: 'Xero received a runtime plan item without a planItems array.',
+          })
+        }
         return
       case 'complete':
         if (!item.detail) {
@@ -358,6 +443,11 @@ export interface RuntimeStreamActivityItemView extends RuntimeStreamBaseItemView
   detail: string | null
 }
 
+export type RuntimeActionAnswerShapeDto = z.infer<typeof runtimeActionAnswerShapeSchema>
+export type RuntimeActionRequiredOptionDto = z.infer<typeof runtimeActionRequiredOptionSchema>
+export type RuntimeStreamPlanItemStatusDto = z.infer<typeof runtimeStreamPlanItemStatusSchema>
+export type RuntimeStreamPlanItemDto = z.infer<typeof runtimeStreamPlanItemSchema>
+
 export interface RuntimeStreamActionRequiredItemView extends RuntimeStreamBaseItemView {
   kind: 'action_required'
   actionId: string
@@ -365,6 +455,16 @@ export interface RuntimeStreamActionRequiredItemView extends RuntimeStreamBaseIt
   actionType: string
   title: string
   detail: string
+  answerShape: RuntimeActionAnswerShapeDto | null
+  options: RuntimeActionRequiredOptionDto[] | null
+  allowMultiple: boolean | null
+}
+
+export interface RuntimeStreamPlanItemView extends RuntimeStreamBaseItemView {
+  kind: 'plan'
+  planId: string
+  items: RuntimeStreamPlanItemDto[]
+  lastChangedId: string | null
 }
 
 export interface RuntimeStreamCompleteItemView extends RuntimeStreamBaseItemView {
@@ -385,6 +485,7 @@ export type RuntimeStreamViewItem =
   | RuntimeStreamSkillItemView
   | RuntimeStreamActivityItemView
   | RuntimeStreamActionRequiredItemView
+  | RuntimeStreamPlanItemView
   | RuntimeStreamCompleteItemView
   | RuntimeStreamFailureItemView
 
@@ -414,6 +515,7 @@ export interface RuntimeStreamView {
   skillItems: RuntimeStreamSkillItemView[]
   activityItems: RuntimeStreamActivityItemView[]
   actionRequired: RuntimeStreamActionRequiredItemView[]
+  plan: RuntimeStreamPlanItemView | null
   completion: RuntimeStreamCompleteItemView | null
   failure: RuntimeStreamFailureItemView | null
   lastIssue: RuntimeStreamIssueView | null
@@ -501,6 +603,14 @@ function capRuntimeTimelineItems(
             item.runId === nextItem.runId &&
             item.actionId === nextItem.actionId
           ),
+      ),
+      nextItem,
+    ]
+  } else if (nextItem.kind === 'plan') {
+    nonTranscriptItems = [
+      ...nonTranscriptItems.filter(
+        (item) =>
+          !(item.kind === 'plan' && item.runId === nextItem.runId && item.planId === nextItem.planId),
       ),
       nextItem,
     ]
@@ -655,6 +765,10 @@ function runtimeStreamActionRequiredItemId(runId: string, actionId: string): str
   return `action_required:${runId}:${actionId}`
 }
 
+function runtimeStreamPlanItemId(runId: string, planId: string): string {
+  return `plan:${runId}:${planId}`
+}
+
 function getRecoveredRuntimeStreamStatus(base: RuntimeStreamView): RuntimeStreamStatus {
   if (base.completion) {
     return 'complete'
@@ -806,6 +920,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
       const actionType = ensureRuntimeStreamText(event.item.actionType, 'actionType', 'action-required')
       const title = ensureRuntimeStreamText(event.item.title, 'title', 'action-required')
       const detail = ensureRuntimeStreamText(event.item.detail, 'detail', 'action-required')
+      const options = event.item.options ?? null
       return {
         id: runtimeStreamActionRequiredItemId(itemRunId, actionId),
         kind: 'action_required',
@@ -817,6 +932,36 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         actionType,
         title,
         detail,
+        answerShape: event.item.answerShape ?? null,
+        options: options && options.length > 0
+          ? options.map((option) => ({
+              id: option.id,
+              label: option.label,
+              description: option.description ?? null,
+            }))
+          : null,
+        allowMultiple:
+          typeof event.item.allowMultiple === 'boolean' ? event.item.allowMultiple : null,
+      }
+    }
+    case 'plan': {
+      const planId = ensureRuntimeStreamText(event.item.planId, 'planId', 'plan')
+      const planItems = Array.isArray(event.item.planItems) ? event.item.planItems : []
+      return {
+        id: runtimeStreamPlanItemId(itemRunId, planId),
+        kind: 'plan',
+        runId: itemRunId,
+        sequence: event.item.sequence,
+        createdAt: event.item.createdAt,
+        planId,
+        items: planItems.map((planItem) => ({
+          id: planItem.id,
+          title: planItem.title,
+          notes: planItem.notes ?? null,
+          status: planItem.status,
+          updatedAt: planItem.updatedAt,
+        })),
+        lastChangedId: normalizeOptionalText(event.item.planLastChangedId),
       }
     }
     case 'complete': {
@@ -876,6 +1021,7 @@ export function createRuntimeStreamView(options: {
     skillItems: [],
     activityItems: [],
     actionRequired: [],
+    plan: null,
     completion: null,
     failure: null,
     lastIssue: null,
@@ -981,6 +1127,7 @@ export function mergeRuntimeStreamEvent(
           MAX_RUNTIME_STREAM_ACTION_REQUIRED,
         )
       : base.actionRequired
+  const nextPlan = nextItem.kind === 'plan' ? nextItem : base.plan
 
   return {
     ...base,
@@ -1004,6 +1151,7 @@ export function mergeRuntimeStreamEvent(
     skillItems: nextSkillItems,
     activityItems: nextActivityItems,
     actionRequired: nextActionRequired,
+    plan: nextPlan,
     completion: nextItem.kind === 'complete' ? nextItem : base.completion,
     failure: nextItem.kind === 'failure' ? nextItem : null,
     lastIssue:
@@ -1172,6 +1320,25 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
       bytes += estimateUtf16Bytes(item.actionType)
       bytes += estimateUtf16Bytes(item.title)
       bytes += estimateUtf16Bytes(item.detail)
+      bytes += estimateOptionalTextBytes(item.answerShape)
+      if (item.options) {
+        for (const option of item.options) {
+          bytes += estimateUtf16Bytes(option.id)
+          bytes += estimateUtf16Bytes(option.label)
+          bytes += estimateOptionalTextBytes(option.description)
+        }
+      }
+      return bytes
+    case 'plan':
+      bytes += estimateUtf16Bytes(item.planId)
+      bytes += estimateOptionalTextBytes(item.lastChangedId)
+      for (const planItem of item.items) {
+        bytes += estimateUtf16Bytes(planItem.id)
+        bytes += estimateUtf16Bytes(planItem.title)
+        bytes += estimateOptionalTextBytes(planItem.notes)
+        bytes += estimateUtf16Bytes(planItem.status)
+        bytes += estimateUtf16Bytes(planItem.updatedAt)
+      }
       return bytes
     case 'complete':
       bytes += estimateUtf16Bytes(item.detail)
@@ -1223,6 +1390,7 @@ export function estimateRuntimeStreamViewBytes(stream: RuntimeStreamView | null 
     ...stream.skillItems,
     ...stream.activityItems,
     ...stream.actionRequired,
+    ...(stream.plan ? [stream.plan] : []),
     ...(stream.completion ? [stream.completion] : []),
     ...(stream.failure ? [stream.failure] : []),
   ])

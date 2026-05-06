@@ -2071,12 +2071,12 @@ pub(crate) struct AgentWorkspaceWriteObservation {
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentRollbackCheckpoint {
-    path: String,
-    operation: String,
-    old_hash: Option<String>,
-    old_content_base64: Option<String>,
-    old_content_omitted_reason: Option<String>,
-    old_content_bytes: Option<u64>,
+    pub(crate) path: String,
+    pub(crate) operation: String,
+    pub(crate) old_hash: Option<String>,
+    pub(crate) old_content_base64: Option<String>,
+    pub(crate) old_content_omitted_reason: Option<String>,
+    pub(crate) old_content_bytes: Option<u64>,
 }
 
 pub(crate) fn rollback_checkpoints_for_request(
@@ -2160,6 +2160,134 @@ pub(crate) fn record_rollback_checkpoints(
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn restore_rollback_checkpoints(
+    repo_root: &Path,
+    checkpoints: &[AgentRollbackCheckpoint],
+) -> CommandResult<JsonValue> {
+    use base64::Engine as _;
+
+    let mut restored = Vec::new();
+    let mut skipped = Vec::new();
+    for checkpoint in checkpoints.iter().rev() {
+        let Some(relative_path) = safe_relative_path(&checkpoint.path) else {
+            skipped.push(json!({
+                "path": checkpoint.path,
+                "reason": "unsafe_path",
+            }));
+            continue;
+        };
+        let path = repo_root.join(relative_path);
+        if let Some(content_base64) = checkpoint.old_content_base64.as_deref() {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(content_base64)
+                .map_err(|error| {
+                    CommandError::system_fault(
+                        "agent_rollback_content_decode_failed",
+                        format!(
+                            "Xero could not decode rollback content for `{}`: {error}",
+                            checkpoint.path
+                        ),
+                    )
+                })?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    CommandError::retryable(
+                        "agent_rollback_restore_prepare_failed",
+                        format!(
+                            "Xero could not prepare rollback parent for {}: {error}",
+                            path.display()
+                        ),
+                    )
+                })?;
+            }
+            fs::write(&path, &bytes).map_err(|error| {
+                CommandError::retryable(
+                    "agent_rollback_restore_failed",
+                    format!("Xero could not restore {}: {error}", path.display()),
+                )
+            })?;
+            restored.push(json!({
+                "path": checkpoint.path,
+                "operation": checkpoint.operation,
+                "restoredBytes": bytes.len(),
+                "restoredHash": checkpoint.old_hash,
+            }));
+            continue;
+        }
+
+        if checkpoint.old_hash.is_none() {
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() => {
+                    fs::remove_dir_all(&path).map_err(|error| {
+                        CommandError::retryable(
+                            "agent_rollback_remove_created_path_failed",
+                            format!(
+                                "Xero could not remove created directory {} during rollback: {error}",
+                                path.display()
+                            ),
+                        )
+                    })?;
+                    restored.push(json!({
+                        "path": checkpoint.path,
+                        "operation": checkpoint.operation,
+                        "removedCreatedPath": true,
+                    }));
+                }
+                Ok(_) => {
+                    fs::remove_file(&path).map_err(|error| {
+                        CommandError::retryable(
+                            "agent_rollback_remove_created_path_failed",
+                            format!(
+                                "Xero could not remove created file {} during rollback: {error}",
+                                path.display()
+                            ),
+                        )
+                    })?;
+                    restored.push(json!({
+                        "path": checkpoint.path,
+                        "operation": checkpoint.operation,
+                        "removedCreatedPath": true,
+                    }));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    skipped.push(json!({
+                        "path": checkpoint.path,
+                        "reason": "created_path_absent",
+                    }));
+                }
+                Err(error) => {
+                    return Err(CommandError::retryable(
+                        "agent_rollback_inspect_created_path_failed",
+                        format!(
+                            "Xero could not inspect {} during rollback: {error}",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
+            continue;
+        }
+
+        skipped.push(json!({
+            "path": checkpoint.path,
+            "operation": checkpoint.operation,
+            "reason": checkpoint
+                .old_content_omitted_reason
+                .clone()
+                .unwrap_or_else(|| "old_content_unavailable".into()),
+            "oldContentBytes": checkpoint.old_content_bytes,
+        }));
+    }
+
+    Ok(json!({
+        "schema": "xero.agent_file_rollback.v1",
+        "restoredCount": restored.len(),
+        "skippedCount": skipped.len(),
+        "restored": restored,
+        "skipped": skipped,
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3090,5 +3218,96 @@ Repository map captured.
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].path, "src/lib.rs");
         assert!(observations[0].old_hash.is_some());
+    }
+
+    #[test]
+    fn rollback_restore_reinstates_checkpointed_file_content() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(root.join("src/lib.rs"), "before\n").expect("source");
+        let mut guard = AgentWorkspaceGuard::default();
+        guard
+            .record_tool_output(
+                root,
+                &AutonomousToolOutput::Read(crate::runtime::AutonomousReadOutput {
+                    path: "src/lib.rs".into(),
+                    start_line: 1,
+                    line_count: 1,
+                    total_lines: 1,
+                    truncated: false,
+                    content: "before\n".into(),
+                    content_kind: Some(crate::runtime::AutonomousReadContentKind::Text),
+                    total_bytes: Some(7),
+                    byte_offset: None,
+                    byte_count: None,
+                    sha256: None,
+                    line_hashes: Vec::new(),
+                    encoding: Some("utf-8".into()),
+                    line_ending: Some(crate::runtime::AutonomousLineEnding::Lf),
+                    has_bom: Some(false),
+                    media_type: Some("text/plain; charset=utf-8".into()),
+                    image_width: None,
+                    image_height: None,
+                    preview_base64: None,
+                    preview_bytes: None,
+                    binary_excerpt_base64: None,
+                }),
+            )
+            .expect("record read");
+        let observations = guard
+            .validate_write_intent(
+                root,
+                &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
+                    path: "src/lib.rs".into(),
+                    content: "after\n".into(),
+                }),
+                false,
+            )
+            .expect("write intent");
+        let checkpoints = rollback_checkpoints_for_request(
+            root,
+            &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
+                path: "src/lib.rs".into(),
+                content: "after\n".into(),
+            }),
+            &observations,
+        )
+        .expect("checkpoint");
+        fs::write(root.join("src/lib.rs"), "after\n").expect("mutate");
+
+        let outcome = restore_rollback_checkpoints(root, &checkpoints).expect("restore");
+
+        assert_eq!(
+            fs::read_to_string(root.join("src/lib.rs")).expect("read restored"),
+            "before\n"
+        );
+        assert_eq!(outcome["restoredCount"], json!(1));
+    }
+
+    #[test]
+    fn rollback_restore_removes_created_file_when_no_old_hash_exists() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        let observations = vec![AgentWorkspaceWriteObservation {
+            path: "notes/new.txt".into(),
+            old_hash: None,
+        }];
+        let checkpoints = rollback_checkpoints_for_request(
+            root,
+            &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
+                path: "notes/new.txt".into(),
+                content: "new\n".into(),
+            }),
+            &observations,
+        )
+        .expect("checkpoint");
+        fs::create_dir_all(root.join("notes")).expect("notes");
+        fs::write(root.join("notes/new.txt"), "new\n").expect("created file");
+
+        let outcome = restore_rollback_checkpoints(root, &checkpoints).expect("restore");
+
+        assert!(!root.join("notes/new.txt").exists());
+        assert_eq!(outcome["restoredCount"], json!(1));
     }
 }

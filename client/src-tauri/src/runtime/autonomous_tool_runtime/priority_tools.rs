@@ -21,22 +21,23 @@ use super::{
     deferred_tool_catalog,
     process::apply_sanitized_command_environment,
     repo_scope::{normalize_relative_path, path_to_forward_slash, WalkErrorCodes, WalkState},
-    tool_allowed_for_runtime_agent, tool_catalog_activation_groups, AutonomousCodeDiagnostic,
-    AutonomousCodeIntelAction, AutonomousCodeIntelOutput, AutonomousCodeIntelRequest,
-    AutonomousCodeSymbol, AutonomousCommandRequest, AutonomousDynamicToolDescriptor,
-    AutonomousDynamicToolRoute, AutonomousLspAction, AutonomousLspInstallCommand,
-    AutonomousLspInstallSuggestion, AutonomousLspOutput, AutonomousLspRequest,
-    AutonomousLspServerStatus, AutonomousMcpAction, AutonomousMcpOutput, AutonomousMcpRequest,
-    AutonomousMcpServerSummary, AutonomousNotebookEditOutput, AutonomousNotebookEditRequest,
-    AutonomousPowerShellRequest, AutonomousSubagentAction, AutonomousSubagentInputRecord,
-    AutonomousSubagentOutput, AutonomousSubagentRequest, AutonomousSubagentRole,
-    AutonomousSubagentTask, AutonomousTodoAction, AutonomousTodoItem, AutonomousTodoOutput,
-    AutonomousTodoRequest, AutonomousTodoStatus, AutonomousToolCatalogEntry, AutonomousToolOutput,
-    AutonomousToolResult, AutonomousToolRuntime, AutonomousToolSearchMatch,
-    AutonomousToolSearchOutput, AutonomousToolSearchRequest, AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX,
-    AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_MCP,
-    AUTONOMOUS_TOOL_NOTEBOOK_EDIT, AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_SKILL,
-    AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_SEARCH,
+    tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_catalog_activation_groups,
+    AutonomousCodeDiagnostic, AutonomousCodeIntelAction, AutonomousCodeIntelOutput,
+    AutonomousCodeIntelRequest, AutonomousCodeSymbol, AutonomousCommandRequest,
+    AutonomousDynamicToolDescriptor, AutonomousDynamicToolRoute, AutonomousLspAction,
+    AutonomousLspInstallCommand, AutonomousLspInstallSuggestion, AutonomousLspOutput,
+    AutonomousLspRequest, AutonomousLspServerStatus, AutonomousMcpAction, AutonomousMcpOutput,
+    AutonomousMcpRequest, AutonomousMcpServerSummary, AutonomousNotebookEditOutput,
+    AutonomousNotebookEditRequest, AutonomousPowerShellRequest, AutonomousSubagentAction,
+    AutonomousSubagentInputRecord, AutonomousSubagentOutput, AutonomousSubagentRequest,
+    AutonomousSubagentRole, AutonomousSubagentTask, AutonomousTodoAction, AutonomousTodoItem,
+    AutonomousTodoMode, AutonomousTodoOutput, AutonomousTodoRequest, AutonomousTodoStatus,
+    AutonomousToolCatalogEntry, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
+    AutonomousToolSearchMatch, AutonomousToolSearchOutput, AutonomousToolSearchRequest,
+    AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP,
+    AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_NOTEBOOK_EDIT, AUTONOMOUS_TOOL_POWERSHELL,
+    AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO,
+    AUTONOMOUS_TOOL_TOOL_SEARCH,
 };
 
 use crate::{
@@ -76,7 +77,10 @@ impl AutonomousToolRuntime {
 
         let catalog = deferred_tool_catalog(self.skill_tool_enabled())
             .into_iter()
-            .filter(|entry| tool_allowed_for_runtime_agent(runtime_agent_id, entry.tool_name))
+            .filter(|entry| {
+                tool_allowed_for_runtime_agent(runtime_agent_id, entry.tool_name)
+                    && tool_available_on_current_host(entry.tool_name)
+            })
             .collect::<Vec<_>>();
         let mut searched_catalog_size = catalog.len();
         for entry in catalog {
@@ -183,6 +187,13 @@ impl AutonomousToolRuntime {
                     .as_deref()
                     .ok_or_else(|| CommandError::invalid_request("title"))?;
                 validate_non_empty(title, "title")?;
+                let mode = request.mode.unwrap_or(AutonomousTodoMode::Plan);
+                if mode == AutonomousTodoMode::DebugEvidence && request.debug_stage.is_none() {
+                    return Err(CommandError::user_fixable(
+                        "autonomous_tool_todo_debug_stage_required",
+                        "debug_evidence todo items require debugStage.",
+                    ));
+                }
                 let id = request
                     .id
                     .as_deref()
@@ -194,6 +205,9 @@ impl AutonomousToolRuntime {
                     title: title.trim().into(),
                     notes: normalize_optional_text(request.notes),
                     status: request.status.unwrap_or(AutonomousTodoStatus::Pending),
+                    mode,
+                    debug_stage: request.debug_stage,
+                    evidence: normalize_optional_text(request.evidence),
                     updated_at: now_timestamp(),
                 };
                 todos.insert(id, item.clone());

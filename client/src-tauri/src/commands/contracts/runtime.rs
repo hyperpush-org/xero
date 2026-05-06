@@ -1341,6 +1341,7 @@ pub enum RuntimeStreamItemKind {
     Skill,
     Activity,
     ActionRequired,
+    Plan,
     Complete,
     Failure,
 }
@@ -1353,10 +1354,48 @@ impl RuntimeStreamItemKind {
             Self::Skill => "skill",
             Self::Activity => "activity",
             Self::ActionRequired => "action_required",
+            Self::Plan => "plan",
             Self::Complete => "complete",
             Self::Failure => "failure",
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStreamPlanItemStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeStreamPlanItemDto {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub status: RuntimeStreamPlanItemStatus,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeActionAnswerShape {
+    PlainText,
+    TerminalInput,
+    SingleChoice,
+    MultiChoice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeActionRequiredOptionDto {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1410,8 +1449,20 @@ pub struct RuntimeStreamItemDto {
     pub action_id: Option<String>,
     pub boundary_id: Option<String>,
     pub action_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_shape: Option<RuntimeActionAnswerShape>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<RuntimeActionRequiredOptionDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_multiple: Option<bool>,
     pub title: Option<String>,
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_items: Option<Vec<RuntimeStreamPlanItemDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_last_changed_id: Option<String>,
     pub code: Option<String>,
     pub message: Option<String>,
     pub retryable: Option<bool>,
@@ -1419,12 +1470,13 @@ pub struct RuntimeStreamItemDto {
 }
 
 impl RuntimeStreamItemDto {
-    pub const ALLOWED_KIND_NAMES: [&'static str; 7] = [
+    pub const ALLOWED_KIND_NAMES: [&'static str; 8] = [
         "transcript",
         "tool",
         "skill",
         "activity",
         "action_required",
+        "plan",
         "complete",
         "failure",
     ];

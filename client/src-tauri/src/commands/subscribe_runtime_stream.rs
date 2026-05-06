@@ -16,9 +16,10 @@ use crate::{
         BrowserComputerUseToolResultSummaryDto, CommandError, CommandResult,
         CommandToolResultSummaryDto, FileToolResultSummaryDto, GitToolResultScopeDto,
         GitToolResultSummaryDto, McpCapabilityKindDto, McpCapabilityToolResultSummaryDto,
-        RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamTranscriptRole,
-        RuntimeToolCallState, SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
-        ToolResultSummaryDto, WebToolResultContentKindDto, WebToolResultSummaryDto,
+        RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeStreamPlanItemDto,
+        RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole, RuntimeToolCallState,
+        SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto,
+        WebToolResultContentKindDto, WebToolResultSummaryDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
@@ -88,6 +89,7 @@ fn parse_runtime_stream_item_kind(value: &str) -> CommandResult<RuntimeStreamIte
         "skill" => Ok(RuntimeStreamItemKind::Skill),
         "activity" => Ok(RuntimeStreamItemKind::Activity),
         "action_required" => Ok(RuntimeStreamItemKind::ActionRequired),
+        "plan" => Ok(RuntimeStreamItemKind::Plan),
         "complete" => Ok(RuntimeStreamItemKind::Complete),
         "failure" => Ok(RuntimeStreamItemKind::Failure),
         other => Err(CommandError::user_fixable(
@@ -296,8 +298,14 @@ fn owned_agent_event_runtime_item(
         action_id: None,
         boundary_id: None,
         action_type: None,
+        answer_shape: None,
+        options: None,
+        allow_multiple: None,
         title: None,
         detail: None,
+        plan_id: None,
+        plan_items: None,
+        plan_last_changed_id: None,
         code: None,
         message: None,
         retryable: None,
@@ -499,7 +507,7 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::PlanUpdated => {
-            item.kind = RuntimeStreamItemKind::Activity;
+            item.kind = RuntimeStreamItemKind::Plan;
             item.code = Some("owned_agent_plan_updated".into());
             item.title = Some("Plan updated".into());
             let total = payload
@@ -514,6 +522,13 @@ fn owned_agent_event_runtime_item(
                 "Structured plan has {total} item(s), {completed} completed."
             ));
             item.text = item.detail.clone();
+            item.plan_id = Some(format!("run:{}", event.run_id));
+            item.plan_items = plan_items_from_payload(&payload);
+            item.plan_last_changed_id = payload
+                .get("changedItem")
+                .and_then(|changed| changed.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
         }
         AgentRunEventKind::VerificationGate => {
             item.kind = RuntimeStreamItemKind::Activity;
@@ -1436,6 +1451,30 @@ fn payload_transcript_role(payload: &serde_json::Value) -> Option<RuntimeStreamT
         "tool" => Some(RuntimeStreamTranscriptRole::Tool),
         _ => None,
     }
+}
+
+fn plan_items_from_payload(payload: &serde_json::Value) -> Option<Vec<RuntimeStreamPlanItemDto>> {
+    let items = payload.get("items")?.as_array()?;
+    let mut projected = Vec::with_capacity(items.len());
+    for entry in items {
+        let id = payload_string(entry, "id")?;
+        let title = payload_string(entry, "title").unwrap_or_else(|| id.clone());
+        let notes = payload_string(entry, "notes");
+        let status = match entry.get("status").and_then(serde_json::Value::as_str) {
+            Some("in_progress") => RuntimeStreamPlanItemStatus::InProgress,
+            Some("completed") => RuntimeStreamPlanItemStatus::Completed,
+            _ => RuntimeStreamPlanItemStatus::Pending,
+        };
+        let updated_at = payload_string(entry, "updatedAt").unwrap_or_default();
+        projected.push(RuntimeStreamPlanItemDto {
+            id,
+            title,
+            notes,
+            status,
+            updated_at,
+        });
+    }
+    Some(projected)
 }
 
 fn command_output_result_preview(payload: &serde_json::Value) -> Option<String> {

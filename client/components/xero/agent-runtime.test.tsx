@@ -790,6 +790,7 @@ describe('AgentRuntime current UI', () => {
             skillItems: [],
             activityItems: [],
             actionRequired: [],
+            plan: null,
             completion: {
               id: 'complete:run-1:9',
               kind: 'complete',

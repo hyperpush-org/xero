@@ -1325,13 +1325,33 @@ fn execute_prepared_call(
     }
 
     let checkpoint = if prepared.descriptor.mutability == ToolMutability::Mutating {
-        match rollback.and_then(|recorder| {
-            match recorder.checkpoint_before(&prepared.call, &prepared.descriptor) {
-                Ok(checkpoint) => checkpoint,
-                Err(_) => None,
+        match rollback {
+            Some(recorder) => {
+                match recorder.checkpoint_before(&prepared.call, &prepared.descriptor) {
+                    Ok(checkpoint) => checkpoint,
+                    Err(error) => {
+                        let mut sandbox_metadata = prepared.sandbox_metadata;
+                        if let Some(metadata) = sandbox_metadata.as_mut() {
+                            metadata.exit_classification = exit_classification_from_error(&error);
+                        }
+                        return ToolDispatchOutcome::Failed(ToolDispatchFailure {
+                            tool_call_id: prepared.call.tool_call_id,
+                            tool_name: prepared.call.tool_name,
+                            error,
+                            doom_loop_signal: None,
+                            rollback_payload: None,
+                            rollback_error: None,
+                            pre_hook_payload: prepared.pre_hook_payload,
+                            post_hook_payload: json!({
+                                "ok": false,
+                                "preflight": "rollback_checkpoint_failed",
+                            }),
+                            elapsed_ms: prepared.started.elapsed().as_millis(),
+                            sandbox_metadata,
+                        });
+                    }
+                }
             }
-        }) {
-            Some(checkpoint) => Some(checkpoint),
             None => None,
         }
     } else {
@@ -1638,6 +1658,23 @@ fn truncate_tool_output(
         );
     }
 
+    if descriptor.result_truncation.preserve_json_shape {
+        let shaped = truncate_preserving_json_shape(output, max_output_bytes);
+        let returned_bytes = serde_json::to_string(&shaped)
+            .map(|value| value.len())
+            .unwrap_or(0);
+        return (
+            shaped,
+            ToolResultTruncationMetadata {
+                was_truncated: true,
+                original_bytes,
+                returned_bytes,
+                omitted_bytes: original_bytes.saturating_sub(returned_bytes),
+                max_output_bytes,
+            },
+        );
+    }
+
     let preview = truncate_utf8(&serialized, max_output_bytes);
     let returned_bytes = preview.len();
     (
@@ -1667,6 +1704,80 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         end = end.saturating_sub(1);
     }
     value[..end].to_string()
+}
+
+fn truncate_preserving_json_shape(mut output: JsonValue, max_output_bytes: usize) -> JsonValue {
+    let mut string_budget = max_output_bytes.saturating_div(2).clamp(64, 4096);
+    loop {
+        let mut changed = false;
+        truncate_json_value_in_place(&mut output, string_budget, &mut changed);
+        if serde_json::to_string(&output)
+            .map(|serialized| serialized.len() <= max_output_bytes)
+            .unwrap_or(true)
+        {
+            break;
+        }
+        if string_budget <= 32 || !changed {
+            add_shape_truncation_marker(&mut output, max_output_bytes);
+            break;
+        }
+        string_budget /= 2;
+    }
+    add_shape_truncation_marker(&mut output, max_output_bytes);
+    output
+}
+
+fn truncate_json_value_in_place(value: &mut JsonValue, string_budget: usize, changed: &mut bool) {
+    match value {
+        JsonValue::String(text) => {
+            if text.len() > string_budget {
+                let omitted = text.len().saturating_sub(string_budget);
+                let mut truncated = truncate_utf8(text, string_budget);
+                truncated.push_str(&format!("\n...[truncated {omitted} byte(s)]"));
+                *text = truncated;
+                *changed = true;
+            }
+        }
+        JsonValue::Array(items) => {
+            let max_items = 64;
+            if items.len() > max_items {
+                let omitted = items.len().saturating_sub(max_items);
+                items.truncate(max_items);
+                items.push(json!({
+                    "xeroTruncatedArrayItems": omitted,
+                }));
+                *changed = true;
+            }
+            for item in items {
+                truncate_json_value_in_place(item, string_budget, changed);
+            }
+        }
+        JsonValue::Object(fields) => {
+            for item in fields.values_mut() {
+                truncate_json_value_in_place(item, string_budget, changed);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
+    }
+}
+
+fn add_shape_truncation_marker(output: &mut JsonValue, max_output_bytes: usize) {
+    let marker = json!({
+        "wasTruncated": true,
+        "maxOutputBytes": max_output_bytes,
+        "contract": "preserve_json_shape",
+    });
+    match output {
+        JsonValue::Object(fields) => {
+            fields.insert("xeroTruncation".into(), marker);
+        }
+        _ => {
+            *output = json!({
+                "value": output.clone(),
+                "xeroTruncation": marker,
+            });
+        }
+    }
 }
 
 fn validate_input_against_schema(
@@ -2107,6 +2218,64 @@ mod tests {
         assert_eq!(*rollback.rollbacks.lock().unwrap(), 1);
     }
 
+    #[derive(Debug)]
+    struct FailingCheckpoint;
+
+    impl ToolRollback for FailingCheckpoint {
+        fn checkpoint_before(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+        ) -> ToolRegistryResult<Option<JsonValue>> {
+            Err(ToolExecutionError::policy_denied(
+                "checkpoint_denied",
+                "checkpoint denied before handler execution",
+            ))
+        }
+
+        fn rollback_after_failure(
+            &self,
+            _call: &ToolCallInput,
+            _descriptor: &ToolDescriptorV2,
+            _checkpoint: &JsonValue,
+            _error: &ToolExecutionError,
+        ) -> ToolRegistryResult<JsonValue> {
+            Ok(json!({ "unexpected": true }))
+        }
+    }
+
+    #[test]
+    fn mutating_preflight_error_blocks_handler_execution() {
+        let executed = Arc::new(Mutex::new(false));
+        let executed_for_handler = Arc::clone(&executed);
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("write_file", ToolMutability::Mutating),
+                move |_context, _call| {
+                    *executed_for_handler.lock().unwrap() = true;
+                    Ok(ToolHandlerOutput::new("write", json!({ "ok": true })))
+                },
+            ))
+            .expect("register write");
+        let config = ToolDispatchConfig {
+            rollback: Some(Arc::new(FailingCheckpoint)),
+            ..ToolDispatchConfig::default()
+        };
+        let mut tracker = ToolBudgetTracker::new(ToolBudget::default());
+
+        let outcome = registry.dispatch_call(
+            call("call-1", "write_file", "src/lib.rs"),
+            &mut tracker,
+            &config,
+        );
+
+        let failure = outcome.failure().expect("preflight failure");
+        assert_eq!(failure.error.category, ToolErrorCategory::PolicyDenied);
+        assert_eq!(failure.error.code, "checkpoint_denied");
+        assert!(!*executed.lock().unwrap());
+    }
+
     #[test]
     fn repeated_failing_tool_sets_doom_loop_signal() {
         let mut registry = ToolRegistryV2::new();
@@ -2268,6 +2437,48 @@ mod tests {
     }
 
     #[test]
+    fn cancellable_handler_observes_group_deadline_control() {
+        let observed_cancel = Arc::new(Mutex::new(false));
+        let observed_cancel_for_handler = Arc::clone(&observed_cancel);
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new_cancellable(
+                descriptor("slow_probe", ToolMutability::ReadOnly),
+                move |_context, call, control| {
+                    while !control.is_cancelled() {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    *observed_cancel_for_handler.lock().unwrap() = true;
+                    Err(ToolExecutionError::timeout(
+                        "slow_probe_cancelled",
+                        format!("{} saw cancellation", call.tool_name),
+                    ))
+                },
+            ))
+            .expect("register cancellable probe");
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 20,
+                ..ToolBudget::default()
+            },
+            ..ToolDispatchConfig::default()
+        };
+
+        let report = registry.dispatch_batch(&[call("call-1", "slow_probe", "a")], &config);
+
+        assert!(report.groups[0].outcomes[0]
+            .failure()
+            .is_some_and(|failure| failure.error.category == ToolErrorCategory::Timeout));
+        for _ in 0..20 {
+            if *observed_cancel.lock().unwrap() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(*observed_cancel.lock().unwrap());
+    }
+
+    #[test]
     fn mutating_tools_are_split_into_sequential_groups() {
         let mut registry = ToolRegistryV2::new();
         registry
@@ -2335,5 +2546,40 @@ mod tests {
                 .exit_classification,
             SandboxExitClassification::Success
         );
+    }
+
+    #[test]
+    fn structured_truncation_preserves_json_object_shape_when_requested() {
+        let mut descriptor = descriptor("structured_read", ToolMutability::ReadOnly);
+        descriptor.result_truncation.max_output_bytes = 220;
+        descriptor.result_truncation.preserve_json_shape = true;
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(descriptor, |_context, _call| {
+                Ok(ToolHandlerOutput::new(
+                    "read",
+                    json!({
+                        "path": "src/lib.rs",
+                        "content": "a".repeat(2000),
+                    }),
+                ))
+            }))
+            .expect("register structured read");
+        let mut tracker = ToolBudgetTracker::new(ToolBudget::default());
+
+        let outcome = registry.dispatch_call(
+            call("call-1", "structured_read", "src/lib.rs"),
+            &mut tracker,
+            &ToolDispatchConfig::default(),
+        );
+
+        let ToolDispatchOutcome::Succeeded(success) = outcome else {
+            panic!("expected success");
+        };
+        assert!(success.truncation.was_truncated);
+        assert_eq!(success.output["path"], json!("src/lib.rs"));
+        assert!(success.output["content"].as_str().is_some());
+        assert!(success.output.get("xeroTruncation").is_some());
+        assert!(success.output.get("xeroTruncated").is_none());
     }
 }

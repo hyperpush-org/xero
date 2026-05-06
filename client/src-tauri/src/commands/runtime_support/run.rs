@@ -912,7 +912,7 @@ fn is_local_provider_endpoint(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
+pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     require_persisted_profile: bool,
@@ -922,14 +922,17 @@ fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
     initial_attachments: &[crate::commands::StagedAgentAttachmentDto],
 ) -> CommandResult<ProviderPreflightSnapshot> {
     let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
-    required_features.attachments = initial_attachments.iter().any(|attachment| {
-        matches!(
-            attachment.kind,
-            crate::commands::AgentAttachmentKindDto::Image
-                | crate::commands::AgentAttachmentKindDto::Document
-        )
-    });
+    required_features.attachments = !initial_attachments.is_empty();
     let preflight = if require_persisted_profile {
+        let expected_cache_binding =
+            crate::provider_preflight::current_provider_preflight_cache_binding(
+                app,
+                state,
+                profile_id,
+                provider_id,
+                model_id,
+                &required_features,
+            )?;
         let cache_started = Instant::now();
         let reusable_snapshot = match crate::provider_preflight::latest_provider_preflight_snapshot(
             app,
@@ -938,7 +941,11 @@ fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
             provider_id,
             model_id,
         )? {
-            Some(snapshot) => reusable_provider_preflight_snapshot(snapshot, &required_features),
+            Some(snapshot) => reusable_provider_preflight_snapshot(
+                snapshot,
+                &required_features,
+                expected_cache_binding.as_ref(),
+            ),
             None => None,
         };
         eprintln!(
@@ -983,7 +990,7 @@ fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
         return Err(CommandError::user_fixable(
             "provider_attachment_capability_missing",
             format!(
-                "Xero cannot send image or document attachments to provider `{provider_id}` with the current owned adapter. Choose an attachment-capable provider or remove the attachments before starting the run."
+                "Xero cannot send attachments to provider `{provider_id}` with the current owned adapter. Choose an attachment-capable provider or remove the attachments before starting the run."
             ),
         ));
     }
@@ -994,15 +1001,50 @@ fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
 fn reusable_provider_preflight_snapshot(
     snapshot: ProviderPreflightSnapshot,
     required_features: &ProviderPreflightRequiredFeatures,
+    expected_cache_binding: Option<&xero_agent_core::ProviderPreflightCacheBinding>,
 ) -> Option<ProviderPreflightSnapshot> {
     if snapshot.stale || snapshot.required_features != *required_features {
         return None;
+    }
+    if let Some(expected_cache_binding) = expected_cache_binding {
+        let matches_cache_binding = snapshot
+            .cache_binding
+            .as_ref()
+            .is_some_and(|binding| binding.cache_key == expected_cache_binding.cache_key);
+        if !matches_cache_binding {
+            return None;
+        }
     }
 
     let snapshot = xero_agent_core::provider_preflight_snapshot_as_cached_probe(snapshot);
     provider_preflight_blockers(&snapshot)
         .is_empty()
         .then_some(snapshot)
+}
+
+pub(crate) fn agent_provider_config_identity(config: &AgentProviderConfig) -> (String, String) {
+    match config {
+        AgentProviderConfig::Fake => (
+            OPENAI_CODEX_PROVIDER_ID.into(),
+            OPENAI_CODEX_PROVIDER_ID.into(),
+        ),
+        AgentProviderConfig::OpenAiResponses(config) => {
+            (config.provider_id.clone(), config.model_id.clone())
+        }
+        AgentProviderConfig::OpenAiCodexResponses(config) => {
+            (config.provider_id.clone(), config.model_id.clone())
+        }
+        AgentProviderConfig::OpenAiCompatible(config) => {
+            (config.provider_id.clone(), config.model_id.clone())
+        }
+        AgentProviderConfig::Anthropic(config) => {
+            (config.provider_id.clone(), config.model_id.clone())
+        }
+        AgentProviderConfig::Bedrock(config) => {
+            (BEDROCK_PROVIDER_ID.into(), config.model_id.clone())
+        }
+        AgentProviderConfig::Vertex(config) => (VERTEX_PROVIDER_ID.into(), config.model_id.clone()),
+    }
 }
 
 pub(crate) fn generate_runtime_run_id() -> String {
@@ -1685,8 +1727,9 @@ fn queued_runtime_attachments(
 mod tests {
     use super::*;
     use xero_agent_core::{
-        provider_capability_catalog, provider_preflight_snapshot, ProviderCapabilityCatalogInput,
-        ProviderPreflightInput, ProviderPreflightSource, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+        provider_capability_catalog, provider_preflight_cache_binding, provider_preflight_snapshot,
+        ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightSource,
+        DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
     };
 
     fn stored_codex_session(expires_at: i64) -> StoredOpenAiCodexSession {
@@ -1781,7 +1824,8 @@ mod tests {
 
         assert!(reusable_provider_preflight_snapshot(
             snapshot,
-            &ProviderPreflightRequiredFeatures::owned_agent_text_turn()
+            &ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            None,
         )
         .is_none());
     }
@@ -1793,10 +1837,35 @@ mod tests {
         let reused = reusable_provider_preflight_snapshot(
             snapshot,
             &ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            None,
         )
         .expect("reusable preflight");
 
         assert_eq!(reused.source, ProviderPreflightSource::CachedProbe);
         assert!(provider_preflight_blockers(&reused).is_empty());
+    }
+
+    #[test]
+    fn cached_preflight_reuse_requires_matching_cache_binding_when_known() {
+        let required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        let mut snapshot = preflight_snapshot(ProviderPreflightSource::LiveProbe);
+        snapshot.cache_binding = Some(provider_preflight_cache_binding(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.4",
+            "https://chatgpt.com/backend-api/codex/responses",
+            "openai_codex:account-a",
+            &required,
+        ));
+        let expected = provider_preflight_cache_binding(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.4",
+            "https://chatgpt.com/backend-api/codex/responses",
+            "openai_codex:account-b",
+            &required,
+        );
+
+        assert!(
+            reusable_provider_preflight_snapshot(snapshot, &required, Some(&expected)).is_none()
+        );
     }
 }

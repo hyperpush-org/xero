@@ -1167,14 +1167,18 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .iter()
         .map(|descriptor| descriptor.name.as_str())
         .collect::<BTreeSet<_>>();
-    let expected_names = BTreeSet::from([
+    let mut expected_names = BTreeSet::from([
         "read",
         "search",
         "find",
         "git_status",
         "git_diff",
         "tool_access",
-        "project_context",
+        "project_context_search",
+        "project_context_get",
+        "project_context_record",
+        "project_context_update",
+        "project_context_refresh",
         "workspace_index",
         "agent_coordination",
         "edit",
@@ -1185,26 +1189,28 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "mkdir",
         "list",
         "file_hash",
-        "command",
-        "command_session_start",
-        "command_session_read",
-        "command_session_stop",
+        "command_probe",
+        "command_verify",
+        "command_run",
+        "command_session",
         "process_manager",
-        "macos_automation",
-        "mcp",
+        "mcp_list",
+        "mcp_read_resource",
+        "mcp_get_prompt",
+        "mcp_call_tool",
         "subagent",
         "todo",
         "notebook_edit",
         "code_intel",
         "lsp",
-        "powershell",
         "tool_search",
         "web_search",
         "web_fetch",
-        "browser",
+        "browser_observe",
+        "browser_control",
         "emulator",
         "environment_context",
-        "system_diagnostics",
+        "system_diagnostics_observe",
         "solana_cluster",
         "solana_logs",
         "solana_tx",
@@ -1230,6 +1236,13 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "solana_cost",
         "solana_docs",
     ]);
+    if cfg!(target_os = "macos") {
+        expected_names.insert("macos_automation");
+        expected_names.insert("system_diagnostics_privileged");
+    }
+    if cfg!(target_os = "windows") {
+        expected_names.insert("powershell");
+    }
     assert_eq!(descriptor_names, expected_names);
 
     let read = registry.descriptor("read").expect("read descriptor");
@@ -1258,18 +1271,28 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
             .expect("tool access groups description")
             .contains("process_manager")
     );
-    let project_context = registry
-        .descriptor("project_context")
-        .expect("project context descriptor");
-    assert_eq!(project_context.input_schema["required"], json!(["action"]));
-    assert!(project_context.input_schema["properties"]["action"]["enum"]
-        .as_array()
-        .expect("project context action enum")
-        .contains(&json!("search_project_records")));
-    assert!(project_context.input_schema["properties"]["action"]["enum"]
-        .as_array()
-        .expect("project context action enum")
-        .contains(&json!("propose_record_candidate")));
+    let project_context_search = registry
+        .descriptor("project_context_search")
+        .expect("project context search descriptor");
+    assert_eq!(
+        project_context_search.input_schema["required"],
+        json!(["action"])
+    );
+    assert!(
+        project_context_search.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("project context action enum")
+            .contains(&json!("search_project_records"))
+    );
+    let project_context_record = registry
+        .descriptor("project_context_record")
+        .expect("project context record descriptor");
+    assert!(
+        project_context_record.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("project context action enum")
+            .contains(&json!("propose_record_candidate"))
+    );
 
     let process_manager = registry
         .descriptor("process_manager")
@@ -1281,27 +1304,36 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .contains(&json!("async_start")));
     assert!(process_manager.description.contains("phase 5"));
 
-    let macos = registry
-        .descriptor("macos_automation")
-        .expect("macos automation descriptor");
-    assert_eq!(macos.input_schema["required"], json!(["action"]));
-    assert!(macos.input_schema["properties"]["action"]["enum"]
-        .as_array()
-        .expect("macos action enum")
-        .contains(&json!("mac_permissions")));
-    assert!(macos.input_schema["properties"]["action"]["enum"]
-        .as_array()
-        .expect("macos action enum")
-        .contains(&json!("mac_screenshot")));
+    if cfg!(target_os = "macos") {
+        let macos = registry
+            .descriptor("macos_automation")
+            .expect("macos automation descriptor");
+        assert_eq!(macos.input_schema["required"], json!(["action"]));
+        assert!(macos.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("macos action enum")
+            .contains(&json!("mac_permissions")));
+        assert!(macos.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("macos action enum")
+            .contains(&json!("mac_screenshot")));
+    } else {
+        assert!(registry.descriptor("macos_automation").is_none());
+    }
 
-    assert!(registry.descriptor("browser").is_some());
-    assert!(registry.descriptor("mcp").is_some());
+    assert!(registry.descriptor("browser_observe").is_some());
+    assert!(registry.descriptor("browser_control").is_some());
+    assert!(registry.descriptor("mcp_list").is_some());
+    assert!(registry.descriptor("mcp_call_tool").is_some());
     assert!(registry.descriptor("subagent").is_some());
     assert!(registry.descriptor("todo").is_some());
     assert!(registry.descriptor("notebook_edit").is_some());
     assert!(registry.descriptor("code_intel").is_some());
     assert!(registry.descriptor("lsp").is_some());
-    assert!(registry.descriptor("powershell").is_some());
+    assert_eq!(
+        registry.descriptor("powershell").is_some(),
+        cfg!(target_os = "windows")
+    );
     assert!(registry.descriptor("tool_search").is_some());
     let emulator = registry
         .descriptor("emulator")
@@ -1354,12 +1386,13 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     let read_only_names = read_only.descriptor_names();
     assert!(read_only_names.contains("read"));
     assert!(read_only_names.contains("tool_access"));
-    assert!(read_only_names.contains("project_context"));
+    assert!(read_only_names.contains("project_context_search"));
+    assert!(read_only_names.contains("project_context_get"));
     assert!(read_only_names.contains("tool_search"));
     assert!(read_only_names.contains("todo"));
     assert!(read_only_names.contains("git_diff"));
     assert!(!read_only_names.contains("write"));
-    assert!(!read_only_names.contains("command"));
+    assert!(!read_only_names.contains("command_run"));
     assert!(!read_only_names.contains("emulator"));
     assert!(!read_only_names.contains("solana_cluster"));
 
@@ -1371,8 +1404,10 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     let implementation_names = implementation.descriptor_names();
     assert!(implementation_names.contains("write"));
     assert!(implementation_names.contains("patch"));
-    assert!(implementation_names.contains("command"));
-    assert!(implementation_names.contains("command_session_start"));
+    assert!(implementation_names.contains("command_probe"));
+    assert!(implementation_names.contains("command_verify"));
+    assert!(!implementation_names.contains("command_run"));
+    assert!(!implementation_names.contains("command_session"));
     assert!(!implementation_names.contains("emulator"));
 
     let process_manager = ToolRegistry::for_prompt(
@@ -1389,7 +1424,10 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
         "Implement phase 7 macOS app/system automation with app list and screenshots.",
         &controls,
     );
-    assert!(macos.descriptor_names().contains("macos_automation"));
+    assert_eq!(
+        macos.descriptor_names().contains("macos_automation"),
+        cfg!(target_os = "macos")
+    );
 
     let audit = ToolRegistry::for_prompt(
         temp.path(),
@@ -1399,7 +1437,7 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     let audit_names = audit.descriptor_names();
     assert!(audit_names.contains("read"));
     assert!(audit_names.contains("git_diff"));
-    assert!(audit_names.contains("command"));
+    assert!(audit_names.contains("command_verify"));
 
     fs::write(temp.path().join("Anchor.toml"), "[programs.localnet]\n")
         .expect("seed solana-looking workspace");
@@ -1418,14 +1456,18 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
         &controls,
     );
     let priority_names = priority_tools.descriptor_names();
-    assert!(priority_names.contains("mcp"));
+    assert!(priority_names.contains("mcp_list"));
+    assert!(!priority_names.contains("mcp_call_tool"));
     assert!(priority_names.contains("subagent"));
     assert!(priority_names.contains("todo"));
     assert!(priority_names.contains("tool_search"));
     assert!(priority_names.contains("code_intel"));
     assert!(priority_names.contains("lsp"));
     assert!(priority_names.contains("notebook_edit"));
-    assert!(priority_names.contains("powershell"));
+    assert_eq!(
+        priority_names.contains("powershell"),
+        cfg!(target_os = "windows")
+    );
 
     let app_use = ToolRegistry::for_prompt(
         temp.path(),
@@ -1451,8 +1493,9 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
         },
     );
     let default_browser_names = default_browser.descriptor_names();
-    assert!(default_browser_names.contains("browser"));
-    assert!(default_browser_names.contains("macos_automation"));
+    assert!(default_browser_names.contains("browser_observe"));
+    assert!(default_browser_names.contains("browser_control"));
+    assert!(!default_browser_names.contains("macos_automation"));
 
     let in_app_browser = ToolRegistry::for_prompt_with_options(
         temp.path(),
@@ -1464,7 +1507,8 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
         },
     );
     let in_app_browser_names = in_app_browser.descriptor_names();
-    assert!(in_app_browser_names.contains("browser"));
+    assert!(in_app_browser_names.contains("browser_observe"));
+    assert!(in_app_browser_names.contains("browser_control"));
     assert!(!in_app_browser_names.contains("macos_automation"));
 
     let native_browser = ToolRegistry::for_prompt_with_options(
@@ -1477,8 +1521,12 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
         },
     );
     let native_browser_names = native_browser.descriptor_names();
-    assert!(!native_browser_names.contains("browser"));
-    assert!(native_browser_names.contains("macos_automation"));
+    assert!(!native_browser_names.contains("browser_observe"));
+    assert!(!native_browser_names.contains("browser_control"));
+    assert_eq!(
+        native_browser_names.contains("macos_automation"),
+        cfg!(target_os = "macos")
+    );
 }
 
 #[test]
@@ -1846,6 +1894,20 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
                 .iter()
                 .any(|group| group == "core")
             && entry["riskClass"] == "observe"));
+    assert_eq!(
+        registry_payload["exposurePlan"]["schema"],
+        "xero.tool_exposure_plan.v1"
+    );
+    assert!(registry_payload["exposurePlan"]["entries"]
+        .as_array()
+        .expect("exposure entries")
+        .iter()
+        .any(|entry| entry["toolName"] == "read"
+            && entry["reasons"]
+                .as_array()
+                .expect("read exposure reasons")
+                .iter()
+                .any(|reason| reason["source"] == "user_explicit_tool_marker")));
 
     assert_eq!(snapshot.tool_calls.len(), 1);
     let tool_call = &snapshot.tool_calls[0];

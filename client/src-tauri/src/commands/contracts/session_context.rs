@@ -2224,6 +2224,7 @@ fn transcript_kind_from_runtime_stream(
             SessionTranscriptItemKindDto::Activity
         }
         RuntimeStreamItemKind::ActionRequired => SessionTranscriptItemKindDto::ActionRequest,
+        RuntimeStreamItemKind::Plan => SessionTranscriptItemKindDto::Activity,
         RuntimeStreamItemKind::Complete => SessionTranscriptItemKindDto::Complete,
         RuntimeStreamItemKind::Failure => SessionTranscriptItemKindDto::Failure,
     }

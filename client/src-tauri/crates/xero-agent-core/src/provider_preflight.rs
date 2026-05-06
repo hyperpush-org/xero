@@ -141,6 +141,8 @@ pub struct ProviderPreflightSnapshot {
     pub profile_id: String,
     pub provider_id: String,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_binding: Option<ProviderPreflightCacheBinding>,
     pub source: ProviderPreflightSource,
     pub checked_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,6 +153,15 @@ pub struct ProviderPreflightSnapshot {
     pub capabilities: ProviderCapabilityCatalog,
     pub checks: Vec<ProviderPreflightCheck>,
     pub status: ProviderPreflightStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderPreflightCacheBinding {
+    pub endpoint_fingerprint: String,
+    pub account_class: String,
+    pub required_features_fingerprint: String,
+    pub cache_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,6 +310,7 @@ pub fn provider_preflight_snapshot(input: ProviderPreflightInput) -> ProviderPre
         profile_id: normalize_or_default(input.profile_id, "default"),
         provider_id: normalize_or_default(input.provider_id, "unknown"),
         model_id: normalize_or_default(input.model_id, "unknown-model"),
+        cache_binding: None,
         source: input.source,
         checked_at: normalize_or_default(input.checked_at, "unknown"),
         age_seconds: input.age_seconds,
@@ -309,6 +321,54 @@ pub fn provider_preflight_snapshot(input: ProviderPreflightInput) -> ProviderPre
         checks,
         status,
     }
+}
+
+pub fn provider_preflight_cache_binding(
+    provider_id: &str,
+    model_id: &str,
+    endpoint_fingerprint: &str,
+    account_class: &str,
+    required_features: &ProviderPreflightRequiredFeatures,
+) -> ProviderPreflightCacheBinding {
+    let feature_json = serde_json::to_string(required_features)
+        .unwrap_or_else(|_| "provider_preflight_required_features_unserializable".into());
+    let required_features_fingerprint =
+        crate::runtime_trace_id("provider-preflight-features", &[&feature_json]);
+    let cache_key = crate::runtime_trace_id(
+        "provider-preflight-cache",
+        &[
+            provider_id.trim(),
+            model_id.trim(),
+            endpoint_fingerprint.trim(),
+            account_class.trim(),
+            &required_features_fingerprint,
+        ],
+    );
+
+    ProviderPreflightCacheBinding {
+        endpoint_fingerprint: normalize_or_default(
+            endpoint_fingerprint.trim().to_owned(),
+            "unknown_endpoint",
+        ),
+        account_class: normalize_or_default(account_class.trim().to_owned(), "unknown_account"),
+        required_features_fingerprint,
+        cache_key,
+    }
+}
+
+pub fn bind_provider_preflight_cache(
+    mut snapshot: ProviderPreflightSnapshot,
+    endpoint_fingerprint: &str,
+    account_class: &str,
+) -> ProviderPreflightSnapshot {
+    snapshot.cache_binding = Some(provider_preflight_cache_binding(
+        &snapshot.provider_id,
+        &snapshot.model_id,
+        endpoint_fingerprint,
+        account_class,
+        &snapshot.required_features,
+    ));
+    snapshot
 }
 
 pub fn provider_preflight_blockers(
@@ -1196,5 +1256,48 @@ mod tests {
         assert!(provider_preflight_blockers(&snapshot)
             .iter()
             .any(|check| { check.code == "provider_preflight_attachments" }));
+    }
+
+    #[test]
+    fn provider_preflight_cache_binding_changes_with_binding_inputs() {
+        let required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        let base = provider_preflight_cache_binding(
+            "openai_api",
+            "gpt-5.4",
+            "https://api.openai.com/v1",
+            "api_key:2026-05-05",
+            &required,
+        );
+        let different_endpoint = provider_preflight_cache_binding(
+            "openai_api",
+            "gpt-5.4",
+            "http://127.0.0.1:11434/v1",
+            "api_key:2026-05-05",
+            &required,
+        );
+        let different_account = provider_preflight_cache_binding(
+            "openai_api",
+            "gpt-5.4",
+            "https://api.openai.com/v1",
+            "api_key:2026-05-06",
+            &required,
+        );
+        let mut attachment_required = required.clone();
+        attachment_required.attachments = true;
+        let different_features = provider_preflight_cache_binding(
+            "openai_api",
+            "gpt-5.4",
+            "https://api.openai.com/v1",
+            "api_key:2026-05-05",
+            &attachment_required,
+        );
+
+        assert_ne!(base.cache_key, different_endpoint.cache_key);
+        assert_ne!(base.cache_key, different_account.cache_key);
+        assert_ne!(base.cache_key, different_features.cache_key);
+        assert_ne!(
+            base.required_features_fingerprint,
+            different_features.required_features_fingerprint
+        );
     }
 }

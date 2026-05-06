@@ -103,7 +103,7 @@ impl AgentToolDescriptor {
             telemetry_attributes,
             result_truncation: xero_agent_core::ToolResultTruncationContract {
                 max_output_bytes: 64 * 1024,
-                preserve_json_shape: false,
+                preserve_json_shape: true,
             },
         }
     }
@@ -113,6 +113,7 @@ impl AgentToolDescriptor {
 pub struct ToolRegistry {
     descriptors: Vec<AgentToolDescriptor>,
     dynamic_routes: BTreeMap<String, AutonomousDynamicToolRoute>,
+    exposure_plan: ToolExposurePlan,
     options: ToolRegistryOptions,
 }
 
@@ -135,27 +136,188 @@ impl Default for ToolRegistryOptions {
     }
 }
 
+const TOOL_EXPOSURE_PLAN_SCHEMA: &str = "xero.tool_exposure_plan.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExposurePlan {
+    pub schema: String,
+    pub strategy: String,
+    pub runtime_agent_id: RuntimeAgentIdDto,
+    pub task_classification: ToolExposureTaskClassification,
+    pub provider_tool_support: String,
+    pub environment_health: String,
+    pub entries: Vec<ToolExposureEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExposureTaskClassification {
+    pub kind: String,
+    pub requires_plan: bool,
+    pub score: u8,
+    pub reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExposureEntry {
+    pub tool_name: String,
+    pub reasons: Vec<ToolExposureReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExposureReason {
+    pub source: String,
+    pub reason_code: String,
+    pub detail: String,
+}
+
+impl ToolExposurePlan {
+    pub(crate) fn empty(
+        runtime_agent_id: RuntimeAgentIdDto,
+        strategy: impl Into<String>,
+        task_classification: ToolExposureTaskClassification,
+    ) -> Self {
+        Self {
+            schema: TOOL_EXPOSURE_PLAN_SCHEMA.into(),
+            strategy: strategy.into(),
+            runtime_agent_id,
+            task_classification,
+            provider_tool_support: "tool_schemas_supported_by_selected_provider".into(),
+            environment_health: "runtime_availability_checked_by_tool_runtime".into(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub(crate) fn for_tool_names<I, S>(
+        runtime_agent_id: RuntimeAgentIdDto,
+        strategy: impl Into<String>,
+        tool_names: I,
+        source: &str,
+        reason_code: &str,
+        detail: &str,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut plan = Self::empty(
+            runtime_agent_id,
+            strategy,
+            ToolExposureTaskClassification::manual("not_task_classified"),
+        );
+        plan.add_tools(tool_names, source, reason_code, detail);
+        plan
+    }
+
+    pub(crate) fn tool_names(&self) -> BTreeSet<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.tool_name.clone())
+            .collect()
+    }
+
+    pub(crate) fn add_tools<I, S>(
+        &mut self,
+        tool_names: I,
+        source: &str,
+        reason_code: &str,
+        detail: &str,
+    ) where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for tool_name in tool_names {
+            self.add_tool(tool_name.as_ref(), source, reason_code, detail);
+        }
+        self.entries
+            .sort_by(|left, right| left.tool_name.cmp(&right.tool_name));
+    }
+
+    pub(crate) fn add_tool(
+        &mut self,
+        tool_name: &str,
+        source: &str,
+        reason_code: &str,
+        detail: &str,
+    ) {
+        let reason = ToolExposureReason {
+            source: source.into(),
+            reason_code: reason_code.into(),
+            detail: detail.into(),
+        };
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.tool_name == tool_name)
+        {
+            if !entry.reasons.contains(&reason) {
+                entry.reasons.push(reason);
+                entry.reasons.sort_by(|left, right| {
+                    left.source
+                        .cmp(&right.source)
+                        .then(left.reason_code.cmp(&right.reason_code))
+                });
+            }
+            return;
+        }
+        self.entries.push(ToolExposureEntry {
+            tool_name: tool_name.into(),
+            reasons: vec![reason],
+        });
+    }
+
+    pub(crate) fn retain_tools(&mut self, allowed: &BTreeSet<String>) {
+        self.entries
+            .retain(|entry| allowed.contains(entry.tool_name.as_str()));
+    }
+}
+
+impl ToolExposureTaskClassification {
+    pub(crate) fn manual(kind: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            requires_plan: false,
+            score: 0,
+            reason_codes: Vec::new(),
+        }
+    }
+}
+
 impl ToolRegistry {
     pub fn builtin() -> Self {
         Self::builtin_with_options(ToolRegistryOptions::default())
     }
 
     pub fn builtin_with_options(options: ToolRegistryOptions) -> Self {
+        let descriptors = builtin_tool_descriptors()
+            .into_iter()
+            .filter(|descriptor| {
+                options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
+            })
+            .filter(|descriptor| tool_available_on_current_host(&descriptor.name))
+            .filter(|descriptor| {
+                tool_allowed_for_runtime_agent_with_policy(
+                    options.runtime_agent_id,
+                    &descriptor.name,
+                    options.agent_tool_policy.as_ref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let exposure_plan = ToolExposurePlan::for_tool_names(
+            options.runtime_agent_id,
+            "builtin_full_registry",
+            descriptors.iter().map(|descriptor| descriptor.name.as_str()),
+            "startup_core",
+            "builtin_full_registry",
+            "Full built-in registry requested for contract export, harness setup, or explicit diagnostic use.",
+        );
         Self {
-            descriptors: builtin_tool_descriptors()
-                .into_iter()
-                .filter(|descriptor| {
-                    options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
-                })
-                .filter(|descriptor| {
-                    tool_allowed_for_runtime_agent_with_policy(
-                        options.runtime_agent_id,
-                        &descriptor.name,
-                        options.agent_tool_policy.as_ref(),
-                    )
-                })
-                .collect(),
+            descriptors,
             dynamic_routes: BTreeMap::new(),
+            exposure_plan,
             options,
         }
     }
@@ -175,11 +337,14 @@ impl ToolRegistry {
         mut options: ToolRegistryOptions,
     ) -> Self {
         options.runtime_agent_id = controls.active.runtime_agent_id;
-        let mut names = select_tool_names_for_prompt(repo_root, prompt, controls, &options);
+        let mut exposure_plan =
+            plan_tool_exposure_for_prompt(repo_root, prompt, controls, &options);
+        let mut names = exposure_plan.tool_names();
         if !options.skill_tool_enabled {
             names.remove(AUTONOMOUS_TOOL_SKILL);
         }
-        Self::for_tool_names_with_options(names, options)
+        exposure_plan.retain_tools(&names);
+        Self::for_tool_names_with_options_and_exposure(names, options, exposure_plan)
     }
 
     pub fn for_tool_names(tool_names: BTreeSet<String>) -> Self {
@@ -190,21 +355,52 @@ impl ToolRegistry {
         tool_names: BTreeSet<String>,
         options: ToolRegistryOptions,
     ) -> Self {
+        let exposure_plan = ToolExposurePlan::for_tool_names(
+            options.runtime_agent_id,
+            "explicit_tool_set",
+            tool_names.iter().map(String::as_str),
+            "user_explicit_tool_marker",
+            "explicit_tool_set",
+            "Tool registry was created from an explicit tool set.",
+        );
+        Self::for_tool_names_with_options_and_exposure(tool_names, options, exposure_plan)
+    }
+
+    fn for_tool_names_with_options_and_exposure(
+        tool_names: BTreeSet<String>,
+        options: ToolRegistryOptions,
+        mut exposure_plan: ToolExposurePlan,
+    ) -> Self {
         let descriptors = builtin_tool_descriptors()
             .into_iter()
             .filter(|descriptor| {
                 tool_names.contains(descriptor.name.as_str())
                     && (options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
+                    && tool_available_on_current_host(&descriptor.name)
                     && tool_allowed_for_runtime_agent_with_policy(
                         options.runtime_agent_id,
                         &descriptor.name,
                         options.agent_tool_policy.as_ref(),
                     )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let allowed = descriptors
+            .iter()
+            .map(|descriptor| descriptor.name.clone())
+            .collect::<BTreeSet<_>>();
+        if options.agent_tool_policy.is_some() {
+            exposure_plan.add_tools(
+                allowed.iter().map(String::as_str),
+                "custom_policy",
+                "custom_policy_allowed",
+                "The active custom agent policy allowed this tool after base agent filtering.",
+            );
+        }
+        exposure_plan.retain_tools(&allowed);
         Self {
             descriptors,
             dynamic_routes: BTreeMap::new(),
+            exposure_plan,
             options,
         }
     }
@@ -219,6 +415,7 @@ impl ToolRegistry {
             .filter(|descriptor| {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
             })
+            .filter(|descriptor| tool_available_on_current_host(&descriptor.name))
             .filter(|descriptor| {
                 tool_allowed_for_runtime_agent_with_policy(
                     options.runtime_agent_id,
@@ -228,9 +425,20 @@ impl ToolRegistry {
             })
             .collect::<Vec<_>>();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        let exposure_plan = ToolExposurePlan::for_tool_names(
+            options.runtime_agent_id,
+            "persisted_registry_snapshot",
+            descriptors
+                .iter()
+                .map(|descriptor| descriptor.name.as_str()),
+            "startup_core",
+            "persisted_registry_snapshot",
+            "Active registry was reconstructed from persisted descriptors.",
+        );
         Self {
             descriptors,
             dynamic_routes,
+            exposure_plan,
             options,
         }
     }
@@ -248,6 +456,16 @@ impl ToolRegistry {
 
     pub(crate) fn dynamic_routes(&self) -> &BTreeMap<String, AutonomousDynamicToolRoute> {
         &self.dynamic_routes
+    }
+
+    pub(crate) fn exposure_plan(&self) -> &ToolExposurePlan {
+        &self.exposure_plan
+    }
+
+    pub(crate) fn replace_exposure_plan(&mut self, mut exposure_plan: ToolExposurePlan) {
+        let allowed = self.descriptor_names();
+        exposure_plan.retain_tools(&allowed);
+        self.exposure_plan = exposure_plan;
     }
 
     pub fn into_descriptors(self) -> Vec<AgentToolDescriptor> {
@@ -272,9 +490,31 @@ impl ToolRegistry {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        self.expand_with_tool_names_for_reason(
+            tool_names,
+            "runtime_expansion",
+            "registry_expanded",
+            "The active registry was expanded by runtime orchestration.",
+        );
+    }
+
+    pub(crate) fn expand_with_tool_names_for_reason<I, S>(
+        &mut self,
+        tool_names: I,
+        source: &str,
+        reason_code: &str,
+        detail: &str,
+    ) where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let mut names = self.descriptor_names();
-        for tool_name in tool_names {
-            names.insert(tool_name.as_ref().to_owned());
+        let requested = tool_names
+            .into_iter()
+            .map(|tool_name| tool_name.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        for tool_name in &requested {
+            names.insert(tool_name.clone());
         }
         let dynamic_descriptors = self
             .descriptors
@@ -288,18 +528,34 @@ impl ToolRegistry {
         next.descriptors
             .sort_by(|left, right| left.name.cmp(&right.name));
         next.dynamic_routes = dynamic_routes;
+        next.exposure_plan = self.exposure_plan.clone();
+        next.exposure_plan.add_tools(
+            requested.iter().map(String::as_str),
+            source,
+            reason_code,
+            detail,
+        );
+        let allowed = next.descriptor_names();
+        next.exposure_plan.retain_tools(&allowed);
         *self = next;
     }
 
-    pub(crate) fn expand_with_tool_names_from_runtime<I, S>(
+    pub(crate) fn expand_with_tool_names_from_runtime_for_reason<I, S>(
         &mut self,
         tool_names: I,
         tool_runtime: &AutonomousToolRuntime,
+        source: &str,
+        reason_code: &str,
+        detail: &str,
     ) -> CommandResult<()>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let requested = tool_names
+            .into_iter()
+            .map(|tool_name| tool_name.as_ref().to_owned())
+            .collect::<Vec<_>>();
         let mut descriptors_by_name = self
             .descriptors
             .iter()
@@ -312,10 +568,11 @@ impl ToolRegistry {
             .map(|descriptor| (descriptor.name.clone(), descriptor))
             .collect::<BTreeMap<_, _>>();
 
-        for tool_name in tool_names {
-            let tool_name = tool_name.as_ref();
+        for tool_name in &requested {
+            let tool_name = tool_name.as_str();
             if let Some(descriptor) = builtin_descriptors.get(tool_name) {
                 if (self.options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL)
+                    && tool_available_on_current_host(&descriptor.name)
                     && tool_allowed_for_runtime_agent_with_policy(
                         self.options.runtime_agent_id,
                         &descriptor.name,
@@ -350,6 +607,17 @@ impl ToolRegistry {
 
         self.descriptors = descriptors_by_name.into_values().collect();
         self.dynamic_routes = dynamic_routes;
+        let allowed = self.descriptor_names();
+        self.exposure_plan.add_tools(
+            requested
+                .iter()
+                .filter(|tool_name| allowed.contains(tool_name.as_str()))
+                .map(String::as_str),
+            source,
+            reason_code,
+            detail,
+        );
+        self.exposure_plan.retain_tools(&allowed);
         Ok(())
     }
 
@@ -359,6 +627,15 @@ impl ToolRegistry {
                 || tool_call
                     .tool_name
                     .starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX);
+            if known_tool && !tool_available_on_current_host(&tool_call.tool_name) {
+                return Err(CommandError::user_fixable(
+                    "agent_tool_unavailable_on_host",
+                    format!(
+                        "Tool `{}` is unavailable on the current host operating system.",
+                        tool_call.tool_name
+                    ),
+                ));
+            }
             if known_tool
                 && !tool_allowed_for_runtime_agent_with_policy(
                     self.options.runtime_agent_id,
@@ -390,6 +667,8 @@ impl ToolRegistry {
                 &tool_call.tool_name,
             ));
         }
+
+        validate_call_for_runtime_agent(self.options.runtime_agent_id, tool_call)?;
 
         if let Some(route) = self.dynamic_routes.get(&tool_call.tool_name) {
             return match route {
@@ -584,6 +863,29 @@ fn decode_action_level_tool_call(
         }),
         _ => return None,
     })
+}
+
+fn validate_call_for_runtime_agent(
+    runtime_agent_id: RuntimeAgentIdDto,
+    tool_call: &AgentToolCall,
+) -> CommandResult<()> {
+    if tool_call.tool_name == AUTONOMOUS_TOOL_TODO
+        && tool_call
+            .input
+            .get("mode")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|mode| mode == "debug_evidence")
+        && runtime_agent_id != RuntimeAgentIdDto::Debug
+    {
+        return Err(CommandError::user_fixable(
+            "agent_debug_evidence_todo_mode_denied",
+            format!(
+                "The {} agent cannot use todo mode `debug_evidence`; that structured evidence ledger is reserved for Debug runs.",
+                runtime_agent_id.label()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1555,6 +1857,50 @@ mod tests {
     }
 
     #[test]
+    fn registry_filters_tools_that_do_not_match_the_current_host_os() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_MACOS_AUTOMATION.to_string(),
+                AUTONOMOUS_TOOL_POWERSHELL.to_string(),
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let names = registry.descriptor_names();
+
+        assert_eq!(
+            names.contains(AUTONOMOUS_TOOL_MACOS_AUTOMATION),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            names.contains(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            names.contains(AUTONOMOUS_TOOL_POWERSHELL),
+            cfg!(target_os = "windows")
+        );
+
+        let unavailable_tool = if cfg!(target_os = "windows") {
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION
+        } else {
+            AUTONOMOUS_TOOL_POWERSHELL
+        };
+        let error = registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-os-specific".into(),
+                tool_name: unavailable_tool.into(),
+                input: json!({}),
+            })
+            .expect_err("host-unavailable tools must fail closed");
+
+        assert_eq!(error.code, "agent_tool_unavailable_on_host");
+    }
+
+    #[test]
     fn action_level_wrappers_reject_actions_outside_their_surface() {
         let registry = ToolRegistry::for_tool_names_with_options(
             BTreeSet::from([
@@ -1616,6 +1962,54 @@ mod tests {
     }
 
     #[test]
+    fn debug_evidence_todo_mode_is_reserved_for_debug_agent() {
+        let debug_registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([AUTONOMOUS_TOOL_TODO.to_string()]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Debug,
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        let request = debug_registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-debug-ledger".into(),
+                tool_name: AUTONOMOUS_TOOL_TODO.into(),
+                input: json!({
+                    "action": "upsert",
+                    "title": "Reproduced panic",
+                    "mode": "debug_evidence",
+                    "debugStage": "reproduction",
+                    "evidence": "cargo test reproduced the panic"
+                }),
+            })
+            .expect("Debug may use structured evidence ledger todos");
+        assert!(matches!(request, AutonomousToolRequest::Todo(_)));
+
+        let engineer_registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([AUTONOMOUS_TOOL_TODO.to_string()]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let error = engineer_registry
+            .decode_call(&AgentToolCall {
+                tool_call_id: "call-engineer-ledger".into(),
+                tool_name: AUTONOMOUS_TOOL_TODO.into(),
+                input: json!({
+                    "action": "upsert",
+                    "title": "Engineer should not use debug ledger",
+                    "mode": "debug_evidence",
+                    "debugStage": "hypothesis"
+                }),
+            })
+            .expect_err("debug evidence mode is Debug-only");
+
+        assert_eq!(error.code, "agent_debug_evidence_todo_mode_denied");
+    }
+
+    #[test]
     fn test_registry_exposes_harness_surface_without_agent_definition_mutation() {
         let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             runtime_agent_id: RuntimeAgentIdDto::Test,
@@ -1626,6 +2020,7 @@ mod tests {
 
         for expected in [
             AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
             AUTONOMOUS_TOOL_TOOL_ACCESS,
             AUTONOMOUS_TOOL_GIT_STATUS,
             AUTONOMOUS_TOOL_GIT_DIFF,
@@ -1649,7 +2044,6 @@ mod tests {
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
             AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
             AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
-            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
             AUTONOMOUS_TOOL_BROWSER_OBSERVE,
             AUTONOMOUS_TOOL_BROWSER_CONTROL,
             AUTONOMOUS_TOOL_MCP_LIST,
@@ -1659,13 +2053,27 @@ mod tests {
             AUTONOMOUS_TOOL_SKILL,
             AUTONOMOUS_TOOL_EMULATOR,
             AUTONOMOUS_TOOL_SOLANA_CLUSTER,
-            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
         ] {
             assert!(
                 names.contains(expected),
                 "Test harness registry should expose `{expected}` when active"
             );
         }
+        assert_eq!(
+            names.contains(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED),
+            cfg!(target_os = "macos"),
+            "macOS-only privileged diagnostics should match host availability"
+        );
+        assert_eq!(
+            names.contains(AUTONOMOUS_TOOL_MACOS_AUTOMATION),
+            cfg!(target_os = "macos"),
+            "macOS automation should match host availability"
+        );
+        assert_eq!(
+            names.contains(AUTONOMOUS_TOOL_POWERSHELL),
+            cfg!(target_os = "windows"),
+            "PowerShell should match host availability"
+        );
         assert!(
             !names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION),
             "Test must not inherit Agent Create's definition-registry mutation tool"

@@ -9,9 +9,9 @@ use xero_agent_core::{
     PermissionProfileSandbox, ProjectTrustState, SandboxApprovalSource, SandboxExecutionContext,
     SandboxPlatform, ToolBatchDispatchReport, ToolBudget, ToolCallInput, ToolDescriptorV2,
     ToolDispatchConfig, ToolDispatchFailure, ToolDispatchOutcome, ToolDispatchSuccess,
-    ToolErrorCategory, ToolExecutionContext, ToolExecutionError, ToolGroupExecutionMode,
-    ToolHandler, ToolHandlerOutput, ToolPolicy, ToolPolicyDecision, ToolRegistryResult,
-    ToolRegistryV2, ToolRollback, ToolSandbox, ToolSandboxResult,
+    ToolErrorCategory, ToolExecutionContext, ToolExecutionControl, ToolExecutionError,
+    ToolGroupExecutionMode, ToolHandler, ToolHandlerOutput, ToolPolicy, ToolPolicyDecision,
+    ToolRegistryResult, ToolRegistryV2, ToolRollback, ToolSandbox, ToolSandboxResult,
 };
 
 #[derive(Debug, Default)]
@@ -185,6 +185,7 @@ fn dispatch_tool_batch_with_options(
         project_id: project_id.to_owned(),
         run_id: run_id.to_owned(),
         workspace_guard: Arc::new(Mutex::new(std::mem::take(workspace_guard))),
+        write_preflight: Arc::new(Mutex::new(BTreeMap::new())),
         approved_existing_write_call_ids: options.approved_existing_write_call_ids,
         operator_approved_call_ids: options.operator_approved_call_ids,
     });
@@ -306,12 +307,25 @@ struct AutonomousToolHandlerShared {
     project_id: String,
     run_id: String,
     workspace_guard: Arc<Mutex<AgentWorkspaceGuard>>,
+    write_preflight: Arc<Mutex<BTreeMap<String, AgentToolWritePreflight>>>,
     approved_existing_write_call_ids: BTreeSet<String>,
     operator_approved_call_ids: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone)]
+struct AgentToolWritePreflight {
+    request: AutonomousToolRequest,
+    write_observations: Vec<AgentWorkspaceWriteObservation>,
+    rollback_checkpoints: Vec<AgentRollbackCheckpoint>,
+    auto_file_reservations: Vec<project_store::AgentFileReservationRecord>,
+}
+
 impl AutonomousToolHandlerShared {
-    fn execute_tool_call(&self, call: &ToolCallInput) -> ToolRegistryResult<ToolHandlerOutput> {
+    fn execute_tool_call(
+        &self,
+        call: &ToolCallInput,
+        control: Option<&ToolExecutionControl>,
+    ) -> ToolRegistryResult<ToolHandlerOutput> {
         let tool_call = AgentToolCall {
             tool_call_id: call.tool_call_id.clone(),
             tool_name: call.tool_name.clone(),
@@ -330,34 +344,37 @@ impl AutonomousToolHandlerShared {
                 );
                 command_error_to_tool_execution_error(error)
             })?;
+        if let AutonomousToolRequest::HarnessRunner(request) = &request {
+            let (summary, output) = harness_runner_tool_output(&self.legacy_registry, request)
+                .map_err(command_error_to_tool_execution_error)?;
+            let mut handler_output = ToolHandlerOutput::new(summary, output);
+            handler_output
+                .telemetry_attributes
+                .insert("xero.tool.handler".into(), "harness_runner".into());
+            return Ok(handler_output);
+        }
         let operator_approved = self
             .operator_approved_call_ids
             .contains(&tool_call.tool_call_id);
-        let approved_existing_write = self
-            .approved_existing_write_call_ids
-            .contains(&tool_call.tool_call_id);
-
-        let write_observations = {
-            let guard = self.workspace_guard.lock().map_err(|_| {
-                ToolExecutionError::retryable(
-                    "agent_workspace_guard_lock_failed",
-                    "Xero could not lock owned-agent workspace observation state.",
-                )
-            })?;
-            guard
-                .validate_write_intent(&self.repo_root, &request, approved_existing_write)
-                .map_err(command_error_to_tool_execution_error)?
-        };
-        let rollback_checkpoints =
-            rollback_checkpoints_for_request(&self.repo_root, &request, &write_observations)
-                .map_err(command_error_to_tool_execution_error)?;
-        let auto_file_reservations = claim_file_reservations_for_request(
-            &self.repo_root,
-            &self.project_id,
-            &self.run_id,
-            &request,
-        )
-        .map_err(command_error_to_tool_execution_error)?;
+        let write_preflight = self
+            .get_write_preflight(&tool_call.tool_call_id)
+            .map_err(command_error_to_tool_execution_error)?;
+        if let Some(preflight) = write_preflight.as_ref() {
+            if std::mem::discriminant(&preflight.request) != std::mem::discriminant(&request) {
+                return Err(ToolExecutionError::retryable(
+                    "agent_tool_write_preflight_mismatch",
+                    "Xero prepared write preflight metadata for a different tool action.",
+                ));
+            }
+        }
+        let tool_runtime = control
+            .cloned()
+            .map(|control| {
+                self.tool_runtime
+                    .clone()
+                    .with_tool_execution_cancellation(Arc::new(move || control.is_cancelled()))
+            })
+            .unwrap_or_else(|| self.tool_runtime.clone());
 
         let tool_execution = match request {
             AutonomousToolRequest::Command(command_request) => {
@@ -372,40 +389,37 @@ impl AutonomousToolHandlerShared {
                     );
                 };
                 if operator_approved {
-                    self.tool_runtime
-                        .command_with_operator_approval_and_output_callback(
-                            command_request,
-                            &mut emit_chunk,
-                        )
+                    tool_runtime.command_with_operator_approval_and_output_callback(
+                        command_request,
+                        &mut emit_chunk,
+                    )
                 } else {
-                    self.tool_runtime
-                        .command_with_output_callback(command_request, &mut emit_chunk)
+                    tool_runtime.command_with_output_callback(command_request, &mut emit_chunk)
                 }
             }
-            request if operator_approved => self.tool_runtime.execute_approved(request),
-            request => self.tool_runtime.execute(request),
+            request if operator_approved => tool_runtime.execute_approved(request),
+            request => tool_runtime.execute(request),
         };
 
         let tool_result = match tool_execution {
             Ok(tool_result) => tool_result,
             Err(error) => {
-                release_auto_file_reservations(
-                    &self.repo_root,
-                    &self.project_id,
-                    &self.run_id,
-                    &auto_file_reservations,
-                    "tool_failed",
-                )
-                .map_err(command_error_to_tool_execution_error)?;
+                if write_preflight.is_none() {
+                    let _ = self.release_write_preflight(&tool_call.tool_call_id, "tool_failed");
+                }
                 return Err(command_error_to_tool_execution_error(error));
             }
         };
 
+        let write_observations = write_preflight
+            .as_ref()
+            .map(|preflight| preflight.write_observations.as_slice())
+            .unwrap_or(&[]);
         record_file_change_event(
             &self.repo_root,
             &self.project_id,
             &self.run_id,
-            &write_observations,
+            write_observations,
             &tool_result.output,
         )
         .map_err(command_error_to_tool_execution_error)?;
@@ -423,17 +437,14 @@ impl AutonomousToolHandlerShared {
             &self.project_id,
             &self.run_id,
             &tool_call.tool_call_id,
-            &rollback_checkpoints,
+            write_preflight
+                .as_ref()
+                .map(|preflight| preflight.rollback_checkpoints.as_slice())
+                .unwrap_or(&[]),
         )
         .map_err(command_error_to_tool_execution_error)?;
-        release_auto_file_reservations(
-            &self.repo_root,
-            &self.project_id,
-            &self.run_id,
-            &auto_file_reservations,
-            "tool_completed",
-        )
-        .map_err(command_error_to_tool_execution_error)?;
+        self.release_write_preflight(&tool_call.tool_call_id, "tool_completed")
+            .map_err(command_error_to_tool_execution_error)?;
         {
             let mut guard = self.workspace_guard.lock().map_err(|_| {
                 ToolExecutionError::retryable(
@@ -459,6 +470,116 @@ impl AutonomousToolHandlerShared {
             .insert("xero.tool.handler".into(), "autonomous_tool_runtime".into());
         Ok(handler_output)
     }
+
+    fn prepare_write_preflight(
+        &self,
+        call: &ToolCallInput,
+        request: AutonomousToolRequest,
+    ) -> CommandResult<Option<JsonValue>> {
+        let planned = planned_file_reservation_operations(&request)?;
+        if planned.is_empty() {
+            return Ok(None);
+        }
+        let approved_existing_write = self
+            .approved_existing_write_call_ids
+            .contains(&call.tool_call_id);
+        let write_observations = {
+            let guard = self.workspace_guard.lock().map_err(|_| {
+                CommandError::system_fault(
+                    "agent_workspace_guard_lock_failed",
+                    "Xero could not lock owned-agent workspace observation state.",
+                )
+            })?;
+            guard.validate_write_intent(&self.repo_root, &request, approved_existing_write)?
+        };
+        let rollback_checkpoints =
+            rollback_checkpoints_for_request(&self.repo_root, &request, &write_observations)?;
+        let auto_file_reservations = claim_file_reservations_for_request(
+            &self.repo_root,
+            &self.project_id,
+            &self.run_id,
+            &request,
+        )?;
+        let reservation_ids = auto_file_reservations
+            .iter()
+            .map(|reservation| reservation.reservation_id.clone())
+            .collect::<Vec<_>>();
+        let checkpoint_count = rollback_checkpoints.len();
+        let reservation_count = auto_file_reservations.len();
+        self.write_preflight
+            .lock()
+            .map_err(|_| {
+                CommandError::system_fault(
+                    "agent_write_preflight_lock_failed",
+                    "Xero could not lock owned-agent write preflight state.",
+                )
+            })?
+            .insert(
+                call.tool_call_id.clone(),
+                AgentToolWritePreflight {
+                    request,
+                    write_observations,
+                    rollback_checkpoints,
+                    auto_file_reservations,
+                },
+            );
+        Ok(Some(json!({
+            "kind": "agent_tool_write_preflight",
+            "toolCallId": call.tool_call_id,
+            "toolName": call.tool_name,
+            "projectId": self.project_id,
+            "runId": self.run_id,
+            "checkpointCount": checkpoint_count,
+            "reservationCount": reservation_count,
+            "reservationIds": reservation_ids,
+            "checkpointedAt": now_timestamp(),
+        })))
+    }
+
+    fn get_write_preflight(
+        &self,
+        tool_call_id: &str,
+    ) -> CommandResult<Option<AgentToolWritePreflight>> {
+        self.write_preflight
+            .lock()
+            .map_err(|_| {
+                CommandError::system_fault(
+                    "agent_write_preflight_lock_failed",
+                    "Xero could not lock owned-agent write preflight state.",
+                )
+            })
+            .map(|preflight| preflight.get(tool_call_id).cloned())
+    }
+
+    fn take_write_preflight(
+        &self,
+        tool_call_id: &str,
+    ) -> CommandResult<Option<AgentToolWritePreflight>> {
+        self.write_preflight
+            .lock()
+            .map_err(|_| {
+                CommandError::system_fault(
+                    "agent_write_preflight_lock_failed",
+                    "Xero could not lock owned-agent write preflight state.",
+                )
+            })
+            .map(|mut preflight| preflight.remove(tool_call_id))
+    }
+
+    fn release_write_preflight(&self, tool_call_id: &str, reason: &str) -> CommandResult<()> {
+        let preflight = self.get_write_preflight(tool_call_id)?;
+        if let Some(preflight) = preflight {
+            release_auto_file_reservations(
+                &self.repo_root,
+                &self.project_id,
+                &self.run_id,
+                &preflight.auto_file_reservations,
+                reason,
+            )?;
+            let _ = self.take_write_preflight(tool_call_id)?;
+        }
+        Ok(())
+    }
 }
 
 struct AutonomousToolHandler {
@@ -476,19 +597,27 @@ impl ToolHandler for AutonomousToolHandler {
         _context: &ToolExecutionContext,
         call: &ToolCallInput,
     ) -> ToolRegistryResult<ToolHandlerOutput> {
-        self.shared.execute_tool_call(call)
+        self.shared.execute_tool_call(call, None)
     }
 
     fn execute_with_control(
         &self,
         _context: &ToolExecutionContext,
         call: &ToolCallInput,
-        control: &xero_agent_core::ToolExecutionControl,
+        control: &ToolExecutionControl,
     ) -> ToolRegistryResult<ToolHandlerOutput> {
         control.ensure_not_cancelled(&call.tool_name)?;
-        let output = self.shared.execute_tool_call(call)?;
-        control.ensure_not_cancelled(&call.tool_name)?;
-        Ok(output)
+        match self.shared.execute_tool_call(call, Some(control)) {
+            Ok(output) => {
+                control.ensure_not_cancelled(&call.tool_name)?;
+                Ok(output)
+            }
+            Err(error) if control.is_cancelled() => {
+                control.ensure_not_cancelled(&call.tool_name)?;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -642,14 +771,19 @@ impl ToolRollback for AgentToolRollback {
         if descriptor.mutability.is_read_only() {
             return Ok(None);
         }
-        Ok(Some(json!({
-            "kind": "agent_tool_dispatch_checkpoint",
-            "toolCallId": call.tool_call_id,
-            "toolName": call.tool_name,
-            "projectId": self.shared.project_id,
-            "runId": self.shared.run_id,
-            "checkpointedAt": now_timestamp(),
-        })))
+        let tool_call = AgentToolCall {
+            tool_call_id: call.tool_call_id.clone(),
+            tool_name: call.tool_name.clone(),
+            input: call.input.clone(),
+        };
+        let request = self
+            .shared
+            .legacy_registry
+            .decode_call(&tool_call)
+            .map_err(command_error_to_tool_execution_error)?;
+        self.shared
+            .prepare_write_preflight(call, request)
+            .map_err(command_error_to_tool_execution_error)
     }
 
     fn rollback_after_failure(
@@ -659,13 +793,54 @@ impl ToolRollback for AgentToolRollback {
         checkpoint: &JsonValue,
         error: &ToolExecutionError,
     ) -> ToolRegistryResult<JsonValue> {
+        let preflight = self
+            .shared
+            .take_write_preflight(&call.tool_call_id)
+            .map_err(command_error_to_tool_execution_error)?;
+        let Some(preflight) = preflight else {
+            return Ok(json!({
+                "kind": "agent_tool_dispatch_failure_checkpoint",
+                "toolCallId": call.tool_call_id,
+                "toolName": call.tool_name,
+                "checkpoint": checkpoint,
+                "failure": tool_execution_error_json(error),
+                "workspaceRollback": "not_applicable",
+            }));
+        };
+        let checkpoint_record = record_rollback_checkpoints(
+            &self.shared.repo_root,
+            &self.shared.project_id,
+            &self.shared.run_id,
+            &call.tool_call_id,
+            &preflight.rollback_checkpoints,
+        )
+        .map(|()| json!({ "recorded": true }))
+        .unwrap_or_else(|error| {
+            json!({
+                "recorded": false,
+                "code": error.code,
+                "message": error.message,
+            })
+        });
+        let rollback_outcome =
+            restore_rollback_checkpoints(&self.shared.repo_root, &preflight.rollback_checkpoints);
+        let release_outcome = release_auto_file_reservations(
+            &self.shared.repo_root,
+            &self.shared.project_id,
+            &self.shared.run_id,
+            &preflight.auto_file_reservations,
+            "tool_failed_rollback",
+        );
+        let rollback_outcome = rollback_outcome.map_err(command_error_to_tool_execution_error)?;
+        release_outcome.map_err(command_error_to_tool_execution_error)?;
         Ok(json!({
             "kind": "agent_tool_dispatch_failure_checkpoint",
             "toolCallId": call.tool_call_id,
             "toolName": call.tool_name,
             "checkpoint": checkpoint,
             "failure": tool_execution_error_json(error),
-            "workspaceRollback": "not_applied_before_handler_success",
+            "checkpointRecord": checkpoint_record,
+            "workspaceRollback": rollback_outcome,
         }))
     }
 }

@@ -2,6 +2,7 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 const HARNESS_MANIFEST_VERSION: &str = "harness_test_manifest_v1";
+const HARNESS_RUNNER_SCHEMA: &str = "xero.harness_runner.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -518,6 +519,160 @@ struct FinalReportRow {
     skip_reason: String,
 }
 
+pub(crate) fn harness_runner_tool_output(
+    registry: &ToolRegistry,
+    request: &AutonomousHarnessRunnerRequest,
+) -> CommandResult<(String, JsonValue)> {
+    let items = canonical_manifest_items(registry);
+    let manifest_signature = manifest_signature(&items)?;
+    let comparison = match request.action {
+        AutonomousHarnessRunnerAction::Manifest => harness_runner_manifest_comparison(),
+        AutonomousHarnessRunnerAction::CompareReport => {
+            let report = request.final_report.as_deref().ok_or_else(|| {
+                CommandError::user_fixable(
+                    "harness_runner_final_report_required",
+                    "harness_runner compare_report requires finalReport markdown.",
+                )
+            })?;
+            harness_runner_compare_report(&items, report)
+        }
+    };
+    let passed = comparison
+        .get("passed")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(true);
+    let summary = match request.action {
+        AutonomousHarnessRunnerAction::Manifest => format!(
+            "Harness runner exported {} canonical manifest item(s).",
+            items.len()
+        ),
+        AutonomousHarnessRunnerAction::CompareReport if passed => {
+            "Harness runner matched the model-driven report against the canonical manifest.".into()
+        }
+        AutonomousHarnessRunnerAction::CompareReport => {
+            "Harness runner found differences between the model-driven report and canonical manifest."
+                .into()
+        }
+    };
+    let item_values = items
+        .iter()
+        .map(|item| serde_json::to_value(item).unwrap_or(JsonValue::Null))
+        .collect::<Vec<_>>();
+    Ok((
+        summary.clone(),
+        json!({
+            "schema": HARNESS_RUNNER_SCHEMA,
+            "kind": "harness_runner",
+            "action": request.action,
+            "passed": passed,
+            "summary": summary,
+            "manifestVersion": HARNESS_MANIFEST_VERSION,
+            "manifestSignature": manifest_signature,
+            "itemCount": items.len(),
+            "comparison": comparison,
+            "items": item_values,
+        }),
+    ))
+}
+
+fn harness_runner_manifest_comparison() -> JsonValue {
+    json!({
+        "passed": true,
+        "mode": "manifest_only",
+        "missingRows": [],
+        "unexpectedRows": [],
+        "outOfOrderRows": [],
+        "unsafeRows": [],
+    })
+}
+
+fn harness_runner_compare_report(items: &[HarnessManifestItem], final_report: &str) -> JsonValue {
+    let expected = items
+        .iter()
+        .filter(|item| item.step_id != "final_report")
+        .collect::<Vec<_>>();
+    let rows = parse_final_report_rows(final_report);
+    let mut missing_rows = Vec::new();
+    let mut unexpected_rows = Vec::new();
+    let mut out_of_order_rows = Vec::new();
+    let mut unsafe_rows = Vec::new();
+
+    for expected_item in &expected {
+        if !rows
+            .iter()
+            .any(|row| row.step_id == expected_item.step_id && row.target == expected_item.target)
+        {
+            missing_rows.push(json!({
+                "stepId": expected_item.step_id,
+                "target": expected_item.target,
+            }));
+        }
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        let expected_at_index = expected.get(index);
+        if expected_at_index.map_or(true, |item| {
+            item.step_id != row.step_id.as_str() || item.target != row.target
+        }) {
+            out_of_order_rows.push(json!({
+                "index": index,
+                "stepId": row.step_id,
+                "target": row.target,
+                "expectedStepId": expected_at_index.map(|item| item.step_id),
+                "expectedTarget": expected_at_index.map(|item| item.target.as_str()),
+            }));
+        }
+
+        if !expected
+            .iter()
+            .any(|item| item.step_id == row.step_id.as_str() && item.target == row.target)
+        {
+            unexpected_rows.push(json!({
+                "stepId": row.step_id,
+                "target": row.target,
+            }));
+        }
+
+        match row.status {
+            HarnessStepStatus::Passed
+                if row.evidence.trim().is_empty() || row.evidence.trim() == "none" =>
+            {
+                unsafe_rows.push(json!({
+                    "stepId": row.step_id,
+                    "target": row.target,
+                    "reason": "passed_row_requires_evidence",
+                }));
+            }
+            HarnessStepStatus::SkippedWithReason
+                if row.skip_reason.trim().is_empty() || row.skip_reason.trim() == "none" =>
+            {
+                unsafe_rows.push(json!({
+                    "stepId": row.step_id,
+                    "target": row.target,
+                    "reason": "skipped_row_requires_reason",
+                }));
+            }
+            HarnessStepStatus::Failed | HarnessStepStatus::Pending => {}
+            HarnessStepStatus::Passed | HarnessStepStatus::SkippedWithReason => {}
+        }
+    }
+
+    let passed = missing_rows.is_empty()
+        && unexpected_rows.is_empty()
+        && out_of_order_rows.is_empty()
+        && unsafe_rows.is_empty();
+    json!({
+        "passed": passed,
+        "mode": "compare_report",
+        "expectedRowCount": expected.len(),
+        "observedRowCount": rows.len(),
+        "missingRows": missing_rows,
+        "unexpectedRows": unexpected_rows,
+        "outOfOrderRows": out_of_order_rows,
+        "unsafeRows": unsafe_rows,
+    })
+}
+
 fn parse_final_report_rows(message: &str) -> Vec<FinalReportRow> {
     message
         .lines()
@@ -603,6 +758,12 @@ fn target_manifest_profile(step: &HarnessStepDefinition, target: &str) -> Harnes
         step.cleanup_requirement,
     );
     match (step.step_id, target) {
+        ("deterministic_runner", AUTONOMOUS_TOOL_HARNESS_RUNNER) => profile(
+            r#"{"action":"manifest"}"#,
+            "Harness runner exports the canonical machine-readable manifest.",
+            "harness_runner is absent from the active registry.",
+            "None.",
+        ),
         ("registry_discovery", AUTONOMOUS_TOOL_TOOL_SEARCH) => profile(
             r#"{"query":"harness registry discovery","limit":10}"#,
             "Tool search returns persisted registry/catalog matches for the active harness surface.",
@@ -908,6 +1069,14 @@ fn canonical_manifest_items(registry: &ToolRegistry) -> Vec<HarnessManifestItem>
 fn canonical_step_definitions() -> &'static [HarnessStepDefinition] {
     &[
         HarnessStepDefinition {
+            step_id: "deterministic_runner",
+            targets: &[AUTONOMOUS_TOOL_HARNESS_RUNNER],
+            safe_input: "Export the canonical machine-readable harness manifest.",
+            pass_condition: "Harness runner manifest output is persisted.",
+            skip_condition: "harness_runner is absent from the active registry.",
+            cleanup_requirement: "None.",
+        },
+        HarnessStepDefinition {
             step_id: "registry_discovery",
             targets: &[AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_TOOL_ACCESS],
             safe_input: "Inspect available tools and active registry metadata.",
@@ -1196,6 +1365,7 @@ mod tests {
     #[test]
     fn manifest_orders_active_tools_by_canonical_harness_sequence() {
         let registry = test_registry(&[
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
             AUTONOMOUS_TOOL_READ,
             AUTONOMOUS_TOOL_TOOL_ACCESS,
             AUTONOMOUS_TOOL_TOOL_SEARCH,
@@ -1210,6 +1380,7 @@ mod tests {
         assert_eq!(
             targets,
             vec![
+                AUTONOMOUS_TOOL_HARNESS_RUNNER,
                 AUTONOMOUS_TOOL_TOOL_SEARCH,
                 AUTONOMOUS_TOOL_TOOL_ACCESS,
                 AUTONOMOUS_TOOL_GIT_STATUS,
@@ -1224,6 +1395,7 @@ mod tests {
         let dynamic_mcp = "mcp__fixture__echo__000000000000";
         let registry = test_registry_with_dynamic_mcp(
             &[
+                AUTONOMOUS_TOOL_HARNESS_RUNNER,
                 AUTONOMOUS_TOOL_TOOL_SEARCH,
                 AUTONOMOUS_TOOL_TOOL_ACCESS,
                 AUTONOMOUS_TOOL_GIT_STATUS,
@@ -1260,6 +1432,7 @@ mod tests {
         assert_eq!(
             step_ids,
             vec![
+                "deterministic_runner",
                 "registry_discovery",
                 "repo_inspection",
                 "planning_runtime_state",
@@ -1286,6 +1459,16 @@ mod tests {
         };
         assert!(target_index(AUTONOMOUS_TOOL_MCP_LIST) < target_index(dynamic_mcp));
         assert!(target_index(dynamic_mcp) < target_index(AUTONOMOUS_TOOL_SKILL));
+
+        let runner = items
+            .iter()
+            .find(|item| {
+                item.step_id == "deterministic_runner"
+                    && item.target == AUTONOMOUS_TOOL_HARNESS_RUNNER
+            })
+            .expect("harness runner item");
+        assert_eq!(runner.safe_input, r#"{"action":"manifest"}"#);
+        assert_eq!(runner.effect_class, "observe");
 
         for item in &items {
             assert_eq!(
@@ -1336,5 +1519,53 @@ mod tests {
         assert_eq!(rows[0].target, "browser_observe");
         assert_eq!(rows[0].status, HarnessStepStatus::SkippedWithReason);
         assert_eq!(rows[0].skip_reason, "no local target");
+    }
+
+    #[test]
+    fn harness_runner_compares_model_report_to_machine_manifest() {
+        let registry = test_registry(&[
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+        ]);
+        let report = r#"# Harness Test Report
+| Step | Target | Status | Evidence | Skip reason |
+| --- | --- | --- | --- | --- |
+| deterministic_runner | harness_runner | passed | persisted manifest | none |
+| registry_discovery | tool_search | passed | persisted search | none |
+| registry_discovery | tool_access | passed | persisted access | none |
+"#;
+        let (_, output) = harness_runner_tool_output(
+            &registry,
+            &AutonomousHarnessRunnerRequest {
+                action: AutonomousHarnessRunnerAction::CompareReport,
+                final_report: Some(report.into()),
+            },
+        )
+        .expect("compare report");
+
+        assert_eq!(output["passed"], json!(true));
+
+        let bad_report = r#"# Harness Test Report
+| Step | Target | Status | Evidence | Skip reason |
+| --- | --- | --- | --- | --- |
+| registry_discovery | tool_search | passed | none | none |
+"#;
+        let (_, output) = harness_runner_tool_output(
+            &registry,
+            &AutonomousHarnessRunnerRequest {
+                action: AutonomousHarnessRunnerAction::CompareReport,
+                final_report: Some(bad_report.into()),
+            },
+        )
+        .expect("compare bad report");
+
+        assert_eq!(output["passed"], json!(false));
+        assert!(output["comparison"]["missingRows"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()));
+        assert!(output["comparison"]["unsafeRows"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()));
     }
 }

@@ -288,6 +288,7 @@ function makeRuntimeStream(overrides: Partial<RuntimeStreamView> = {}): RuntimeS
     skillItems: [],
     activityItems: [],
     actionRequired: [],
+    plan: null,
     completion: null,
     failure: null,
     lastIssue: null,

@@ -34,6 +34,7 @@ import type {
   RuntimeAutoCompactPreferenceDto,
   ProviderAuthSessionView,
   RuntimeSessionView,
+  RuntimeStreamActionRequiredItemView,
   RuntimeStreamActivityItemView,
   RuntimeStreamFailureItemView,
   RuntimeStreamToolItemView,
@@ -64,7 +65,12 @@ import {
   getComposerPlaceholder,
   getComposerThinkingOptions,
 } from './agent-runtime/composer-helpers'
+import {
+  ActionPromptDispatchProvider,
+  type ActionPromptDispatchValue,
+} from './agent-runtime/action-prompt-card'
 import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
+import { PlanTray } from './agent-runtime/plan-tray'
 import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
 import { AgentCreateDraftSection } from './agent-runtime/agent-create-draft-section'
 import { ConversationSection, type ConversationTurn } from './agent-runtime/conversation-section'
@@ -219,6 +225,24 @@ function getReasoningActivityText(item: RuntimeStreamActivityItemView): string {
 
 function isCodeEditToolName(toolName: string): boolean {
   return CODE_EDIT_TOOL_NAMES.has(toolName)
+}
+
+function actionPromptTurnFromItem(item: RuntimeStreamActionRequiredItemView): ConversationTurn {
+  const shape = item.answerShape ?? 'plain_text'
+  return {
+    id: item.id,
+    kind: 'action_prompt',
+    sequence: item.sequence,
+    actionId: item.actionId,
+    actionType: item.actionType,
+    title: item.title,
+    detail: item.detail,
+    shape,
+    options: item.options ?? null,
+    allowMultiple: item.allowMultiple ?? shape === 'multi_choice',
+    pendingDecision: null,
+    isResolved: false,
+  }
 }
 
 function actionTurnFromItem(item: RuntimeStreamToolItemView): ConversationTurn {
@@ -583,6 +607,11 @@ function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamV
         sequence: item.sequence,
         text,
       })
+      continue
+    }
+
+    if (item.kind === 'action_required') {
+      turns.push(actionPromptTurnFromItem(item))
       continue
     }
 
@@ -1396,6 +1425,36 @@ export const AgentRuntime = memo(function AgentRuntime({
   )
   const promptInputLabel = controller.promptInputAvailable ? 'Agent input' : 'Agent input unavailable'
   const sendButtonLabel = controller.promptInputAvailable ? 'Send message' : 'Send message unavailable'
+  const actionPromptDispatchValue = useMemo<ActionPromptDispatchValue>(() => {
+    const pendingOperatorIntent = controller.pendingOperatorIntent
+    return {
+      pendingActionId: pendingOperatorIntent?.actionId ?? null,
+      pendingDecision: pendingOperatorIntent?.kind ?? null,
+      isResolving: agent.operatorActionStatus === 'running',
+      resolveActionPrompt: async (actionId, decision, options) => {
+        if (decision === 'resume') {
+          if (renderableRuntimeRun && !renderableRuntimeRun.isTerminal) {
+            return controller.handleResumeLiveActionRequired(actionId, {
+              userAnswer: options?.userAnswer ?? null,
+            })
+          }
+          return controller.handleResumeOperatorRun(actionId, {
+            userAnswer: options?.userAnswer ?? null,
+          })
+        }
+        return controller.handleResolveOperatorAction(actionId, decision, {
+          userAnswer: options?.userAnswer ?? null,
+        })
+      },
+    }
+  }, [
+    controller.pendingOperatorIntent,
+    controller.handleResolveOperatorAction,
+    controller.handleResumeOperatorRun,
+    controller.handleResumeLiveActionRequired,
+    agent.operatorActionStatus,
+    renderableRuntimeRun,
+  ])
   const isProviderLoggedIn = Boolean(
     selectedProviderReadyForSession ||
       runtimeSession?.isAuthenticated,
@@ -1735,17 +1794,19 @@ export const AgentRuntime = memo(function AgentRuntime({
                   isDense ? 'max-w-full gap-1' : 'max-w-[720px] gap-4',
                 )}
               >
-                <ConversationSection
-                  runtimeRun={renderableRuntimeRun}
-                  visibleTurns={visibleTurnsWithPendingPrompt}
-                  streamIssue={streamIssue}
-                  streamFailure={runtimeStream?.failure ?? null}
-                  showActivityIndicator={showAgentActivityIndicator}
-                  streamCompletion={runtimeStream?.completion ?? null}
-                  accountAvatarUrl={accountAvatarUrl}
-                  accountLogin={accountLogin}
-                  variant={isDense ? 'dense' : 'default'}
-                />
+                <ActionPromptDispatchProvider value={actionPromptDispatchValue}>
+                  <ConversationSection
+                    runtimeRun={renderableRuntimeRun}
+                    visibleTurns={visibleTurnsWithPendingPrompt}
+                    streamIssue={streamIssue}
+                    streamFailure={runtimeStream?.failure ?? null}
+                    showActivityIndicator={showAgentActivityIndicator}
+                    streamCompletion={runtimeStream?.completion ?? null}
+                    accountAvatarUrl={accountAvatarUrl}
+                    accountLogin={accountLogin}
+                    variant={isDense ? 'dense' : 'default'}
+                  />
+                </ActionPromptDispatchProvider>
                 {controller.composerRuntimeAgentId === 'agent_create' ? (
                   <AgentCreateDraftSection
                     runtimeStreamItems={runtimeStreamItems}
@@ -1774,6 +1835,8 @@ export const AgentRuntime = memo(function AgentRuntime({
             </Button>
           ) : null}
         </div>
+
+        <PlanTray plan={runtimeStream?.plan ?? null} density={density} />
 
         <ComposerDock
           density={density}

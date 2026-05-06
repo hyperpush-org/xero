@@ -46,6 +46,7 @@ const TEST_AGENT_CI_PROJECT_ID: &str = "test-agent-ci-project";
 const TEST_AGENT_CI_RUN_ID: &str = "test-agent-ci-run";
 const TEST_AGENT_CI_SESSION_ID: &str = project_store::DEFAULT_AGENT_SESSION_ID;
 const TEST_AGENT_CI_REQUIRED_TOOLS: &[&str] = &[
+    AUTONOMOUS_TOOL_HARNESS_RUNNER,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
     AUTONOMOUS_TOOL_TOOL_ACCESS,
     AUTONOMOUS_TOOL_READ,
@@ -967,7 +968,7 @@ fn test_agent_ci_registry() -> ToolRegistry {
 }
 
 fn test_agent_ci_scripted_tool_calls() -> Vec<AgentToolCall> {
-    (0..3)
+    (0..4)
         .filter_map(test_agent_ci_scripted_tool_call_for_turn)
         .collect()
 }
@@ -975,16 +976,21 @@ fn test_agent_ci_scripted_tool_calls() -> Vec<AgentToolCall> {
 fn test_agent_ci_scripted_tool_call_for_turn(turn_index: usize) -> Option<AgentToolCall> {
     match turn_index {
         0 => Some(AgentToolCall {
+            tool_call_id: "ci-harness-runner".into(),
+            tool_name: AUTONOMOUS_TOOL_HARNESS_RUNNER.into(),
+            input: json!({ "action": "manifest" }),
+        }),
+        1 => Some(AgentToolCall {
             tool_call_id: "ci-tool-search".into(),
             tool_name: AUTONOMOUS_TOOL_TOOL_SEARCH.into(),
             input: json!({ "query": "harness registry discovery", "limit": 10 }),
         }),
-        1 => Some(AgentToolCall {
+        2 => Some(AgentToolCall {
             tool_call_id: "ci-tool-access".into(),
             tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
             input: json!({ "action": "list" }),
         }),
-        2 => Some(AgentToolCall {
+        3 => Some(AgentToolCall {
             tool_call_id: "ci-read-plan".into(),
             tool_name: AUTONOMOUS_TOOL_READ.into(),
             input: json!({
@@ -1001,11 +1007,12 @@ fn test_agent_ci_final_report() -> String {
     [
         "# Harness Test Report",
         "Status: pass",
-        "Counts: passed=3 failed=0 skipped=1",
+        "Counts: passed=4 failed=0 skipped=1",
         "Scratch cleanup: skipped_with_reason - no scratch mutation tools active in CI",
         "",
         "| Step | Target | Status | Evidence | Skip reason |",
         "| --- | --- | --- | --- | --- |",
+        "| deterministic_runner | harness_runner | passed | persisted harness_runner manifest | none |",
         "| registry_discovery | tool_search | passed | persisted tool_search result | none |",
         "| registry_discovery | tool_access | passed | persisted tool_access result | none |",
         "| repo_inspection | read | passed | persisted read result | none |",
@@ -1042,6 +1049,40 @@ fn build_test_agent_ci_report(
         validate_test_agent_ci_runtime_events(&evidence.snapshot, &mut failures);
     let manifest_outcomes =
         validate_test_agent_ci_manifest(&evidence.snapshot, &evidence.final_report, &mut failures);
+    let runner_registry = ToolRegistry::for_tool_names_with_options(
+        evidence.active_tools.iter().cloned().collect(),
+        ToolRegistryOptions {
+            runtime_agent_id: RuntimeAgentIdDto::Test,
+            ..ToolRegistryOptions::default()
+        },
+    );
+    match harness_runner_tool_output(
+        &runner_registry,
+        &AutonomousHarnessRunnerRequest {
+            action: AutonomousHarnessRunnerAction::CompareReport,
+            final_report: Some(evidence.final_report.clone()),
+        },
+    ) {
+        Ok((_, output)) => {
+            let passed = output
+                .get("passed")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            if !passed {
+                failures.push(format!(
+                    "Deterministic harness runner report comparison failed: {}",
+                    output
+                        .get("comparison")
+                        .map(JsonValue::to_string)
+                        .unwrap_or_else(|| "{}".into())
+                ));
+            }
+        }
+        Err(error) => failures.push(format!(
+            "Deterministic harness runner comparison errored: {}",
+            error.message
+        )),
+    }
 
     if evidence.final_report.trim().is_empty() {
         failures.push("Final harness report was not persisted as an assistant message.".into());

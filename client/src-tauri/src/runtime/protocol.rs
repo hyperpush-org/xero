@@ -182,6 +182,43 @@ pub enum ToolResultSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorActionAnswerShape {
+    PlainText,
+    TerminalInput,
+    SingleChoice,
+    MultiChoice,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupervisorActionRequiredOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SupervisorPlanItemStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupervisorPlanItem {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub status: SupervisorPlanItemStatus,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum SupervisorLiveEventPayload {
     Transcript {
@@ -217,6 +254,18 @@ pub enum SupervisorLiveEventPayload {
         action_type: String,
         title: String,
         detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer_shape: Option<SupervisorActionAnswerShape>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        options: Option<Vec<SupervisorActionRequiredOption>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allow_multiple: Option<bool>,
+    },
+    Plan {
+        plan_id: String,
+        items: Vec<SupervisorPlanItem>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_changed_id: Option<String>,
     },
 }
 

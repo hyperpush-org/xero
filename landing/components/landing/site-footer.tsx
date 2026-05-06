@@ -3,8 +3,6 @@ import { Github } from "lucide-react"
 import { DiscordIcon, XBrandIcon } from "@/components/landing/brand-icons"
 
 const links = [
-  { label: "Docs", href: "/docs" },
-  { label: "Changelog", href: "/changelog" },
   { label: "Privacy", href: "/privacy" },
   { label: "Terms", href: "/terms" },
 ]

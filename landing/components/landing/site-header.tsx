@@ -13,8 +13,6 @@ const nav = [
   { label: "Models", href: "/#models" },
   { label: "Workflow", href: "/#workflow" },
   { label: "Pricing", href: "/#pricing" },
-  { label: "Docs", href: "/docs" },
-  { label: "Changelog", href: "/changelog" },
 ]
 
 export function SiteHeader() {
@@ -42,9 +40,9 @@ export function SiteHeader() {
           <Image
             src="/icon-logo.svg"
             alt=""
-            width={32}
-            height={32}
-            className="h-7 w-7 opacity-95"
+            width={24}
+            height={24}
+            className="h-5 w-5 opacity-95"
             priority
           />
           <span className="text-base font-semibold tracking-tight text-foreground">Xero</span>

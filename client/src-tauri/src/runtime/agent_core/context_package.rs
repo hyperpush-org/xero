@@ -30,6 +30,7 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub browser_control_preference: BrowserControlPreferenceDto,
     pub soul_settings: Option<&'a SoulSettingsDto>,
     pub tools: &'a [AgentToolDescriptor],
+    pub tool_exposure_plan: Option<&'a ToolExposurePlan>,
     pub messages: &'a [ProviderMessage],
     pub owned_process_summary: Option<&'a str>,
     pub provider_preflight: Option<&'a xero_agent_core::ProviderPreflightSnapshot>,
@@ -49,6 +50,10 @@ pub(crate) fn assemble_provider_context_package(
     )?;
     let active_coordination_summary =
         active_coordination_prompt_summary(&active_coordination_context);
+    let context_limit = resolve_context_limit(input.provider_id, input.model_id);
+    let budget_tokens = context_limit.effective_input_budget_tokens;
+    let relevant_paths = prompt_relevant_paths_from_provider_messages(input.messages);
+    let runtime_metadata = provider_context_runtime_metadata(&input, &created_at);
     let compilation = PromptCompiler::new(
         input.repo_root,
         Some(input.project_id),
@@ -62,10 +67,15 @@ pub(crate) fn assemble_provider_context_package(
     .with_owned_process_summary(input.owned_process_summary)
     .with_active_coordination_summary(active_coordination_summary.as_deref())
     .with_skill_contexts(skill_contexts)
+    .with_relevant_paths(relevant_paths.iter().map(String::as_str))
+    .with_prompt_budget_tokens(budget_tokens)
+    .with_runtime_metadata(runtime_metadata)
     .compile()?;
 
     let (included_contributors, prompt_fragments_json, prompt_redacted) =
         prompt_fragment_manifest_entries(&compilation.fragments);
+    let (excluded_prompt_contributors, prompt_fragment_exclusions_json) =
+        prompt_fragment_exclusion_manifest_entries(&compilation.excluded_fragments);
     let (message_contributors, messages_json, messages_redacted) =
         provider_message_manifest_entries(input.messages)?;
     let (tool_contributors, tool_descriptors_json) = tool_descriptor_manifest_entries(input.tools)?;
@@ -76,7 +86,7 @@ pub(crate) fn assemble_provider_context_package(
     included.extend(tool_contributors);
     included.extend(coordination_contributors);
 
-    let mut excluded = Vec::new();
+    let mut excluded = excluded_prompt_contributors;
     append_empty_context_exclusions(
         &mut excluded,
         &compilation.fragments,
@@ -86,8 +96,6 @@ pub(crate) fn assemble_provider_context_package(
     let estimated_tokens = included.iter().fold(0_u64, |total, contributor| {
         total.saturating_add(contributor.estimated_tokens)
     });
-    let context_limit = resolve_context_limit(input.provider_id, input.model_id);
-    let budget_tokens = context_limit.effective_input_budget_tokens;
     let active_compaction = project_store::load_active_agent_compaction(
         input.repo_root,
         input.project_id,
@@ -158,12 +166,7 @@ pub(crate) fn assemble_provider_context_package(
     let mut required_provider_features =
         xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn();
     required_provider_features.attachments = input.messages.iter().any(|message| match message {
-        ProviderMessage::User { attachments, .. } => attachments.iter().any(|attachment| {
-            matches!(
-                attachment.kind,
-                MessageAttachmentKind::Image | MessageAttachmentKind::Document
-            )
-        }),
+        ProviderMessage::User { attachments, .. } => !attachments.is_empty(),
         ProviderMessage::Assistant { .. } | ProviderMessage::Tool { .. } => false,
     });
     let provider_preflight = input.provider_preflight.cloned().unwrap_or_else(|| {
@@ -174,6 +177,17 @@ pub(crate) fn assemble_provider_context_package(
         )
     });
     let admitted_provider_preflight_hash = stable_provider_preflight_hash(&provider_preflight);
+    let prompt_diff = prompt_diff_since_previous_manifest(
+        input.repo_root,
+        input.project_id,
+        input.run_id,
+        input.turn_index,
+        &compilation.fragments,
+        input.tools,
+        active_compaction
+            .as_ref()
+            .map(|compaction| compaction.compaction_id.as_str()),
+    )?;
     let manifest_json = json!({
         "kind": "provider_context_package",
         "schema": CONTEXT_PACKAGE_SCHEMA,
@@ -214,8 +228,20 @@ pub(crate) fn assemble_provider_context_package(
             "excluded": excluded.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
         },
         "promptFragments": prompt_fragments_json,
+        "promptFragmentExclusions": prompt_fragment_exclusions_json,
+        "promptAssembly": {
+            "strategy": "priority_budget_pipeline_v1",
+            "sort": "priority_desc_id_asc_provenance_asc",
+            "promptBudgetTokens": compilation.prompt_budget_tokens,
+            "estimatedPromptTokens": compilation.estimated_prompt_tokens,
+            "relevantPaths": relevant_paths.iter().collect::<Vec<_>>(),
+            "includedFragmentCount": compilation.fragments.len(),
+            "excludedFragmentCount": compilation.excluded_fragments.len(),
+        },
         "messages": messages_json,
         "toolDescriptors": tool_descriptors_json,
+        "toolExposurePlan": input.tool_exposure_plan,
+        "promptDiff": prompt_diff,
         "retrieval": retrieval_json,
         "coordination": coordination_json,
         "compactionId": active_compaction.as_ref().map(|compaction| compaction.compaction_id.as_str()),
@@ -290,6 +316,23 @@ fn retrieve_project_context(
     )
 }
 
+fn provider_context_runtime_metadata(
+    input: &ProviderContextPackageInput<'_>,
+    fallback_timestamp: &str,
+) -> RuntimeHostMetadata {
+    let timestamp = project_store::load_agent_run(input.repo_root, input.project_id, input.run_id)
+        .map(|snapshot| snapshot.run.started_at)
+        .unwrap_or_else(|_| fallback_timestamp.to_string());
+    let mut metadata = runtime_host_metadata();
+    metadata.date_utc = timestamp
+        .split_once('T')
+        .map(|(date, _)| date)
+        .unwrap_or(timestamp.as_str())
+        .to_owned();
+    metadata.timestamp_utc = timestamp;
+    metadata
+}
+
 fn prompt_fragment_manifest_entries(
     fragments: &[PromptFragment],
 ) -> (
@@ -306,7 +349,7 @@ fn prompt_fragment_manifest_entries(
             kind: prompt_fragment_context_kind(fragment).into(),
             source_id: Some(fragment.provenance.clone()),
             estimated_tokens: fragment.token_estimate,
-            reason: Some(format!("included_by_priority_{}", fragment.priority)),
+            reason: Some(fragment.inclusion_reason.clone()),
         });
         let body = fragment.body.clone();
         let body_redacted = body.contains("[redacted]") || body.contains("[REDACTED]");
@@ -316,6 +359,8 @@ fn prompt_fragment_manifest_entries(
             "priority": fragment.priority,
             "title": fragment.title,
             "provenance": fragment.provenance,
+            "budgetPolicy": fragment.budget_policy.as_str(),
+            "inclusionReason": fragment.inclusion_reason,
             "sha256": fragment.sha256,
             "tokenEstimate": fragment.token_estimate,
             "body": body,
@@ -323,6 +368,36 @@ fn prompt_fragment_manifest_entries(
         }));
     }
     (contributors, fragments_json, redacted)
+}
+
+fn prompt_fragment_exclusion_manifest_entries(
+    exclusions: &[PromptFragmentExclusion],
+) -> (
+    Vec<project_store::AgentContextManifestContributorRecord>,
+    Vec<JsonValue>,
+) {
+    let mut contributors = Vec::with_capacity(exclusions.len());
+    let mut exclusions_json = Vec::with_capacity(exclusions.len());
+    for exclusion in exclusions {
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: exclusion.id.clone(),
+            kind: prompt_exclusion_context_kind(exclusion).into(),
+            source_id: Some(exclusion.provenance.clone()),
+            estimated_tokens: exclusion.token_estimate,
+            reason: Some(exclusion.reason.clone()),
+        });
+        exclusions_json.push(json!({
+            "id": exclusion.id,
+            "priority": exclusion.priority,
+            "title": exclusion.title,
+            "provenance": exclusion.provenance,
+            "budgetPolicy": exclusion.budget_policy.as_str(),
+            "sha256": exclusion.sha256,
+            "tokenEstimate": exclusion.token_estimate,
+            "reason": exclusion.reason,
+        }));
+    }
+    (contributors, exclusions_json)
 }
 
 fn provider_message_manifest_entries(
@@ -627,6 +702,177 @@ fn provider_context_hash(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn prompt_diff_since_previous_manifest(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    turn_index: usize,
+    current_fragments: &[PromptFragment],
+    current_tools: &[AgentToolDescriptor],
+    current_compaction_id: Option<&str>,
+) -> CommandResult<JsonValue> {
+    let previous =
+        project_store::list_agent_context_manifests_for_run(repo_root, project_id, run_id)?
+            .into_iter()
+            .filter(|record| {
+                record
+                    .manifest
+                    .get("turnIndex")
+                    .and_then(JsonValue::as_u64)
+                    .is_some_and(|previous_turn| previous_turn < turn_index as u64)
+            })
+            .last();
+    let Some(previous) = previous else {
+        return Ok(json!({
+            "kind": "prompt_fragment_diff",
+            "schema": "xero.prompt_fragment_diff.v1",
+            "basis": "no_previous_provider_context_manifest",
+            "previousManifestId": JsonValue::Null,
+            "added": [],
+            "removed": [],
+            "changed": [],
+            "unchangedCount": current_fragments.len(),
+            "suspectedCauses": [],
+        }));
+    };
+
+    let previous_fragments = previous_prompt_fragment_hashes(&previous.manifest);
+    let current_fragments_by_id = current_fragments
+        .iter()
+        .map(|fragment| (fragment.id.as_str(), fragment))
+        .collect::<BTreeMap<_, _>>();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    let mut unchanged_count = 0_usize;
+
+    for (id, fragment) in &current_fragments_by_id {
+        match previous_fragments.get(*id) {
+            None => added.push(prompt_diff_item(
+                id,
+                &fragment.sha256,
+                fragment.title.as_str(),
+            )),
+            Some(previous_sha) if previous_sha != &fragment.sha256 => {
+                changed.push(json!({
+                    "id": id,
+                    "previousSha256": previous_sha,
+                    "currentSha256": fragment.sha256,
+                    "title": fragment.title,
+                }));
+            }
+            Some(_) => unchanged_count = unchanged_count.saturating_add(1),
+        }
+    }
+    for (id, previous_sha) in &previous_fragments {
+        if !current_fragments_by_id.contains_key(id.as_str()) {
+            removed.push(prompt_diff_item(
+                id,
+                previous_sha,
+                "previous prompt fragment",
+            ));
+        }
+    }
+
+    let current_tool_names = current_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let previous_tool_names = previous_tool_names(&previous.manifest);
+    let mut suspected_causes = prompt_diff_suspected_causes(
+        &added,
+        &removed,
+        &changed,
+        current_tool_names != previous_tool_names,
+    );
+    let previous_compaction_id = previous
+        .manifest
+        .get("compactionId")
+        .and_then(JsonValue::as_str);
+    if previous_compaction_id != current_compaction_id {
+        suspected_causes.insert("compaction".to_string());
+    }
+
+    Ok(json!({
+        "kind": "prompt_fragment_diff",
+        "schema": "xero.prompt_fragment_diff.v1",
+        "basis": "previous_provider_context_manifest",
+        "previousManifestId": previous.manifest_id,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "unchangedCount": unchanged_count,
+        "suspectedCauses": suspected_causes.into_iter().collect::<Vec<_>>(),
+    }))
+}
+
+fn previous_prompt_fragment_hashes(manifest: &JsonValue) -> BTreeMap<String, String> {
+    manifest
+        .get("promptFragments")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|fragment| {
+            let id = fragment.get("id").and_then(JsonValue::as_str)?;
+            let sha = fragment.get("sha256").and_then(JsonValue::as_str)?;
+            Some((id.to_owned(), sha.to_owned()))
+        })
+        .collect()
+}
+
+fn previous_tool_names(manifest: &JsonValue) -> BTreeSet<&str> {
+    manifest
+        .get("toolDescriptors")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(JsonValue::as_str))
+        .collect()
+}
+
+fn prompt_diff_item(id: &str, sha256: &str, title: &str) -> JsonValue {
+    json!({
+        "id": id,
+        "sha256": sha256,
+        "title": title,
+    })
+}
+
+fn prompt_diff_suspected_causes(
+    added: &[JsonValue],
+    removed: &[JsonValue],
+    changed: &[JsonValue],
+    tool_names_changed: bool,
+) -> BTreeSet<String> {
+    let mut causes = BTreeSet::new();
+    if tool_names_changed
+        || changed
+            .iter()
+            .any(|item| item.get("id").and_then(JsonValue::as_str) == Some("xero.tool_policy"))
+    {
+        causes.insert("tool_activation".into());
+    }
+    for item in added.iter().chain(removed).chain(changed) {
+        let Some(id) = item.get("id").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        if id == "xero.owned_process_state" {
+            causes.insert("process_state".into());
+        } else if id == "xero.active_coordination" {
+            causes.insert("coordination".into());
+        } else if id.starts_with("skill.context.") {
+            causes.insert("skills".into());
+        } else if id.starts_with("project.instructions.") {
+            causes.insert("repository_instruction_scope".into());
+        } else if id == "project.workspace_manifest" {
+            causes.insert("workspace_manifest".into());
+        }
+    }
+    causes
+}
+
 fn stable_provider_preflight_hash(snapshot: &xero_agent_core::ProviderPreflightSnapshot) -> String {
     let serialized = serde_json::to_string(snapshot).unwrap_or_else(|_| "unserializable".into());
     xero_agent_core::runtime_trace_id("provider-preflight", &[&serialized])
@@ -700,14 +946,24 @@ fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
     match fragment.id.as_str() {
         "xero.soul" => "soul",
         "xero.system_policy" => "runtime_policy",
+        "xero.runtime_metadata" => "runtime_metadata",
         "xero.tool_policy" => "tool_policy",
         "xero.agent_definition_policy" => "agent_definition_policy",
-        "project.code_map" => "code_map",
+        "project.workspace_manifest" => "workspace_manifest",
         "xero.owned_process_state" => "process_state",
         "xero.durable_context_tools" => "durable_context_tool_instruction",
         "xero.active_coordination" => "active_agent_coordination",
         id if id.starts_with("project.instructions.") => "repository_instructions",
         id if id.starts_with("skill.context.") => "skill_context",
+        _ => "prompt_fragment",
+    }
+}
+
+fn prompt_exclusion_context_kind(exclusion: &PromptFragmentExclusion) -> &'static str {
+    match exclusion.id.as_str() {
+        id if id.starts_with("project.instructions.") => "repository_instructions",
+        id if id.starts_with("skill.context.") => "skill_context",
+        "project.workspace_manifest" => "workspace_manifest",
         _ => "prompt_fragment",
     }
 }
@@ -860,7 +1116,9 @@ fn freshness_count(freshness_diagnostics: &JsonValue, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn context_policy_action_label(action: &project_store::AgentContextPolicyAction) -> &'static str {
+pub(crate) fn context_policy_action_label(
+    action: &project_store::AgentContextPolicyAction,
+) -> &'static str {
     match action {
         project_store::AgentContextPolicyAction::ContinueNow => "continue_now",
         project_store::AgentContextPolicyAction::CompactNow => "compact_now",
@@ -1046,6 +1304,7 @@ mod tests {
             browser_control_preference: BrowserControlPreferenceDto::Default,
             soul_settings: None,
             tools: &[],
+            tool_exposure_plan: None,
             messages: &messages,
             owned_process_summary: None,
             provider_preflight: None,
@@ -1074,6 +1333,113 @@ mod tests {
             false
         );
         assert!(!first.manifest.retrieval_result_ids.is_empty());
+    }
+
+    #[test]
+    fn provider_context_manifest_explains_path_scoped_repository_instructions() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        fs::create_dir_all(repo_root.join("client/src")).expect("create nested source dir");
+        fs::write(
+            repo_root.join("client").join("AGENTS.md"),
+            "Use client rules.\n",
+        )
+        .expect("write client instructions");
+
+        let first_messages = vec![ProviderMessage::User {
+            content: "Inspect the project before choosing files.".into(),
+            attachments: Vec::new(),
+        }];
+        let first = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root: &repo_root,
+                project_id: &project_id,
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                run_id: "run-context-package",
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer",
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_definition_snapshot: None,
+                provider_id: OPENAI_CODEX_PROVIDER_ID,
+                model_id: OPENAI_CODEX_PROVIDER_ID,
+                turn_index: 0,
+                browser_control_preference: BrowserControlPreferenceDto::Default,
+                soul_settings: None,
+                tools: &[],
+                tool_exposure_plan: None,
+                messages: &first_messages,
+                owned_process_summary: None,
+                provider_preflight: None,
+            },
+            Vec::new(),
+        )
+        .expect("assemble first package");
+
+        assert!(!first
+            .system_prompt
+            .contains("--- BEGIN PROJECT INSTRUCTIONS: client/AGENTS.md ---"));
+        assert!(first.manifest.manifest["promptFragmentExclusions"]
+            .as_array()
+            .expect("prompt exclusions")
+            .iter()
+            .any(|exclusion| {
+                exclusion["id"] == "project.instructions.client.AGENTS.md"
+                    && exclusion["reason"]
+                        == "nested_repository_instruction_deferred_until_path_scope_exists"
+            }));
+
+        let second_messages = vec![
+            ProviderMessage::User {
+                content: "Inspect the project before choosing files.".into(),
+                attachments: Vec::new(),
+            },
+            ProviderMessage::Assistant {
+                content: String::new(),
+                tool_calls: vec![AgentToolCall {
+                    tool_call_id: "read-client-main".into(),
+                    tool_name: AUTONOMOUS_TOOL_READ.into(),
+                    input: json!({"path": "client/src/main.rs"}),
+                }],
+            },
+        ];
+        let second = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root: &repo_root,
+                project_id: &project_id,
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                run_id: "run-context-package",
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer",
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_definition_snapshot: None,
+                provider_id: OPENAI_CODEX_PROVIDER_ID,
+                model_id: OPENAI_CODEX_PROVIDER_ID,
+                turn_index: 1,
+                browser_control_preference: BrowserControlPreferenceDto::Default,
+                soul_settings: None,
+                tools: &[],
+                tool_exposure_plan: None,
+                messages: &second_messages,
+                owned_process_summary: None,
+                provider_preflight: None,
+            },
+            Vec::new(),
+        )
+        .expect("assemble second package");
+
+        assert!(second
+            .system_prompt
+            .contains("--- BEGIN PROJECT INSTRUCTIONS: client/AGENTS.md ---"));
+        assert_eq!(
+            second.manifest.manifest["promptAssembly"]["relevantPaths"][0],
+            "client/src/main.rs"
+        );
+        assert!(second.manifest.manifest["promptDiff"]["suspectedCauses"]
+            .as_array()
+            .expect("prompt diff causes")
+            .iter()
+            .any(|cause| cause == "repository_instruction_scope"));
     }
 
     #[test]
@@ -1189,6 +1555,7 @@ mod tests {
                 browser_control_preference: BrowserControlPreferenceDto::Default,
                 soul_settings: None,
                 tools: &tools,
+                tool_exposure_plan: None,
                 messages: &messages,
                 owned_process_summary: None,
                 provider_preflight: None,
@@ -1299,6 +1666,7 @@ mod tests {
                 browser_control_preference: BrowserControlPreferenceDto::Default,
                 soul_settings: None,
                 tools: &tools,
+                tool_exposure_plan: None,
                 messages: &messages,
                 owned_process_summary: None,
                 provider_preflight: None,

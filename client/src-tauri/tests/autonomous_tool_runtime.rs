@@ -24,11 +24,11 @@ use xero_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     runtime::{
         AutonomousAgentToolPolicy, AutonomousCodeIntelAction, AutonomousCodeIntelRequest,
-        AutonomousCommandPolicyOutcome, AutonomousCommandRequest, AutonomousEditRequest,
-        AutonomousFindRequest, AutonomousGitDiffRequest, AutonomousGitStatusRequest,
-        AutonomousLspAction, AutonomousLspRequest, AutonomousMacosAutomationAction,
-        AutonomousMacosAutomationRequest, AutonomousMcpAction, AutonomousMcpRequest,
-        AutonomousNotebookEditRequest, AutonomousProcessManagerAction,
+        AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandRequest,
+        AutonomousEditRequest, AutonomousFindRequest, AutonomousGitDiffRequest,
+        AutonomousGitStatusRequest, AutonomousLspAction, AutonomousLspRequest,
+        AutonomousMacosAutomationAction, AutonomousMacosAutomationRequest, AutonomousMcpAction,
+        AutonomousMcpRequest, AutonomousNotebookEditRequest, AutonomousProcessManagerAction,
         AutonomousProcessManagerRequest, AutonomousProcessOwnershipScope, AutonomousReadMode,
         AutonomousReadRequest, AutonomousSearchRequest, AutonomousSubagentAction,
         AutonomousSubagentLimits, AutonomousSubagentRequest, AutonomousSubagentRole,
@@ -452,6 +452,8 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
             assert!(output.granted_tools.contains(&"process_manager".into()));
             #[cfg(target_os = "macos")]
             assert!(output.granted_tools.contains(&"macos_automation".into()));
+            #[cfg(not(target_os = "macos"))]
+            assert!(output.denied_tools.contains(&"macos".into()));
             assert!(output.granted_tools.contains(&"web_search".into()));
             assert!(output
                 .granted_tools
@@ -2623,6 +2625,10 @@ fn tool_runtime_command_policy_uses_active_approval_snapshot_only() {
                 AutonomousCommandPolicyOutcome::Allowed
             );
             assert_eq!(output.policy.approval_mode, RuntimeRunApprovalModeDto::Yolo);
+            assert_eq!(
+                output.policy.profile,
+                AutonomousCommandPolicyProfile::ReadOnlyVerification
+            );
             assert_eq!(output.policy.code, "policy_allowed_repo_scoped_command");
         }
         other => panic!("unexpected yolo command output: {other:?}"),
@@ -2656,6 +2662,10 @@ fn tool_runtime_command_policy_escalates_destructive_shell_wrappers_before_spawn
             assert_eq!(
                 output.policy.outcome,
                 AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(
+                output.policy.profile,
+                AutonomousCommandPolicyProfile::DestructiveOperation
             );
             assert_eq!(output.policy.code, "policy_escalated_destructive_shell");
         }
@@ -2708,6 +2718,10 @@ fn tool_runtime_command_policy_fails_closed_for_ambiguous_commands() {
                 output.policy.outcome,
                 AutonomousCommandPolicyOutcome::Escalated
             );
+            assert_eq!(
+                output.policy.profile,
+                AutonomousCommandPolicyProfile::ExternalNetwork
+            );
             assert_eq!(output.policy.code, "policy_escalated_network_command");
         }
         other => panic!("unexpected network command output: {other:?}"),
@@ -2728,6 +2742,10 @@ fn tool_runtime_command_policy_fails_closed_for_ambiguous_commands() {
             assert_eq!(
                 output.policy.outcome,
                 AutonomousCommandPolicyOutcome::Escalated
+            );
+            assert_eq!(
+                output.policy.profile,
+                AutonomousCommandPolicyProfile::DependencyInstallation
             );
             assert_eq!(
                 output.policy.code,

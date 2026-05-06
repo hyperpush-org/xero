@@ -18,10 +18,12 @@ use crate::{
 
 use super::agent_task::auto_compact_preference;
 use super::runtime_support::{
-    apply_owned_runtime_run_pending_controls_with_status, bind_owned_runtime_run_to_agent_handoff,
-    emit_runtime_run_updated_if_changed, fail_owned_runtime_run, launch_or_reconnect_runtime_run,
-    load_persisted_runtime_run, resolve_owned_agent_provider_config, resolve_project_root,
-    runtime_run_dto_from_snapshot, update_owned_runtime_run_controls,
+    agent_provider_config_identity, apply_owned_runtime_run_pending_controls_with_status,
+    bind_owned_runtime_run_to_agent_handoff, emit_runtime_run_updated_if_changed,
+    ensure_owned_runtime_provider_turn_capabilities, fail_owned_runtime_run,
+    launch_or_reconnect_runtime_run, load_persisted_runtime_run,
+    resolve_owned_agent_provider_config, resolve_project_root, runtime_run_dto_from_snapshot,
+    update_owned_runtime_run_controls,
 };
 
 #[tauri::command]
@@ -241,6 +243,23 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
 
     let controls = Some(runtime_run_controls_as_input(snapshot));
     let provider_config = resolve_owned_agent_provider_config(app, state, controls.as_ref())?;
+    let (provider_id, model_id) = agent_provider_config_identity(&provider_config);
+    let profile_id = controls
+        .as_ref()
+        .and_then(|controls| controls.provider_profile_id.as_deref())
+        .map(str::trim)
+        .filter(|profile_id| !profile_id.is_empty())
+        .unwrap_or(provider_id.as_str())
+        .to_string();
+    let provider_preflight = ensure_owned_runtime_provider_turn_capabilities(
+        app,
+        state,
+        state.owned_agent_provider_config_override().is_none(),
+        &profile_id,
+        &provider_id,
+        &model_id,
+        &attachments,
+    )?;
     let tool_runtime = AutonomousToolRuntime::for_project(app, state, &snapshot.run.project_id)?;
     match project_store::load_agent_run(repo_root, &snapshot.run.project_id, &snapshot.run.run_id) {
         Ok(agent_snapshot) => {
@@ -260,7 +279,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 controls,
                 tool_runtime,
                 provider_config,
-                provider_preflight: None,
+                provider_preflight: Some(provider_preflight.clone()),
                 answer_pending_actions,
                 auto_compact,
             };
@@ -306,7 +325,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 controls,
                 tool_runtime,
                 provider_config,
-                provider_preflight: None,
+                provider_preflight: Some(provider_preflight),
             };
             agent_core.start_run(request, DesktopRunDriveMode::Background)?;
             Ok(None)

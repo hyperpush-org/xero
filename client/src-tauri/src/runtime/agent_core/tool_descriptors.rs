@@ -14,6 +14,28 @@ const MAX_PROMPT_CONTEXT_CACHE_ENTRIES: usize = 32;
 const MAX_PROMPT_CONTEXT_WALK_FILES: usize = 5_000;
 const MAX_REPOSITORY_INSTRUCTION_FILES: usize = 32;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PromptFragmentBudgetPolicy {
+    AlwaysInclude,
+    IncludeIfRelevant,
+    Summarize,
+    ToolMediatedOnly,
+    Exclude,
+}
+
+impl PromptFragmentBudgetPolicy {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::AlwaysInclude => "always_include",
+            Self::IncludeIfRelevant => "include_if_relevant",
+            Self::Summarize => "summarize",
+            Self::ToolMediatedOnly => "tool_mediated_only",
+            Self::Exclude => "exclude",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PromptFragment {
@@ -21,6 +43,8 @@ pub(crate) struct PromptFragment {
     pub priority: u16,
     pub title: String,
     pub provenance: String,
+    pub budget_policy: PromptFragmentBudgetPolicy,
+    pub inclusion_reason: String,
     pub body: String,
     pub sha256: String,
     pub token_estimate: u64,
@@ -30,6 +54,28 @@ pub(crate) struct PromptFragment {
 pub(crate) struct PromptCompilation {
     pub prompt: String,
     pub fragments: Vec<PromptFragment>,
+    pub excluded_fragments: Vec<PromptFragmentExclusion>,
+    pub prompt_budget_tokens: Option<u64>,
+    pub estimated_prompt_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptFragmentExclusion {
+    pub id: String,
+    pub priority: u16,
+    pub title: String,
+    pub provenance: String,
+    pub budget_policy: PromptFragmentBudgetPolicy,
+    pub token_estimate: u64,
+    pub sha256: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+struct PromptFragmentCandidate {
+    fragment: PromptFragment,
+    include: bool,
+    decision_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -41,8 +87,9 @@ struct PromptContextCacheEntry<T> {
 static REPOSITORY_INSTRUCTION_CACHE: OnceLock<
     Mutex<HashMap<PathBuf, PromptContextCacheEntry<Vec<PromptFragment>>>>,
 > = OnceLock::new();
-static PROJECT_CODE_MAP_CACHE: OnceLock<Mutex<HashMap<PathBuf, PromptContextCacheEntry<String>>>> =
-    OnceLock::new();
+static PROJECT_WORKSPACE_MANIFEST_CACHE: OnceLock<
+    Mutex<HashMap<PathBuf, PromptContextCacheEntry<String>>>,
+> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCompiler<'a> {
@@ -56,6 +103,9 @@ pub(crate) struct PromptCompiler<'a> {
     owned_process_summary: Option<&'a str>,
     active_coordination_summary: Option<&'a str>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
+    relevant_paths: BTreeSet<String>,
+    prompt_budget_tokens: Option<u64>,
+    runtime_metadata: Option<RuntimeHostMetadata>,
 }
 
 impl<'a> PromptCompiler<'a> {
@@ -78,6 +128,9 @@ impl<'a> PromptCompiler<'a> {
             owned_process_summary: None,
             active_coordination_summary: None,
             skill_contexts: Vec::new(),
+            relevant_paths: BTreeSet::new(),
+            prompt_budget_tokens: None,
+            runtime_metadata: None,
         }
     }
 
@@ -109,25 +162,64 @@ impl<'a> PromptCompiler<'a> {
         self
     }
 
+    pub(crate) fn with_relevant_paths<I, S>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.relevant_paths = normalize_relevant_prompt_paths(paths);
+        self
+    }
+
+    pub(crate) fn with_prompt_budget_tokens(mut self, budget_tokens: Option<u64>) -> Self {
+        self.prompt_budget_tokens = budget_tokens;
+        self
+    }
+
+    pub(crate) fn with_runtime_metadata(mut self, metadata: RuntimeHostMetadata) -> Self {
+        self.runtime_metadata = Some(metadata);
+        self
+    }
+
     pub(crate) fn compile(&self) -> CommandResult<PromptCompilation> {
-        let mut fragments = Vec::new();
+        let mut candidates = Vec::new();
         if let Some(settings) = self.soul_settings.as_ref() {
-            fragments.push(prompt_fragment(
+            candidates.push(prompt_fragment_candidate(
                 "xero.soul",
                 975,
                 "Selected Soul",
                 "xero-runtime:soul-settings",
                 soul_prompt_fragment(settings),
+                PromptFragmentBudgetPolicy::AlwaysInclude,
+                true,
+                "selected_soul_settings",
             ));
         }
-        fragments.push(prompt_fragment(
+        candidates.push(prompt_fragment_candidate(
             "xero.system_policy",
             1000,
             "Xero system policy",
             "xero-runtime",
             base_policy_fragment(self.runtime_agent_id),
+            PromptFragmentBudgetPolicy::AlwaysInclude,
+            true,
+            "built_in_agent_contract",
         ));
-        fragments.push(prompt_fragment(
+        let runtime_metadata = self
+            .runtime_metadata
+            .clone()
+            .unwrap_or_else(runtime_host_metadata);
+        candidates.push(prompt_fragment_candidate(
+            "xero.runtime_metadata",
+            990,
+            "Runtime metadata",
+            "xero-runtime:host",
+            runtime_metadata_fragment(&runtime_metadata),
+            PromptFragmentBudgetPolicy::AlwaysInclude,
+            true,
+            "authoritative_runtime_host_metadata",
+        ));
+        candidates.push(prompt_fragment_candidate(
             "xero.tool_policy",
             900,
             "Active tool policy",
@@ -137,52 +229,81 @@ impl<'a> PromptCompiler<'a> {
                 self.browser_control_preference,
                 self.tools,
             ),
+            PromptFragmentBudgetPolicy::AlwaysInclude,
+            true,
+            "active_tool_contract",
         ));
         if let Some(fragment) = agent_definition_policy_fragment(
             self.runtime_agent_id,
             self.agent_definition_snapshot.as_ref(),
         )? {
-            fragments.push(fragment);
+            candidates.push(PromptFragmentCandidate {
+                fragment,
+                include: true,
+                decision_reason: "active_custom_agent_definition".into(),
+            });
         }
-        fragments.extend(repository_instruction_fragments(self.repo_root));
-        fragments.push(prompt_fragment(
-            "project.code_map",
-            260,
-            "Project code map",
-            "project:code-map",
-            project_code_map_fragment(self.repo_root),
+        candidates.extend(repository_instruction_fragment_candidates(
+            self.repo_root,
+            &self.relevant_paths,
         ));
-        fragments.extend(skill_context_fragments(&self.skill_contexts));
+        candidates.push(prompt_fragment_candidate(
+            "project.workspace_manifest",
+            260,
+            "Workspace manifest",
+            "project:workspace-manifest",
+            project_workspace_manifest_fragment(self.repo_root),
+            PromptFragmentBudgetPolicy::Summarize,
+            true,
+            "compact_workspace_manifest",
+        ));
+        candidates.extend(
+            skill_context_fragments(&self.skill_contexts)
+                .into_iter()
+                .map(|fragment| PromptFragmentCandidate {
+                    fragment,
+                    include: true,
+                    decision_reason: "invoked_skill_context".into(),
+                }),
+        );
         if let Some(summary) = self.owned_process_summary {
-            fragments.push(prompt_fragment(
+            candidates.push(prompt_fragment_candidate(
                 "xero.owned_process_state",
                 800,
                 "Owned process state",
                 "xero-runtime:process_manager",
                 owned_process_state_fragment(summary),
+                PromptFragmentBudgetPolicy::Summarize,
+                true,
+                "owned_process_state_changed",
             ));
         }
         if self.project_id.is_some() {
-            fragments.push(prompt_fragment(
+            candidates.push(prompt_fragment_candidate(
                 "xero.durable_context_tools",
                 240,
                 "Durable context tools",
                 "xero-runtime:project_context",
                 durable_context_tools_fragment(self.runtime_agent_id, self.tools),
+                PromptFragmentBudgetPolicy::AlwaysInclude,
+                true,
+                "durable_context_is_tool_mediated",
             ));
         }
         if let Some(summary) = self.active_coordination_summary {
-            fragments.push(prompt_fragment(
+            candidates.push(prompt_fragment_candidate(
                 "xero.active_coordination",
                 230,
                 "Active coordination",
                 "xero-runtime:agent_coordination",
                 active_coordination_fragment(summary),
+                PromptFragmentBudgetPolicy::Summarize,
+                true,
+                "active_same_project_coordination",
             ));
         }
 
-        let prompt = render_prompt(&fragments);
-        Ok(PromptCompilation { prompt, fragments })
+        assemble_prompt_candidates(candidates, self.prompt_budget_tokens)
     }
 }
 
@@ -261,12 +382,14 @@ fn render_prompt(fragments: &[PromptFragment]) -> String {
     prompt
 }
 
-fn prompt_fragment(
+fn prompt_fragment_with_policy(
     id: &str,
     priority: u16,
     title: &str,
     provenance: &str,
     body: String,
+    budget_policy: PromptFragmentBudgetPolicy,
+    inclusion_reason: &str,
 ) -> PromptFragment {
     let mut hasher = Sha256::new();
     hasher.update(id.as_bytes());
@@ -277,10 +400,148 @@ fn prompt_fragment(
         priority,
         title: title.into(),
         provenance: provenance.into(),
+        budget_policy,
+        inclusion_reason: inclusion_reason.into(),
         token_estimate: estimate_tokens(&body),
         sha256: format!("{:x}", hasher.finalize()),
         body,
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Prompt fragment candidate construction records a typed assembly decision at each call site."
+)]
+fn prompt_fragment_candidate(
+    id: &str,
+    priority: u16,
+    title: &str,
+    provenance: &str,
+    body: String,
+    budget_policy: PromptFragmentBudgetPolicy,
+    include: bool,
+    reason: &str,
+) -> PromptFragmentCandidate {
+    let mut fragment =
+        prompt_fragment_with_policy(id, priority, title, provenance, body, budget_policy, reason);
+    fragment.inclusion_reason = reason.into();
+    PromptFragmentCandidate {
+        fragment,
+        include,
+        decision_reason: reason.into(),
+    }
+}
+
+fn assemble_prompt_candidates(
+    mut candidates: Vec<PromptFragmentCandidate>,
+    prompt_budget_tokens: Option<u64>,
+) -> CommandResult<PromptCompilation> {
+    candidates.sort_by(|left, right| prompt_candidate_sort_order(left, right));
+    let mut fragments = Vec::new();
+    let mut excluded_fragments = Vec::new();
+    let mut estimated_prompt_tokens = estimate_tokens(SYSTEM_PROMPT_VERSION);
+
+    for candidate in candidates {
+        let mut fragment = candidate.fragment;
+        if !candidate.include
+            || matches!(
+                fragment.budget_policy,
+                PromptFragmentBudgetPolicy::ToolMediatedOnly | PromptFragmentBudgetPolicy::Exclude
+            )
+        {
+            excluded_fragments.push(prompt_fragment_exclusion(
+                &fragment,
+                candidate.decision_reason,
+            ));
+            continue;
+        }
+
+        if prompt_budget_tokens.is_some_and(|budget| {
+            estimated_prompt_tokens.saturating_add(fragment.token_estimate) > budget
+        }) && fragment.budget_policy != PromptFragmentBudgetPolicy::AlwaysInclude
+        {
+            if fragment.budget_policy == PromptFragmentBudgetPolicy::Summarize {
+                fragment = summarize_prompt_fragment(fragment);
+            }
+            if prompt_budget_tokens.is_some_and(|budget| {
+                estimated_prompt_tokens.saturating_add(fragment.token_estimate) > budget
+            }) {
+                excluded_fragments.push(prompt_fragment_exclusion(
+                    &fragment,
+                    "prompt_budget_exceeded",
+                ));
+                continue;
+            }
+        }
+
+        estimated_prompt_tokens = estimated_prompt_tokens.saturating_add(fragment.token_estimate);
+        fragments.push(fragment);
+    }
+
+    if fragments.is_empty() {
+        return Err(CommandError::system_fault(
+            "agent_prompt_compiler_empty",
+            "Xero could not assemble owned-agent prompt fragments.",
+        ));
+    }
+
+    let prompt = render_prompt(&fragments);
+    Ok(PromptCompilation {
+        prompt,
+        fragments,
+        excluded_fragments,
+        prompt_budget_tokens,
+        estimated_prompt_tokens,
+    })
+}
+
+fn prompt_candidate_sort_order(
+    left: &PromptFragmentCandidate,
+    right: &PromptFragmentCandidate,
+) -> std::cmp::Ordering {
+    right
+        .fragment
+        .priority
+        .cmp(&left.fragment.priority)
+        .then_with(|| left.fragment.id.cmp(&right.fragment.id))
+        .then_with(|| left.fragment.provenance.cmp(&right.fragment.provenance))
+}
+
+fn prompt_fragment_exclusion(
+    fragment: &PromptFragment,
+    reason: impl Into<String>,
+) -> PromptFragmentExclusion {
+    PromptFragmentExclusion {
+        id: fragment.id.clone(),
+        priority: fragment.priority,
+        title: fragment.title.clone(),
+        provenance: fragment.provenance.clone(),
+        budget_policy: fragment.budget_policy,
+        token_estimate: fragment.token_estimate,
+        sha256: fragment.sha256.clone(),
+        reason: reason.into(),
+    }
+}
+
+fn summarize_prompt_fragment(mut fragment: PromptFragment) -> PromptFragment {
+    if fragment.body.chars().count() <= 1_600 {
+        return fragment;
+    }
+    let original_chars = fragment.body.chars().count();
+    let excerpt = fragment.body.chars().take(1_200).collect::<String>();
+    fragment.body = format!(
+        "{}\n...[{} char(s) omitted by prompt budget policy; use the named tool surface for authoritative details]",
+        excerpt,
+        original_chars.saturating_sub(1_200)
+    );
+    fragment.token_estimate = estimate_tokens(&fragment.body);
+    let mut hasher = Sha256::new();
+    hasher.update(fragment.id.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(fragment.body.as_bytes());
+    fragment.sha256 = format!("{:x}", hasher.finalize());
+    fragment.inclusion_reason = "summarized_to_fit_prompt_budget".into();
+    fragment
 }
 
 fn harness_test_agent_contract_fragment() -> String {
@@ -296,21 +557,22 @@ fn harness_test_agent_contract_fragment() -> String {
         "Safety contract: use harmless inputs only. Use repo-scoped scratch files or scratch directories only for mutation probes, and keep them under a clearly named temporary harness path. Do not mutate user project files outside scratch state. Do not create external side effects unless a capability is already present, read-only or fixture-backed, and explicitly safe for harness probing. Do not leak secrets; redact sensitive values in evidence.",
         "",
         "Canonical step order v1:",
-        "1. `registry_discovery`: inspect `tool_search` and `tool_access` availability and active registry metadata.",
-        "2. `repo_inspection`: exercise core repo inspection tools: `git_status`, `git_diff`, `find`, `search`, `read`, `list`, and `hash` when available.",
-        "3. `planning_runtime_state`: exercise `todo` and `project_context` with safe read or runtime-owned app-data actions when available.",
-        "4. `scratch_mutation`: exercise scratch-only `mkdir`, `write`, `edit`, `rename`, and `delete` when available.",
-        "5. `commands`: run a short harmless command and a command session start/read/stop sequence when available.",
-        "6. `process_manager`: list or inspect only Xero-owned or harmless processes when available.",
-        "7. `environment_diagnostics`: inspect redacted environment context and bounded system diagnostics when available.",
-        "8. `browser_tools`: observe first; control only against a local or fixture-safe target when available.",
-        "9. `mcp_tools`: list servers, resources, and tools; invoke only a configured safe fixture tool when available.",
-        "10. `skills`: discover, list, or load safe local skill metadata; skip install or invocation unless a safe fixture exists.",
-        "11. `emulator_tools`: skip unless a managed emulator fixture is available.",
-        "12. `solana_tools`: use local, devnet, read-only, or fixture-backed probes only.",
-        "13. `macos_automation`: check permissions/status/read-only probes first; skip control unless explicitly safe.",
-        "14. `cleanup_scratch`: remove all harness-created scratch state and verify cleanup when possible.",
-        "15. `final_report`: produce the final report only after every available manifest item has a terminal status.",
+        "1. `deterministic_runner`: use `harness_runner` when available to export the canonical machine manifest.",
+        "2. `registry_discovery`: inspect `tool_search` and `tool_access` availability and active registry metadata.",
+        "3. `repo_inspection`: exercise core repo inspection tools: `git_status`, `git_diff`, `find`, `search`, `read`, `list`, and `hash` when available.",
+        "4. `planning_runtime_state`: exercise `todo` and `project_context` with safe read or runtime-owned app-data actions when available.",
+        "5. `scratch_mutation`: exercise scratch-only `mkdir`, `write`, `edit`, `rename`, and `delete` when available.",
+        "6. `commands`: run a short harmless command and a command session start/read/stop sequence when available.",
+        "7. `process_manager`: list or inspect only Xero-owned or harmless processes when available.",
+        "8. `environment_diagnostics`: inspect redacted environment context and bounded system diagnostics when available.",
+        "9. `browser_tools`: observe first; control only against a local or fixture-safe target when available.",
+        "10. `mcp_tools`: list servers, resources, and tools; invoke only a configured safe fixture tool when available.",
+        "11. `skills`: discover, list, or load safe local skill metadata; skip install or invocation unless a safe fixture exists.",
+        "12. `emulator_tools`: skip unless a managed emulator fixture is available.",
+        "13. `solana_tools`: use local, devnet, read-only, or fixture-backed probes only.",
+        "14. `macos_automation`: check permissions/status/read-only probes first; skip control unless explicitly safe.",
+        "15. `cleanup_scratch`: remove all harness-created scratch state and verify cleanup when possible.",
+        "16. `final_report`: produce the final report only after every available manifest item has a terminal status.",
         "",
         "Per-step record contract: for each step, record the stable step id, target tool or group, expected effect class, safe input summary, pass condition, skip condition, cleanup requirement, observed tool call or skip reason, and terminal status. A missing unavailable capability is `skipped_with_reason`, not `passed`.",
         "",
@@ -343,6 +605,18 @@ fn presentation_fragment() -> &'static str {
     "Presentation contract: the chat renderer supports GitHub-flavored Markdown tables and Mermaid diagrams in fenced ```mermaid blocks. The diagram preview is bounded in chat with a fullscreen pan/zoom view available, so diagrams render at any size. Pick the Mermaid type that matches the structure of the answer:\n- `flowchart` for branching logic, control flow, decision trees, or any directed step graph.\n- `sequenceDiagram` for ordered interactions between actors / services / functions over time.\n- `classDiagram` for type hierarchies, OO structure, or component contracts with fields and methods.\n- `stateDiagram-v2` for state machines, lifecycles, and transitions triggered by events.\n- `erDiagram` for database tables, relationships, and cardinality.\n- `gantt` for schedules, timelines with durations, or phased plans with start/end dates.\n- `timeline` for ordered events without durations (history, release lineage).\n- `journey` for user-experience steps with sentiment scores.\n- `gitGraph` for branch / merge / tag history.\n- `mindmap` for hierarchical breakdown of a concept into sub-concepts.\n- `pie` for a small categorical share-of-whole (≤8 slices).\n- `quadrantChart` for two-axis classification (e.g. impact vs. effort).\n- `requirementDiagram` for traceability between requirements, tests, and components.\nFor a comparison of options, a list of items with consistent attributes, a small schema, or a count of things across categories, prefer a Markdown table over a bullet list of `X: Y` pairs. Use diagrams and tables when they add information density; do not produce a diagram for content that is naturally one or two sentences. Keep diagrams under roughly 25 nodes; if larger, summarize and link to specific files instead. Stay terse — visuals replace prose, they do not accompany the same prose."
 }
 
+fn runtime_metadata_fragment(metadata: &RuntimeHostMetadata) -> String {
+    format!(
+        "Runtime metadata for this provider turn (authoritative Xero host facts):\n- Current timestamp (UTC): {}\n- Current date (UTC): {}\n- Host operating system: {} (`{}`)\n- Host architecture: `{}`\n- Host OS family: `{}`\nUse these facts when reasoning about dates, commands, paths, and OS-specific tools. Do not request or rely on tools that are unavailable for this host operating system.",
+        metadata.timestamp_utc,
+        metadata.date_utc,
+        metadata.operating_system_label,
+        metadata.operating_system,
+        metadata.architecture,
+        metadata.family
+    )
+}
+
 fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
     let agent_contract = match runtime_agent_id {
         RuntimeAgentIdDto::Ask => [
@@ -350,7 +624,7 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
             "",
             "Ask is answer-only in observable effect. Do not edit, write, patch, delete, rename, create directories, run shell commands, start or stop processes, control browsers or devices, invoke external services, install or invoke skills, spawn subagents, or mutate app state. Do not request approval to escape this boundary.",
             "",
-            "Persistence and retrieval contract: Xero keeps durable project context behind the `project_context` tool instead of preloading raw memory or project records. Use `project_context` to read context before prior-work-sensitive tasks and record/update context after durable findings, corrections, decisions, or stale evidence. Ask must not mutate repo files; durable-context writes are runtime-owned app state.",
+            "Persistence and retrieval contract: Xero keeps durable project context behind read-only `project_context_search` and `project_context_get` actions instead of preloading raw memory or project records. Read context before prior-work-sensitive questions. Durable-context writes are not part of Ask's default surface; a user-requested note requires a separate approved context-write action when Xero exposes one.",
             "",
             "When the user asks for implementation while Ask is selected, explain what would need to change and offer a concise plan, but do not perform the work or claim that you changed, ran, installed, deployed, opened, or approved anything.",
             "",
@@ -362,7 +636,7 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
         RuntimeAgentIdDto::Engineer => [
             "You are Xero's Engineer agent. Work directly in the imported repository, use tools for filesystem and command work, record evidence, and stop only when the task is done or a configured safety boundary requires user input.",
             "",
-            "Operate like a production coding agent: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion. Before modifying an existing file, read or hash the target in the current run so Xero can detect stale writes safely.",
+            "Operate like a production coding agent: inspect before editing, respect a dirty worktree, keep changes scoped, prefer `rg` for search, run focused verification when behavior changes, and summarize concrete evidence before completion. File-write tools enforce current-run observation and stale-write preconditions.",
             "",
             "Persistence and retrieval contract: Xero persists a context manifest before provider turns and keeps durable project context behind the `project_context` tool instead of preloading raw memory or project records. Use `project_context` to read context before prior-work-sensitive tasks involving previous work, decisions, constraints, known failures, or previous runs. Use it to record/update context after durable findings, file changes, verification, blockers, corrections, and handoff-ready summaries.",
             "",
@@ -376,7 +650,7 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
         RuntimeAgentIdDto::Debug => [
             "You are Xero's Debug agent. Work directly in the imported repository with the Engineer tool surface, but optimize every run for root-cause analysis, reproducible evidence, high-signal fixes, and future debugging memory.",
             "",
-            "Follow a structured debugging workflow: intake the symptom and expected behavior, identify the execution path, reproduce or tightly simulate the issue, keep an evidence ledger, form falsifiable hypotheses, run the smallest useful experiments, eliminate unsupported causes, implement the narrowest fix, and verify the original failure plus adjacent regressions. Treat code you just wrote with extra skepticism and prefer evidence over confidence.",
+            "Follow a structured debugging workflow: intake the symptom and expected behavior, identify the execution path, reproduce or tightly simulate the issue, record evidence in the structured `todo` debug ledger, form falsifiable hypotheses, run the smallest useful experiments, eliminate unsupported causes, implement the narrowest fix, and verify the original failure plus adjacent regressions. Treat code you just wrote with extra skepticism and prefer evidence over confidence.",
             "",
             "Persistence and retrieval contract: Xero persists a context manifest before provider turns and keeps durable project context behind the `project_context` tool instead of preloading raw memory or project records. Use `project_context` to read context before prior-work-sensitive tasks and before investigating related symptoms, subsystems, errors, or paths with possible history. Use it to record/update context after durable findings, disproven hypotheses, root cause, fix rationale, verification, reusable troubleshooting facts, and blockers.",
             "",
@@ -406,7 +680,7 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
             "",
             "Agent Create is definition-registry-only in this phase. Do not edit repository files, run shell commands, start or stop processes, control browsers or devices, invoke external services, install or invoke skills, or spawn subagents. You may mutate app-data-backed agent-definition state only through the `agent_definition` tool, and save/update/archive/clone actions require explicit operator approval.",
             "",
-            "Design workflow: clarify the agent's purpose, scope, risk tolerance, expected outputs, project specificity, and example tasks. Propose the smallest safe capability profile and tool boundary. Prefer narrow agents over broad do-everything agents, and call out safety limits before presenting a draft.",
+            "Design workflow: clarify the agent's purpose, scope, risk tolerance, expected outputs, project specificity, and example tasks. Draft schema-first definitions, validate them with `agent_definition`, and use validation diagnostics as the authority for denied tools, effect classes, and profile boundaries. Prefer narrow agents over broad do-everything agents, and call out safety limits before presenting a draft.",
             "",
             "Persistence and retrieval contract: Xero provides durable project context, approved memory, project records, handoffs, and the current context manifest as lower-priority data. Use read-only retrieval only when the requested agent depends on project-specific context. Save definitions only to app-data-backed registry state through `agent_definition`; never write `.xero/` or repository files.",
             "",
@@ -528,12 +802,14 @@ fn agent_definition_policy_fragment(
 
     let (body, _redaction) = redact_session_context_text(&body);
 
-    Ok(Some(prompt_fragment(
+    Ok(Some(prompt_fragment_with_policy(
         "xero.agent_definition_policy",
         850,
         "Custom agent definition policy",
         &format!("agent-definition:{definition_id}@{definition_version}"),
         body,
+        PromptFragmentBudgetPolicy::AlwaysInclude,
+        "active_custom_agent_definition",
     )))
 }
 
@@ -575,13 +851,13 @@ fn tool_policy_fragment(
         browser_control_prompt_section(browser_control_preference, tools);
     match runtime_agent_id {
         RuntimeAgentIdDto::Ask => format!(
-            "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context` to search/read durable context and to record/update context after durable findings; these writes are runtime-owned durable context, not repository mutation. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
+            "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Engineer => format!(
             "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Debug => format!(
-            "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for debugging hypotheses and verification checkpoints. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
+            "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` with `mode=debug_evidence` for symptom, reproduction, hypothesis, experiment, root_cause, fix, and verification ledger entries. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Crawl => format!(
             "Available repository reconnaissance tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, code intelligence, environment context, and system diagnostics only for local repository mapping. `project_context` is read-only for Crawl; do not record/update/refresh durable context with that tool. `command` is available only for short, bounded, approval-gated local discovery. `tool_search` and `tool_access` are filtered to Crawl-safe reconnaissance capabilities; do not ask for mutation, browser-control, MCP, skill, subagent, device, network, or external-service tools.{browser_control_guidance}"
@@ -590,7 +866,7 @@ fn tool_policy_fragment(
             "Available agent-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition registry actions. `agent_definition` is the only persistence tool Agent Create may use, and save/update/archive/clone require explicit operator approval. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Test => format!(
-            "Available harness tools: {tool_names}\n\nUse tools only for the dev harness validation run. Prefer `tool_search` and `tool_access` to inspect the active registry and activate the smallest safe capability needed for the next canonical harness step only. Execute the manifest in the system-prompt order, mark unavailable capabilities as `skipped_with_reason`, use scratch paths for mutation probes, avoid external side effects unless the capability is already safe for harness probing, and clean up scratch state before the final report.{browser_control_guidance}"
+            "Available harness tools: {tool_names}\n\nUse tools only for the dev harness validation run. Use `harness_runner` when present to export the machine-readable manifest before exercising tools. Prefer `tool_search` and `tool_access` to inspect the active registry and activate the smallest safe capability needed for the next canonical harness step only. Execute the manifest in the system-prompt order, mark unavailable capabilities as `skipped_with_reason`, use scratch paths for mutation probes, avoid external side effects unless the capability is already safe for harness probing, and clean up scratch state before the final report.{browser_control_guidance}"
         ),
     }
 }
@@ -601,7 +877,10 @@ struct RepositoryInstructionFile {
     body: String,
 }
 
-fn repository_instruction_fragments(repo_root: &Path) -> Vec<PromptFragment> {
+fn repository_instruction_fragment_candidates(
+    repo_root: &Path,
+    relevant_paths: &BTreeSet<String>,
+) -> Vec<PromptFragmentCandidate> {
     let started = Instant::now();
     let fragments = cached_prompt_context(&REPOSITORY_INSTRUCTION_CACHE, repo_root, || {
         build_repository_instruction_fragments(repo_root)
@@ -613,17 +892,41 @@ fn repository_instruction_fragments(repo_root: &Path) -> Vec<PromptFragment> {
         started.elapsed().as_millis()
     );
     fragments
+        .into_iter()
+        .map(|fragment| {
+            let is_root = fragment.provenance == "project:AGENTS.md";
+            let applies =
+                repository_instruction_applies_to_paths(&fragment.provenance, relevant_paths);
+            let include = is_root || applies;
+            let decision_reason = if is_root {
+                "root_repository_instruction_scope".into()
+            } else if applies {
+                "nested_repository_instruction_matches_relevant_path_scope".into()
+            } else if relevant_paths.is_empty() {
+                "nested_repository_instruction_deferred_until_path_scope_exists".into()
+            } else {
+                "nested_repository_instruction_outside_relevant_path_scope".into()
+            };
+            PromptFragmentCandidate {
+                fragment,
+                include,
+                decision_reason,
+            }
+        })
+        .collect()
 }
 
 fn build_repository_instruction_fragments(repo_root: &Path) -> Vec<PromptFragment> {
     let instruction_files = collect_repository_instruction_files(repo_root);
     if instruction_files.is_empty() {
-        return vec![prompt_fragment(
+        return vec![prompt_fragment_with_policy(
             "project.instructions.AGENTS.md",
             300,
             "Repository instructions",
             "project:AGENTS.md",
             repository_instructions_fragment("AGENTS.md", "(none)"),
+            PromptFragmentBudgetPolicy::AlwaysInclude,
+            "root_repository_instruction_scope",
         )];
     }
 
@@ -634,12 +937,23 @@ fn build_repository_instruction_fragments(repo_root: &Path) -> Vec<PromptFragmen
                 "project.instructions.{}",
                 instruction.relative_path.replace('/', ".")
             );
-            prompt_fragment(
+            let is_root = instruction.relative_path == "AGENTS.md";
+            prompt_fragment_with_policy(
                 &fragment_id,
                 300,
                 "Repository instructions",
                 &format!("project:{}", instruction.relative_path),
                 repository_instructions_fragment(&instruction.relative_path, &instruction.body),
+                if is_root {
+                    PromptFragmentBudgetPolicy::AlwaysInclude
+                } else {
+                    PromptFragmentBudgetPolicy::IncludeIfRelevant
+                },
+                if is_root {
+                    "root_repository_instruction_scope"
+                } else {
+                    "nested_repository_instruction_deferred_until_path_scope_exists"
+                },
             )
         })
         .collect()
@@ -740,6 +1054,129 @@ fn repo_relative_prompt_path(repo_root: &Path, path: &Path) -> Option<String> {
     }
 }
 
+fn repository_instruction_applies_to_paths(
+    provenance: &str,
+    relevant_paths: &BTreeSet<String>,
+) -> bool {
+    let Some(relative_path) = provenance.strip_prefix("project:") else {
+        return false;
+    };
+    let Some(scope) = relative_path.strip_suffix("/AGENTS.md") else {
+        return relative_path == "AGENTS.md";
+    };
+    relevant_paths
+        .iter()
+        .any(|path| path == scope || path.starts_with(&format!("{scope}/")))
+}
+
+fn normalize_relevant_prompt_paths<I, S>(paths: I) -> BTreeSet<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    paths
+        .into_iter()
+        .filter_map(|path| normalize_relevant_prompt_path(path.as_ref()))
+        .collect()
+}
+
+fn normalize_relevant_prompt_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\0')
+        || trimmed.starts_with('/')
+        || trimmed.contains("://")
+    {
+        return None;
+    }
+    let parts = Path::new(trimmed)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(segment) => segment.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+pub(crate) fn prompt_relevant_paths_from_provider_messages(
+    messages: &[ProviderMessage],
+) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    for message in messages {
+        match message {
+            ProviderMessage::Assistant { tool_calls, .. } => {
+                for tool_call in tool_calls {
+                    collect_relevant_paths_from_json(&tool_call.input, &mut paths);
+                }
+            }
+            ProviderMessage::Tool { content, .. } => {
+                if let Ok(value) = serde_json::from_str::<JsonValue>(content) {
+                    collect_relevant_paths_from_json(&value, &mut paths);
+                }
+            }
+            ProviderMessage::User { .. } => {}
+        }
+    }
+    paths
+}
+
+fn collect_relevant_paths_from_json(value: &JsonValue, paths: &mut BTreeSet<String>) {
+    match value {
+        JsonValue::Array(items) => {
+            for item in items {
+                collect_relevant_paths_from_json(item, paths);
+            }
+        }
+        JsonValue::Object(fields) => {
+            for (key, value) in fields {
+                if prompt_path_json_key(key) {
+                    collect_relevant_path_value(value, paths);
+                }
+                collect_relevant_paths_from_json(value, paths);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
+    }
+}
+
+fn collect_relevant_path_value(value: &JsonValue, paths: &mut BTreeSet<String>) {
+    match value {
+        JsonValue::String(path) => {
+            if let Some(path) = normalize_relevant_prompt_path(path) {
+                paths.insert(path);
+            }
+        }
+        JsonValue::Array(items) => {
+            for item in items {
+                collect_relevant_path_value(item, paths);
+            }
+        }
+        JsonValue::Object(fields) => {
+            for value in fields.values() {
+                collect_relevant_path_value(value, paths);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) => {}
+    }
+}
+
+fn prompt_path_json_key(key: &str) -> bool {
+    matches!(
+        key,
+        "path"
+            | "filePath"
+            | "fromPath"
+            | "toPath"
+            | "targetPath"
+            | "relativePath"
+            | "manifestPath"
+            | "relatedPaths"
+            | "paths"
+            | "writeSet"
+    )
+}
+
 fn cached_prompt_context<T: Clone>(
     cache: &'static OnceLock<Mutex<HashMap<PathBuf, PromptContextCacheEntry<T>>>>,
     repo_root: &Path,
@@ -793,13 +1230,13 @@ fn repository_instructions_fragment(relative_path: &str, body: &str) -> String {
     )
 }
 
-fn project_code_map_fragment(repo_root: &Path) -> String {
+fn project_workspace_manifest_fragment(repo_root: &Path) -> String {
     let started = Instant::now();
-    let fragment = cached_prompt_context(&PROJECT_CODE_MAP_CACHE, repo_root, || {
-        build_project_code_map_fragment(repo_root)
+    let fragment = cached_prompt_context(&PROJECT_WORKSPACE_MANIFEST_CACHE, repo_root, || {
+        build_project_workspace_manifest_fragment(repo_root)
     });
     eprintln!(
-        "[runtime-latency] project_code_map_fragment repo_root={} bytes={} duration_ms={}",
+        "[runtime-latency] project_workspace_manifest_fragment repo_root={} bytes={} duration_ms={}",
         repo_root.display(),
         fragment.len(),
         started.elapsed().as_millis()
@@ -807,9 +1244,10 @@ fn project_code_map_fragment(repo_root: &Path) -> String {
     fragment
 }
 
-fn build_project_code_map_fragment(repo_root: &Path) -> String {
+fn build_project_workspace_manifest_fragment(repo_root: &Path) -> String {
     let mut manifests = Vec::new();
-    let mut symbols = Vec::new();
+    let mut top_level_dirs = BTreeSet::new();
+    let mut instruction_scopes = Vec::new();
     let walker = WalkBuilder::new(repo_root)
         .git_ignore(true)
         .git_exclude(true)
@@ -828,7 +1266,7 @@ fn build_project_code_map_fragment(repo_root: &Path) -> String {
         if visited_files > MAX_PROMPT_CONTEXT_WALK_FILES {
             break;
         }
-        if manifests.len() >= 16 && symbols.len() >= 48 {
+        if manifests.len() >= 16 && top_level_dirs.len() >= 24 && instruction_scopes.len() >= 16 {
             break;
         }
         let path = entry.path();
@@ -838,21 +1276,12 @@ fn build_project_code_map_fragment(repo_root: &Path) -> String {
         if manifests.len() < 16 && is_prompt_manifest(path) {
             manifests.push(relative_path.clone());
         }
-        if symbols.len() >= 48 || !is_prompt_source_file(path) {
-            continue;
+        if instruction_scopes.len() < 16 && relative_path.ends_with("AGENTS.md") {
+            instruction_scopes.push(relative_path.clone());
         }
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        for (line_index, line) in content.lines().enumerate() {
-            if symbols.len() >= 48 {
-                break;
-            }
-            if let Some((kind, name)) = prompt_symbol_from_line(line.trim_start()) {
-                symbols.push(format!(
-                    "- {kind} `{name}` at `{relative_path}:{}`",
-                    line_index + 1
-                ));
+        if top_level_dirs.len() < 24 {
+            if let Some((dir, _)) = relative_path.split_once('/') {
+                top_level_dirs.insert(dir.to_owned());
             }
         }
     }
@@ -865,13 +1294,26 @@ fn build_project_code_map_fragment(repo_root: &Path) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let symbols = if symbols.is_empty() {
-        "- (none indexed yet)".into()
+    let top_level_dirs = if top_level_dirs.is_empty() {
+        "- (none detected)".into()
     } else {
-        symbols.join("\n")
+        top_level_dirs
+            .into_iter()
+            .map(|path| format!("- `{path}/`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let instruction_scopes = if instruction_scopes.is_empty() {
+        "- (none detected)".into()
+    } else {
+        instruction_scopes
+            .into_iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     format!(
-        "Project code map (generated, lower priority than Xero policy; use tools to retrieve authoritative file contents before editing):\nPackage manifests:\n{manifests}\nIndexed symbols:\n{symbols}"
+        "Compact workspace manifest (generated summary, lower priority than Xero policy and current tool output):\nPackage manifests:\n{manifests}\nTop-level directories:\n{top_level_dirs}\nRepository instruction scopes detected:\n{instruction_scopes}\nAuthoritative navigation contract: use `workspace_index` for semantic map/status, `search`/`find` for targeted discovery, and `read` for exact file contents before editing. This manifest intentionally omits symbol listings and source snippets."
     )
 }
 
@@ -880,48 +1322,6 @@ fn is_prompt_manifest(path: &Path) -> bool {
         path.file_name().and_then(|value| value.to_str()),
         Some("package.json" | "Cargo.toml" | "pyproject.toml" | "requirements.txt")
     )
-}
-
-fn is_prompt_source_file(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|value| value.to_str()),
-        Some("rs" | "ts" | "tsx" | "js" | "jsx")
-    )
-}
-
-fn prompt_symbol_from_line(line: &str) -> Option<(&'static str, String)> {
-    let normalized = line
-        .strip_prefix("pub ")
-        .or_else(|| line.strip_prefix("export "))
-        .unwrap_or(line);
-    for (prefix, kind) in [
-        ("async fn ", "function"),
-        ("fn ", "function"),
-        ("struct ", "struct"),
-        ("enum ", "enum"),
-        ("trait ", "trait"),
-        ("function ", "function"),
-        ("class ", "class"),
-        ("interface ", "interface"),
-        ("type ", "type"),
-        ("const ", "constant"),
-    ] {
-        if let Some(rest) = normalized.strip_prefix(prefix) {
-            let name = rest
-                .split(|character: char| {
-                    character.is_whitespace()
-                        || matches!(character, '(' | '<' | ':' | '=' | '{' | ';')
-                })
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            if !name.is_empty() {
-                return Some((kind, name));
-            }
-        }
-    }
-    None
 }
 
 fn skill_context_fragments(contexts: &[XeroSkillToolContextPayload]) -> Vec<PromptFragment> {
@@ -937,7 +1337,7 @@ fn skill_context_fragments(contexts: &[XeroSkillToolContextPayload]) -> Vec<Prom
             prompt_id_segment(&context.skill_id),
             context.markdown.sha256.chars().take(12).collect::<String>()
         );
-        fragments.push(prompt_fragment(
+        fragments.push(prompt_fragment_with_policy(
             &id,
             350,
             &format!("Skill context: {}", context.skill_id),
@@ -946,6 +1346,8 @@ fn skill_context_fragments(contexts: &[XeroSkillToolContextPayload]) -> Vec<Prom
                 context.source_id, context.markdown.relative_path
             ),
             skill_context_fragment(context),
+            PromptFragmentBudgetPolicy::Summarize,
+            "invoked_skill_context",
         ));
     }
     fragments
@@ -1082,26 +1484,74 @@ fn browser_control_prompt_section(
     format!("\n\n{body}")
 }
 
-pub(crate) fn select_tool_names_for_prompt(
+pub(crate) fn plan_tool_exposure_for_prompt(
     _repo_root: &Path,
     prompt: &str,
-    _controls: &RuntimeRunControlStateDto,
+    controls: &RuntimeRunControlStateDto,
     options: &ToolRegistryOptions,
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    add_tool_group(&mut names, "core");
+) -> ToolExposurePlan {
+    let lowered = prompt.to_lowercase();
+    let task_classification = classify_agent_task(prompt, controls);
+    let task_kind = exposure_task_kind(&lowered, options.runtime_agent_id);
+    let mut plan = ToolExposurePlan::empty(
+        options.runtime_agent_id,
+        "capability_planner_v1",
+        ToolExposureTaskClassification {
+            kind: task_kind.into(),
+            requires_plan: task_classification.requires_plan,
+            score: task_classification.score,
+            reason_codes: task_classification.reason_codes,
+        },
+    );
+
+    add_startup_surface(&mut plan, options);
     if options.runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
-        add_tool_group(&mut names, "agent_builder");
+        add_tool_group_with_reason(
+            &mut plan,
+            "agent_builder",
+            "agent_profile",
+            "agent_create_registry_contract",
+            "Agent Create may use the registry-backed agent-definition tool.",
+        );
     }
     if options.runtime_agent_id == RuntimeAgentIdDto::Crawl {
-        add_tool_group(&mut names, "command_readonly");
-        add_tool_group(&mut names, "intelligence");
-        add_tool_group(&mut names, "environment");
-        add_tool_group(&mut names, "system_diagnostics");
+        add_tool_group_with_reason(
+            &mut plan,
+            "command_readonly",
+            "agent_profile",
+            "crawl_repository_recon",
+            "Crawl can run bounded local discovery and verification probes.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "intelligence",
+            "agent_profile",
+            "crawl_repository_recon",
+            "Crawl uses code intelligence for repository mapping.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "environment",
+            "agent_profile",
+            "crawl_repository_recon",
+            "Crawl may read redacted local environment facts.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "system_diagnostics_observe",
+            "agent_profile",
+            "crawl_repository_recon",
+            "Crawl can inspect bounded read-only diagnostics.",
+        );
     }
 
-    let lowered = prompt.to_lowercase();
-    names.extend(explicit_tool_names_from_prompt(&lowered));
+    let explicit_tools = explicit_tool_names_from_prompt(&lowered);
+    plan.add_tools(
+        explicit_tools.iter().map(String::as_str),
+        "user_explicit_tool_marker",
+        "explicit_tool_marker",
+        "The user prompt included a tool: marker for this exact capability.",
+    );
 
     if contains_any(
         &lowered,
@@ -1126,7 +1576,27 @@ pub(crate) fn select_tool_names_for_prompt(
             "scaffold",
         ],
     ) {
-        add_tool_group(&mut names, "mutation");
+        add_tool_group_with_reason(
+            &mut plan,
+            "mutation",
+            "planner_classification",
+            "code_change_intent",
+            "Task text indicates repository file creation or mutation.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "intelligence",
+            "planner_classification",
+            "code_change_intent",
+            "Implementation work benefits from symbol and diagnostic inspection before edits.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "command_readonly",
+            "planner_classification",
+            "verification_expected",
+            "Implementation work should have bounded probe and verification command access.",
+        );
     }
 
     if contains_any(
@@ -1155,7 +1625,13 @@ pub(crate) fn select_tool_names_for_prompt(
             "security",
         ],
     ) {
-        add_tool_group(&mut names, "command");
+        add_tool_group_with_reason(
+            &mut plan,
+            "command_readonly",
+            "planner_classification",
+            "verification_or_diagnostics_intent",
+            "Task text asks for tests, build, lint, verification, or bounded investigation.",
+        );
     }
 
     if contains_any(
@@ -1175,7 +1651,13 @@ pub(crate) fn select_tool_names_for_prompt(
             "group kill",
         ],
     ) {
-        add_tool_group(&mut names, "process_manager");
+        add_tool_group_with_reason(
+            &mut plan,
+            "process_manager",
+            "planner_classification",
+            "process_lifecycle_intent",
+            "Task text mentions owned process lifecycle or visibility.",
+        );
     }
 
     if contains_any(
@@ -1197,7 +1679,29 @@ pub(crate) fn select_tool_names_for_prompt(
             "accessibility snapshot",
         ],
     ) {
-        add_tool_group(&mut names, "system_diagnostics");
+        add_tool_group_with_reason(
+            &mut plan,
+            "system_diagnostics_observe",
+            "planner_classification",
+            "system_diagnostics_intent",
+            "Task text asks for bounded system diagnostics.",
+        );
+        if contains_any(
+            &lowered,
+            &[
+                "process sample",
+                "process sampling",
+                "accessibility snapshot",
+            ],
+        ) {
+            add_tool_group_with_reason(
+                &mut plan,
+                "system_diagnostics_privileged",
+                "planner_classification",
+                "privileged_system_diagnostics_intent",
+                "Task text names diagnostics that require approval-gated system state capture.",
+            );
+        }
     }
 
     if contains_any(
@@ -1222,39 +1726,110 @@ pub(crate) fn select_tool_names_for_prompt(
             "mac_screenshot",
         ],
     ) {
-        add_tool_group(&mut names, "macos");
+        add_tool_group_with_reason(
+            &mut plan,
+            "macos",
+            "planner_classification",
+            "macos_automation_intent",
+            "Task text explicitly asks for macOS app, window, permission, or screenshot automation.",
+        );
     }
 
-    if contains_any(
+    let docs_or_current_web = contains_any(
+        &lowered,
+        &["docs", "documentation", "internet", "latest", "current "],
+    );
+    if docs_or_current_web || contains_any(&lowered, &["web search", "web fetch"]) {
+        add_tool_group_with_reason(
+            &mut plan,
+            "web_search_only",
+            "planner_classification",
+            "web_research_intent",
+            "Task text asks for current documentation, latest information, or web search.",
+        );
+        add_tool_group_with_reason(
+            &mut plan,
+            "web_fetch",
+            "planner_classification",
+            "web_research_intent",
+            "Task text asks for current documentation, latest information, or web fetch.",
+        );
+    }
+
+    let browser_task = contains_any(
         &lowered,
         &[
             "browser",
             "frontend",
             "ui",
-            "web",
             "playwright",
             "screenshot",
             "localhost",
-            "url",
-            "docs",
-            "documentation",
-            "internet",
-            "latest",
+            "http://",
+            "https://",
+            "click",
+            "type",
+            "navigate",
         ],
-    ) {
-        add_tool_group(&mut names, "web");
-        match options.browser_control_preference {
-            BrowserControlPreferenceDto::Default => add_tool_group(&mut names, "macos"),
-            BrowserControlPreferenceDto::InAppBrowser => {}
-            BrowserControlPreferenceDto::NativeBrowser => {
-                add_tool_group(&mut names, "macos");
-                if !contains_any(
-                    &lowered,
-                    &["in-app browser", "in app browser", "xero browser"],
-                ) {
-                    names.remove(AUTONOMOUS_TOOL_BROWSER);
-                    names.remove(AUTONOMOUS_TOOL_BROWSER_OBSERVE);
-                    names.remove(AUTONOMOUS_TOOL_BROWSER_CONTROL);
+    );
+    if browser_task
+        && (!docs_or_current_web
+            || contains_any(&lowered, &["localhost", "click", "type", "navigate"]))
+    {
+        let explicit_in_app_browser = contains_any(
+            &lowered,
+            &["in-app browser", "in app browser", "xero browser"],
+        );
+        if options.browser_control_preference == BrowserControlPreferenceDto::NativeBrowser
+            && !explicit_in_app_browser
+        {
+            add_tool_group_with_reason(
+                &mut plan,
+                "macos",
+                "planner_classification",
+                "native_browser_preference",
+                "Runtime browser-control preference selected native browser automation.",
+            );
+        } else {
+            add_tool_group_with_reason(
+                &mut plan,
+                "browser_observe",
+                "planner_classification",
+                "browser_observation_intent",
+                "Task text asks for local/browser UI inspection.",
+            );
+        }
+        if contains_any(
+            &lowered,
+            &[
+                "open ",
+                "navigate",
+                "click",
+                "type",
+                "press ",
+                "scroll",
+                "localhost",
+            ],
+        ) {
+            match options.browser_control_preference {
+                BrowserControlPreferenceDto::Default
+                | BrowserControlPreferenceDto::InAppBrowser => {
+                    add_tool_group_with_reason(
+                        &mut plan,
+                        "browser_control",
+                        "planner_classification",
+                        "browser_control_intent",
+                        "Task text requires browser navigation or interaction.",
+                    );
+                }
+                BrowserControlPreferenceDto::NativeBrowser => {
+                    add_tool_group_with_reason(
+                        &mut plan,
+                        "macos",
+                        "planner_classification",
+                        "native_browser_preference",
+                        "Runtime browser-control preference selected native browser automation.",
+                    );
                 }
             }
         }
@@ -1270,7 +1845,25 @@ pub(crate) fn select_tool_names_for_prompt(
             "invoke tool",
         ],
     ) {
-        add_tool_group(&mut names, "mcp");
+        add_tool_group_with_reason(
+            &mut plan,
+            "mcp_list",
+            "planner_classification",
+            "mcp_discovery_intent",
+            "Task text asks about MCP capabilities; listing is safe before invocation.",
+        );
+        if contains_any(
+            &lowered,
+            &["invoke tool", "call tool", "read resource", "get prompt"],
+        ) {
+            add_tool_group_with_reason(
+                &mut plan,
+                "mcp_invoke",
+                "planner_classification",
+                "mcp_invocation_intent",
+                "Task text explicitly asks to invoke or read a named MCP capability.",
+            );
+        }
     }
 
     if contains_any(
@@ -1285,7 +1878,13 @@ pub(crate) fn select_tool_names_for_prompt(
             "deferred tool",
         ],
     ) {
-        add_tool_group(&mut names, "agent_ops");
+        add_tool_group_with_reason(
+            &mut plan,
+            "agent_ops",
+            "planner_classification",
+            "agent_delegation_intent",
+            "Task text asks for subagent delegation or agent operations.",
+        );
     }
 
     if contains_any(
@@ -1300,11 +1899,23 @@ pub(crate) fn select_tool_names_for_prompt(
             "bundled skill",
         ],
     ) {
-        add_tool_group(&mut names, "skills");
+        add_tool_group_with_reason(
+            &mut plan,
+            "skills",
+            "planner_classification",
+            "skill_runtime_intent",
+            "Task text asks for skill discovery or skill execution.",
+        );
     }
 
     if contains_any(&lowered, &["notebook", "jupyter", ".ipynb", "cell"]) {
-        add_tool_group(&mut names, "notebook");
+        add_tool_group_with_reason(
+            &mut plan,
+            "notebook",
+            "planner_classification",
+            "notebook_edit_intent",
+            "Task text mentions notebook cell editing.",
+        );
     }
 
     if contains_any(
@@ -1319,11 +1930,23 @@ pub(crate) fn select_tool_names_for_prompt(
             "code-intelligence",
         ],
     ) {
-        add_tool_group(&mut names, "intelligence");
+        add_tool_group_with_reason(
+            &mut plan,
+            "intelligence",
+            "planner_classification",
+            "code_intelligence_intent",
+            "Task text asks for code symbols or diagnostics.",
+        );
     }
 
     if contains_any(&lowered, &["powershell", "pwsh", "windows shell"]) {
-        add_tool_group(&mut names, "powershell");
+        add_tool_group_with_reason(
+            &mut plan,
+            "powershell",
+            "planner_classification",
+            "powershell_intent",
+            "Task text explicitly asks for PowerShell.",
+        );
     }
 
     if contains_any(
@@ -1341,7 +1964,13 @@ pub(crate) fn select_tool_names_for_prompt(
             "swipe",
         ],
     ) {
-        add_tool_group(&mut names, "emulator");
+        add_tool_group_with_reason(
+            &mut plan,
+            "emulator",
+            "planner_classification",
+            "emulator_intent",
+            "Task text asks for mobile emulator or device automation.",
+        );
     }
 
     if contains_any(
@@ -1360,25 +1989,114 @@ pub(crate) fn select_tool_names_for_prompt(
             "jupiter",
         ],
     ) {
-        add_tool_group(&mut names, "solana");
+        add_tool_group_with_reason(
+            &mut plan,
+            "solana",
+            "planner_classification",
+            "solana_intent",
+            "Task text asks for Solana-specific runtime capabilities.",
+        );
     }
 
     let known_tools = tool_access_all_known_tools();
+    let mut names = plan.tool_names();
     names.retain(|name| {
-        known_tools.contains(name.as_str())
+        (options.skill_tool_enabled || name != AUTONOMOUS_TOOL_SKILL)
+            && known_tools.contains(name.as_str())
+            && tool_available_on_current_host(name)
             && tool_allowed_for_runtime_agent_with_policy(
                 options.runtime_agent_id,
                 name,
                 options.agent_tool_policy.as_ref(),
             )
     });
-    names
+    plan.retain_tools(&names);
+    plan
 }
 
-fn add_tool_group(names: &mut BTreeSet<String>, group: &str) {
-    if let Some(tools) = tool_access_group_tools(group) {
-        names.extend(tools.iter().map(|tool| (*tool).to_owned()));
+fn add_startup_surface(plan: &mut ToolExposurePlan, options: &ToolRegistryOptions) {
+    let startup_tools = [
+        AUTONOMOUS_TOOL_READ,
+        AUTONOMOUS_TOOL_SEARCH,
+        AUTONOMOUS_TOOL_FIND,
+        AUTONOMOUS_TOOL_GIT_STATUS,
+        AUTONOMOUS_TOOL_GIT_DIFF,
+        AUTONOMOUS_TOOL_TOOL_ACCESS,
+        AUTONOMOUS_TOOL_TOOL_SEARCH,
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+        AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+        AUTONOMOUS_TOOL_LIST,
+        AUTONOMOUS_TOOL_HASH,
+    ];
+    plan.add_tools(
+        startup_tools,
+        "startup_core",
+        "small_startup_surface",
+        "Small startup surface for file read/search/status, tool discovery, durable context reads, and workspace-index status.",
+    );
+    if options.runtime_agent_id == RuntimeAgentIdDto::Test {
+        plan.add_tool(
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
+            "startup_core",
+            "test_harness_runner",
+            "Test agent may export the deterministic machine-readable harness manifest.",
+        );
     }
+    if tool_allowed_for_runtime_agent_with_policy(
+        options.runtime_agent_id,
+        AUTONOMOUS_TOOL_TODO,
+        options.agent_tool_policy.as_ref(),
+    ) {
+        plan.add_tool(
+            AUTONOMOUS_TOOL_TODO,
+            "startup_core",
+            "todo_allowed_for_agent",
+            "Selected agent may use model-visible planning state.",
+        );
+    }
+}
+
+fn add_tool_group_with_reason(
+    plan: &mut ToolExposurePlan,
+    group: &str,
+    source: &str,
+    reason_code: &str,
+    detail: &str,
+) {
+    if let Some(tools) = tool_access_group_tools(group) {
+        plan.add_tools(tools.iter().copied(), source, reason_code, detail);
+    }
+}
+
+fn exposure_task_kind(lowered: &str, runtime_agent_id: RuntimeAgentIdDto) -> &'static str {
+    if runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
+        return "agent_definition";
+    }
+    if runtime_agent_id == RuntimeAgentIdDto::Crawl {
+        return "repository_recon";
+    }
+    if contains_any(lowered, &["docs", "documentation", "internet", "latest"]) {
+        return "web_research";
+    }
+    if contains_any(
+        lowered,
+        &[
+            "implement",
+            "fix",
+            "change",
+            "update",
+            "edit",
+            "write",
+            "add ",
+        ],
+    ) {
+        return "code_implementation";
+    }
+    if contains_any(lowered, &["debug", "diagnose", "investigate", "root cause"]) {
+        return "debugging";
+    }
+    "observe"
 }
 
 fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
@@ -1399,6 +2117,9 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             }
             line if line.starts_with("tool:hash ") => {
                 names.insert(AUTONOMOUS_TOOL_HASH.into());
+            }
+            line if line.starts_with("tool:harness_runner") => {
+                names.insert(AUTONOMOUS_TOOL_HARNESS_RUNNER.into());
             }
             line if line.starts_with("tool:write ") => {
                 names.insert(AUTONOMOUS_TOOL_WRITE.into());
@@ -1675,7 +2396,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, harness_runner, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -1690,6 +2411,26 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "reason",
                         string_schema("Brief reason the additional capability is needed."),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_HARNESS_RUNNER,
+            "Run deterministic Test-agent harness manifest checks and compare model-driven reports without relying only on final Markdown.",
+            object_schema(
+                &["action"],
+                &[
+                    (
+                        "action",
+                        enum_schema(
+                            "Harness runner action to execute.",
+                            &["manifest", "compare_report"],
+                        ),
+                    ),
+                    (
+                        "finalReport",
+                        string_schema("Draft or final Harness Test Report Markdown for action=compare_report."),
                     ),
                 ],
             ),
@@ -1969,7 +2710,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_TODO,
-            "Maintain model-visible planning state for the current owned-agent run.",
+            "Maintain model-visible planning state for the current owned-agent run, including Debug's structured evidence ledger mode.",
             object_schema(
                 &["action"],
                 &[
@@ -1989,6 +2730,32 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                             "Todo status for upsert.",
                             &["pending", "in_progress", "completed"],
                         ),
+                    ),
+                    (
+                        "mode",
+                        enum_schema(
+                            "Todo mode. Use debug_evidence only for Debug-agent evidence ledgers.",
+                            &["plan", "debug_evidence"],
+                        ),
+                    ),
+                    (
+                        "debugStage",
+                        enum_schema(
+                            "Required when mode=debug_evidence.",
+                            &[
+                                "symptom",
+                                "reproduction",
+                                "hypothesis",
+                                "experiment",
+                                "root_cause",
+                                "fix",
+                                "verification",
+                            ],
+                        ),
+                    ),
+                    (
+                        "evidence",
+                        string_schema("Concise evidence, command result, file reference, or falsification note for debug_evidence items."),
                     ),
                 ],
             ),
@@ -4013,6 +4780,14 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
             });
             continue;
         }
+        if line == "tool:harness_runner_manifest" || line == "tool:harness_runner" {
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-harness-runner-{}", calls.len() + 1),
+                tool_name: AUTONOMOUS_TOOL_HARNESS_RUNNER.into(),
+                input: json!({ "action": "manifest" }),
+            });
+            continue;
+        }
         if let Some(query) = line.strip_prefix("tool:project_context_search ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-project-context-{}", calls.len() + 1),
@@ -4342,7 +5117,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_compiler_adds_selected_soul_at_prompt_start() {
+    fn prompt_compiler_sorts_selected_soul_by_priority() {
         let root = tempfile::tempdir().expect("temp dir");
         let controls = runtime_controls_from_request(None);
         let registry = ToolRegistry::for_prompt(root.path(), "What is left to do?", &controls);
@@ -4360,10 +5135,12 @@ mod tests {
         .compile()
         .expect("compile prompt");
 
-        assert_eq!(compilation.fragments[0].id, "xero.soul");
+        assert_eq!(compilation.fragments[0].id, "xero.system_policy");
+        assert_eq!(compilation.fragments[1].id, "xero.runtime_metadata");
+        assert_eq!(compilation.fragments[2].id, "xero.soul");
         assert!(compilation
             .prompt
-            .starts_with("xero-owned-agent-v1\n\nSelected Soul: Steady steward"));
+            .starts_with("xero-owned-agent-v1\n\nYou are Xero's Ask agent."));
         assert!(compilation
             .prompt
             .contains("must stay inside Xero runtime policy"));
@@ -4401,6 +5178,43 @@ mod tests {
         assert!(!compilation
             .prompt
             .contains("command tool only after consent"));
+    }
+
+    #[test]
+    fn prompt_compiler_includes_runtime_metadata_for_every_agent_profile() {
+        let root = tempfile::tempdir().expect("temp dir");
+        for runtime_agent_id in [
+            RuntimeAgentIdDto::Ask,
+            RuntimeAgentIdDto::Engineer,
+            RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Crawl,
+            RuntimeAgentIdDto::AgentCreate,
+            RuntimeAgentIdDto::Test,
+        ] {
+            let compilation = PromptCompiler::new(
+                root.path(),
+                None,
+                None,
+                runtime_agent_id,
+                BrowserControlPreferenceDto::Default,
+                &[],
+            )
+            .compile()
+            .expect("compile prompt");
+            let metadata = compilation
+                .fragments
+                .iter()
+                .find(|fragment| fragment.id == "xero.runtime_metadata")
+                .expect("runtime metadata fragment");
+
+            assert_eq!(metadata.priority, 990);
+            assert_eq!(metadata.provenance, "xero-runtime:host");
+            assert!(metadata.body.contains("Current timestamp (UTC):"));
+            assert!(metadata.body.contains("Current date (UTC):"));
+            assert!(metadata.body.contains("Host operating system:"));
+            assert!(metadata.body.contains(std::env::consts::OS));
+            assert!(metadata.body.contains("OS-specific tools"));
+        }
     }
 
     #[test]
@@ -4445,7 +5259,7 @@ mod tests {
         assert!(compilation.prompt.contains("Available tools:"));
         assert!(compilation
             .prompt
-            .contains("Use `todo` for debugging hypotheses and verification checkpoints"));
+            .contains("Use `todo` with `mode=debug_evidence`"));
         assert!(!compilation.prompt.contains("Available observe-only tools:"));
     }
 
@@ -4537,11 +5351,13 @@ mod tests {
             .prompt
             .contains("Do not answer questions, implement user-requested changes"));
         assert!(compilation.prompt.contains("Canonical step order v1:"));
+        assert!(compilation.prompt.contains("`deterministic_runner`"));
         assert!(compilation.prompt.contains("`registry_discovery`"));
         assert!(compilation.prompt.contains("`scratch_mutation`"));
         assert!(compilation.prompt.contains("`cleanup_scratch`"));
         assert!(compilation.prompt.contains("skipped_with_reason"));
         assert!(compilation.prompt.contains("Available harness tools:"));
+        assert!(compilation.prompt.contains(AUTONOMOUS_TOOL_HARNESS_RUNNER));
         assert!(compilation.prompt.contains("# Harness Test Report"));
         assert!(compilation
             .prompt
@@ -4558,7 +5374,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_compiler_includes_nested_instruction_fragments_in_deterministic_order() {
+    fn prompt_compiler_defers_nested_instruction_fragments_without_path_scope() {
         let root = tempfile::tempdir().expect("temp dir");
         fs::create_dir_all(root.path().join("client/src")).expect("create nested dir");
         fs::write(root.path().join("AGENTS.md"), "Use repo root rules.\n")
@@ -4582,6 +5398,52 @@ mod tests {
             BrowserControlPreferenceDto::Default,
             &[],
         )
+        .compile()
+        .expect("compile prompt");
+        let instruction_ids = compilation
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.id.starts_with("project.instructions."))
+            .map(|fragment| fragment.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(instruction_ids, vec!["project.instructions.AGENTS.md"]);
+        assert!(!compilation
+            .prompt
+            .contains("--- BEGIN PROJECT INSTRUCTIONS: client/AGENTS.md ---"));
+        assert!(compilation.excluded_fragments.iter().any(|fragment| {
+            fragment.id == "project.instructions.client.AGENTS.md"
+                && fragment.reason
+                    == "nested_repository_instruction_deferred_until_path_scope_exists"
+        }));
+    }
+
+    #[test]
+    fn prompt_compiler_includes_nested_instruction_fragments_for_relevant_paths() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(root.path().join("client/src")).expect("create nested dir");
+        fs::write(root.path().join("AGENTS.md"), "Use repo root rules.\n")
+            .expect("write root instructions");
+        fs::write(
+            root.path().join("client").join("AGENTS.md"),
+            "Use client rules.\n",
+        )
+        .expect("write client instructions");
+        fs::write(
+            root.path().join("client/src").join("AGENTS.md"),
+            "Use source rules.\n",
+        )
+        .expect("write source instructions");
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Ask,
+            BrowserControlPreferenceDto::Default,
+            &[],
+        )
+        .with_relevant_paths(["client/src/main.rs"])
         .compile()
         .expect("compile prompt");
         let instruction_ids = compilation
@@ -4722,6 +5584,74 @@ mod tests {
         assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD));
         assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE));
         assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH));
+    }
+
+    #[test]
+    fn capability_planner_routes_latest_docs_to_search_and_fetch_without_browser_control() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "For this frontend change, check the latest docs before editing.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        assert!(names.contains(AUTONOMOUS_TOOL_WEB_SEARCH));
+        assert!(names.contains(AUTONOMOUS_TOOL_WEB_FETCH));
+        assert!(!names.contains(AUTONOMOUS_TOOL_BROWSER_CONTROL));
+        assert!(!names.contains(AUTONOMOUS_TOOL_MACOS_AUTOMATION));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_WEB_SEARCH
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "web_research_intent"
+                })
+        }));
+    }
+
+    #[test]
+    fn capability_planner_exposes_mutation_and_verification_without_general_commands() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(
+            root.path(),
+            "Implement phase 2 and run scoped tests.",
+            &controls,
+        );
+        let names = registry.descriptor_names();
+
+        assert!(names.contains(AUTONOMOUS_TOOL_PATCH));
+        assert!(names.contains(AUTONOMOUS_TOOL_WRITE));
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_PROBE));
+        assert!(names.contains(AUTONOMOUS_TOOL_COMMAND_VERIFY));
+        assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND_SESSION));
+        assert!(registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == AUTONOMOUS_TOOL_COMMAND_VERIFY
+                && entry.reasons.iter().any(|reason| {
+                    reason.source == "planner_classification"
+                        && reason.reason_code == "verification_expected"
+                })
+        }));
     }
 
     #[test]
