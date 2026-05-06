@@ -12,6 +12,8 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_003_AGENT_COORDINATION_SQL),
             M::up(MIGRATION_004_AGENT_MAILBOX_SQL),
             M::up_with_hook("", migrate_agent_trace_columns),
+            M::up_with_hook("", migrate_environment_lifecycle_schema),
+            M::up_with_hook("", migrate_agent_events_current_event_kinds),
         ])
     });
 
@@ -514,7 +516,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (short_label <> ''),
         CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
         CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
-        CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder'))
+        CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder', 'harness_test'))
     );
 
     CREATE TABLE IF NOT EXISTS agent_definition_versions (
@@ -561,7 +563,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
         ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
         ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
-        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
+        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z'),
+        ('test', 1, 'Test', 'Test', 'Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.', 'built_in', 'active', 'harness_test', '2026-05-01T00:00:00Z');
 
     INSERT OR IGNORE INTO agent_definition_versions (
         definition_id,
@@ -574,7 +577,8 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
-        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('test', 1, '{"schema":"xero.agent_definition.v1","id":"test","version":1,"displayName":"Test","shortLabel":"Test","description":"Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.","taskPurpose":"Trigger and report a deterministic internal harness validation run instead of fulfilling the user prompt as a normal task.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"harness_test","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"harness_test","toolPolicy":"harness_test","outputContract":"harness_test_report","workflowContract":"Use the built-in Xero harness runtime contract for this agent.","finalResponseContract":"Produce the built-in harness test report.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","plan","finding","verification","question","artifact","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1","xero.harness_test_report.v1"],"unstructuredScopes":["answer_note","session_summary","artifact_excerpt","troubleshooting_note"],"memoryCandidateKinds":["project_fact","decision","session_summary","troubleshooting"]}}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
 
     CREATE TABLE IF NOT EXISTS runtime_runs (
         project_id TEXT NOT NULL,
@@ -850,9 +854,9 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         run_id TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        provider_metadata_json TEXT,
         created_at TEXT NOT NULL,
         CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
-        CHECK (content <> ''),
         FOREIGN KEY (project_id, run_id)
             REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
     );
@@ -868,6 +872,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         CHECK (event_kind IN (
+            'run_started',
             'message_delta',
             'reasoning_summary',
             'tool_started',
@@ -882,7 +887,16 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             'state_transition',
             'plan_updated',
             'verification_gate',
+            'context_manifest_recorded',
+            'retrieval_performed',
+            'memory_candidate_captured',
+            'environment_lifecycle_update',
+            'sandbox_lifecycle_update',
             'action_required',
+            'approval_required',
+            'tool_permission_grant',
+            'provider_model_changed',
+            'runtime_settings_changed',
             'run_paused',
             'run_completed',
             'run_failed'
@@ -895,6 +909,74 @@ const BASELINE_SCHEMA_SQL: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_agent_events_project_run_id
         ON agent_events(project_id, run_id, id ASC);
+
+    CREATE TABLE IF NOT EXISTS agent_environment_lifecycle_snapshots (
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        environment_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        previous_state TEXT,
+        pending_message_count INTEGER NOT NULL DEFAULT 0 CHECK (pending_message_count >= 0),
+        health_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (health_checks_json <> '' AND json_valid(health_checks_json)),
+        setup_steps_json TEXT NOT NULL DEFAULT '[]' CHECK (setup_steps_json <> '' AND json_valid(setup_steps_json)),
+        diagnostic_json TEXT CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        snapshot_json TEXT NOT NULL CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id),
+        CHECK (environment_id <> ''),
+        CHECK (state IN (
+            'created',
+            'waiting_for_sandbox',
+            'preparing_repository',
+            'loading_project_instructions',
+            'running_setup_scripts',
+            'setting_up_hooks',
+            'setting_up_skills_plugins',
+            'indexing_workspace',
+            'starting_conversation',
+            'ready',
+            'failed',
+            'paused',
+            'archived'
+        )),
+        CHECK (
+            previous_state IS NULL OR previous_state IN (
+                'created',
+                'waiting_for_sandbox',
+                'preparing_repository',
+                'loading_project_instructions',
+                'running_setup_scripts',
+                'setting_up_hooks',
+                'setting_up_skills_plugins',
+                'indexing_workspace',
+                'starting_conversation',
+                'ready',
+                'failed',
+                'paused',
+                'archived'
+            )
+        ),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_environment_pending_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        submitted_at TEXT NOT NULL,
+        delivered_at TEXT,
+        CHECK (role IN ('user')),
+        CHECK (content <> ''),
+        CHECK (delivered_at IS NULL OR delivered_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_environment_pending_messages_run
+        ON agent_environment_pending_messages(project_id, run_id, delivered_at, id ASC);
 
     CREATE TABLE IF NOT EXISTS agent_tool_calls (
         project_id TEXT NOT NULL,
@@ -1689,12 +1771,221 @@ fn migrate_agent_trace_columns(transaction: &Transaction<'_>) -> rusqlite_migrat
     Ok(())
 }
 
+fn migrate_environment_lifecycle_schema(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    transaction.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_environment_lifecycle_snapshots (
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            environment_id TEXT NOT NULL,
+            state TEXT NOT NULL,
+            previous_state TEXT,
+            pending_message_count INTEGER NOT NULL DEFAULT 0 CHECK (pending_message_count >= 0),
+            health_checks_json TEXT NOT NULL DEFAULT '[]' CHECK (health_checks_json <> '' AND json_valid(health_checks_json)),
+            setup_steps_json TEXT NOT NULL DEFAULT '[]' CHECK (setup_steps_json <> '' AND json_valid(setup_steps_json)),
+            diagnostic_json TEXT CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+            snapshot_json TEXT NOT NULL CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, run_id),
+            CHECK (environment_id <> ''),
+            CHECK (state IN (
+                'created',
+                'waiting_for_sandbox',
+                'preparing_repository',
+                'loading_project_instructions',
+                'running_setup_scripts',
+                'setting_up_hooks',
+                'setting_up_skills_plugins',
+                'indexing_workspace',
+                'starting_conversation',
+                'ready',
+                'failed',
+                'paused',
+                'archived'
+            )),
+            CHECK (
+                previous_state IS NULL OR previous_state IN (
+                    'created',
+                    'waiting_for_sandbox',
+                    'preparing_repository',
+                    'loading_project_instructions',
+                    'running_setup_scripts',
+                    'setting_up_hooks',
+                    'setting_up_skills_plugins',
+                    'indexing_workspace',
+                    'starting_conversation',
+                    'ready',
+                    'failed',
+                    'paused',
+                    'archived'
+                )
+            ),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_environment_pending_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            submitted_at TEXT NOT NULL,
+            delivered_at TEXT,
+            CHECK (role IN ('user')),
+            CHECK (content <> ''),
+            CHECK (delivered_at IS NULL OR delivered_at <> ''),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_environment_pending_messages_run
+            ON agent_environment_pending_messages(project_id, run_id, delivered_at, id ASC);
+        "#,
+    )?;
+
+    if table_exists(transaction, "agent_events")?
+        && !agent_events_supports_current_event_kinds(transaction)?
+    {
+        rebuild_agent_events_with_current_event_kind_constraint(
+            transaction,
+            "agent_events_before_environment_lifecycle",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn migrate_agent_events_current_event_kinds(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    if table_exists(transaction, "agent_events")?
+        && !agent_events_supports_current_event_kinds(transaction)?
+    {
+        rebuild_agent_events_with_current_event_kind_constraint(
+            transaction,
+            "agent_events_before_current_event_kinds",
+        )?;
+    }
+
+    Ok(())
+}
+
 fn table_exists(transaction: &Transaction<'_>, table: &str) -> rusqlite::Result<bool> {
     transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
         [table],
         |row| row.get::<_, bool>(0),
     )
+}
+
+fn agent_events_supports_current_event_kinds(
+    transaction: &Transaction<'_>,
+) -> rusqlite::Result<bool> {
+    let sql = transaction.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_events'",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(CURRENT_AGENT_EVENT_KIND_SQL_VALUES
+        .iter()
+        .all(|kind| sql.contains(&format!("'{kind}'"))))
+}
+
+const CURRENT_AGENT_EVENT_KIND_SQL_VALUES: &[&str] = &[
+    "run_started",
+    "message_delta",
+    "reasoning_summary",
+    "tool_started",
+    "tool_delta",
+    "tool_completed",
+    "file_changed",
+    "command_output",
+    "validation_started",
+    "validation_completed",
+    "tool_registry_snapshot",
+    "policy_decision",
+    "state_transition",
+    "plan_updated",
+    "verification_gate",
+    "context_manifest_recorded",
+    "retrieval_performed",
+    "memory_candidate_captured",
+    "environment_lifecycle_update",
+    "sandbox_lifecycle_update",
+    "action_required",
+    "approval_required",
+    "tool_permission_grant",
+    "provider_model_changed",
+    "runtime_settings_changed",
+    "run_paused",
+    "run_completed",
+    "run_failed",
+];
+
+fn rebuild_agent_events_with_current_event_kind_constraint(
+    transaction: &Transaction<'_>,
+    backup_table: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute_batch(&format!(
+        r#"
+        ALTER TABLE agent_events RENAME TO {backup_table};
+
+        CREATE TABLE agent_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            CHECK (event_kind IN (
+                'run_started',
+                'message_delta',
+                'reasoning_summary',
+                'tool_started',
+                'tool_delta',
+                'tool_completed',
+                'file_changed',
+                'command_output',
+                'validation_started',
+                'validation_completed',
+                'tool_registry_snapshot',
+                'policy_decision',
+                'state_transition',
+                'plan_updated',
+                'verification_gate',
+                'context_manifest_recorded',
+                'retrieval_performed',
+                'memory_candidate_captured',
+                'environment_lifecycle_update',
+                'sandbox_lifecycle_update',
+                'action_required',
+                'approval_required',
+                'tool_permission_grant',
+                'provider_model_changed',
+                'runtime_settings_changed',
+                'run_paused',
+                'run_completed',
+                'run_failed'
+            )),
+            CHECK (payload_json <> ''),
+            CHECK (json_valid(payload_json)),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        INSERT INTO agent_events (id, project_id, run_id, event_kind, payload_json, created_at)
+        SELECT id, project_id, run_id, event_kind, payload_json, created_at
+        FROM {backup_table};
+
+        DROP TABLE {backup_table};
+
+        CREATE INDEX IF NOT EXISTS idx_agent_events_project_run_id
+            ON agent_events(project_id, run_id, id ASC);
+        "#
+    ))
 }
 
 fn add_column_if_missing(
@@ -1778,6 +2069,100 @@ mod tests {
     }
 
     #[test]
+    fn event_kind_repair_migration_updates_already_migrated_agent_events_tables() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE agent_runs (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    PRIMARY KEY (project_id, run_id)
+                );
+
+                CREATE TABLE agent_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    event_kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    CHECK (event_kind IN (
+                        'message_delta',
+                        'reasoning_summary',
+                        'tool_started',
+                        'tool_delta',
+                        'tool_completed',
+                        'file_changed',
+                        'command_output',
+                        'validation_started',
+                        'validation_completed',
+                        'tool_registry_snapshot',
+                        'policy_decision',
+                        'state_transition',
+                        'plan_updated',
+                        'verification_gate',
+                        'environment_lifecycle_update',
+                        'action_required',
+                        'run_paused',
+                        'run_completed',
+                        'run_failed'
+                    )),
+                    CHECK (payload_json <> ''),
+                    CHECK (json_valid(payload_json)),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO agent_runs (project_id, run_id)
+                VALUES ('project-1', 'run-1');
+
+                INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                VALUES ('project-1', 'run-1', 'message_delta', '{}', '2026-05-05T16:32:47Z');
+                "#,
+            )
+            .expect("create old constrained schema");
+
+        let transaction = connection.transaction().expect("start transaction");
+        migrate_agent_events_current_event_kinds(&transaction).expect("repair event kinds");
+        transaction.commit().expect("commit repair");
+
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "project-1",
+                    "run-1",
+                    "run_started",
+                    "{}",
+                    "2026-05-05T16:32:48Z"
+                ],
+            )
+            .expect("insert run_started after repair");
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "project-1",
+                    "run-1",
+                    "context_manifest_recorded",
+                    "{}",
+                    "2026-05-05T16:32:49Z"
+                ],
+            )
+            .expect("insert context_manifest_recorded after repair");
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM agent_events", [], |row| row.get(0))
+            .expect("count events");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
     fn baseline_contains_current_project_tables() {
         let connection = migrate_to_latest_in_memory();
         let tables = collect_strings(
@@ -1804,6 +2189,8 @@ mod tests {
                 "agent_definition_versions",
                 "agent_definitions",
                 "agent_embedding_backfill_jobs",
+                "agent_environment_lifecycle_snapshots",
+                "agent_environment_pending_messages",
                 "agent_events",
                 "agent_file_changes",
                 "agent_file_reservations",
@@ -1867,6 +2254,146 @@ mod tests {
         assert!(
             tables.is_empty(),
             "deprecated workflow/autonomous-unit/memory tables should not exist in the fresh baseline: {tables:?}"
+        );
+    }
+
+    #[test]
+    fn baseline_seeds_test_agent_definition_registry_entry() {
+        let connection = migrate_to_latest_in_memory();
+        let built_ins = {
+            let mut statement = connection
+                .prepare(
+                    r#"
+                    SELECT
+                        definition_id,
+                        current_version,
+                        display_name,
+                        short_label,
+                        scope,
+                        lifecycle_state,
+                        base_capability_profile
+                    FROM agent_definitions
+                    WHERE scope = 'built_in'
+                    ORDER BY definition_id
+                    "#,
+                )
+                .expect("prepare built-in definitions query");
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .expect("query built-in definitions");
+            rows.collect::<Result<Vec<_>, _>>()
+                .expect("collect built-in definitions")
+        };
+
+        assert_eq!(
+            built_ins,
+            vec![
+                (
+                    "agent_create".into(),
+                    1,
+                    "Agent Create".into(),
+                    "Create".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "agent_builder".into(),
+                ),
+                (
+                    "ask".into(),
+                    1,
+                    "Ask".into(),
+                    "Ask".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "observe_only".into(),
+                ),
+                (
+                    "debug".into(),
+                    1,
+                    "Debug".into(),
+                    "Debug".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "debugging".into(),
+                ),
+                (
+                    "engineer".into(),
+                    1,
+                    "Engineer".into(),
+                    "Build".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "engineering".into(),
+                ),
+                (
+                    "test".into(),
+                    1,
+                    "Test".into(),
+                    "Test".into(),
+                    "built_in".into(),
+                    "active".into(),
+                    "harness_test".into(),
+                ),
+            ],
+            "fresh project databases should seed every built-in agent definition"
+        );
+
+        let test_snapshot = connection
+            .query_row(
+                r#"
+                SELECT
+                    json_extract(snapshot_json, '$.id'),
+                    json_extract(snapshot_json, '$.displayName'),
+                    json_extract(snapshot_json, '$.scope'),
+                    json_extract(snapshot_json, '$.baseCapabilityProfile'),
+                    json_extract(snapshot_json, '$.defaultApprovalMode'),
+                    json_extract(snapshot_json, '$.promptPolicy'),
+                    json_extract(snapshot_json, '$.toolPolicy'),
+                    json_extract(snapshot_json, '$.outputContract'),
+                    json_extract(validation_report_json, '$.source')
+                FROM agent_definition_versions
+                WHERE definition_id = 'test'
+                  AND version = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .expect("load test agent definition version snapshot");
+
+        assert_eq!(
+            test_snapshot,
+            (
+                "test".into(),
+                "Test".into(),
+                "built_in".into(),
+                "harness_test".into(),
+                "suggest".into(),
+                "harness_test".into(),
+                "harness_test".into(),
+                "harness_test_report".into(),
+                "seed".into(),
+            )
         );
     }
 

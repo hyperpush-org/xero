@@ -1,8 +1,24 @@
 use super::*;
 use crate::runtime::AutonomousSubagentWriteScope;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 const MAX_AUTOMATIC_MEMORY_CANDIDATES: u8 = 8;
 const MIN_AUTOMATIC_MEMORY_CONFIDENCE: u8 = 50;
+const REPO_FINGERPRINT_CACHE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
+struct RepoFingerprintCacheEntry {
+    value: JsonValue,
+    cached_at: Instant,
+}
+
+static REPO_FINGERPRINT_CACHE: OnceLock<Mutex<HashMap<PathBuf, RepoFingerprintCacheEntry>>> =
+    OnceLock::new();
 
 pub(crate) fn append_message(
     repo_root: &Path,
@@ -234,6 +250,12 @@ fn coordination_activity_for_event(
                 "verification_completed",
                 format!("Verification `{label}` {outcome}."),
             ))
+        }
+        AgentRunEventKind::EnvironmentLifecycleUpdate => {
+            let state = payload_text(payload, "state").unwrap_or_else(|| "starting".into());
+            let detail = payload_text(payload, "detail")
+                .unwrap_or_else(|| format!("Environment lifecycle: {state}."));
+            Some(("environment_lifecycle", detail))
         }
         AgentRunEventKind::StateTransition => {
             let to = payload_text(payload, "to").unwrap_or_else(|| "runtime".into());
@@ -1343,6 +1365,17 @@ fn agent_memory_kind_from_provider(value: &str) -> Option<project_store::AgentMe
 }
 
 pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
+    let started = Instant::now();
+    let fingerprint = cached_repo_fingerprint(repo_root, || build_repo_fingerprint(repo_root));
+    eprintln!(
+        "[runtime-latency] repo_fingerprint repo_root={} duration_ms={}",
+        repo_root.display(),
+        started.elapsed().as_millis()
+    );
+    fingerprint
+}
+
+fn build_repo_fingerprint(repo_root: &Path) -> JsonValue {
     match git2::Repository::discover(repo_root) {
         Ok(repository) => {
             let head = repository
@@ -1362,6 +1395,32 @@ pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
         }
         Err(_) => json!({ "kind": "filesystem" }),
     }
+}
+
+fn cached_repo_fingerprint(repo_root: &Path, build: impl FnOnce() -> JsonValue) -> JsonValue {
+    let key = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let cache = REPO_FINGERPRINT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.get(&key) {
+            if entry.cached_at.elapsed() <= REPO_FINGERPRINT_CACHE_TTL {
+                return entry.value.clone();
+            }
+        }
+    }
+
+    let value = build();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            key,
+            RepoFingerprintCacheEntry {
+                value: value.clone(),
+                cached_at: Instant::now(),
+            },
+        );
+    }
+    value
 }
 
 pub(crate) fn record_file_change_event(
@@ -1696,6 +1755,8 @@ pub(crate) fn record_command_output_event(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
     output: &AutonomousToolOutput,
 ) -> CommandResult<()> {
     match output {
@@ -1707,6 +1768,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "argv": argv.clone(),
                     "cwd": output.cwd.clone(),
                     "stdout": output.stdout.clone(),
@@ -1719,6 +1782,7 @@ pub(crate) fn record_command_output_event(
                     "timedOut": output.timed_out,
                     "spawned": output.spawned,
                     "policy": output.policy.clone(),
+                    "sandbox": output.sandbox.clone(),
                 }),
             )?;
 
@@ -1742,6 +1806,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.operation.clone(),
                     "sessionId": output.session_id.clone(),
                     "argv": argv.clone(),
@@ -1752,6 +1818,7 @@ pub(crate) fn record_command_output_event(
                     "chunks": output.chunks.clone(),
                     "nextSequence": output.next_sequence,
                     "policy": output.policy.clone(),
+                    "sandbox": output.sandbox.clone(),
                 }),
             )?;
 
@@ -1776,6 +1843,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "processId": output.process_id.clone(),
                     "spawned": output.spawned,
@@ -1817,6 +1886,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "performed": output.performed,
                     "platformSupported": output.platform_supported,
@@ -1841,6 +1912,8 @@ pub(crate) fn record_command_output_event(
                 run_id,
                 AgentRunEventKind::CommandOutput,
                 json!({
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_name,
                     "operation": output.action.clone(),
                     "performed": output.performed,
                     "platformSupported": output.platform_supported,
@@ -1860,6 +1933,32 @@ pub(crate) fn record_command_output_event(
     }
 
     Ok(())
+}
+
+pub(crate) fn record_command_output_chunk_event(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    chunk: &AutonomousCommandOutputChunk,
+) -> CommandResult<()> {
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::CommandOutput,
+        json!({
+            "toolCallId": tool_call_id,
+            "toolName": tool_name,
+            "stream": chunk.stream.clone(),
+            "text": chunk.text.clone(),
+            "truncated": chunk.truncated,
+            "redacted": chunk.redacted,
+            "partial": true,
+        }),
+    )
+    .map(|_| ())
 }
 
 fn record_system_diagnostics_action_required(

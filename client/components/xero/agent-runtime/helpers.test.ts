@@ -187,6 +187,7 @@ function makeToolItem(overrides: Partial<RuntimeStreamToolItemView> = {}): Runti
     toolState: 'succeeded',
     detail: null,
     toolSummary: null,
+    toolResultPreview: null,
     ...overrides,
   }
 }
@@ -333,6 +334,15 @@ describe('agent-runtime helpers', () => {
         }),
       ),
     ).toBe('list client/components/xero')
+
+    expect(
+      getToolCardTitle(
+        makeToolItem({
+          toolName: 'project_context',
+          detail: 'action: retrieval, queryId: query-1, resultCount: 2',
+        }),
+      ),
+    ).toBe('project context retrieval')
   })
 
   it('uses generic blocked copy when no credentials are configured for the chosen provider', () => {

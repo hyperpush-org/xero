@@ -1,212 +1,312 @@
-# Agent Harness Benchmarking Research And Plan
+# Agent Harness Benchmarking Implementation Plan
 
 Reader: an internal Xero engineer or evaluation owner.
 
-Post-read action: implement a benchmark path that can compare Xero's owned agent harness against other agent harnesses with reproducible, defensible results.
+Post-read action: implement a reproducible benchmark path that compares Xero's owned-agent harness against OpenCode, ForgeCode, and other coding harnesses under the same model, task set, limits, and scoring rules.
 
-Last researched: 2026-05-01.
+Last researched: 2026-05-05.
 
-## Short Answer
+## Decision
 
-There is no single universally agreed benchmark for "agent harnesses." The agreement is emerging around a testing pattern:
+Use Harbor plus Terminal-Bench 2.0 as the first external benchmark integration. It is the best fit for Xero because it evaluates agents in terminal-oriented, sandboxed tasks and records verifier output, trajectories, and job artifacts. Use SWE-bench next when the question is patch quality on real software issues. Keep the existing Xero quality eval suite as a fast preflight, but do not treat it as public benchmark evidence.
 
-1. Freeze the task set.
-2. Run each agent in the same sandboxed environment.
-3. Let the agent act through its real tools.
-4. Grade the final state with objective tests or a tightly specified verifier.
-5. Publish enough metadata, trajectories, patches, logs, costs, and configuration to make the number interpretable.
+The benchmark claim must always separate two modes:
 
-For Xero, the strongest benchmark stack is:
+- Fixed-model harness comparison: Xero, OpenCode, ForgeCode, and other baselines run the same model, benchmark version, task ids, time limit, cost limit, provider endpoint, and attempt count.
+- Product-mode comparison: each harness runs its recommended setup. This is useful for positioning, but it is not an apples-to-apples harness comparison.
 
-- Use SWE-Bench Pro or the current SWE-bench family for software issue resolution credibility.
-- Use Terminal-Bench for terminal-native, end-to-end harness behavior.
-- Use a private Xero-shaped eval set for product-relevant regressions that public leaderboards do not measure.
-- Add OSWorld or WebArena only if Xero wants to make claims about general desktop or browser-control performance.
+For the first milestone, optimize for a small honest run over leaderboard ambition: 5 to 10 Terminal-Bench tasks, 5 to 10 SWE-style tasks, the same model for every harness, full artifacts, and a report that explains every failure category.
 
-The key comparison rule is simple: to compare harnesses, hold the model fixed. To compare models, hold the harness fixed. Scores that change both at once are product demos, not clean benchmark evidence.
+## Current External Ground Truth
 
-## What Public Benchmarks Measure
+Harbor is the official runner for Terminal-Bench 2.0. The current Harbor docs show Terminal-Bench runs through the published dataset package and custom agents through an importable agent class. Harbor also stores run output as jobs with per-trial config, result, trajectory, and verifier artifacts.
 
-SWE-bench established the most common coding-agent evaluation shape: given a real GitHub issue and repository snapshot, produce a patch that resolves the issue. The official evaluation applies generated patches in Docker and reports resolved instances, completion, logs, and resolution rate. SWE-bench's evaluation guide expects JSONL predictions with `instance_id`, `model_name_or_path`, and `model_patch`, then runs the Dockerized harness over the predictions.
+Harbor's public docs list built-in integrations such as Terminus-2, Claude Code, Codex CLI, Gemini CLI, OpenHands, and Mini-SWE-Agent. The Harbor repository's own agent guidance also lists additional installed agents, including OpenCode, Aider, SWE-agent, Cursor CLI, and others. Treat the exact installed-agent list as versioned toolchain state: discover it with `harbor run --help` during preflight and record the result in every benchmark manifest.
 
-SWE-bench Verified was the public benchmark most often cited in model and harness comparisons. It is still historically useful and the SWE-bench site describes it as a 500-instance human-validated subset. However, as of February 23, 2026, OpenAI says SWE-bench Verified is increasingly contaminated and recommends SWE-bench Pro for frontier coding capability claims. That matters for Xero: Verified can be used for continuity with older posts, but it should not be the headline benchmark for a new serious claim.
+The Harbor examples currently appear in two dataset naming styles: `terminal-bench/terminal-bench-2` in the hosted docs, and `terminal-bench@2.0` in some repository guidance and third-party examples. Xero's benchmark runner should support a configurable dataset id and store the resolved dataset package/version in the run manifest instead of hardcoding one spelling everywhere.
 
-SWE-Bench Pro is designed to answer the next problem: longer-horizon, less contaminated, more industrial coding tasks. Its public description emphasizes Docker-based environments, fail-to-pass tests for issue resolution, pass-to-pass tests for regression prevention, human-augmented task specs, and a primary Resolve Rate metric. It also publishes trajectories, which is important for inspecting whether a harness solved tasks cleanly or accidentally got lucky.
+SWE-bench's official evaluator expects patch predictions and grades them in Docker. For Xero, SWE-bench support should be a patch-export adapter around the same headless run contract used by Harbor, not a separate agent implementation.
 
-Terminal-Bench is the closest public match for comparing agent harness mechanics. It is explicitly a benchmark for AI agents in real terminal environments. Each task includes an English instruction, a sandbox, a test script, and an oracle solution. The harness connects a model or agent to a sandboxed terminal, records logs and terminal sessions, then validates the final state. This is valuable for Xero because terminal benchmarks stress tool orchestration, file operations, command execution, retries, and verification behavior rather than only final patch format.
+OpenCode has first-class CLI and non-interactive modes, including `opencode run`, headless server/web modes, and an ACP server mode. Prefer Harbor's built-in OpenCode integration when available; otherwise wrap the official non-interactive CLI.
 
-Multi-language coding benchmarks matter because Xero itself is not a Python-only product. Multi-SWE-bench covers Java, TypeScript, JavaScript, Go, Rust, C, and C++, while SWE-PolyBench covers repository-level tasks in Java, JavaScript, TypeScript, and Python. These are better signals for Xero's Rust, TypeScript, and desktop-app work than Python-only issue resolution alone.
+ForgeCode is a CLI-based coding harness with Zsh-oriented interactive usage, config isolation through `FORGE_CONFIG`, MCP support, custom agents, and stdin prompting. Because ForgeCode is not guaranteed to be a built-in Harbor agent in the current Harbor docs, treat ForgeCode support as an installed-agent wrapper that must pass a smoke test before it is included in comparisons.
 
-WebArena and OSWorld are useful if Xero wants to compare browser or general computer-control behavior. WebArena evaluates agents on reproducible web tasks across realistic sites. OSWorld evaluates multimodal agents in real computer environments with setup and execution-based evaluation scripts. They are broader than Xero's immediate owned-agent harness question, so they should be second-wave benchmarks unless desktop/browser autonomy becomes the benchmark claim.
+## What Xero Must Build
 
-tau-bench and GAIA are less direct matches. tau-bench is useful for multi-turn tool-agent-user policy adherence in simulated service domains. GAIA is useful for general assistant research and tool use. They can inspire metrics and reliability methodology, but they are not the first benchmark to run for a coding harness.
+The benchmark system has four parts.
 
-## What Counts As The Harness
+The first part is a headless Xero agent runner. It must drive the same owned-agent runtime as the desktop app without opening a Tauri window, without adding temporary UI, and without falling back to fake-provider behavior except in explicit fixture tests. It should import or materialize a project, apply selected provider/model controls, run the agent against an instruction, enforce limits, persist events in app-data state, export the final artifact, and return a process exit code that benchmark runners can trust.
 
-When comparing Xero against another harness, the benchmark subject is not just the model. For Xero, "harness" should mean the owned-agent runtime around the model:
+The second part is a normalized artifact contract. Every run should emit a manifest, a trajectory, a redacted support bundle, final workspace metadata, and benchmark-specific outputs such as a patch or Harbor ATIF trajectory. The existing `xero_harness_evals` quality gate can remain the fast static preflight, but external benchmark runs need richer per-task artifacts and comparable metrics.
 
-- System prompt and runtime-agent contract.
-- Context assembly, compaction, memory, and instruction-file handling.
-- Tool descriptors, tool selection, and tool validation.
-- Filesystem, command, git, browser, emulator, Solana, MCP, and skill tool policies.
-- Approval and continuation gates.
-- Verification and completion gates.
-- Rollback/checkpoint behavior.
-- Persistence, transcript export, usage tracking, and redaction.
+The third part is the Harbor adapter. Xero should expose a Python installed-agent adapter that Harbor can import with `--agent-import-path`. The adapter installs or locates the Xero headless command in the task container, prepares an isolated app-data directory for the trial, forwards the task instruction and model settings to Xero, lets Xero act inside the benchmark workspace, and attaches Xero's manifest and trajectory back to the Harbor context.
 
-Xero already has an internal production harness eval suite that checks tool exposure, descriptor validation, plan gates, verification gates, rollback coverage, and fixture coverage. Keep that suite as a regression gate. It is not enough for public comparison because it does not run real model trajectories over public benchmark tasks.
+The fourth part is the competitor registry. It should describe how to run Xero, OpenCode, ForgeCode, and other baselines with the same benchmark, model, limits, environment variables, and artifact collection. Competitors that Harbor already supports should use Harbor's built-in `--agent` integration. Competitors that Harbor does not support should use the same installed-agent adapter shape as Xero.
 
-## Benchmarking Protocol
+## Command Contract
 
-Use two run modes.
+The exact Harbor flags should come from the installed Harbor version's help output, but Xero should support these command shapes:
 
-Mode 1: fixed-model harness comparison.
+- Xero on Terminal-Bench through Harbor: `harbor run -d <terminal-bench-dataset> -m <model> --agent-import-path <xero-agent-adapter>`.
+- OpenCode on Terminal-Bench through Harbor: `harbor run -d <terminal-bench-dataset> -m <model> -a opencode`, when the installed Harbor version lists `opencode`.
+- ForgeCode on Terminal-Bench through Harbor: `harbor run -d <terminal-bench-dataset> -m <model> --agent-import-path <forge-agent-adapter>`, until ForgeCode is available as a verified built-in agent.
+- Xero on SWE-style tasks: run the Xero headless benchmark command to produce `predictions.jsonl`, then run `python3 -m swebench.harness.run_evaluation` with the selected dataset and run id.
 
-Run Xero, OpenHands, SWE-agent or mini-SWE-agent, and any other target harness with the same model, provider, temperature or reasoning settings, context limit, max turns, max wall time, max cost, and benchmark split. This is the clean answer to "is Xero's harness better?"
+The implementation should not bake these examples into code. It should store dataset id, agent adapter, model, attempts, concurrency, and environment as configuration so the same runner can reproduce an old run even after Harbor changes aliases or defaults.
 
-Mode 2: product-mode comparison.
+## Run Manifest
 
-Run Xero with its best supported provider setup and compare against public product leaderboard numbers. This is useful for marketing or product positioning, but the report must say it is not an apples-to-apples harness comparison unless the model and settings match.
+Every benchmark attempt must record:
 
-Every run should produce a manifest with:
+- Run identity: run id, task id, attempt index, benchmark name, dataset id, dataset version or digest, task selection rule, and run date.
+- Harness identity: harness name, harness version, adapter version, source revision, prompt bundle version, tool policy version, and whether it is fixed-model or product mode.
+- Model identity: provider, model id, endpoint class, temperature, reasoning effort, context budget, max output tokens, seed when available, and provider account class.
+- Execution limits: wall time, max turns, max tool calls, max command calls, max cost, approval mode, sandbox profile, network policy, and retry policy.
+- Environment: local Docker, Daytona, Modal, or another environment; image digest; OS and architecture; installed CLI versions; relevant env vars by name only; and whether secrets were redacted.
+- Results: status, verifier status, score or reward, resolved flag, failure category, cost, token counts, wall time, command count, tool-call count, patch stats, and final artifact references.
+- Evidence: Xero trajectory, Harbor trajectory, terminal recording if available, final diff, verifier logs, redaction summary, and support-bundle pointer.
 
-- Benchmark name, version, split, and task ids.
-- Harness name, git revision, prompt bundle version, tool policy version, and adapter version.
-- Model, provider, endpoint class, temperature, reasoning effort, seed if available, context budget, and tool budget.
-- Sandbox image digest or environment hash.
-- Time limit, max turns, retry policy, and approval mode.
-- Per-task cost, tokens, wall time, number of tool calls, number of command calls, and final status.
-- Final patch or final-state artifact, full redacted trajectory, verifier output, and failure category.
+No benchmark report should publish a success rate without the manifest fields above. Scores without benchmark version, model version, and harness version are not useful evidence.
 
-The primary metrics should be:
+## Metrics
 
-- Resolve rate or task success rate.
-- Pass@1 for deterministic or single-attempt runs.
-- pass^k or repeated-trial success for stochastic agents when cost allows.
-- Completion rate, timeout rate, crash rate, and invalid-output rate.
-- Mean and p95 cost per task.
-- Mean and p95 wall time per task.
+Primary metrics:
+
+- Task success rate or resolve rate.
+- Pass@1 for single-attempt runs.
+- pass^k or repeated-trial success when running multiple attempts.
+- Wilson or bootstrap confidence interval for success rate.
+- Mean and p95 wall time.
+- Mean and p95 cost.
+- Mean and p95 token usage.
+
+Secondary metrics:
+
+- Completion, timeout, crash, and invalid-output rates.
 - Tool-call validity rate.
 - Verification-evidence rate.
+- Approval/manual-intervention count.
+- Patch size, edited-file count, and unnecessary-change rate.
 - Regression rate for tasks with pass-to-pass tests.
-- Manual intervention or approval count.
-- Safety and policy violation count.
-- Patch size, file count, and unnecessary-change rate.
+- Failure category distribution.
 
-Do not publish a single score without the model, benchmark version, harness version, and run mode. For agent harnesses, the scaffold often contributes as much as the model.
+Failure categories should include setup failure, provider/auth failure, harness crash, timeout, budget exhausted, policy blocked, invalid output, verifier failed, flaky verifier, and benchmark infrastructure failure.
 
-## Implementation Plan
+## Phase 0: Baseline And Preflight
 
-### Phase 0: Establish A Local Baseline
+Keep the existing Xero quality eval suite as the zero-cost preflight. Extend its output only enough to share the benchmark manifest vocabulary: suite id, fixture id, harness revision, tool policy version, metrics, failures, and artifact paths.
 
-Keep the existing internal harness eval suite as a fast preflight. Extend its report shape only if needed so it can emit the same run-manifest concepts as external benchmarks: suite id, fixture id, tool policy version, metrics, failures, and markdown/JSON output.
+Add an external benchmark preflight command that checks:
 
-Success condition: a focused test can prove Xero's tool descriptors, gates, rollback expectations, and verification expectations before any paid benchmark run starts.
+- Harbor is installed and can run the Terminal-Bench oracle or a tiny sample task.
+- Docker or the selected cloud sandbox provider is available.
+- `python3` can run the SWE-bench evaluator when SWE-style tasks are selected.
+- The selected model provider credentials are present without printing secrets.
+- The requested competitor CLIs are installed or can be installed in the benchmark container.
+- The configured dataset id resolves.
+- Xero can create a fresh app-data directory for the run.
 
-### Phase 1: Build A Headless Eval Runner
+Exit criteria:
 
-Add a headless evaluation entry point for owned-agent runs. Do not add temporary UI. The runner should be usable from tests or CLI automation and should drive the same owned-agent runtime that the desktop app uses.
+- A maintainer can run a local preflight before spending model tokens.
+- The preflight prints exact versions for Harbor, Docker, Xero, OpenCode, ForgeCode when present, and the selected provider/model route.
+- No benchmark path writes new state to the legacy repo-local `.xero` directory.
 
-The runner needs to:
+## Phase 1: Headless Xero Runner
 
-- Create an isolated project sandbox from a benchmark task.
-- Start an owned-agent run with a provided prompt, provider profile, model, tool policy, and limits.
-- Stream and persist the trajectory.
-- Stop cleanly on completion, timeout, budget exhaustion, crash, or policy block.
-- Export a normalized run artifact.
-- Redact secrets before writing shareable logs.
+Build a headless benchmark command around the real owned-agent runtime. It should be usable by Harbor, SWE-style adapters, CI, and local smoke tests.
 
-Success condition: one local synthetic task can run end-to-end through Xero's owned-agent harness and produce a stable manifest plus trajectory artifact.
+Required behavior:
 
-### Phase 2: Add A SWE-style Patch Adapter
+- Accept an instruction, workspace root, benchmark metadata, provider/model controls, approval mode, and limits.
+- Create or select an isolated app-data root for the trial.
+- Import the benchmark workspace as a Xero project without opening the desktop UI.
+- Drive the real provider loop and real tool runtime.
+- Enforce wall-time, turn, tool-call, command, and cost limits.
+- Stop cleanly on completion, timeout, budget exhaustion, crash, cancellation, or policy block.
+- Export a normalized manifest, trajectory, redacted log bundle, and final workspace diff.
+- Return stable exit codes for success, verifier-independent failure, infrastructure failure, and invalid configuration.
 
-Build an adapter that converts a SWE-style task into a Xero owned-agent run and converts the final working tree diff into the JSONL prediction format expected by SWE-bench-compatible harnesses.
+Exit criteria:
 
-The adapter flow:
+- A synthetic repository task runs through the real runtime headlessly and produces a manifest plus trajectory.
+- Fake-provider mode is explicit and labeled as fixture-only.
+- The command is covered by focused Rust tests and a CLI smoke test.
 
-1. Materialize the task repository in an isolated sandbox.
-2. Import that sandbox as a Xero project.
+## Phase 2: Harbor Adapter For Terminal-Bench
+
+Implement Xero as a Harbor installed agent. This is the first public-comparison adapter.
+
+Adapter behavior:
+
+- `install` locates or installs the Xero headless command and benchmark dependencies inside the container.
+- `run` forwards the rendered Terminal-Bench instruction to Xero, with the benchmark workspace as the project root.
+- The adapter sets a trial-local app-data directory and passes only approved environment variables.
+- Xero writes its own artifacts, while Harbor remains the source of task execution, sandboxing, verifier execution, and job layout.
+- `populate_context_post_run` attaches Xero's manifest, cost, failure category, and trajectory references.
+
+Initial run matrix:
+
+- Xero vs Harbor `nop` and `oracle` for adapter sanity.
+- Xero vs OpenCode using Harbor's built-in `opencode` agent when `harbor run --help` lists it.
+- Xero vs Mini-SWE-Agent or OpenHands as a stable open-source baseline.
+- Xero vs ForgeCode once the Forge installed-agent wrapper passes smoke.
+
+Exit criteria:
+
+- Xero completes a 5-task Terminal-Bench smoke run through Harbor.
+- The same task ids and model run through at least one competitor.
+- The report includes success rate, confidence interval, cost, time, verifier logs, and trajectory links.
+
+## Phase 3: Competitor Support
+
+Competitor support should be configuration-driven, not hardcoded into the Xero runner.
+
+OpenCode support:
+
+- Prefer Harbor's built-in `opencode` installed agent.
+- If unavailable, use an installed-agent wrapper around `opencode run`.
+- Record OpenCode version, config source, model flag, permission mode, and whether ACP/server mode was used.
+- Export OpenCode sessions when possible and attach sanitized logs.
+
+ForgeCode support:
+
+- Use a dedicated trial-local `FORGE_CONFIG` so benchmark runs never reuse a developer's personal Forge state.
+- Prefer stdin prompting or the most stable documented non-interactive path confirmed by smoke tests.
+- Record ForgeCode version, config directory, provider/model settings, service features enabled, MCP state, and whether semantic sync was enabled.
+- Disable auto-opening browser artifacts during benchmark runs.
+- Treat ForgeCode Services and semantic sync as product-mode features unless the same retrieval capability is also enabled for Xero and other harnesses in a fixed-model harness comparison.
+
+Other baselines:
+
+- Add Mini-SWE-Agent, SWE-agent, OpenHands, Aider, Claude Code, Codex CLI, Gemini CLI, and Cursor CLI as registry entries only when their install path and non-interactive mode are verified.
+- Keep a "do nothing" or `nop` baseline and the Harbor `oracle` run in smoke reports. They catch broken scoring and broken task setup.
+
+Exit criteria:
+
+- A benchmark owner can add or disable a competitor without changing Xero runtime code.
+- Every competitor has a smoke status: supported, blocked, or experimental.
+- Unsupported competitors fail closed with an explanation before paid runs start.
+
+## Phase 4: SWE-Bench Adapter
+
+Add a SWE-style adapter after Terminal-Bench works. This adapter measures patch quality rather than terminal-task behavior.
+
+Adapter flow:
+
+1. Materialize each task repository at the exact dataset commit.
+2. Import the repository into an isolated Xero app-data root.
 3. Prompt Xero with the issue statement and benchmark rules.
-4. Let Xero edit, test, and verify through its normal tools.
-5. Capture the final diff as the task prediction.
-6. Run the official verifier with `python3 -m swebench.harness.run_evaluation` or the relevant benchmark CLI.
-7. Attach verifier logs back to the Xero run report.
+4. Let Xero edit and verify through the normal runtime.
+5. Capture the final unified diff.
+6. Write `predictions.jsonl` with the official `instance_id`, `model_name_or_path`, and `model_patch` fields.
+7. Run the official evaluator with `python3 -m swebench.harness.run_evaluation`.
+8. Attach evaluator logs and resolved status back to the Xero report.
 
-Start with a tiny smoke subset, then scale to a public SWE-Bench Pro or current SWE-bench-family split. Include Multi-SWE-bench or SWE-PolyBench early because TypeScript and Rust coverage is more relevant to Xero than Python-only performance.
+Use SWE-bench Lite or Verified for integration smoke, then expand to the current dataset needed for the claim. On Apple Silicon, record whether evaluation images were pulled or built locally because official SWE-bench notes different behavior for ARM machines.
 
-Success condition: Xero can produce valid predictions for a small SWE-style subset, and the official verifier can grade them without manual repair.
+Exit criteria:
 
-### Phase 3: Add A Terminal-Bench Adapter
+- Xero produces valid predictions for a small SWE-style subset.
+- The official evaluator grades those predictions without manual repair.
+- The same task ids and model run through at least one baseline harness.
 
-Use Terminal-Bench as the first real harness-vs-harness comparison. It exercises the command loop directly and avoids overfitting the plan around patch-only output.
+## Phase 5: Private Xero Eval Set
 
-There are two viable adapter shapes:
+Public benchmarks will not cover all product promises. Build a private eval set that looks like real Xero work and run it before releases.
 
-- Implement a Terminal-Bench-compatible agent adapter that forwards each task instruction to Xero and lets Xero operate in the benchmark sandbox.
-- Or wrap Xero's owned-agent command execution behind the benchmark's terminal interface so Terminal-Bench can record the same terminal panes, commands, and tests it records for other agents.
-
-Prefer the adapter that preserves the official Terminal-Bench logging and verifier flow. Xero's own transcript should be additional evidence, not a replacement for benchmark-native logs.
-
-Success condition: Xero can run a versioned Terminal-Bench dataset subset with the same model and limits as at least one baseline harness.
-
-### Phase 4: Create A Private Xero Eval Set
-
-Public benchmarks will not measure Xero-specific product promises. Build a private set that looks like real Xero work:
+Task types:
 
 - Rust backend changes with scoped Cargo tests.
-- React/ShadCN UI changes with unit or component tests.
+- React and ShadCN UI changes with unit or component tests.
 - Tauri command-surface changes.
-- App-data persistence changes.
+- App-data persistence and migration tasks.
 - Provider setup and diagnostic failures.
 - Session memory, compaction, branch, rewind, and retrieval behavior.
-- Dirty worktree conflict handling.
+- Dirty-worktree conflict handling.
 - Prompt-injection handling from untrusted files.
 - Tool-policy and approval-boundary tasks.
+- MCP, browser, emulator, and Solana workbench tasks when those surfaces are part of the release claim.
 
-Each task should include a setup script, task prompt, hidden verifier, expected safety constraints, and an oracle solution. Keep the task set private if it will be used for decision-making, and rotate it as Xero changes.
+Each task should include a setup script, task prompt, hidden verifier, expected safety constraints, oracle solution, and artifact-retention policy.
 
-Success condition: the private set catches regressions that public SWE-style and terminal-style benchmarks miss.
+Exit criteria:
 
-### Phase 5: Reporting And Comparison
+- The private set catches at least one class of regression that public Terminal-Bench and SWE-style tasks do not.
+- Private tasks are versioned, rotated, and kept out of public reports unless explicitly approved.
 
-Publish two report types.
+## Phase 6: Reporting
 
-The engineering report is detailed and reproducible. It includes manifests, trajectories, verifier logs, failure categories, costs, timings, and patches.
+Produce two report shapes.
 
-The public summary is narrower. It includes benchmark version, run date, model, harness version, task count, success rate with confidence interval, cost/time summary, and links to public trajectories when licenses allow.
+The engineering report is complete and reproducible. It includes manifests, trajectories, verifier logs, final diffs, failure categories, costs, timings, task ids, adapter versions, and environment details.
 
-For every chart, split results by language, repository, task type, edit size, and failure category. A harness that scores well overall but fails Rust or TypeScript tasks is not good enough for Xero's own development loop.
+The public summary is concise. It includes benchmark name and version, run date, model, harness version, task count, success rate with confidence interval, cost/time summary, and links to public trajectories where licenses and privacy allow.
+
+Reports should group results by task type, language, repository, edited-file count, failure category, and harness. A harness that scores well overall but fails Rust, TypeScript, or desktop-app tasks is not good enough for Xero's own development loop.
+
+Exit criteria:
+
+- A benchmark owner can regenerate the report from stored artifacts.
+- The report clearly marks fixed-model comparison versus product-mode comparison.
+- A failed run is as useful as a successful one because it identifies failure category and supporting evidence.
+
+## Phase 7: Operational Support
+
+Support this as a maintained benchmark harness, not a one-off script.
+
+Ongoing responsibilities:
+
+- Pin and record Harbor, dataset, Docker image, Xero, and competitor versions.
+- Run a weekly smoke job against a tiny Terminal-Bench subset.
+- Run a release-candidate job against the private Xero eval set.
+- Keep a compatibility matrix for competitor CLIs and Harbor built-in agents.
+- Rotate benchmark API keys and use benchmark-only provider accounts.
+- Redact prompts, file contents, env values, and credentials before sharing logs.
+- Preserve raw artifacts internally long enough to debug regressions.
+- Track cost budgets per benchmark suite.
+- Review task contamination and benchmark drift before making public claims.
+
+Support triage should answer these questions in order:
+
+1. Did the task environment build and verify with oracle?
+2. Did the model/provider route work outside the harness?
+3. Did the adapter invoke the intended harness version and model?
+4. Did the harness fail before, during, or after tool execution?
+5. Did the verifier fail because the solution was wrong, the patch was invalid, or the benchmark infrastructure was unhealthy?
+6. Is the failure reproducible with the same seed, task id, and artifact bundle?
 
 ## First Milestone
 
-Build a small but honest benchmark loop before chasing a leaderboard:
+The first shippable milestone is "Xero can be benchmarked fairly."
 
-1. Normalize the existing internal eval report into JSON and markdown artifacts.
-2. Add the headless owned-agent eval runner.
-3. Run 5 to 10 SWE-style smoke tasks and grade them with the official verifier.
-4. Run 5 to 10 Terminal-Bench tasks through the official harness.
-5. Run the same model through Xero and one baseline harness.
-6. Produce a comparison report with success rate, verifier logs, cost, time, and trajectory links.
+Deliverables:
 
-That milestone will answer whether Xero can be benchmarked fairly. Only after that should Xero spend money on large public runs or leaderboard submissions.
+- Extend the existing Xero quality eval report with benchmark-compatible manifest metadata.
+- Add the headless Xero benchmark command around the real runtime.
+- Add the Harbor installed-agent adapter for Xero.
+- Run 5 to 10 Terminal-Bench tasks through Harbor for Xero and OpenCode with the same model.
+- Add a ForgeCode wrapper spike and mark it supported only after a smoke run passes.
+- Add a SWE-style smoke adapter that produces valid `predictions.jsonl` and runs the official evaluator.
+- Generate one engineering report with manifests, trajectories, verifier logs, cost, time, and failure categories.
+
+Success criteria:
+
+- The same task ids, model, limits, and environment are used for Xero and at least one competitor.
+- Every run is reproducible from stored configuration.
+- Every artifact is redacted before it leaves local/internal storage.
+- The report is useful even if Xero loses the first comparison.
 
 ## Sources
 
-- [SWE-bench GitHub repository](https://github.com/SWE-bench/SWE-bench)
-- [SWE-bench evaluation guide](https://www.swebench.com/SWE-bench/guides/evaluation/)
-- [SWE-bench Verified overview](https://www.swebench.com/verified.html)
-- [OpenAI: Why SWE-bench Verified no longer measures frontier coding capabilities](https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/)
-- [SWE-Bench Pro public leaderboard and methodology](https://labs.scale.com/leaderboard/swe_bench_pro_public)
-- [SWE-Bench Pro paper](https://arxiv.org/abs/2509.16941)
-- [Terminal-Bench repository](https://github.com/harbor-framework/terminal-bench)
-- [Terminal-Bench harness docs](https://www.tbench.ai/docs/harness)
-- [Terminal-Bench task docs](https://www.tbench.ai/docs/task-overview)
-- [Terminal-Bench 2.0 paper](https://arxiv.org/abs/2601.11868)
-- [Multi-SWE-bench paper](https://arxiv.org/abs/2504.02605)
-- [SWE-PolyBench paper](https://arxiv.org/abs/2504.08703)
-- [SWE-agent paper](https://arxiv.org/abs/2405.15793)
-- [OpenHands evaluation harness docs](https://docs.openhands.dev/openhands/usage/developers/evaluation-harness)
-- [OSWorld project](https://os-world.github.io/)
-- [WebArena paper](https://arxiv.org/abs/2307.13854)
-- [OpenAI evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
-- [Inspect evaluation framework](https://inspect.aisi.org.uk/)
+- [Harbor: Running Terminal-Bench](https://www.harborframework.com/docs/tutorials/running-terminal-bench)
+- [Harbor: Agents](https://www.harborframework.com/docs/agents)
+- [Harbor: Run Evals](https://www.harborframework.com/docs/run-jobs/run-evals)
+- [Harbor repository agent guidance](https://github.com/harbor-framework/harbor/blob/main/AGENTS.md)
+- [Terminal-Bench 2.0 announcement](https://www.tbench.ai/news/announcement-2-0)
+- [SWE-bench repository and evaluator README](https://github.com/SWE-bench/SWE-bench)
+- [OpenCode CLI docs](https://opencode.ai/docs/cli/)
+- [ForgeCode setup docs](https://forgecode.dev/docs/)
+- [ForgeCode piping guide](https://forgecode.dev/docs/piping-guide/)
+- [ForgeCode config docs](https://forgecode.dev/docs/forge-config/)
+- [ForgeCode MCP docs](https://forgecode.dev/docs/mcp-integration/)

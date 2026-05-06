@@ -10,6 +10,7 @@ use crate::{auth::now_timestamp, commands::CommandError, db::database_path_for_r
 
 use super::{
     agent_context::{load_active_agent_compaction, AgentCompactionRecord, AgentCompactionTrigger},
+    agent_continuity::copy_agent_context_manifests_for_branch,
     agent_core::{
         agent_event_kind_sql_value, agent_message_role_sql_value, agent_run_status_sql_value,
         agent_tool_call_state_sql_value, load_agent_run, load_agent_usage, AgentMessageRecord,
@@ -70,6 +71,7 @@ pub struct AgentSessionBranchCreateRecord {
     pub project_id: String,
     pub source_agent_session_id: String,
     pub source_run_id: String,
+    pub target_agent_session_id: Option<String>,
     pub title: Option<String>,
     pub selected: bool,
     pub boundary: AgentSessionBranchBoundary,
@@ -108,6 +110,12 @@ struct CopiedEventRecord {
     payload_json: String,
 }
 
+#[derive(Debug, Clone)]
+struct CopiedCompactionRecord {
+    source_compaction_id: String,
+    replay_compaction_id: String,
+}
+
 pub fn create_agent_session_branch(
     repo_root: &Path,
     request: &AgentSessionBranchCreateRecord,
@@ -127,6 +135,13 @@ pub fn create_agent_session_branch(
         "sourceRunId",
         "agent_session_branch_request_invalid",
     )?;
+    if let Some(target_agent_session_id) = request.target_agent_session_id.as_deref() {
+        validate_non_empty_text(
+            target_agent_session_id,
+            "targetAgentSessionId",
+            "agent_session_branch_request_invalid",
+        )?;
+    }
     if let Some(title) = request.title.as_deref() {
         validate_non_empty_text(title, "title", "agent_session_branch_request_invalid")?;
     }
@@ -163,7 +178,10 @@ pub fn create_agent_session_branch(
     });
     let source_usage = load_agent_usage(repo_root, &request.project_id, &request.source_run_id)?;
 
-    let child_agent_session_id = generate_agent_session_id();
+    let child_agent_session_id = request
+        .target_agent_session_id
+        .clone()
+        .unwrap_or_else(generate_agent_session_id);
     let replay_run_id = generate_branch_replay_run_id(&request.source_run_id);
     let lineage_id = generate_agent_session_lineage_id();
     let now = now_timestamp();
@@ -292,7 +310,7 @@ pub fn create_agent_session_branch(
         }
     }
 
-    let carried_compaction_id = copy_replay_compaction_if_available(
+    let copied_compaction = copy_replay_compaction_if_available(
         &transaction,
         active_compaction.as_ref(),
         &source_snapshot,
@@ -301,6 +319,22 @@ pub fn create_agent_session_branch(
         &copied_events,
         &child_agent_session_id,
         &replay_run_id,
+        &now,
+    )?;
+    copy_agent_context_manifests_for_branch(
+        &transaction,
+        &database_path,
+        &request.project_id,
+        &request.source_agent_session_id,
+        &request.source_run_id,
+        &child_agent_session_id,
+        &replay_run_id,
+        copied_compaction.as_ref().map(|record| {
+            (
+                record.source_compaction_id.as_str(),
+                record.replay_compaction_id.as_str(),
+            )
+        }),
         &now,
     )?;
 
@@ -335,7 +369,9 @@ pub fn create_agent_session_branch(
                 lineage_boundary_kind_sql_value(&boundary.kind),
                 boundary.source_message_id,
                 boundary.source_checkpoint_id,
-                carried_compaction_id.as_deref(),
+                copied_compaction
+                    .as_ref()
+                    .map(|record| record.source_compaction_id.as_str()),
                 source_title.as_str(),
                 branch_title.as_str(),
                 replay_run_id.as_str(),
@@ -554,6 +590,8 @@ fn insert_replay_run(
                 agent_session_id,
                 run_id,
                 trace_id,
+                parent_run_id,
+                parent_trace_id,
                 provider_id,
                 model_id,
                 status,
@@ -568,7 +606,7 @@ fn insert_replay_run(
                 updated_at,
                 created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?13, NULL, NULL, NULL, ?13, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?15, NULL, NULL, NULL, ?15, ?15)
             "#,
             params![
                 source_snapshot.run.runtime_agent_id.as_str(),
@@ -578,6 +616,8 @@ fn insert_replay_run(
                 child_agent_session_id,
                 replay_run_id,
                 xero_agent_core::runtime_trace_id_for_run(project_id, replay_run_id),
+                source_snapshot.run.run_id.as_str(),
+                source_snapshot.run.trace_id.as_str(),
                 source_snapshot.run.provider_id.as_str(),
                 source_snapshot.run.model_id.as_str(),
                 agent_run_status_sql_value(&AgentRunStatus::Completed),
@@ -898,7 +938,7 @@ fn copy_replay_compaction_if_available(
     child_agent_session_id: &str,
     replay_run_id: &str,
     now: &str,
-) -> Result<Option<String>, CommandError> {
+) -> Result<Option<CopiedCompactionRecord>, CommandError> {
     let Some(compaction) = active_compaction else {
         return Ok(None);
     };
@@ -1015,7 +1055,10 @@ fn copy_replay_compaction_if_available(
                 format!("Xero could not copy active compaction summary into branch replay: {error}"),
             )
         })?;
-    Ok(Some(compaction.compaction_id.clone()))
+    Ok(Some(CopiedCompactionRecord {
+        source_compaction_id: compaction.compaction_id.clone(),
+        replay_compaction_id,
+    }))
 }
 
 fn includes_message(message: &AgentMessageRecord, boundary: &ResolvedBranchBoundary) -> bool {

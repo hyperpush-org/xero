@@ -173,5 +173,7 @@ describe('AgentDockSidebar', () => {
     const aside = screen.getByLabelText('Agent dock')
     expect(aside.getAttribute('aria-hidden')).toBe('true')
     expect((aside as HTMLElement).style.width).toBe('0px')
+    expect(screen.queryByTestId('live-agent-runtime')).not.toBeInTheDocument()
+    expect(screen.queryByText('No active session')).not.toBeInTheDocument()
   })
 })

@@ -264,8 +264,12 @@ import {
   type UpsertProviderCredentialRequestDto,
 } from '@/src/lib/xero-model/provider-credentials'
 import {
+  createPreflightProviderProfileRequest,
   createProviderModelCatalogRequest,
+  providerPreflightSnapshotSchema,
   providerModelCatalogSchema,
+  type ProviderPreflightRequiredFeaturesDto,
+  type ProviderPreflightSnapshotDto,
   type ProviderModelCatalogDto,
 } from '@/src/lib/xero-model/provider-models'
 import {
@@ -466,6 +470,7 @@ const COMMANDS = {
   setPluginEnabled: 'set_plugin_enabled',
   removePlugin: 'remove_plugin',
   getProviderModelCatalog: 'get_provider_model_catalog',
+  preflightProviderProfile: 'preflight_provider_profile',
   runDoctorReport: 'run_doctor_report',
   checkProviderProfile: 'check_provider_profile',
   listProviderCredentials: 'list_provider_credentials',
@@ -823,6 +828,14 @@ export interface XeroDesktopAdapter {
     profileId: string,
     options?: { forceRefresh?: boolean },
   ): Promise<ProviderModelCatalogDto>
+  preflightProviderProfile(
+    profileId: string,
+    options?: {
+      forceRefresh?: boolean
+      modelId?: string | null
+      requiredFeatures?: Partial<ProviderPreflightRequiredFeaturesDto>
+    },
+  ): Promise<ProviderPreflightSnapshotDto>
   runDoctorReport(request?: Partial<RunDoctorReportRequestDto>): Promise<XeroDoctorReportDto>
   checkProviderProfile(
     profileId: string,
@@ -981,6 +994,7 @@ export interface XeroDesktopAdapter {
     itemKinds: RuntimeStreamItemKindDto[],
     handler: (payload: RuntimeStreamEventDto) => void,
     onError?: (error: XeroDesktopError) => void,
+    options?: { afterSequence?: number | null; replayLimit?: number | null },
   ): Promise<XeroRuntimeStreamSubscription>
   subscribeAgentStream?(
     runId: string,
@@ -1153,6 +1167,10 @@ function hasCheapRuntimeStreamItemShape(payload: unknown): payload is RuntimeStr
   )
 }
 
+function shouldUseFullRuntimeStreamChannelValidation(): boolean {
+  return import.meta.env.MODE === 'test' || import.meta.env.VITE_XERO_RUNTIME_STREAM_ZOD === '1'
+}
+
 function parseRuntimeStreamChannelItem(payload: unknown): RuntimeStreamItemDto {
   const budgetSample = recordIpcPayloadSample({
     boundary: 'channel',
@@ -1169,7 +1187,7 @@ function parseRuntimeStreamChannelItem(payload: unknown): RuntimeStreamItemDto {
     })
   }
 
-  if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
+  if (shouldUseFullRuntimeStreamChannelValidation()) {
     return runtimeStreamItemSchema.parse(payload)
   }
 
@@ -1190,6 +1208,7 @@ async function createRuntimeStreamSubscription(
   itemKinds: RuntimeStreamItemKindDto[],
   handler: (payload: RuntimeStreamEventDto) => void,
   onError?: (error: XeroDesktopError) => void,
+  options: { afterSequence?: number | null; replayLimit?: number | null } = {},
 ): Promise<XeroRuntimeStreamSubscription> {
   ensureDesktopRuntime(`Command ${COMMANDS.subscribeRuntimeStream}`)
 
@@ -1262,12 +1281,20 @@ async function createRuntimeStreamSubscription(
   }
 
   try {
-    const request = subscribeRuntimeStreamRequestSchema.parse({ projectId, agentSessionId, itemKinds })
+    const request = subscribeRuntimeStreamRequestSchema.parse({
+      projectId,
+      agentSessionId,
+      itemKinds,
+      afterSequence: options.afterSequence ?? null,
+      replayLimit: options.replayLimit ?? null,
+    })
     response = await invokeTyped(COMMANDS.subscribeRuntimeStream, subscribeRuntimeStreamResponseSchema, {
       request: {
         projectId: request.projectId,
         agentSessionId: request.agentSessionId,
         itemKinds: request.itemKinds,
+        afterSequence: request.afterSequence ?? null,
+        replayLimit: request.replayLimit ?? null,
         channel,
       },
     })
@@ -2109,6 +2136,17 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  preflightProviderProfile(profileId, options) {
+    const request = createPreflightProviderProfileRequest(profileId, {
+      forceRefresh: options?.forceRefresh ?? false,
+      modelId: options?.modelId ?? null,
+      requiredFeatures: options?.requiredFeatures,
+    })
+    return invokeTyped(COMMANDS.preflightProviderProfile, providerPreflightSnapshotSchema, {
+      request,
+    })
+  },
+
   runDoctorReport(request = {}) {
     const parsedRequest = runDoctorReportRequestSchema.parse({
       mode: request.mode ?? 'quick_local',
@@ -2628,8 +2666,8 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return listenTyped(EVENTS.browserTabUpdated, browserTabUpdatedPayloadSchema, handler, onError)
   },
 
-  subscribeRuntimeStream(projectId, agentSessionId, itemKinds, handler, onError) {
-    return createRuntimeStreamSubscription(projectId, agentSessionId, itemKinds, handler, onError)
+  subscribeRuntimeStream(projectId, agentSessionId, itemKinds, handler, onError, options) {
+    return createRuntimeStreamSubscription(projectId, agentSessionId, itemKinds, handler, onError, options)
   },
 
   subscribeAgentStream(runId, handler, onError) {

@@ -11,6 +11,7 @@ pub struct OwnedAgentRunRequest {
     pub controls: Option<RuntimeRunControlInputDto>,
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
+    pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ pub struct ContinueOwnedAgentRunRequest {
     pub controls: Option<RuntimeRunControlInputDto>,
     pub tool_runtime: AutonomousToolRuntime,
     pub provider_config: AgentProviderConfig,
+    pub provider_preflight: Option<xero_agent_core::ProviderPreflightSnapshot>,
     pub answer_pending_actions: bool,
     pub auto_compact: Option<AgentAutoCompactPreference>,
 }
@@ -458,6 +460,8 @@ pub struct AgentToolResult {
     pub ok: bool,
     pub summary: String,
     pub output: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_assistant_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1108,6 +1112,71 @@ mod tests {
             .expect_err("Ask must reject command calls even if the provider emits one");
 
         assert_eq!(error.code, "agent_tool_boundary_violation");
+    }
+
+    #[test]
+    fn test_registry_exposes_harness_surface_without_agent_definition_mutation() {
+        let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+            runtime_agent_id: RuntimeAgentIdDto::Test,
+            skill_tool_enabled: true,
+            ..ToolRegistryOptions::default()
+        });
+        let names = registry.descriptor_names();
+
+        for expected in [
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_GIT_DIFF,
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_HASH,
+            AUTONOMOUS_TOOL_TODO,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            AUTONOMOUS_TOOL_MKDIR,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_RENAME,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_COMMAND,
+            AUTONOMOUS_TOOL_COMMAND_SESSION_START,
+            AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+            AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+            AUTONOMOUS_TOOL_BROWSER,
+            AUTONOMOUS_TOOL_MCP,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+        ] {
+            assert!(
+                names.contains(expected),
+                "Test harness registry should expose `{expected}` when active"
+            );
+        }
+        assert!(
+            !names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION),
+            "Test must not inherit Agent Create's definition-registry mutation tool"
+        );
+
+        let agent_create_registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_AGENT_DEFINITION.to_string(),
+                AUTONOMOUS_TOOL_WRITE.to_string(),
+                AUTONOMOUS_TOOL_COMMAND.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::AgentCreate,
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let agent_create_names = agent_create_registry.descriptor_names();
+
+        assert!(agent_create_names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION));
+        assert!(!agent_create_names.contains(AUTONOMOUS_TOOL_WRITE));
+        assert!(!agent_create_names.contains(AUTONOMOUS_TOOL_COMMAND));
     }
 
     #[test]

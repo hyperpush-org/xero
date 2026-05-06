@@ -52,6 +52,7 @@ pub fn start_agent_task<R: Runtime + 'static>(
         controls: request.controls,
         tool_runtime,
         provider_config,
+        provider_preflight: None,
     };
     let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
     let snapshot = runtime.start_run(owned_request, DesktopRunDriveMode::Background)?;
@@ -84,6 +85,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
         controls: None,
         tool_runtime,
         provider_config,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: auto_compact_preference(request.auto_compact)?,
     };
@@ -138,6 +140,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         controls: None,
         tool_runtime,
         provider_config,
+        provider_preflight: None,
         answer_pending_actions: true,
         auto_compact: auto_compact_preference(request.auto_compact)?,
     };
@@ -210,6 +213,7 @@ pub fn export_agent_trace<R: Runtime>(
         timeline: trace_to_json_value(&canonical.timeline)?,
         diagnostics: trace_to_json_value(&canonical.diagnostics)?,
         quality_gates: trace_to_json_value(&canonical.quality_gates)?,
+        production_readiness: trace_to_json_value(&canonical.production_readiness)?,
         markdown_summary,
         support_bundle,
         canonical_trace: trace_to_json_value(&canonical)?,

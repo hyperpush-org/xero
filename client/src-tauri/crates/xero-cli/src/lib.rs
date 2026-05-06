@@ -3,38 +3,64 @@ use std::{
     env, fs,
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
+    process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use xero_agent_core::{
     domain_tool_pack_health_report, domain_tool_pack_manifest, domain_tool_pack_manifests,
-    provider_capability_catalog, AgentCoreStore, AgentRuntimeFacade, DomainToolPackHealthInput,
+    provider_capability_catalog, provider_preflight_blockers, provider_preflight_snapshot,
+    provider_preflight_snapshot_as_cached_probe, run_openai_compatible_provider_preflight_probe,
+    AgentCoreStore, AgentRuntimeFacade, ContextManifest, DomainToolPackHealthInput,
     DomainToolPackHealthReport, DomainToolPackHealthStatus, DomainToolPackManifest,
-    FakeProviderRuntime, FileAgentCoreStore, MessageRole, NewMessageRecord, NewRunRecord,
-    NewRuntimeEvent, PermissionProfileSandbox, ProjectTrustState, ProviderCapabilityCatalog,
-    ProviderCapabilityCatalogInput, ProviderSelection, RunControls, RunSnapshot, RunStatus,
-    RuntimeEventKind, RuntimeTraceContext, SandboxApprovalSource, SandboxExecutionContext,
-    SandboxPlatform, StartRunRequest, ToolApprovalRequirement, ToolCallInput, ToolDescriptorV2,
-    ToolEffectClass, ToolExecutionContext, ToolMutability, ToolSandbox, ToolSandboxRequirement,
-    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS, DOMAIN_TOOL_PACK_CONTRACT_VERSION,
+    EnvironmentSemanticIndexState, FileAgentCoreStore, HeadlessProviderExecutionConfig,
+    HeadlessProviderRuntime, HeadlessRuntimeOptions, MessageRole, NewContextManifest,
+    NewMessageRecord, NewRunRecord, NewRuntimeEvent, OpenAiCompatibleHeadlessConfig,
+    OpenAiCompatibleProviderPreflightProbeRequest, PermissionProfileSandbox,
+    ProductionRuntimeContract, ProjectTrustState, ProviderCapabilityCatalog,
+    ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightRequiredFeatures,
+    ProviderPreflightSnapshot, ProviderPreflightSource, ProviderSelection, RunControls,
+    RunSnapshot, RunStatus, RunSummary, RuntimeEvent, RuntimeEventKind, RuntimeMessage,
+    RuntimeMessageProviderMetadata, RuntimeStoreDescriptor, RuntimeTrace, RuntimeTraceContext,
+    SandboxApprovalSource, SandboxExecutionContext, SandboxExecutionMetadata, SandboxPlatform,
+    SandboxedProcessRequest, SandboxedProcessRunner, StartRunRequest, ToolApprovalRequirement,
+    ToolCallInput, ToolDescriptorV2, ToolEffectClass, ToolExecutionContext, ToolMutability,
+    ToolSandbox, ToolSandboxRequirement, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+    DOMAIN_TOOL_PACK_CONTRACT_VERSION,
 };
 
 const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.xero";
 const HEADLESS_DIRECTORY_NAME: &str = "headless";
 const AGENT_CORE_STATE_FILE: &str = "agent-core-runs.json";
 const CLI_CONFIG_FILE: &str = "cli-config.json";
-const WORKSPACE_INDEX_DIRECTORY: &str = "workspace-indexes";
-const DEFAULT_PROVIDER_ID: &str = "fake_provider";
+const PROVIDER_PREFLIGHT_STATE_FILE: &str = "provider-preflight-results.json";
+const GLOBAL_DATABASE_FILE: &str = "xero.db";
+const PROJECTS_DIRECTORY: &str = "projects";
+const STATE_DATABASE_FILE: &str = "state.db";
+const FAKE_PROVIDER_ID: &str = "fake_provider";
 const DEFAULT_MODEL_ID: &str = "fake-model";
 const DEFAULT_PROJECT_ID: &str = "headless-local";
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_SERVER_NAME: &str = "xero-local-harness";
-const DEFAULT_INDEX_FILE_LIMIT: usize = 1_000;
+const WORKSPACE_INDEX_VERSION: u32 = 1;
+const DEFAULT_INDEX_FILE_LIMIT: usize = 5_000;
+const HARD_INDEX_FILE_LIMIT: usize = 20_000;
 const MAX_INDEX_FILE_BYTES: u64 = 512 * 1024;
+const DEFAULT_WORKSPACE_QUERY_LIMIT: usize = 8;
 const MAX_QUERY_RESULTS: usize = 20;
+const MAX_INDEX_SNIPPET_CHARS: usize = 1_200;
+const MAX_WORKSPACE_FEATURES: usize = 40;
+const MAX_WORKSPACE_IMPORTS: usize = 32;
+const MAX_WORKSPACE_SYMBOLS: usize = 64;
+const MAX_WORKSPACE_TESTS: usize = 32;
+const WORKSPACE_EMBEDDING_DIM: usize = 768;
+const WORKSPACE_EMBEDDING_MODEL: &str = "xero-local-hash-embedding";
+const WORKSPACE_EMBEDDING_VERSION: &str = "xero-local-hash-embedding.v1";
+const EXTERNAL_AGENT_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
@@ -183,11 +209,12 @@ fn dispatch_provider(globals: GlobalOptions, args: Vec<String>) -> Result<CliRes
         Some("list") => command_provider_list(globals, args[1..].to_vec()),
         Some("login") => command_provider_login(globals, args[1..].to_vec()),
         Some("doctor") => command_provider_doctor(globals, args[1..].to_vec()),
+        Some("preflight") => command_provider_preflight(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!(
             "Unknown provider command `{other}`."
         ))),
         None => Err(CliError::usage(
-            "Missing provider command. Use list, login, or doctor.",
+            "Missing provider command. Use list, login, doctor, or preflight.",
         )),
     }
 }
@@ -208,12 +235,15 @@ fn dispatch_mcp(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse
 fn dispatch_workspace(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, CliError> {
     match args.first().map(String::as_str) {
         Some("index") => command_workspace_index(globals, args[1..].to_vec()),
+        Some("status") => command_workspace_status(globals, args[1..].to_vec()),
         Some("query") => command_workspace_query(globals, args[1..].to_vec()),
+        Some("explain") => command_workspace_explain(globals, args[1..].to_vec()),
+        Some("reset") => command_workspace_reset(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!(
             "Unknown workspace command `{other}`."
         ))),
         None => Err(CliError::usage(
-            "Missing workspace command. Use index or query.",
+            "Missing workspace command. Use index, status, query, explain, or reset.",
         )),
     }
 }
@@ -238,37 +268,19 @@ fn command_agent_exec(
     if take_help(&args) {
         return Ok(response(
             &globals,
-            "Usage: xero agent exec [PROMPT] [--project-id ID] [--session-id ID] [--run-id ID] [--provider ID] [--model ID]\nRuns a headless owned-agent turn through xero-agent-core.",
+            "Usage: xero agent exec [PROMPT] [--project-id ID] [--session-id ID] [--run-id ID] --provider ID [--model ID]\nRuns a headless owned-agent turn through the shared Xero runtime. Use --provider fake_provider only for harness tests.",
             json!({ "command": "agent exec" }),
         ));
     }
 
     let prompt_flag = take_option(&mut args, "--prompt")?;
-    let project_id = take_option(&mut args, "--project-id")?.unwrap_or_else(|| {
-        env::current_dir()
-            .ok()
-            .and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-            })
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_PROJECT_ID.into())
-    });
+    let project_id = take_option(&mut args, "--project-id")?;
     let agent_session_id =
         take_option(&mut args, "--session-id")?.unwrap_or_else(|| generate_id("session"));
     let run_id = take_option(&mut args, "--run-id")?.unwrap_or_else(|| generate_id("run"));
-    let provider_id =
-        take_option(&mut args, "--provider")?.unwrap_or_else(|| DEFAULT_PROVIDER_ID.into());
-    let model_id = take_option(&mut args, "--model")?.unwrap_or_else(|| DEFAULT_MODEL_ID.into());
+    let provider_id = take_option(&mut args, "--provider")?;
+    let model_id = take_option(&mut args, "--model")?;
     reject_unknown_options(&args)?;
-
-    ensure_owned_agent_provider(&provider_id)?;
-    if globals.ci && provider_id != DEFAULT_PROVIDER_ID {
-        return Err(CliError::user_fixable(
-            "xero_cli_provider_unavailable_in_ci",
-            "Headless CI mode currently supports the built-in fake provider only, so provider execution stays non-interactive and sandbox-strict.",
-        ));
-    }
 
     let prompt = prompt_flag
         .or_else(|| (!args.is_empty()).then(|| args.join(" ")))
@@ -277,8 +289,22 @@ fn command_agent_exec(
         return Err(CliError::usage("Prompt cannot be empty."));
     }
 
-    let store = open_agent_store(&globals)?;
-    let runtime = FakeProviderRuntime::new(store.clone());
+    let provider = resolve_cli_provider_execution(&globals, provider_id, model_id)?;
+    let (project_id, store) = open_run_store_for_provider(&globals, project_id, &provider)?;
+    let provider = provider.with_project_workspace(&store);
+    if provider.execution_mode == "real_provider" {
+        ensure_cli_real_provider_runtime_contract(&project_id, &provider, &store)?;
+    }
+    let provider_preflight = ensure_cli_provider_preflight_for_run(&globals, &provider)?;
+    let runtime = HeadlessProviderRuntime::new(
+        store.clone(),
+        provider.execution.clone(),
+        HeadlessRuntimeOptions {
+            ci_mode: globals.ci,
+            provider_preflight: Some(provider_preflight.clone()),
+            ..HeadlessRuntimeOptions::default()
+        },
+    );
     let snapshot = runtime
         .start_run(StartRunRequest {
             project_id: project_id.clone(),
@@ -286,8 +312,8 @@ fn command_agent_exec(
             run_id,
             prompt: prompt.clone(),
             provider: ProviderSelection {
-                provider_id,
-                model_id,
+                provider_id: provider.provider_id.clone(),
+                model_id: provider.model_id.clone(),
             },
             controls: Some(RunControls {
                 runtime_agent_id: "engineer".into(),
@@ -313,9 +339,11 @@ fn command_agent_exec(
         text,
         json!({
             "kind": "agentExec",
+            "executionMode": provider.execution_mode,
             "ciMode": globals.ci,
             "sandboxDefaults": sandbox_defaults_json(globals.ci),
             "storePath": store.path(),
+            "providerPreflight": provider_preflight,
             "snapshot": snapshot,
         }),
     ))
@@ -328,7 +356,7 @@ fn command_agent_host(
     if take_help(&args) {
         return Ok(response(
             &globals,
-            "Usage: xero agent host [PROMPT] --adapter codex|claude|gemini|custom [--command CMD] [--arg ARG]... --allow-subprocess\nLaunches an explicitly-approved external CLI agent as an auditable Xero conversation.",
+            "Usage: xero agent host [PROMPT] --adapter codex|claude|gemini|custom [--command CMD] [--arg ARG]... [--timeout-ms MS] --allow-subprocess\nLaunches an explicitly-approved external CLI agent as an auditable Xero conversation.",
             json!({ "command": "agent host" }),
         ));
     }
@@ -346,6 +374,10 @@ fn command_agent_host(
         take_option(&mut args, "--session-id")?.unwrap_or_else(|| generate_id("external-session"));
     let run_id = take_option(&mut args, "--run-id")?.unwrap_or_else(|| generate_id("external-run"));
     let model_override = take_option(&mut args, "--model")?;
+    let timeout_ms = take_option(&mut args, "--timeout-ms")?
+        .map(|value| parse_positive_u64(&value, "--timeout-ms"))
+        .transpose()?
+        .unwrap_or(EXTERNAL_AGENT_DEFAULT_TIMEOUT_MS);
     let allow_subprocess = take_bool_flag(&mut args, "--allow-subprocess");
     reject_unknown_options(&args)?;
 
@@ -373,7 +405,7 @@ fn command_agent_host(
         })?;
     let argv = external_agent_argv(&adapter, command_args, &prompt);
     let model_id = model_override.unwrap_or_else(|| adapter.default_model_id.into());
-    let store = open_agent_store(&globals)?;
+    let store = open_harness_agent_store(&globals)?;
     let snapshot = host_external_agent_run(
         &globals,
         &store,
@@ -386,6 +418,7 @@ fn command_agent_host(
             command,
             argv,
             model_id,
+            timeout_ms,
             approval_source,
         },
     )?;
@@ -416,12 +449,7 @@ fn command_conversation_list(
 ) -> Result<CliResponse, CliError> {
     let project_filter = take_option(&mut args, "--project-id")?;
     reject_unknown_options(&args)?;
-    let store = open_agent_store(&globals)?;
-    let runs = match project_filter.as_deref() {
-        Some(project_id) => store.list_project_runs(project_id),
-        None => store.list_runs(),
-    }
-    .map_err(core_error)?;
+    let runs = list_conversation_runs(&globals, project_filter.as_deref())?;
 
     let text = if runs.is_empty() {
         "No headless conversations found.".into()
@@ -445,7 +473,7 @@ fn command_conversation_list(
     Ok(response(
         &globals,
         text,
-        json!({ "kind": "conversationList", "storePath": store.path(), "runs": runs }),
+        json!({ "kind": "conversationList", "appDataRoot": cli_app_data_root(&globals), "harnessStorePath": harness_store_path(&globals), "runs": runs }),
     ))
 }
 
@@ -482,6 +510,7 @@ fn command_conversation_dump(
             "timeline": canonical_trace.timeline,
             "diagnostics": canonical_trace.diagnostics,
             "qualityGates": canonical_trace.quality_gates,
+            "productionReadiness": canonical_trace.production_readiness,
             "canonicalTrace": canonical_trace,
         }),
     ))
@@ -512,14 +541,21 @@ fn command_conversation_compact(
     globals: GlobalOptions,
     args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
-    let (_store, snapshot) = load_conversation_from_args(&globals, args)?;
-    let store = open_agent_store(&globals)?;
-    let runtime = FakeProviderRuntime::new(store.clone());
+    let (store, snapshot) = load_conversation_from_args(&globals, args)?;
+    let provider = resolve_runtime_for_existing_snapshot(&globals, &snapshot)?;
+    let runtime = HeadlessProviderRuntime::new(
+        store.clone(),
+        provider.execution,
+        HeadlessRuntimeOptions {
+            ci_mode: globals.ci,
+            ..HeadlessRuntimeOptions::default()
+        },
+    );
     let compacted = runtime
-        .continue_run(xero_agent_core::ContinueRunRequest {
+        .compact_session(xero_agent_core::CompactSessionRequest {
             project_id: snapshot.project_id.clone(),
-            run_id: snapshot.run_id.clone(),
-            prompt: "Compact this headless conversation and retain the durable run summary.".into(),
+            agent_session_id: snapshot.agent_session_id.clone(),
+            reason: "cli_compact_requested".into(),
         })
         .map_err(core_error)?;
     let text = format!(
@@ -538,9 +574,18 @@ fn command_conversation_retry(
     globals: GlobalOptions,
     args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
-    let (_store, snapshot) = load_conversation_from_args(&globals, args)?;
-    let store = open_agent_store(&globals)?;
-    let runtime = FakeProviderRuntime::new(store.clone());
+    let (store, snapshot) = load_conversation_from_args(&globals, args)?;
+    let provider = resolve_runtime_for_existing_snapshot(&globals, &snapshot)?;
+    let provider_preflight = ensure_cli_provider_preflight_for_run(&globals, &provider)?;
+    let runtime = HeadlessProviderRuntime::new(
+        store.clone(),
+        provider.execution,
+        HeadlessRuntimeOptions {
+            ci_mode: globals.ci,
+            provider_preflight: Some(provider_preflight.clone()),
+            ..HeadlessRuntimeOptions::default()
+        },
+    );
     let retried = runtime
         .start_run(StartRunRequest {
             project_id: snapshot.project_id.clone(),
@@ -548,8 +593,8 @@ fn command_conversation_retry(
             run_id: generate_id("run-retry"),
             prompt: snapshot.prompt.clone(),
             provider: ProviderSelection {
-                provider_id: snapshot.provider_id.clone(),
-                model_id: snapshot.model_id.clone(),
+                provider_id: provider.provider_id,
+                model_id: provider.model_id,
             },
             controls: Some(RunControls {
                 runtime_agent_id: "engineer".into(),
@@ -565,7 +610,12 @@ fn command_conversation_retry(
     Ok(response(
         &globals,
         text,
-        json!({ "kind": "conversationRetry", "sourceRunId": snapshot.run_id, "snapshot": retried }),
+        json!({
+            "kind": "conversationRetry",
+            "sourceRunId": snapshot.run_id,
+            "providerPreflight": provider_preflight,
+            "snapshot": retried
+        }),
     ))
 }
 
@@ -573,24 +623,21 @@ fn command_conversation_clone(
     globals: GlobalOptions,
     args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
-    let (_store, snapshot) = load_conversation_from_args(&globals, args)?;
-    let store = open_agent_store(&globals)?;
-    let runtime = FakeProviderRuntime::new(store.clone());
+    let (store, snapshot) = load_conversation_from_args(&globals, args)?;
+    let provider = resolve_runtime_for_existing_snapshot(&globals, &snapshot)?;
+    let runtime = HeadlessProviderRuntime::new(
+        store.clone(),
+        provider.execution,
+        HeadlessRuntimeOptions {
+            ci_mode: globals.ci,
+            ..HeadlessRuntimeOptions::default()
+        },
+    );
     let cloned = runtime
-        .start_run(StartRunRequest {
+        .fork_session(xero_agent_core::ForkSessionRequest {
             project_id: snapshot.project_id.clone(),
-            agent_session_id: generate_id("session-clone"),
-            run_id: generate_id("run-clone"),
-            prompt: snapshot.prompt.clone(),
-            provider: ProviderSelection {
-                provider_id: snapshot.provider_id.clone(),
-                model_id: snapshot.model_id.clone(),
-            },
-            controls: Some(RunControls {
-                runtime_agent_id: "engineer".into(),
-                approval_mode: if globals.ci { "strict" } else { "on_request" }.into(),
-                plan_mode_required: globals.ci,
-            }),
+            source_agent_session_id: snapshot.agent_session_id.clone(),
+            target_agent_session_id: generate_id("session-clone"),
         })
         .map_err(core_error)?;
     let text = format!(
@@ -733,7 +780,7 @@ fn command_provider_doctor(
                     .map(|profile| profile.provider_id.clone())
             })
         })
-        .unwrap_or_else(|| DEFAULT_PROVIDER_ID.into());
+        .unwrap_or_else(|| FAKE_PROVIDER_ID.into());
     let profile = profile_id
         .as_ref()
         .and_then(|id| config.providers.get(id))
@@ -770,6 +817,59 @@ fn command_provider_doctor(
             .push_str("\nProvider diagnostics found a headless configuration issue.");
     }
     Ok(output)
+}
+
+fn command_provider_preflight(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero provider preflight [PROVIDER_ID] [--profile PROFILE_ID] [--model MODEL_ID] [--force]\nChecks the selected headless provider/profile/model contract without starting an agent run.",
+            json!({ "command": "provider preflight" }),
+        ));
+    }
+    let profile_id = take_option(&mut args, "--profile")?;
+    let model_id = take_option(&mut args, "--model")?;
+    let force = take_bool_flag(&mut args, "--force");
+    reject_unknown_options(&args)?;
+    let snapshot = cli_provider_preflight_for_selection(
+        &globals,
+        args.first().map(String::as_str),
+        profile_id.as_deref(),
+        model_id.as_deref(),
+        force,
+    )?;
+    let blockers = provider_preflight_blockers(&snapshot);
+    let lines = snapshot
+        .checks
+        .iter()
+        .map(|check| format!("{}: {}", check.status.as_str(), check.message))
+        .collect::<Vec<_>>();
+    let text = if lines.is_empty() {
+        format!(
+            "Provider preflight for {}/{} produced no checks.",
+            snapshot.provider_id, snapshot.model_id
+        )
+    } else {
+        format!(
+            "Provider preflight for {}/{}: {}\n{}",
+            snapshot.provider_id,
+            snapshot.model_id,
+            snapshot.status.as_str(),
+            lines.join("\n")
+        )
+    };
+    Ok(response(
+        &globals,
+        text,
+        json!({
+            "kind": "providerPreflight",
+            "snapshot": snapshot,
+            "blockers": blockers,
+        }),
+    ))
 }
 
 fn command_tool_pack_list(
@@ -908,7 +1008,7 @@ fn cli_tool_pack_prerequisite_available(
         "repo_root" => env::current_dir()
             .map(|path| path.is_dir())
             .unwrap_or(false),
-        "workspace_index_store" => globals.state_dir.join(WORKSPACE_INDEX_DIRECTORY).is_dir(),
+        "workspace_index_store" => cli_app_data_root(globals).join(PROJECTS_DIRECTORY).is_dir(),
         "macos_platform" => cfg!(target_os = "macos"),
         "webview_runtime" => cfg!(any(
             target_os = "macos",
@@ -1090,27 +1190,70 @@ fn command_workspace_index(
     globals: GlobalOptions,
     mut args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero workspace index [--repo PATH] [--project-id ID] [--max-files N] [--force]\nBuilds Xero's local semantic workspace index in app-data project state.",
+            json!({ "command": "workspace index" }),
+        ));
+    }
     let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
-    let project_id =
-        take_option(&mut args, "--project-id")?.unwrap_or_else(|| DEFAULT_PROJECT_ID.into());
-    let limit = take_option(&mut args, "--limit")?
+    let project_id = take_option(&mut args, "--project-id")?;
+    let max_files = take_option(&mut args, "--max-files")?;
+    let legacy_limit = if max_files.is_none() {
+        take_option(&mut args, "--limit")?
+    } else {
+        None
+    };
+    let limit = max_files
+        .or(legacy_limit)
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_INDEX_FILE_LIMIT);
+        .unwrap_or(DEFAULT_INDEX_FILE_LIMIT)
+        .clamp(1, HARD_INDEX_FILE_LIMIT);
+    let force = take_bool_flag(&mut args, "--force");
     reject_unknown_options(&args)?;
     let repo_root = canonicalize_existing_path(&repo)?;
-    let index = build_workspace_index(&repo_root, &project_id, limit)?;
-    let path = workspace_index_path(&globals, &repo_root);
-    write_json_file(&path, &index)?;
+    let project_id = project_id.unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+    let response_body = build_workspace_index(&globals, &repo_root, &project_id, limit, force)?;
     let text = format!(
-        "Indexed {} files for `{}` at {}.",
-        index.files.len(),
+        "Indexed {} changed file(s), reused {}, removed {} for `{}` at {}.",
+        response_body.changed_files,
+        response_body.unchanged_files,
+        response_body.removed_files,
         project_id,
-        path.display()
+        response_body.status.storage_path
     );
     Ok(response(
         &globals,
         text,
-        json!({ "kind": "workspaceIndex", "path": path, "index": index }),
+        json!({ "kind": "workspaceIndex", "response": response_body }),
+    ))
+}
+
+fn command_workspace_status(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero workspace status [--repo PATH] [--project-id ID]\nReports freshness and coverage for Xero's app-data semantic workspace index.",
+            json!({ "command": "workspace status" }),
+        ));
+    }
+    let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
+    let project_id = take_option(&mut args, "--project-id")?;
+    reject_unknown_options(&args)?;
+    let repo_root = canonicalize_existing_path(&repo)?;
+    let project_id = project_id.unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+    let status = workspace_index_status(&globals, &repo_root, &project_id)?;
+    Ok(response(
+        &globals,
+        format!(
+            "Workspace index is {} with {} of {} files indexed.",
+            status.state, status.indexed_files, status.total_files
+        ),
+        json!({ "kind": "workspaceStatus", "status": status }),
     ))
 }
 
@@ -1118,10 +1261,23 @@ fn command_workspace_query(
     globals: GlobalOptions,
     mut args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero workspace query [--repo PATH] [--project-id ID] [--mode semantic|symbol|related-tests|impact|auto] [--limit N] [--path PATH] QUERY\nQueries Xero's local semantic workspace index.",
+            json!({ "command": "workspace query" }),
+        ));
+    }
     let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
+    let project_id = take_option(&mut args, "--project-id")?;
+    let mode = take_option(&mut args, "--mode")?
+        .map(|value| parse_workspace_query_mode(&value))
+        .transpose()?
+        .unwrap_or(WorkspaceQueryMode::Auto);
+    let path_filter = take_option(&mut args, "--path")?;
     let limit = take_option(&mut args, "--limit")?
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(8)
+        .unwrap_or(DEFAULT_WORKSPACE_QUERY_LIMIT)
         .min(MAX_QUERY_RESULTS);
     reject_unknown_options(&args)?;
     let query = if args.is_empty() {
@@ -1132,13 +1288,21 @@ fn command_workspace_query(
         args.join(" ")
     };
     let repo_root = canonicalize_existing_path(&repo)?;
-    let path = workspace_index_path(&globals, &repo_root);
-    let index = read_json_file::<WorkspaceIndex>(&path)?;
-    let results = query_workspace_index(&index, &query, limit);
-    let text = if results.is_empty() {
+    let project_id = project_id.unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+    let response_body = query_workspace_index_for_repo(
+        &globals,
+        &repo_root,
+        &project_id,
+        &query,
+        mode,
+        limit,
+        path_filter.into_iter().collect(),
+    )?;
+    let text = if response_body.results.is_empty() {
         "No workspace index results matched.".into()
     } else {
-        results
+        response_body
+            .results
             .iter()
             .map(|result| format!("{:.3}  {}", result.score, result.path))
             .collect::<Vec<_>>()
@@ -1147,7 +1311,57 @@ fn command_workspace_query(
     Ok(response(
         &globals,
         text,
-        json!({ "kind": "workspaceQuery", "query": query, "indexPath": path, "results": results }),
+        json!({ "kind": "workspaceQuery", "response": response_body }),
+    ))
+}
+
+fn command_workspace_explain(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero workspace explain [--repo PATH] [--project-id ID] [--path PATH] [QUERY]\nExplains index freshness and the top retrieval signals.",
+            json!({ "command": "workspace explain" }),
+        ));
+    }
+    let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
+    let project_id = take_option(&mut args, "--project-id")?;
+    let path = take_option(&mut args, "--path")?;
+    reject_unknown_options(&args)?;
+    let query = (!args.is_empty()).then(|| args.join(" "));
+    let repo_root = canonicalize_existing_path(&repo)?;
+    let project_id = project_id.unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+    let explanation = explain_workspace_index(&globals, &repo_root, &project_id, query, path)?;
+    Ok(response(
+        &globals,
+        explanation.summary.clone(),
+        json!({ "kind": "workspaceExplain", "explanation": explanation }),
+    ))
+}
+
+fn command_workspace_reset(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero workspace reset [--repo PATH] [--project-id ID]\nDeletes Xero's local semantic workspace index rows for the selected project.",
+            json!({ "command": "workspace reset" }),
+        ));
+    }
+    let repo = take_option(&mut args, "--repo")?.unwrap_or_else(|| ".".into());
+    let project_id = take_option(&mut args, "--project-id")?;
+    reject_unknown_options(&args)?;
+    let repo_root = canonicalize_existing_path(&repo)?;
+    let project_id = project_id.unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+    let status = reset_workspace_index(&globals, &repo_root, &project_id)?;
+    Ok(response(
+        &globals,
+        format!("Reset workspace index for `{project_id}`."),
+        json!({ "kind": "workspaceReset", "status": status }),
     ))
 }
 
@@ -1211,24 +1425,1441 @@ fn command_daemon(globals: GlobalOptions, args: Vec<String>) -> Result<CliRespon
 fn load_conversation_from_args(
     globals: &GlobalOptions,
     mut args: Vec<String>,
-) -> Result<(FileAgentCoreStore, RunSnapshot), CliError> {
+) -> Result<(CliAgentStore, RunSnapshot), CliError> {
     let project_id = take_option(&mut args, "--project-id")?;
     reject_unknown_options(&args)?;
     let run_id = args
         .first()
         .cloned()
         .ok_or_else(|| CliError::usage("Missing run id."))?;
-    let store = open_agent_store(globals)?;
-    let snapshot = match project_id {
-        Some(project_id) => store.load_run(&project_id, &run_id),
-        None => store.load_run_by_id(&run_id),
-    }
-    .map_err(core_error)?;
-    Ok((store, snapshot))
+    load_conversation_snapshot(globals, project_id.as_deref(), &run_id)
 }
 
-fn open_agent_store(globals: &GlobalOptions) -> Result<FileAgentCoreStore, CliError> {
-    FileAgentCoreStore::open(globals.state_dir.join(AGENT_CORE_STATE_FILE)).map_err(core_error)
+fn load_conversation_snapshot(
+    globals: &GlobalOptions,
+    project_id: Option<&str>,
+    run_id: &str,
+) -> Result<(CliAgentStore, RunSnapshot), CliError> {
+    let mut app_data_error = None;
+    if let Some(project_id) = project_id {
+        match open_registered_project_store(globals, project_id) {
+            Ok(store) => match store.load_run(project_id, run_id) {
+                Ok(snapshot) => return Ok((CliAgentStore::AppData(store), snapshot)),
+                Err(error) if error.code != "agent_core_run_not_found" => {
+                    return Err(core_error(error));
+                }
+                Err(_) => {}
+            },
+            Err(error) => app_data_error = Some(error),
+        }
+    } else if let Some(found) = load_registered_run_by_id(globals, run_id)? {
+        return Ok(found);
+    }
+
+    let harness = open_harness_agent_store(globals)?;
+    let harness_result = match project_id {
+        Some(project_id) => harness.load_run(project_id, run_id),
+        None => harness.load_run_by_id(run_id),
+    };
+    let snapshot = match harness_result {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            if let Some(app_data_error) = app_data_error {
+                if app_data_error.code != "xero_cli_project_registry_missing" {
+                    return Err(app_data_error);
+                }
+            }
+            return Err(core_error(error));
+        }
+    };
+    if snapshot.provider_id != FAKE_PROVIDER_ID {
+        return Err(CliError::user_fixable(
+            "xero_cli_harness_store_real_run_rejected",
+            format!(
+                "Run `{}` was found only in `{}`, but real-provider runs must be inspected from app-data project state.",
+                snapshot.run_id,
+                harness.path().display()
+            ),
+        ));
+    }
+    Ok((CliAgentStore::Harness(harness), snapshot))
+}
+
+fn list_conversation_runs(
+    globals: &GlobalOptions,
+    project_id: Option<&str>,
+) -> Result<Vec<RunSummary>, CliError> {
+    let mut runs = Vec::new();
+    if let Some(project_id) = project_id {
+        if let Ok(store) = open_registered_project_store(globals, project_id) {
+            runs.extend(store.list_project_runs(project_id).map_err(core_error)?);
+        }
+    } else {
+        for project in read_registered_projects_optional(globals)? {
+            if let Ok(store) = AppDataProjectAgentStore::open(project) {
+                runs.extend(store.list_runs().map_err(core_error)?);
+            }
+        }
+    }
+
+    let harness = open_harness_agent_store(globals)?;
+    let harness_runs = match project_id {
+        Some(project_id) => harness.list_project_runs(project_id),
+        None => harness.list_runs(),
+    }
+    .map_err(core_error)?
+    .into_iter()
+    .filter(|run| run.provider_id == FAKE_PROVIDER_ID);
+    runs.extend(harness_runs);
+    runs.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.started_at.cmp(&left.started_at))
+            .then_with(|| left.project_id.cmp(&right.project_id))
+            .then_with(|| left.run_id.cmp(&right.run_id))
+    });
+    Ok(runs)
+}
+
+fn load_registered_run_by_id(
+    globals: &GlobalOptions,
+    run_id: &str,
+) -> Result<Option<(CliAgentStore, RunSnapshot)>, CliError> {
+    let mut matches = Vec::new();
+    for project in read_registered_projects_optional(globals)? {
+        let store = match AppDataProjectAgentStore::open(project) {
+            Ok(store) => store,
+            Err(_) => continue,
+        };
+        match store.load_run_by_id(run_id) {
+            Ok(snapshot) => matches.push((CliAgentStore::AppData(store), snapshot)),
+            Err(error) if error.code == "agent_core_run_not_found" => {}
+            Err(error) => return Err(core_error(error)),
+        }
+    }
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
+        _ => Err(CliError::user_fixable(
+            "agent_core_run_ambiguous",
+            format!("Run `{run_id}` exists in multiple projects. Pass `--project-id`."),
+        )),
+    }
+}
+
+fn open_run_store_for_provider(
+    globals: &GlobalOptions,
+    project_id: Option<String>,
+    provider: &CliProviderExecution,
+) -> Result<(String, CliAgentStore), CliError> {
+    if provider.execution_mode == "real_provider" {
+        let project = resolve_registered_project_for_run(globals, project_id.as_deref())?;
+        let project_id = project.project_id.clone();
+        let store = AppDataProjectAgentStore::open(project)?;
+        return Ok((project_id, CliAgentStore::AppData(store)));
+    }
+
+    Ok((
+        project_id.unwrap_or_else(default_harness_project_id),
+        CliAgentStore::Harness(open_harness_agent_store(globals)?),
+    ))
+}
+
+fn default_harness_project_id() -> String {
+    env::current_dir()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_PROJECT_ID.into())
+}
+
+fn open_harness_agent_store(globals: &GlobalOptions) -> Result<FileAgentCoreStore, CliError> {
+    FileAgentCoreStore::open(harness_store_path(globals)).map_err(core_error)
+}
+
+fn harness_store_path(globals: &GlobalOptions) -> PathBuf {
+    globals.state_dir.join(AGENT_CORE_STATE_FILE)
+}
+
+fn ensure_cli_real_provider_runtime_contract(
+    project_id: &str,
+    provider: &CliProviderExecution,
+    store: &CliAgentStore,
+) -> Result<(), CliError> {
+    let contract = ProductionRuntimeContract::real_provider(
+        "cli_agent_exec",
+        project_id.to_owned(),
+        provider.provider_id.clone(),
+        provider.model_id.clone(),
+        store.runtime_store_descriptor(project_id),
+    );
+    xero_agent_core::validate_production_runtime_contract(&contract).map_err(core_error)
+}
+
+#[derive(Debug, Clone)]
+enum CliAgentStore {
+    Harness(FileAgentCoreStore),
+    AppData(AppDataProjectAgentStore),
+}
+
+impl CliAgentStore {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Harness(store) => store.path(),
+            Self::AppData(store) => store.path(),
+        }
+    }
+
+    fn repo_root(&self) -> Option<&Path> {
+        match self {
+            Self::Harness(_) => None,
+            Self::AppData(store) => Some(store.repo_root.as_path()),
+        }
+    }
+}
+
+impl AgentCoreStore for CliAgentStore {
+    fn runtime_store_descriptor(&self, project_id: &str) -> RuntimeStoreDescriptor {
+        match self {
+            Self::Harness(store) => store.runtime_store_descriptor(project_id),
+            Self::AppData(store) => store.runtime_store_descriptor(project_id),
+        }
+    }
+
+    fn semantic_workspace_index_state(&self, project_id: &str) -> EnvironmentSemanticIndexState {
+        match self {
+            Self::Harness(store) => store.semantic_workspace_index_state(project_id),
+            Self::AppData(store) => store.semantic_workspace_index_state(project_id),
+        }
+    }
+
+    fn insert_run(&self, run: NewRunRecord) -> xero_agent_core::CoreResult<RunSnapshot> {
+        match self {
+            Self::Harness(store) => store.insert_run(run),
+            Self::AppData(store) => store.insert_run(run),
+        }
+    }
+
+    fn load_run(&self, project_id: &str, run_id: &str) -> xero_agent_core::CoreResult<RunSnapshot> {
+        match self {
+            Self::Harness(store) => store.load_run(project_id, run_id),
+            Self::AppData(store) => store.load_run(project_id, run_id),
+        }
+    }
+
+    fn append_message(
+        &self,
+        message: NewMessageRecord,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        match self {
+            Self::Harness(store) => store.append_message(message),
+            Self::AppData(store) => store.append_message(message),
+        }
+    }
+
+    fn append_event(&self, event: NewRuntimeEvent) -> xero_agent_core::CoreResult<RuntimeEvent> {
+        match self {
+            Self::Harness(store) => store.append_event(event),
+            Self::AppData(store) => store.append_event(event),
+        }
+    }
+
+    fn record_context_manifest(
+        &self,
+        manifest: NewContextManifest,
+    ) -> xero_agent_core::CoreResult<ContextManifest> {
+        match self {
+            Self::Harness(store) => store.record_context_manifest(manifest),
+            Self::AppData(store) => store.record_context_manifest(manifest),
+        }
+    }
+
+    fn update_run_status(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        status: RunStatus,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        match self {
+            Self::Harness(store) => store.update_run_status(project_id, run_id, status),
+            Self::AppData(store) => store.update_run_status(project_id, run_id, status),
+        }
+    }
+
+    fn export_trace(
+        &self,
+        project_id: &str,
+        run_id: &str,
+    ) -> xero_agent_core::CoreResult<RuntimeTrace> {
+        match self {
+            Self::Harness(store) => store.export_trace(project_id, run_id),
+            Self::AppData(store) => store.export_trace(project_id, run_id),
+        }
+    }
+
+    fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        match self {
+            Self::Harness(store) => store.latest_run_for_session(project_id, agent_session_id),
+            Self::AppData(store) => store.latest_run_for_session(project_id, agent_session_id),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AppDataProjectAgentStore {
+    project_id: String,
+    repo_root: PathBuf,
+    database_path: PathBuf,
+}
+
+impl AppDataProjectAgentStore {
+    fn open(project: RegisteredProject) -> Result<Self, CliError> {
+        if !project.repo_root.is_dir() {
+            return Err(CliError::user_fixable(
+                "xero_cli_project_root_missing",
+                format!(
+                    "Imported project `{}` points at `{}`, but that root is unavailable.",
+                    project.project_id,
+                    project.repo_root.display()
+                ),
+            ));
+        }
+        if !project.database_path.exists() {
+            return Err(CliError::user_fixable(
+                "xero_cli_project_state_missing",
+                format!(
+                    "Imported project `{}` is missing app-data project database `{}`.",
+                    project.project_id,
+                    project.database_path.display()
+                ),
+            ));
+        }
+        Ok(Self {
+            project_id: project.project_id,
+            repo_root: project.repo_root,
+            database_path: project.database_path,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.database_path.as_path()
+    }
+
+    fn connection(&self) -> xero_agent_core::CoreResult<Connection> {
+        let connection = Connection::open(&self.database_path).map_err(|error| {
+            xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_store_open_failed",
+                format!(
+                    "Xero could not open app-data project state `{}`: {error}",
+                    self.database_path.display()
+                ),
+            )
+        })?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| {
+                xero_agent_core::CoreError::system_fault(
+                    "agent_core_app_data_store_config_failed",
+                    format!("Xero could not configure app-data project state: {error}"),
+                )
+            })?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+            .map_err(|error| {
+                xero_agent_core::CoreError::system_fault(
+                    "agent_core_app_data_store_config_failed",
+                    format!("Xero could not configure app-data project state pragmas: {error}"),
+                )
+            })?;
+        Ok(connection)
+    }
+
+    fn workspace_index_status_for_lifecycle(
+        &self,
+        project_id: &str,
+    ) -> Option<WorkspaceIndexStatus> {
+        let connection = self.connection().ok()?;
+        let mut status = read_workspace_status(
+            &connection,
+            &self.repo_root,
+            project_id,
+            &self.database_path,
+        )
+        .ok()?
+        .unwrap_or_else(|| {
+            empty_workspace_status(&self.repo_root, project_id, &self.database_path)
+        });
+        let scan = scan_workspace(&self.repo_root, HARD_INDEX_FILE_LIMIT).ok()?;
+        let indexed = read_workspace_fingerprints(&connection, project_id).ok()?;
+        let current_paths = scan
+            .files
+            .iter()
+            .map(|candidate| candidate.virtual_path.clone())
+            .collect::<BTreeSet<_>>();
+        let stale_current = scan
+            .files
+            .iter()
+            .filter(|candidate| {
+                indexed
+                    .get(&candidate.virtual_path)
+                    .map(|fingerprint| {
+                        fingerprint.modified_at != candidate.modified_at
+                            || fingerprint.byte_length != candidate.byte_length
+                    })
+                    .unwrap_or(true)
+            })
+            .count();
+        let removed = indexed
+            .keys()
+            .filter(|path| !current_paths.contains(*path))
+            .count();
+        status.total_files = scan.files.len() as u32;
+        status.skipped_files = scan.skipped_files as u32;
+        status.stale_files = stale_current.saturating_add(removed) as u32;
+        status.coverage_percent = coverage_percent(
+            status.indexed_files.saturating_sub(removed as u32),
+            status.total_files,
+        );
+        if status.indexed_files == 0 {
+            status.state = WorkspaceIndexState::Empty;
+        } else if status.stale_files > 0 || status.head_sha != repository_head_sha(&self.repo_root)
+        {
+            status.state = WorkspaceIndexState::Stale;
+        } else if status.state != WorkspaceIndexState::Failed {
+            status.state = WorkspaceIndexState::Ready;
+        }
+        Some(status)
+    }
+
+    fn list_runs(&self) -> xero_agent_core::CoreResult<Vec<RunSummary>> {
+        self.list_project_runs(&self.project_id)
+    }
+
+    fn list_project_runs(&self, project_id: &str) -> xero_agent_core::CoreResult<Vec<RunSummary>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT
+                    trace_id,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    provider_id,
+                    model_id,
+                    status,
+                    prompt,
+                    (SELECT COUNT(*) FROM agent_messages WHERE agent_messages.project_id = agent_runs.project_id AND agent_messages.run_id = agent_runs.run_id),
+                    (SELECT COUNT(*) FROM agent_events WHERE agent_events.project_id = agent_runs.project_id AND agent_events.run_id = agent_runs.run_id),
+                    (SELECT COUNT(*) FROM agent_context_manifests WHERE agent_context_manifests.project_id = agent_runs.project_id AND agent_context_manifests.run_id = agent_runs.run_id),
+                    started_at,
+                    updated_at
+                FROM agent_runs
+                WHERE project_id = ?1
+                ORDER BY updated_at DESC, started_at DESC, run_id ASC
+                "#,
+            )
+            .map_err(|error| self.query_error("agent_core_app_data_run_list_prepare_failed", error))?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok(RunSummary {
+                    trace_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    agent_session_id: row.get(2)?,
+                    run_id: row.get(3)?,
+                    provider_id: row.get(4)?,
+                    model_id: row.get(5)?,
+                    status: parse_core_run_status(row.get::<_, String>(6)?.as_str()),
+                    prompt: row.get(7)?,
+                    message_count: nonnegative_count(row.get(8)?),
+                    event_count: nonnegative_count(row.get(9)?),
+                    context_manifest_count: nonnegative_count(row.get(10)?),
+                    started_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                })
+            })
+            .map_err(|error| self.query_error("agent_core_app_data_run_list_failed", error))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| self.query_error("agent_core_app_data_run_list_decode_failed", error))
+    }
+
+    fn load_run_by_id(&self, run_id: &str) -> xero_agent_core::CoreResult<RunSnapshot> {
+        let connection = self.connection()?;
+        let project_id = connection
+            .query_row(
+                "SELECT project_id FROM agent_runs WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| self.query_error("agent_core_app_data_run_lookup_failed", error))?
+            .ok_or_else(|| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_run_not_found",
+                    format!("Run `{run_id}` was not found."),
+                )
+            })?;
+        self.load_run(&project_id, run_id)
+    }
+
+    fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        let connection = self.connection()?;
+        let run_id = connection
+            .query_row(
+                r#"
+                SELECT run_id
+                FROM agent_runs
+                WHERE project_id = ?1 AND agent_session_id = ?2
+                ORDER BY updated_at DESC, started_at DESC, run_id DESC
+                LIMIT 1
+                "#,
+                params![project_id, agent_session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                self.query_error("agent_core_app_data_session_latest_failed", error)
+            })?
+            .ok_or_else(|| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_session_run_not_found",
+                    format!(
+                        "No run was found for session `{agent_session_id}` in project `{project_id}`."
+                    ),
+                )
+            })?;
+        self.load_run(project_id, &run_id)
+    }
+
+    fn query_error(
+        &self,
+        code: &'static str,
+        error: rusqlite::Error,
+    ) -> xero_agent_core::CoreError {
+        xero_agent_core::CoreError::system_fault(
+            code,
+            format!(
+                "Xero could not read app-data project state `{}` for `{}`: {error}",
+                self.database_path.display(),
+                self.repo_root.display()
+            ),
+        )
+    }
+
+    fn write_error(
+        &self,
+        code: &'static str,
+        error: rusqlite::Error,
+    ) -> xero_agent_core::CoreError {
+        xero_agent_core::CoreError::system_fault(
+            code,
+            format!(
+                "Xero could not write app-data project state `{}` for `{}`: {error}",
+                self.database_path.display(),
+                self.repo_root.display()
+            ),
+        )
+    }
+}
+
+impl AgentCoreStore for AppDataProjectAgentStore {
+    fn runtime_store_descriptor(&self, project_id: &str) -> RuntimeStoreDescriptor {
+        RuntimeStoreDescriptor::app_data_project_state(project_id, self.database_path.clone())
+    }
+
+    fn semantic_workspace_index_state(&self, project_id: &str) -> EnvironmentSemanticIndexState {
+        self.workspace_index_status_for_lifecycle(project_id)
+            .map(|status| semantic_index_state_from_workspace_status(status.state))
+            .unwrap_or(EnvironmentSemanticIndexState::Unavailable)
+    }
+
+    fn insert_run(&self, run: NewRunRecord) -> xero_agent_core::CoreResult<RunSnapshot> {
+        validate_core_required(&run.project_id, "projectId")?;
+        validate_core_required(&run.agent_session_id, "agentSessionId")?;
+        validate_core_required(&run.run_id, "runId")?;
+        validate_core_required(&run.prompt, "prompt")?;
+        validate_core_required(&run.provider_id, "providerId")?;
+        validate_core_required(&run.model_id, "modelId")?;
+        if run.project_id != self.project_id {
+            return Err(xero_agent_core::CoreError::invalid_request(
+                "agent_core_app_data_project_mismatch",
+                format!(
+                    "Store for project `{}` cannot persist run for `{}`.",
+                    self.project_id, run.project_id
+                ),
+            ));
+        }
+
+        let connection = self.connection()?;
+        let project_exists = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
+                params![run.project_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| self.query_error("agent_core_app_data_project_read_failed", error))?;
+        if !project_exists {
+            return Err(xero_agent_core::CoreError::invalid_request(
+                "agent_core_app_data_project_missing",
+                format!(
+                    "App-data project database `{}` does not contain project `{}`.",
+                    self.database_path.display(),
+                    run.project_id
+                ),
+            ));
+        }
+
+        let now = now_timestamp();
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_sessions (
+                    project_id,
+                    agent_session_id,
+                    title,
+                    summary,
+                    status,
+                    selected,
+                    updated_at,
+                    last_run_id,
+                    last_runtime_kind,
+                    last_provider_id
+                )
+                VALUES (?1, ?2, ?3, '', 'active', 0, ?4, ?5, 'owned_agent', ?6)
+                ON CONFLICT(project_id, agent_session_id) DO UPDATE SET
+                    status = 'active',
+                    archived_at = NULL,
+                    updated_at = excluded.updated_at,
+                    last_run_id = excluded.last_run_id,
+                    last_runtime_kind = excluded.last_runtime_kind,
+                    last_provider_id = excluded.last_provider_id
+                "#,
+                params![
+                    run.project_id,
+                    run.agent_session_id,
+                    session_title(&run.agent_session_id),
+                    now,
+                    run.run_id,
+                    run.provider_id,
+                ],
+            )
+            .map_err(|error| {
+                self.write_error("agent_core_app_data_session_upsert_failed", error)
+            })?;
+
+        let trace_id = run.trace_id.clone().unwrap_or_else(|| {
+            xero_agent_core::runtime_trace_id_for_run(&run.project_id, &run.run_id)
+        });
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_runs (
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    trace_id,
+                    provider_id,
+                    model_id,
+                    status,
+                    prompt,
+                    system_prompt,
+                    started_at,
+                    last_heartbeat_at,
+                    updated_at
+                )
+                VALUES ('engineer', 'engineer', 1, ?1, ?2, ?3, ?4, ?5, ?6, 'starting', ?7, ?8, ?9, ?9, ?9)
+                "#,
+                params![
+                    run.project_id,
+                    run.agent_session_id,
+                    run.run_id,
+                    trace_id,
+                    run.provider_id,
+                    run.model_id,
+                    run.prompt,
+                    "Xero CLI production runtime.",
+                    now,
+                ],
+            )
+            .map_err(|error| self.write_error("agent_core_app_data_run_insert_failed", error))?;
+        self.load_run(&run.project_id, &run.run_id)
+    }
+
+    fn load_run(&self, project_id: &str, run_id: &str) -> xero_agent_core::CoreResult<RunSnapshot> {
+        let connection = self.connection()?;
+        let run = connection
+            .query_row(
+                r#"
+                SELECT trace_id, project_id, agent_session_id, run_id, provider_id, model_id, status, prompt
+                FROM agent_runs
+                WHERE project_id = ?1 AND run_id = ?2
+                "#,
+                params![project_id, run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| self.query_error("agent_core_app_data_run_read_failed", error))?
+            .ok_or_else(|| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_run_not_found",
+                    format!("Run `{run_id}` was not found in project `{project_id}`."),
+                )
+            })?;
+        let messages = read_app_data_messages(&connection, self, project_id, run_id)?;
+        let events = read_app_data_events(&connection, self, &run.0, project_id, run_id)?;
+        let context_manifests =
+            read_app_data_context_manifests(&connection, self, &run.0, project_id, run_id)?;
+        Ok(RunSnapshot {
+            trace_id: run.0,
+            project_id: run.1,
+            agent_session_id: run.2,
+            run_id: run.3,
+            provider_id: run.4,
+            model_id: run.5,
+            status: parse_core_run_status(&run.6),
+            prompt: run.7,
+            messages,
+            events,
+            context_manifests,
+        })
+    }
+
+    fn append_message(
+        &self,
+        message: NewMessageRecord,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        validate_core_required(&message.project_id, "projectId")?;
+        validate_core_required(&message.run_id, "runId")?;
+        validate_core_message_content(&message)?;
+        let provider_metadata_json = encode_message_provider_metadata(&message.provider_metadata)?;
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO agent_messages (project_id, run_id, role, content, provider_metadata_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    message.project_id,
+                    message.run_id,
+                    message_role_wire(&message.role),
+                    message.content,
+                    provider_metadata_json,
+                    now_timestamp(),
+                ],
+            )
+            .map_err(|error| self.write_error("agent_core_app_data_message_insert_failed", error))?;
+        self.load_run(&message.project_id, &message.run_id)
+    }
+
+    fn append_event(&self, event: NewRuntimeEvent) -> xero_agent_core::CoreResult<RuntimeEvent> {
+        validate_core_required(&event.project_id, "projectId")?;
+        validate_core_required(&event.run_id, "runId")?;
+        let connection = self.connection()?;
+        let trace_id = run_trace_id(&connection, self, &event.project_id, &event.run_id)?;
+        let payload_json = serde_json::to_string(&event.payload).map_err(|error| {
+            xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_event_encode_failed",
+                format!("Xero could not encode app-data event payload: {error}"),
+            )
+        })?;
+        let created_at = now_timestamp();
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    event.project_id,
+                    event.run_id,
+                    runtime_event_kind_wire(&event.event_kind),
+                    payload_json,
+                    created_at,
+                ],
+            )
+            .map_err(|error| self.write_error("agent_core_app_data_event_insert_failed", error))?;
+        let id = connection.last_insert_rowid();
+        let run_id_for_trace = event.run_id.clone();
+        let event_kind_for_trace = event.event_kind.clone();
+        Ok(RuntimeEvent {
+            id,
+            project_id: event.project_id,
+            run_id: event.run_id,
+            event_kind: event.event_kind,
+            trace: event.trace.unwrap_or_else(|| {
+                RuntimeTraceContext::for_event(
+                    &trace_id,
+                    &run_id_for_trace,
+                    id,
+                    &event_kind_for_trace,
+                )
+            }),
+            payload: event.payload,
+            created_at,
+        })
+    }
+
+    fn record_context_manifest(
+        &self,
+        manifest: NewContextManifest,
+    ) -> xero_agent_core::CoreResult<ContextManifest> {
+        validate_core_required(&manifest.project_id, "projectId")?;
+        validate_core_required(&manifest.agent_session_id, "agentSessionId")?;
+        validate_core_required(&manifest.run_id, "runId")?;
+        validate_core_required(&manifest.manifest_id, "manifestId")?;
+        let connection = self.connection()?;
+        let trace_id = run_trace_id(&connection, self, &manifest.project_id, &manifest.run_id)?;
+        let recorded_after_event_id =
+            latest_app_data_event_id(&connection, self, &manifest.project_id, &manifest.run_id)?;
+        let manifest_json = serde_json::to_string(&manifest.manifest).map_err(|error| {
+            xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_context_manifest_encode_failed",
+                format!("Xero could not encode app-data context manifest: {error}"),
+            )
+        })?;
+        let created_at = now_timestamp();
+        let context_hash = normalize_context_hash(&manifest.context_hash);
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_context_manifests (
+                    manifest_id,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    provider_id,
+                    model_id,
+                    request_kind,
+                    policy_action,
+                    policy_reason_code,
+                    budget_tokens,
+                    estimated_tokens,
+                    pressure,
+                    context_hash,
+                    included_contributors_json,
+                    excluded_contributors_json,
+                    retrieval_query_ids_json,
+                    retrieval_result_ids_json,
+                    redaction_state,
+                    manifest_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, 'engineer', 'engineer', 1, ?5, ?6, 'provider_turn', 'continue_now', 'cli_app_data_runtime', NULL, 0, 'unknown', ?7, '[]', '[]', '[]', '[]', 'clean', ?8, ?9)
+                "#,
+                params![
+                    manifest.manifest_id,
+                    manifest.project_id,
+                    manifest.agent_session_id,
+                    manifest.run_id,
+                    manifest.provider_id,
+                    manifest.model_id,
+                    context_hash,
+                    manifest_json,
+                    created_at,
+                ],
+            )
+            .map_err(|error| {
+                self.write_error("agent_core_app_data_context_manifest_insert_failed", error)
+            })?;
+        let run_id_for_trace = manifest.run_id.clone();
+        let manifest_id_for_trace = manifest.manifest_id.clone();
+        Ok(ContextManifest {
+            manifest_id: manifest.manifest_id,
+            project_id: manifest.project_id,
+            agent_session_id: manifest.agent_session_id,
+            run_id: manifest.run_id,
+            provider_id: manifest.provider_id,
+            model_id: manifest.model_id,
+            turn_index: manifest.turn_index,
+            context_hash,
+            recorded_after_event_id,
+            trace: manifest.trace.unwrap_or_else(|| {
+                RuntimeTraceContext::for_context_manifest(
+                    &trace_id,
+                    &run_id_for_trace,
+                    &manifest_id_for_trace,
+                    manifest.turn_index,
+                )
+            }),
+            manifest: manifest.manifest,
+            created_at,
+        })
+    }
+
+    fn update_run_status(
+        &self,
+        project_id: &str,
+        run_id: &str,
+        status: RunStatus,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        let connection = self.connection()?;
+        let now = now_timestamp();
+        connection
+            .execute(
+                r#"
+                UPDATE agent_runs
+                SET status = ?3,
+                    last_heartbeat_at = ?4,
+                    completed_at = CASE WHEN ?3 IN ('completed', 'handed_off') THEN ?4 ELSE completed_at END,
+                    cancelled_at = CASE WHEN ?3 = 'cancelled' THEN ?4 ELSE cancelled_at END,
+                    updated_at = ?4
+                WHERE project_id = ?1 AND run_id = ?2
+                "#,
+                params![project_id, run_id, run_status_wire(&status), now],
+            )
+            .map_err(|error| self.write_error("agent_core_app_data_status_update_failed", error))?;
+        self.load_run(project_id, run_id)
+    }
+
+    fn export_trace(
+        &self,
+        project_id: &str,
+        run_id: &str,
+    ) -> xero_agent_core::CoreResult<RuntimeTrace> {
+        RuntimeTrace::from_snapshot(self.load_run(project_id, run_id)?)
+    }
+
+    fn latest_run_for_session(
+        &self,
+        project_id: &str,
+        agent_session_id: &str,
+    ) -> xero_agent_core::CoreResult<RunSnapshot> {
+        self.latest_run_for_session(project_id, agent_session_id)
+    }
+}
+
+fn read_app_data_messages(
+    connection: &Connection,
+    store: &AppDataProjectAgentStore,
+    project_id: &str,
+    run_id: &str,
+) -> xero_agent_core::CoreResult<Vec<RuntimeMessage>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, project_id, run_id, role, content, provider_metadata_json, created_at FROM agent_messages WHERE project_id = ?1 AND run_id = ?2 ORDER BY id ASC",
+        )
+        .map_err(|error| store.query_error("agent_core_app_data_messages_prepare_failed", error))?;
+    let rows = statement
+        .query_map(params![project_id, run_id], |row| {
+            let provider_metadata_json: Option<String> = row.get(5)?;
+            let provider_metadata = match provider_metadata_json {
+                Some(value) => Some(
+                    serde_json::from_str::<RuntimeMessageProviderMetadata>(&value).map_err(
+                        |error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                5,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        },
+                    )?,
+                ),
+                None => None,
+            };
+            Ok(RuntimeMessage {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                run_id: row.get(2)?,
+                role: parse_message_role(row.get::<_, String>(3)?.as_str()),
+                content: row.get(4)?,
+                provider_metadata,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|error| store.query_error("agent_core_app_data_messages_query_failed", error))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| store.query_error("agent_core_app_data_messages_decode_failed", error))
+}
+
+fn read_app_data_events(
+    connection: &Connection,
+    store: &AppDataProjectAgentStore,
+    trace_id: &str,
+    project_id: &str,
+    run_id: &str,
+) -> xero_agent_core::CoreResult<Vec<RuntimeEvent>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, project_id, run_id, event_kind, payload_json, created_at FROM agent_events WHERE project_id = ?1 AND run_id = ?2 ORDER BY id ASC",
+        )
+        .map_err(|error| store.query_error("agent_core_app_data_events_prepare_failed", error))?;
+    let rows = statement
+        .query_map(params![project_id, run_id], |row| {
+            let id = row.get::<_, i64>(0)?;
+            let event_kind = parse_runtime_event_kind(row.get::<_, String>(3)?.as_str());
+            let payload_text = row.get::<_, String>(4)?;
+            let payload = serde_json::from_str::<JsonValue>(&payload_text).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok(RuntimeEvent {
+                id,
+                project_id: row.get(1)?,
+                run_id: row.get(2)?,
+                trace: RuntimeTraceContext::for_event(trace_id, run_id, id, &event_kind),
+                event_kind,
+                payload,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|error| store.query_error("agent_core_app_data_events_query_failed", error))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| store.query_error("agent_core_app_data_events_decode_failed", error))
+}
+
+fn read_app_data_context_manifests(
+    connection: &Connection,
+    store: &AppDataProjectAgentStore,
+    trace_id: &str,
+    project_id: &str,
+    run_id: &str,
+) -> xero_agent_core::CoreResult<Vec<ContextManifest>> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT manifest_id, project_id, agent_session_id, run_id, provider_id, model_id, context_hash, manifest_json, created_at
+            FROM agent_context_manifests
+            WHERE project_id = ?1 AND run_id = ?2
+            ORDER BY id ASC
+            "#,
+        )
+        .map_err(|error| {
+            store.query_error("agent_core_app_data_context_manifests_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id, run_id], |row| {
+            let manifest_text = row.get::<_, String>(7)?;
+            let manifest = serde_json::from_str::<JsonValue>(&manifest_text).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            let manifest_id = row.get::<_, String>(0)?;
+            let turn_index = manifest
+                .get("turnIndex")
+                .and_then(JsonValue::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            Ok(ContextManifest {
+                trace: RuntimeTraceContext::for_context_manifest(
+                    trace_id,
+                    run_id,
+                    &manifest_id,
+                    turn_index,
+                ),
+                manifest_id,
+                project_id: row.get(1)?,
+                agent_session_id: row.get(2)?,
+                run_id: row.get(3)?,
+                provider_id: row.get(4)?,
+                model_id: row.get(5)?,
+                turn_index,
+                context_hash: row.get(6)?,
+                recorded_after_event_id: None,
+                manifest,
+                created_at: row.get(8)?,
+            })
+        })
+        .map_err(|error| {
+            store.query_error("agent_core_app_data_context_manifests_query_failed", error)
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        store.query_error("agent_core_app_data_context_manifests_decode_failed", error)
+    })
+}
+
+fn run_trace_id(
+    connection: &Connection,
+    store: &AppDataProjectAgentStore,
+    project_id: &str,
+    run_id: &str,
+) -> xero_agent_core::CoreResult<String> {
+    connection
+        .query_row(
+            "SELECT trace_id FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![project_id, run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| store.query_error("agent_core_app_data_run_trace_read_failed", error))
+}
+
+fn latest_app_data_event_id(
+    connection: &Connection,
+    store: &AppDataProjectAgentStore,
+    project_id: &str,
+    run_id: &str,
+) -> xero_agent_core::CoreResult<Option<i64>> {
+    connection
+        .query_row(
+            "SELECT MAX(id) FROM agent_events WHERE project_id = ?1 AND run_id = ?2",
+            params![project_id, run_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| store.query_error("agent_core_app_data_latest_event_failed", error))
+}
+
+fn validate_core_required(value: &str, field: &str) -> xero_agent_core::CoreResult<()> {
+    if value.trim().is_empty() {
+        Err(xero_agent_core::CoreError::invalid_request(
+            "agent_core_app_data_required_field_missing",
+            format!("App-data store field `{field}` is required."),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_core_message_content(message: &NewMessageRecord) -> xero_agent_core::CoreResult<()> {
+    if !message.content.trim().is_empty() {
+        return Ok(());
+    }
+    let has_provider_tool_calls = message
+        .provider_metadata
+        .as_ref()
+        .is_some_and(|metadata| !metadata.assistant_tool_calls.is_empty());
+    if matches!(message.role, MessageRole::Assistant) && has_provider_tool_calls {
+        return Ok(());
+    }
+    Err(xero_agent_core::CoreError::invalid_request(
+        "agent_core_app_data_required_field_missing",
+        "App-data store field `content` is required.",
+    ))
+}
+
+fn encode_message_provider_metadata(
+    metadata: &Option<RuntimeMessageProviderMetadata>,
+) -> xero_agent_core::CoreResult<Option<String>> {
+    metadata
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_message_provider_metadata_encode_failed",
+                format!("Xero could not encode app-data message provider metadata: {error}"),
+            )
+        })
+}
+
+fn nonnegative_count(value: i64) -> usize {
+    usize::try_from(value.max(0)).unwrap_or(0)
+}
+
+fn normalize_context_hash(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() == 64 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        trimmed.to_ascii_lowercase()
+    } else {
+        sha256_text(trimmed)
+    }
+}
+
+fn session_title(agent_session_id: &str) -> String {
+    let trimmed = agent_session_id.trim();
+    if trimmed.is_empty() {
+        "CLI Session".into()
+    } else {
+        format!("CLI {trimmed}")
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RegisteredProject {
+    project_id: String,
+    repo_root: PathBuf,
+    database_path: PathBuf,
+}
+
+fn resolve_registered_project_for_run(
+    globals: &GlobalOptions,
+    project_id: Option<&str>,
+) -> Result<RegisteredProject, CliError> {
+    if let Some(project_id) = project_id {
+        return registered_project_by_id(globals, project_id);
+    }
+
+    let current_dir = env::current_dir().map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_current_dir_failed",
+            format!("Could not inspect the current workspace directory: {error}"),
+        )
+    })?;
+    let current_dir = fs::canonicalize(&current_dir).unwrap_or(current_dir);
+    let mut matches = read_registered_projects_strict(globals)?
+        .into_iter()
+        .filter(|project| current_dir.starts_with(&project.repo_root))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        right
+            .repo_root
+            .components()
+            .count()
+            .cmp(&left.repo_root.components().count())
+    });
+    matches.into_iter().next().ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_project_unimported",
+            format!(
+                "Current directory `{}` is not registered in Xero app-data. Import the project in desktop first or pass a registered `--project-id`.",
+                current_dir.display()
+            ),
+        )
+    })
+}
+
+fn open_registered_project_store(
+    globals: &GlobalOptions,
+    project_id: &str,
+) -> Result<AppDataProjectAgentStore, CliError> {
+    AppDataProjectAgentStore::open(registered_project_by_id(globals, project_id)?)
+}
+
+fn registered_project_by_id(
+    globals: &GlobalOptions,
+    project_id: &str,
+) -> Result<RegisteredProject, CliError> {
+    validate_required_cli(project_id, "projectId")?;
+    read_registered_projects_strict(globals)?
+        .into_iter()
+        .find(|project| project.project_id == project_id)
+        .ok_or_else(|| {
+            CliError::user_fixable(
+                "xero_cli_project_unknown",
+                format!(
+                    "Project `{project_id}` is not registered in Xero app-data at `{}`.",
+                    cli_app_data_root(globals).display()
+                ),
+            )
+        })
+}
+
+fn read_registered_projects_optional(
+    globals: &GlobalOptions,
+) -> Result<Vec<RegisteredProject>, CliError> {
+    let database_path = global_database_path(globals);
+    if !database_path.exists() {
+        return Ok(Vec::new());
+    }
+    read_registered_projects_from_database(globals, &database_path).or_else(|_| Ok(Vec::new()))
+}
+
+fn read_registered_projects_strict(
+    globals: &GlobalOptions,
+) -> Result<Vec<RegisteredProject>, CliError> {
+    let database_path = global_database_path(globals);
+    if !database_path.exists() {
+        return Err(CliError::user_fixable(
+            "xero_cli_project_registry_missing",
+            format!(
+                "Xero app-data registry `{}` does not exist. Import the project in desktop before starting real-provider CLI or MCP runs.",
+                database_path.display()
+            ),
+        ));
+    }
+    read_registered_projects_from_database(globals, &database_path)
+}
+
+fn read_registered_projects_from_database(
+    globals: &GlobalOptions,
+    database_path: &Path,
+) -> Result<Vec<RegisteredProject>, CliError> {
+    let connection = Connection::open(database_path).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_project_registry_open_failed",
+            format!(
+                "Xero could not open app-data project registry `{}`: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT projects.id, repositories.root_path
+            FROM projects
+            JOIN repositories ON repositories.project_id = projects.id
+            ORDER BY projects.updated_at DESC, repositories.updated_at DESC, repositories.root_path ASC
+            "#,
+        )
+        .map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_project_registry_read_failed",
+                format!("Xero could not prepare app-data project registry read: {error}"),
+            )
+        })?;
+    let app_data_root = cli_app_data_root(globals);
+    let rows = statement
+        .query_map([], |row| {
+            let project_id = row.get::<_, String>(0)?;
+            let repo_root = PathBuf::from(row.get::<_, String>(1)?);
+            Ok(RegisteredProject {
+                database_path: workspace_project_database_path_for_app_root(
+                    &app_data_root,
+                    &project_id,
+                ),
+                project_id,
+                repo_root,
+            })
+        })
+        .map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_project_registry_read_failed",
+                format!("Xero could not read app-data project registry: {error}"),
+            )
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_project_registry_decode_failed",
+            format!("Xero could not decode app-data project registry: {error}"),
+        )
+    })
+}
+
+fn global_database_path(globals: &GlobalOptions) -> PathBuf {
+    cli_app_data_root(globals).join(GLOBAL_DATABASE_FILE)
+}
+
+fn run_status_wire(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Starting => "starting",
+        RunStatus::Running => "running",
+        RunStatus::Paused => "paused",
+        RunStatus::Cancelling => "cancelling",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::HandedOff => "handed_off",
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+    }
+}
+
+fn parse_core_run_status(value: &str) -> RunStatus {
+    match value {
+        "starting" => RunStatus::Starting,
+        "running" => RunStatus::Running,
+        "paused" => RunStatus::Paused,
+        "cancelling" => RunStatus::Cancelling,
+        "cancelled" => RunStatus::Cancelled,
+        "handed_off" => RunStatus::HandedOff,
+        "completed" => RunStatus::Completed,
+        "failed" => RunStatus::Failed,
+        _ => RunStatus::Failed,
+    }
+}
+
+fn message_role_wire(role: &MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::Developer => "developer",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    }
+}
+
+fn parse_message_role(value: &str) -> MessageRole {
+    match value {
+        "system" => MessageRole::System,
+        "developer" => MessageRole::Developer,
+        "user" => MessageRole::User,
+        "tool" => MessageRole::Tool,
+        _ => MessageRole::Assistant,
+    }
+}
+
+fn runtime_event_kind_wire(kind: &RuntimeEventKind) -> &'static str {
+    match kind {
+        RuntimeEventKind::RunStarted => "run_started",
+        RuntimeEventKind::MessageDelta => "message_delta",
+        RuntimeEventKind::ReasoningSummary => "reasoning_summary",
+        RuntimeEventKind::ToolStarted => "tool_started",
+        RuntimeEventKind::ToolDelta => "tool_delta",
+        RuntimeEventKind::ToolCompleted => "tool_completed",
+        RuntimeEventKind::FileChanged => "file_changed",
+        RuntimeEventKind::CommandOutput => "command_output",
+        RuntimeEventKind::ValidationStarted => "validation_started",
+        RuntimeEventKind::ValidationCompleted => "validation_completed",
+        RuntimeEventKind::ToolRegistrySnapshot => "tool_registry_snapshot",
+        RuntimeEventKind::PolicyDecision => "policy_decision",
+        RuntimeEventKind::StateTransition => "state_transition",
+        RuntimeEventKind::PlanUpdated => "plan_updated",
+        RuntimeEventKind::VerificationGate => "verification_gate",
+        RuntimeEventKind::ContextManifestRecorded => "context_manifest_recorded",
+        RuntimeEventKind::RetrievalPerformed => "retrieval_performed",
+        RuntimeEventKind::MemoryCandidateCaptured => "memory_candidate_captured",
+        RuntimeEventKind::EnvironmentLifecycleUpdate => "environment_lifecycle_update",
+        RuntimeEventKind::SandboxLifecycleUpdate => "sandbox_lifecycle_update",
+        RuntimeEventKind::ActionRequired => "action_required",
+        RuntimeEventKind::ApprovalRequired => "approval_required",
+        RuntimeEventKind::ToolPermissionGrant => "tool_permission_grant",
+        RuntimeEventKind::ProviderModelChanged => "provider_model_changed",
+        RuntimeEventKind::RuntimeSettingsChanged => "runtime_settings_changed",
+        RuntimeEventKind::RunPaused => "run_paused",
+        RuntimeEventKind::RunCompleted => "run_completed",
+        RuntimeEventKind::RunFailed => "run_failed",
+    }
+}
+
+fn parse_runtime_event_kind(value: &str) -> RuntimeEventKind {
+    match value {
+        "run_started" => RuntimeEventKind::RunStarted,
+        "message_delta" => RuntimeEventKind::MessageDelta,
+        "reasoning_summary" => RuntimeEventKind::ReasoningSummary,
+        "tool_started" => RuntimeEventKind::ToolStarted,
+        "tool_delta" => RuntimeEventKind::ToolDelta,
+        "tool_completed" => RuntimeEventKind::ToolCompleted,
+        "file_changed" => RuntimeEventKind::FileChanged,
+        "command_output" => RuntimeEventKind::CommandOutput,
+        "validation_started" => RuntimeEventKind::ValidationStarted,
+        "validation_completed" => RuntimeEventKind::ValidationCompleted,
+        "tool_registry_snapshot" => RuntimeEventKind::ToolRegistrySnapshot,
+        "policy_decision" => RuntimeEventKind::PolicyDecision,
+        "state_transition" => RuntimeEventKind::StateTransition,
+        "plan_updated" => RuntimeEventKind::PlanUpdated,
+        "verification_gate" => RuntimeEventKind::VerificationGate,
+        "context_manifest_recorded" => RuntimeEventKind::ContextManifestRecorded,
+        "retrieval_performed" => RuntimeEventKind::RetrievalPerformed,
+        "memory_candidate_captured" => RuntimeEventKind::MemoryCandidateCaptured,
+        "environment_lifecycle_update" => RuntimeEventKind::EnvironmentLifecycleUpdate,
+        "sandbox_lifecycle_update" => RuntimeEventKind::SandboxLifecycleUpdate,
+        "action_required" => RuntimeEventKind::ActionRequired,
+        "approval_required" => RuntimeEventKind::ApprovalRequired,
+        "tool_permission_grant" => RuntimeEventKind::ToolPermissionGrant,
+        "provider_model_changed" => RuntimeEventKind::ProviderModelChanged,
+        "runtime_settings_changed" => RuntimeEventKind::RuntimeSettingsChanged,
+        "run_paused" => RuntimeEventKind::RunPaused,
+        "run_completed" => RuntimeEventKind::RunCompleted,
+        "run_failed" => RuntimeEventKind::RunFailed,
+        _ => RuntimeEventKind::RunFailed,
+    }
 }
 
 fn parse_global_options(raw_args: Vec<String>) -> Result<(GlobalOptions, Vec<String>), CliError> {
@@ -1335,9 +2966,9 @@ fn root_help() -> String {
         "  agent exec",
         "  agent host",
         "  conversation list|show|dump|support-bundle|compact|retry|clone|stats",
-        "  provider list|login|doctor",
+        "  provider list|login|doctor|preflight",
         "  mcp list|add|login|serve",
-        "  workspace index|query",
+        "  workspace index|status|query|explain|reset",
         "  tool-pack list|doctor",
         "  commit-message",
         "  suggest-command",
@@ -1363,12 +2994,16 @@ fn root_help_json() -> JsonValue {
             "provider list",
             "provider login",
             "provider doctor",
+            "provider preflight",
             "mcp list",
             "mcp add",
             "mcp login",
             "mcp serve",
             "workspace index",
+            "workspace status",
             "workspace query",
+            "workspace explain",
+            "workspace reset",
             "tool-pack list",
             "tool-pack doctor",
             "commit-message",
@@ -1413,6 +3048,19 @@ fn reject_unknown_options(args: &[String]) -> Result<(), CliError> {
         return Err(CliError::usage(format!("Unknown option `{option}`.")));
     }
     Ok(())
+}
+
+fn parse_positive_u64(value: &str, name: &str) -> Result<u64, CliError> {
+    let parsed = value
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| CliError::usage(format!("`{name}` must be a positive integer.")))?;
+    if parsed == 0 {
+        return Err(CliError::usage(format!(
+            "`{name}` must be greater than zero."
+        )));
+    }
+    Ok(parsed)
 }
 
 fn core_error(error: xero_agent_core::CoreError) -> CliError {
@@ -1619,11 +3267,11 @@ struct ProviderCatalogEntry {
 fn provider_catalog() -> Vec<ProviderCatalogEntry> {
     vec![
         ProviderCatalogEntry {
-            provider_id: DEFAULT_PROVIDER_ID,
+            provider_id: FAKE_PROVIDER_ID,
             label: "Fake Provider",
             default_model: DEFAULT_MODEL_ID,
             credential_kind: "none",
-            headless_status: "ready",
+            headless_status: "harness_only_explicit",
             catalog_kind: "owned_agent_provider",
             adapter_kind: None,
         },
@@ -1633,6 +3281,15 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
             default_model: "gpt-5.4",
             credential_kind: "app_session",
             headless_status: "diagnostics_only",
+            catalog_kind: "model_provider",
+            adapter_kind: None,
+        },
+        ProviderCatalogEntry {
+            provider_id: "openai_api",
+            label: "OpenAI API",
+            default_model: "gpt-5.4",
+            credential_kind: "api_key_env",
+            headless_status: "configured_profile_required",
             catalog_kind: "model_provider",
             adapter_kind: None,
         },
@@ -1748,22 +3405,69 @@ fn provider_capability_for_entry(
     entry: ProviderCatalogEntry,
     profile: Option<&ProviderProfile>,
 ) -> ProviderCapabilityCatalog {
-    let catalog_source = if entry.provider_id == DEFAULT_PROVIDER_ID {
+    let catalog_source = if entry.provider_id == FAKE_PROVIDER_ID {
         "live"
     } else if profile.is_some() || entry.catalog_kind == "external_agent_adapter" {
         "manual"
     } else {
         "unavailable"
     };
-    let credential_proof = match (entry.credential_kind, profile) {
+    let credential_proof = provider_credential_proof_for_entry(entry, profile);
+    provider_capability_for_selection(entry, entry.default_model, catalog_source, credential_proof)
+}
+
+fn provider_credential_proof_for_entry(
+    entry: ProviderCatalogEntry,
+    profile: Option<&ProviderProfile>,
+) -> Option<String> {
+    match (entry.credential_kind, profile) {
         ("none", _) => Some("none_required".into()),
         ("external_process", _) => Some("external_process".into()),
         (_, Some(profile)) if profile.api_key_env.is_some() => Some("api_key_env_recorded".into()),
+        (_, Some(profile))
+            if profile
+                .base_url
+                .as_deref()
+                .is_some_and(is_local_provider_base_url) =>
+        {
+            Some("local_endpoint".into())
+        }
         (_, Some(_)) => Some("profile_recorded".into()),
         _ => None,
-    };
-    let thinking_efforts = match entry.provider_id {
-        "openai_codex" => vec!["low".into(), "medium".into(), "high".into()],
+    }
+}
+
+fn provider_capability_for_selection(
+    entry: ProviderCatalogEntry,
+    model_id: &str,
+    catalog_source: &str,
+    credential_proof: Option<String>,
+) -> ProviderCapabilityCatalog {
+    let thinking_efforts = provider_reasoning_efforts(entry.provider_id);
+    let thinking_default_effort = provider_reasoning_default_effort(entry.provider_id);
+
+    provider_capability_catalog(ProviderCapabilityCatalogInput {
+        provider_id: entry.provider_id.into(),
+        model_id: model_id.into(),
+        catalog_source: catalog_source.into(),
+        fetched_at: None,
+        last_success_at: None,
+        cache_age_seconds: None,
+        cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+        credential_proof,
+        context_window_tokens: None,
+        max_output_tokens: None,
+        context_limit_source: Some("unknown".into()),
+        context_limit_confidence: Some("unknown".into()),
+        thinking_supported: provider_supports_reasoning(entry.provider_id),
+        thinking_efforts,
+        thinking_default_effort,
+    })
+}
+
+fn provider_reasoning_efforts(provider_id: &str) -> Vec<String> {
+    match provider_id {
+        "openai_api" | "openai_codex" => vec!["low".into(), "medium".into(), "high".into()],
         "openrouter" => vec![
             "minimal".into(),
             "low".into(),
@@ -1775,30 +3479,217 @@ fn provider_capability_for_entry(
             vec!["low".into(), "medium".into(), "high".into()]
         }
         _ => Vec::new(),
-    };
-    let thinking_default_effort = if thinking_efforts.iter().any(|effort| effort == "medium") {
-        Some("medium".into())
-    } else {
-        None
-    };
+    }
+}
 
-    provider_capability_catalog(ProviderCapabilityCatalogInput {
-        provider_id: entry.provider_id.into(),
-        model_id: entry.default_model.into(),
-        catalog_source: catalog_source.into(),
-        fetched_at: None,
-        last_success_at: None,
-        cache_age_seconds: None,
-        cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
-        credential_proof,
-        context_window_tokens: None,
-        max_output_tokens: None,
-        context_limit_source: Some("unknown".into()),
-        context_limit_confidence: Some("unknown".into()),
-        thinking_supported: !thinking_efforts.is_empty(),
-        thinking_efforts,
-        thinking_default_effort,
+fn provider_supports_reasoning(provider_id: &str) -> bool {
+    !provider_reasoning_efforts(provider_id).is_empty()
+}
+
+fn provider_reasoning_default_effort(provider_id: &str) -> Option<String> {
+    let efforts = provider_reasoning_efforts(provider_id);
+    efforts
+        .iter()
+        .any(|effort| effort == "medium")
+        .then(|| "medium".into())
+}
+
+#[derive(Debug, Clone)]
+struct CliProviderExecution {
+    profile_id: String,
+    provider_id: String,
+    model_id: String,
+    execution_mode: &'static str,
+    execution: HeadlessProviderExecutionConfig,
+    credential_proof: Option<String>,
+}
+
+impl CliProviderExecution {
+    fn with_project_workspace(mut self, store: &CliAgentStore) -> Self {
+        if let (
+            "real_provider",
+            Some(repo_root),
+            HeadlessProviderExecutionConfig::OpenAiCompatible(config),
+        ) = (self.execution_mode, store.repo_root(), &mut self.execution)
+        {
+            config.workspace_root = Some(repo_root.to_path_buf());
+        }
+        self
+    }
+}
+
+fn resolve_cli_provider_execution(
+    globals: &GlobalOptions,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<CliProviderExecution, CliError> {
+    let explicit_provider = provider_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider_id| !provider_id.is_empty());
+    if explicit_provider == Some(FAKE_PROVIDER_ID) {
+        return Ok(CliProviderExecution {
+            profile_id: FAKE_PROVIDER_ID.into(),
+            provider_id: FAKE_PROVIDER_ID.into(),
+            model_id: model_id.unwrap_or_else(|| DEFAULT_MODEL_ID.into()),
+            execution_mode: "fake_provider_harness",
+            execution: HeadlessProviderExecutionConfig::Fake,
+            credential_proof: Some("none_required".into()),
+        });
+    }
+    if let Some(provider_id) = explicit_provider {
+        ensure_owned_agent_provider(provider_id)?;
+    }
+
+    let config = load_config(globals)?;
+    let profile = match explicit_provider {
+        Some(provider_id) => find_provider_profile(&config, provider_id).ok_or_else(|| {
+            CliError::user_fixable(
+                "xero_cli_provider_profile_missing",
+                format!(
+                    "No headless profile is configured for `{provider_id}`. Run `xero provider login {provider_id} --api-key-env NAME`, or use `--provider fake_provider` for harness-only tests."
+                ),
+            )
+        })?,
+        None => {
+            if config.providers.is_empty() {
+                return Err(CliError::user_fixable(
+                    "xero_cli_provider_required",
+                    "Headless real execution requires a configured provider. Pass `--provider PROVIDER_ID`, or pass `--provider fake_provider` for harness-only tests.",
+                ));
+            }
+            config.providers.values().next().expect("checked non-empty")
+        }
+    };
+    ensure_owned_agent_provider(&profile.provider_id)?;
+    if globals.ci {
+        return Err(CliError::user_fixable(
+            "xero_cli_provider_unavailable_in_ci",
+            "Headless CI mode currently allows only `--provider fake_provider` because real-provider writes require explicit non-interactive approval policy.",
+        ));
+    }
+
+    let entry = provider_catalog_entry(&profile.provider_id).ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_provider_unknown",
+            format!(
+                "Provider `{}` is not in Xero's headless provider catalog.",
+                profile.provider_id
+            ),
+        )
+    })?;
+    let model_id = model_id.unwrap_or_else(|| entry.default_model.into());
+    let execution = openai_compatible_execution_config(globals, profile, &model_id)?;
+    Ok(CliProviderExecution {
+        profile_id: profile.profile_id.clone(),
+        provider_id: profile.provider_id.clone(),
+        model_id,
+        execution_mode: "real_provider",
+        execution,
+        credential_proof: provider_credential_proof_for_entry(entry, Some(profile)),
     })
+}
+
+fn resolve_runtime_for_existing_snapshot(
+    globals: &GlobalOptions,
+    snapshot: &RunSnapshot,
+) -> Result<CliProviderExecution, CliError> {
+    if snapshot.provider_id == FAKE_PROVIDER_ID {
+        return Ok(CliProviderExecution {
+            profile_id: snapshot.provider_id.clone(),
+            provider_id: snapshot.provider_id.clone(),
+            model_id: snapshot.model_id.clone(),
+            execution_mode: "fake_provider_harness",
+            execution: HeadlessProviderExecutionConfig::Fake,
+            credential_proof: Some("none_required".into()),
+        });
+    }
+    resolve_cli_provider_execution(
+        globals,
+        Some(snapshot.provider_id.clone()),
+        Some(snapshot.model_id.clone()),
+    )
+}
+
+fn find_provider_profile<'a>(config: &'a CliConfig, selector: &str) -> Option<&'a ProviderProfile> {
+    config.providers.get(selector).or_else(|| {
+        config
+            .providers
+            .values()
+            .find(|profile| profile.provider_id == selector)
+    })
+}
+
+fn openai_compatible_execution_config(
+    globals: &GlobalOptions,
+    profile: &ProviderProfile,
+    model_id: &str,
+) -> Result<HeadlessProviderExecutionConfig, CliError> {
+    let base_url = profile
+        .base_url
+        .clone()
+        .or_else(|| default_openai_compatible_base_url(&profile.provider_id).map(str::to_owned))
+        .ok_or_else(|| {
+            CliError::user_fixable(
+                "xero_cli_provider_not_executable",
+                format!(
+                    "Provider `{}` does not have a headless OpenAI-compatible execution route yet.",
+                    profile.provider_id
+                ),
+            )
+        })?;
+    let api_key = match profile.api_key_env.as_deref() {
+        Some(env_name) => Some(env::var(env_name).map_err(|_| {
+            CliError::user_fixable(
+                "xero_cli_provider_api_key_missing",
+                format!(
+                    "Environment variable `{env_name}` is not set for provider `{}`.",
+                    profile.provider_id
+                ),
+            )
+        })?),
+        None => None,
+    };
+    let hosted_without_key = !is_local_provider_base_url(&base_url) && api_key.is_none();
+    if hosted_without_key {
+        return Err(CliError::user_fixable(
+            "xero_cli_provider_api_key_missing",
+            format!(
+                "Provider `{}` targets hosted endpoint `{base_url}` without an API key environment variable.",
+                profile.provider_id
+            ),
+        ));
+    }
+    Ok(HeadlessProviderExecutionConfig::OpenAiCompatible(
+        OpenAiCompatibleHeadlessConfig {
+            provider_id: profile.provider_id.clone(),
+            model_id: model_id.into(),
+            base_url,
+            api_key,
+            timeout_ms: 0,
+            workspace_root: env::current_dir().ok(),
+            allow_workspace_writes: !globals.ci,
+        },
+    ))
+}
+
+fn default_openai_compatible_base_url(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "openai_api" => Some("https://api.openai.com/v1"),
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "github_models" => Some("https://models.github.ai/inference"),
+        "ollama" => Some("http://localhost:11434/v1"),
+        "gemini_ai_studio" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+        _ => None,
+    }
+}
+
+fn is_local_provider_base_url(base_url: &str) -> bool {
+    let lower = base_url.to_ascii_lowercase();
+    lower.starts_with("http://localhost")
+        || lower.starts_with("http://127.")
+        || lower.starts_with("http://[::1]")
+        || lower.starts_with("http://0.0.0.0")
 }
 
 fn ensure_owned_agent_provider(provider_id: &str) -> Result<(), CliError> {
@@ -1819,16 +3710,335 @@ fn ensure_owned_agent_provider(provider_id: &str) -> Result<(), CliError> {
         ));
     }
 
-    if entry.provider_id != DEFAULT_PROVIDER_ID {
+    Ok(())
+}
+
+fn ensure_cli_provider_preflight_for_run(
+    globals: &GlobalOptions,
+    provider: &CliProviderExecution,
+) -> Result<ProviderPreflightSnapshot, CliError> {
+    let required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+    if let Some(snapshot) = load_cli_provider_preflight_snapshot(
+        globals,
+        &provider.profile_id,
+        &provider.provider_id,
+        &provider.model_id,
+    )? {
+        let snapshot = provider_preflight_snapshot_as_cached_probe(snapshot);
+        if !snapshot.stale && snapshot.required_features == required_features {
+            return reject_provider_preflight_blockers(snapshot);
+        }
+    }
+
+    let snapshot = cli_provider_preflight_for_execution(provider, required_features)?;
+    persist_cli_provider_preflight_snapshot(globals, &snapshot)?;
+    reject_provider_preflight_blockers(snapshot)
+}
+
+fn reject_provider_preflight_blockers(
+    snapshot: ProviderPreflightSnapshot,
+) -> Result<ProviderPreflightSnapshot, CliError> {
+    if let Some(blocker) = provider_preflight_blockers(&snapshot).first() {
         return Err(CliError::user_fixable(
-            "xero_cli_provider_not_executable",
+            "xero_cli_provider_preflight_blocked",
             format!(
-                "Provider `{provider_id}` is a model-provider catalog entry, but this headless `agent exec` path only executes `{DEFAULT_PROVIDER_ID}` until the real provider adapter is wired."
+                "Provider preflight blocked {}/{} because `{}` failed: {}",
+                snapshot.provider_id, snapshot.model_id, blocker.code, blocker.message
             ),
         ));
     }
+    Ok(snapshot)
+}
 
-    Ok(())
+fn cli_provider_preflight_for_selection(
+    globals: &GlobalOptions,
+    provider_selector: Option<&str>,
+    profile_selector: Option<&str>,
+    model_selector: Option<&str>,
+    force: bool,
+) -> Result<ProviderPreflightSnapshot, CliError> {
+    let config = load_config(globals)?;
+    let provider_id = provider_selector
+        .map(str::trim)
+        .filter(|provider_id| !provider_id.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            profile_selector.and_then(|profile_id| {
+                config
+                    .providers
+                    .get(profile_id)
+                    .map(|profile| profile.provider_id.clone())
+            })
+        })
+        .unwrap_or_else(|| FAKE_PROVIDER_ID.into());
+    ensure_owned_agent_provider(&provider_id)?;
+    let entry = provider_catalog_entry(&provider_id).ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_provider_unknown",
+            format!("Provider `{provider_id}` is not in Xero's headless provider catalog."),
+        )
+    })?;
+
+    let profile = if provider_id == FAKE_PROVIDER_ID {
+        None
+    } else if let Some(profile_id) = profile_selector {
+        Some(config.providers.get(profile_id).ok_or_else(|| {
+            CliError::user_fixable(
+                "xero_cli_provider_profile_missing",
+                format!("No headless provider profile `{profile_id}` is configured."),
+            )
+        })?)
+    } else {
+        config
+            .providers
+            .values()
+            .find(|profile| profile.provider_id == provider_id)
+            .ok_or_else(|| {
+                CliError::user_fixable(
+                    "xero_cli_provider_profile_missing",
+                    format!(
+                        "No headless profile is configured for `{provider_id}`. Run `xero provider login {provider_id} --api-key-env NAME`."
+                    ),
+                )
+            })
+            .map(Some)?
+    };
+
+    let profile_id = profile
+        .map(|profile| profile.profile_id.clone())
+        .unwrap_or_else(|| FAKE_PROVIDER_ID.into());
+    let model_id = model_selector
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())
+        .unwrap_or(entry.default_model);
+    if !force {
+        if let Some(snapshot) =
+            load_cli_provider_preflight_snapshot(globals, &profile_id, &provider_id, model_id)?
+        {
+            return Ok(provider_preflight_snapshot_as_cached_probe(snapshot));
+        }
+    }
+
+    let snapshot = if provider_id == FAKE_PROVIDER_ID {
+        let credential_proof = provider_credential_proof_for_entry(entry, profile);
+        cli_provider_preflight_snapshot(
+            &profile_id,
+            &provider_id,
+            model_id,
+            entry,
+            ProviderPreflightSource::LiveProbe,
+            credential_proof,
+            true,
+            ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        )
+    } else {
+        let profile = profile.ok_or_else(|| {
+            CliError::user_fixable(
+                "xero_cli_provider_profile_missing",
+                format!("No headless provider profile `{profile_id}` is configured."),
+            )
+        })?;
+        let execution = openai_compatible_execution_config(globals, profile, model_id)?;
+        let provider = CliProviderExecution {
+            profile_id: profile.profile_id.clone(),
+            provider_id: profile.provider_id.clone(),
+            model_id: model_id.into(),
+            execution_mode: "real_provider",
+            execution,
+            credential_proof: provider_credential_proof_for_entry(entry, Some(profile)),
+        };
+        cli_provider_preflight_for_execution(
+            &provider,
+            ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        )?
+    };
+    persist_cli_provider_preflight_snapshot(globals, &snapshot)?;
+    Ok(snapshot)
+}
+
+fn cli_provider_preflight_for_execution(
+    provider: &CliProviderExecution,
+    required_features: ProviderPreflightRequiredFeatures,
+) -> Result<ProviderPreflightSnapshot, CliError> {
+    let entry = provider_catalog_entry(&provider.provider_id).ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_provider_unknown",
+            format!(
+                "Provider `{}` is not in Xero's headless provider catalog.",
+                provider.provider_id
+            ),
+        )
+    })?;
+    match &provider.execution {
+        HeadlessProviderExecutionConfig::Fake => Ok(cli_provider_preflight_snapshot(
+            &provider.profile_id,
+            &provider.provider_id,
+            &provider.model_id,
+            entry,
+            ProviderPreflightSource::LiveProbe,
+            provider.credential_proof.clone(),
+            cli_provider_execution_credentials_available(&provider.execution),
+            required_features,
+        )),
+        HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
+            Ok(run_openai_compatible_provider_preflight_probe(
+                OpenAiCompatibleProviderPreflightProbeRequest {
+                    profile_id: provider.profile_id.clone(),
+                    provider_id: config.provider_id.clone(),
+                    model_id: config.model_id.clone(),
+                    base_url: config.base_url.clone(),
+                    api_key: config.api_key.clone(),
+                    timeout_ms: config.timeout_ms,
+                    required_features,
+                    credential_proof: provider.credential_proof.clone(),
+                    context_window_tokens: Some(128_000),
+                    max_output_tokens: Some(16_384),
+                    context_limit_source: Some("configured_default".into()),
+                    context_limit_confidence: Some("medium".into()),
+                    thinking_supported: provider_supports_reasoning(entry.provider_id),
+                    thinking_efforts: provider_reasoning_efforts(entry.provider_id),
+                    thinking_default_effort: provider_reasoning_default_effort(entry.provider_id),
+                },
+            ))
+        }
+    }
+}
+
+fn cli_provider_preflight_snapshot(
+    profile_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    entry: ProviderCatalogEntry,
+    source: ProviderPreflightSource,
+    credential_proof: Option<String>,
+    credential_ready: bool,
+    required_features: ProviderPreflightRequiredFeatures,
+) -> ProviderPreflightSnapshot {
+    let catalog_source = match source {
+        ProviderPreflightSource::LiveProbe | ProviderPreflightSource::LiveCatalog => "live",
+        ProviderPreflightSource::CachedProbe => "cache",
+        ProviderPreflightSource::StaticManual => "manual",
+        ProviderPreflightSource::Unavailable => "unavailable",
+    };
+    let capabilities = if provider_id == FAKE_PROVIDER_ID {
+        provider_capability_catalog(ProviderCapabilityCatalogInput {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            catalog_source: catalog_source.into(),
+            fetched_at: Some(now_timestamp()),
+            last_success_at: Some(now_timestamp()),
+            cache_age_seconds: Some(0),
+            cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+            credential_proof,
+            context_window_tokens: Some(128_000),
+            max_output_tokens: Some(16_384),
+            context_limit_source: Some("built_in_registry".into()),
+            context_limit_confidence: Some("high".into()),
+            thinking_supported: false,
+            thinking_efforts: Vec::new(),
+            thinking_default_effort: None,
+        })
+    } else {
+        provider_capability_for_selection(entry, model_id, catalog_source, credential_proof)
+    };
+    let live_probe = matches!(source, ProviderPreflightSource::LiveProbe);
+    let context_limit_known = capabilities
+        .capabilities
+        .context_limits
+        .context_window_tokens
+        .is_some()
+        && capabilities.capabilities.context_limits.confidence != "unknown";
+    let context_limit_known = if live_probe || context_limit_known {
+        Some(context_limit_known)
+    } else {
+        None
+    };
+    provider_preflight_snapshot(ProviderPreflightInput {
+        profile_id: profile_id.into(),
+        provider_id: provider_id.into(),
+        model_id: model_id.into(),
+        source,
+        checked_at: now_timestamp(),
+        age_seconds: Some(0),
+        ttl_seconds: None,
+        required_features,
+        capabilities,
+        credential_ready: Some(credential_ready),
+        endpoint_reachable: live_probe.then_some(true),
+        model_available: live_probe.then_some(true),
+        streaming_route_available: live_probe.then_some(true),
+        tool_schema_accepted: live_probe.then_some(true),
+        reasoning_controls_accepted: None,
+        attachments_accepted: None,
+        context_limit_known,
+        provider_error: None,
+    })
+}
+
+fn cli_provider_execution_credentials_available(
+    execution: &HeadlessProviderExecutionConfig,
+) -> bool {
+    match execution {
+        HeadlessProviderExecutionConfig::Fake => true,
+        HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
+            config
+                .api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty())
+                || is_local_provider_base_url(&config.base_url)
+        }
+    }
+}
+
+fn load_cli_provider_preflight_snapshot(
+    globals: &GlobalOptions,
+    profile_id: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<Option<ProviderPreflightSnapshot>, CliError> {
+    let store = load_provider_preflight_store(globals)?;
+    Ok(store
+        .snapshots
+        .get(&provider_preflight_key(profile_id, provider_id, model_id))
+        .cloned())
+}
+
+fn persist_cli_provider_preflight_snapshot(
+    globals: &GlobalOptions,
+    snapshot: &ProviderPreflightSnapshot,
+) -> Result<(), CliError> {
+    let mut store = load_provider_preflight_store(globals)?;
+    store.snapshots.insert(
+        provider_preflight_key(
+            &snapshot.profile_id,
+            &snapshot.provider_id,
+            &snapshot.model_id,
+        ),
+        snapshot.clone(),
+    );
+    write_json_file(
+        &globals.state_dir.join(PROVIDER_PREFLIGHT_STATE_FILE),
+        &store,
+    )
+}
+
+fn load_provider_preflight_store(
+    globals: &GlobalOptions,
+) -> Result<ProviderPreflightStore, CliError> {
+    let path = globals.state_dir.join(PROVIDER_PREFLIGHT_STATE_FILE);
+    if !path.exists() {
+        return Ok(ProviderPreflightStore::default());
+    }
+    read_json_file(&path)
+}
+
+fn provider_preflight_key(profile_id: &str, provider_id: &str, model_id: &str) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        profile_id.trim(),
+        provider_id.trim(),
+        model_id.trim()
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1863,6 +4073,22 @@ struct ProviderProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderPreflightStore {
+    schema_version: u32,
+    snapshots: BTreeMap<String, ProviderPreflightSnapshot>,
+}
+
+impl Default for ProviderPreflightStore {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            snapshots: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct McpServerConfig {
     name: String,
     command: String,
@@ -1873,7 +4099,7 @@ struct McpServerConfig {
     added_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProviderDoctorCheck {
     code: String,
@@ -1885,12 +4111,12 @@ fn provider_doctor_checks(
     provider_id: &str,
     profile: Option<&ProviderProfile>,
 ) -> Vec<ProviderDoctorCheck> {
-    if provider_id == DEFAULT_PROVIDER_ID {
+    if provider_id == FAKE_PROVIDER_ID {
         return vec![ProviderDoctorCheck {
             code: "provider_fake_ready".into(),
             status: "passed".into(),
             message:
-                "The built-in fake provider is ready for headless protocol and storage checks."
+                "The built-in fake provider is ready for explicit harness-only protocol and storage checks."
                     .into(),
         }];
     }
@@ -1991,6 +4217,7 @@ struct ExternalAgentRunRequest {
     command: String,
     argv: Vec<String>,
     model_id: String,
+    timeout_ms: u64,
     approval_source: ExternalAgentApprovalSource,
 }
 
@@ -2129,7 +4356,7 @@ fn host_external_agent_run(
                 "providerId": snapshot.provider_id,
                 "modelId": snapshot.model_id,
                 "provenance": external_agent_provenance(&request),
-                "sandbox": sandbox_metadata,
+                "sandbox": external_agent_sandbox_payload(&sandbox_metadata, request.timeout_ms),
             }),
         })
         .map_err(core_error)?;
@@ -2152,6 +4379,7 @@ fn host_external_agent_run(
                 },
                 "command": request.command,
                 "argv": request.argv,
+                "timeoutMs": request.timeout_ms,
             }),
         })
         .map_err(core_error)?;
@@ -2164,6 +4392,7 @@ fn host_external_agent_run(
                 "External agent session hosted by Xero. Provenance: {} ({})",
                 request.adapter.label, request.adapter.provider_id
             ),
+            provider_metadata: None,
         })
         .map_err(core_error)?;
     store
@@ -2172,25 +4401,35 @@ fn host_external_agent_run(
             run_id: snapshot.run_id.clone(),
             role: MessageRole::User,
             content: request.prompt.clone(),
+            provider_metadata: None,
         })
         .map_err(core_error)?;
     store
         .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Running)
         .map_err(core_error)?;
 
-    let output = Command::new(&request.command)
-        .args(&request.argv)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    let mut process_argv = vec![request.command.clone()];
+    process_argv.extend(request.argv.iter().cloned());
+    let output = SandboxedProcessRunner::new().run(
+        SandboxedProcessRequest {
+            argv: process_argv,
+            cwd: env::current_dir()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned()),
+            timeout_ms: Some(request.timeout_ms),
+            stdout_limit_bytes: 64 * 1024,
+            stderr_limit_bytes: 64 * 1024,
+            metadata: sandbox_metadata,
+        },
+        || false,
+    );
     let run = store
         .load_run(&snapshot.project_id, &snapshot.run_id)
         .map_err(core_error)?;
     let completed_snapshot = match output {
         Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let stdout = output.stdout.unwrap_or_default();
+            let stderr = output.stderr.unwrap_or_default();
             if !stdout.is_empty() {
                 append_external_agent_output_event(store, &run, "stdout", &stdout)?;
             }
@@ -2208,6 +4447,7 @@ fn host_external_agent_run(
                     run_id: run.run_id.clone(),
                     role: MessageRole::Assistant,
                     content: assistant_content.clone(),
+                    provider_metadata: None,
                 })
                 .map_err(core_error)?;
             store
@@ -2228,7 +4468,7 @@ fn host_external_agent_run(
                 })
                 .map_err(core_error)?;
 
-            if output.status.success() {
+            if output.exit_code == Some(0) {
                 store
                     .update_run_status(&run.project_id, &run.run_id, RunStatus::Completed)
                     .map_err(core_error)?;
@@ -2244,8 +4484,9 @@ fn host_external_agent_run(
                         )),
                         payload: json!({
                             "summary": "External agent subprocess completed.",
-                            "exitCode": output.status.code(),
+                            "exitCode": output.exit_code,
                             "provenance": external_agent_provenance(&request),
+                            "sandbox": external_agent_sandbox_payload(&output.metadata, request.timeout_ms),
                         }),
                     })
                     .map_err(core_error)?;
@@ -2266,8 +4507,9 @@ fn host_external_agent_run(
                         payload: json!({
                             "code": "external_agent_exit_failed",
                             "message": "External agent subprocess exited unsuccessfully.",
-                            "exitCode": output.status.code(),
+                            "exitCode": output.exit_code,
                             "provenance": external_agent_provenance(&request),
+                            "sandbox": external_agent_sandbox_payload(&output.metadata, request.timeout_ms),
                         }),
                     })
                     .map_err(core_error)?;
@@ -2291,9 +4533,10 @@ fn host_external_agent_run(
                         "external_spawn_failed",
                     )),
                     payload: json!({
-                        "code": "external_agent_spawn_failed",
-                        "message": format!("Could not launch external agent command: {error}"),
+                        "code": error.code,
+                        "message": error.message,
                         "provenance": external_agent_provenance(&request),
+                        "sandbox": external_agent_sandbox_payload(&error.metadata, request.timeout_ms),
                     }),
                 })
                 .map_err(core_error)?;
@@ -2309,7 +4552,7 @@ fn host_external_agent_run(
 fn external_agent_sandbox_metadata(
     globals: &GlobalOptions,
     request: &ExternalAgentRunRequest,
-) -> Result<JsonValue, CliError> {
+) -> Result<SandboxExecutionMetadata, CliError> {
     let workspace_root = env::current_dir()
         .map_err(|error| {
             CliError::system_fault(
@@ -2335,11 +4578,23 @@ fn external_agent_sandbox_metadata(
         workspace_root,
         app_data_roots: vec![globals.state_dir.display().to_string()],
         project_trust: ProjectTrustState::UserApproved,
-        approval_source: SandboxApprovalSource::Operator,
+        approval_source: match request.approval_source {
+            ExternalAgentApprovalSource::OperatorFlag => SandboxApprovalSource::Operator,
+            ExternalAgentApprovalSource::Environment => SandboxApprovalSource::Policy,
+        },
         platform: SandboxPlatform::current(),
         explicit_git_mutation_allowed: false,
         legacy_xero_migration_allowed: false,
-        preserved_environment_keys: Vec::new(),
+        preserved_environment_keys: vec![
+            "PATH".into(),
+            "HOME".into(),
+            "USER".into(),
+            "LOGNAME".into(),
+            "SHELL".into(),
+            "TMPDIR".into(),
+            "TMP".into(),
+            "TEMP".into(),
+        ],
     });
     let call = ToolCallInput {
         tool_call_id: format!("external-agent-{}", request.run_id),
@@ -2351,15 +4606,22 @@ fn external_agent_sandbox_metadata(
             "runId": request.run_id,
         }),
     };
-    let metadata = sandbox
+    sandbox
         .evaluate(&descriptor, &call, &ToolExecutionContext::default())
-        .map_err(|denied| CliError::user_fixable(denied.error.code, denied.error.message))?;
-    Ok(json!({
+        .map_err(|denied| CliError::user_fixable(denied.error.code, denied.error.message))
+}
+
+fn external_agent_sandbox_payload(
+    metadata: &SandboxExecutionMetadata,
+    timeout_ms: u64,
+) -> JsonValue {
+    json!({
         "metadata": metadata,
-        "enforcement": "approval_gated_preflight",
+        "enforcement": "os_sandbox_runner",
         "subprocessStdio": "piped",
         "shellExpansion": false,
-    }))
+        "timeoutMs": timeout_ms,
+    })
 }
 
 fn append_external_agent_output_event(
@@ -2551,6 +4813,7 @@ impl McpServerSession {
 
         match name {
             "xero_start_run" => Ok(self.tool_start_run(&arguments)),
+            "xero_provider_preflight" => Ok(self.tool_provider_preflight(&arguments)),
             "xero_query_conversation" => Ok(self.tool_query_conversation(&arguments)),
             "xero_query_workspace_index" => Ok(self.tool_query_workspace_index(&arguments)),
             "xero_fetch_project_memory" => Ok(self.tool_fetch_project_memory(&arguments)),
@@ -2572,32 +4835,52 @@ impl McpServerSession {
                 "`prompt` is required to start a run.",
             );
         };
-        let provider_id =
-            mcp_string_arg(arguments, "providerId").unwrap_or_else(|| DEFAULT_PROVIDER_ID.into());
-        if let Err(error) = ensure_owned_agent_provider(&provider_id) {
-            return mcp_tool_error(error.code, error.message);
-        }
-        let project_id =
-            mcp_string_arg(arguments, "projectId").unwrap_or_else(|| DEFAULT_PROJECT_ID.into());
+        let provider_id = mcp_string_arg(arguments, "providerId");
+        let project_id = mcp_string_arg(arguments, "projectId");
         let agent_session_id =
             mcp_string_arg(arguments, "sessionId").unwrap_or_else(|| generate_id("mcp-session"));
         let run_id = mcp_string_arg(arguments, "runId").unwrap_or_else(|| generate_id("mcp-run"));
-        let model_id =
-            mcp_string_arg(arguments, "modelId").unwrap_or_else(|| DEFAULT_MODEL_ID.into());
-
-        let store = match open_agent_store(&self.globals) {
-            Ok(store) => store,
+        let model_id = mcp_string_arg(arguments, "modelId");
+        let provider = match resolve_cli_provider_execution(&self.globals, provider_id, model_id) {
+            Ok(provider) => provider,
             Err(error) => return mcp_tool_error(error.code, error.message),
         };
-        let runtime = FakeProviderRuntime::new(store.clone());
+        let (project_id, store) =
+            match open_run_store_for_provider(&self.globals, project_id, &provider) {
+                Ok(resolved) => resolved,
+                Err(error) => return mcp_tool_error(error.code, error.message),
+            };
+        let provider = provider.with_project_workspace(&store);
+        if provider.execution_mode == "real_provider" {
+            if let Err(error) =
+                ensure_cli_real_provider_runtime_contract(&project_id, &provider, &store)
+            {
+                return mcp_tool_error(error.code, error.message);
+            }
+        }
+        let provider_preflight =
+            match ensure_cli_provider_preflight_for_run(&self.globals, &provider) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return mcp_tool_error(error.code, error.message),
+            };
+
+        let runtime = HeadlessProviderRuntime::new(
+            store.clone(),
+            provider.execution.clone(),
+            HeadlessRuntimeOptions {
+                ci_mode: self.globals.ci,
+                provider_preflight: Some(provider_preflight.clone()),
+                ..HeadlessRuntimeOptions::default()
+            },
+        );
         match runtime.start_run(StartRunRequest {
             project_id,
             agent_session_id,
             run_id,
             prompt,
             provider: ProviderSelection {
-                provider_id,
-                model_id,
+                provider_id: provider.provider_id,
+                model_id: provider.model_id,
             },
             controls: Some(RunControls {
                 runtime_agent_id: "mcp_harness".into(),
@@ -2615,8 +4898,40 @@ impl McpServerSession {
                     "Started and completed Xero owned-agent run `{}` with provider `{}`.",
                     snapshot.run_id, snapshot.provider_id
                 ),
-                json!({ "snapshot": snapshot, "storePath": store.path() }),
+                json!({
+                    "snapshot": snapshot,
+                    "storePath": store.path(),
+                    "providerPreflight": provider_preflight,
+                }),
             ),
+            Err(error) => mcp_tool_error(error.code, error.message),
+        }
+    }
+
+    fn tool_provider_preflight(&self, arguments: &JsonValue) -> JsonValue {
+        let provider_id = mcp_string_arg(arguments, "providerId");
+        let profile_id = mcp_string_arg(arguments, "profileId");
+        let model_id = mcp_string_arg(arguments, "modelId");
+        let force = mcp_bool_arg(arguments, "force").unwrap_or(false);
+        match cli_provider_preflight_for_selection(
+            &self.globals,
+            provider_id.as_deref(),
+            profile_id.as_deref(),
+            model_id.as_deref(),
+            force,
+        ) {
+            Ok(snapshot) => {
+                let blockers = provider_preflight_blockers(&snapshot);
+                mcp_tool_success(
+                    format!(
+                        "Provider preflight for `{}/{}` completed with `{}`.",
+                        snapshot.provider_id,
+                        snapshot.model_id,
+                        snapshot.status.as_str()
+                    ),
+                    json!({ "snapshot": snapshot, "blockers": blockers }),
+                )
+            }
             Err(error) => mcp_tool_error(error.code, error.message),
         }
     }
@@ -2630,16 +4945,8 @@ impl McpServerSession {
         };
         let include_events = mcp_bool_arg(arguments, "includeEvents").unwrap_or(false);
         let project_id = mcp_string_arg(arguments, "projectId");
-        let store = match open_agent_store(&self.globals) {
-            Ok(store) => store,
-            Err(error) => return mcp_tool_error(error.code, error.message),
-        };
-        let snapshot = match project_id {
-            Some(project_id) => store.load_run(&project_id, &run_id),
-            None => store.load_run_by_id(&run_id),
-        };
-        match snapshot {
-            Ok(snapshot) => {
+        match load_conversation_snapshot(&self.globals, project_id.as_deref(), &run_id) {
+            Ok((_store, snapshot)) => {
                 let payload = if include_events {
                     json!({ "snapshot": snapshot })
                 } else {
@@ -2673,13 +4980,35 @@ impl McpServerSession {
             );
         };
         let repo = mcp_string_arg(arguments, "repo").unwrap_or_else(|| ".".into());
+        let repo_root = match canonicalize_existing_path(&repo) {
+            Ok(repo_root) => repo_root,
+            Err(error) => return mcp_tool_error(error.code, error.message),
+        };
+        let project_id = mcp_string_arg(arguments, "projectId")
+            .unwrap_or_else(|| stable_project_id_for_repo_root(&repo_root));
+        let mode = match mcp_string_arg(arguments, "mode")
+            .map(|value| parse_workspace_query_mode(&value))
+            .transpose()
+        {
+            Ok(mode) => mode.unwrap_or(WorkspaceQueryMode::Auto),
+            Err(error) => return mcp_tool_error(error.code, error.message),
+        };
         let limit = mcp_usize_arg(arguments, "limit")
-            .unwrap_or(8)
+            .unwrap_or(DEFAULT_WORKSPACE_QUERY_LIMIT)
             .min(MAX_QUERY_RESULTS);
-        match query_workspace_index_for_repo(&self.globals, &repo, &query, limit) {
-            Ok((index_path, results)) => mcp_tool_success(
-                format!("Found {} workspace index result(s).", results.len()),
-                json!({ "query": query, "indexPath": index_path, "results": results }),
+        let paths = mcp_string_arg(arguments, "path").into_iter().collect();
+        match query_workspace_index_for_repo(
+            &self.globals,
+            &repo_root,
+            &project_id,
+            &query,
+            mode,
+            limit,
+            paths,
+        ) {
+            Ok(response) => mcp_tool_success(
+                format!("Found {} workspace index result(s).", response.result_count),
+                json!({ "response": response }),
             ),
             Err(error) => mcp_tool_error(error.code, error.message),
         }
@@ -2695,35 +5024,30 @@ impl McpServerSession {
             );
         }
         let limit = mcp_usize_arg(arguments, "limit").unwrap_or(20).min(100);
-        let store = match open_agent_store(&self.globals) {
-            Ok(store) => store,
-            Err(error) => return mcp_tool_error(error.code, error.message),
-        };
 
         let snapshots = match (&project_id, &run_id) {
             (Some(project_id), Some(run_id)) => {
-                match store
-                    .load_run(project_id, run_id)
-                    .map(|snapshot| vec![snapshot])
-                {
-                    Ok(snapshots) => snapshots,
+                match load_conversation_snapshot(&self.globals, Some(project_id), run_id) {
+                    Ok((_store, snapshot)) => vec![snapshot],
                     Err(error) => return mcp_tool_error(error.code, error.message),
                 }
             }
-            (None, Some(run_id)) => {
-                match store.load_run_by_id(run_id).map(|snapshot| vec![snapshot]) {
-                    Ok(snapshots) => snapshots,
-                    Err(error) => return mcp_tool_error(error.code, error.message),
-                }
-            }
+            (None, Some(run_id)) => match load_conversation_snapshot(&self.globals, None, run_id) {
+                Ok((_store, snapshot)) => vec![snapshot],
+                Err(error) => return mcp_tool_error(error.code, error.message),
+            },
             (Some(project_id), None) => {
-                let runs = match store.list_project_runs(project_id) {
+                let runs = match list_conversation_runs(&self.globals, Some(project_id)) {
                     Ok(runs) => runs,
                     Err(error) => return mcp_tool_error(error.code, error.message),
                 };
                 let mut snapshots = Vec::new();
                 for run in runs.into_iter().take(limit) {
-                    if let Ok(snapshot) = store.load_run(&run.project_id, &run.run_id) {
+                    if let Ok((_store, snapshot)) = load_conversation_snapshot(
+                        &self.globals,
+                        Some(&run.project_id),
+                        &run.run_id,
+                    ) {
                         snapshots.push(snapshot);
                     }
                 }
@@ -2783,16 +5107,9 @@ impl McpServerSession {
                         "`runId` is required for conversation.stats.",
                     );
                 };
-                let store = match open_agent_store(&self.globals) {
-                    Ok(store) => store,
-                    Err(error) => return mcp_tool_error(error.code, error.message),
-                };
-                let snapshot = match mcp_string_arg(&pack_arguments, "projectId") {
-                    Some(project_id) => store.load_run(&project_id, &run_id),
-                    None => store.load_run_by_id(&run_id),
-                };
-                match snapshot {
-                    Ok(snapshot) => mcp_tool_success(
+                let project_id = mcp_string_arg(&pack_arguments, "projectId");
+                match load_conversation_snapshot(&self.globals, project_id.as_deref(), &run_id) {
+                    Ok((_store, snapshot)) => mcp_tool_success(
                         "Computed conversation statistics.",
                         conversation_stats_json(&snapshot),
                     ),
@@ -2819,18 +5136,12 @@ impl McpServerSession {
         let include_timeline = mcp_bool_arg(arguments, "includeTimeline").unwrap_or(true);
         let include_support_bundle =
             mcp_bool_arg(arguments, "includeSupportBundle").unwrap_or(false);
-        let store = match open_agent_store(&self.globals) {
-            Ok(store) => store,
-            Err(error) => return mcp_tool_error(error.code, error.message),
-        };
-        let snapshot = match mcp_string_arg(arguments, "projectId") {
-            Some(project_id) => store.load_run(&project_id, &run_id),
-            None => store.load_run_by_id(&run_id),
-        };
-        let snapshot = match snapshot {
-            Ok(snapshot) => snapshot,
-            Err(error) => return mcp_tool_error(error.code, error.message),
-        };
+        let project_id = mcp_string_arg(arguments, "projectId");
+        let (store, snapshot) =
+            match load_conversation_snapshot(&self.globals, project_id.as_deref(), &run_id) {
+                Ok(resolved) => resolved,
+                Err(error) => return mcp_tool_error(error.code, error.message),
+            };
         let trace = match store.export_trace(&snapshot.project_id, &snapshot.run_id) {
             Ok(trace) => trace,
             Err(error) => return mcp_tool_error(error.code, error.message),
@@ -2859,6 +5170,7 @@ impl McpServerSession {
                 "timeline": timeline,
                 "diagnostics": canonical_trace.diagnostics,
                 "qualityGates": canonical_trace.quality_gates,
+                "productionReadiness": canonical_trace.production_readiness,
                 "canonicalTrace": canonical_trace,
                 "supportBundle": support_bundle,
             }),
@@ -2897,21 +5209,37 @@ fn mcp_tool_definitions() -> Vec<JsonValue> {
         json!({
             "name": "xero_start_run",
             "title": "Start Xero Owned Run",
-            "description": "Start a Xero-owned headless run through the reusable harness. Use this for safe local harness checks that should persist as conversations. Do not use this for external CLI agents; those require the approval-gated `xero agent host` path.",
+            "description": "Start a Xero-owned headless run through the shared runtime. Real providers require a configured headless profile and registered app-data project state; fake_provider is explicit harness-only mode. Do not use this for external CLI agents; those require the approval-gated `xero agent host` path.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "prompt": { "type": "string", "description": "User prompt for the run." },
-                    "projectId": { "type": "string", "description": "Durable project id. Defaults to headless-local." },
+                    "projectId": { "type": "string", "description": "Durable project id. Real-provider runs may omit this only when the current directory belongs to a registered app-data project." },
                     "sessionId": { "type": "string", "description": "Optional agent session id." },
                     "runId": { "type": "string", "description": "Optional run id." },
-                    "providerId": { "type": "string", "description": "Owned-agent provider id. Only fake_provider is executable in this headless harness." },
+                    "providerId": { "type": "string", "description": "Owned-agent provider id. Use fake_provider only for explicit harness tests." },
                     "modelId": { "type": "string", "description": "Model id for the owned-agent provider." }
                 },
                 "required": ["prompt"],
                 "additionalProperties": false
             },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
+        }),
+        json!({
+            "name": "xero_provider_preflight",
+            "title": "Preflight Xero Provider",
+            "description": "Check the selected Xero provider/profile/model contract without starting an agent run. Results are persisted in headless app-data and contain only redacted request metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "providerId": { "type": "string", "description": "Owned-agent provider id. Defaults to fake_provider when no profile is configured." },
+                    "profileId": { "type": "string", "description": "Optional configured headless profile id." },
+                    "modelId": { "type": "string", "description": "Model id for the selected provider." },
+                    "force": { "type": "boolean", "description": "Recompute the preflight snapshot instead of returning the cached snapshot." }
+                },
+                "additionalProperties": false
+            },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         }),
         json!({
             "name": "xero_query_conversation",
@@ -2938,6 +5266,9 @@ fn mcp_tool_definitions() -> Vec<JsonValue> {
                 "properties": {
                     "query": { "type": "string", "description": "Search terms to match against the workspace index." },
                     "repo": { "type": "string", "description": "Repository path. Defaults to the current directory." },
+                    "projectId": { "type": "string", "description": "Optional project id. Defaults to Xero's stable id for the repo root." },
+                    "mode": { "type": "string", "enum": ["auto", "semantic", "symbol", "related_tests", "impact"], "description": "Semantic query mode." },
+                    "path": { "type": "string", "description": "Optional indexed path or directory filter." },
                     "limit": { "type": "integer", "description": "Maximum number of results, capped by Xero." }
                 },
                 "required": ["query"],
@@ -3069,18 +5400,6 @@ fn mcp_usize_arg(arguments: &JsonValue, key: &str) -> Option<usize> {
         .and_then(|value| usize::try_from(value).ok())
 }
 
-fn query_workspace_index_for_repo(
-    globals: &GlobalOptions,
-    repo: &str,
-    query: &str,
-    limit: usize,
-) -> Result<(PathBuf, Vec<WorkspaceQueryResult>), CliError> {
-    let repo_root = canonicalize_existing_path(repo)?;
-    let path = workspace_index_path(globals, &repo_root);
-    let index = read_json_file::<WorkspaceIndex>(&path)?;
-    Ok((path, query_workspace_index(&index, query, limit)))
-}
-
 fn load_config(globals: &GlobalOptions) -> Result<CliConfig, CliError> {
     let path = globals.state_dir.join(CLI_CONFIG_FILE);
     if !path.exists() {
@@ -3093,46 +5412,618 @@ fn save_config(globals: &GlobalOptions, config: &CliConfig) -> Result<(), CliErr
     write_json_file(&globals.state_dir.join(CLI_CONFIG_FILE), config)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceIndex {
-    schema_version: u32,
-    project_id: String,
-    repo_root: PathBuf,
-    indexed_at: String,
-    files: Vec<WorkspaceIndexedFile>,
-    skipped_files: usize,
-    truncated: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceIndexState {
+    Empty,
+    Indexing,
+    Ready,
+    Stale,
+    Failed,
+}
+
+impl WorkspaceIndexState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Indexing => "indexing",
+            Self::Ready => "ready",
+            Self::Stale => "stale",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl Serialize for WorkspaceIndexState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl std::fmt::Display for WorkspaceIndexState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceQueryMode {
+    Auto,
+    Semantic,
+    Symbol,
+    RelatedTests,
+    Impact,
+}
+
+impl WorkspaceQueryMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Semantic => "semantic",
+            Self::Symbol => "symbol",
+            Self::RelatedTests => "related_tests",
+            Self::Impact => "impact",
+        }
+    }
+}
+
+impl Serialize for WorkspaceQueryMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WorkspaceIndexedFile {
-    path: String,
-    byte_length: u64,
-    modified_at: Option<String>,
-    terms: BTreeMap<String, u32>,
-    preview: String,
+#[serde(rename_all = "camelCase")]
+struct WorkspaceIndexDiagnostic {
+    severity: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceIndexStatus {
+    project_id: String,
+    state: WorkspaceIndexState,
+    index_version: u32,
+    root_path: String,
+    storage_path: String,
+    total_files: u32,
+    indexed_files: u32,
+    skipped_files: u32,
+    stale_files: u32,
+    symbol_count: u32,
+    indexed_bytes: u64,
+    coverage_percent: f64,
+    head_sha: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    updated_at: Option<String>,
+    diagnostics: Vec<WorkspaceIndexDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceIndexResponse {
+    status: WorkspaceIndexStatus,
+    changed_files: u32,
+    unchanged_files: u32,
+    removed_files: u32,
+    duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceQueryResponse {
+    project_id: String,
+    query: String,
+    mode: WorkspaceQueryMode,
+    result_count: u32,
+    stale: bool,
+    diagnostics: Vec<WorkspaceIndexDiagnostic>,
+    results: Vec<WorkspaceQueryResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceQueryResult {
+    rank: u32,
     path: String,
-    score: f32,
-    preview: String,
-    matched_terms: Vec<String>,
+    score: f64,
+    language: String,
+    summary: String,
+    snippet: String,
+    symbols: Vec<String>,
+    imports: Vec<String>,
+    tests: Vec<String>,
+    diffs: Vec<String>,
+    failures: Vec<String>,
+    reasons: Vec<String>,
+    content_hash: String,
+    indexed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceExplainResponse {
+    project_id: String,
+    summary: String,
+    status: WorkspaceIndexStatus,
+    top_signals: Vec<String>,
+    diagnostics: Vec<WorkspaceIndexDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceCandidate {
+    absolute_path: PathBuf,
+    virtual_path: String,
+    language: String,
+    modified_at: String,
+    byte_length: i64,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceScan {
+    files: Vec<WorkspaceCandidate>,
+    skipped_files: usize,
+    truncated: bool,
+    diagnostics: Vec<WorkspaceIndexDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceFingerprint {
+    modified_at: String,
+    byte_length: i64,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedWorkspaceRow {
+    project_id: String,
+    path: String,
+    language: String,
+    content_hash: String,
+    modified_at: String,
+    byte_length: i64,
+    summary: String,
+    snippet: String,
+    symbols: Vec<String>,
+    imports: Vec<String>,
+    tests: Vec<String>,
+    routes: Vec<String>,
+    commands: Vec<String>,
+    diffs: Vec<String>,
+    failures: Vec<String>,
+    embedding_json: String,
+    embedding_model: String,
+    embedding_version: String,
+    indexed_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct StoredWorkspaceRow {
+    path: String,
+    language: String,
+    content_hash: String,
+    summary: String,
+    snippet: String,
+    symbols_json: String,
+    imports_json: String,
+    tests_json: String,
+    routes_json: String,
+    commands_json: String,
+    diffs_json: String,
+    failures_json: String,
+    embedding_json: String,
+    indexed_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct FileFeatures {
+    symbols: Vec<String>,
+    imports: Vec<String>,
+    tests: Vec<String>,
+    routes: Vec<String>,
+    commands: Vec<String>,
+    diffs: Vec<String>,
+    failures: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LexicalScore {
+    total: f64,
+    reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScoredWorkspaceRow {
+    row: StoredWorkspaceRow,
+    score: f64,
+    reasons: Vec<String>,
 }
 
 fn build_workspace_index(
+    globals: &GlobalOptions,
     repo_root: &Path,
     project_id: &str,
     limit: usize,
-) -> Result<WorkspaceIndex, CliError> {
+    force: bool,
+) -> Result<WorkspaceIndexResponse, CliError> {
+    let started = SystemTime::now();
+    let started_at = now_timestamp();
+    let database_path = workspace_project_database_path(globals, project_id);
+    let mut connection = open_workspace_index_database(globals, repo_root, project_id)?;
+    write_workspace_status(
+        &connection,
+        &database_path,
+        repo_root,
+        project_id,
+        WorkspaceIndexState::Indexing,
+        0,
+        count_workspace_rows(&connection, project_id).unwrap_or(0),
+        0,
+        0,
+        0,
+        0,
+        &[],
+        Some(&started_at),
+        None,
+        None,
+    )?;
+
+    let scan = scan_workspace(repo_root, limit)?;
+    let existing = read_workspace_fingerprints(&connection, project_id)?;
+    let current_paths = scan
+        .files
+        .iter()
+        .map(|candidate| candidate.virtual_path.clone())
+        .collect::<BTreeSet<_>>();
+    let diff_signals = recent_diff_signals(repo_root);
+    let indexed_at = now_timestamp();
+    let mut rows = Vec::new();
+    let mut changed_files = 0_u32;
+    let mut unchanged_files = 0_u32;
+
+    for candidate in scan.files {
+        let unchanged = !force
+            && existing
+                .get(&candidate.virtual_path)
+                .map(|fingerprint| {
+                    fingerprint.modified_at == candidate.modified_at
+                        && fingerprint.byte_length == candidate.byte_length
+                })
+                .unwrap_or(false);
+        if unchanged {
+            unchanged_files = unchanged_files.saturating_add(1);
+            continue;
+        }
+        let Some(row) =
+            index_workspace_candidate(candidate, project_id, &indexed_at, &diff_signals)?
+        else {
+            continue;
+        };
+        changed_files = changed_files.saturating_add(1);
+        rows.push(row);
+    }
+
+    let removed_paths = existing
+        .keys()
+        .filter(|path| !current_paths.contains(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let tx = connection
+        .transaction()
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_transaction_failed", error))?;
+    for row in &rows {
+        upsert_workspace_row(&tx, row)?;
+    }
+    for path in &removed_paths {
+        tx.execute(
+            "DELETE FROM workspace_index_files WHERE project_id = ?1 AND path = ?2",
+            params![project_id, path],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_delete_failed", error))?;
+    }
+    tx.commit()
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_commit_failed", error))?;
+
+    let indexed_files = count_workspace_rows(&connection, project_id)?;
+    let (indexed_bytes, symbol_count) = workspace_index_stats(&connection, project_id)?;
+    let mut diagnostics = scan.diagnostics;
+    if scan.truncated {
+        diagnostics.push(workspace_diagnostic(
+            "warning",
+            "workspace_index_file_cap_reached",
+            "Workspace indexing stopped at the configured file cap. Increase max files for broader coverage.",
+        ));
+    }
+    let state = if indexed_files == 0 {
+        WorkspaceIndexState::Empty
+    } else if scan.truncated {
+        WorkspaceIndexState::Stale
+    } else {
+        WorkspaceIndexState::Ready
+    };
+    let completed_at = now_timestamp();
+    write_workspace_status(
+        &connection,
+        &database_path,
+        repo_root,
+        project_id,
+        state,
+        current_paths.len() as u32,
+        indexed_files,
+        scan.skipped_files as u32,
+        if scan.truncated { 1 } else { 0 },
+        symbol_count,
+        indexed_bytes,
+        &diagnostics,
+        Some(&started_at),
+        Some(&completed_at),
+        None,
+    )?;
+    let status = workspace_index_status(globals, repo_root, project_id)?;
+    let duration_ms = started
+        .elapsed()
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    Ok(WorkspaceIndexResponse {
+        status,
+        changed_files,
+        unchanged_files,
+        removed_files: removed_paths.len() as u32,
+        duration_ms,
+    })
+}
+
+fn workspace_index_status(
+    globals: &GlobalOptions,
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<WorkspaceIndexStatus, CliError> {
+    let connection = open_workspace_index_database(globals, repo_root, project_id)?;
+    let database_path = workspace_project_database_path(globals, project_id);
+    let mut status = read_workspace_status(&connection, repo_root, project_id, &database_path)?
+        .unwrap_or_else(|| empty_workspace_status(repo_root, project_id, &database_path));
+    let scan = scan_workspace(repo_root, HARD_INDEX_FILE_LIMIT)?;
+    let indexed = read_workspace_fingerprints(&connection, project_id)?;
+    let current_paths = scan
+        .files
+        .iter()
+        .map(|candidate| candidate.virtual_path.clone())
+        .collect::<BTreeSet<_>>();
+    let stale_current = scan
+        .files
+        .iter()
+        .filter(|candidate| {
+            indexed
+                .get(&candidate.virtual_path)
+                .map(|fingerprint| {
+                    fingerprint.modified_at != candidate.modified_at
+                        || fingerprint.byte_length != candidate.byte_length
+                })
+                .unwrap_or(true)
+        })
+        .count();
+    let removed = indexed
+        .keys()
+        .filter(|path| !current_paths.contains(*path))
+        .count();
+    status.total_files = scan.files.len() as u32;
+    status.skipped_files = scan.skipped_files as u32;
+    status.stale_files = stale_current.saturating_add(removed) as u32;
+    status.coverage_percent = coverage_percent(
+        status.indexed_files.saturating_sub(removed as u32),
+        status.total_files,
+    );
+    if status.indexed_files == 0 {
+        status.state = WorkspaceIndexState::Empty;
+    } else if status.stale_files > 0 || status.head_sha != repository_head_sha(repo_root) {
+        status.state = WorkspaceIndexState::Stale;
+    } else if status.state != WorkspaceIndexState::Failed {
+        status.state = WorkspaceIndexState::Ready;
+    }
+    if scan.truncated {
+        status.diagnostics.push(workspace_diagnostic(
+            "warning",
+            "workspace_index_status_scan_truncated",
+            "Workspace status was estimated from the first indexed-file scan window.",
+        ));
+    }
+    Ok(status)
+}
+
+fn query_workspace_index_for_repo(
+    globals: &GlobalOptions,
+    repo_root: &Path,
+    project_id: &str,
+    query: &str,
+    mode: WorkspaceQueryMode,
+    limit: usize,
+    paths: Vec<String>,
+) -> Result<WorkspaceQueryResponse, CliError> {
+    let status = workspace_index_status(globals, repo_root, project_id)?;
+    let connection = open_workspace_index_database(globals, repo_root, project_id)?;
+    let query_embedding = workspace_embedding(&query_embedding_text(query, mode))?;
+    let query_tokens = tokenize_workspace_query(query);
+    let path_filters = paths
+        .iter()
+        .filter_map(|path| normalize_virtual_path(path))
+        .collect::<Vec<_>>();
+    let mut rows = read_workspace_rows(&connection, project_id)?;
+    if !path_filters.is_empty() {
+        rows.retain(|row| {
+            path_filters
+                .iter()
+                .any(|filter| path_matches_filter(&row.path, filter))
+        });
+    }
+
+    let mut ranked = rows
+        .into_iter()
+        .filter_map(|row| {
+            let embedding = serde_json::from_str::<Vec<f32>>(&row.embedding_json).ok()?;
+            let semantic = cosine_similarity(&query_embedding, embedding.as_slice());
+            let lexical = lexical_score(&query_tokens, &row, mode);
+            let score = score_for_mode(semantic, lexical.total, mode);
+            (score > 0.001).then_some(ScoredWorkspaceRow {
+                row,
+                score,
+                reasons: lexical.reasons,
+            })
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.row.path.cmp(&right.row.path))
+    });
+    let results = ranked
+        .into_iter()
+        .take(limit)
+        .enumerate()
+        .map(|(index, scored)| workspace_row_to_query_result(index as u32 + 1, scored))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut diagnostics = status.diagnostics.clone();
+    if status.state == WorkspaceIndexState::Empty {
+        diagnostics.push(workspace_diagnostic(
+            "warning",
+            "workspace_index_empty",
+            "No workspace index exists yet. Run workspace index before relying on semantic results.",
+        ));
+    } else if status.state == WorkspaceIndexState::Stale {
+        diagnostics.push(workspace_diagnostic(
+            "warning",
+            "workspace_index_stale",
+            "Workspace index has stale or missing files. Results may omit recent changes.",
+        ));
+    }
+    Ok(WorkspaceQueryResponse {
+        project_id: project_id.to_owned(),
+        query: query.to_owned(),
+        mode,
+        result_count: results.len() as u32,
+        stale: status.state == WorkspaceIndexState::Stale,
+        diagnostics,
+        results,
+    })
+}
+
+fn explain_workspace_index(
+    globals: &GlobalOptions,
+    repo_root: &Path,
+    project_id: &str,
+    query: Option<String>,
+    path: Option<String>,
+) -> Result<WorkspaceExplainResponse, CliError> {
+    let status = workspace_index_status(globals, repo_root, project_id)?;
+    let connection = open_workspace_index_database(globals, repo_root, project_id)?;
+    let mut top_signals = Vec::new();
+    let mut diagnostics = status.diagnostics.clone();
+    if let Some(path) = path.as_deref().and_then(normalize_virtual_path) {
+        match read_workspace_row(&connection, project_id, &path)? {
+            Some(row) => {
+                top_signals.push(format!("{} is indexed as {}.", row.path, row.language));
+                top_signals.push(row.summary.clone());
+                let symbols = decode_string_array(&row.symbols_json, "symbols")?;
+                if !symbols.is_empty() {
+                    top_signals.push(format!("Symbols: {}.", symbols.join(", ")));
+                }
+                let imports = decode_string_array(&row.imports_json, "imports")?;
+                if !imports.is_empty() {
+                    top_signals.push(format!(
+                        "Imports: {}.",
+                        imports.into_iter().take(8).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+            None => diagnostics.push(workspace_diagnostic(
+                "warning",
+                "workspace_index_path_missing",
+                "The requested path is not present in the workspace index.",
+            )),
+        }
+    }
+    if let Some(query) = query.filter(|value| !value.trim().is_empty()) {
+        let response = query_workspace_index_for_repo(
+            globals,
+            repo_root,
+            project_id,
+            &query,
+            WorkspaceQueryMode::Auto,
+            5,
+            Vec::new(),
+        )?;
+        for result in response.results {
+            top_signals.push(format!(
+                "{} scored {:.3}: {}",
+                result.path,
+                result.score,
+                result.reasons.join("; ")
+            ));
+        }
+        diagnostics.extend(response.diagnostics);
+    }
+    if top_signals.is_empty() {
+        top_signals.push(format!(
+            "Index state is {}; {} of {} files are indexed.",
+            status.state, status.indexed_files, status.total_files
+        ));
+    }
+    let summary = match status.state {
+        WorkspaceIndexState::Ready => "Workspace index is fresh and queryable.",
+        WorkspaceIndexState::Stale => "Workspace index is queryable but has stale coverage.",
+        WorkspaceIndexState::Empty => "Workspace index has not been built yet.",
+        WorkspaceIndexState::Indexing => "Workspace index is currently being rebuilt.",
+        WorkspaceIndexState::Failed => "Workspace index failed during the previous rebuild.",
+    }
+    .to_string();
+    Ok(WorkspaceExplainResponse {
+        project_id: project_id.to_owned(),
+        summary,
+        status,
+        top_signals,
+        diagnostics,
+    })
+}
+
+fn reset_workspace_index(
+    globals: &GlobalOptions,
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<WorkspaceIndexStatus, CliError> {
+    let connection = open_workspace_index_database(globals, repo_root, project_id)?;
+    connection
+        .execute(
+            "DELETE FROM workspace_index_files WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_reset_failed", error))?;
+    connection
+        .execute(
+            "DELETE FROM workspace_index_metadata WHERE project_id = ?1",
+            params![project_id],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_reset_failed", error))?;
+    Ok(empty_workspace_status(
+        repo_root,
+        project_id,
+        &workspace_project_database_path(globals, project_id),
+    ))
+}
+
+fn scan_workspace(repo_root: &Path, limit: usize) -> Result<WorkspaceScan, CliError> {
     let mut files = Vec::new();
     let mut skipped_files = 0usize;
     let mut truncated = false;
-    scan_workspace(
+    scan_workspace_dir(
         repo_root,
         repo_root,
         limit,
@@ -3140,22 +6031,28 @@ fn build_workspace_index(
         &mut skipped_files,
         &mut truncated,
     )?;
-    Ok(WorkspaceIndex {
-        schema_version: 1,
-        project_id: project_id.into(),
-        repo_root: repo_root.into(),
-        indexed_at: now_timestamp(),
+    files.sort_by(|left, right| left.virtual_path.cmp(&right.virtual_path));
+    let mut diagnostics = Vec::new();
+    if skipped_files > 0 {
+        diagnostics.push(workspace_diagnostic(
+            "info",
+            "workspace_index_skipped_files",
+            format!("Skipped {skipped_files} non-source, oversized, ignored, or unreadable files."),
+        ));
+    }
+    Ok(WorkspaceScan {
         files,
         skipped_files,
         truncated,
+        diagnostics,
     })
 }
 
-fn scan_workspace(
+fn scan_workspace_dir(
     repo_root: &Path,
     current: &Path,
     limit: usize,
-    files: &mut Vec<WorkspaceIndexedFile>,
+    files: &mut Vec<WorkspaceCandidate>,
     skipped_files: &mut usize,
     truncated: &mut bool,
 ) -> Result<(), CliError> {
@@ -3163,7 +6060,6 @@ fn scan_workspace(
         *truncated = true;
         return Ok(());
     }
-
     let entries = fs::read_dir(current).map_err(|error| {
         CliError::system_fault(
             "xero_cli_workspace_scan_failed",
@@ -3193,12 +6089,11 @@ fn scan_workspace(
                 ),
             )
         })?;
-
         if file_type.is_dir() {
             if should_skip_dir(&path) {
                 continue;
             }
-            scan_workspace(repo_root, &path, limit, files, skipped_files, truncated)?;
+            scan_workspace_dir(repo_root, &path, limit, files, skipped_files, truncated)?;
             if *truncated {
                 return Ok(());
             }
@@ -3207,52 +6102,45 @@ fn scan_workspace(
                 *truncated = true;
                 return Ok(());
             }
-            match index_file(repo_root, &path) {
-                Ok(Some(indexed)) => files.push(indexed),
-                Ok(None) => *skipped_files = skipped_files.saturating_add(1),
-                Err(_) => *skipped_files = skipped_files.saturating_add(1),
+            match workspace_candidate(repo_root, &path) {
+                Ok(Some(candidate)) => files.push(candidate),
+                Ok(None) | Err(_) => *skipped_files = skipped_files.saturating_add(1),
             }
         }
     }
     Ok(())
 }
 
-fn index_file(repo_root: &Path, path: &Path) -> Result<Option<WorkspaceIndexedFile>, CliError> {
+fn workspace_candidate(
+    repo_root: &Path,
+    path: &Path,
+) -> Result<Option<WorkspaceCandidate>, CliError> {
     let metadata = fs::metadata(path).map_err(|error| {
         CliError::system_fault(
             "xero_cli_workspace_file_metadata_failed",
             format!("Could not inspect `{}`: {error}", path.display()),
         )
     })?;
-    if metadata.len() > MAX_INDEX_FILE_BYTES || !looks_like_source_file(path) {
+    let Some(language) = workspace_language(path) else {
         return Ok(None);
-    }
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(_) => return Ok(None),
     };
-    let tokens = tokenize(&content);
-    if tokens.is_empty() {
+    if metadata.len() > MAX_INDEX_FILE_BYTES {
         return Ok(None);
     }
-    let mut terms = BTreeMap::<String, u32>::new();
-    for token in tokens {
-        *terms.entry(token).or_default() += 1;
-    }
-    let relative = path
-        .strip_prefix(repo_root)
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| path.to_string_lossy().to_string());
-    Ok(Some(WorkspaceIndexedFile {
-        path: relative,
-        byte_length: metadata.len(),
+    let Some(virtual_path) = to_virtual_path(repo_root, path) else {
+        return Ok(None);
+    };
+    Ok(Some(WorkspaceCandidate {
+        absolute_path: path.to_path_buf(),
+        virtual_path,
+        language,
+        byte_length: metadata.len() as i64,
         modified_at: metadata
             .modified()
             .ok()
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| format!("{}Z", duration.as_secs())),
-        terms,
-        preview: content.chars().take(240).collect(),
+            .map(|duration| format!("{}Z", duration.as_secs()))
+            .unwrap_or_else(now_timestamp),
     }))
 }
 
@@ -3263,6 +6151,7 @@ fn should_skip_dir(path: &Path) -> bool {
             matches!(
                 name,
                 ".git"
+                    | ".xero"
                     | "target"
                     | "node_modules"
                     | ".next"
@@ -3276,112 +6165,1287 @@ fn should_skip_dir(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn looks_like_source_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            matches!(
-                extension,
-                "rs" | "ts"
-                    | "tsx"
-                    | "js"
-                    | "jsx"
-                    | "json"
-                    | "toml"
-                    | "md"
-                    | "css"
-                    | "html"
-                    | "ex"
-                    | "exs"
-                    | "py"
-                    | "go"
-                    | "java"
-                    | "kt"
-                    | "swift"
-                    | "c"
-                    | "cpp"
-                    | "h"
-                    | "hpp"
-                    | "sh"
-                    | "sql"
-                    | "yaml"
-                    | "yml"
+fn index_workspace_candidate(
+    candidate: WorkspaceCandidate,
+    project_id: &str,
+    indexed_at: &str,
+    diff_signals: &BTreeMap<String, Vec<String>>,
+) -> Result<Option<IndexedWorkspaceRow>, CliError> {
+    let Ok(content) = fs::read_to_string(&candidate.absolute_path) else {
+        return Ok(None);
+    };
+    let mut features = extract_workspace_features(&candidate, &content);
+    features.diffs = diff_signals
+        .get(&candidate.virtual_path)
+        .cloned()
+        .unwrap_or_default();
+    let summary = summarize_workspace_file(&candidate, &features);
+    let snippet = content
+        .chars()
+        .take(MAX_INDEX_SNIPPET_CHARS)
+        .collect::<String>();
+    let content_hash = sha256_text(&content);
+    let embedding_text = [
+        candidate.virtual_path.as_str(),
+        candidate.language.as_str(),
+        summary.as_str(),
+        &features.symbols.join(" "),
+        &features.imports.join(" "),
+        &features.tests.join(" "),
+        &features.routes.join(" "),
+        &features.commands.join(" "),
+        &features.diffs.join(" "),
+        &snippet,
+    ]
+    .join("\n");
+    let embedding_json =
+        serde_json::to_string(&workspace_embedding(&embedding_text)?).map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_workspace_embedding_encode_failed",
+                format!("Could not serialize workspace embedding: {error}"),
             )
-        })
-        .unwrap_or(false)
+        })?;
+    Ok(Some(IndexedWorkspaceRow {
+        project_id: project_id.to_owned(),
+        path: candidate.virtual_path,
+        language: candidate.language,
+        content_hash,
+        modified_at: candidate.modified_at,
+        byte_length: candidate.byte_length,
+        summary,
+        snippet,
+        symbols: features.symbols,
+        imports: features.imports,
+        tests: features.tests,
+        routes: features.routes,
+        commands: features.commands,
+        diffs: features.diffs,
+        failures: features.failures,
+        embedding_json,
+        embedding_model: WORKSPACE_EMBEDDING_MODEL.into(),
+        embedding_version: WORKSPACE_EMBEDDING_VERSION.into(),
+        indexed_at: indexed_at.to_owned(),
+    }))
 }
 
-fn query_workspace_index(
-    index: &WorkspaceIndex,
-    query: &str,
-    limit: usize,
-) -> Vec<WorkspaceQueryResult> {
-    let query_terms = tokenize(query).into_iter().collect::<BTreeSet<_>>();
-    if query_terms.is_empty() {
-        return Vec::new();
+fn extract_workspace_features(candidate: &WorkspaceCandidate, content: &str) -> FileFeatures {
+    let mut features = FileFeatures {
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        tests: Vec::new(),
+        routes: Vec::new(),
+        commands: Vec::new(),
+        diffs: Vec::new(),
+        failures: Vec::new(),
+    };
+    let mut previous_tauri_command = false;
+    if candidate.virtual_path.contains("/routes/")
+        || candidate.virtual_path.contains("/app/")
+        || candidate.virtual_path.contains("/pages/")
+        || candidate.virtual_path.contains("/components/")
+    {
+        features.routes.push(candidate.virtual_path.clone());
     }
-    let mut results = index
-        .files
-        .iter()
-        .filter_map(|file| {
-            let mut score = 0f32;
-            let mut matched_terms = Vec::new();
-            for term in &query_terms {
-                if let Some(count) = file.terms.get(term) {
-                    score += (*count as f32).sqrt();
-                    matched_terms.push(term.clone());
+    if is_test_path(&candidate.virtual_path) {
+        features
+            .tests
+            .push(format!("test file {}", candidate.virtual_path));
+    }
+    for (line_index, raw_line) in content.lines().enumerate() {
+        if line_index > 2_000
+            && features.symbols.len() >= MAX_WORKSPACE_SYMBOLS
+            && features.imports.len() >= MAX_WORKSPACE_IMPORTS
+            && features.tests.len() >= MAX_WORKSPACE_TESTS
+        {
+            break;
+        }
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if features.imports.len() < MAX_WORKSPACE_IMPORTS {
+            if let Some(import) = import_from_workspace_line(line) {
+                push_unique(&mut features.imports, import, MAX_WORKSPACE_IMPORTS);
+            }
+        }
+        if features.tests.len() < MAX_WORKSPACE_TESTS {
+            if let Some(test) = test_from_workspace_line(line, line_index + 1) {
+                push_unique(&mut features.tests, test, MAX_WORKSPACE_TESTS);
+            }
+        }
+        if line.contains("#[tauri::command]") {
+            previous_tauri_command = true;
+            push_unique(
+                &mut features.commands,
+                format!("tauri command marker at line {}", line_index + 1),
+                MAX_WORKSPACE_FEATURES,
+            );
+            continue;
+        }
+        if features.symbols.len() < MAX_WORKSPACE_SYMBOLS {
+            if let Some((kind, name)) = symbol_from_workspace_line(line) {
+                if previous_tauri_command {
+                    push_unique(
+                        &mut features.commands,
+                        format!("{name} at line {}", line_index + 1),
+                        MAX_WORKSPACE_FEATURES,
+                    );
                 }
+                previous_tauri_command = false;
+                push_unique(
+                    &mut features.symbols,
+                    format!("{kind} {name}:{}", line_index + 1),
+                    MAX_WORKSPACE_SYMBOLS,
+                );
             }
-            if matched_terms.is_empty() {
-                None
-            } else {
-                Some(WorkspaceQueryResult {
-                    path: file.path.clone(),
-                    score,
-                    preview: file.preview.clone(),
-                    matched_terms,
+        }
+    }
+    features
+}
+
+fn import_from_workspace_line(line: &str) -> Option<String> {
+    let keep = line
+        .strip_prefix("import ")
+        .or_else(|| line.strip_prefix("export "))
+        .or_else(|| line.strip_prefix("use "))
+        .or_else(|| line.strip_prefix("mod "))
+        .or_else(|| line.strip_prefix("from "))?;
+    let trimmed = keep.trim().trim_end_matches(';');
+    (!trimmed.is_empty()).then(|| trimmed.chars().take(160).collect())
+}
+
+fn test_from_workspace_line(line: &str, line_number: usize) -> Option<String> {
+    if line.starts_with("#[test]")
+        || line.starts_with("#[tokio::test]")
+        || line.starts_with("describe(")
+        || line.starts_with("it(")
+        || line.starts_with("test(")
+        || line.contains("vitest")
+    {
+        Some(format!("test signal at line {line_number}"))
+    } else {
+        None
+    }
+}
+
+fn symbol_from_workspace_line(line: &str) -> Option<(&'static str, String)> {
+    let normalized = line
+        .strip_prefix("pub ")
+        .or_else(|| line.strip_prefix("export default "))
+        .or_else(|| line.strip_prefix("export "))
+        .or_else(|| line.strip_prefix("async "))
+        .unwrap_or(line);
+    for (prefix, kind) in [
+        ("async fn ", "function"),
+        ("fn ", "function"),
+        ("struct ", "struct"),
+        ("enum ", "enum"),
+        ("trait ", "trait"),
+        ("impl ", "impl"),
+        ("function ", "function"),
+        ("class ", "class"),
+        ("interface ", "interface"),
+        ("type ", "type"),
+        ("const ", "constant"),
+        ("let ", "binding"),
+        ("def ", "function"),
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            let name = rest
+                .split(|character: char| {
+                    character.is_whitespace()
+                        || matches!(character, '(' | '<' | ':' | '=' | '{' | ';' | ',')
                 })
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .trim_matches(|character: char| !character.is_alphanumeric() && character != '_')
+                .to_string();
+            if !name.is_empty() {
+                return Some((kind, name));
             }
+        }
+    }
+    None
+}
+
+fn summarize_workspace_file(candidate: &WorkspaceCandidate, features: &FileFeatures) -> String {
+    let mut parts = vec![format!(
+        "{} source at {}",
+        candidate.language, candidate.virtual_path
+    )];
+    if !features.symbols.is_empty() {
+        parts.push(format!(
+            "defines {}",
+            features
+                .symbols
+                .iter()
+                .take(6)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !features.imports.is_empty() {
+        parts.push(format!(
+            "imports {}",
+            features
+                .imports
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !features.tests.is_empty() {
+        parts.push("contains test signals".into());
+    }
+    if !features.routes.is_empty() {
+        parts.push("looks route/component-facing".into());
+    }
+    if !features.commands.is_empty() {
+        parts.push("exposes Tauri command signals".into());
+    }
+    if !features.diffs.is_empty() {
+        parts.push("has recent working-tree diff signals".into());
+    }
+    parts.join("; ")
+}
+
+fn open_workspace_index_database(
+    globals: &GlobalOptions,
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<Connection, CliError> {
+    let database_path = workspace_project_database_path(globals, project_id);
+    if let Some(parent) = database_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_workspace_index_dir_failed",
+                format!(
+                    "Could not prepare workspace index directory `{}`: {error}",
+                    parent.display()
+                ),
+            )
+        })?;
+    }
+    let connection = Connection::open(&database_path).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_workspace_index_open_failed",
+            format!(
+                "Could not open workspace index database `{}`: {error}",
+                database_path.display()
+            ),
+        )
+    })?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_config_failed", error))?;
+    connection
+        .execute_batch(
+            "
+            PRAGMA foreign_keys = ON;
+            PRAGMA journal_mode = WAL;
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                milestone TEXT NOT NULL DEFAULT '',
+                total_phases INTEGER NOT NULL DEFAULT 0 CHECK (total_phases >= 0),
+                completed_phases INTEGER NOT NULL DEFAULT 0 CHECK (completed_phases >= 0),
+                active_phase INTEGER NOT NULL DEFAULT 0 CHECK (active_phase >= 0),
+                branch TEXT,
+                runtime TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS repositories (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                root_path TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                branch TEXT,
+                head_sha TEXT,
+                is_git_repo INTEGER NOT NULL DEFAULT 1 CHECK (is_git_repo IN (0, 1)),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS workspace_index_metadata (
+                project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN ('empty', 'indexing', 'ready', 'stale', 'failed')),
+                index_version INTEGER NOT NULL CHECK (index_version > 0),
+                root_path TEXT NOT NULL CHECK (root_path <> ''),
+                storage_path TEXT NOT NULL CHECK (storage_path <> ''),
+                head_sha TEXT,
+                worktree_fingerprint TEXT,
+                total_files INTEGER NOT NULL DEFAULT 0 CHECK (total_files >= 0),
+                indexed_files INTEGER NOT NULL DEFAULT 0 CHECK (indexed_files >= 0),
+                skipped_files INTEGER NOT NULL DEFAULT 0 CHECK (skipped_files >= 0),
+                stale_files INTEGER NOT NULL DEFAULT 0 CHECK (stale_files >= 0),
+                symbol_count INTEGER NOT NULL DEFAULT 0 CHECK (symbol_count >= 0),
+                indexed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (indexed_bytes >= 0),
+                coverage_percent REAL NOT NULL DEFAULT 0 CHECK (coverage_percent >= 0 AND coverage_percent <= 100),
+                diagnostics_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(diagnostics_json)),
+                last_error_code TEXT,
+                last_error_message TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspace_index_files (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                path TEXT NOT NULL CHECK (path <> ''),
+                language TEXT NOT NULL CHECK (language <> ''),
+                content_hash TEXT NOT NULL CHECK (content_hash <> ''),
+                modified_at TEXT NOT NULL CHECK (modified_at <> ''),
+                byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+                summary TEXT NOT NULL,
+                snippet TEXT NOT NULL,
+                symbols_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(symbols_json)),
+                imports_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(imports_json)),
+                tests_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tests_json)),
+                routes_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(routes_json)),
+                commands_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(commands_json)),
+                diffs_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(diffs_json)),
+                failures_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(failures_json)),
+                embedding_json TEXT NOT NULL CHECK (embedding_json <> '' AND json_valid(embedding_json)),
+                embedding_model TEXT NOT NULL CHECK (embedding_model <> ''),
+                embedding_version TEXT NOT NULL CHECK (embedding_version <> ''),
+                indexed_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_workspace_index_files_project_language
+                ON workspace_index_files(project_id, language, path);
+            CREATE INDEX IF NOT EXISTS idx_workspace_index_files_project_hash
+                ON workspace_index_files(project_id, content_hash);
+            ",
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_schema_failed", error))?;
+    let display_name = repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(project_id);
+    connection
+        .execute(
+            "INSERT INTO projects (id, name, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+            params![project_id, display_name, now_timestamp()],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_project_write_failed", error))?;
+    connection
+        .execute(
+            "INSERT INTO repositories (id, project_id, root_path, display_name, head_sha, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(root_path) DO UPDATE SET
+                project_id = excluded.project_id,
+                display_name = excluded.display_name,
+                head_sha = excluded.head_sha,
+                updated_at = excluded.updated_at",
+            params![
+                format!("repo-{}", project_id),
+                project_id,
+                repo_root.display().to_string(),
+                display_name,
+                repository_head_sha(repo_root),
+                now_timestamp(),
+            ],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_repository_write_failed", error))?;
+    Ok(connection)
+}
+
+fn upsert_workspace_row(
+    connection: &Connection,
+    row: &IndexedWorkspaceRow,
+) -> Result<(), CliError> {
+    connection
+        .execute(
+            "INSERT INTO workspace_index_files (
+                project_id, path, language, content_hash, modified_at, byte_length,
+                summary, snippet, symbols_json, imports_json, tests_json, routes_json,
+                commands_json, diffs_json, failures_json, embedding_json, embedding_model,
+                embedding_version, indexed_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            ON CONFLICT(project_id, path) DO UPDATE SET
+                language = excluded.language,
+                content_hash = excluded.content_hash,
+                modified_at = excluded.modified_at,
+                byte_length = excluded.byte_length,
+                summary = excluded.summary,
+                snippet = excluded.snippet,
+                symbols_json = excluded.symbols_json,
+                imports_json = excluded.imports_json,
+                tests_json = excluded.tests_json,
+                routes_json = excluded.routes_json,
+                commands_json = excluded.commands_json,
+                diffs_json = excluded.diffs_json,
+                failures_json = excluded.failures_json,
+                embedding_json = excluded.embedding_json,
+                embedding_model = excluded.embedding_model,
+                embedding_version = excluded.embedding_version,
+                indexed_at = excluded.indexed_at",
+            params![
+                &row.project_id,
+                &row.path,
+                &row.language,
+                &row.content_hash,
+                &row.modified_at,
+                row.byte_length,
+                &row.summary,
+                &row.snippet,
+                json_array(&row.symbols)?,
+                json_array(&row.imports)?,
+                json_array(&row.tests)?,
+                json_array(&row.routes)?,
+                json_array(&row.commands)?,
+                json_array(&row.diffs)?,
+                json_array(&row.failures)?,
+                &row.embedding_json,
+                &row.embedding_model,
+                &row.embedding_version,
+                &row.indexed_at,
+            ],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_file_write_failed", error))?;
+    Ok(())
+}
+
+fn read_workspace_fingerprints(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<BTreeMap<String, WorkspaceFingerprint>, CliError> {
+    let mut stmt = connection
+        .prepare("SELECT path, modified_at, byte_length FROM workspace_index_files WHERE project_id = ?1")
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_read_failed", error))?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                WorkspaceFingerprint {
+                    modified_at: row.get(1)?,
+                    byte_length: row.get(2)?,
+                },
+            ))
+        })
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_read_failed", error))?;
+    let mut fingerprints = BTreeMap::new();
+    for row in rows {
+        let (path, fingerprint) =
+            row.map_err(|error| sqlite_cli_error("xero_cli_workspace_index_read_failed", error))?;
+        fingerprints.insert(path, fingerprint);
+    }
+    Ok(fingerprints)
+}
+
+fn read_workspace_rows(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<StoredWorkspaceRow>, CliError> {
+    let mut stmt = connection
+        .prepare(
+            "SELECT path, language, content_hash, summary, snippet, symbols_json, imports_json,
+                    tests_json, routes_json, commands_json, diffs_json, failures_json,
+                    embedding_json, indexed_at
+             FROM workspace_index_files WHERE project_id = ?1",
+        )
+        .map_err(|error| {
+            sqlite_cli_error("xero_cli_workspace_index_query_prepare_failed", error)
+        })?;
+    let rows = stmt
+        .query_map(params![project_id], stored_workspace_row_from_sql)
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_query_failed", error))?;
+    let mut output = Vec::new();
+    for row in rows {
+        output.push(
+            row.map_err(|error| sqlite_cli_error("xero_cli_workspace_index_query_failed", error))?,
+        );
+    }
+    Ok(output)
+}
+
+fn read_workspace_row(
+    connection: &Connection,
+    project_id: &str,
+    path: &str,
+) -> Result<Option<StoredWorkspaceRow>, CliError> {
+    connection
+        .query_row(
+            "SELECT path, language, content_hash, summary, snippet, symbols_json, imports_json,
+                    tests_json, routes_json, commands_json, diffs_json, failures_json,
+                    embedding_json, indexed_at
+             FROM workspace_index_files WHERE project_id = ?1 AND path = ?2",
+            params![project_id, path],
+            stored_workspace_row_from_sql,
+        )
+        .optional()
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_query_failed", error))
+}
+
+fn stored_workspace_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredWorkspaceRow> {
+    Ok(StoredWorkspaceRow {
+        path: row.get(0)?,
+        language: row.get(1)?,
+        content_hash: row.get(2)?,
+        summary: row.get(3)?,
+        snippet: row.get(4)?,
+        symbols_json: row.get(5)?,
+        imports_json: row.get(6)?,
+        tests_json: row.get(7)?,
+        routes_json: row.get(8)?,
+        commands_json: row.get(9)?,
+        diffs_json: row.get(10)?,
+        failures_json: row.get(11)?,
+        embedding_json: row.get(12)?,
+        indexed_at: row.get(13)?,
+    })
+}
+
+fn count_workspace_rows(connection: &Connection, project_id: &str) -> Result<u32, CliError> {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM workspace_index_files WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count.max(0) as u32)
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_count_failed", error))
+}
+
+fn workspace_index_stats(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<(u64, u32), CliError> {
+    let mut stmt = connection
+        .prepare(
+            "SELECT byte_length, symbols_json FROM workspace_index_files WHERE project_id = ?1",
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_stats_failed", error))?;
+    let rows = stmt
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_stats_failed", error))?;
+    let mut bytes = 0_u64;
+    let mut symbols = 0_u32;
+    for row in rows {
+        let (byte_length, symbols_json) =
+            row.map_err(|error| sqlite_cli_error("xero_cli_workspace_index_stats_failed", error))?;
+        bytes = bytes.saturating_add(byte_length.max(0) as u64);
+        symbols =
+            symbols.saturating_add(decode_string_array(&symbols_json, "symbols")?.len() as u32);
+    }
+    Ok((bytes, symbols))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_workspace_status(
+    connection: &Connection,
+    database_path: &Path,
+    repo_root: &Path,
+    project_id: &str,
+    state: WorkspaceIndexState,
+    total_files: u32,
+    indexed_files: u32,
+    skipped_files: u32,
+    stale_files: u32,
+    symbol_count: u32,
+    indexed_bytes: u64,
+    diagnostics: &[WorkspaceIndexDiagnostic],
+    started_at: Option<&str>,
+    completed_at: Option<&str>,
+    error: Option<(&str, &str)>,
+) -> Result<(), CliError> {
+    let diagnostics_json = serde_json::to_string(diagnostics).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_workspace_index_diagnostics_encode_failed",
+            format!("Could not serialize workspace-index diagnostics: {error}"),
+        )
+    })?;
+    let updated_at = now_timestamp();
+    let root_path = repo_root.display().to_string();
+    let storage_path = database_path
+        .parent()
+        .unwrap_or(database_path)
+        .display()
+        .to_string();
+    let head_sha = repository_head_sha(repo_root);
+    let fingerprint = workspace_fingerprint(repo_root);
+    let (last_error_code, last_error_message) = error
+        .map(|(code, message)| (Some(code.to_owned()), Some(message.to_owned())))
+        .unwrap_or((None, None));
+    connection
+        .execute(
+            "INSERT INTO workspace_index_metadata (
+                project_id, status, index_version, root_path, storage_path, head_sha,
+                worktree_fingerprint, total_files, indexed_files, skipped_files, stale_files,
+                symbol_count, indexed_bytes, coverage_percent, diagnostics_json,
+                last_error_code, last_error_message, started_at, completed_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            ON CONFLICT(project_id) DO UPDATE SET
+                status = excluded.status,
+                index_version = excluded.index_version,
+                root_path = excluded.root_path,
+                storage_path = excluded.storage_path,
+                head_sha = excluded.head_sha,
+                worktree_fingerprint = excluded.worktree_fingerprint,
+                total_files = excluded.total_files,
+                indexed_files = excluded.indexed_files,
+                skipped_files = excluded.skipped_files,
+                stale_files = excluded.stale_files,
+                symbol_count = excluded.symbol_count,
+                indexed_bytes = excluded.indexed_bytes,
+                coverage_percent = excluded.coverage_percent,
+                diagnostics_json = excluded.diagnostics_json,
+                last_error_code = excluded.last_error_code,
+                last_error_message = excluded.last_error_message,
+                started_at = excluded.started_at,
+                completed_at = excluded.completed_at,
+                updated_at = excluded.updated_at",
+            params![
+                project_id,
+                state.as_str(),
+                WORKSPACE_INDEX_VERSION,
+                root_path,
+                storage_path,
+                head_sha,
+                fingerprint,
+                total_files,
+                indexed_files,
+                skipped_files,
+                stale_files,
+                symbol_count,
+                indexed_bytes as i64,
+                coverage_percent(indexed_files, total_files),
+                diagnostics_json,
+                last_error_code,
+                last_error_message,
+                started_at,
+                completed_at,
+                updated_at,
+            ],
+        )
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_status_write_failed", error))?;
+    Ok(())
+}
+
+fn read_workspace_status(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    database_path: &Path,
+) -> Result<Option<WorkspaceIndexStatus>, CliError> {
+    connection
+        .query_row(
+            "SELECT status, index_version, root_path, storage_path, head_sha, total_files,
+                    indexed_files, skipped_files, stale_files, symbol_count, indexed_bytes,
+                    coverage_percent, diagnostics_json, last_error_code, last_error_message,
+                    started_at, completed_at, updated_at
+             FROM workspace_index_metadata WHERE project_id = ?1",
+            params![project_id],
+            |row| {
+                let diagnostics_json: String = row.get(12)?;
+                let mut diagnostics =
+                    serde_json::from_str::<Vec<WorkspaceIndexDiagnostic>>(&diagnostics_json)
+                        .unwrap_or_default();
+                let last_error_code: Option<String> = row.get(13)?;
+                let last_error_message: Option<String> = row.get(14)?;
+                if let (Some(code), Some(message)) = (last_error_code, last_error_message) {
+                    diagnostics.push(WorkspaceIndexDiagnostic {
+                        severity: "error".into(),
+                        code,
+                        message,
+                    });
+                }
+                Ok(WorkspaceIndexStatus {
+                    project_id: project_id.to_owned(),
+                    state: parse_workspace_state(row.get::<_, String>(0)?.as_str()),
+                    index_version: row.get::<_, i64>(1)?.max(1) as u32,
+                    root_path: row.get(2)?,
+                    storage_path: row.get(3)?,
+                    head_sha: row.get(4)?,
+                    total_files: row.get::<_, i64>(5)?.max(0) as u32,
+                    indexed_files: row.get::<_, i64>(6)?.max(0) as u32,
+                    skipped_files: row.get::<_, i64>(7)?.max(0) as u32,
+                    stale_files: row.get::<_, i64>(8)?.max(0) as u32,
+                    symbol_count: row.get::<_, i64>(9)?.max(0) as u32,
+                    indexed_bytes: row.get::<_, i64>(10)?.max(0) as u64,
+                    coverage_percent: row.get(11)?,
+                    diagnostics,
+                    started_at: row.get(15)?,
+                    completed_at: row.get(16)?,
+                    updated_at: row.get(17)?,
+                })
+            },
+        )
+        .optional()
+        .map(|status| {
+            status.or_else(|| Some(empty_workspace_status(repo_root, project_id, database_path)))
+        })
+        .map_err(|error| sqlite_cli_error("xero_cli_workspace_index_status_read_failed", error))
+}
+
+fn empty_workspace_status(
+    repo_root: &Path,
+    project_id: &str,
+    database_path: &Path,
+) -> WorkspaceIndexStatus {
+    WorkspaceIndexStatus {
+        project_id: project_id.to_owned(),
+        state: WorkspaceIndexState::Empty,
+        index_version: WORKSPACE_INDEX_VERSION,
+        root_path: repo_root.display().to_string(),
+        storage_path: database_path
+            .parent()
+            .unwrap_or(database_path)
+            .display()
+            .to_string(),
+        total_files: 0,
+        indexed_files: 0,
+        skipped_files: 0,
+        stale_files: 0,
+        symbol_count: 0,
+        indexed_bytes: 0,
+        coverage_percent: 0.0,
+        head_sha: repository_head_sha(repo_root),
+        started_at: None,
+        completed_at: None,
+        updated_at: None,
+        diagnostics: Vec::new(),
+    }
+}
+
+fn workspace_row_to_query_result(
+    rank: u32,
+    scored: ScoredWorkspaceRow,
+) -> Result<WorkspaceQueryResult, CliError> {
+    Ok(WorkspaceQueryResult {
+        rank,
+        path: scored.row.path,
+        score: round_score(scored.score),
+        language: scored.row.language,
+        summary: scored.row.summary,
+        snippet: scored.row.snippet,
+        symbols: decode_string_array(&scored.row.symbols_json, "symbols")?,
+        imports: decode_string_array(&scored.row.imports_json, "imports")?,
+        tests: decode_string_array(&scored.row.tests_json, "tests")?,
+        diffs: decode_string_array(&scored.row.diffs_json, "diffs")?,
+        failures: decode_string_array(&scored.row.failures_json, "failures")?,
+        reasons: scored.reasons,
+        content_hash: scored.row.content_hash,
+        indexed_at: scored.row.indexed_at,
+    })
+}
+
+fn lexical_score(
+    tokens: &[String],
+    row: &StoredWorkspaceRow,
+    mode: WorkspaceQueryMode,
+) -> LexicalScore {
+    if tokens.is_empty() {
+        return LexicalScore {
+            total: 0.0,
+            reasons: vec!["empty query token set".into()],
+        };
+    }
+    let symbols = decode_string_array(&row.symbols_json, "symbols").unwrap_or_default();
+    let imports = decode_string_array(&row.imports_json, "imports").unwrap_or_default();
+    let tests = decode_string_array(&row.tests_json, "tests").unwrap_or_default();
+    let routes = decode_string_array(&row.routes_json, "routes").unwrap_or_default();
+    let commands = decode_string_array(&row.commands_json, "commands").unwrap_or_default();
+    let diffs = decode_string_array(&row.diffs_json, "diffs").unwrap_or_default();
+    let failures = decode_string_array(&row.failures_json, "failures").unwrap_or_default();
+    let path_l = row.path.to_lowercase();
+    let summary_l = row.summary.to_lowercase();
+    let symbols_l = symbols.join(" ").to_lowercase();
+    let imports_l = imports.join(" ").to_lowercase();
+    let tests_l = tests.join(" ").to_lowercase();
+    let feature_l = [
+        routes.join(" "),
+        commands.join(" "),
+        diffs.join(" "),
+        failures.join(" "),
+    ]
+    .join(" ")
+    .to_lowercase();
+    let mut score = 0.0_f64;
+    let mut reasons = Vec::new();
+    for token in tokens {
+        if path_l.contains(token) {
+            score += 0.24;
+            push_reason(&mut reasons, format!("path matches `{token}`"));
+        }
+        if symbols_l.contains(token) {
+            score += 0.22;
+            push_reason(&mut reasons, format!("symbol matches `{token}`"));
+        }
+        if summary_l.contains(token) {
+            score += 0.12;
+            push_reason(&mut reasons, format!("summary matches `{token}`"));
+        }
+        if imports_l.contains(token) {
+            score += 0.1;
+            push_reason(&mut reasons, format!("import/dependency matches `{token}`"));
+        }
+        if tests_l.contains(token) {
+            score += 0.12;
+            push_reason(&mut reasons, format!("test signal matches `{token}`"));
+        }
+        if feature_l.contains(token) {
+            score += 0.1;
+            push_reason(
+                &mut reasons,
+                format!("route/command/diff/failure signal matches `{token}`"),
+            );
+        }
+    }
+    match mode {
+        WorkspaceQueryMode::Symbol if !symbols.is_empty() => {
+            score += 0.15;
+            push_reason(&mut reasons, "symbol-aware lookup boost".into());
+        }
+        WorkspaceQueryMode::RelatedTests if !tests.is_empty() || is_test_path(&row.path) => {
+            score += 0.25;
+            push_reason(&mut reasons, "related test discovery boost".into());
+        }
+        WorkspaceQueryMode::Impact => {
+            if !imports.is_empty() {
+                score += 0.12;
+                push_reason(&mut reasons, "change-impact import graph signal".into());
+            }
+            if !diffs.is_empty() {
+                score += 0.18;
+                push_reason(&mut reasons, "recent diff impact signal".into());
+            }
+        }
+        _ => {}
+    }
+    if !failures.is_empty() {
+        score += 0.1;
+        push_reason(&mut reasons, "recent build/test failure signal".into());
+    }
+    if reasons.is_empty() {
+        reasons.push("semantic embedding similarity".into());
+    }
+    LexicalScore {
+        total: score.min(1.0),
+        reasons,
+    }
+}
+
+fn score_for_mode(semantic: f64, lexical: f64, mode: WorkspaceQueryMode) -> f64 {
+    let (semantic_weight, lexical_weight) = match mode {
+        WorkspaceQueryMode::Semantic => (0.82, 0.18),
+        WorkspaceQueryMode::Symbol => (0.4, 0.6),
+        WorkspaceQueryMode::RelatedTests | WorkspaceQueryMode::Impact => (0.48, 0.52),
+        WorkspaceQueryMode::Auto => (0.62, 0.38),
+    };
+    (semantic * semantic_weight + lexical * lexical_weight).min(1.0)
+}
+
+fn query_embedding_text(query: &str, mode: WorkspaceQueryMode) -> String {
+    match mode {
+        WorkspaceQueryMode::RelatedTests => format!("tests specs verification related to {query}"),
+        WorkspaceQueryMode::Impact => format!("change impact imports dependents {query}"),
+        WorkspaceQueryMode::Symbol => format!("symbol definition lookup {query}"),
+        WorkspaceQueryMode::Semantic | WorkspaceQueryMode::Auto => query.to_owned(),
+    }
+}
+
+fn parse_workspace_query_mode(value: &str) -> Result<WorkspaceQueryMode, CliError> {
+    match value.trim().replace('-', "_").as_str() {
+        "auto" => Ok(WorkspaceQueryMode::Auto),
+        "semantic" => Ok(WorkspaceQueryMode::Semantic),
+        "symbol" | "symbols" => Ok(WorkspaceQueryMode::Symbol),
+        "related_tests" | "tests" => Ok(WorkspaceQueryMode::RelatedTests),
+        "impact" | "change_impact" => Ok(WorkspaceQueryMode::Impact),
+        other => Err(CliError::usage(format!(
+            "Unknown workspace query mode `{other}`. Use auto, semantic, symbol, related-tests, or impact."
+        ))),
+    }
+}
+
+fn parse_workspace_state(value: &str) -> WorkspaceIndexState {
+    match value {
+        "indexing" => WorkspaceIndexState::Indexing,
+        "ready" => WorkspaceIndexState::Ready,
+        "stale" => WorkspaceIndexState::Stale,
+        "failed" => WorkspaceIndexState::Failed,
+        _ => WorkspaceIndexState::Empty,
+    }
+}
+
+fn semantic_index_state_from_workspace_status(
+    state: WorkspaceIndexState,
+) -> EnvironmentSemanticIndexState {
+    match state {
+        WorkspaceIndexState::Ready => EnvironmentSemanticIndexState::Ready,
+        WorkspaceIndexState::Indexing => EnvironmentSemanticIndexState::Indexing,
+        WorkspaceIndexState::Stale => EnvironmentSemanticIndexState::Stale,
+        WorkspaceIndexState::Empty => EnvironmentSemanticIndexState::Empty,
+        WorkspaceIndexState::Failed => EnvironmentSemanticIndexState::Failed,
+    }
+}
+
+fn workspace_language(path: &Path) -> Option<String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if matches!(
+        file_name,
+        "Cargo.toml"
+            | "package.json"
+            | "tsconfig.json"
+            | "vite.config.ts"
+            | "README.md"
+            | "AGENTS.md"
+    ) {
+        return Some(file_name.to_owned());
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_lowercase();
+    let language = match extension.as_str() {
+        "rs" => "rust",
+        "ts" => "typescript",
+        "tsx" => "typescript-react",
+        "js" => "javascript",
+        "jsx" => "javascript-react",
+        "py" => "python",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "hpp" => "cpp",
+        "cs" => "csharp",
+        "rb" => "ruby",
+        "php" => "php",
+        "ex" | "exs" => "elixir",
+        "svelte" => "svelte",
+        "vue" => "vue",
+        "md" | "mdx" => "markdown",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "graphql" | "gql" => "graphql",
+        "sql" => "sql",
+        "sh" | "bash" | "zsh" => "shell",
+        _ => return None,
+    };
+    Some(language.into())
+}
+
+fn is_test_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.contains(".test.")
+        || lower.contains(".spec.")
+        || lower.contains("/tests/")
+        || lower.ends_with("_test.rs")
+        || lower.ends_with("_test.py")
+}
+
+fn to_virtual_path(repo_root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(repo_root).ok()?;
+    let parts = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
         })
         .collect::<Vec<_>>();
-    results.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    results.truncate(limit);
-    results
+    (!parts.is_empty()).then(|| format!("/{}", parts.join("/")))
 }
 
-fn tokenize(value: &str) -> Vec<String> {
-    value
-        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-        .filter_map(|part| {
-            let token = part.trim().to_ascii_lowercase();
-            (token.len() > 1).then_some(token)
+fn normalize_virtual_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let prefixed = if trimmed.starts_with('/') {
+        trimmed.to_owned()
+    } else {
+        format!("/{trimmed}")
+    };
+    Some(prefixed.trim_end_matches('/').to_owned())
+}
+
+fn path_matches_filter(path: &str, filter: &str) -> bool {
+    path == filter
+        || path
+            .strip_prefix(filter)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn tokenize_workspace_query(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| {
+            !character.is_alphanumeric() && character != '_' && character != '-'
         })
+        .map(|token| token.trim().to_lowercase())
+        .filter(|token| token.len() >= 2)
+        .take(24)
         .collect()
 }
 
-fn workspace_index_path(globals: &GlobalOptions, repo_root: &Path) -> PathBuf {
-    globals
-        .state_dir
-        .join(WORKSPACE_INDEX_DIRECTORY)
-        .join(format!(
-            "{:016x}.json",
-            stable_hash(&repo_root.display().to_string())
-        ))
+fn workspace_embedding(text: &str) -> Result<Vec<f32>, CliError> {
+    let mut vector = vec![0.0_f32; WORKSPACE_EMBEDDING_DIM];
+    let tokens = embedding_tokens(text);
+    if tokens.is_empty() {
+        return Ok(vector);
+    }
+    for token in tokens {
+        let digest = Sha256::digest(token.as_bytes());
+        let index = u64::from_be_bytes([
+            digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+        ]) as usize
+            % WORKSPACE_EMBEDDING_DIM;
+        let sign = if digest[8] & 1 == 0 { 1.0 } else { -1.0 };
+        let weight = 1.0 + ((digest[9] % 7) as f32 / 16.0);
+        vector[index] += sign * weight;
+    }
+    let norm = vector
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt();
+    if norm > 0.0 {
+        for value in &mut vector {
+            *value = (f64::from(*value) / norm) as f32;
+        }
+    }
+    Ok(vector)
 }
 
-fn stable_hash(value: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+fn embedding_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for character in text.chars().flat_map(char::to_lowercase) {
+        if character.is_alphanumeric() || character == '_' || character == '-' {
+            current.push(character);
+        } else if !current.is_empty() {
+            push_embedding_token_variants(&mut tokens, &current);
+            current.clear();
+        }
     }
-    hash
+    if !current.is_empty() {
+        push_embedding_token_variants(&mut tokens, &current);
+    }
+    tokens
+}
+
+fn push_embedding_token_variants(tokens: &mut Vec<String>, token: &str) {
+    tokens.push(format!("tok:{token}"));
+    let chars = token.chars().collect::<Vec<_>>();
+    if chars.len() >= 4 {
+        for window in chars.windows(4) {
+            tokens.push(format!("gram:{}", window.iter().collect::<String>()));
+        }
+    }
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f64 {
+    if left.len() != right.len() || left.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0_f64;
+    let mut left_norm = 0.0_f64;
+    let mut right_norm = 0.0_f64;
+    for (left_value, right_value) in left.iter().zip(right.iter()) {
+        let left_value = f64::from(*left_value);
+        let right_value = f64::from(*right_value);
+        dot += left_value * right_value;
+        left_norm += left_value * left_value;
+        right_norm += right_value * right_value;
+    }
+    if left_norm == 0.0 || right_norm == 0.0 {
+        0.0
+    } else {
+        (dot / (left_norm.sqrt() * right_norm.sqrt())).max(0.0)
+    }
+}
+
+fn recent_diff_signals(repo_root: &Path) -> BTreeMap<String, Vec<String>> {
+    let mut signals = BTreeMap::<String, Vec<String>>::new();
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("status")
+        .arg("--porcelain")
+        .output();
+    let Ok(output) = output else {
+        return signals;
+    };
+    if !output.status.success() {
+        return signals;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let status = line[..2].trim();
+        let path = line[3..].split(" -> ").last().unwrap_or_default().trim();
+        if path.is_empty() {
+            continue;
+        }
+        let virtual_path = normalize_virtual_path(path).unwrap_or_else(|| format!("/{path}"));
+        let label = match status {
+            "M" | "MM" | "AM" | "A" | "??" => "recent worktree change",
+            "D" => "recent deletion",
+            "R" => "recent rename",
+            _ => "recent diff signal",
+        };
+        push_unique_map_signal(
+            &mut signals,
+            virtual_path,
+            label.into(),
+            MAX_WORKSPACE_FEATURES,
+        );
+    }
+    signals
+}
+
+fn repository_head_sha(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn workspace_fingerprint(repo_root: &Path) -> Option<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(repo_root.display().to_string().as_bytes());
+    if let Some(head) = repository_head_sha(repo_root) {
+        hasher.update(head.as_bytes());
+    }
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+fn stable_project_id_for_repo_root(repo_root: &Path) -> String {
+    let root_path_string = fs::canonicalize(repo_root)
+        .unwrap_or_else(|_| repo_root.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+    let digest = Sha256::digest(root_path_string.as_bytes());
+    let short = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("project_{short}")
+}
+
+fn cli_app_data_root(globals: &GlobalOptions) -> PathBuf {
+    if globals.state_dir.file_name().and_then(|name| name.to_str()) == Some(HEADLESS_DIRECTORY_NAME)
+    {
+        globals
+            .state_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| globals.state_dir.clone())
+    } else {
+        globals.state_dir.clone()
+    }
+}
+
+fn workspace_project_database_path(globals: &GlobalOptions, project_id: &str) -> PathBuf {
+    workspace_project_database_path_for_app_root(&cli_app_data_root(globals), project_id)
+}
+
+fn workspace_project_database_path_for_app_root(app_data_root: &Path, project_id: &str) -> PathBuf {
+    app_data_root
+        .join(PROJECTS_DIRECTORY)
+        .join(project_id)
+        .join(STATE_DATABASE_FILE)
+}
+
+fn sha256_text(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn json_array(values: &[String]) -> Result<String, CliError> {
+    serde_json::to_string(values).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_workspace_index_json_encode_failed",
+            format!("Could not serialize workspace-index features: {error}"),
+        )
+    })
+}
+
+fn decode_string_array(value: &str, label: &'static str) -> Result<Vec<String>, CliError> {
+    serde_json::from_str::<Vec<String>>(value).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_workspace_index_json_decode_failed",
+            format!("Could not decode workspace-index {label}: {error}"),
+        )
+    })
+}
+
+fn push_unique(values: &mut Vec<String>, value: String, limit: usize) {
+    if values.len() >= limit || values.iter().any(|existing| existing == &value) {
+        return;
+    }
+    values.push(value);
+}
+
+fn push_unique_map_signal(
+    values: &mut BTreeMap<String, Vec<String>>,
+    path: String,
+    value: String,
+    limit: usize,
+) {
+    let entry = values.entry(path).or_default();
+    push_unique(entry, value, limit);
+}
+
+fn push_reason(values: &mut Vec<String>, value: String) {
+    push_unique(values, value, 8);
+}
+
+fn coverage_percent(indexed_files: u32, total_files: u32) -> f64 {
+    if total_files == 0 {
+        0.0
+    } else {
+        ((indexed_files as f64 / total_files as f64) * 100.0).clamp(0.0, 100.0)
+    }
+}
+
+fn round_score(score: f64) -> f64 {
+    (score * 1000.0).round() / 1000.0
+}
+
+fn workspace_diagnostic(
+    severity: impl Into<String>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> WorkspaceIndexDiagnostic {
+    WorkspaceIndexDiagnostic {
+        severity: severity.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn sqlite_cli_error(code: &'static str, error: rusqlite::Error) -> CliError {
+    CliError::system_fault(
+        code,
+        format!("Xero workspace index storage failed: {error}"),
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3568,7 +7632,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_exec_persists_headless_run_for_conversation_show() {
+    fn fake_provider_harness_agent_exec_persists_headless_run_for_conversation_show() {
         let state_dir = unique_temp_dir("agent-exec");
         let exec = run_with_args([
             "xero",
@@ -3583,6 +7647,8 @@ mod tests {
             "session-1",
             "--run-id",
             "run-1",
+            "--provider",
+            "fake_provider",
             "Summarize this repo.",
         ])
         .expect("agent exec should succeed");
@@ -3609,7 +7675,703 @@ mod tests {
     }
 
     #[test]
-    fn conversation_dump_and_support_bundle_use_canonical_trace_snapshot() {
+    fn agent_exec_requires_explicit_provider_when_unconfigured() {
+        let state_dir = unique_temp_dir("agent-exec-provider-required");
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "Summarize this repo.",
+        ])
+        .expect_err("unconfigured real provider should be rejected");
+
+        assert_eq!(error.code, "xero_cli_provider_required");
+    }
+
+    #[test]
+    fn real_provider_agent_exec_rejects_missing_app_data_registry_without_json_store() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-contract");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+        ])
+        .expect("provider profile should be recorded");
+
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "Complete a real provider run.",
+        ])
+        .expect_err("real provider should require app-data project registration");
+
+        assert_eq!(error.code, "xero_cli_project_registry_missing");
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "real provider rejection must happen before opening the harness JSON store"
+        );
+    }
+
+    #[test]
+    fn real_provider_agent_exec_rejects_missing_app_data_project_database() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-missing-db");
+        let repo_dir = unique_temp_dir("agent-exec-real-provider-missing-db-repo");
+        seed_global_project_registration_only(&state_dir, "project-real", &repo_dir);
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+        ])
+        .expect("provider profile should be recorded");
+
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "Complete a real provider run.",
+        ])
+        .expect_err("missing app-data project state should be rejected");
+
+        assert_eq!(error.code, "xero_cli_project_state_missing");
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "real provider rejection must not create the harness JSON store"
+        );
+    }
+
+    #[test]
+    fn real_provider_agent_exec_rejects_unimported_current_project_root() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-unimported");
+        let registered_repo = unique_temp_dir("agent-exec-real-provider-registered-repo");
+        let unregistered_repo = unique_temp_dir("agent-exec-real-provider-unregistered-repo");
+        seed_registered_project(&state_dir, "project-registered", &registered_repo);
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+        ])
+        .expect("provider profile should be recorded");
+
+        let previous_dir = env::current_dir().expect("current dir");
+        env::set_current_dir(&unregistered_repo).expect("switch to unregistered repo");
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "Complete a real provider run.",
+        ])
+        .expect_err("unimported current project root should be rejected");
+        env::set_current_dir(previous_dir).expect("restore current dir");
+
+        assert_eq!(error.code, "xero_cli_project_unimported");
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "real provider rejection must not create the harness JSON store"
+        );
+    }
+
+    #[test]
+    fn cli_show_and_dump_read_desktop_style_app_data_run() {
+        let state_dir = unique_temp_dir("desktop-style-run");
+        let repo_dir = unique_temp_dir("desktop-style-run-repo");
+        let trace_id = seed_desktop_style_app_data_run(
+            &state_dir,
+            "project-desktop",
+            &repo_dir,
+            "session-desktop",
+            "run-desktop",
+        );
+
+        let show = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "show",
+            "--project-id",
+            "project-desktop",
+            "run-desktop",
+        ])
+        .expect("conversation show should read desktop-style app-data state");
+        assert_eq!(show.json["snapshot"]["traceId"], json!(trace_id));
+        assert_eq!(
+            show.json["snapshot"]["contextManifests"][0]["manifestId"],
+            json!("manifest-desktop-run-0")
+        );
+
+        let dump = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "dump",
+            "--project-id",
+            "project-desktop",
+            "run-desktop",
+        ])
+        .expect("conversation dump should export the canonical trace");
+        assert_eq!(
+            dump.json["canonicalTrace"]["traceId"],
+            show.json["snapshot"]["traceId"]
+        );
+        assert_eq!(
+            dump.json["timeline"]["items"][0]["eventKind"],
+            json!("run_started")
+        );
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "desktop-style app-data inspection must not create the harness JSON store"
+        );
+    }
+
+    #[test]
+    fn real_provider_uses_project_store() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-store");
+        let repo_dir = unique_temp_dir("agent-exec-real-provider-store-repo");
+        seed_registered_project(&state_dir, "project-real", &repo_dir);
+        let server = MockOpenAiCompatibleServer::start(vec![json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Real provider run completed."
+                }
+            }]
+        })]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let previous_dir = env::current_dir().expect("current dir");
+        env::set_current_dir(&repo_dir).expect("switch to registered repo");
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--session-id",
+            "session-real",
+            "--run-id",
+            "run-real",
+            "Complete a real provider run.",
+        ]);
+        env::set_current_dir(previous_dir).expect("restore current dir");
+        let output = output.expect("real provider run should succeed");
+        server.join();
+
+        assert_eq!(output.json["executionMode"], json!("real_provider"));
+        assert_eq!(output.json["snapshot"]["status"], json!("completed"));
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "real provider runs must not write the harness JSON store"
+        );
+        let project_database =
+            workspace_project_database_path_for_app_root(&state_dir, "project-real");
+        assert_eq!(
+            output.json["storePath"],
+            json!(project_database.display().to_string()),
+            "real provider runs must use app-data project state"
+        );
+        let show = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "show",
+            "--project-id",
+            "project-real",
+            "run-real",
+        ])
+        .expect("CLI conversation show should read the app-data project run");
+        assert_eq!(
+            show.json["snapshot"]["traceId"],
+            output.json["snapshot"]["traceId"]
+        );
+    }
+
+    #[test]
+    fn real_provider_uses_tool_registry_v2() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-v2");
+        let workspace = unique_temp_dir("agent-exec-real-provider-v2-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        fs::write(workspace.join("tracked.txt"), "tracked\n").expect("write tracked file");
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-read",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": "{\"path\":\"tracked.txt\"}"
+                            }
+                        }, {
+                            "id": "call-list",
+                            "type": "function",
+                            "function": {
+                                "name": "list",
+                                "arguments": "{\"path\":\".\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Listed files through Tool Registry V2."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-real",
+            "--run-id",
+            "run-real",
+            "List files.",
+        ]);
+        let output = output.expect("real provider run should succeed");
+        server.join();
+
+        let events = output.json["snapshot"]["events"]
+            .as_array()
+            .expect("events");
+        assert!(events.iter().any(
+            |event| event["eventKind"] == json!("tool_registry_snapshot")
+                && event["payload"]["executionRegistry"] == json!("tool_registry_v2")
+        ));
+        let registry = events
+            .iter()
+            .find(|event| event["eventKind"] == json!("tool_registry_snapshot"))
+            .expect("tool registry snapshot");
+        assert!(registry["payload"]["descriptorNames"]
+            .as_array()
+            .expect("descriptor names")
+            .iter()
+            .any(|name| name == "read"));
+        assert!(registry["payload"]["descriptorNames"]
+            .as_array()
+            .expect("descriptor names")
+            .iter()
+            .all(|name| {
+                !matches!(
+                    name.as_str(),
+                    Some("read_file" | "write_file" | "list_files")
+                )
+            }));
+        assert!(events
+            .iter()
+            .filter(|event| {
+                event["eventKind"] == json!("tool_started")
+                    || event["eventKind"] == json!("tool_completed")
+            })
+            .all(|event| event["payload"]["dispatch"]["registryVersion"]
+                == json!("tool_registry_v2")));
+        let completed_ids = events
+            .iter()
+            .filter(|event| event["eventKind"] == json!("tool_completed"))
+            .map(|event| event["payload"]["toolCallId"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completed_ids,
+            vec!["call-read", "call-list"],
+            "read-only V2 batches must preserve provider tool-call result order"
+        );
+    }
+
+    #[test]
+    fn real_provider_write_records_v2_rollback_and_reservation_metadata() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-v2-write");
+        let workspace = unique_temp_dir("agent-exec-real-provider-v2-write-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-write",
+                            "type": "function",
+                            "function": {
+                                "name": "write",
+                                "arguments": "{\"path\":\"scratch/generated.txt\",\"content\":\"hello from v2\\n\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Wrote through Tool Registry V2."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-real",
+            "--run-id",
+            "run-real",
+            "Write a scratch file.",
+        ]);
+        let output = output.expect("real provider run should succeed");
+        server.join();
+
+        assert_eq!(
+            fs::read_to_string(workspace.join("scratch/generated.txt")).expect("generated file"),
+            "hello from v2\n"
+        );
+        let events = output.json["snapshot"]["events"]
+            .as_array()
+            .expect("events");
+        let started = events
+            .iter()
+            .find(|event| {
+                event["eventKind"] == json!("tool_started")
+                    && event["payload"]["toolCallId"] == json!("call-write")
+            })
+            .expect("started write event");
+        assert_eq!(started["payload"]["inputRedacted"], json!(true));
+        assert_eq!(
+            started["payload"]["input"]["content"]["redacted"],
+            json!(true)
+        );
+
+        let completed = events
+            .iter()
+            .find(|event| {
+                event["eventKind"] == json!("tool_completed")
+                    && event["payload"]["toolCallId"] == json!("call-write")
+            })
+            .expect("completed write event");
+        assert_eq!(
+            completed["payload"]["dispatch"]["registryVersion"],
+            json!("tool_registry_v2")
+        );
+        assert_eq!(
+            completed["payload"]["dispatch"]["fileReservation"]["kind"],
+            json!("file_reservation")
+        );
+        assert_eq!(
+            completed["payload"]["dispatch"]["rollback"]["kind"],
+            json!("file_rollback")
+        );
+        assert!(events.iter().any(|event| {
+            event["eventKind"] == json!("file_changed")
+                && event["payload"]["dispatch"]["registryVersion"] == json!("tool_registry_v2")
+        }));
+    }
+
+    #[test]
+    fn real_provider_denied_write_emits_typed_v2_failure_without_writing() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-v2-denied-write");
+        let workspace = unique_temp_dir("agent-exec-real-provider-v2-denied-write-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-denied",
+                            "type": "function",
+                            "function": {
+                                "name": "write",
+                                "arguments": "{\"path\":\".xero/blocked.txt\",\"content\":\"must not write\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Write was denied."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-real",
+            "--run-id",
+            "run-real",
+            "Attempt a denied write.",
+        ]);
+        let output = output.expect("real provider run should finish after denied tool result");
+        server.join();
+
+        assert!(
+            !workspace.join(".xero/blocked.txt").exists(),
+            "sandbox-denied V2 write must not execute the handler"
+        );
+        let events = output.json["snapshot"]["events"]
+            .as_array()
+            .expect("events");
+        let completed = events
+            .iter()
+            .find(|event| {
+                event["eventKind"] == json!("tool_completed")
+                    && event["payload"]["toolCallId"] == json!("call-denied")
+            })
+            .expect("completed denied event");
+        assert_eq!(completed["payload"]["ok"], json!(false));
+        assert_eq!(
+            completed["payload"]["dispatch"]["typedErrorCategory"],
+            json!("sandbox_denied")
+        );
+        assert_eq!(
+            completed["payload"]["dispatch"]["sandbox"]["exitClassification"],
+            json!("denied_by_sandbox")
+        );
+        assert!(completed["payload"]["dispatch"]["sandbox"]["blockedReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(".xero")));
+    }
+
+    #[test]
+    fn real_provider_legacy_mini_tool_names_are_unavailable() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-v2-legacy-tool");
+        let workspace = unique_temp_dir("agent-exec-real-provider-v2-legacy-tool-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-legacy",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": "{\"path\":\"legacy.txt\",\"content\":\"old loop\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Legacy tool was unavailable."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-real",
+            "--run-id",
+            "run-real",
+            "Try a legacy mini tool.",
+        ]);
+        let output = output.expect("real provider run should finish after unavailable tool result");
+        server.join();
+
+        assert!(
+            !workspace.join("legacy.txt").exists(),
+            "legacy mini tool names must not reach direct filesystem handlers"
+        );
+        let events = output.json["snapshot"]["events"]
+            .as_array()
+            .expect("events");
+        let registry = events
+            .iter()
+            .find(|event| event["eventKind"] == json!("tool_registry_snapshot"))
+            .expect("tool registry snapshot");
+        assert_eq!(
+            registry["payload"]["legacyMiniToolsAvailable"],
+            json!(false)
+        );
+        let completed = events
+            .iter()
+            .find(|event| {
+                event["eventKind"] == json!("tool_completed")
+                    && event["payload"]["toolCallId"] == json!("call-legacy")
+            })
+            .expect("completed legacy event");
+        assert_eq!(completed["payload"]["ok"], json!(false));
+        assert_eq!(
+            completed["payload"]["dispatch"]["typedErrorCategory"],
+            json!("tool_unavailable")
+        );
+        assert_eq!(
+            completed["payload"]["dispatch"]["registryVersion"],
+            json!("tool_registry_v2")
+        );
+    }
+
+    #[test]
+    fn fake_provider_harness_conversation_dump_and_support_bundle_use_canonical_trace_snapshot() {
         let state_dir = unique_temp_dir("conversation-trace");
         run_with_args([
             "xero",
@@ -3623,6 +8385,8 @@ mod tests {
             "session-trace",
             "--run-id",
             "run-trace",
+            "--provider",
+            "fake_provider",
             "Summarize bearer token handling without exposing Bearer secret-token.",
         ])
         .expect("agent exec should succeed");
@@ -3646,7 +8410,19 @@ mod tests {
             dump.json["canonicalTrace"]["traceId"],
             dump.json["trace"]["traceId"]
         );
-        assert_eq!(dump.json["qualityGates"]["passed"], json!(true));
+        assert!(
+            dump.json["qualityGates"]["gates"].is_array(),
+            "harness trace exports should expose quality gates without counting as production proof"
+        );
+        assert_eq!(
+            dump.json["productionReadiness"]["traceId"],
+            dump.json["canonicalTrace"]["traceId"]
+        );
+        assert_eq!(
+            dump.json["productionReadiness"]["status"],
+            json!("blocked"),
+            "trace exports must not imply release readiness without focused test evidence"
+        );
 
         let bundle = run_with_args([
             "xero",
@@ -3661,6 +8437,93 @@ mod tests {
         let serialized = serde_json::to_string(&bundle.json).expect("serialize support bundle");
         assert!(!serialized.contains("secret-token"));
         assert!(serialized.contains("canonical_runtime_trace_snapshot"));
+        assert_eq!(
+            bundle.json["supportBundle"]["productionReadiness"]["traceId"],
+            dump.json["canonicalTrace"]["traceId"]
+        );
+    }
+
+    #[test]
+    fn fake_provider_harness_conversation_compact_and_clone_use_facade_operations() {
+        let state_dir = unique_temp_dir("conversation-facade-ops");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--project-id",
+            "project-facade",
+            "--session-id",
+            "session-facade",
+            "--run-id",
+            "run-facade",
+            "--provider",
+            "fake_provider",
+            "Create a durable conversation that can be compacted and cloned.",
+        ])
+        .expect("agent exec should succeed");
+
+        let compact = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "compact",
+            "run-facade",
+        ])
+        .expect("conversation compact should use the facade");
+        assert!(compact.json["snapshot"]["contextManifests"]
+            .as_array()
+            .expect("context manifests")
+            .iter()
+            .any(|manifest| manifest["manifest"]["kind"] == json!("session_compaction_artifact")));
+        assert!(compact.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| event["eventKind"] == json!("policy_decision")
+                && event["payload"]["kind"] == json!("session_compaction")));
+
+        let cloned = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "clone",
+            "run-facade",
+        ])
+        .expect("conversation clone should fork through the facade");
+        assert_ne!(
+            cloned.json["snapshot"]["agentSessionId"],
+            json!("session-facade")
+        );
+        assert!(cloned.json["snapshot"]["contextManifests"]
+            .as_array()
+            .expect("clone manifests")
+            .iter()
+            .any(|manifest| manifest["manifest"]["kind"] == json!("session_fork")));
+        assert!(cloned.json["snapshot"]["messages"]
+            .as_array()
+            .expect("clone messages")
+            .iter()
+            .any(|message| message["role"] == json!("user")));
+
+        let retried = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "retry",
+            "run-facade",
+        ])
+        .expect("conversation retry should use the resolved runtime");
+        assert_ne!(retried.json["snapshot"]["runId"], json!("run-facade"));
+        assert_eq!(retried.json["snapshot"]["status"], json!("completed"));
+        assert_eq!(retried.json["sourceRunId"], json!("run-facade"));
     }
 
     #[test]
@@ -3698,11 +8561,178 @@ mod tests {
         ])
         .expect("workspace query should succeed");
 
-        assert_eq!(query.json["results"][0]["path"], json!("src/lib.rs"));
+        assert_eq!(
+            query.json["response"]["results"][0]["path"],
+            json!("/src/lib.rs")
+        );
     }
 
     #[test]
-    fn ci_mode_records_strict_sandbox_defaults() {
+    fn workspace_status_reset_and_staleness_use_semantic_project_state() {
+        let state_dir = unique_temp_dir("workspace-status-state");
+        let repo_dir = unique_temp_dir("workspace-status-repo");
+        fs::create_dir_all(repo_dir.join("src")).expect("create src");
+        fs::write(
+            repo_dir.join("src/lib.rs"),
+            "pub fn semantic_workspace_status() -> bool { true }\n",
+        )
+        .expect("write source");
+
+        let indexed = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "index",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-status",
+        ])
+        .expect("workspace index should succeed");
+        assert_eq!(
+            indexed.json["response"]["status"]["storagePath"],
+            json!(state_dir
+                .join("projects/project-status")
+                .display()
+                .to_string())
+        );
+
+        fs::write(
+            repo_dir.join("src/lib.rs"),
+            "pub fn semantic_workspace_status_changed() -> bool { true }\n",
+        )
+        .expect("modify source");
+
+        let status = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "status",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-status",
+        ])
+        .expect("workspace status should succeed");
+        assert_eq!(status.json["status"]["state"], json!("stale"));
+        assert_eq!(status.json["status"]["staleFiles"], json!(1));
+
+        let reset = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "reset",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-status",
+        ])
+        .expect("workspace reset should succeed");
+        assert_eq!(reset.json["status"]["state"], json!("empty"));
+    }
+
+    #[test]
+    fn workspace_query_modes_rank_symbols_tests_and_impacts() {
+        let state_dir = unique_temp_dir("workspace-modes-state");
+        let repo_dir = unique_temp_dir("workspace-modes-repo");
+        fs::create_dir_all(repo_dir.join("src")).expect("create src");
+        fs::create_dir_all(repo_dir.join("tests")).expect("create tests");
+        fs::write(
+            repo_dir.join("src/payment.ts"),
+            "import { ledger } from './ledger'\nexport function reconcileInvoice() { return ledger() }\n",
+        )
+        .expect("write source");
+        fs::write(
+            repo_dir.join("tests/payment.test.ts"),
+            "import { reconcileInvoice } from '../src/payment'\ntest('reconcile invoice', () => reconcileInvoice())\n",
+        )
+        .expect("write test");
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "index",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-modes",
+        ])
+        .expect("workspace index should succeed");
+
+        let symbol = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "query",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-modes",
+            "--mode",
+            "symbol",
+            "reconcileInvoice",
+        ])
+        .expect("symbol query should succeed");
+        assert_eq!(
+            symbol.json["response"]["results"][0]["path"],
+            json!("/src/payment.ts")
+        );
+
+        let tests = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "query",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-modes",
+            "--mode",
+            "related-tests",
+            "payment test",
+        ])
+        .expect("related tests query should succeed");
+        assert_eq!(
+            tests.json["response"]["results"][0]["path"],
+            json!("/tests/payment.test.ts")
+        );
+
+        let impact = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "workspace",
+            "query",
+            "--repo",
+            repo_dir.to_str().expect("repo dir"),
+            "--project-id",
+            "project-modes",
+            "--mode",
+            "impact",
+            "ledger",
+        ])
+        .expect("impact query should succeed");
+        assert_eq!(
+            impact.json["response"]["results"][0]["path"],
+            json!("/src/payment.ts")
+        );
+    }
+
+    #[test]
+    fn fake_provider_harness_ci_mode_records_strict_sandbox_defaults() {
         let state_dir = unique_temp_dir("ci-mode");
         let output = run_with_args([
             "xero",
@@ -3714,6 +8744,8 @@ mod tests {
             "exec",
             "--run-id",
             "run-ci",
+            "--provider",
+            "fake_provider",
             "Run in CI mode.",
         ])
         .expect("ci agent exec should succeed");
@@ -3726,7 +8758,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_server_lists_tools_and_queries_started_run() {
+    fn fake_provider_harness_mcp_server_lists_tools_and_queries_started_run() {
         let state_dir = unique_temp_dir("mcp-server");
         let globals = GlobalOptions {
             output_mode: OutputMode::Json,
@@ -3756,6 +8788,7 @@ mod tests {
                         "projectId": "project-mcp",
                         "sessionId": "session-mcp",
                         "runId": "run-mcp",
+                        "providerId": "fake_provider",
                         "prompt": "Start from MCP."
                     }
                 }
@@ -3766,6 +8799,18 @@ mod tests {
                 "method": "tools/call",
                 "params": {
                     "name": "xero_query_conversation",
+                    "arguments": {
+                        "projectId": "project-mcp",
+                        "runId": "run-mcp"
+                    }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "xero_export_trace",
                     "arguments": {
                         "projectId": "project-mcp",
                         "runId": "run-mcp"
@@ -3791,7 +8836,7 @@ mod tests {
 
         assert_eq!(
             responses.len(),
-            4,
+            5,
             "initialized notification has no response"
         );
         assert_eq!(
@@ -3805,8 +8850,248 @@ mod tests {
             .any(|tool| tool["name"] == json!("xero_export_trace")));
         assert_eq!(responses[2]["result"]["isError"], json!(false));
         assert_eq!(
+            responses[2]["result"]["structuredContent"]["providerPreflight"]["source"],
+            json!("live_probe")
+        );
+        assert_eq!(
             responses[3]["result"]["structuredContent"]["snapshot"]["runId"],
             json!("run-mcp")
+        );
+        assert_eq!(responses[4]["result"]["isError"], json!(false));
+        assert_eq!(
+            responses[4]["result"]["structuredContent"]["trace"]["snapshot"]["runId"],
+            json!("run-mcp")
+        );
+    }
+
+    #[test]
+    fn real_provider_mcp_start_run_rejects_missing_app_data_registry_without_json_store() {
+        let state_dir = unique_temp_dir("mcp-real-provider-contract");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            "http://127.0.0.1:9/v1",
+        ])
+        .expect("provider profile should be recorded");
+
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Json,
+            ci: false,
+            state_dir: state_dir.clone(),
+        };
+        let messages = vec![
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "xero-test", "version": "1.0.0" }
+                }
+            }),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "xero_start_run",
+                    "arguments": {
+                        "projectId": "project-mcp-real",
+                        "providerId": "openai_api",
+                        "modelId": "test-model",
+                        "prompt": "Start a real provider run from MCP."
+                    }
+                }
+            }),
+        ];
+        let input = messages
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("serialize MCP messages")
+            .join("\n")
+            + "\n";
+        let mut output = Vec::new();
+        run_mcp_jsonrpc_stream(globals, std::io::Cursor::new(input), &mut output)
+            .expect("MCP stream should complete");
+        let responses = String::from_utf8(output)
+            .expect("utf8 output")
+            .lines()
+            .map(|line| serde_json::from_str::<JsonValue>(line).expect("json response"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(responses[1]["result"]["isError"], json!(true));
+        assert_eq!(
+            responses[1]["result"]["structuredContent"]["error"]["code"],
+            json!("xero_cli_project_registry_missing")
+        );
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "real MCP rejection must happen before opening the harness JSON store"
+        );
+    }
+
+    #[test]
+    fn mcp_uses_canonical_runtime() {
+        let state_dir = unique_temp_dir("mcp-real-provider");
+        let repo_dir = unique_temp_dir("mcp-real-provider-repo");
+        seed_registered_project(&state_dir, "project-mcp-real", &repo_dir);
+        let server = MockOpenAiCompatibleServer::start(vec![json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "MCP real provider run completed."
+                }
+            }]
+        })]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Json,
+            ci: false,
+            state_dir: state_dir.clone(),
+        };
+        let messages = vec![
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "xero-test", "version": "1.0.0" }
+                }
+            }),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "xero_start_run",
+                    "arguments": {
+                        "projectId": "project-mcp-real",
+                        "sessionId": "session-mcp-real",
+                        "runId": "run-mcp-real",
+                        "providerId": "openai_api",
+                        "modelId": "test-model",
+                        "prompt": "Start a real provider run from MCP."
+                    }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "xero_export_trace",
+                    "arguments": {
+                        "projectId": "project-mcp-real",
+                        "runId": "run-mcp-real",
+                        "includeSupportBundle": true
+                    }
+                }
+            }),
+        ];
+        let input = messages
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("serialize MCP messages")
+            .join("\n")
+            + "\n";
+        let mut output = Vec::new();
+        run_mcp_jsonrpc_stream(globals, std::io::Cursor::new(input), &mut output)
+            .expect("MCP stream should complete");
+        server.join();
+        let responses = String::from_utf8(output)
+            .expect("utf8 output")
+            .lines()
+            .map(|line| serde_json::from_str::<JsonValue>(line).expect("json response"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(responses[1]["result"]["isError"], json!(false));
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["trace"]["snapshot"]["runId"],
+            json!("run-mcp-real")
+        );
+        let show = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "show",
+            "--project-id",
+            "project-mcp-real",
+            "run-mcp-real",
+        ])
+        .expect("CLI should query the MCP-created app-data run");
+        assert_eq!(
+            show.json["snapshot"]["traceId"],
+            responses[1]["result"]["structuredContent"]["snapshot"]["traceId"]
+        );
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["canonicalTrace"]["traceId"],
+            show.json["snapshot"]["traceId"]
+        );
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["productionReadiness"]["traceId"],
+            show.json["snapshot"]["traceId"]
+        );
+        let exported_event_ids = responses[2]["result"]["structuredContent"]["trace"]["snapshot"]
+            ["events"]
+            .as_array()
+            .expect("exported events")
+            .iter()
+            .map(|event| event["id"].clone())
+            .collect::<Vec<_>>();
+        let shown_event_ids = show.json["snapshot"]["events"]
+            .as_array()
+            .expect("shown events")
+            .iter()
+            .map(|event| event["id"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            exported_event_ids, shown_event_ids,
+            "MCP export and CLI show must reference the same canonical event ids"
+        );
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "real MCP runs must not use the harness JSON store"
+        );
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["supportBundle"]["run"]["runId"],
+            json!("run-mcp-real"),
+            "MCP support bundle must be generated from the same canonical run snapshot"
+        );
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["supportBundle"]["traceId"],
+            show.json["snapshot"]["traceId"]
+        );
+        assert!(
+            responses[2]["result"]["structuredContent"]["supportBundle"]["qualityGates"]
+                ["gates"]
+                .is_array(),
+            "MCP support bundle should include trace quality gates without treating later-phase gates as Phase 2 blockers"
         );
     }
 
@@ -3893,6 +9178,121 @@ mod tests {
             .expect("checks")
             .iter()
             .any(|check| check["code"] == json!("provider_external_agent_cataloged")));
+    }
+
+    #[test]
+    fn provider_preflight_force_runs_live_probe_and_cache_becomes_cached_probe() {
+        let state_dir = unique_temp_dir("provider-preflight-static");
+        let server = MockOpenAiCompatibleServer::start(Vec::new());
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "preflight",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--force",
+        ])
+        .expect("provider preflight should succeed");
+        server.join();
+
+        assert_eq!(output.json["snapshot"]["source"], json!("live_probe"));
+        assert_eq!(output.json["snapshot"]["modelId"], json!("test-model"));
+        assert!(output.json["snapshot"]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .any(
+                |check| check["code"] == json!("provider_preflight_tool_schema")
+                    && check["status"] == json!("passed")
+            ));
+
+        let cached = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "preflight",
+            "openai_api",
+            "--model",
+            "test-model",
+        ])
+        .expect("cached provider preflight should load");
+        assert_eq!(cached.json["snapshot"]["source"], json!("cached_probe"));
+        assert_eq!(
+            cached.json["snapshot"]["modelId"],
+            output.json["snapshot"]["modelId"]
+        );
+    }
+
+    #[test]
+    fn live_provider_preflight_probe() {
+        let state_dir = unique_temp_dir("provider-preflight-live");
+        let server = MockLiveProbeServer::start(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "probe ok"
+                }
+            }]
+        }));
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "preflight",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--force",
+        ])
+        .expect("provider preflight should succeed");
+        let request_count = server.finish();
+
+        assert_eq!(output.json["snapshot"]["source"], json!("live_probe"));
+        assert_eq!(
+            output.json["snapshot"]["checks"]
+                .as_array()
+                .expect("checks")
+                .iter()
+                .find(|check| check["code"] == json!("provider_preflight_tool_schema"))
+                .expect("tool schema check")["status"],
+            json!("passed")
+        );
+        assert!(
+            request_count >= 1,
+            "preflight must call the mock provider at least once"
+        );
     }
 
     #[test]
@@ -4023,6 +9423,19 @@ mod tests {
             .expect("events")
             .iter()
             .any(|event| event["payload"]["provenance"]["kind"] == json!("external_agent")));
+        assert!(hosted.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| event["eventKind"] == json!("run_started")
+                && event["payload"]["sandbox"]["enforcement"] == json!("os_sandbox_runner")));
+        assert!(hosted.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| event["eventKind"] == json!("run_completed")
+                && event["payload"]["sandbox"]["metadata"]["exitClassification"]
+                    == json!("success")));
         assert!(hosted.json["snapshot"]["messages"]
             .as_array()
             .expect("messages")
@@ -4031,6 +9444,536 @@ mod tests {
                 && message["content"]
                     .as_str()
                     .is_some_and(|content| content.contains("external-output"))));
+    }
+
+    fn seed_registered_project(state_dir: &Path, project_id: &str, repo_root: &Path) {
+        let repo_root = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+        fs::create_dir_all(state_dir).expect("create app-data root");
+        let now = now_timestamp();
+        let global_database = state_dir.join(GLOBAL_DATABASE_FILE);
+        let global = Connection::open(&global_database).expect("open global registry");
+        global
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS repositories (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    root_path TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .expect("create global registry schema");
+        global
+            .execute(
+                "INSERT INTO projects (id, name, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+                params![project_id, project_id, now],
+            )
+            .expect("seed global project");
+        global
+            .execute(
+                "INSERT INTO repositories (id, project_id, root_path, display_name, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(root_path) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    display_name = excluded.display_name,
+                    updated_at = excluded.updated_at",
+                params![
+                    format!("repo-{project_id}"),
+                    project_id,
+                    repo_root.display().to_string(),
+                    repo_root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(project_id),
+                    now_timestamp(),
+                ],
+            )
+            .expect("seed global repository");
+
+        let project_database = workspace_project_database_path_for_app_root(state_dir, project_id);
+        fs::create_dir_all(project_database.parent().expect("project database parent"))
+            .expect("create project state directory");
+        let project = Connection::open(&project_database).expect("open project database");
+        project
+            .execute_batch(APP_DATA_PROJECT_TEST_SCHEMA)
+            .expect("create app-data project schema");
+        project
+            .execute(
+                "INSERT INTO projects (id, name, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+                params![project_id, project_id, now_timestamp()],
+            )
+            .expect("seed project row");
+    }
+
+    fn seed_global_project_registration_only(state_dir: &Path, project_id: &str, repo_root: &Path) {
+        let repo_root = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+        fs::create_dir_all(state_dir).expect("create app-data root");
+        let global =
+            Connection::open(state_dir.join(GLOBAL_DATABASE_FILE)).expect("open global registry");
+        global
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS repositories (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    root_path TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .expect("create global registry schema");
+        global
+            .execute(
+                "INSERT INTO projects (id, name, updated_at) VALUES (?1, ?2, ?3)",
+                params![project_id, project_id, now_timestamp()],
+            )
+            .expect("seed global-only project");
+        global
+            .execute(
+                "INSERT INTO repositories (id, project_id, root_path, display_name, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    format!("repo-{project_id}"),
+                    project_id,
+                    repo_root.display().to_string(),
+                    project_id,
+                    now_timestamp(),
+                ],
+            )
+            .expect("seed global-only repository");
+    }
+
+    fn seed_desktop_style_app_data_run(
+        state_dir: &Path,
+        project_id: &str,
+        repo_root: &Path,
+        agent_session_id: &str,
+        run_id: &str,
+    ) -> String {
+        seed_registered_project(state_dir, project_id, repo_root);
+        let project_database = workspace_project_database_path_for_app_root(state_dir, project_id);
+        let connection = Connection::open(&project_database).expect("open project database");
+        let trace_id = xero_agent_core::runtime_trace_id_for_run(project_id, run_id);
+        let context_hash = "a".repeat(64);
+        let now = now_timestamp();
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_sessions (
+                    project_id,
+                    agent_session_id,
+                    title,
+                    summary,
+                    status,
+                    selected,
+                    updated_at,
+                    last_run_id,
+                    last_runtime_kind,
+                    last_provider_id
+                )
+                VALUES (?1, ?2, 'Desktop Session', '', 'active', 1, ?3, ?4, 'owned_agent', 'openai_api')
+                "#,
+                params![project_id, agent_session_id, now, run_id],
+            )
+            .expect("seed desktop-style session");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_runs (
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    trace_id,
+                    provider_id,
+                    model_id,
+                    status,
+                    prompt,
+                    system_prompt,
+                    started_at,
+                    last_heartbeat_at,
+                    completed_at,
+                    updated_at
+                )
+                VALUES ('engineer', 'engineer', 1, ?1, ?2, ?3, ?4, 'openai_api', 'test-model', 'completed', 'Desktop prompt', 'Desktop system prompt', ?5, ?5, ?5, ?5)
+                "#,
+                params![project_id, agent_session_id, run_id, trace_id, now],
+            )
+            .expect("seed desktop-style run");
+        connection
+            .execute(
+                "INSERT INTO agent_messages (project_id, run_id, role, content, created_at)
+                 VALUES (?1, ?2, 'user', 'Desktop prompt', ?3)",
+                params![project_id, run_id, now_timestamp()],
+            )
+            .expect("seed user message");
+        connection
+            .execute(
+                "INSERT INTO agent_messages (project_id, run_id, role, content, created_at)
+                 VALUES (?1, ?2, 'assistant', 'Desktop assistant response.', ?3)",
+                params![project_id, run_id, now_timestamp()],
+            )
+            .expect("seed assistant message");
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, 'run_started', ?3, ?4)",
+                params![
+                    project_id,
+                    run_id,
+                    r#"{"status":"starting","source":"desktop"}"#,
+                    now_timestamp(),
+                ],
+            )
+            .expect("seed run started event");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_context_manifests (
+                    manifest_id,
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    runtime_agent_id,
+                    agent_definition_id,
+                    agent_definition_version,
+                    provider_id,
+                    model_id,
+                    request_kind,
+                    policy_action,
+                    policy_reason_code,
+                    budget_tokens,
+                    estimated_tokens,
+                    pressure,
+                    context_hash,
+                    included_contributors_json,
+                    excluded_contributors_json,
+                    retrieval_query_ids_json,
+                    retrieval_result_ids_json,
+                    redaction_state,
+                    manifest_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, 'engineer', 'engineer', 1, 'openai_api', 'test-model', 'provider_turn', 'continue_now', 'desktop_test_seed', NULL, 12, 'low', ?5, '[]', '[]', '[]', '[]', 'clean', ?6, ?7)
+                "#,
+                params![
+                    "manifest-desktop-run-0",
+                    project_id,
+                    agent_session_id,
+                    run_id,
+                    context_hash,
+                    r#"{"kind":"provider_context_package","turnIndex":0,"source":"desktop"}"#,
+                    now_timestamp(),
+                ],
+            )
+            .expect("seed context manifest");
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, 'context_manifest_recorded', ?3, ?4)",
+                params![
+                    project_id,
+                    run_id,
+                    r#"{"manifestId":"manifest-desktop-run-0","turnIndex":0}"#,
+                    now_timestamp(),
+                ],
+            )
+            .expect("seed context manifest event");
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, 'run_completed', ?3, ?4)",
+                params![
+                    project_id,
+                    run_id,
+                    r#"{"summary":"Desktop run completed."}"#,
+                    now_timestamp(),
+                ],
+            )
+            .expect("seed run completed event");
+        trace_id
+    }
+
+    const APP_DATA_PROJECT_TEST_SCHEMA: &str = r#"
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_definitions (
+            definition_id TEXT PRIMARY KEY,
+            current_version INTEGER NOT NULL,
+            display_name TEXT NOT NULL,
+            short_label TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            lifecycle_state TEXT NOT NULL,
+            base_capability_profile TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_definition_versions (
+            definition_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            validation_report_json TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (definition_id, version),
+            FOREIGN KEY (definition_id) REFERENCES agent_definitions(definition_id)
+        );
+        INSERT OR IGNORE INTO agent_definitions (
+            definition_id,
+            current_version,
+            display_name,
+            short_label,
+            scope,
+            lifecycle_state,
+            base_capability_profile,
+            updated_at
+        )
+        VALUES ('engineer', 1, 'Engineer', 'Build', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z');
+        INSERT OR IGNORE INTO agent_definition_versions (
+            definition_id,
+            version,
+            snapshot_json,
+            validation_report_json,
+            created_at
+        )
+        VALUES ('engineer', 1, '{"id":"engineer","version":1}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            agent_session_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            selected INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            archived_at TEXT,
+            last_run_id TEXT,
+            last_runtime_kind TEXT,
+            last_provider_id TEXT,
+            PRIMARY KEY (project_id, agent_session_id)
+        );
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            runtime_agent_id TEXT NOT NULL,
+            agent_definition_id TEXT NOT NULL,
+            agent_definition_version INTEGER NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            agent_session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            trace_id TEXT NOT NULL,
+            lineage_kind TEXT NOT NULL DEFAULT 'top_level',
+            parent_run_id TEXT,
+            parent_trace_id TEXT,
+            parent_subagent_id TEXT,
+            subagent_role TEXT,
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            system_prompt TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            last_heartbeat_at TEXT,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            last_error_code TEXT,
+            last_error_message TEXT,
+            updated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            PRIMARY KEY (project_id, run_id),
+            FOREIGN KEY (project_id, agent_session_id) REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+            FOREIGN KEY (agent_definition_id, agent_definition_version) REFERENCES agent_definition_versions(definition_id, version)
+        );
+        CREATE TABLE IF NOT EXISTS agent_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            provider_metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agent_context_manifests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            manifest_id TEXT NOT NULL UNIQUE,
+            project_id TEXT NOT NULL,
+            agent_session_id TEXT NOT NULL,
+            run_id TEXT,
+            runtime_agent_id TEXT NOT NULL,
+            agent_definition_id TEXT NOT NULL,
+            agent_definition_version INTEGER NOT NULL,
+            provider_id TEXT,
+            model_id TEXT,
+            request_kind TEXT NOT NULL,
+            policy_action TEXT NOT NULL,
+            policy_reason_code TEXT NOT NULL,
+            budget_tokens INTEGER,
+            estimated_tokens INTEGER NOT NULL DEFAULT 0,
+            pressure TEXT NOT NULL,
+            context_hash TEXT NOT NULL,
+            included_contributors_json TEXT NOT NULL,
+            excluded_contributors_json TEXT NOT NULL,
+            retrieval_query_ids_json TEXT NOT NULL,
+            retrieval_result_ids_json TEXT NOT NULL,
+            compaction_id TEXT,
+            handoff_id TEXT,
+            redaction_state TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (project_id, agent_session_id) REFERENCES agent_sessions(project_id, agent_session_id) ON DELETE CASCADE,
+            FOREIGN KEY (project_id, run_id) REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+            FOREIGN KEY (agent_definition_id, agent_definition_version) REFERENCES agent_definition_versions(definition_id, version)
+        );
+    "#;
+
+    struct MockOpenAiCompatibleServer {
+        base_url: String,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    impl MockOpenAiCompatibleServer {
+        fn start(mut responses: Vec<JsonValue>) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
+            let address = listener.local_addr().expect("mock address");
+            responses.insert(0, mock_preflight_response());
+            let handle = std::thread::spawn(move || {
+                for response in responses {
+                    let (mut stream, _) = listener.accept().expect("accept provider request");
+                    read_http_request(&mut stream);
+                    let body = serde_json::to_string(&response).expect("serialize response");
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    use std::io::Write as _;
+                    stream
+                        .write_all(reply.as_bytes())
+                        .expect("write provider response");
+                }
+            });
+            Self {
+                base_url: format!("http://{address}/v1"),
+                handle,
+            }
+        }
+
+        fn join(self) {
+            self.handle.join().expect("mock provider thread");
+        }
+    }
+
+    fn mock_preflight_response() -> JsonValue {
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "preflight ok"
+                }
+            }]
+        })
+    }
+
+    struct MockLiveProbeServer {
+        base_url: String,
+        request_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    impl MockLiveProbeServer {
+        fn start(response: JsonValue) -> Self {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock probe provider");
+            listener
+                .set_nonblocking(true)
+                .expect("configure mock probe listener");
+            let address = listener.local_addr().expect("mock probe address");
+            let request_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let request_count_for_thread = std::sync::Arc::clone(&request_count);
+            let handle = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+                while std::time::Instant::now() < deadline {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            request_count_for_thread
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            read_http_request(&mut stream);
+                            let body =
+                                serde_json::to_string(&response).expect("serialize probe response");
+                            let reply = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            use std::io::Write as _;
+                            stream
+                                .write_all(reply.as_bytes())
+                                .expect("write probe response");
+                            return;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("mock probe accept failed: {error}"),
+                    }
+                }
+            });
+            Self {
+                base_url: format!("http://{address}/v1"),
+                request_count,
+                handle,
+            }
+        }
+
+        fn finish(self) -> usize {
+            self.handle.join().expect("mock probe provider thread");
+            self.request_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) {
+        use std::io::Read as _;
+        let mut buffer = [0_u8; 8192];
+        let mut request = Vec::new();
+        loop {
+            let read = stream.read(&mut buffer).expect("read request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

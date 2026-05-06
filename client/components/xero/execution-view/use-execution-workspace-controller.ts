@@ -498,35 +498,36 @@ export function useExecutionWorkspaceController({
   }, [expandedFolders, refreshFolder, tree])
 
   const handleSnapshotChange = useCallback(
-    (value: string) => {
-      if (!activePath) {
+    (value: string, pathOverride?: string) => {
+      const targetPath = pathOverride ?? activePath
+      if (!targetPath) {
         return
       }
 
       setFileContents((current) => {
-        if (current[activePath] === value) {
+        if (current[targetPath] === value) {
           return current
         }
-        return { ...current, [activePath]: value }
+        return { ...current, [targetPath]: value }
       })
       setLineCounts((current) => {
         const nextLineCount = countLines(value)
-        if (current[activePath] === nextLineCount) {
+        if (current[targetPath] === nextLineCount) {
           return current
         }
-        return { ...current, [activePath]: nextLineCount }
+        return { ...current, [targetPath]: nextLineCount }
       })
 
       setDirtyPaths((current) => {
-        const savedValue = savedContents[activePath] ?? ''
+        const savedValue = savedContents[targetPath] ?? ''
         const isDirty = value !== savedValue
-        if (isDirty === current.has(activePath)) {
+        if (isDirty === current.has(targetPath)) {
           return current
         }
 
         const next = new Set(current)
-        if (isDirty) next.add(activePath)
-        else next.delete(activePath)
+        if (isDirty) next.add(targetPath)
+        else next.delete(targetPath)
         return next
       })
     },
@@ -534,19 +535,20 @@ export function useExecutionWorkspaceController({
   )
 
   const handleDirtyChange = useCallback(
-    (isDirty: boolean) => {
-      if (!activePath) {
+    (isDirty: boolean, pathOverride?: string) => {
+      const targetPath = pathOverride ?? activePath
+      if (!targetPath) {
         return
       }
 
       setDirtyPaths((current) => {
-        if (isDirty === current.has(activePath)) {
+        if (isDirty === current.has(targetPath)) {
           return current
         }
 
         const next = new Set(current)
-        if (isDirty) next.add(activePath)
-        else next.delete(activePath)
+        if (isDirty) next.add(targetPath)
+        else next.delete(targetPath)
         return next
       })
     },
@@ -554,16 +556,17 @@ export function useExecutionWorkspaceController({
   )
 
   const handleDocumentStatsChange = useCallback(
-    ({ lineCount }: { lineCount: number }) => {
-      if (!activePath) {
+    ({ lineCount }: { lineCount: number }, pathOverride?: string) => {
+      const targetPath = pathOverride ?? activePath
+      if (!targetPath) {
         return
       }
 
       setLineCounts((current) => {
-        if (current[activePath] === lineCount) {
+        if (current[targetPath] === lineCount) {
           return current
         }
-        return { ...current, [activePath]: lineCount }
+        return { ...current, [targetPath]: lineCount }
       })
     },
     [activePath],

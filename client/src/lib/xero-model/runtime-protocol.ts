@@ -359,6 +359,12 @@ export const runtimeProtocolEventPayloadSchema = z.discriminatedUnion('kind', [
     pendingMessageCount: z.number().int().nonnegative(),
     healthChecks: z.array(environmentHealthCheckSchema),
     setupSteps: z.array(environmentSetupStepSchema),
+    semanticIndexRequired: z.boolean().optional(),
+    semanticIndexAvailable: z.boolean().optional(),
+    semanticIndexState: z
+      .enum(['ready', 'indexing', 'stale', 'empty', 'failed', 'unavailable'])
+      .optional(),
+    semanticIndexRequirementReasons: z.array(z.string()).optional(),
     detail: z.string().nullable().optional(),
     diagnostic: environmentDiagnosticSchema.nullable().optional(),
   }).strict() }).strict(),

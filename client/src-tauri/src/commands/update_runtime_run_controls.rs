@@ -1,13 +1,14 @@
-use std::path::Path;
+use std::{path::Path, thread};
 
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
+    auth::now_timestamp,
     commands::{
         validate_non_empty, CommandError, CommandResult, RuntimeRunDto,
         UpdateRuntimeRunControlsRequestDto,
     },
-    db::project_store::{self, RuntimeRunSnapshotRecord},
+    db::project_store::{self, RuntimeRunSnapshotRecord, RuntimeRunStatus},
     runtime::{
         AgentAutoCompactPreference, AutonomousToolRuntime, ContinueOwnedAgentRunRequest,
         DesktopAgentCoreRuntime, DesktopRunDriveMode, OwnedAgentRunRequest,
@@ -17,8 +18,8 @@ use crate::{
 
 use super::agent_task::auto_compact_preference;
 use super::runtime_support::{
-    apply_owned_runtime_run_pending_controls, bind_owned_runtime_run_to_agent_handoff,
-    emit_runtime_run_updated_if_changed, launch_or_reconnect_runtime_run,
+    apply_owned_runtime_run_pending_controls_with_status, bind_owned_runtime_run_to_agent_handoff,
+    emit_runtime_run_updated_if_changed, fail_owned_runtime_run, launch_or_reconnect_runtime_run,
     load_persisted_runtime_run, resolve_owned_agent_provider_config, resolve_project_root,
     runtime_run_dto_from_snapshot, update_owned_runtime_run_controls,
 };
@@ -84,6 +85,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         existing,
         request.controls.clone(),
         request.prompt.clone(),
+        &request.attachments,
     )?;
     emit_runtime_run_updated_if_changed(
         &app,
@@ -92,44 +94,129 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         &before,
         &Some(after.clone()),
     )?;
-    let mut response_snapshot = after.clone();
     if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
-        if let Some(rebound) = drive_owned_runtime_prompt(
-            &app,
-            state.inner(),
-            &repo_root,
-            &after,
+        let agent_core = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+        if agent_core.is_active(&after.run.run_id)? {
+            return Err(CommandError::user_fixable(
+                "agent_run_already_active",
+                format!(
+                    "Xero is already driving owned-agent run `{}`. Wait for it to finish or cancel it before sending another message.",
+                    after.run.run_id
+                ),
+            ));
+        }
+        mark_existing_agent_run_accepted(&repo_root, &after)?;
+        spawn_owned_runtime_prompt_drive(
+            app.clone(),
+            state.inner().clone(),
+            repo_root.clone(),
+            after.clone(),
             prompt,
             request.attachments.clone(),
             auto_compact,
-        )? {
-            let before_bind = Some(after.clone());
-            response_snapshot = rebound;
-            emit_runtime_run_updated_if_changed(
-                &app,
-                &request.project_id,
-                &request.agent_session_id,
-                &before_bind,
-                &Some(response_snapshot.clone()),
-            )?;
-        } else {
-            let before_apply = Some(after.clone());
-            response_snapshot = apply_owned_runtime_run_pending_controls(
-                &repo_root,
-                &after,
-                "Owned agent runtime accepted the queued prompt.",
-            )?;
-            emit_runtime_run_updated_if_changed(
-                &app,
-                &request.project_id,
-                &request.agent_session_id,
-                &before_apply,
-                &Some(response_snapshot.clone()),
-            )?;
-        }
+        );
     }
 
-    Ok(runtime_run_dto_from_snapshot(&response_snapshot))
+    Ok(runtime_run_dto_from_snapshot(&after))
+}
+
+fn mark_existing_agent_run_accepted(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+) -> CommandResult<()> {
+    let run = match project_store::load_agent_run_record(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+    ) {
+        Ok(run) => run,
+        Err(error) if error.code == "agent_run_not_found" => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if matches!(
+        run.status,
+        project_store::AgentRunStatus::Starting | project_store::AgentRunStatus::Running
+    ) {
+        return Ok(());
+    }
+    project_store::update_agent_run_status(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+        project_store::AgentRunStatus::Running,
+        None,
+        &now_timestamp(),
+    )?;
+    Ok(())
+}
+
+fn spawn_owned_runtime_prompt_drive<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    repo_root: std::path::PathBuf,
+    snapshot: RuntimeRunSnapshotRecord,
+    prompt: String,
+    attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
+    auto_compact: Option<AgentAutoCompactPreference>,
+) {
+    thread::spawn(move || {
+        let before = Some(snapshot.clone());
+        match drive_owned_runtime_prompt(
+            &app,
+            &state,
+            &repo_root,
+            &snapshot,
+            prompt,
+            attachments,
+            auto_compact,
+        ) {
+            Ok(Some(rebound)) => {
+                let _ = emit_runtime_run_updated_if_changed(
+                    &app,
+                    &snapshot.run.project_id,
+                    &snapshot.run.agent_session_id,
+                    &before,
+                    &Some(rebound),
+                );
+            }
+            Ok(None) => {
+                match apply_owned_runtime_run_pending_controls_with_status(
+                    &repo_root,
+                    &snapshot,
+                    RuntimeRunStatus::Running,
+                    "Owned agent runtime accepted the queued prompt.",
+                ) {
+                    Ok(applied) => {
+                        let _ = emit_runtime_run_updated_if_changed(
+                            &app,
+                            &snapshot.run.project_id,
+                            &snapshot.run.agent_session_id,
+                            &before,
+                            &Some(applied),
+                        );
+                    }
+                    Err(error) => {
+                        let _ = fail_owned_runtime_run(
+                            &app,
+                            &repo_root,
+                            &snapshot,
+                            &error,
+                            "Owned agent task failed.",
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = fail_owned_runtime_run(
+                    &app,
+                    &repo_root,
+                    &snapshot,
+                    &error,
+                    "Owned agent task failed.",
+                );
+            }
+        }
+    });
 }
 
 fn drive_owned_runtime_prompt<R: Runtime + 'static>(
@@ -173,6 +260,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 controls,
                 tool_runtime,
                 provider_config,
+                provider_preflight: None,
                 answer_pending_actions,
                 auto_compact,
             };
@@ -218,6 +306,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 controls,
                 tool_runtime,
                 provider_config,
+                provider_preflight: None,
             };
             agent_core.start_run(request, DesktopRunDriveMode::Background)?;
             Ok(None)

@@ -30,7 +30,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use xero_agent_core::{
     domain_tool_pack_health_report, domain_tool_pack_ids_for_tool, domain_tool_pack_manifests,
     domain_tool_pack_tools, DomainToolPackHealthInput, DomainToolPackHealthReport,
-    DomainToolPackManifest,
+    DomainToolPackManifest, SandboxExecutionMetadata,
 };
 
 use super::autonomous_web_runtime::{
@@ -1033,7 +1033,7 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
     match agent_id {
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => true,
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
             matches!(tool_name, AUTONOMOUS_TOOL_TOOL_ACCESS)
                 || tool_effect_class(tool_name).is_ask_observe_only()
@@ -1065,6 +1065,9 @@ fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::AgentCreate, tool_name) {
         agents.push(RuntimeAgentIdDto::AgentCreate.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Test, tool_name) {
+        agents.push(RuntimeAgentIdDto::Test.as_str());
     }
     agents
 }
@@ -4107,6 +4110,8 @@ pub struct AutonomousCommandOutput {
     pub timed_out: bool,
     pub spawned: bool,
     pub policy: AutonomousCommandPolicyTrace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4122,6 +4127,15 @@ pub enum AutonomousCommandSessionOperation {
 pub enum AutonomousCommandSessionStream {
     Stdout,
     Stderr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCommandOutputChunk {
+    pub stream: AutonomousCommandSessionStream,
+    pub text: Option<String>,
+    pub truncated: bool,
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4147,6 +4161,8 @@ pub struct AutonomousCommandSessionOutput {
     pub chunks: Vec<AutonomousCommandSessionChunk>,
     pub next_sequence: u64,
     pub policy: Option<AutonomousCommandPolicyTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

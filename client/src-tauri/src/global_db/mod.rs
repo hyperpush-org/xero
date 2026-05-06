@@ -210,6 +210,7 @@ mod tests {
             "skill_sources",
             "mcp_registry",
             "provider_model_catalog_cache",
+            "provider_preflight_results",
             "environment_profile",
             "user_added_environment_tools",
             "projects",

@@ -91,39 +91,6 @@ describe('XeroShell', () => {
     expect(logo.parentElement?.parentElement).toHaveClass('absolute', 'left-1/2')
   })
 
-  it.each(['macos', 'windows'] as const)('toggles the arcade from the %s titlebar', (platform) => {
-    const onToggleGames = vi.fn()
-
-    const { rerender } = render(
-      <XeroShell
-        activeView="phases"
-        onToggleGames={onToggleGames}
-        onViewChange={() => undefined}
-        platformOverride={platform}
-      >
-        <div>Body</div>
-      </XeroShell>,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open arcade' }))
-    expect(onToggleGames).toHaveBeenCalledTimes(1)
-
-    rerender(
-      <XeroShell
-        activeView="phases"
-        gamesOpen
-        onToggleGames={onToggleGames}
-        onViewChange={() => undefined}
-        platformOverride={platform}
-      >
-        <div>Body</div>
-      </XeroShell>,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Close arcade' }))
-    expect(onToggleGames).toHaveBeenCalledTimes(2)
-  })
-
   it.each(['macos', 'windows'] as const)('places the tools dropdown to the right of the avatar in %s', (platform) => {
     render(
       <XeroShell

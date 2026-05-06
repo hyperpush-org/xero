@@ -1,8 +1,14 @@
-use std::{path::Path, path::PathBuf, thread};
+use std::{
+    path::{Path, PathBuf},
+    thread,
+    time::Instant,
+};
 
 use rand::RngCore;
 use tauri::{AppHandle, Emitter, Runtime};
-use xero_agent_core::{provider_capability_catalog, ProviderCapabilityCatalogInput};
+use xero_agent_core::{
+    provider_preflight_blockers, ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot,
+};
 
 use crate::{
     auth::{
@@ -12,7 +18,7 @@ use crate::{
         refresh_provider_auth_session, StoredOpenAiCodexSession,
     },
     commands::{
-        default_runtime_agent_id,
+        default_runtime_agent_id, ensure_runtime_agent_available,
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile,
         provider_credentials::load_provider_credentials_view, CommandError, CommandResult,
         RuntimeRunActiveControlSnapshotDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
@@ -24,9 +30,10 @@ use crate::{
     db::project_store::{
         self, build_runtime_run_control_state_with_profile, RuntimeRunActiveControlSnapshotRecord,
         RuntimeRunCheckpointKind, RuntimeRunCheckpointRecord, RuntimeRunControlStateRecord,
-        RuntimeRunDiagnosticRecord, RuntimeRunPendingControlSnapshotRecord, RuntimeRunRecord,
-        RuntimeRunSnapshotRecord, RuntimeRunStatus, RuntimeRunTransportLiveness,
-        RuntimeRunTransportRecord, RuntimeRunUpsertRecord,
+        RuntimeRunDiagnosticRecord, RuntimeRunPendingControlSnapshotRecord,
+        RuntimeRunQueuedAttachmentRecord, RuntimeRunRecord, RuntimeRunSnapshotRecord,
+        RuntimeRunStatus, RuntimeRunTransportLiveness, RuntimeRunTransportRecord,
+        RuntimeRunUpsertRecord,
     },
     runtime::{
         create_owned_agent_run, drive_owned_agent_run, normalize_openai_codex_model_id,
@@ -57,6 +64,19 @@ struct ActiveProviderProfileSelection {
     profile_id: String,
     provider_id: String,
     model_id: String,
+}
+
+pub(crate) struct OwnedRuntimePromptStart {
+    repo_root: PathBuf,
+    project_id: String,
+    agent_session_id: String,
+    run_id: String,
+    provider_profile_id: String,
+    provider_id: String,
+    run_controls: RuntimeRunControlStateRecord,
+    accepted_snapshot: RuntimeRunSnapshotRecord,
+    prompt: String,
+    attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 }
 
 pub(crate) fn load_persisted_runtime_run(
@@ -215,6 +235,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     initial_prompt: Option<String>,
     initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
+    let started = Instant::now();
     let repo_root = resolve_project_root(app, state, project_id)?;
     project_store::ensure_agent_session_active(&repo_root, project_id, agent_session_id)?;
     let before = load_persisted_runtime_run(&repo_root, project_id, agent_session_id)?;
@@ -223,6 +244,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         .as_ref()
         .filter(|snapshot| is_reconnectable_owned_runtime_run(snapshot))
     {
+        ensure_runtime_agent_available(existing.controls.active.runtime_agent_id)?;
         reject_runtime_run_provider_profile_switch(existing, requested_controls.as_ref())?;
         return Ok(RuntimeRunLaunchOutcome {
             repo_root,
@@ -237,6 +259,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         .as_ref()
         .map(|controls| controls.runtime_agent_id)
         .unwrap_or_else(default_runtime_agent_id);
+    ensure_runtime_agent_available(requested_agent_id)?;
     let definition_selection = project_store::resolve_agent_definition_for_run(
         &repo_root,
         requested_controls
@@ -244,28 +267,33 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
             .and_then(|controls| controls.agent_definition_id.as_deref()),
         requested_agent_id,
     )?;
-    let run_controls = resolve_owned_runtime_run_control_state(
+    let mut run_controls = resolve_owned_runtime_run_control_state(
         &active_profile,
         &definition_selection,
         requested_controls.as_ref(),
         initial_prompt.as_deref(),
     )?;
-    ensure_owned_runtime_provider_turn_capabilities(
-        &active_profile.provider_id,
-        &run_controls.active.model_id,
-        &initial_attachments,
-    )?;
+    attach_queued_runtime_attachments(&mut run_controls, &initial_attachments);
     let run_id = generate_runtime_run_id();
-    let mut snapshot = persist_owned_runtime_run(
+    let prompt = initial_prompt.and_then(|prompt| {
+        let trimmed = prompt.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    });
+    let checkpoint_summary = if prompt.is_some() {
+        "Owned agent runtime queued the initial prompt."
+    } else {
+        "Owned agent runtime accepted the run."
+    };
+    let snapshot = persist_owned_runtime_run(
         &repo_root,
         project_id,
         agent_session_id,
         &run_id,
         &active_profile.provider_id,
         &run_controls,
-        RuntimeRunStatus::Running,
+        RuntimeRunStatus::Starting,
         None,
-        "Owned agent runtime started.",
+        checkpoint_summary,
         1,
         None,
     )?;
@@ -273,120 +301,300 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
     emit_runtime_run_updated(app, Some(&runtime_run))?;
 
-    if let Some(prompt) = initial_prompt.and_then(|prompt| {
-        let trimmed = prompt.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    }) {
-        let tool_runtime = AutonomousToolRuntime::for_project(app, state, project_id)?;
-        let provider_config =
-            resolve_owned_agent_provider_config(app, state, requested_controls.as_ref())?;
-        let owned_request = OwnedAgentRunRequest {
-            repo_root: repo_root.clone(),
-            project_id: project_id.into(),
-            agent_session_id: agent_session_id.into(),
-            run_id: run_id.clone(),
-            prompt,
-            attachments: initial_attachments
-                .iter()
-                .map(staged_attachment_dto_to_message_attachment)
-                .collect(),
-            controls: Some(runtime_control_input_from_active(&run_controls.active)),
-            tool_runtime,
-            provider_config,
-        };
-        let lease = state
-            .agent_run_supervisor()
-            .begin(project_id, agent_session_id, &run_id)?;
-        if let Err(error) = create_owned_agent_run(&owned_request) {
-            drop(lease);
-            let diagnostic = RuntimeRunDiagnosticRecord {
-                code: error.code.clone(),
-                message: error.message.clone(),
-            };
-            snapshot = persist_owned_runtime_run(
-                &repo_root,
-                project_id,
-                agent_session_id,
-                &run_id,
-                &active_profile.provider_id,
-                &run_controls,
-                RuntimeRunStatus::Failed,
-                Some(diagnostic),
-                "Owned agent task failed.",
-                2,
-                Some(&snapshot),
-            )?;
-            let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
-            emit_runtime_run_updated(app, Some(&runtime_run))?;
-            return Err(error);
-        }
-        let app_for_task = app.clone();
-        let repo_root_for_task = repo_root.clone();
-        let project_id_for_task = project_id.to_string();
-        let agent_session_id_for_task = agent_session_id.to_string();
-        let run_id_for_task = run_id.clone();
-        let provider_id_for_task = active_profile.provider_id.clone();
-        snapshot = apply_owned_runtime_run_pending_controls(
-            &repo_root,
-            &snapshot,
-            "Owned agent runtime accepted the initial prompt.",
-        )?;
-        let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
-        emit_runtime_run_updated(app, Some(&runtime_run))?;
-
-        let run_controls_for_task = snapshot.controls.clone();
-        let runtime_snapshot_for_task = snapshot.clone();
-        thread::spawn(move || {
-            let token = lease.token();
-            let outcome = drive_owned_agent_run(owned_request, token);
-            let failure = match outcome {
-                Ok(agent_snapshot)
-                    if agent_snapshot.run.status == project_store::AgentRunStatus::Failed =>
-                {
-                    agent_snapshot
-                        .run
-                        .last_error
-                        .map(|error| RuntimeRunDiagnosticRecord {
-                            code: error.code,
-                            message: error.message,
-                        })
-                }
-                Err(error) => Some(RuntimeRunDiagnosticRecord {
-                    code: error.code,
-                    message: error.message,
-                }),
-                _ => None,
-            };
-
-            if let Some(diagnostic) = failure {
-                if let Ok(snapshot) = persist_owned_runtime_run(
-                    &repo_root_for_task,
-                    &project_id_for_task,
-                    &agent_session_id_for_task,
-                    &run_id_for_task,
-                    &provider_id_for_task,
-                    &run_controls_for_task,
-                    RuntimeRunStatus::Failed,
-                    Some(diagnostic),
-                    "Owned agent task failed.",
-                    runtime_snapshot_for_task
-                        .last_checkpoint_sequence
-                        .saturating_add(1),
-                    Some(&runtime_snapshot_for_task),
-                ) {
-                    let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
-                    let _ = emit_runtime_run_updated(&app_for_task, Some(&runtime_run));
-                }
-            }
-            drop(lease);
-        });
+    if let Some(prompt) = prompt {
+        spawn_owned_runtime_prompt_start(
+            app.clone(),
+            state.clone(),
+            OwnedRuntimePromptStart {
+                repo_root: repo_root.clone(),
+                project_id: project_id.into(),
+                agent_session_id: agent_session_id.into(),
+                run_id: run_id.clone(),
+                provider_profile_id: active_profile.profile_id,
+                provider_id: active_profile.provider_id.clone(),
+                run_controls: run_controls.clone(),
+                accepted_snapshot: snapshot.clone(),
+                prompt,
+                attachments: initial_attachments,
+            },
+        );
     }
+
+    eprintln!(
+        "[runtime-latency] start_runtime_run accepted project_id={project_id} agent_session_id={agent_session_id} run_id={run_id} duration_ms={}",
+        started.elapsed().as_millis()
+    );
 
     Ok(RuntimeRunLaunchOutcome {
         repo_root,
         snapshot,
         reconnected: false,
     })
+}
+
+pub(crate) fn spawn_owned_runtime_prompt_start<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    task: OwnedRuntimePromptStart,
+) {
+    thread::spawn(move || {
+        if let Err(error) = bootstrap_and_drive_owned_runtime_prompt(&app, &state, task) {
+            eprintln!(
+                "[runtime-latency] owned runtime background bootstrap failed before durable failure update: {}: {}",
+                error.code, error.message
+            );
+        }
+    });
+}
+
+fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    task: OwnedRuntimePromptStart,
+) -> CommandResult<()> {
+    let total_started = Instant::now();
+    let mut runtime_snapshot = task.accepted_snapshot.clone();
+
+    runtime_snapshot = emit_owned_runtime_progress(
+        app,
+        &task.repo_root,
+        &runtime_snapshot,
+        RuntimeRunStatus::Starting,
+        None,
+        "Checking provider.",
+    )?;
+
+    let preflight_started = Instant::now();
+    let provider_preflight = match ensure_owned_runtime_provider_turn_capabilities(
+        app,
+        state,
+        state.owned_agent_provider_config_override().is_none(),
+        &task.provider_profile_id,
+        &task.provider_id,
+        &task.run_controls.active.model_id,
+        &task.attachments,
+    ) {
+        Ok(snapshot) => {
+            eprintln!(
+                "[runtime-latency] provider_preflight project_id={} run_id={} duration_ms={}",
+                task.project_id,
+                task.run_id,
+                preflight_started.elapsed().as_millis()
+            );
+            snapshot
+        }
+        Err(error) => {
+            let _ = emit_owned_runtime_failure(
+                app,
+                &task.repo_root,
+                &runtime_snapshot,
+                &error,
+                "Provider check failed.",
+            );
+            return Ok(());
+        }
+    };
+
+    runtime_snapshot = emit_owned_runtime_progress(
+        app,
+        &task.repo_root,
+        &runtime_snapshot,
+        RuntimeRunStatus::Starting,
+        None,
+        "Preparing tools and context.",
+    )?;
+
+    let controls = Some(runtime_control_input_from_active(&task.run_controls.active));
+    let provider_config = match resolve_owned_agent_provider_config(app, state, controls.as_ref()) {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = emit_owned_runtime_failure(
+                app,
+                &task.repo_root,
+                &runtime_snapshot,
+                &error,
+                "Provider configuration failed.",
+            );
+            return Ok(());
+        }
+    };
+    let tool_runtime = match AutonomousToolRuntime::for_project(app, state, &task.project_id) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = emit_owned_runtime_failure(
+                app,
+                &task.repo_root,
+                &runtime_snapshot,
+                &error,
+                "Tool runtime preparation failed.",
+            );
+            return Ok(());
+        }
+    };
+    let owned_request = OwnedAgentRunRequest {
+        repo_root: task.repo_root.clone(),
+        project_id: task.project_id.clone(),
+        agent_session_id: task.agent_session_id.clone(),
+        run_id: task.run_id.clone(),
+        prompt: task.prompt,
+        attachments: task
+            .attachments
+            .iter()
+            .map(staged_attachment_dto_to_message_attachment)
+            .collect(),
+        controls,
+        tool_runtime,
+        provider_config,
+        provider_preflight: Some(provider_preflight),
+    };
+    let lease = match state.agent_run_supervisor().begin(
+        &task.project_id,
+        &task.agent_session_id,
+        &task.run_id,
+    ) {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = emit_owned_runtime_failure(
+                app,
+                &task.repo_root,
+                &runtime_snapshot,
+                &error,
+                "Owned agent task failed.",
+            );
+            return Ok(());
+        }
+    };
+
+    let create_started = Instant::now();
+    if let Err(error) = create_owned_agent_run(&owned_request) {
+        drop(lease);
+        let _ = emit_owned_runtime_failure(
+            app,
+            &task.repo_root,
+            &runtime_snapshot,
+            &error,
+            "Owned agent task failed.",
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "[runtime-latency] create_owned_agent_run project_id={} run_id={} duration_ms={}",
+        task.project_id,
+        task.run_id,
+        create_started.elapsed().as_millis()
+    );
+
+    runtime_snapshot = apply_owned_runtime_run_pending_controls_with_status(
+        &task.repo_root,
+        &runtime_snapshot,
+        RuntimeRunStatus::Running,
+        "Starting provider stream.",
+    )?;
+    let runtime_run = runtime_run_dto_from_snapshot(&runtime_snapshot);
+    emit_runtime_run_updated(app, Some(&runtime_run))?;
+
+    let token = lease.token();
+    let outcome = drive_owned_agent_run(owned_request, token);
+    let failure = match outcome {
+        Ok(agent_snapshot)
+            if agent_snapshot.run.status == project_store::AgentRunStatus::Failed =>
+        {
+            agent_snapshot
+                .run
+                .last_error
+                .map(|error| RuntimeRunDiagnosticRecord {
+                    code: error.code,
+                    message: error.message,
+                })
+        }
+        Err(error) => Some(RuntimeRunDiagnosticRecord {
+            code: error.code,
+            message: error.message,
+        }),
+        _ => None,
+    };
+
+    if let Some(diagnostic) = failure {
+        runtime_snapshot = persist_owned_runtime_run(
+            &task.repo_root,
+            &task.project_id,
+            &task.agent_session_id,
+            &task.run_id,
+            &task.provider_id,
+            &runtime_snapshot.controls,
+            RuntimeRunStatus::Failed,
+            Some(diagnostic),
+            "Owned agent task failed.",
+            runtime_snapshot.last_checkpoint_sequence.saturating_add(1),
+            Some(&runtime_snapshot),
+        )?;
+        let runtime_run = runtime_run_dto_from_snapshot(&runtime_snapshot);
+        emit_runtime_run_updated(app, Some(&runtime_run))?;
+    }
+    drop(lease);
+    eprintln!(
+        "[runtime-latency] owned_runtime_prompt_background project_id={} run_id={} duration_ms={}",
+        task.project_id,
+        task.run_id,
+        total_started.elapsed().as_millis()
+    );
+    Ok(())
+}
+
+fn emit_owned_runtime_progress<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    status: RuntimeRunStatus,
+    last_error: Option<RuntimeRunDiagnosticRecord>,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    let next = persist_owned_runtime_run(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+        &snapshot.run.run_id,
+        &snapshot.run.provider_id,
+        &snapshot.controls,
+        status,
+        last_error,
+        checkpoint_summary,
+        snapshot.last_checkpoint_sequence.saturating_add(1),
+        Some(snapshot),
+    )?;
+    let runtime_run = runtime_run_dto_from_snapshot(&next);
+    emit_runtime_run_updated(app, Some(&runtime_run))?;
+    Ok(next)
+}
+
+fn emit_owned_runtime_failure<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    error: &CommandError,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    emit_owned_runtime_progress(
+        app,
+        repo_root,
+        snapshot,
+        RuntimeRunStatus::Failed,
+        Some(RuntimeRunDiagnosticRecord {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        }),
+        checkpoint_summary,
+    )
+}
+
+pub(crate) fn fail_owned_runtime_run<R: Runtime>(
+    app: &AppHandle<R>,
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    error: &CommandError,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    emit_owned_runtime_failure(app, repo_root, snapshot, error, checkpoint_summary)
 }
 
 pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
@@ -689,46 +897,74 @@ fn is_local_provider_endpoint(base_url: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_owned_runtime_provider_turn_capabilities(
+fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    require_persisted_profile: bool,
+    profile_id: &str,
     provider_id: &str,
     model_id: &str,
     initial_attachments: &[crate::commands::StagedAgentAttachmentDto],
-) -> CommandResult<()> {
-    let capability = provider_capability_catalog(ProviderCapabilityCatalogInput {
-        provider_id: provider_id.into(),
-        model_id: model_id.into(),
-        catalog_source: "manual".into(),
-        fetched_at: None,
-        last_success_at: None,
-        cache_age_seconds: None,
-        cache_ttl_seconds: Some(xero_agent_core::DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
-        credential_proof: None,
-        context_window_tokens: None,
-        max_output_tokens: None,
-        context_limit_source: None,
-        context_limit_confidence: None,
-        thinking_supported: false,
-        thinking_efforts: Vec::new(),
-        thinking_default_effort: None,
-    });
-
-    if capability.capabilities.tool_calls.status == "unavailable" {
-        return Err(CommandError::user_fixable(
-            "provider_tool_call_capability_missing",
-            format!(
-                "Xero cannot start an owned agent turn with provider `{provider_id}` and model `{model_id}` because tool-call support is unavailable."
-            ),
-        ));
-    }
-
-    let has_rich_attachment = initial_attachments.iter().any(|attachment| {
+) -> CommandResult<ProviderPreflightSnapshot> {
+    let mut required_features = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+    required_features.attachments = initial_attachments.iter().any(|attachment| {
         matches!(
             attachment.kind,
             crate::commands::AgentAttachmentKindDto::Image
                 | crate::commands::AgentAttachmentKindDto::Document
         )
     });
-    if has_rich_attachment && capability.capabilities.attachments.status != "supported" {
+    let preflight = if require_persisted_profile {
+        let cache_started = Instant::now();
+        let reusable_snapshot = match crate::provider_preflight::latest_provider_preflight_snapshot(
+            app,
+            state,
+            profile_id,
+            provider_id,
+            model_id,
+        )? {
+            Some(snapshot) => reusable_provider_preflight_snapshot(snapshot, &required_features),
+            None => None,
+        };
+        eprintln!(
+            "[runtime-latency] provider_preflight_cache_lookup profile_id={profile_id} provider_id={provider_id} model_id={model_id} hit={} duration_ms={}",
+            reusable_snapshot.is_some(),
+            cache_started.elapsed().as_millis()
+        );
+        match reusable_snapshot {
+            Some(snapshot) => snapshot,
+            None => crate::provider_preflight::run_selected_provider_preflight(
+                app,
+                state,
+                profile_id,
+                Some(model_id),
+                false,
+                required_features.clone(),
+            )?,
+        }
+    } else {
+        crate::provider_preflight::static_provider_preflight_snapshot(
+            provider_id,
+            model_id,
+            required_features.clone(),
+        )
+    };
+
+    if require_persisted_profile {
+        if let Some(blocker) = provider_preflight_blockers(&preflight).first() {
+            return Err(CommandError::user_fixable(
+                "provider_preflight_blocked",
+                format!(
+                    "Xero cannot start an owned agent turn with provider `{provider_id}` and model `{model_id}` because provider preflight `{}` failed: {}",
+                    blocker.code, blocker.message
+                ),
+            ));
+        }
+    }
+
+    if required_features.attachments
+        && preflight.capabilities.capabilities.attachments.status != "supported"
+    {
         return Err(CommandError::user_fixable(
             "provider_attachment_capability_missing",
             format!(
@@ -737,7 +973,21 @@ fn ensure_owned_runtime_provider_turn_capabilities(
         ));
     }
 
-    Ok(())
+    Ok(preflight)
+}
+
+fn reusable_provider_preflight_snapshot(
+    snapshot: ProviderPreflightSnapshot,
+    required_features: &ProviderPreflightRequiredFeatures,
+) -> Option<ProviderPreflightSnapshot> {
+    if snapshot.stale || snapshot.required_features != *required_features {
+        return None;
+    }
+
+    let snapshot = xero_agent_core::provider_preflight_snapshot_as_cached_probe(snapshot);
+    provider_preflight_blockers(&snapshot)
+        .is_empty()
+        .then_some(snapshot)
 }
 
 pub(crate) fn generate_runtime_run_id() -> String {
@@ -895,8 +1145,10 @@ pub(crate) fn update_owned_runtime_run_controls(
     snapshot: &RuntimeRunSnapshotRecord,
     controls: Option<RuntimeRunControlInputDto>,
     prompt: Option<String>,
+    attachments: &[crate::commands::StagedAgentAttachmentDto],
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
     let active = &snapshot.controls.active;
+    ensure_runtime_agent_available(active.runtime_agent_id)?;
     if let Some(requested_agent_id) = controls
         .as_ref()
         .map(|controls| controls.runtime_agent_id)
@@ -980,6 +1232,7 @@ pub(crate) fn update_owned_runtime_run_controls(
             queued_at: now,
             queued_prompt,
             queued_prompt_at,
+            queued_attachments: queued_runtime_attachments(attachments),
         }),
     };
 
@@ -998,13 +1251,26 @@ pub(crate) fn update_owned_runtime_run_controls(
     )
 }
 
-pub(crate) fn apply_owned_runtime_run_pending_controls(
+pub(crate) fn apply_owned_runtime_run_pending_controls_with_status(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
+    status: RuntimeRunStatus,
     checkpoint_summary: &str,
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
     let Some(pending) = snapshot.controls.pending.as_ref() else {
-        return Ok(snapshot.clone());
+        return persist_owned_runtime_run(
+            repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.agent_session_id,
+            &snapshot.run.run_id,
+            &snapshot.run.provider_id,
+            &snapshot.controls,
+            status,
+            snapshot.run.last_error.clone(),
+            checkpoint_summary,
+            snapshot.last_checkpoint_sequence.saturating_add(1),
+            Some(snapshot),
+        );
     };
 
     let run_controls = RuntimeRunControlStateRecord {
@@ -1030,7 +1296,7 @@ pub(crate) fn apply_owned_runtime_run_pending_controls(
         &snapshot.run.run_id,
         &snapshot.run.provider_id,
         &run_controls,
-        snapshot.run.status.clone(),
+        status,
         snapshot.run.last_error.clone(),
         checkpoint_summary,
         snapshot.last_checkpoint_sequence.saturating_add(1),
@@ -1369,9 +1635,39 @@ pub(crate) fn staged_attachment_dto_to_message_attachment(
     }
 }
 
+fn attach_queued_runtime_attachments(
+    controls: &mut RuntimeRunControlStateRecord,
+    attachments: &[crate::commands::StagedAgentAttachmentDto],
+) {
+    if let Some(pending) = controls.pending.as_mut() {
+        pending.queued_attachments = queued_runtime_attachments(attachments);
+    }
+}
+
+fn queued_runtime_attachments(
+    attachments: &[crate::commands::StagedAgentAttachmentDto],
+) -> Vec<RuntimeRunQueuedAttachmentRecord> {
+    attachments
+        .iter()
+        .map(|attachment| RuntimeRunQueuedAttachmentRecord {
+            kind: attachment.kind.clone(),
+            absolute_path: attachment.absolute_path.clone(),
+            media_type: attachment.media_type.clone(),
+            original_name: attachment.original_name.clone(),
+            size_bytes: attachment.size_bytes,
+            width: attachment.width,
+            height: attachment.height,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xero_agent_core::{
+        provider_capability_catalog, provider_preflight_snapshot, ProviderCapabilityCatalogInput,
+        ProviderPreflightInput, ProviderPreflightSource, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+    };
 
     fn stored_codex_session(expires_at: i64) -> StoredOpenAiCodexSession {
         StoredOpenAiCodexSession {
@@ -1418,5 +1714,69 @@ mod tests {
             &stored_codex_session(now + OPENAI_CODEX_REFRESH_SKEW_SECONDS + 1),
             now
         ));
+    }
+
+    fn preflight_snapshot(source: ProviderPreflightSource) -> ProviderPreflightSnapshot {
+        provider_preflight_snapshot(ProviderPreflightInput {
+            profile_id: "openai_codex-default".into(),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            model_id: "gpt-5.4".into(),
+            source,
+            checked_at: "2026-05-05T15:57:13Z".into(),
+            age_seconds: Some(0),
+            ttl_seconds: Some(120),
+            required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            capabilities: provider_capability_catalog(ProviderCapabilityCatalogInput {
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: "gpt-5.4".into(),
+                catalog_source: "live".into(),
+                fetched_at: Some("2026-05-05T15:57:13Z".into()),
+                last_success_at: Some("2026-05-05T15:57:13Z".into()),
+                cache_age_seconds: Some(0),
+                cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+                credential_proof: Some("app_data_openai_codex_session".into()),
+                context_window_tokens: Some(400_000),
+                max_output_tokens: Some(16_384),
+                context_limit_source: Some("built_in_registry".into()),
+                context_limit_confidence: Some("medium".into()),
+                thinking_supported: true,
+                thinking_efforts: vec!["medium".into()],
+                thinking_default_effort: Some("medium".into()),
+            }),
+            credential_ready: Some(true),
+            endpoint_reachable: Some(true),
+            model_available: Some(true),
+            streaming_route_available: Some(true),
+            tool_schema_accepted: Some(true),
+            reasoning_controls_accepted: None,
+            attachments_accepted: None,
+            context_limit_known: Some(true),
+            provider_error: None,
+        })
+    }
+
+    #[test]
+    fn static_manual_preflight_is_not_reused_for_owned_turn() {
+        let snapshot = preflight_snapshot(ProviderPreflightSource::StaticManual);
+
+        assert!(reusable_provider_preflight_snapshot(
+            snapshot,
+            &ProviderPreflightRequiredFeatures::owned_agent_text_turn()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn live_probe_preflight_is_reused_as_cached_probe() {
+        let snapshot = preflight_snapshot(ProviderPreflightSource::LiveProbe);
+
+        let reused = reusable_provider_preflight_snapshot(
+            snapshot,
+            &ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        )
+        .expect("reusable preflight");
+
+        assert_eq!(reused.source, ProviderPreflightSource::CachedProbe);
+        assert!(provider_preflight_blockers(&reused).is_empty());
     }
 }

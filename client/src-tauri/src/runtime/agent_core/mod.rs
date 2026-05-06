@@ -6,9 +6,11 @@ use std::{
 };
 
 mod context_package;
+mod environment_lifecycle;
 mod evals;
 mod events;
 mod facade;
+mod harness_order;
 mod provider_adapters;
 mod supervisor;
 
@@ -21,19 +23,19 @@ mod tool_dispatch;
 mod types;
 
 pub use evals::{
-    run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite,
+    run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite, run_test_agent_ci_eval,
     run_xero_quality_eval_suites, AgentDefinitionEvalFixtureKind, AgentDefinitionQualityCaseResult,
     AgentDefinitionQualityCoverage, AgentDefinitionQualityEvalReport,
     AgentDefinitionQualityMetrics, AgentDefinitionQualitySurface, AgentDefinitionQualityThresholds,
     AgentHarnessEvalCaseResult, AgentHarnessEvalCoverage, AgentHarnessEvalMetrics,
     AgentHarnessEvalReport, AgentHarnessEvalThresholds, HarnessEvalFixtureKind,
-    XeroQualityEvalReport,
+    TestAgentCiEvalReport, TestAgentCiManifestOutcome, XeroQualityEvalReport,
 };
 pub use events::{publish_agent_event, subscribe_agent_events, AgentEventSubscription};
 pub use facade::{
-    DesktopAgentCoreRuntime, DesktopCancelRunRequest, DesktopContinueRunRequest,
-    DesktopExportTraceRequest, DesktopRunDriveMode, DesktopStartRunRequest,
-    DesktopUnsupportedRuntimeRequest,
+    DesktopAgentCoreRuntime, DesktopCancelRunRequest, DesktopCompactSessionRequest,
+    DesktopContinueRunRequest, DesktopExportTraceRequest, DesktopForkSessionRequest,
+    DesktopRejectActionRequest, DesktopRunDriveMode, DesktopStartRunRequest,
 };
 pub use provider_adapters::{
     create_provider_adapter, AgentProviderConfig, AnthropicProviderConfig, BedrockProviderConfig,
@@ -48,6 +50,8 @@ pub use supervisor::{
 pub use types::*;
 
 pub(crate) use context_package::*;
+pub(crate) use environment_lifecycle::*;
+pub(crate) use harness_order::*;
 pub(crate) use persistence::*;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;
@@ -61,12 +65,13 @@ use crate::{
     auth::now_timestamp,
     commands::{
         context_budget, default_runtime_agent_approval_mode, default_runtime_agent_id,
-        estimate_tokens, evaluate_compaction_policy, redact_session_context_text,
-        resolve_context_limit, runtime_agent_allows_approval_mode, soul_prompt_fragment,
-        BrowserControlPreferenceDto, CommandError, CommandErrorClass, CommandResult,
-        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
-        RuntimeRunControlInputDto, RuntimeRunControlStateDto, SessionCompactionPolicyInput,
-        SessionContextBudgetPressureDto, SessionContextPolicyActionDto, SoulSettingsDto,
+        ensure_runtime_agent_available, estimate_tokens, evaluate_compaction_policy,
+        redact_session_context_text, resolve_context_limit, runtime_agent_allows_approval_mode,
+        soul_prompt_fragment, BrowserControlPreferenceDto, CommandError, CommandErrorClass,
+        CommandResult, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+        SessionCompactionPolicyInput, SessionContextBudgetPressureDto,
+        SessionContextPolicyActionDto, SoulSettingsDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentMessageRecord, AgentMessageRole, AgentRunEventKind,
@@ -98,7 +103,7 @@ use crate::{
             AUTONOMOUS_TOOL_WORKSPACE_INDEX,
         },
         redaction::{find_prohibited_persistence_content, redact_command_argv_for_persistence},
-        AutonomousDynamicToolRoute, AutonomousMacosAutomationAction,
+        AutonomousCommandOutputChunk, AutonomousDynamicToolRoute, AutonomousMacosAutomationAction,
         AutonomousMacosAutomationOutput, AutonomousMcpAction, AutonomousMcpRequest,
         AutonomousProcessManagerAction, AutonomousSubagentExecutor, AutonomousSubagentTask,
         AutonomousSystemDiagnosticsOutput, AutonomousTodoStatus, AutonomousToolOutput,

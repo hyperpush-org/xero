@@ -2035,17 +2035,28 @@ fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItem
         }
         AgentRunEventKind::ToolCompleted => SessionTranscriptItemKindDto::ToolResult,
         AgentRunEventKind::FileChanged => SessionTranscriptItemKindDto::FileChange,
-        AgentRunEventKind::ActionRequired => SessionTranscriptItemKindDto::ActionRequest,
+        AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
+            SessionTranscriptItemKindDto::ActionRequest
+        }
         AgentRunEventKind::RunPaused => SessionTranscriptItemKindDto::Activity,
         AgentRunEventKind::RunCompleted => SessionTranscriptItemKindDto::Complete,
         AgentRunEventKind::RunFailed => SessionTranscriptItemKindDto::Failure,
-        AgentRunEventKind::CommandOutput
+        AgentRunEventKind::RunStarted
+        | AgentRunEventKind::CommandOutput
         | AgentRunEventKind::ValidationStarted
         | AgentRunEventKind::ValidationCompleted
         | AgentRunEventKind::ToolRegistrySnapshot
         | AgentRunEventKind::PolicyDecision
         | AgentRunEventKind::StateTransition
         | AgentRunEventKind::PlanUpdated
+        | AgentRunEventKind::ContextManifestRecorded
+        | AgentRunEventKind::RetrievalPerformed
+        | AgentRunEventKind::MemoryCandidateCaptured
+        | AgentRunEventKind::EnvironmentLifecycleUpdate
+        | AgentRunEventKind::SandboxLifecycleUpdate
+        | AgentRunEventKind::ToolPermissionGrant
+        | AgentRunEventKind::ProviderModelChanged
+        | AgentRunEventKind::RuntimeSettingsChanged
         | AgentRunEventKind::VerificationGate => SessionTranscriptItemKindDto::Activity,
     }
 }
@@ -2058,7 +2069,9 @@ fn actor_from_event(kind: &AgentRunEventKind) -> SessionTranscriptActorDto {
         AgentRunEventKind::ToolStarted
         | AgentRunEventKind::ToolDelta
         | AgentRunEventKind::ToolCompleted => SessionTranscriptActorDto::Tool,
-        AgentRunEventKind::ActionRequired => SessionTranscriptActorDto::Operator,
+        AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
+            SessionTranscriptActorDto::Operator
+        }
         _ => SessionTranscriptActorDto::Xero,
     }
 }
@@ -2073,6 +2086,7 @@ fn transcript_parts_from_event(
     SessionContextRedactionDto,
 ) {
     let title = match event.event_kind {
+        AgentRunEventKind::RunStarted => Some("Run started".into()),
         AgentRunEventKind::MessageDelta => Some("Message delta".into()),
         AgentRunEventKind::ReasoningSummary => Some("Reasoning".into()),
         AgentRunEventKind::ToolStarted => Some("Tool started".into()),
@@ -2086,10 +2100,18 @@ fn transcript_parts_from_event(
         AgentRunEventKind::PolicyDecision => Some("Policy decision".into()),
         AgentRunEventKind::StateTransition => Some("Agent state".into()),
         AgentRunEventKind::PlanUpdated => Some("Plan updated".into()),
+        AgentRunEventKind::ContextManifestRecorded => Some("Context manifest".into()),
+        AgentRunEventKind::RetrievalPerformed => Some("Context retrieval".into()),
+        AgentRunEventKind::MemoryCandidateCaptured => Some("Memory candidate".into()),
+        AgentRunEventKind::EnvironmentLifecycleUpdate => Some("Environment".into()),
+        AgentRunEventKind::SandboxLifecycleUpdate => Some("Sandbox".into()),
         AgentRunEventKind::VerificationGate => Some("Verification gate".into()),
-        AgentRunEventKind::ActionRequired => {
+        AgentRunEventKind::ActionRequired | AgentRunEventKind::ApprovalRequired => {
             payload_string(payload, "title").or_else(|| Some("Action required".into()))
         }
+        AgentRunEventKind::ToolPermissionGrant => Some("Tool permission".into()),
+        AgentRunEventKind::ProviderModelChanged => Some("Provider model".into()),
+        AgentRunEventKind::RuntimeSettingsChanged => Some("Runtime settings".into()),
         AgentRunEventKind::RunPaused => Some("Run paused".into()),
         AgentRunEventKind::RunCompleted => Some("Run completed".into()),
         AgentRunEventKind::RunFailed => Some("Run failed".into()),

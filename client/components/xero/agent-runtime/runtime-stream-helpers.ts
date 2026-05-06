@@ -360,6 +360,8 @@ function getToolActionLabel(item: RuntimeStreamToolItemView): string {
       return 'search web'
     case 'web_fetch':
       return 'fetch web page'
+    case 'project_context':
+      return 'project context'
     default:
       return humanizeToolName(item.toolName) || 'tool'
   }
@@ -421,6 +423,16 @@ function getToolTargetLabel(item: RuntimeStreamToolItemView): string | null {
       return summary?.kind === 'web'
         ? summary.finalUrl ?? summary.target
         : firstDetailValue(detailValues, ['url'])
+    case 'project_context':
+      return firstDetailValue(detailValues, [
+        'action',
+        'query',
+        'queryId',
+        'recordId',
+        'memoryId',
+        'manifestId',
+        'candidateId',
+      ])
     default:
       if (summary?.kind === 'file') {
         return summary.path ? compactFileTarget(summary.path) : summary.scope ?? null

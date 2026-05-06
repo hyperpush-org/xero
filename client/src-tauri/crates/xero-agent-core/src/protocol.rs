@@ -482,6 +482,7 @@ pub struct CanonicalRuntimeTraceSnapshot {
     pub timeline: ReplayedRunTimeline,
     pub diagnostics: TraceDiagnosticsReport,
     pub quality_gates: TraceQualityGateReport,
+    pub production_readiness: ProductionReadinessReport,
     pub redaction_report: TraceRedactionReport,
     pub export_formats: Vec<RuntimeTraceExportFormat>,
 }
@@ -505,6 +506,7 @@ pub struct RuntimeSupportBundle {
     pub timeline: ReplayedRunTimeline,
     pub diagnostics: TraceDiagnosticsReport,
     pub quality_gates: TraceQualityGateReport,
+    pub production_readiness: ProductionReadinessReport,
     pub redaction_report: TraceRedactionReport,
     pub redacted_trace: JsonValue,
 }
@@ -523,6 +525,136 @@ pub struct RuntimeSupportRunMetadata {
     pub context_manifest_count: usize,
 }
 
+pub const PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS: &[&str] = &[
+    "command -v protoc",
+    "cargo fmt -p xero-agent-core -- --check",
+    "cargo fmt -p xero-cli -- --check",
+    "cargo test -p xero-agent-core provider_preflight -- --nocapture",
+    "cargo test -p xero-agent-core tool_registry -- --nocapture",
+    "cargo test -p xero-agent-core trace_quality -- --nocapture",
+    "cargo test -p xero-cli real_provider_uses_project_store -- --nocapture",
+    "cargo test -p xero-cli real_provider_uses_tool_registry_v2 -- --nocapture",
+    "cargo test -p xero-cli live_provider_preflight_probe -- --nocapture",
+    "cargo test -p xero-cli mcp_uses_canonical_runtime -- --nocapture",
+    "cargo test -p xero-desktop --test agent_core_runtime provider_preflight_manifest_binding -- --nocapture",
+    "cargo test -p xero-desktop --test agent_core_runtime tool_registry_v2_enforces_sandbox_denial -- --nocapture",
+    "cargo test -p xero-desktop --test agent_core_runtime tool_group_timeout_interrupts_hung_read_only_handler -- --nocapture",
+    "cargo test -p xero-desktop --test agent_core_runtime workspace_index_required_blocks_lifecycle -- --nocapture",
+    "cargo test -p xero-desktop --test agent_core_runtime canonical_trace_passes_production_gates -- --nocapture",
+    "pnpm --dir client vitest run src/lib/xero-model/provider-models.test.ts src/lib/xero-model/runtime-protocol.test.ts src/lib/xero-model/agent.test.ts src/features/xero/use-xero-desktop-state/runtime-stream.test.ts",
+];
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductionReadinessStatus {
+    Ready,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductionReadinessFocusedTestStatus {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionReadinessFocusedTestResult {
+    pub command: String,
+    pub status: ProductionReadinessFocusedTestStatus,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+}
+
+impl ProductionReadinessFocusedTestResult {
+    pub fn passed(command: impl Into<String>, summary: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            status: ProductionReadinessFocusedTestStatus::Passed,
+            summary: summary.into(),
+            checked_at: None,
+        }
+    }
+
+    pub fn failed(command: impl Into<String>, summary: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            status: ProductionReadinessFocusedTestStatus::Failed,
+            summary: summary.into(),
+            checked_at: None,
+        }
+    }
+
+    pub fn skipped(command: impl Into<String>, summary: impl Into<String>) -> Self {
+        Self {
+            command: command.into(),
+            status: ProductionReadinessFocusedTestStatus::Skipped,
+            summary: summary.into(),
+            checked_at: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionReadinessGateSummary {
+    pub total: usize,
+    pub passed: usize,
+    pub warned: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionReadinessFocusedTestSummary {
+    pub required_count: usize,
+    pub provided_count: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub missing_required_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProductionReadinessBlockerKind {
+    TraceGate,
+    FocusedTestFailed,
+    FocusedTestSkipped,
+    FocusedTestMissing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionReadinessBlocker {
+    pub kind: ProductionReadinessBlockerKind,
+    pub layer: TraceFailureLayer,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<TraceQualityGateCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionReadinessReport {
+    pub schema: String,
+    pub generated_from: String,
+    pub protocol_version: u32,
+    pub trace_id: String,
+    pub status: ProductionReadinessStatus,
+    pub gate_summary: ProductionReadinessGateSummary,
+    pub focused_test_summary: ProductionReadinessFocusedTestSummary,
+    pub failing_categories: Vec<TraceQualityGateCategory>,
+    pub failing_layers: Vec<TraceFailureLayer>,
+    pub blockers: Vec<ProductionReadinessBlocker>,
+    pub focused_tests: Vec<ProductionReadinessFocusedTestResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TraceDiagnosticCategory {
@@ -536,6 +668,7 @@ pub enum TraceDiagnosticCategory {
     RedactionEvent,
     StorageError,
     ProviderCapabilityState,
+    EnvironmentLifecycleState,
     MissingTimelineSegment,
     TraceExportConversionFailure,
     VerificationFailure,
@@ -554,12 +687,17 @@ pub enum TraceDiagnosticSeverity {
 #[serde(rename_all = "snake_case")]
 pub enum TraceFailureLayer {
     Provider,
+    Lifecycle,
     ContextAssembly,
     Retrieval,
     ToolSchema,
+    ToolDispatch,
     Approval,
     Sandbox,
     Filesystem,
+    Timeout,
+    ProviderHistory,
+    WorkspaceIndex,
     Verification,
     Storage,
     Redaction,
@@ -589,14 +727,25 @@ pub struct TraceDiagnosticsReport {
     pub most_likely_failing_layer: Option<TraceFailureLayer>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum TraceQualityGateCategory {
     PromptInjectionRegression,
+    EnvironmentLifecycleEvents,
+    ProductionRuntimeStore,
     SandboxPolicy,
+    SandboxDenialOutcome,
     ProviderCapabilityPreflight,
+    ProviderPreflightSnapshot,
+    ProviderPreflightManifestBinding,
+    ToolRegistryV2Execution,
+    SubprocessSandboxMetadata,
+    ToolTimeoutMetadata,
+    ProviderHistoryReplay,
+    WorkspaceIndexLifecycle,
     ToolSchemaValidation,
     ContextManifestDeterminism,
+    ContextManifestBeforeProviderTurn,
     EventProtocolSchemaSnapshot,
     SupportBundleRedaction,
 }
@@ -796,6 +945,13 @@ impl RuntimeTrace {
             &redaction_report,
             redaction_failed,
         );
+        let production_readiness = production_readiness_report_for_trace(
+            self.protocol_version,
+            &self.trace_id,
+            &quality_gates,
+            &diagnostics,
+            Vec::new(),
+        );
 
         Ok(CanonicalRuntimeTraceSnapshot {
             schema: "xero.canonical_runtime_trace_snapshot.v1".into(),
@@ -805,6 +961,7 @@ impl RuntimeTrace {
             timeline,
             diagnostics,
             quality_gates,
+            production_readiness,
             redaction_report,
             export_formats: vec![
                 RuntimeTraceExportFormat::JsonTrace,
@@ -835,6 +992,12 @@ impl RuntimeTrace {
             "agent_quality_gates_decode_failed",
             "runtime quality gates",
         )?;
+        let redacted_production_readiness = redacted_json_round_trip(
+            &canonical.production_readiness,
+            "agent_production_readiness_encode_failed",
+            "agent_production_readiness_decode_failed",
+            "production readiness report",
+        )?;
 
         Ok(RuntimeSupportBundle {
             schema: "xero.runtime_support_bundle.v1".into(),
@@ -855,9 +1018,18 @@ impl RuntimeTrace {
             timeline: redacted_timeline,
             diagnostics: redacted_diagnostics,
             quality_gates: redacted_quality_gates,
+            production_readiness: redacted_production_readiness,
             redaction_report,
             redacted_trace,
         })
+    }
+
+    pub fn production_readiness_report(
+        &self,
+        focused_tests: Vec<ProductionReadinessFocusedTestResult>,
+    ) -> CoreResult<ProductionReadinessReport> {
+        let canonical = self.canonical_snapshot()?;
+        Ok(canonical.production_readiness_report(focused_tests))
     }
 
     pub fn to_markdown_summary(&self) -> CoreResult<String> {
@@ -866,6 +1038,10 @@ impl RuntimeTrace {
             "PASS"
         } else {
             "FAIL"
+        };
+        let readiness_status = match bundle.production_readiness.status {
+            ProductionReadinessStatus::Ready => "READY",
+            ProductionReadinessStatus::Blocked => "BLOCKED",
         };
         let failing_layer = bundle
             .diagnostics
@@ -882,6 +1058,7 @@ impl RuntimeTrace {
             ),
             format!("- Status: `{:?}`", bundle.run.status),
             format!("- Quality gates: `{gate_status}`"),
+            format!("- Production readiness: `{readiness_status}`"),
             format!("- Most likely failing layer: `{failing_layer}`"),
             format!("- Timeline items: {}", bundle.timeline.items.len()),
             format!(
@@ -919,6 +1096,21 @@ impl RuntimeTrace {
         }
         lines.push(String::new());
         Ok(lines.join("\n"))
+    }
+}
+
+impl CanonicalRuntimeTraceSnapshot {
+    pub fn production_readiness_report(
+        &self,
+        focused_tests: Vec<ProductionReadinessFocusedTestResult>,
+    ) -> ProductionReadinessReport {
+        production_readiness_report_for_trace(
+            self.protocol_version,
+            &self.trace_id,
+            &self.quality_gates,
+            &self.diagnostics,
+            focused_tests,
+        )
     }
 }
 
@@ -988,6 +1180,36 @@ fn diagnose_trace(
                 redaction_report.categories.len()
             ),
         });
+    }
+
+    if trace
+        .events
+        .iter()
+        .all(|event| event.event_kind != RuntimeEventKind::EnvironmentLifecycleUpdate)
+    {
+        signals.push(TraceDiagnosticSignal {
+            category: TraceDiagnosticCategory::EnvironmentLifecycleState,
+            severity: TraceDiagnosticSeverity::Error,
+            trace_id: trace.trace_id.clone(),
+            event_id: trace.events.first().map(|event| event.event_id),
+            layer: TraceFailureLayer::Runtime,
+            summary: "The trace has no persisted environment lifecycle event.".into(),
+        });
+    }
+
+    for manifest in &trace.snapshot.context_manifests {
+        if let Some(preflight) = provider_preflight_value(&manifest.manifest) {
+            if provider_preflight_value_is_not_live_ready(preflight) {
+                signals.push(TraceDiagnosticSignal {
+                    category: TraceDiagnosticCategory::ProviderCapabilityState,
+                    severity: TraceDiagnosticSeverity::Warning,
+                    trace_id: trace.trace_id.clone(),
+                    event_id: manifest.recorded_after_event_id,
+                    layer: TraceFailureLayer::Provider,
+                    summary: "Provider preflight snapshot is stale, unavailable, static, cached, warning, or failed.".into(),
+                });
+            }
+        }
     }
 
     for event in &trace.events {
@@ -1124,7 +1346,9 @@ fn diagnose_trace(
             ));
         }
 
-        if json_contains_provider_capability_state(raw_payload) {
+        if provider_preflight_value(raw_payload)
+            .is_some_and(provider_preflight_value_is_not_live_ready)
+        {
             signals.push(event_signal(
                 trace,
                 event,
@@ -1190,10 +1414,21 @@ fn quality_gates_for_trace(
 ) -> TraceQualityGateReport {
     let mut gates = vec![
         prompt_injection_gate(trace),
+        environment_lifecycle_gate(trace),
+        production_runtime_store_gate(trace),
         sandbox_policy_gate(trace, diagnostics),
+        sandbox_denial_outcome_gate(trace),
         provider_capability_gate(trace, diagnostics),
+        provider_preflight_snapshot_gate(trace),
+        provider_preflight_manifest_binding_gate(trace),
+        tool_registry_v2_execution_gate(trace),
+        subprocess_sandbox_metadata_gate(trace),
+        tool_timeout_metadata_gate(trace),
+        provider_history_replay_gate(trace),
+        workspace_index_lifecycle_gate(trace),
         tool_schema_gate(trace),
         context_manifest_gate(trace),
+        context_manifest_before_provider_turn_gate(trace),
         event_protocol_gate(trace, timeline),
         support_bundle_redaction_gate(trace, redaction_report, redaction_failed),
     ];
@@ -1202,6 +1437,172 @@ fn quality_gates_for_trace(
         .all(|gate| gate.status != TraceQualityGateStatus::Fail);
     gates.sort_by_key(|gate| format!("{:?}", gate.category));
     TraceQualityGateReport { passed, gates }
+}
+
+fn production_readiness_report_for_trace(
+    protocol_version: u32,
+    trace_id: &str,
+    quality_gates: &TraceQualityGateReport,
+    diagnostics: &TraceDiagnosticsReport,
+    focused_tests: Vec<ProductionReadinessFocusedTestResult>,
+) -> ProductionReadinessReport {
+    let gate_summary = ProductionReadinessGateSummary {
+        total: quality_gates.gates.len(),
+        passed: quality_gates
+            .gates
+            .iter()
+            .filter(|gate| gate.status == TraceQualityGateStatus::Pass)
+            .count(),
+        warned: quality_gates
+            .gates
+            .iter()
+            .filter(|gate| gate.status == TraceQualityGateStatus::Warn)
+            .count(),
+        failed: quality_gates
+            .gates
+            .iter()
+            .filter(|gate| gate.status == TraceQualityGateStatus::Fail)
+            .count(),
+    };
+
+    let mut failing_categories = quality_gates
+        .gates
+        .iter()
+        .filter(|gate| gate.status == TraceQualityGateStatus::Fail)
+        .map(|gate| gate.category.clone())
+        .collect::<Vec<_>>();
+    failing_categories.sort();
+
+    let mut blockers = quality_gates
+        .gates
+        .iter()
+        .filter(|gate| gate.status == TraceQualityGateStatus::Fail)
+        .map(|gate| ProductionReadinessBlocker {
+            kind: ProductionReadinessBlockerKind::TraceGate,
+            layer: trace_gate_failure_layer(&gate.category, diagnostics),
+            category: Some(gate.category.clone()),
+            command: None,
+            summary: gate.summary.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let provided_commands = focused_tests
+        .iter()
+        .map(|test| test.command.trim())
+        .filter(|command| !command.is_empty())
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let missing_required_commands = PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS
+        .iter()
+        .filter(|command| !provided_commands.contains::<str>(*command))
+        .map(|command| (*command).to_owned())
+        .collect::<Vec<_>>();
+
+    let focused_test_summary = ProductionReadinessFocusedTestSummary {
+        required_count: PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS.len(),
+        provided_count: focused_tests.len(),
+        passed: focused_tests
+            .iter()
+            .filter(|test| test.status == ProductionReadinessFocusedTestStatus::Passed)
+            .count(),
+        failed: focused_tests
+            .iter()
+            .filter(|test| test.status == ProductionReadinessFocusedTestStatus::Failed)
+            .count(),
+        skipped: focused_tests
+            .iter()
+            .filter(|test| test.status == ProductionReadinessFocusedTestStatus::Skipped)
+            .count(),
+        missing_required_commands: missing_required_commands.clone(),
+    };
+
+    for test in &focused_tests {
+        match test.status {
+            ProductionReadinessFocusedTestStatus::Passed => {}
+            ProductionReadinessFocusedTestStatus::Failed => {
+                blockers.push(ProductionReadinessBlocker {
+                    kind: ProductionReadinessBlockerKind::FocusedTestFailed,
+                    layer: TraceFailureLayer::Verification,
+                    category: None,
+                    command: Some(test.command.clone()),
+                    summary: test.summary.clone(),
+                });
+            }
+            ProductionReadinessFocusedTestStatus::Skipped => {
+                blockers.push(ProductionReadinessBlocker {
+                    kind: ProductionReadinessBlockerKind::FocusedTestSkipped,
+                    layer: TraceFailureLayer::Verification,
+                    category: None,
+                    command: Some(test.command.clone()),
+                    summary: test.summary.clone(),
+                });
+            }
+        }
+    }
+
+    for command in &missing_required_commands {
+        blockers.push(ProductionReadinessBlocker {
+            kind: ProductionReadinessBlockerKind::FocusedTestMissing,
+            layer: TraceFailureLayer::Verification,
+            category: None,
+            command: Some(command.clone()),
+            summary: "Required production-readiness verification evidence was not attached.".into(),
+        });
+    }
+
+    let failing_layers = blockers
+        .iter()
+        .map(|blocker| blocker.layer)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let status = if blockers.is_empty() && quality_gates.passed {
+        ProductionReadinessStatus::Ready
+    } else {
+        ProductionReadinessStatus::Blocked
+    };
+
+    ProductionReadinessReport {
+        schema: "xero.production_readiness_report.v1".into(),
+        generated_from: "canonical_runtime_trace_snapshot_and_focused_tests".into(),
+        protocol_version,
+        trace_id: trace_id.to_owned(),
+        status,
+        gate_summary,
+        focused_test_summary,
+        failing_categories,
+        failing_layers,
+        blockers,
+        focused_tests,
+    }
+}
+
+fn trace_gate_failure_layer(
+    category: &TraceQualityGateCategory,
+    _diagnostics: &TraceDiagnosticsReport,
+) -> TraceFailureLayer {
+    match category {
+        TraceQualityGateCategory::PromptInjectionRegression => TraceFailureLayer::Policy,
+        TraceQualityGateCategory::EnvironmentLifecycleEvents => TraceFailureLayer::Lifecycle,
+        TraceQualityGateCategory::ProductionRuntimeStore => TraceFailureLayer::Storage,
+        TraceQualityGateCategory::SandboxPolicy
+        | TraceQualityGateCategory::SandboxDenialOutcome
+        | TraceQualityGateCategory::SubprocessSandboxMetadata => TraceFailureLayer::Sandbox,
+        TraceQualityGateCategory::ProviderCapabilityPreflight
+        | TraceQualityGateCategory::ProviderPreflightSnapshot => TraceFailureLayer::Provider,
+        TraceQualityGateCategory::ProviderPreflightManifestBinding
+        | TraceQualityGateCategory::ContextManifestDeterminism
+        | TraceQualityGateCategory::ContextManifestBeforeProviderTurn => {
+            TraceFailureLayer::ContextAssembly
+        }
+        TraceQualityGateCategory::ToolRegistryV2Execution => TraceFailureLayer::ToolDispatch,
+        TraceQualityGateCategory::ToolTimeoutMetadata => TraceFailureLayer::Timeout,
+        TraceQualityGateCategory::ProviderHistoryReplay => TraceFailureLayer::ProviderHistory,
+        TraceQualityGateCategory::WorkspaceIndexLifecycle => TraceFailureLayer::WorkspaceIndex,
+        TraceQualityGateCategory::ToolSchemaValidation => TraceFailureLayer::ToolSchema,
+        TraceQualityGateCategory::EventProtocolSchemaSnapshot => TraceFailureLayer::Protocol,
+        TraceQualityGateCategory::SupportBundleRedaction => TraceFailureLayer::Redaction,
+    }
 }
 
 fn gate(
@@ -1258,6 +1659,70 @@ fn prompt_injection_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
     }
 }
 
+fn environment_lifecycle_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if trace
+        .events
+        .iter()
+        .any(|event| event.event_kind == RuntimeEventKind::EnvironmentLifecycleUpdate)
+    {
+        return gate(
+            trace,
+            TraceQualityGateCategory::EnvironmentLifecycleEvents,
+            TraceQualityGateStatus::Pass,
+            None,
+            "environment_lifecycle_events",
+            "Environment lifecycle events are present in the canonical trace.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::EnvironmentLifecycleEvents,
+        TraceQualityGateStatus::Fail,
+        trace.events.first().map(|event| event.event_id),
+        "environment_lifecycle_events",
+        "The trace is missing persisted environment lifecycle events.",
+    )
+}
+
+fn production_runtime_store_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if !is_real_owned_provider_trace(trace) {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ProductionRuntimeStore,
+            TraceQualityGateStatus::Pass,
+            None,
+            "production_runtime_store",
+            "Fake-provider and external-agent traces are outside the real owned-provider store gate.",
+        );
+    }
+
+    if let Some(event) = trace
+        .snapshot
+        .events
+        .iter()
+        .find(|event| json_contains_headless_file_store_signal(&event.payload))
+    {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ProductionRuntimeStore,
+            TraceQualityGateStatus::Fail,
+            Some(event.id),
+            "production_runtime_store",
+            "A real owned-provider trace used the headless file-backed runtime/store path.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ProductionRuntimeStore,
+        TraceQualityGateStatus::Pass,
+        None,
+        "production_runtime_store",
+        "Real owned-provider trace did not expose file-backed headless state.",
+    )
+}
+
 fn sandbox_policy_gate(
     trace: &RuntimeTrace,
     diagnostics: &TraceDiagnosticsReport,
@@ -1300,6 +1765,33 @@ fn sandbox_policy_gate(
     )
 }
 
+fn sandbox_denial_outcome_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if let Some(event) = trace
+        .snapshot
+        .events
+        .iter()
+        .find(|event| json_contains_sandbox_denial_success_shape(&event.payload))
+    {
+        return gate(
+            trace,
+            TraceQualityGateCategory::SandboxDenialOutcome,
+            TraceQualityGateStatus::Fail,
+            Some(event.id),
+            "sandbox_denial_outcome",
+            "Sandbox denial appeared with success-shaped tool metadata.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::SandboxDenialOutcome,
+        TraceQualityGateStatus::Pass,
+        None,
+        "sandbox_denial_outcome",
+        "Sandbox denials are not represented as successful tool outcomes.",
+    )
+}
+
 fn provider_capability_gate(
     trace: &RuntimeTrace,
     diagnostics: &TraceDiagnosticsReport,
@@ -1312,7 +1804,7 @@ fn provider_capability_gate(
         return gate(
             trace,
             TraceQualityGateCategory::ProviderCapabilityPreflight,
-            TraceQualityGateStatus::Warn,
+            TraceQualityGateStatus::Fail,
             signal.event_id,
             "provider_capability_preflight",
             signal.summary.clone(),
@@ -1325,6 +1817,282 @@ fn provider_capability_gate(
         None,
         "provider_capability_preflight",
         "Provider/model identity is present; capability snapshots remain owned by provider diagnostics.",
+    )
+}
+
+fn provider_preflight_snapshot_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if trace
+        .snapshot
+        .context_manifests
+        .iter()
+        .any(|manifest| provider_preflight_value(&manifest.manifest).is_some())
+    {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ProviderPreflightSnapshot,
+            TraceQualityGateStatus::Pass,
+            None,
+            "provider_preflight_snapshot",
+            "Provider preflight metadata is attached to the trace.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ProviderPreflightSnapshot,
+        TraceQualityGateStatus::Fail,
+        trace.events.first().map(|event| event.event_id),
+        "provider_preflight_snapshot",
+        "No context manifest includes the provider preflight snapshot used for the provider turn.",
+    )
+}
+
+fn provider_preflight_manifest_binding_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if trace.snapshot.context_manifests.is_empty() {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ProviderPreflightManifestBinding,
+            TraceQualityGateStatus::Pass,
+            None,
+            "provider_preflight_manifest_binding",
+            "No context manifest was available for preflight binding checks.",
+        );
+    }
+
+    let Some(admitted_preflight) = admitted_provider_preflight_value(trace) else {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ProviderPreflightManifestBinding,
+            TraceQualityGateStatus::Fail,
+            trace.events.first().map(|event| event.event_id),
+            "provider_preflight_manifest_binding",
+            "A provider context manifest exists but no admitted provider preflight snapshot was recorded.",
+        );
+    };
+    let admitted_hash = stable_json_fingerprint(admitted_preflight);
+
+    for manifest in &trace.snapshot.context_manifests {
+        let Some(manifest_preflight) = provider_preflight_value(&manifest.manifest) else {
+            return gate(
+                trace,
+                TraceQualityGateCategory::ProviderPreflightManifestBinding,
+                TraceQualityGateStatus::Fail,
+                manifest.recorded_after_event_id,
+                "provider_preflight_manifest_binding",
+                format!(
+                    "Context manifest `{}` lacks the admitted provider preflight snapshot.",
+                    manifest.manifest_id
+                ),
+            );
+        };
+        let manifest_hash = manifest
+            .manifest
+            .get("providerPreflightHash")
+            .or_else(|| manifest.manifest.get("admittedProviderPreflightHash"))
+            .and_then(JsonValue::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| stable_json_fingerprint(manifest_preflight));
+        if manifest_preflight != admitted_preflight && manifest_hash != admitted_hash {
+            return gate(
+                trace,
+                TraceQualityGateCategory::ProviderPreflightManifestBinding,
+                TraceQualityGateStatus::Fail,
+                manifest.recorded_after_event_id,
+                "provider_preflight_manifest_binding",
+                format!(
+                    "Context manifest `{}` does not match the admitted provider preflight snapshot.",
+                    manifest.manifest_id
+                ),
+            );
+        }
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ProviderPreflightManifestBinding,
+        TraceQualityGateStatus::Pass,
+        None,
+        "provider_preflight_manifest_binding",
+        "Context manifests carry the admitted provider preflight snapshot or matching stable hash.",
+    )
+}
+
+fn tool_registry_v2_execution_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    let Some(tool_event) = trace.snapshot.events.iter().find(|event| {
+        matches!(
+            event.event_kind,
+            RuntimeEventKind::ToolStarted
+                | RuntimeEventKind::ToolDelta
+                | RuntimeEventKind::ToolCompleted
+        )
+    }) else {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ToolRegistryV2Execution,
+            TraceQualityGateStatus::Pass,
+            None,
+            "tool_registry_v2_execution",
+            "No tool execution appeared in the trace.",
+        );
+    };
+
+    let has_registry_snapshot = trace.snapshot.events.iter().any(|event| {
+        event.event_kind == RuntimeEventKind::ToolRegistrySnapshot
+            && json_string_at(&event.payload, &["executionRegistry"]) == Some("tool_registry_v2")
+    });
+    let every_tool_event_has_v2_dispatch = trace
+        .snapshot
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_kind,
+                RuntimeEventKind::ToolStarted | RuntimeEventKind::ToolCompleted
+            )
+        })
+        .all(|event| json_has_tool_registry_v2_dispatch(&event.payload));
+
+    if has_registry_snapshot && every_tool_event_has_v2_dispatch {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ToolRegistryV2Execution,
+            TraceQualityGateStatus::Pass,
+            None,
+            "tool_registry_v2_execution",
+            "Tool execution is represented as ToolRegistryV2 dispatch.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ToolRegistryV2Execution,
+        TraceQualityGateStatus::Fail,
+        Some(tool_event.id),
+        "tool_registry_v2_execution",
+        "Tool execution appeared without ToolRegistryV2 dispatch metadata.",
+    )
+}
+
+fn subprocess_sandbox_metadata_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    let Some(event) = trace
+        .snapshot
+        .events
+        .iter()
+        .find(|event| subprocess_event_requires_sandbox_metadata(&event.payload))
+    else {
+        return gate(
+            trace,
+            TraceQualityGateCategory::SubprocessSandboxMetadata,
+            TraceQualityGateStatus::Pass,
+            None,
+            "subprocess_sandbox_metadata",
+            "No subprocess or external-agent execution required sandbox metadata.",
+        );
+    };
+
+    if json_has_sandbox_metadata(&event.payload) {
+        return gate(
+            trace,
+            TraceQualityGateCategory::SubprocessSandboxMetadata,
+            TraceQualityGateStatus::Pass,
+            None,
+            "subprocess_sandbox_metadata",
+            "Subprocess execution includes sandbox metadata.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::SubprocessSandboxMetadata,
+        TraceQualityGateStatus::Fail,
+        Some(event.id),
+        "subprocess_sandbox_metadata",
+        "Subprocess or external-agent execution appeared without sandbox metadata.",
+    )
+}
+
+fn tool_timeout_metadata_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if let Some(event) = trace.snapshot.events.iter().find(|event| {
+        json_contains_timeout_signal(&event.payload)
+            && !json_has_timeout_cleanup_metadata(&event.payload)
+    }) {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ToolTimeoutMetadata,
+            TraceQualityGateStatus::Fail,
+            Some(event.id),
+            "tool_timeout_metadata",
+            "Timeout appeared without deadline, budget, cancellation, or cleanup metadata.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ToolTimeoutMetadata,
+        TraceQualityGateStatus::Pass,
+        None,
+        "tool_timeout_metadata",
+        "Timeout signals include enough metadata to prove cancellation and cleanup.",
+    )
+}
+
+fn provider_history_replay_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if let Some(message) = trace.snapshot.messages.iter().find(|message| {
+        message.role == MessageRole::Tool && !tool_message_has_replay_metadata(message)
+    }) {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ProviderHistoryReplay,
+            TraceQualityGateStatus::Fail,
+            None,
+            "provider_history_replay",
+            format!(
+                "Tool result message #{} is missing replayable tool-call protocol metadata.",
+                message.id
+            ),
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ProviderHistoryReplay,
+        TraceQualityGateStatus::Pass,
+        None,
+        "provider_history_replay",
+        "Persisted tool result messages carry replayable provider tool-call ids.",
+    )
+}
+
+fn workspace_index_lifecycle_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    if !trace_requires_semantic_workspace_index(trace) {
+        return gate(
+            trace,
+            TraceQualityGateCategory::WorkspaceIndexLifecycle,
+            TraceQualityGateStatus::Pass,
+            None,
+            "workspace_index_lifecycle",
+            "Trace did not declare semantic workspace index as required.",
+        );
+    }
+
+    if trace_has_ready_semantic_workspace_index(trace) {
+        return gate(
+            trace,
+            TraceQualityGateCategory::WorkspaceIndexLifecycle,
+            TraceQualityGateStatus::Pass,
+            None,
+            "workspace_index_lifecycle",
+            "Required semantic workspace index readiness is represented in lifecycle events.",
+        );
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::WorkspaceIndexLifecycle,
+        TraceQualityGateStatus::Fail,
+        trace.events.first().map(|event| event.event_id),
+        "workspace_index_lifecycle",
+        "Semantic workspace index was required but no ready lifecycle health evidence appeared.",
     )
 }
 
@@ -1424,6 +2192,75 @@ fn context_manifest_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
         None,
         "context_manifest_determinism",
         "Context manifest hashes are deterministic for each provider turn.",
+    )
+}
+
+fn context_manifest_before_provider_turn_gate(trace: &RuntimeTrace) -> TraceQualityGateResult {
+    let provider_events = trace
+        .events
+        .iter()
+        .filter(|event| is_provider_turn_event(event))
+        .collect::<Vec<_>>();
+    if provider_events.is_empty() {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ContextManifestBeforeProviderTurn,
+            TraceQualityGateStatus::Pass,
+            None,
+            "context_manifest_before_provider_turn",
+            "No provider-turn event appeared in the trace.",
+        );
+    }
+
+    if trace.snapshot.context_manifests.is_empty() {
+        return gate(
+            trace,
+            TraceQualityGateCategory::ContextManifestBeforeProviderTurn,
+            TraceQualityGateStatus::Fail,
+            provider_events.first().map(|event| event.event_id),
+            "context_manifest_before_provider_turn",
+            "Provider-turn events appeared before any context manifest was recorded.",
+        );
+    }
+
+    for event in provider_events {
+        let Some(provider_turn_trace_id) = event.trace.provider_turn_trace_id.as_deref() else {
+            continue;
+        };
+        let Some(manifest) = trace.snapshot.context_manifests.iter().find(|manifest| {
+            manifest.trace.provider_turn_trace_id.as_deref() == Some(provider_turn_trace_id)
+        }) else {
+            return gate(
+                trace,
+                TraceQualityGateCategory::ContextManifestBeforeProviderTurn,
+                TraceQualityGateStatus::Fail,
+                Some(event.event_id),
+                "context_manifest_before_provider_turn",
+                "A provider-turn event did not have a matching context manifest for the same provider turn.",
+            );
+        };
+        if manifest
+            .recorded_after_event_id
+            .is_some_and(|event_id| event_id >= event.event_id)
+        {
+            return gate(
+                trace,
+                TraceQualityGateCategory::ContextManifestBeforeProviderTurn,
+                TraceQualityGateStatus::Fail,
+                Some(event.event_id),
+                "context_manifest_before_provider_turn",
+                "A provider-turn event was recorded before its context manifest boundary.",
+            );
+        }
+    }
+
+    gate(
+        trace,
+        TraceQualityGateCategory::ContextManifestBeforeProviderTurn,
+        TraceQualityGateStatus::Pass,
+        None,
+        "context_manifest_before_provider_turn",
+        "Provider-turn events have context manifests recorded first.",
     )
 }
 
@@ -1673,6 +2510,14 @@ fn secret_like_string_category(text: &str) -> Option<TraceRedactionCategory> {
         || lower.contains("service-account")
         || lower.contains("service_account")
         || lower.contains("application_default_credentials")
+        || lower.contains("/.aws/credentials")
+        || lower.ends_with("\\.aws\\credentials")
+        || lower.contains("/.config/gcloud/")
+        || lower.contains("\\appdata\\roaming\\gcloud\\")
+        || lower.contains("/.azure/")
+        || lower.contains("\\.azure\\")
+        || lower.contains("/.kube/config")
+        || lower.ends_with("\\.kube\\config")
     {
         return Some(TraceRedactionCategory::CredentialPath);
     }
@@ -1718,10 +2563,17 @@ fn classify_failure_layer(code: &str, message: &str) -> TraceFailureLayer {
     let text = format!("{code} {message}").to_ascii_lowercase();
     if text.contains("provider") || text.contains("rate_limit") || text.contains("model") {
         TraceFailureLayer::Provider
+    } else if text.contains("lifecycle") || text.contains("environment") || text.contains("health")
+    {
+        TraceFailureLayer::Lifecycle
     } else if text.contains("context") || text.contains("manifest") || text.contains("compact") {
         TraceFailureLayer::ContextAssembly
+    } else if text.contains("workspace_index") || text.contains("semantic index") {
+        TraceFailureLayer::WorkspaceIndex
     } else if text.contains("retrieval") || text.contains("lance") || text.contains("index") {
         TraceFailureLayer::Retrieval
+    } else if text.contains("tool dispatch") || text.contains("registry") {
+        TraceFailureLayer::ToolDispatch
     } else if text.contains("tool") || text.contains("schema") {
         TraceFailureLayer::ToolSchema
     } else if text.contains("approval") || text.contains("action") {
@@ -1730,6 +2582,10 @@ fn classify_failure_layer(code: &str, message: &str) -> TraceFailureLayer {
         TraceFailureLayer::Sandbox
     } else if text.contains("file") || text.contains("fs") || text.contains("path") {
         TraceFailureLayer::Filesystem
+    } else if text.contains("timeout") || text.contains("deadline") || text.contains("cleanup") {
+        TraceFailureLayer::Timeout
+    } else if text.contains("history") || text.contains("replay") || text.contains("tool_call_id") {
+        TraceFailureLayer::ProviderHistory
     } else if text.contains("validation") || text.contains("verification") || text.contains("test")
     {
         TraceFailureLayer::Verification
@@ -1764,11 +2620,6 @@ fn json_contains_storage_error(value: &JsonValue) -> bool {
     )
 }
 
-fn json_contains_provider_capability_state(value: &JsonValue) -> bool {
-    json_contains_any(value, &["capability"])
-        && json_contains_any(value, &["stale", "manual", "cached", "unprobed"])
-}
-
 fn json_contains_prompt_injection(value: &JsonValue) -> bool {
     json_contains_any(
         value,
@@ -1785,6 +2636,255 @@ fn json_contains_prompt_injection(value: &JsonValue) -> bool {
 fn json_contains_dangerous_unrestricted_without_approval(value: &JsonValue) -> bool {
     json_contains_any(value, &["dangerous_unrestricted"])
         && !json_contains_any(value, &["operator", "approved", "approval"])
+}
+
+fn provider_preflight_value(value: &JsonValue) -> Option<&JsonValue> {
+    value
+        .get("providerPreflight")
+        .or_else(|| value.get("provider_preflight"))
+        .filter(|value| value.is_object())
+}
+
+fn provider_preflight_value_is_not_live_ready(value: &JsonValue) -> bool {
+    let source = text_field(value, "source").unwrap_or_default();
+    let status = text_field(value, "status").unwrap_or_default();
+    let stale = value
+        .get("stale")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    stale
+        || matches!(source.as_str(), "static_manual" | "unavailable" | "")
+        || matches!(status.as_str(), "failed" | "warning" | "skipped" | "")
+}
+
+fn admitted_provider_preflight_value(trace: &RuntimeTrace) -> Option<&JsonValue> {
+    trace
+        .snapshot
+        .events
+        .iter()
+        .find_map(|event| provider_preflight_value(&event.payload))
+}
+
+fn stable_json_fingerprint(value: &JsonValue) -> String {
+    let serialized = serde_json::to_string(value).unwrap_or_else(|_| "unserializable".into());
+    runtime_trace_id("json", &[&serialized])
+}
+
+fn is_real_owned_provider_trace(trace: &RuntimeTrace) -> bool {
+    let provider_id = trace.snapshot.provider_id.as_str();
+    provider_id != "fake_provider" && !provider_id.starts_with("external_")
+}
+
+fn json_contains_headless_file_store_signal(value: &JsonValue) -> bool {
+    json_contains_any(
+        value,
+        &[
+            "headless_real_provider",
+            "headless_file_store",
+            "file_agent_core_store",
+            "agent-core-runs.json",
+        ],
+    )
+}
+
+fn json_string_at<'a>(value: &'a JsonValue, path: &[&str]) -> Option<&'a str> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str()
+}
+
+fn json_has_tool_registry_v2_dispatch(value: &JsonValue) -> bool {
+    json_string_at(value, &["dispatch", "registryVersion"]) == Some("tool_registry_v2")
+        || json_string_at(value, &["dispatch", "registry"]) == Some("tool_registry_v2")
+        || json_string_at(value, &["dispatchRegistry"]) == Some("tool_registry_v2")
+        || json_string_at(value, &["executionRegistry"]) == Some("tool_registry_v2")
+}
+
+fn json_contains_sandbox_denial_success_shape(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Array(items) => items.iter().any(json_contains_sandbox_denial_success_shape),
+        JsonValue::Object(map) => {
+            (json_has_sandbox_denial_metadata(value) && json_is_success_shaped(value))
+                || map.values().any(json_contains_sandbox_denial_success_shape)
+        }
+        _ => false,
+    }
+}
+
+fn json_has_sandbox_denial_metadata(value: &JsonValue) -> bool {
+    json_contains_any(value, &["sandbox"])
+        && json_contains_any(
+            value,
+            &["denied_by_sandbox", "deniedbysandbox", "denied by sandbox"],
+        )
+}
+
+fn json_is_success_shaped(value: &JsonValue) -> bool {
+    value.get("ok").and_then(JsonValue::as_bool) == Some(true)
+        || ["status", "state", "outcome", "result"].iter().any(|key| {
+            value
+                .get(*key)
+                .and_then(JsonValue::as_str)
+                .is_some_and(|text| {
+                    matches!(
+                        text.to_ascii_lowercase().as_str(),
+                        "ok" | "success" | "succeeded" | "completed" | "passed"
+                    )
+                })
+        })
+}
+
+fn subprocess_event_requires_sandbox_metadata(value: &JsonValue) -> bool {
+    let tool_name = text_field(value, "toolName")
+        .or_else(|| text_field(value, "tool_name"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        tool_name.as_str(),
+        "command"
+            | "powershell"
+            | "command_session_start"
+            | "process_manager"
+            | "subagent"
+            | "system_diagnostics"
+    ) || json_contains_any(
+        value,
+        &[
+            "subprocess",
+            "external_agent",
+            "external-agent",
+            "process spawn",
+            "command execution",
+        ],
+    )
+}
+
+fn json_has_sandbox_metadata(value: &JsonValue) -> bool {
+    value
+        .get("sandbox")
+        .is_some_and(|sandbox| sandbox.is_object())
+        || value
+            .get("dispatch")
+            .and_then(|dispatch| dispatch.get("sandbox"))
+            .is_some_and(|sandbox| sandbox.is_object())
+}
+
+fn json_contains_timeout_signal(value: &JsonValue) -> bool {
+    json_contains_any(value, &["timeout", "timed_out", "deadline"])
+}
+
+fn json_has_timeout_cleanup_metadata(value: &JsonValue) -> bool {
+    json_contains_any(
+        value,
+        &[
+            "timeoutms",
+            "timeout_ms",
+            "deadline",
+            "budget",
+            "cleanup",
+            "cleanedup",
+            "killed",
+            "cancelled",
+            "canceled",
+            "processgroup",
+            "wallclock",
+            "elapsedms",
+        ],
+    )
+}
+
+fn tool_message_has_replay_metadata(message: &crate::RuntimeMessage) -> bool {
+    if let Some(tool_result) = message
+        .provider_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.tool_result.as_ref())
+    {
+        return !tool_result.tool_call_id.trim().is_empty()
+            && !tool_result.provider_tool_name.trim().is_empty()
+            && !tool_result.parent_assistant_message_id.trim().is_empty();
+    }
+
+    let Ok(value) = serde_json::from_str::<JsonValue>(&message.content) else {
+        return false;
+    };
+    let has_tool_call_id = text_field(&value, "toolCallId")
+        .or_else(|| text_field(&value, "tool_call_id"))
+        .is_some();
+    let has_tool_name = text_field(&value, "providerToolName")
+        .or_else(|| text_field(&value, "toolName"))
+        .or_else(|| text_field(&value, "tool_name"))
+        .is_some();
+    let has_parent_assistant = text_field(&value, "parentAssistantMessageId")
+        .or_else(|| text_field(&value, "assistantMessageId"))
+        .or_else(|| text_field(&value, "assistantToolCallId"))
+        .is_some();
+    has_tool_call_id && has_tool_name && has_parent_assistant
+}
+
+fn trace_requires_semantic_workspace_index(trace: &RuntimeTrace) -> bool {
+    trace
+        .snapshot
+        .events
+        .iter()
+        .any(|event| json_bool_key_is_true(&event.payload, &semantic_index_required_keys()))
+        || trace.snapshot.context_manifests.iter().any(|manifest| {
+            json_bool_key_is_true(&manifest.manifest, &semantic_index_required_keys())
+        })
+}
+
+fn trace_has_ready_semantic_workspace_index(trace: &RuntimeTrace) -> bool {
+    trace
+        .snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_kind == RuntimeEventKind::EnvironmentLifecycleUpdate)
+        .any(|event| {
+            json_bool_key_is_true(&event.payload, &semantic_index_available_keys())
+                || (json_contains_any(&event.payload, &["semantic", "workspace", "index"])
+                    && json_contains_any(&event.payload, &["ready", "passed", "available"]))
+        })
+}
+
+fn semantic_index_required_keys() -> [&'static str; 3] {
+    [
+        "semanticIndexRequired",
+        "semantic_index_required",
+        "workspaceIndexRequired",
+    ]
+}
+
+fn semantic_index_available_keys() -> [&'static str; 3] {
+    [
+        "semanticIndexAvailable",
+        "semantic_index_available",
+        "workspaceIndexReady",
+    ]
+}
+
+fn json_bool_key_is_true(value: &JsonValue, keys: &[&str]) -> bool {
+    match value {
+        JsonValue::Array(items) => items.iter().any(|item| json_bool_key_is_true(item, keys)),
+        JsonValue::Object(map) => map.iter().any(|(key, value)| {
+            (keys.iter().any(|candidate| key == candidate) && value.as_bool() == Some(true))
+                || json_bool_key_is_true(value, keys)
+        }),
+        _ => false,
+    }
+}
+
+fn is_provider_turn_event(event: &RuntimeProtocolEvent) -> bool {
+    matches!(
+        &event.payload,
+        RuntimeProtocolEventPayload::MessageDelta {
+            role: MessageRole::Assistant,
+            ..
+        } | RuntimeProtocolEventPayload::ReasoningSummary { .. }
+            | RuntimeProtocolEventPayload::ToolDelta { .. }
+            | RuntimeProtocolEventPayload::ToolStarted { .. }
+            | RuntimeProtocolEventPayload::ToolCompleted { .. }
+    )
 }
 
 fn json_contains_any(value: &JsonValue, needles: &[&str]) -> bool {
@@ -2266,7 +3366,269 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{RunControls, RuntimeEvent};
+    use crate::{ContextManifest, RunControls, RuntimeEvent};
+
+    fn live_preflight_json() -> JsonValue {
+        json!({
+            "contractVersion": 1,
+            "profileId": "fake_provider",
+            "providerId": "fake_provider",
+            "modelId": "fake-model",
+            "source": "live_probe",
+            "checkedAt": "2026-05-03T12:00:00Z",
+            "ageSeconds": 0,
+            "ttlSeconds": 21600,
+            "stale": false,
+            "requiredFeatures": {
+                "streaming": true,
+                "toolCalls": true,
+                "reasoningControls": false,
+                "attachments": false
+            },
+            "capabilities": {},
+            "checks": [],
+            "status": "passed"
+        })
+    }
+
+    fn static_preflight_json() -> JsonValue {
+        json!({
+            "contractVersion": 1,
+            "profileId": "openai_api-headless",
+            "providerId": "openai_api",
+            "modelId": "test-model",
+            "source": "static_manual",
+            "checkedAt": "2026-05-03T12:00:00Z",
+            "ageSeconds": 0,
+            "ttlSeconds": 21600,
+            "stale": false,
+            "requiredFeatures": {
+                "streaming": true,
+                "toolCalls": true,
+                "reasoningControls": false,
+                "attachments": false
+            },
+            "capabilities": {},
+            "checks": [{
+                "checkId": "provider-preflight-tool-schema",
+                "status": "warning",
+                "code": "provider_preflight_tool_schema",
+                "message": "Tool support came from manual metadata.",
+                "source": "static_manual",
+                "retryable": false
+            }],
+            "status": "warning"
+        })
+    }
+
+    fn live_real_preflight_json(provider_id: &str, model_id: &str) -> JsonValue {
+        let mut preflight = live_preflight_json();
+        preflight["profileId"] = json!(provider_id);
+        preflight["providerId"] = json!(provider_id);
+        preflight["modelId"] = json!(model_id);
+        preflight
+    }
+
+    fn focused_test_matrix(
+        status: ProductionReadinessFocusedTestStatus,
+    ) -> Vec<ProductionReadinessFocusedTestResult> {
+        PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS
+            .iter()
+            .map(|command| ProductionReadinessFocusedTestResult {
+                command: (*command).into(),
+                status,
+                summary: "fixture evidence".into(),
+                checked_at: Some("2026-05-05T12:00:00Z".into()),
+            })
+            .collect()
+    }
+
+    fn good_real_provider_trace() -> RuntimeTrace {
+        let trace_id = runtime_trace_id_for_run("project-real", "run-good");
+        let preflight = live_real_preflight_json("openai_api", "test-model");
+        let manifest_trace =
+            RuntimeTraceContext::for_context_manifest(&trace_id, "run-good", "manifest-good", 0);
+        RuntimeTrace::from_snapshot(RunSnapshot {
+            trace_id: trace_id.clone(),
+            project_id: "project-real".into(),
+            agent_session_id: "session-real".into(),
+            run_id: "run-good".into(),
+            provider_id: "openai_api".into(),
+            model_id: "test-model".into(),
+            status: RunStatus::Completed,
+            prompt: "Use a real provider tool.".into(),
+            messages: vec![crate::RuntimeMessage {
+                id: 1,
+                project_id: "project-real".into(),
+                run_id: "run-good".into(),
+                role: MessageRole::Tool,
+                content: r#"{"ok":true,"path":"tracked.txt"}"#.into(),
+                provider_metadata: Some(crate::RuntimeMessageProviderMetadata::tool_result(
+                    "provider-tool-result-run-good-0-call-read",
+                    "call-read",
+                    "read",
+                    "provider-assistant-run-good-0",
+                )),
+                created_at: "2026-05-03T12:00:06Z".into(),
+            }],
+            events: vec![
+                RuntimeEvent {
+                    id: 1,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::RunStarted,
+                    trace: RuntimeTraceContext::for_run(&trace_id, "run-good", "run_started"),
+                    payload: json!({
+                        "status": "running",
+                        "providerId": "openai_api",
+                        "modelId": "test-model",
+                        "providerPreflight": preflight,
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 2,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::ValidationCompleted,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-good",
+                        2,
+                        &RuntimeEventKind::ValidationCompleted,
+                    ),
+                    payload: json!({
+                        "label": "provider_preflight",
+                        "outcome": "passed",
+                        "providerPreflight": live_real_preflight_json("openai_api", "test-model"),
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 3,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-good",
+                        3,
+                        &RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    ),
+                    payload: json!({
+                        "state": "ready",
+                        "semanticIndexRequired": false,
+                        "sandboxGroupingPolicy": "none",
+                    }),
+                    created_at: "2026-05-03T12:00:01Z".into(),
+                },
+                RuntimeEvent {
+                    id: 4,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::ContextManifestRecorded,
+                    trace: manifest_trace.clone(),
+                    payload: json!({
+                        "manifestId": "manifest-good",
+                        "contextHash": "context-hash",
+                        "turnIndex": 0,
+                    }),
+                    created_at: "2026-05-03T12:00:02Z".into(),
+                },
+                RuntimeEvent {
+                    id: 5,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::ToolRegistrySnapshot,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-good",
+                        5,
+                        &RuntimeEventKind::ToolRegistrySnapshot,
+                    ),
+                    payload: json!({
+                        "toolCount": 1,
+                        "toolNames": ["read"],
+                        "executionRegistry": "tool_registry_v2",
+                    }),
+                    created_at: "2026-05-03T12:00:03Z".into(),
+                },
+                RuntimeEvent {
+                    id: 6,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::ReasoningSummary,
+                    trace: RuntimeTraceContext::for_provider_turn(&trace_id, "run-good", 0),
+                    payload: json!({ "text": "Use the read tool." }),
+                    created_at: "2026-05-03T12:00:04Z".into(),
+                },
+                RuntimeEvent {
+                    id: 7,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::ToolStarted,
+                    trace: RuntimeTraceContext::for_tool_call(&trace_id, "run-good", "call-read"),
+                    payload: json!({
+                        "toolCallId": "call-read",
+                        "toolName": "read",
+                        "dispatch": { "registryVersion": "tool_registry_v2" },
+                    }),
+                    created_at: "2026-05-03T12:00:05Z".into(),
+                },
+                RuntimeEvent {
+                    id: 8,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::ToolCompleted,
+                    trace: RuntimeTraceContext::for_tool_call(&trace_id, "run-good", "call-read"),
+                    payload: json!({
+                        "toolCallId": "call-read",
+                        "toolName": "read",
+                        "ok": true,
+                        "outcome": "success",
+                        "dispatch": { "registryVersion": "tool_registry_v2" },
+                    }),
+                    created_at: "2026-05-03T12:00:06Z".into(),
+                },
+                RuntimeEvent {
+                    id: 9,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::MessageDelta,
+                    trace: RuntimeTraceContext::for_provider_turn(&trace_id, "run-good", 0),
+                    payload: json!({ "role": "assistant", "text": "Read tracked.txt." }),
+                    created_at: "2026-05-03T12:00:07Z".into(),
+                },
+                RuntimeEvent {
+                    id: 10,
+                    project_id: "project-real".into(),
+                    run_id: "run-good".into(),
+                    event_kind: RuntimeEventKind::RunCompleted,
+                    trace: RuntimeTraceContext::for_run(&trace_id, "run-good", "run_completed"),
+                    payload: json!({ "summary": "done" }),
+                    created_at: "2026-05-03T12:00:08Z".into(),
+                },
+            ],
+            context_manifests: vec![ContextManifest {
+                manifest_id: "manifest-good".into(),
+                project_id: "project-real".into(),
+                agent_session_id: "session-real".into(),
+                run_id: "run-good".into(),
+                provider_id: "openai_api".into(),
+                model_id: "test-model".into(),
+                turn_index: 0,
+                context_hash: "context-hash".into(),
+                recorded_after_event_id: Some(4),
+                trace: manifest_trace,
+                manifest: json!({
+                    "kind": "provider_context_package",
+                    "providerPreflight": live_real_preflight_json("openai_api", "test-model"),
+                }),
+                created_at: "2026-05-03T12:00:02Z".into(),
+            }],
+        })
+        .expect("good trace")
+    }
 
     #[test]
     fn submission_envelope_schema_snapshot_is_stable() {
@@ -2427,6 +3789,7 @@ mod tests {
                 run_id: "run-secret".into(),
                 role: MessageRole::User,
                 content: "Bearer secret-token".into(),
+                provider_metadata: None,
                 created_at: "2026-05-03T12:00:00Z".into(),
             }],
             events: vec![
@@ -2434,29 +3797,62 @@ mod tests {
                     id: 1,
                     project_id: "project-1".into(),
                     run_id: "run-secret".into(),
+                    event_kind: RuntimeEventKind::RunStarted,
+                    trace: RuntimeTraceContext::for_run(&trace_id, "run-secret", "run_started"),
+                    payload: json!({
+                        "status": "running",
+                        "providerId": "fake_provider",
+                        "modelId": "fake-model",
+                        "providerPreflight": live_preflight_json(),
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 2,
+                    project_id: "project-1".into(),
+                    run_id: "run-secret".into(),
+                    event_kind: RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-secret",
+                        2,
+                        &RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    ),
+                    payload: json!({
+                        "environmentId": "env-project-1-run-secret",
+                        "state": "ready",
+                        "sandboxGroupingPolicy": "none",
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 3,
+                    project_id: "project-1".into(),
+                    run_id: "run-secret".into(),
                     event_kind: RuntimeEventKind::CommandOutput,
                     trace: RuntimeTraceContext::for_event(
                         &trace_id,
                         "run-secret",
-                        1,
+                        3,
                         &RuntimeEventKind::CommandOutput,
                     ),
                     payload: json!({
                         "stream": "stderr",
                         "text": "Bearer secret-token",
-                        "credentialPath": "/Users/alice/.ssh/id_rsa"
+                        "credentialPath": "/Users/alice/.ssh/id_rsa",
+                        "cloudCredentialPath": "/Users/alice/.aws/credentials"
                     }),
                     created_at: "2026-05-03T12:00:01Z".into(),
                 },
                 RuntimeEvent {
-                    id: 2,
+                    id: 4,
                     project_id: "project-1".into(),
                     run_id: "run-secret".into(),
                     event_kind: RuntimeEventKind::RunFailed,
                     trace: RuntimeTraceContext::for_event(
                         &trace_id,
                         "run-secret",
-                        2,
+                        4,
                         &RuntimeEventKind::RunFailed,
                     ),
                     payload: json!({
@@ -2466,7 +3862,28 @@ mod tests {
                     created_at: "2026-05-03T12:00:02Z".into(),
                 },
             ],
-            context_manifests: Vec::new(),
+            context_manifests: vec![ContextManifest {
+                manifest_id: "manifest-secret".into(),
+                project_id: "project-1".into(),
+                agent_session_id: "session-1".into(),
+                run_id: "run-secret".into(),
+                provider_id: "fake_provider".into(),
+                model_id: "fake-model".into(),
+                turn_index: 0,
+                context_hash: "context-hash".into(),
+                recorded_after_event_id: Some(2),
+                trace: RuntimeTraceContext::for_context_manifest(
+                    &trace_id,
+                    "run-secret",
+                    "manifest-secret",
+                    0,
+                ),
+                manifest: json!({
+                    "kind": "provider_context_package",
+                    "providerPreflight": live_preflight_json(),
+                }),
+                created_at: "2026-05-03T12:00:00Z".into(),
+            }],
         };
         let trace = RuntimeTrace::from_snapshot(snapshot).expect("trace");
         let bundle = trace.redacted_support_bundle().expect("support bundle");
@@ -2474,9 +3891,553 @@ mod tests {
 
         assert!(!serialized.contains("secret-token"));
         assert!(!serialized.contains("/Users/alice/.ssh/id_rsa"));
+        assert!(!serialized.contains("/Users/alice/.aws/credentials"));
         assert!(serialized.contains("[REDACTED:"));
         assert!(bundle.quality_gates.passed);
         assert!(bundle.redaction_report.redacted_value_count > 0);
+    }
+
+    #[test]
+    fn trace_quality_phase0_fails_for_headless_real_provider_static_preflight_and_tool_history() {
+        let trace_id = runtime_trace_id_for_run("project-real", "run-real");
+        let manifest_trace =
+            RuntimeTraceContext::for_context_manifest(&trace_id, "run-real", "manifest-real", 0);
+        let trace = RuntimeTrace::from_snapshot(RunSnapshot {
+            trace_id: trace_id.clone(),
+            project_id: "project-real".into(),
+            agent_session_id: "session-real".into(),
+            run_id: "run-real".into(),
+            provider_id: "openai_api".into(),
+            model_id: "test-model".into(),
+            status: RunStatus::Completed,
+            prompt: "Use a real provider tool.".into(),
+            messages: vec![crate::RuntimeMessage {
+                id: 1,
+                project_id: "project-real".into(),
+                run_id: "run-real".into(),
+                role: MessageRole::Tool,
+                content: r#"{"ok":true,"path":"phase0.txt"}"#.into(),
+                provider_metadata: None,
+                created_at: "2026-05-03T12:00:03Z".into(),
+            }],
+            events: vec![
+                RuntimeEvent {
+                    id: 1,
+                    project_id: "project-real".into(),
+                    run_id: "run-real".into(),
+                    event_kind: RuntimeEventKind::RunStarted,
+                    trace: RuntimeTraceContext::for_run(&trace_id, "run-real", "run_started"),
+                    payload: json!({
+                        "status": "starting",
+                        "providerId": "openai_api",
+                        "modelId": "test-model",
+                        "execution": "headless_real_provider",
+                        "providerPreflight": static_preflight_json(),
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 2,
+                    project_id: "project-real".into(),
+                    run_id: "run-real".into(),
+                    event_kind: RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-real",
+                        2,
+                        &RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    ),
+                    payload: json!({ "state": "ready" }),
+                    created_at: "2026-05-03T12:00:01Z".into(),
+                },
+                RuntimeEvent {
+                    id: 3,
+                    project_id: "project-real".into(),
+                    run_id: "run-real".into(),
+                    event_kind: RuntimeEventKind::ToolStarted,
+                    trace: RuntimeTraceContext::for_tool_call(&trace_id, "run-real", "call-write"),
+                    payload: json!({
+                        "toolCallId": "call-write",
+                        "toolName": "write_file",
+                        "runtime": "headless_real_provider",
+                    }),
+                    created_at: "2026-05-03T12:00:02Z".into(),
+                },
+                RuntimeEvent {
+                    id: 4,
+                    project_id: "project-real".into(),
+                    run_id: "run-real".into(),
+                    event_kind: RuntimeEventKind::ToolCompleted,
+                    trace: RuntimeTraceContext::for_tool_call(&trace_id, "run-real", "call-write"),
+                    payload: json!({
+                        "toolCallId": "call-write",
+                        "toolName": "write_file",
+                        "ok": true,
+                        "runtime": "headless_real_provider",
+                    }),
+                    created_at: "2026-05-03T12:00:03Z".into(),
+                },
+            ],
+            context_manifests: vec![ContextManifest {
+                manifest_id: "manifest-real".into(),
+                project_id: "project-real".into(),
+                agent_session_id: "session-real".into(),
+                run_id: "run-real".into(),
+                provider_id: "openai_api".into(),
+                model_id: "test-model".into(),
+                turn_index: 0,
+                context_hash: "context-hash".into(),
+                recorded_after_event_id: Some(2),
+                trace: manifest_trace,
+                manifest: json!({
+                    "kind": "provider_context_package",
+                    "providerPreflight": static_preflight_json(),
+                }),
+                created_at: "2026-05-03T12:00:01Z".into(),
+            }],
+        })
+        .expect("trace");
+        let canonical = trace.canonical_snapshot().expect("canonical trace");
+
+        assert!(!canonical.quality_gates.passed);
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ProductionRuntimeStore,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ProviderCapabilityPreflight,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ToolRegistryV2Execution,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ProviderHistoryReplay,
+            TraceQualityGateStatus::Fail,
+        );
+    }
+
+    #[test]
+    fn trace_quality_provider_history_replay_accepts_message_metadata() {
+        let message = crate::RuntimeMessage {
+            id: 1,
+            project_id: "project-real".into(),
+            run_id: "run-real".into(),
+            role: MessageRole::Tool,
+            content: r#"{"ok":true}"#.into(),
+            provider_metadata: Some(crate::RuntimeMessageProviderMetadata::tool_result(
+                "provider-tool-result-run-real-0-call-read",
+                "call-read",
+                "read",
+                "provider-assistant-run-real-0",
+            )),
+            created_at: "2026-05-03T12:00:03Z".into(),
+        };
+
+        assert!(tool_message_has_replay_metadata(&message));
+    }
+
+    #[test]
+    fn trace_quality_phase8_good_real_provider_trace_passes_release_gates_and_report() {
+        let trace = good_real_provider_trace();
+        let canonical = trace.canonical_snapshot().expect("canonical trace");
+
+        assert!(
+            canonical.quality_gates.passed,
+            "unexpected failed gates: {:?}",
+            canonical
+                .quality_gates
+                .gates
+                .iter()
+                .filter(|gate| gate.status == TraceQualityGateStatus::Fail)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            canonical.production_readiness.status,
+            ProductionReadinessStatus::Blocked,
+            "trace-only readiness must remain blocked until focused test evidence is attached"
+        );
+
+        let report = canonical.production_readiness_report(focused_test_matrix(
+            ProductionReadinessFocusedTestStatus::Passed,
+        ));
+        assert_eq!(report.status, ProductionReadinessStatus::Ready);
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.gate_summary.failed, 0);
+        assert_eq!(
+            report.focused_test_summary.missing_required_commands.len(),
+            0
+        );
+    }
+
+    #[test]
+    fn trace_quality_phase8_readiness_report_blocks_missing_and_failed_focused_tests() {
+        let trace = good_real_provider_trace();
+        let canonical = trace.canonical_snapshot().expect("canonical trace");
+        let missing_report = canonical.production_readiness_report(Vec::new());
+
+        assert_eq!(missing_report.status, ProductionReadinessStatus::Blocked);
+        assert_eq!(
+            missing_report
+                .focused_test_summary
+                .missing_required_commands
+                .len(),
+            PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS.len()
+        );
+        assert!(missing_report.blockers.iter().any(|blocker| {
+            blocker.kind == ProductionReadinessBlockerKind::FocusedTestMissing
+                && blocker.layer == TraceFailureLayer::Verification
+        }));
+
+        let mut focused_tests = focused_test_matrix(ProductionReadinessFocusedTestStatus::Passed);
+        focused_tests[0] = ProductionReadinessFocusedTestResult::failed(
+            PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS[0],
+            "protoc was missing",
+        );
+        let failed_report = canonical.production_readiness_report(focused_tests);
+
+        assert_eq!(failed_report.status, ProductionReadinessStatus::Blocked);
+        assert_eq!(failed_report.focused_test_summary.failed, 1);
+        assert!(failed_report.blockers.iter().any(|blocker| {
+            blocker.kind == ProductionReadinessBlockerKind::FocusedTestFailed
+                && blocker.command.as_deref()
+                    == Some(PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS[0])
+        }));
+    }
+
+    #[test]
+    fn trace_quality_phase0_fails_for_manifest_mismatch_sandbox_success_timeout_and_workspace() {
+        let trace_id = runtime_trace_id_for_run("project-1", "run-phase0");
+        let mut mismatched_preflight = live_preflight_json();
+        mismatched_preflight["checkedAt"] = json!("2026-05-03T12:00:01Z");
+        let trace = RuntimeTrace::from_snapshot(RunSnapshot {
+            trace_id: trace_id.clone(),
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-phase0".into(),
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            status: RunStatus::Failed,
+            prompt: "Exercise Phase 0 gates.".into(),
+            messages: Vec::new(),
+            events: vec![
+                RuntimeEvent {
+                    id: 1,
+                    project_id: "project-1".into(),
+                    run_id: "run-phase0".into(),
+                    event_kind: RuntimeEventKind::RunStarted,
+                    trace: RuntimeTraceContext::for_run(&trace_id, "run-phase0", "run_started"),
+                    payload: json!({
+                        "status": "starting",
+                        "providerId": "fake_provider",
+                        "modelId": "fake-model",
+                        "providerPreflight": live_preflight_json(),
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 2,
+                    project_id: "project-1".into(),
+                    run_id: "run-phase0".into(),
+                    event_kind: RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-phase0",
+                        2,
+                        &RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    ),
+                    payload: json!({
+                        "state": "starting",
+                        "semanticIndexRequired": true,
+                    }),
+                    created_at: "2026-05-03T12:00:01Z".into(),
+                },
+                RuntimeEvent {
+                    id: 3,
+                    project_id: "project-1".into(),
+                    run_id: "run-phase0".into(),
+                    event_kind: RuntimeEventKind::ToolCompleted,
+                    trace: RuntimeTraceContext::for_tool_call(
+                        &trace_id,
+                        "run-phase0",
+                        "call-denied",
+                    ),
+                    payload: json!({
+                        "toolCallId": "call-denied",
+                        "toolName": "write_file",
+                        "ok": true,
+                        "sandbox": {
+                            "metadata": {
+                                "exitClassification": "denied_by_sandbox"
+                            }
+                        }
+                    }),
+                    created_at: "2026-05-03T12:00:02Z".into(),
+                },
+                RuntimeEvent {
+                    id: 4,
+                    project_id: "project-1".into(),
+                    run_id: "run-phase0".into(),
+                    event_kind: RuntimeEventKind::ToolCompleted,
+                    trace: RuntimeTraceContext::for_tool_call(
+                        &trace_id,
+                        "run-phase0",
+                        "call-timeout",
+                    ),
+                    payload: json!({
+                        "toolCallId": "call-timeout",
+                        "toolName": "read_file",
+                        "outcome": "timeout",
+                    }),
+                    created_at: "2026-05-03T12:00:03Z".into(),
+                },
+            ],
+            context_manifests: vec![ContextManifest {
+                manifest_id: "manifest-phase0".into(),
+                project_id: "project-1".into(),
+                agent_session_id: "session-1".into(),
+                run_id: "run-phase0".into(),
+                provider_id: "fake_provider".into(),
+                model_id: "fake-model".into(),
+                turn_index: 0,
+                context_hash: "context-hash".into(),
+                recorded_after_event_id: Some(2),
+                trace: RuntimeTraceContext::for_context_manifest(
+                    &trace_id,
+                    "run-phase0",
+                    "manifest-phase0",
+                    0,
+                ),
+                manifest: json!({
+                    "kind": "provider_context_package",
+                    "semanticIndexRequired": true,
+                    "providerPreflight": mismatched_preflight,
+                }),
+                created_at: "2026-05-03T12:00:01Z".into(),
+            }],
+        })
+        .expect("trace");
+        let canonical = trace.canonical_snapshot().expect("canonical trace");
+
+        assert!(!canonical.quality_gates.passed);
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ProviderPreflightManifestBinding,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::SandboxDenialOutcome,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ToolTimeoutMetadata,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::WorkspaceIndexLifecycle,
+            TraceQualityGateStatus::Fail,
+        );
+    }
+
+    #[test]
+    fn trace_quality_phase8_fails_with_specific_missing_trace_categories() {
+        let trace_id = runtime_trace_id_for_run("project-1", "run-missing-observability");
+        let trace = RuntimeTrace::from_snapshot(RunSnapshot {
+            trace_id: trace_id.clone(),
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-missing-observability".into(),
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            status: RunStatus::Failed,
+            prompt: "Prompt".into(),
+            messages: Vec::new(),
+            events: vec![RuntimeEvent {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-missing-observability".into(),
+                event_kind: RuntimeEventKind::ReasoningSummary,
+                trace: RuntimeTraceContext::for_provider_turn(
+                    &trace_id,
+                    "run-missing-observability",
+                    0,
+                ),
+                payload: json!({ "text": "Provider turn started without observability metadata." }),
+                created_at: "2026-05-03T12:00:00Z".into(),
+            }],
+            context_manifests: Vec::new(),
+        })
+        .expect("trace");
+        let canonical = trace.canonical_snapshot().expect("canonical trace");
+
+        assert!(!canonical.quality_gates.passed);
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::EnvironmentLifecycleEvents,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ProviderPreflightSnapshot,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ContextManifestBeforeProviderTurn,
+            TraceQualityGateStatus::Fail,
+        );
+    }
+
+    #[test]
+    fn trace_quality_phase8_fails_for_legacy_tool_dispatch_and_unsandboxed_subprocess() {
+        let trace_id = runtime_trace_id_for_run("project-1", "run-legacy-tool");
+        let manifest_trace = RuntimeTraceContext::for_context_manifest(
+            &trace_id,
+            "run-legacy-tool",
+            "manifest-legacy-tool",
+            0,
+        );
+        let trace = RuntimeTrace::from_snapshot(RunSnapshot {
+            trace_id: trace_id.clone(),
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-legacy-tool".into(),
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            status: RunStatus::Failed,
+            prompt: "Prompt".into(),
+            messages: Vec::new(),
+            events: vec![
+                RuntimeEvent {
+                    id: 1,
+                    project_id: "project-1".into(),
+                    run_id: "run-legacy-tool".into(),
+                    event_kind: RuntimeEventKind::RunStarted,
+                    trace: RuntimeTraceContext::for_run(
+                        &trace_id,
+                        "run-legacy-tool",
+                        "run_started",
+                    ),
+                    payload: json!({
+                        "status": "running",
+                        "providerId": "fake_provider",
+                        "modelId": "fake-model",
+                        "providerPreflight": live_preflight_json(),
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 2,
+                    project_id: "project-1".into(),
+                    run_id: "run-legacy-tool".into(),
+                    event_kind: RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-legacy-tool",
+                        2,
+                        &RuntimeEventKind::EnvironmentLifecycleUpdate,
+                    ),
+                    payload: json!({
+                        "environmentId": "env-project-1-run-legacy-tool",
+                        "state": "ready",
+                        "sandboxGroupingPolicy": "none",
+                    }),
+                    created_at: "2026-05-03T12:00:00Z".into(),
+                },
+                RuntimeEvent {
+                    id: 3,
+                    project_id: "project-1".into(),
+                    run_id: "run-legacy-tool".into(),
+                    event_kind: RuntimeEventKind::ToolRegistrySnapshot,
+                    trace: RuntimeTraceContext::for_event(
+                        &trace_id,
+                        "run-legacy-tool",
+                        3,
+                        &RuntimeEventKind::ToolRegistrySnapshot,
+                    ),
+                    payload: json!({
+                        "toolCount": 1,
+                        "toolNames": ["command"],
+                        "executionRegistry": "legacy_registry",
+                    }),
+                    created_at: "2026-05-03T12:00:01Z".into(),
+                },
+                RuntimeEvent {
+                    id: 4,
+                    project_id: "project-1".into(),
+                    run_id: "run-legacy-tool".into(),
+                    event_kind: RuntimeEventKind::ToolStarted,
+                    trace: RuntimeTraceContext::for_tool_call(
+                        &trace_id,
+                        "run-legacy-tool",
+                        "tool-call-1",
+                    ),
+                    payload: json!({
+                        "toolCallId": "tool-call-1",
+                        "toolName": "command",
+                        "subprocess": true,
+                    }),
+                    created_at: "2026-05-03T12:00:02Z".into(),
+                },
+                RuntimeEvent {
+                    id: 5,
+                    project_id: "project-1".into(),
+                    run_id: "run-legacy-tool".into(),
+                    event_kind: RuntimeEventKind::ToolCompleted,
+                    trace: RuntimeTraceContext::for_tool_call(
+                        &trace_id,
+                        "run-legacy-tool",
+                        "tool-call-1",
+                    ),
+                    payload: json!({
+                        "toolCallId": "tool-call-1",
+                        "toolName": "command",
+                        "ok": false,
+                        "message": "subprocess failed without sandbox metadata",
+                    }),
+                    created_at: "2026-05-03T12:00:03Z".into(),
+                },
+            ],
+            context_manifests: vec![ContextManifest {
+                manifest_id: "manifest-legacy-tool".into(),
+                project_id: "project-1".into(),
+                agent_session_id: "session-1".into(),
+                run_id: "run-legacy-tool".into(),
+                provider_id: "fake_provider".into(),
+                model_id: "fake-model".into(),
+                turn_index: 0,
+                context_hash: "context-hash".into(),
+                recorded_after_event_id: Some(2),
+                trace: manifest_trace,
+                manifest: json!({
+                    "kind": "provider_context_package",
+                    "providerPreflight": live_preflight_json(),
+                }),
+                created_at: "2026-05-03T12:00:00Z".into(),
+            }],
+        })
+        .expect("trace");
+        let canonical = trace.canonical_snapshot().expect("canonical trace");
+
+        assert!(!canonical.quality_gates.passed);
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::ToolRegistryV2Execution,
+            TraceQualityGateStatus::Fail,
+        );
+        assert_gate(
+            &canonical.quality_gates,
+            TraceQualityGateCategory::SubprocessSandboxMetadata,
+            TraceQualityGateStatus::Fail,
+        );
     }
 
     #[test]
@@ -2528,5 +4489,18 @@ mod tests {
             .signals
             .iter()
             .any(|signal| signal.category == TraceDiagnosticCategory::MissingTimelineSegment));
+    }
+
+    fn assert_gate(
+        report: &TraceQualityGateReport,
+        category: TraceQualityGateCategory,
+        status: TraceQualityGateStatus,
+    ) {
+        let gate = report
+            .gates
+            .iter()
+            .find(|gate| gate.category == category)
+            .expect("gate should exist");
+        assert_eq!(gate.status, status);
     }
 }

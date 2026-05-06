@@ -1,12 +1,15 @@
-use std::{path::PathBuf, thread};
+use std::{
+    path::{Path, PathBuf},
+    thread,
+};
 
 use serde_json::Value as JsonValue;
 use xero_agent_core::{
-    runtime_trace_id_for_run, AgentRuntimeFacade, ContextManifest as CoreContextManifest,
-    ExportTraceRequest, MessageRole as CoreMessageRole, RunSnapshot as CoreRunSnapshot,
-    RunStatus as CoreRunStatus, RuntimeEvent as CoreRuntimeEvent,
-    RuntimeEventKind as CoreRuntimeEventKind, RuntimeMessage as CoreRuntimeMessage, RuntimeTrace,
-    RuntimeTraceContext,
+    runtime_trace_id_for_run, AgentRuntimeFacade, ApprovalDecisionRequest, CompactSessionRequest,
+    ContextManifest as CoreContextManifest, ExportTraceRequest, ForkSessionRequest,
+    MessageRole as CoreMessageRole, RunSnapshot as CoreRunSnapshot, RunStatus as CoreRunStatus,
+    RuntimeEvent as CoreRuntimeEvent, RuntimeEventKind as CoreRuntimeEventKind,
+    RuntimeMessage as CoreRuntimeMessage, RuntimeTrace, RuntimeTraceContext,
 };
 
 use super::*;
@@ -42,14 +45,36 @@ pub struct DesktopCancelRunRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct DesktopRejectActionRequest {
+    pub repo_root: PathBuf,
+    pub request: ApprovalDecisionRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct DesktopForkSessionRequest {
+    pub repo_root: PathBuf,
+    pub request: ForkSessionRequest,
+    pub source_run_id: Option<String>,
+    pub title: Option<String>,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DesktopCompactSessionRequest {
+    pub repo_root: PathBuf,
+    pub request: CompactSessionRequest,
+    pub run_id: Option<String>,
+    pub raw_tail_message_count: Option<u32>,
+    pub trigger: project_store::AgentCompactionTrigger,
+    pub provider_config: AgentProviderConfig,
+}
+
+#[derive(Debug, Clone)]
 pub struct DesktopExportTraceRequest {
     pub repo_root: PathBuf,
     pub project_id: String,
     pub run_id: String,
 }
-
-#[derive(Debug, Clone)]
-pub struct DesktopUnsupportedRuntimeRequest;
 
 impl DesktopAgentCoreRuntime {
     pub fn new(supervisor: AgentRunSupervisor) -> Self {
@@ -95,6 +120,209 @@ impl DesktopAgentCoreRuntime {
 
     pub fn is_active(&self, run_id: &str) -> CommandResult<bool> {
         self.supervisor.is_active(run_id)
+    }
+
+    pub fn reject_action(
+        &self,
+        repo_root: PathBuf,
+        request: ApprovalDecisionRequest,
+    ) -> CommandResult<AgentRunSnapshotRecord> {
+        if self.supervisor.is_active(&request.run_id)? {
+            return Err(CommandError::user_fixable(
+                "agent_run_already_active",
+                format!(
+                    "Xero is still driving owned-agent run `{}`. Wait for it to pause before rejecting action `{}`.",
+                    request.run_id, request.action_id
+                ),
+            ));
+        }
+
+        let before =
+            project_store::load_agent_run(&repo_root, &request.project_id, &request.run_id)?;
+        if matches!(
+            before.run.status,
+            AgentRunStatus::Cancelled
+                | AgentRunStatus::HandedOff
+                | AgentRunStatus::Completed
+                | AgentRunStatus::Failed
+        ) {
+            return Err(CommandError::user_fixable(
+                "agent_run_terminal",
+                format!(
+                    "Xero cannot reject action `{}` because owned-agent run `{}` is already {:?}.",
+                    request.action_id, request.run_id, before.run.status
+                ),
+            ));
+        }
+
+        let rejected = project_store::reject_pending_agent_action_request(
+            &repo_root,
+            &request.project_id,
+            &request.run_id,
+            &request.action_id,
+            request.response.as_deref(),
+        )?;
+        append_event(
+            &repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::PolicyDecision,
+            json!({
+                "kind": "approval_decision",
+                "actionId": rejected.action_id,
+                "actionType": rejected.action_type,
+                "decision": "rejected",
+                "response": rejected.response,
+                "status": rejected.status,
+            }),
+        )?;
+        record_state_transition(
+            &repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentStateTransition {
+                from: Some(AgentRunState::ApprovalWait),
+                to: AgentRunState::Blocked,
+                reason: "Operator rejected a pending owned-agent action.",
+                stop_reason: Some(AgentRunStopReason::Blocked),
+                extra: Some(json!({
+                    "actionId": request.action_id,
+                    "decision": "rejected",
+                })),
+            },
+        )?;
+        append_event(
+            &repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::RunFailed,
+            json!({
+                "code": "agent_action_rejected",
+                "message": format!("Operator rejected action `{}`.", request.action_id),
+                "retryable": false,
+                "state": AgentRunState::Blocked.as_str(),
+                "stopReason": AgentRunStopReason::Blocked.as_str(),
+            }),
+        )?;
+        project_store::update_agent_run_status(
+            &repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunStatus::Failed,
+            Some(project_store::AgentRunDiagnosticRecord {
+                code: "agent_action_rejected".into(),
+                message: format!("Operator rejected action `{}`.", request.action_id),
+            }),
+            &now_timestamp(),
+        )
+    }
+
+    pub fn fork_session(
+        &self,
+        repo_root: PathBuf,
+        request: ForkSessionRequest,
+        source_run_id: Option<String>,
+        title: Option<String>,
+        selected: bool,
+    ) -> CommandResult<AgentRunSnapshotRecord> {
+        let source_run_id = source_run_id_for_session_fork(
+            &repo_root,
+            &request.project_id,
+            &request.source_agent_session_id,
+            source_run_id,
+        )?;
+        let branch = project_store::create_agent_session_branch(
+            &repo_root,
+            &project_store::AgentSessionBranchCreateRecord {
+                project_id: request.project_id.clone(),
+                source_agent_session_id: request.source_agent_session_id.clone(),
+                source_run_id: source_run_id.clone(),
+                target_agent_session_id: Some(request.target_agent_session_id.clone()),
+                title,
+                selected,
+                boundary: project_store::AgentSessionBranchBoundary::Run,
+            },
+        )?;
+        let replay_project_id = branch.replay_run.run.project_id.clone();
+        let replay_run_id = branch.replay_run.run.run_id.clone();
+        let replay_trace_id = branch.replay_run.run.trace_id.clone();
+        let source_trace_id = branch.replay_run.run.parent_trace_id.clone();
+        let lineage_id = branch.lineage.lineage_id.clone();
+        append_event(
+            &repo_root,
+            &replay_project_id,
+            &replay_run_id,
+            AgentRunEventKind::StateTransition,
+            json!({
+                "kind": "session_forked",
+                "sourceAgentSessionId": request.source_agent_session_id,
+                "targetAgentSessionId": request.target_agent_session_id,
+                "sourceRunId": source_run_id,
+                "sourceTraceId": source_trace_id,
+                "replayRunId": replay_run_id,
+                "replayTraceId": replay_trace_id,
+                "lineageId": lineage_id,
+            }),
+        )?;
+        project_store::load_agent_run(&repo_root, &replay_project_id, &replay_run_id)
+    }
+
+    pub fn compact_session(
+        &self,
+        repo_root: PathBuf,
+        request: CompactSessionRequest,
+        run_id: Option<String>,
+        raw_tail_message_count: Option<u32>,
+        trigger: project_store::AgentCompactionTrigger,
+        provider_config: AgentProviderConfig,
+    ) -> CommandResult<AgentRunSnapshotRecord> {
+        crate::commands::validate_non_empty(&request.reason, "reason")?;
+        let run_id = run_id_for_session_operation(
+            &repo_root,
+            &request.project_id,
+            &request.agent_session_id,
+            run_id,
+        )?;
+        if self.supervisor.is_active(&run_id)? {
+            return Err(CommandError::user_fixable(
+                "agent_run_already_active",
+                format!(
+                    "Xero is still driving owned-agent run `{run_id}`. Wait for it to pause or finish before compacting the session."
+                ),
+            ));
+        }
+        let provider = create_provider_adapter(provider_config)?;
+        let compaction = crate::commands::session_history::compact_session_history_with_provider(
+            &repo_root,
+            &request.project_id,
+            &request.agent_session_id,
+            Some(&run_id),
+            raw_tail_message_count,
+            trigger,
+            &request.reason,
+            provider.as_ref(),
+        )?;
+        let snapshot = project_store::load_agent_run(&repo_root, &request.project_id, &run_id)?;
+        persist_compaction_context_manifest(&repo_root, &snapshot, &compaction)?;
+        append_event(
+            &repo_root,
+            &request.project_id,
+            &run_id,
+            AgentRunEventKind::PolicyDecision,
+            json!({
+                "kind": "session_compaction",
+                "action": "compacted",
+                "compactionId": compaction.compaction_id,
+                "reason": request.reason,
+                "rawTailMessageCount": compaction.raw_tail_message_count,
+                "coveredRunIds": compaction.covered_run_ids,
+                "coveredMessageStartId": compaction.covered_message_start_id,
+                "coveredMessageEndId": compaction.covered_message_end_id,
+                "coveredEventStartId": compaction.covered_event_start_id,
+                "coveredEventEndId": compaction.covered_event_end_id,
+            }),
+        )?;
+        project_store::load_agent_run(&repo_root, &request.project_id, &run_id)
     }
 
     pub fn spawn_owned_agent_run(&self, request: OwnedAgentRunRequest) -> CommandResult<()> {
@@ -154,11 +382,11 @@ impl AgentRuntimeFacade for DesktopAgentCoreRuntime {
     type ContinueRunRequest = DesktopContinueRunRequest;
     type UserInputRequest = DesktopContinueRunRequest;
     type ApprovalRequest = DesktopContinueRunRequest;
-    type RejectRequest = DesktopUnsupportedRuntimeRequest;
+    type RejectRequest = DesktopRejectActionRequest;
     type CancelRunRequest = DesktopCancelRunRequest;
     type ResumeRunRequest = DesktopContinueRunRequest;
-    type ForkSessionRequest = DesktopUnsupportedRuntimeRequest;
-    type CompactSessionRequest = DesktopUnsupportedRuntimeRequest;
+    type ForkSessionRequest = DesktopForkSessionRequest;
+    type CompactSessionRequest = DesktopCompactSessionRequest;
     type ExportTraceRequest = DesktopExportTraceRequest;
     type Snapshot = AgentRunSnapshotRecord;
     type Trace = RuntimeTrace;
@@ -192,9 +420,9 @@ impl AgentRuntimeFacade for DesktopAgentCoreRuntime {
 
     fn reject_action(
         &self,
-        _request: DesktopUnsupportedRuntimeRequest,
+        request: DesktopRejectActionRequest,
     ) -> CommandResult<AgentRunSnapshotRecord> {
-        Err(unsupported_desktop_facade_operation("reject_action"))
+        self.reject_action(request.repo_root, request.request)
     }
 
     fn cancel_run(
@@ -213,16 +441,29 @@ impl AgentRuntimeFacade for DesktopAgentCoreRuntime {
 
     fn fork_session(
         &self,
-        _request: DesktopUnsupportedRuntimeRequest,
+        request: DesktopForkSessionRequest,
     ) -> CommandResult<AgentRunSnapshotRecord> {
-        Err(unsupported_desktop_facade_operation("fork_session"))
+        self.fork_session(
+            request.repo_root,
+            request.request,
+            request.source_run_id,
+            request.title,
+            request.selected,
+        )
     }
 
     fn compact_session(
         &self,
-        _request: DesktopUnsupportedRuntimeRequest,
+        request: DesktopCompactSessionRequest,
     ) -> CommandResult<AgentRunSnapshotRecord> {
-        Err(unsupported_desktop_facade_operation("compact_session"))
+        self.compact_session(
+            request.repo_root,
+            request.request,
+            request.run_id,
+            request.raw_tail_message_count,
+            request.trigger,
+            request.provider_config,
+        )
     }
 
     fn export_trace(&self, request: DesktopExportTraceRequest) -> CommandResult<RuntimeTrace> {
@@ -239,11 +480,125 @@ impl From<DesktopExportTraceRequest> for ExportTraceRequest {
     }
 }
 
-fn unsupported_desktop_facade_operation(operation: &str) -> CommandError {
-    CommandError::user_fixable(
-        "agent_core_operation_unsupported",
-        format!("The desktop agent-core adapter does not implement `{operation}` yet."),
-    )
+fn source_run_id_for_session_fork(
+    repo_root: &Path,
+    project_id: &str,
+    source_agent_session_id: &str,
+    source_run_id: Option<String>,
+) -> CommandResult<String> {
+    if let Some(source_run_id) = source_run_id {
+        crate::commands::validate_non_empty(&source_run_id, "sourceRunId")?;
+        return Ok(source_run_id);
+    }
+    run_id_for_session_operation(repo_root, project_id, source_agent_session_id, None)
+}
+
+fn run_id_for_session_operation(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<String>,
+) -> CommandResult<String> {
+    if let Some(run_id) = run_id {
+        crate::commands::validate_non_empty(&run_id, "runId")?;
+        return Ok(run_id);
+    }
+    let session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_session_not_found",
+                format!(
+                    "Xero could not find agent session `{agent_session_id}` for project `{project_id}`."
+                ),
+            )
+        })?;
+    session.last_run_id.ok_or_else(|| {
+        CommandError::user_fixable(
+            "agent_session_has_no_runs",
+            format!(
+                "Xero cannot operate on session `{agent_session_id}` because it has no owned-agent runs yet."
+            ),
+        )
+    })
+}
+
+fn persist_compaction_context_manifest(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+    compaction: &crate::commands::SessionCompactionRecordDto,
+) -> CommandResult<()> {
+    let existing_manifests = project_store::list_agent_context_manifests_for_run(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+    )?;
+    let turn_index = existing_manifests.len();
+    let manifest_id = format!(
+        "context-manifest:{}:compact:{}",
+        snapshot.run.run_id, compaction.compaction_id
+    );
+    let manifest = json!({
+        "kind": "session_compaction_artifact",
+        "schema": "xero.session_compaction_artifact.v1",
+        "schemaVersion": 1,
+        "projectId": snapshot.run.project_id,
+        "agentSessionId": snapshot.run.agent_session_id,
+        "runId": snapshot.run.run_id,
+        "providerId": snapshot.run.provider_id,
+        "modelId": snapshot.run.model_id,
+        "turnIndex": turn_index,
+        "compactionId": compaction.compaction_id,
+        "policyReason": compaction.policy_reason,
+        "trigger": compaction.trigger,
+        "sourceHash": compaction.source_hash,
+        "sourceRunId": compaction.source_run_id,
+        "coveredRunIds": compaction.covered_run_ids,
+        "coveredMessageStartId": compaction.covered_message_start_id,
+        "coveredMessageEndId": compaction.covered_message_end_id,
+        "coveredEventStartId": compaction.covered_event_start_id,
+        "coveredEventEndId": compaction.covered_event_end_id,
+        "rawTailMessageCount": compaction.raw_tail_message_count,
+        "summaryTokens": compaction.summary_tokens,
+        "inputTokens": compaction.input_tokens,
+        "summary": compaction.summary,
+    });
+    project_store::insert_agent_context_manifest(
+        repo_root,
+        &project_store::NewAgentContextManifestRecord {
+            manifest_id,
+            project_id: snapshot.run.project_id.clone(),
+            agent_session_id: snapshot.run.agent_session_id.clone(),
+            run_id: Some(snapshot.run.run_id.clone()),
+            runtime_agent_id: snapshot.run.runtime_agent_id,
+            agent_definition_id: snapshot.run.agent_definition_id.clone(),
+            agent_definition_version: snapshot.run.agent_definition_version,
+            provider_id: Some(snapshot.run.provider_id.clone()),
+            model_id: Some(snapshot.run.model_id.clone()),
+            request_kind: project_store::AgentContextManifestRequestKind::Diagnostic,
+            policy_action: project_store::AgentContextPolicyAction::CompactNow,
+            policy_reason_code: compaction.policy_reason.clone(),
+            budget_tokens: None,
+            estimated_tokens: compaction.summary_tokens,
+            pressure: project_store::AgentContextBudgetPressure::Unknown,
+            context_hash: compaction.source_hash.clone(),
+            included_contributors: vec![project_store::AgentContextManifestContributorRecord {
+                contributor_id: format!("compaction_summary:{}", compaction.compaction_id),
+                kind: "compaction_summary".into(),
+                source_id: Some(compaction.compaction_id.clone()),
+                estimated_tokens: compaction.summary_tokens,
+                reason: Some(compaction.policy_reason.clone()),
+            }],
+            excluded_contributors: Vec::new(),
+            retrieval_query_ids: Vec::new(),
+            retrieval_result_ids: Vec::new(),
+            compaction_id: Some(compaction.compaction_id.clone()),
+            handoff_id: None,
+            redaction_state: project_store::AgentContextRedactionState::Clean,
+            manifest,
+            created_at: now_timestamp(),
+        },
+    )?;
+    Ok(())
 }
 
 fn core_snapshot_from_desktop(
@@ -283,6 +638,7 @@ fn core_message_from_desktop(message: AgentMessageRecord) -> CoreRuntimeMessage 
         run_id: message.run_id,
         role: core_message_role_from_desktop(&message.role),
         content: message.content,
+        provider_metadata: None,
         created_at: message.created_at,
     }
 }
@@ -360,6 +716,7 @@ fn core_message_role_from_desktop(role: &AgentMessageRole) -> CoreMessageRole {
 
 fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKind {
     match kind {
+        AgentRunEventKind::RunStarted => CoreRuntimeEventKind::RunStarted,
         AgentRunEventKind::MessageDelta => CoreRuntimeEventKind::MessageDelta,
         AgentRunEventKind::ReasoningSummary => CoreRuntimeEventKind::ReasoningSummary,
         AgentRunEventKind::ToolStarted => CoreRuntimeEventKind::ToolStarted,
@@ -374,7 +731,18 @@ fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKin
         AgentRunEventKind::StateTransition => CoreRuntimeEventKind::StateTransition,
         AgentRunEventKind::PlanUpdated => CoreRuntimeEventKind::PlanUpdated,
         AgentRunEventKind::VerificationGate => CoreRuntimeEventKind::VerificationGate,
+        AgentRunEventKind::ContextManifestRecorded => CoreRuntimeEventKind::ContextManifestRecorded,
+        AgentRunEventKind::RetrievalPerformed => CoreRuntimeEventKind::RetrievalPerformed,
+        AgentRunEventKind::MemoryCandidateCaptured => CoreRuntimeEventKind::MemoryCandidateCaptured,
+        AgentRunEventKind::EnvironmentLifecycleUpdate => {
+            CoreRuntimeEventKind::EnvironmentLifecycleUpdate
+        }
+        AgentRunEventKind::SandboxLifecycleUpdate => CoreRuntimeEventKind::SandboxLifecycleUpdate,
         AgentRunEventKind::ActionRequired => CoreRuntimeEventKind::ActionRequired,
+        AgentRunEventKind::ApprovalRequired => CoreRuntimeEventKind::ApprovalRequired,
+        AgentRunEventKind::ToolPermissionGrant => CoreRuntimeEventKind::ToolPermissionGrant,
+        AgentRunEventKind::ProviderModelChanged => CoreRuntimeEventKind::ProviderModelChanged,
+        AgentRunEventKind::RuntimeSettingsChanged => CoreRuntimeEventKind::RuntimeSettingsChanged,
         AgentRunEventKind::RunPaused => CoreRuntimeEventKind::RunPaused,
         AgentRunEventKind::RunCompleted => CoreRuntimeEventKind::RunCompleted,
         AgentRunEventKind::RunFailed => CoreRuntimeEventKind::RunFailed,

@@ -1,5 +1,10 @@
 use super::*;
 use sha2::{Digest, Sha256};
+use std::time::Instant;
+use xero_agent_core::{
+    production_runtime_trace_metadata, validate_production_runtime_contract,
+    ProductionRuntimeContract, RuntimeStoreDescriptor,
+};
 
 #[derive(Debug, Clone)]
 pub struct PreparedOwnedAgentContinuation {
@@ -35,6 +40,7 @@ pub fn create_owned_agent_run(
     )?;
 
     let mut controls = runtime_controls_from_request(request.controls.as_ref());
+    ensure_runtime_agent_available(controls.active.runtime_agent_id)?;
     let definition_selection = project_store::resolve_agent_definition_for_run(
         &request.repo_root,
         request
@@ -57,6 +63,7 @@ pub fn create_owned_agent_run(
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_selection.snapshot, &request.tool_runtime);
+    let tool_registry_started = Instant::now();
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
@@ -68,6 +75,13 @@ pub fn create_owned_agent_run(
             agent_tool_policy: agent_tool_policy.clone(),
         },
     );
+    eprintln!(
+        "[runtime-latency] ToolRegistry::for_prompt_with_options project_id={} run_id={} duration_ms={}",
+        request.project_id,
+        request.run_id,
+        tool_registry_started.elapsed().as_millis()
+    );
+    let system_prompt_started = Instant::now();
     let system_prompt = assemble_system_prompt_for_session(
         &request.repo_root,
         Some(&request.project_id),
@@ -78,7 +92,22 @@ pub fn create_owned_agent_run(
         Some(&definition_selection.snapshot),
         Some(request.tool_runtime.soul_settings()),
     )?;
+    eprintln!(
+        "[runtime-latency] compile_system_prompt_for_session project_id={} run_id={} duration_ms={}",
+        request.project_id,
+        request.run_id,
+        system_prompt_started.elapsed().as_millis()
+    );
     let provider = create_provider_adapter(request.provider_config.clone())?;
+    let runtime_contract = if matches!(&request.provider_config, AgentProviderConfig::Fake) {
+        None
+    } else {
+        Some(owned_agent_production_runtime_contract(
+            request,
+            provider.provider_id(),
+            provider.model_id(),
+        )?)
+    };
     let now = now_timestamp();
 
     project_store::insert_agent_run(
@@ -97,6 +126,33 @@ pub fn create_owned_agent_run(
             now: now.clone(),
         },
     )?;
+    if let Some(runtime_contract) = runtime_contract.as_ref() {
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::StateTransition,
+            json!({
+                "kind": "production_runtime_contract",
+                "runtimeContract": production_runtime_trace_metadata(runtime_contract),
+            }),
+        )?;
+    }
+    if let Some(provider_preflight) = request.provider_preflight.as_ref() {
+        append_event(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            AgentRunEventKind::ValidationCompleted,
+            json!({
+                "label": "provider_preflight",
+                "outcome": provider_preflight.status.as_str(),
+                "providerId": &provider_preflight.provider_id,
+                "modelId": &provider_preflight.model_id,
+                "providerPreflight": provider_preflight,
+            }),
+        )?;
+    }
 
     append_message(
         &request.repo_root,
@@ -157,6 +213,18 @@ pub fn create_owned_agent_run(
         None,
         &started_at,
     )?;
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        AgentRunEventKind::RunStarted,
+        json!({
+            "message": "Owned agent run started.",
+            "state": AgentRunState::Intake.as_str(),
+            "runtimeAgentId": controls.active.runtime_agent_id.as_str(),
+            "runtimeAgentLabel": controls.active.runtime_agent_id.label(),
+        }),
+    )?;
     project_store::upsert_agent_coordination_presence(
         &request.repo_root,
         &project_store::UpsertAgentCoordinationPresenceRecord {
@@ -174,6 +242,33 @@ pub fn create_owned_agent_run(
     )?;
 
     project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)
+}
+
+fn owned_agent_production_runtime_contract(
+    request: &OwnedAgentRunRequest,
+    provider_id: &str,
+    model_id: &str,
+) -> CommandResult<ProductionRuntimeContract> {
+    let contract = ProductionRuntimeContract::real_provider(
+        "desktop_start",
+        request.project_id.clone(),
+        provider_id.to_owned(),
+        model_id.to_owned(),
+        RuntimeStoreDescriptor::app_data_project_state(
+            request.project_id.clone(),
+            crate::db::database_path_for_repo(&request.repo_root),
+        ),
+    );
+    validate_production_runtime_contract(&contract).map_err(|error| {
+        CommandError::user_fixable(
+            error.code,
+            format!(
+                "Xero refused to start owned-agent run `{}` because the production runtime contract is invalid: {}",
+                request.run_id, error.message
+            ),
+        )
+    })?;
+    Ok(contract)
 }
 
 pub fn drive_owned_agent_run(
@@ -244,6 +339,33 @@ pub fn drive_owned_agent_run(
         request.provider_config.clone(),
         cancellation.clone(),
     );
+    let environment = match start_owned_agent_environment(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.provider_config,
+        &tool_runtime,
+    ) {
+        Ok(environment) => environment,
+        Err(error) if error.code == "agent_environment_startup_failed" => {
+            return project_store::load_agent_run(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+            );
+        }
+        Err(error) => return Err(error),
+    };
+    if !environment.state.is_ready() {
+        return project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        );
+    }
+    deliver_environment_pending_messages(&request.repo_root, &request.project_id, &request.run_id)?;
+    let snapshot =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
     let messages = provider_messages_from_snapshot(&request.repo_root, &snapshot)?;
 
     match drive_provider_loop(
@@ -256,6 +378,7 @@ pub fn drive_owned_agent_run(
         &request.project_id,
         &request.run_id,
         &snapshot.run.agent_session_id,
+        request.provider_preflight.as_ref(),
         &cancellation,
     ) {
         Ok(()) => {
@@ -363,6 +486,27 @@ pub fn prepare_owned_agent_continuation_for_drive(
                 request.run_id, before.run.status
             ),
         ));
+    }
+    ensure_runtime_agent_available(before.run.runtime_agent_id)?;
+    if matches!(before.run.status, AgentRunStatus::Starting)
+        || lifecycle_should_queue_user_message(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?
+    {
+        let snapshot = queue_environment_user_message(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            &request.prompt,
+        )?;
+        return Ok(PreparedOwnedAgentContinuation {
+            snapshot,
+            drive_request: request.clone(),
+            drive_required: false,
+            handoff: None,
+        });
     }
 
     let provider = create_provider_adapter(request.provider_config.clone())?;
@@ -1374,6 +1518,7 @@ fn request_for_handoff_target(
         controls: Some(handoff_control_input_for_source(request, source_snapshot)),
         tool_runtime: request.tool_runtime.clone(),
         provider_config: request.provider_config.clone(),
+        provider_preflight: request.provider_preflight.clone(),
         answer_pending_actions: false,
         auto_compact: None,
     }
@@ -1665,6 +1810,13 @@ fn agent_specific_handoff(
             "validationStatus": "available_through_agent_definition_tool",
             "followUpInformationNeeded": [],
         }),
+        RuntimeAgentIdDto::Test => json!({
+            "harnessTrigger": handoff_preview(pending_prompt, 700, redaction_count),
+            "stepOutcomes": completed_work,
+            "scratchChanges": recent_file_changes,
+            "verificationEvidence": verification_status,
+            "followUpInformationNeeded": [],
+        }),
     }
 }
 
@@ -1748,6 +1900,7 @@ pub fn drive_owned_agent_continuation(
         &request.project_id,
         &request.run_id,
         &snapshot.run.agent_session_id,
+        request.provider_preflight.as_ref(),
         &cancellation,
     ) {
         Ok(()) => {
@@ -1823,7 +1976,7 @@ fn replay_answered_tool_action_requests(
                 ),
             )
         })?;
-        let result = dispatch_tool_call_with_write_approval(
+        let mut result = dispatch_tool_call_with_write_approval(
             tool_registry,
             tool_runtime,
             repo_root,
@@ -1842,10 +1995,14 @@ fn replay_answered_tool_action_requests(
                     | AnsweredToolReplayKind::OperatorApprovedSystemRead
             ),
         )?;
+        result.parent_assistant_message_id =
+            Some(format!("provider-assistant-{run_id}-approval-replay"));
         let result_content = serde_json::to_string(&result).map_err(|error| {
             CommandError::system_fault(
                 "agent_tool_result_serialize_failed",
-                format!("Xero could not serialize approved owned-agent tool result: {error}"),
+                format!(
+                    "Xero could not serialize approved owned-agent tool result for transcript persistence: {error}"
+                ),
             )
         })?;
         append_message(
@@ -2289,6 +2446,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 .with_delegated_tool_call_budget(task.subagent_id.clone(), task.max_tool_calls)
                 .with_subagent_write_scope(task.role, task.write_set.clone()),
             provider_config,
+            provider_preflight: None,
         };
 
         task.run_id = Some(child_run_id);
@@ -2809,6 +2967,7 @@ mod tests {
             )),
             tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("run custom engineering agent");
 
@@ -2862,6 +3021,7 @@ mod tests {
             )),
             tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("run custom observe-only agent");
 

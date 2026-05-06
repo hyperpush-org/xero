@@ -220,32 +220,81 @@ async fn ensure_connection(dataset_dir: &Path) -> Result<Connection, CommandErro
 
 async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandError> {
     match connection.open_table(PROJECT_RECORDS_TABLE).execute().await {
+        Ok(table) => ensure_current_table_schema(connection, table).await,
+        Err(_) => create_project_records_table(connection).await,
+    }
+}
+
+async fn ensure_current_table_schema(
+    connection: &Connection,
+    table: Table,
+) -> Result<Table, CommandError> {
+    let table_schema = match table.schema().await {
+        Ok(table_schema) => table_schema,
+        Err(_) => return reset_project_records_table(connection).await,
+    };
+    if table_schema_supports_current_records(&table_schema) {
+        return Ok(table);
+    }
+    reset_project_records_table(connection).await
+}
+
+fn table_schema_supports_current_records(table_schema: &Schema) -> bool {
+    schema().fields().iter().all(|expected| {
+        let Ok(actual) = table_schema.field_with_name(expected.name()) else {
+            return false;
+        };
+        actual.data_type() == expected.data_type() && actual.is_nullable() == expected.is_nullable()
+    })
+}
+
+async fn reset_project_records_table(connection: &Connection) -> Result<Table, CommandError> {
+    connection
+        .drop_table(PROJECT_RECORDS_TABLE, &[])
+        .await
+        .map_err(|error| map_lance_error("project_record_lance_schema_reset_failed", error))?;
+    create_project_records_table(connection).await
+}
+
+async fn create_project_records_table(connection: &Connection) -> Result<Table, CommandError> {
+    let schema = schema();
+    let empty = RecordBatch::new_empty(schema.clone());
+    let iter = RecordBatchIterator::new(
+        std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
+        schema,
+    );
+    let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> = Box::new(iter);
+    match connection
+        .create_table(PROJECT_RECORDS_TABLE, reader)
+        .execute()
+        .await
+    {
         Ok(table) => Ok(table),
-        Err(_) => {
-            let schema = schema();
-            let empty = RecordBatch::new_empty(schema.clone());
-            let iter = RecordBatchIterator::new(
-                std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
-                schema,
-            );
-            let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> = Box::new(iter);
-            match connection
-                .create_table(PROJECT_RECORDS_TABLE, reader)
-                .execute()
-                .await
-            {
-                Ok(table) => Ok(table),
-                Err(create_error) => match connection.open_table(PROJECT_RECORDS_TABLE).execute().await {
-                    Ok(table) => Ok(table),
-                    Err(open_error) => Err(CommandError::retryable(
-                        "project_record_lance_create_table_failed",
-                        format!(
-                            "Xero project_records lance store failed: {create_error}; retry open failed: {open_error}"
-                        ),
-                    )),
-                },
-            }
-        }
+        Err(create_error) => match connection.open_table(PROJECT_RECORDS_TABLE).execute().await {
+            Ok(table) => match table.schema().await {
+                Ok(table_schema) if table_schema_supports_current_records(&table_schema) => {
+                    Ok(table)
+                }
+                Ok(_) => Err(CommandError::retryable(
+                    "project_record_lance_create_table_failed",
+                    format!(
+                        "Xero project_records lance store failed: {create_error}; retry open found a stale schema"
+                    ),
+                )),
+                Err(schema_error) => Err(CommandError::retryable(
+                    "project_record_lance_create_table_failed",
+                    format!(
+                        "Xero project_records lance store failed: {create_error}; retry open schema failed: {schema_error}"
+                    ),
+                )),
+            },
+            Err(open_error) => Err(CommandError::retryable(
+                "project_record_lance_create_table_failed",
+                format!(
+                    "Xero project_records lance store failed: {create_error}; retry open failed: {open_error}"
+                ),
+            )),
+        },
     }
 }
 
@@ -575,10 +624,7 @@ fn append_embedding(
 
 async fn scan_all(dataset_dir: &Path) -> Result<Vec<ProjectRecordRow>, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = match connection.open_table(PROJECT_RECORDS_TABLE).execute().await {
-        Ok(table) => table,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let table = open_or_create_table(&connection).await?;
     let stream = table
         .query()
         .execute()
@@ -878,6 +924,109 @@ fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
         "engineer" => RuntimeAgentIdDto::Engineer,
         "debug" => RuntimeAgentIdDto::Debug,
         "agent_create" => RuntimeAgentIdDto::AgentCreate,
+        "test" => RuntimeAgentIdDto::Test,
         _ => RuntimeAgentIdDto::Ask,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project_record_row(record_id: &str) -> ProjectRecordRow {
+        ProjectRecordRow {
+            record_id: record_id.into(),
+            project_id: "project-1".into(),
+            record_kind: "decision".into(),
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            agent_session_id: Some("default".into()),
+            run_id: format!("{record_id}-run"),
+            workflow_run_id: None,
+            workflow_step_id: None,
+            title: "Schema reset record".into(),
+            summary: "Schema reset record summary".into(),
+            text: "Schema reset record text.".into(),
+            text_hash: format!("{record_id}-text-hash"),
+            content_json: None,
+            content_hash: None,
+            schema_name: None,
+            schema_version: 1,
+            importance: "normal".into(),
+            confidence: None,
+            tags_json: "[]".into(),
+            source_item_ids_json: "[]".into(),
+            related_paths_json: "[]".into(),
+            produced_artifact_refs_json: "[]".into(),
+            redaction_state: "clean".into(),
+            visibility: "retrieval".into(),
+            freshness_state: "current".into(),
+            freshness_checked_at: Some("2026-05-05T16:40:32Z".into()),
+            stale_reason: None,
+            source_fingerprints_json: "{}".into(),
+            supersedes_id: None,
+            superseded_by_id: None,
+            invalidated_at: None,
+            fact_key: None,
+            created_at: "2026-05-05T16:40:32Z".into(),
+            updated_at: "2026-05-05T16:40:32Z".into(),
+            embedding: None,
+            embedding_model: None,
+            embedding_dimension: None,
+            embedding_version: None,
+        }
+    }
+
+    fn legacy_schema_missing_freshness_state() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(
+            "record_id",
+            DataType::Utf8,
+            false,
+        )]))
+    }
+
+    #[test]
+    fn stale_lance_schema_is_reset_before_listing_and_insert() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let dataset_dir = tempdir.path().join(PROJECT_LANCE_SUBDIR);
+
+        runtime()
+            .block_on(async {
+                let connection = connect_dataset(&dataset_dir).await?;
+                let legacy_schema = legacy_schema_missing_freshness_state();
+                let empty = RecordBatch::new_empty(legacy_schema.clone());
+                let iter = RecordBatchIterator::new(
+                    std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
+                    legacy_schema,
+                );
+                let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> =
+                    Box::new(iter);
+                connection
+                    .create_table(PROJECT_RECORDS_TABLE, reader)
+                    .execute()
+                    .await
+                    .map_err(|error| map_lance_error("test_legacy_lance_create_failed", error))?;
+                Ok::<_, CommandError>(())
+            })
+            .expect("create legacy lance table");
+
+        let store = ProjectRecordStore {
+            project_id: "project-1".into(),
+            dataset_dir,
+        };
+
+        let rows = store.list().expect("list resets stale schema");
+        assert!(rows.is_empty());
+
+        let inserted = store
+            .insert_dedup(project_record_row("schema-reset-record"))
+            .expect("insert after schema reset");
+        assert_eq!(inserted.record_id, "schema-reset-record");
+
+        let rows = store.list().expect("list inserted record");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].freshness_state, "current");
     }
 }

@@ -472,9 +472,9 @@ export function useAgentRuntimeController({
     setDraftPrompt('')
   }
 
-  async function handleStartRuntimeRun() {
+  async function handleStartRuntimeRun(): Promise<boolean> {
     if (!onStartRuntimeRun || (!canStartRuntimeRun && !canStartRuntimeSession)) {
-      return
+      return false
     }
 
     setRuntimeRunActionMessage(null)
@@ -482,7 +482,7 @@ export function useAgentRuntimeController({
     try {
       if (!canStartRuntimeRun && canStartRuntimeSession) {
         if (!onStartRuntimeSession) {
-          return
+          return false
         }
 
         setRuntimeSessionBindInFlight(true)
@@ -497,12 +497,12 @@ export function useAgentRuntimeController({
             : boundRuntimeSession?.lastError?.message?.trim() ||
               'Xero could not authenticate the configured provider. Check the provider setup and try again.'
           setRuntimeRunActionMessage(message)
-          return
+          return false
         }
       }
 
       if (!(await dictation.stopBeforeSubmit())) {
-        return
+        return false
       }
 
       const promptToSubmit = draftPromptRef.current.trim()
@@ -521,37 +521,38 @@ export function useAgentRuntimeController({
         }
         onSubmitAttachmentsSettled?.()
       }
+      return true
     } catch (error) {
       setQueuedDraftAcknowledgement(null)
       setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not start the agent run.'))
       setRuntimeSessionBindInFlight(false)
+      return false
     }
   }
 
-  async function handleSubmitDraftPrompt() {
+  async function handleSubmitDraftPrompt(): Promise<boolean> {
     if (!activeRuntimeRun) {
-      await handleStartRuntimeRun()
-      return
+      return handleStartRuntimeRun()
     }
 
     if (!onUpdateRuntimeRunControls) {
-      return
+      return false
     }
 
     if (trimmedDraftPrompt.length === 0 || hasQueuedPrompt || runtimeRunActionStatus === 'running') {
-      return
+      return false
     }
 
     setRuntimeRunActionMessage(null)
 
     try {
       if (!(await dictation.stopBeforeSubmit())) {
-        return
+        return false
       }
 
       const promptToSubmit = draftPromptRef.current.trim()
       if (promptToSubmit.length === 0) {
-        return
+        return false
       }
 
       const attachmentsToSubmit = (getPendingAttachments?.() ?? []).filter(
@@ -565,9 +566,11 @@ export function useAgentRuntimeController({
       clearSubmittedDraft()
       setQueuedDraftAcknowledgement(promptToSubmit)
       onSubmitAttachmentsSettled?.()
+      return true
     } catch (error) {
       setQueuedDraftAcknowledgement(null)
       setRuntimeRunActionMessage(getErrorMessage(error, 'Xero could not queue the next prompt for this agent run.'))
+      return false
     }
   }
 

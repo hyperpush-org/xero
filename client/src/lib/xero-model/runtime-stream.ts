@@ -16,6 +16,8 @@ export const MAX_RUNTIME_STREAM_TOOL_CALLS = 20
 export const MAX_RUNTIME_STREAM_SKILLS = 20
 export const MAX_RUNTIME_STREAM_ACTIVITY = 20
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED = 10
+const OWNED_AGENT_REASONING_ACTIVITY_CODE = 'owned_agent_reasoning'
+const OWNED_AGENT_REASONING_BOUNDARY_CODE = 'owned_agent_reasoning_boundary'
 
 export const runtimeToolCallStateSchema = z.enum(['pending', 'running', 'succeeded', 'failed'])
 export const runtimeSkillLifecycleStageSchema = z.enum(['discovery', 'install', 'invoke'])
@@ -60,6 +62,7 @@ export const runtimeStreamItemSchema = z
     toolName: nonEmptyOptionalTextSchema,
     toolState: runtimeToolCallStateSchema.nullable().optional(),
     toolSummary: toolResultSummarySchema.nullable().optional(),
+    toolResultPreview: z.string().nullable().optional(),
     skillId: nonEmptyOptionalTextSchema,
     skillStage: runtimeSkillLifecycleStageSchema.nullable().optional(),
     skillResult: runtimeSkillLifecycleResultSchema.nullable().optional(),
@@ -277,6 +280,8 @@ export const subscribeRuntimeStreamRequestSchema = z.object({
   projectId: z.string().trim().min(1),
   agentSessionId: z.string().trim().min(1),
   itemKinds: z.array(runtimeStreamItemKindSchema).min(1),
+  afterSequence: z.number().int().nonnegative().nullable().optional(),
+  replayLimit: z.number().int().min(1).max(1000).nullable().optional(),
 }).strict()
 
 export const subscribeRuntimeStreamResponseSchema = z.object({
@@ -314,6 +319,7 @@ interface RuntimeStreamBaseItemView {
   id: string
   runId: string
   sequence: number
+  updatedSequence?: number
   createdAt: string
 }
 
@@ -330,6 +336,7 @@ export interface RuntimeStreamToolItemView extends RuntimeStreamBaseItemView {
   toolState: RuntimeToolCallStateDto
   detail: string | null
   toolSummary: ToolResultSummaryDto | null
+  toolResultPreview: string | null
 }
 
 export interface RuntimeStreamSkillItemView extends RuntimeStreamBaseItemView {
@@ -427,22 +434,64 @@ function compareRuntimeStreamItemsBySequence(
     : left.sequence - right.sequence
 }
 
+function runtimeTimelineUpdateSequence(item: RuntimeStreamViewItem): number {
+  return item.updatedSequence ?? item.sequence
+}
+
+function latestRuntimeTimelineItem(
+  items: readonly RuntimeStreamViewItem[],
+): RuntimeStreamViewItem | null {
+  let latestItem: RuntimeStreamViewItem | null = null
+  for (const item of items) {
+    if (!latestItem || runtimeTimelineUpdateSequence(item) > runtimeTimelineUpdateSequence(latestItem)) {
+      latestItem = item
+    }
+  }
+  return latestItem
+}
+
+function mergeRuntimeTimelineToolItem(
+  currentItems: RuntimeStreamViewItem[],
+  nextItem: RuntimeStreamToolItemView,
+): RuntimeStreamViewItem[] {
+  const existingItemIndex = currentItems.findIndex(
+    (item) => item.kind === 'tool' && item.toolCallId === nextItem.toolCallId,
+  )
+
+  if (existingItemIndex < 0) {
+    return [...currentItems, nextItem]
+  }
+
+  const existingItem = currentItems[existingItemIndex]
+  if (existingItem?.kind !== 'tool') {
+    return [...currentItems, nextItem]
+  }
+
+  const mergedItem: RuntimeStreamToolItemView = {
+    ...nextItem,
+    id: existingItem.id,
+    sequence: existingItem.sequence,
+    createdAt: existingItem.createdAt,
+    updatedSequence: nextItem.sequence,
+  }
+
+  return currentItems.map((item, index) =>
+    index === existingItemIndex ? mergedItem : item,
+  )
+}
+
 function capRuntimeTimelineItems(
   currentItems: RuntimeStreamViewItem[],
   transcriptItems: RuntimeStreamTranscriptItemView[],
   nextItem: RuntimeStreamViewItem,
 ): RuntimeStreamViewItem[] {
+  const previousTimelineItem = latestRuntimeTimelineItem(currentItems)
   let nonTranscriptItems: RuntimeStreamViewItem[] = currentItems.filter(
     (item) => item.kind !== 'transcript',
   )
 
   if (nextItem.kind === 'tool') {
-    nonTranscriptItems = [
-      ...nonTranscriptItems.filter(
-        (item) => !(item.kind === 'tool' && item.toolCallId === nextItem.toolCallId),
-      ),
-      nextItem,
-    ]
+    nonTranscriptItems = mergeRuntimeTimelineToolItem(nonTranscriptItems, nextItem)
   } else if (nextItem.kind === 'action_required') {
     nonTranscriptItems = [
       ...nonTranscriptItems.filter(
@@ -456,21 +505,31 @@ function capRuntimeTimelineItems(
       nextItem,
     ]
   } else if (isReasoningActivityItem(nextItem)) {
-    nonTranscriptItems = mergeReasoningActivityTimelineItem(nonTranscriptItems, nextItem)
+    nonTranscriptItems = mergeReasoningActivityTimelineItem(
+      nonTranscriptItems,
+      nextItem,
+      previousTimelineItem,
+    )
   } else if (nextItem.kind !== 'transcript') {
     nonTranscriptItems = [...nonTranscriptItems, nextItem]
   }
 
+  const reasoningItems = nonTranscriptItems.filter(isReasoningActivityItem)
+  const otherNonTranscriptItems = nonTranscriptItems.filter(
+    (item) => !isReasoningActivityItem(item),
+  )
+
   return [
     ...transcriptItems,
-    ...capRecent(nonTranscriptItems, MAX_RUNTIME_STREAM_ITEMS),
+    ...reasoningItems,
+    ...otherNonTranscriptItems,
   ].sort(compareRuntimeStreamItemsBySequence)
 }
 
 function isReasoningActivityItem(
   item: RuntimeStreamViewItem,
 ): item is RuntimeStreamActivityItemView {
-  return item.kind === 'activity' && item.code === 'owned_agent_reasoning'
+  return item.kind === 'activity' && item.code === OWNED_AGENT_REASONING_ACTIVITY_CODE
 }
 
 function reasoningActivityText(item: RuntimeStreamActivityItemView): string {
@@ -480,25 +539,39 @@ function reasoningActivityText(item: RuntimeStreamActivityItemView): string {
 function mergeReasoningActivityTimelineItem(
   currentItems: RuntimeStreamViewItem[],
   nextItem: RuntimeStreamActivityItemView,
+  previousTimelineItem: RuntimeStreamViewItem | null,
 ): RuntimeStreamViewItem[] {
-  const previousItem = currentItems.at(-1)
-  if (!previousItem || !isReasoningActivityItem(previousItem) || previousItem.runId !== nextItem.runId) {
+  if (
+    !previousTimelineItem ||
+    !isReasoningActivityItem(previousTimelineItem) ||
+    previousTimelineItem.runId !== nextItem.runId
+  ) {
+    return [...currentItems, nextItem]
+  }
+
+  const previousItemIndex = currentItems.findIndex((item) => item.id === previousTimelineItem.id)
+  if (previousItemIndex < 0) {
+    return [...currentItems, nextItem]
+  }
+
+  const previousItem = currentItems[previousItemIndex]
+  if (!isReasoningActivityItem(previousItem)) {
     return [...currentItems, nextItem]
   }
 
   const mergedText = `${reasoningActivityText(previousItem)}${reasoningActivityText(nextItem)}`
-  return [
-    ...currentItems.slice(0, -1),
-    {
-      ...previousItem,
-      sequence: nextItem.sequence,
-      createdAt: nextItem.createdAt,
-      text: mergedText,
-      detail: mergedText.trim().length > 0
-        ? mergedText.trim()
-        : previousItem.detail ?? nextItem.detail,
-    },
-  ]
+  return currentItems.map((item, index) =>
+    index === previousItemIndex
+      ? {
+          ...previousItem,
+          updatedSequence: nextItem.sequence,
+          text: mergedText,
+          detail: mergedText.trim().length > 0
+            ? mergedText.trim()
+            : previousItem.detail ?? nextItem.detail,
+        }
+      : item,
+  )
 }
 
 function uniqueRuntimeStreamKinds(kinds: RuntimeStreamItemKindDto[]): RuntimeStreamItemKindDto[] {
@@ -525,21 +598,27 @@ function ensureRuntimeTranscriptText(value: string | null | undefined): string {
 function mergeRuntimeTranscriptItems(
   currentItems: RuntimeStreamTranscriptItemView[],
   nextItem: RuntimeStreamTranscriptItemView,
+  previousTimelineItem: RuntimeStreamViewItem | null,
 ): RuntimeStreamTranscriptItemView[] {
   if (nextItem.role !== 'assistant') {
     return capRecent([...currentItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
   }
 
   const previousItem = currentItems.at(-1)
-  if (previousItem?.runId !== nextItem.runId || previousItem.role !== nextItem.role) {
+  if (
+    !previousItem ||
+    previousItem.runId !== nextItem.runId ||
+    previousItem.role !== nextItem.role ||
+    previousTimelineItem?.kind !== 'transcript' ||
+    previousTimelineItem.id !== previousItem.id
+  ) {
     return capRecent([...currentItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
   }
 
   const mergedItem: RuntimeStreamTranscriptItemView = {
     ...previousItem,
     id: previousItem.id,
-    sequence: nextItem.sequence,
-    createdAt: nextItem.createdAt,
+    updatedSequence: nextItem.sequence,
     text: `${previousItem.text}${nextItem.text}`,
   }
 
@@ -665,6 +744,7 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         toolState,
         detail: normalizeOptionalText(event.item.detail),
         toolSummary: normalizeRuntimeToolSummary(event.item.toolSummary),
+        toolResultPreview: normalizeOptionalText(event.item.toolResultPreview),
       }
     }
     case 'skill': {
@@ -702,17 +782,22 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
     case 'activity': {
       const code = ensureRuntimeStreamText(event.item.code, 'code', 'activity')
       const title = ensureRuntimeStreamText(event.item.title, 'title', 'activity')
+      const text = typeof event.item.text === 'string' && event.item.text.length > 0
+        ? event.item.text
+        : null
+      const isReasoningBoundary =
+        code === OWNED_AGENT_REASONING_ACTIVITY_CODE &&
+        text != null &&
+        text.trim().length === 0
       return {
         id: runtimeStreamItemId('activity', itemRunId, event.item.sequence),
         kind: 'activity',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
-        code,
+        code: isReasoningBoundary ? OWNED_AGENT_REASONING_BOUNDARY_CODE : code,
         title,
-        text: typeof event.item.text === 'string' && event.item.text.length > 0
-          ? event.item.text
-          : null,
+        text,
         detail: normalizeOptionalText(event.item.detail),
       }
     }
@@ -875,7 +960,11 @@ export function mergeRuntimeStreamEvent(
       : base.skillItems
   const nextTranscriptItems =
     nextItem.kind === 'transcript'
-      ? mergeRuntimeTranscriptItems(base.transcriptItems, nextItem)
+      ? mergeRuntimeTranscriptItems(
+          base.transcriptItems,
+          nextItem,
+          latestRuntimeTimelineItem(base.items),
+        )
       : base.transcriptItems
   const nextItems = capRuntimeTimelineItems(base.items, nextTranscriptItems, nextItem)
   const nextActivityItems =

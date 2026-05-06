@@ -9,6 +9,7 @@ use crate::{
     },
     provider_credentials::ProviderCredentialProfile,
     provider_models::load_provider_model_catalog,
+    provider_preflight::run_selected_provider_preflight,
     runtime::{
         provider_capability_diagnostics, provider_model_catalog_diagnostic,
         provider_validation_diagnostics, XeroDiagnosticCheck, XeroDiagnosticCheckInput,
@@ -54,6 +55,7 @@ pub fn check_provider_profile<R: Runtime>(
     let mut reachability_checks = Vec::new();
     let mut capability_checks = Vec::new();
     let mut model_catalog = None;
+    let mut preflight = None;
     if request.include_network {
         match load_provider_model_catalog(&app, state.inner(), profile_id, true) {
             Ok(catalog) => {
@@ -63,6 +65,14 @@ pub fn check_provider_profile<R: Runtime>(
                     request.model_id.as_deref(),
                 )?);
                 model_catalog = Some(map_provider_model_catalog(catalog));
+                preflight = Some(run_selected_provider_preflight(
+                    &app,
+                    state.inner(),
+                    profile_id,
+                    request.model_id.as_deref(),
+                    true,
+                    xero_agent_core::ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+                )?);
             }
             Err(error) => {
                 reachability_checks.push(command_error_to_model_catalog_check(&profile, error)?);
@@ -78,6 +88,7 @@ pub fn check_provider_profile<R: Runtime>(
         reachability_checks,
         capability_checks,
         model_catalog,
+        preflight,
     })
 }
 

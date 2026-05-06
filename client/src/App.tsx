@@ -55,6 +55,7 @@ import type {
 import {
   useXeroDesktopState,
   type AgentPaneView,
+  type RefreshSource,
 } from '@/src/features/xero/use-xero-desktop-state'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
@@ -67,7 +68,6 @@ export interface XeroAppProps {
 
 const loadAgentRuntime = () => import('@/components/xero/agent-runtime')
 const loadExecutionView = () => import('@/components/xero/execution-view')
-const loadGamesSidebar = () => import('@/components/xero/games-sidebar')
 const loadBrowserSidebar = () => import('@/components/xero/browser-sidebar')
 const loadIosEmulatorSidebar = () => import('@/components/xero/ios-emulator-sidebar')
 const loadSolanaWorkbenchSidebar = () => import('@/components/xero/solana-workbench-sidebar')
@@ -87,7 +87,6 @@ const IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
   'settings',
   'usage',
   'ios',
-  'games',
 ]
 
 const SOLANA_WORKBENCH_WIDTH_STORAGE_KEY = 'xero.solana.workbench.width'
@@ -97,7 +96,6 @@ const SOLANA_WORKBENCH_MAX_WIDTH = 900
 const SIDEBAR_WIDTH_DURATION_MS = 200
 const STARTUP_SURFACE_PREWARM_SETTLE_MS = 320
 const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
-  'games',
   'browser',
   'ios',
   'solana',
@@ -147,10 +145,6 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   }
   warmedSurfaceChunks.add(target)
 
-  if (target === 'games') {
-    void loadGamesSidebar()
-    return
-  }
   if (target === 'browser') {
     void loadBrowserSidebar()
     return
@@ -264,7 +258,6 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
   await Promise.all([
     loadAgentRuntime(),
     loadExecutionView(),
-    loadGamesSidebar(),
     loadBrowserSidebar(),
     loadIosEmulatorSidebar(),
     loadSolanaWorkbenchSidebar().then((module) => module.preloadSolanaWorkbenchPanels()),
@@ -366,9 +359,6 @@ function useIdleSurfacePreloads(enabled: boolean): void {
 
 const LazyExecutionView = lazy(() =>
   loadExecutionView().then((module) => ({ default: module.ExecutionView })),
-)
-const LazyGamesSidebar = lazy(() =>
-  loadGamesSidebar().then((module) => ({ default: module.GamesSidebar })),
 )
 const LazyBrowserSidebar = lazy(() =>
   loadBrowserSidebar().then((module) => ({ default: module.BrowserSidebar })),
@@ -481,13 +471,13 @@ function getPaneCloseConfirmationCopy(state: AgentPaneCloseState | null | undefi
 }
 
 export function useActivatedSurface(active: boolean, prewarm = false) {
-  const [activated, setActivated] = useState(active || prewarm)
+  const [activated, setActivated] = useState(active)
 
   useEffect(() => {
-    if (active || prewarm) {
+    if (active) {
       setActivated(true)
     }
-  }, [active, prewarm])
+  }, [active])
 
   return active || prewarm || activated
 }
@@ -618,6 +608,10 @@ function SolanaWorkbenchOpeningShell({ open }: { open: boolean }) {
       </div>
     </aside>
   )
+}
+
+function isForegroundProjectLoad(source: RefreshSource): boolean {
+  return source === 'startup' || source === 'selection' || source === 'import' || source === 'remove'
 }
 
 function InlineSidebarLoadingShell({
@@ -820,6 +814,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     executionView,
     isLoading,
     isProjectLoading,
+    refreshSource,
     isImporting,
     projectRemovalStatus,
     pendingProjectRemovalId,
@@ -931,7 +926,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     useState<RuntimeRunControlInputDto | null>(null)
   const [isCreatingAgentSession, setIsCreatingAgentSession] = useState(false)
   const [projectAddOpen, setProjectAddOpen] = useState(false)
-  const [gamesOpen, setGamesOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [iosOpen, setIosOpen] = useState(false)
   const [solanaOpen, setSolanaOpen] = useState(false)
@@ -962,7 +956,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const previousNonFloatingRightSidebarOpenRef = useRef(false)
   const projectRailViewAutoCollapseActive = activeView === 'execution' || activeView === 'agent'
   const nonFloatingRightSidebarOpen =
-    gamesOpen ||
     browserOpen ||
     iosOpen ||
     solanaOpen ||
@@ -1143,28 +1136,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [resolvedAdapter],
   )
 
-  const toggleGames = useCallback(() => {
-    if (gamesOpen) {
-      restoreProjectRailForRightSidebarClose()
-      setGamesOpen(false)
-      return
-    }
-    setBrowserOpen(false)
-    setIosOpen(false)
-    setSolanaOpen(false)
-    setVcsOpen(false)
-    setWorkflowsOpen(false)
-    setAgentDockOpen(false)
-    setGamesOpen(true)
-  }, [gamesOpen, restoreProjectRailForRightSidebarClose])
-
   const toggleBrowser = useCallback(() => {
     if (browserOpen) {
       restoreProjectRailForRightSidebarClose()
       setBrowserOpen(false)
       return
     }
-    setGamesOpen(false)
     setIosOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
@@ -1179,7 +1156,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setIosOpen(false)
       return
     }
-    setGamesOpen(false)
     setBrowserOpen(false)
     setSolanaOpen(false)
     setVcsOpen(false)
@@ -1194,7 +1170,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSolanaOpen(false)
       return
     }
-    setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
     setVcsOpen(false)
@@ -1209,7 +1184,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setVcsOpen(false)
       return
     }
-    setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
     setSolanaOpen(false)
@@ -1224,7 +1198,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setWorkflowsOpen(false)
       return
     }
-    setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
     setSolanaOpen(false)
@@ -1239,7 +1212,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setAgentDockOpen(false)
       return
     }
-    setGamesOpen(false)
     setBrowserOpen(false)
     setIosOpen(false)
     setSolanaOpen(false)
@@ -2216,7 +2188,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const shouldAutoOpenOnboarding = !onboardingDismissed && !isLoading && projects.length === 0
   const showOnboarding = (onboardingOpen || shouldAutoOpenOnboarding) && !onboardingDismissed && !isLoading
   const isForegroundProjectSelection = pendingProjectSelectionId !== null
-  const isBlockingProjectLoading = isProjectLoading && !isForegroundProjectSelection
+  const foregroundProjectLoad = isForegroundProjectLoad(refreshSource)
+  const isBlockingProjectLoading =
+    isProjectLoading &&
+    foregroundProjectLoad &&
+    !isForegroundProjectSelection &&
+    !activeProject
   const startupSurfacePrewarm = useStartupSurfacePrewarm(
     !showOnboarding && !isLoading && !isBlockingProjectLoading,
   )
@@ -2277,8 +2254,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
         accountAuthenticating={githubAuthStatus === 'authenticating'}
         accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
         accountLogin={githubSession?.user.login ?? null}
-        onToggleGames={toggleGames}
-        gamesOpen={gamesOpen}
         onToggleBrowser={toggleBrowser}
         browserOpen={browserOpen}
         onToggleIos={toggleIos}
@@ -2361,8 +2336,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
           accountAuthenticating={githubAuthStatus === 'authenticating'}
           accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
           accountLogin={githubSession?.user.login ?? null}
-          onToggleGames={toggleGames}
-          gamesOpen={gamesOpen}
           onToggleBrowser={toggleBrowser}
           browserOpen={browserOpen}
           onToggleIos={toggleIos}
@@ -2389,7 +2362,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             collapsed={sidebarCollapsed}
             errorMessage={errorMessage}
             isImporting={isImporting}
-            isLoading={isLoading || isProjectLoading}
+            isLoading={isLoading || (isProjectLoading && foregroundProjectLoad)}
             onImportProject={() => setProjectAddOpen(true)}
             onRemoveProject={handleRemoveProject}
             onSelectProject={handleSelectProject}
@@ -2410,16 +2383,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
             }
           />
           {renderBody()}
-          <LazyPrerenderedSurface
-            open={gamesOpen}
-            prewarm={startupSurfacePrewarm.shouldMount}
-          >
-            <Suspense
-              fallback={<InlineSidebarLoadingShell label="Games" open={gamesOpen} width={360} />}
-            >
-              <LazyGamesSidebar accountLogin={githubSession?.user.login ?? null} open={gamesOpen} />
-            </Suspense>
-          </LazyPrerenderedSurface>
           <LazyPrerenderedSurface
             open={browserOpen}
             prewarm={startupSurfacePrewarm.shouldMount}

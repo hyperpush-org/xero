@@ -11,14 +11,16 @@
  * passing.
  */
 
-import { memo, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
   Brain,
+  Check,
   CheckCircle2,
   ChevronDown,
   Circle,
+  Copy,
   FileText,
   Info,
   Loader2,
@@ -28,11 +30,17 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import type {
   RuntimeRunView,
   RuntimeStreamCompleteItemView,
@@ -43,7 +51,6 @@ import type {
 
 import { AppLogo } from '../app-logo'
 import { Markdown } from './conversation-markdown'
-import { getToolStateLabel } from './runtime-stream-helpers'
 
 export interface ConversationMessageAttachment {
   id: string
@@ -82,6 +89,7 @@ export type ConversationTurn =
       detail: string
       detailRows: Array<{ label: string; value: string }>
       state?: RuntimeStreamToolItemView['toolState'] | null
+      defaultOpen?: boolean
     }
   | {
       id: string
@@ -94,6 +102,7 @@ export type ConversationTurn =
         id: string
         title: string
         detail: string
+        detailRows: Array<{ label: string; value: string }>
         state: RuntimeStreamToolItemView['toolState'] | null
       }>
     }
@@ -166,6 +175,10 @@ export const ConversationSection = memo(function ConversationSection({
   const showHandoffNotice = !showRunFailure && isHandoffCompletion(streamCompletion)
   const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
   const showAnyTurn = visibleTurns.length > 0
+  const copyableConversationText = useMemo(
+    () => formatConversationForCopy(visibleTurns),
+    [visibleTurns],
+  )
 
   const lastTurn = visibleTurns.length > 0 ? visibleTurns[visibleTurns.length - 1] : null
   const isLastTurnStreamingAssistant = Boolean(
@@ -180,62 +193,79 @@ export const ConversationSection = memo(function ConversationSection({
     return (
       <section
         aria-label="Agent conversation"
-        className="flex flex-col gap-1 font-mono text-[11px] leading-snug"
+        className="flex flex-col gap-2 text-[12px] leading-snug select-text"
       >
         {showAnyTurn ? (
-          <ol aria-label="Agent conversation turns" className="flex flex-col gap-0.5">
+          <ol aria-label="Agent conversation turns" className="flex flex-col gap-2">
             {visibleTurns.map((turn) => (
               <DenseTurnItem key={turn.id} turn={turn} />
             ))}
           </ol>
         ) : null}
         {showActivityIndicator ? (
-          <div className="flex items-center gap-1.5 px-1 text-[10.5px] text-muted-foreground">
+          <div className="flex items-center gap-1.5 px-1 text-[12px] text-muted-foreground">
             <Loader2 className="h-2.5 w-2.5 animate-spin text-primary/70" />
             <span>thinking…</span>
           </div>
         ) : null}
         {showAnyNotice ? (
-          <ul aria-label="Agent run notices" className="mt-1 flex flex-col gap-1">
+          <ul aria-label="Agent run notices" className="mt-2 flex flex-col gap-2">
             {showHandoffNotice ? (
-              <li className="rounded-sm border border-border/40 bg-muted/15 px-2 py-1 text-[10.5px] text-muted-foreground">
+              <li className="rounded-sm border border-border/40 bg-muted/15 px-2 py-1 text-[12px] text-muted-foreground">
                 ⤳ handed off to a fresh same-type session
               </li>
             ) : null}
             {showRunFailure ? (
-              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
+              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[12px] text-destructive">
                 ✗ {runFailureMessage}
               </li>
             ) : null}
             {showStreamFailure && streamFailure ? (
-              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10.5px] text-destructive">
+              <li className="rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-1 text-[12px] text-destructive">
                 ✗ {describeStreamMessage(streamFailure.code, streamFailure.message)}
               </li>
             ) : null}
             {showStreamIssue && streamIssue ? (
-              <li className="rounded-sm border border-border/40 bg-muted/20 px-2 py-1 text-[10.5px] text-muted-foreground">
+              <li className="rounded-sm border border-border/40 bg-muted/20 px-2 py-1 text-[12px] text-muted-foreground">
                 ⚠ {describeStreamMessage(streamIssue.code, streamIssue.message)}
               </li>
             ) : null}
           </ul>
+        ) : null}
+        {copyableConversationText.length > 0 ? (
+          <div className="mt-2 flex justify-end">
+            <CopyTextButton
+              text={copyableConversationText}
+              label="Copy visible conversation"
+              copiedLabel="Copied visible conversation"
+              tooltip="Copy conversation"
+              className="h-6 w-6 rounded-full text-muted-foreground/75 hover:text-foreground"
+            />
+          </div>
         ) : null}
       </section>
     )
   }
 
   return (
-    <section aria-label="Agent conversation" className="flex flex-col gap-5">
+    <section aria-label="Agent conversation" className="flex flex-col gap-5 select-text">
       {showAnyTurn ? (
         <ol aria-label="Agent conversation turns" className="flex flex-col gap-5">
-          {visibleTurns.map((turn, index) => (
-            <ConversationTurnItem
-              key={turn.id}
-              turn={turn}
-              accountAvatarUrl={accountAvatarUrl}
-              accountLogin={accountLogin}
-              isStreaming={index === visibleTurns.length - 1 && isLastTurnStreamingAssistant}
-            />
-          ))}
+          {visibleTurns.map((turn, index) => {
+            const prev = index > 0 ? visibleTurns[index - 1] : null
+            const next = index < visibleTurns.length - 1 ? visibleTurns[index + 1] : null
+            return (
+              <ConversationTurnItem
+                key={turn.id}
+                turn={turn}
+                accountAvatarUrl={accountAvatarUrl}
+                accountLogin={accountLogin}
+                isStreaming={index === visibleTurns.length - 1 && isLastTurnStreamingAssistant}
+                connectsTop={isToolTurnKind(prev)}
+                connectsBottom={isToolTurnKind(next)}
+              />
+            )
+          })}
         </ol>
       ) : null}
 
@@ -287,9 +317,155 @@ export const ConversationSection = memo(function ConversationSection({
           ) : null}
         </ul>
       ) : null}
+
+      {copyableConversationText.length > 0 ? (
+        <div className="flex justify-end pt-1">
+          <CopyTextButton
+            text={copyableConversationText}
+            label="Copy visible conversation"
+            copiedLabel="Copied visible conversation"
+            tooltip="Copy conversation"
+            className={cn(
+              'h-5 w-5 rounded-full text-muted-foreground/55 hover:text-foreground',
+              'opacity-50 hover:opacity-100',
+            )}
+          />
+        </div>
+      ) : null}
     </section>
   )
 })
+
+function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
+  return turns
+    .map((turn) => {
+      switch (turn.kind) {
+        case 'message': {
+          if (turn.role === 'assistant') {
+            return splitAssistantText(turn.text)
+              .map((segment) => {
+                const segmentText = segment.text.trim()
+                if (segmentText.length === 0) return ''
+                return `${segment.kind === 'thinking' ? 'Thoughts' : 'Agent'}:\n${segmentText}`
+              })
+              .filter(Boolean)
+              .join('\n\n')
+          }
+          const parts = [turn.text.trim()]
+          if (turn.attachments && turn.attachments.length > 0) {
+            const attachmentNames = turn.attachments
+              .map((attachment) => attachment.originalName.trim())
+              .filter(Boolean)
+            if (attachmentNames.length > 0) {
+              parts.push(`Attachments: ${attachmentNames.join(', ')}`)
+            }
+          }
+          const body = parts.filter(Boolean).join('\n')
+          return body.length > 0 ? `${turn.role === 'user' ? 'You' : 'Agent'}:\n${body}` : ''
+        }
+        case 'thinking':
+          return turn.text.trim().length > 0 ? `Thoughts:\n${turn.text.trim()}` : ''
+        case 'action':
+          return formatActionForCopy('Tool', turn.title, turn.detail, turn.detailRows)
+        case 'action_group': {
+          const groupLines = [
+            formatActionForCopy('Tools', turn.title, turn.detail, []),
+            ...turn.actions.map((action) =>
+              formatActionForCopy('Tool', action.title, action.detail, action.detailRows),
+            ),
+          ]
+          return groupLines.filter(Boolean).join('\n\n')
+        }
+        case 'failure':
+          return `Agent run failed:\n${turn.message}${turn.code.trim().length > 0 ? `\nCode: ${turn.code}` : ''}`
+        default:
+          return ''
+      }
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim()
+}
+
+function formatActionForCopy(
+  prefix: string,
+  title: string,
+  detail: string,
+  detailRows: ReadonlyArray<{ label: string; value: string }>,
+): string {
+  const lines = [`${prefix}: ${title.trim() || 'activity'}`]
+  if (detail.trim().length > 0) {
+    lines.push(detail.trim())
+  }
+  for (const row of detailRows) {
+    const label = row.label.trim()
+    const value = row.value.trim()
+    if (label.length > 0 && value.length > 0) {
+      lines.push(`${label}: ${value}`)
+    } else if (value.length > 0) {
+      lines.push(value)
+    }
+  }
+  return lines.join('\n')
+}
+
+interface CopyTextButtonProps {
+  text: string
+  label: string
+  copiedLabel: string
+  tooltip: string
+  className?: string
+}
+
+function CopyTextButton({
+  text,
+  label,
+  copiedLabel,
+  tooltip,
+  className,
+}: CopyTextButtonProps) {
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!copied) return
+    const timeoutId = window.setTimeout(() => setCopied(false), 1400)
+    return () => window.clearTimeout(timeoutId)
+  }, [copied])
+
+  const handleCopy = useCallback(async () => {
+    try {
+      if (!navigator.clipboard?.writeText) return
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+    } catch {
+      // Clipboard writes can be denied by WebView permissions or test runners.
+    }
+  }, [text])
+
+  const Icon = copied ? Check : Copy
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={copied ? copiedLabel : label}
+          onClick={handleCopy}
+          className={cn(
+            'select-none rounded-md transition-opacity [&_svg]:size-[11px]',
+            copied ? 'text-success opacity-100' : null,
+            className,
+          )}
+        >
+          <Icon aria-hidden="true" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{copied ? 'Copied' : tooltip}</TooltipContent>
+    </Tooltip>
+  )
+}
 
 function NoticeListItem({ children }: { children: React.ReactNode }) {
   return <li className={TURN_ENTRY_CLASS}>{children}</li>
@@ -326,11 +502,19 @@ function describeStreamMessage(code: string, fallback: string): string {
   }
 }
 
+function isToolTurnKind(turn: ConversationTurn | null): boolean {
+  return turn != null && (turn.kind === 'action' || turn.kind === 'action_group')
+}
+
 interface ConversationTurnItemProps {
   turn: ConversationTurn
   accountAvatarUrl: string | null
   accountLogin: string | null
   isStreaming: boolean
+  /** Previous visible turn is also a tool call; render a connector up to it. */
+  connectsTop: boolean
+  /** Next visible turn is also a tool call; render a connector down to it. */
+  connectsBottom: boolean
 }
 
 const TURN_ENTRY_CLASS = cn(
@@ -343,6 +527,8 @@ function ConversationTurnItem({
   accountAvatarUrl,
   accountLogin,
   isStreaming,
+  connectsTop,
+  connectsBottom,
 }: ConversationTurnItemProps) {
   return (
     <li className={TURN_ENTRY_CLASS}>
@@ -351,6 +537,8 @@ function ConversationTurnItem({
         accountAvatarUrl={accountAvatarUrl}
         accountLogin={accountLogin}
         isStreaming={isStreaming}
+        connectsTop={connectsTop}
+        connectsBottom={connectsBottom}
       />
     </li>
   )
@@ -361,6 +549,8 @@ interface ConversationTurnRowProps {
   accountAvatarUrl: string | null
   accountLogin: string | null
   isStreaming: boolean
+  connectsTop: boolean
+  connectsBottom: boolean
 }
 
 function ConversationTurnRow({
@@ -368,6 +558,8 @@ function ConversationTurnRow({
   accountAvatarUrl,
   accountLogin,
   isStreaming,
+  connectsTop,
+  connectsBottom,
 }: ConversationTurnRowProps) {
   if (turn.kind === 'message') {
     return turn.role === 'user' ? (
@@ -387,9 +579,7 @@ function ConversationTurnRow({
       <div className="flex gap-2.5">
         <AgentAvatar pulse={isStreaming} />
         <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
-          <span className="px-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
-            Agent
-          </span>
+          <span className="sr-only">Agent</span>
           <ThinkingBlock messageId={turn.id} text={turn.text} />
         </div>
       </div>
@@ -407,22 +597,30 @@ function ConversationTurnRow({
         detail={turn.detail}
         state={turn.state ?? null}
         actions={turn.actions}
+        connectsTop={connectsTop}
+        connectsBottom={connectsBottom}
       />
     )
   }
 
   return (
-    <ActionCard
-      title={turn.title}
-      detail={turn.detail}
-      detailRows={turn.detailRows}
-      state={turn.state ?? null}
-    />
+      <ActionCard
+        title={turn.title}
+        detail={turn.detail}
+        detailRows={turn.detailRows}
+        state={turn.state ?? null}
+        defaultOpen={turn.defaultOpen ?? false}
+        connectsTop={connectsTop}
+        connectsBottom={connectsBottom}
+      />
   )
 }
 
 // ---------------------------------------------------------------------------
-// Action / tool card — flat, inline row with a leading status icon.
+// Action / tool row — cardless, inline row with a leading status icon. The
+// running state gets a thin primary-colored left rail; the failed state gets
+// destructive-colored text. No surrounding border or background — consecutive
+// tool calls read as a compact log rather than a stack of cards.
 // ---------------------------------------------------------------------------
 
 interface ActionCardProps {
@@ -430,65 +628,56 @@ interface ActionCardProps {
   detail: string
   detailRows: Array<{ label: string; value: string }>
   state: RuntimeStreamToolItemView['toolState'] | null
+  defaultOpen?: boolean
+  connectsTop?: boolean
+  connectsBottom?: boolean
 }
 
-function ActionCard({ title, detail, detailRows, state }: ActionCardProps) {
-  const [open, setOpen] = useState(false)
+function ActionCard({
+  title,
+  detail,
+  detailRows,
+  state,
+  defaultOpen = false,
+  connectsTop = false,
+  connectsBottom = false,
+}: ActionCardProps) {
   const hasDetails = detailRows.length > 0
+  const [open, setOpen] = useState(() => defaultOpen && hasDetails)
   const isFailed = state === 'failed'
+  const isRunning = state === 'running'
+  const rowClass = cn(
+    'flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors',
+    'hover:bg-foreground/[0.03]',
+    isRunning && 'bg-primary/[0.025]',
+    isFailed && 'bg-destructive/[0.04]',
+  )
+
+  useEffect(() => {
+    if (defaultOpen && hasDetails) {
+      setOpen(true)
+    }
+  }, [defaultOpen, hasDetails])
 
   return (
-    <div
-      className={cn(
-        'group rounded-lg border bg-card/25 transition-colors',
-        isFailed
-          ? 'border-destructive/30 bg-destructive/[0.04]'
-          : 'border-border/40 hover:border-border/70 hover:bg-card/45',
-        open && !isFailed ? 'border-border/70 bg-card/45' : null,
-      )}
-    >
+    <div className="group/tool relative">
+      <ToolChainConnectors connectsTop={connectsTop} connectsBottom={connectsBottom} />
       <Collapsible open={open} onOpenChange={setOpen}>
-        <div className="flex items-start gap-2 px-3 py-2">
-          <ToolStatusIcon state={state} className="mt-[2.5px]" />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span
-                className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground"
-                title={title}
-              >
-                {title}
-              </span>
-              <ToolStateLabel state={state} size="sm" />
-              {hasDetails ? (
-                <CollapsibleTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={`${open ? 'Hide' : 'Show'} tool details for ${title}`}
-                    className={cn(
-                      'flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-muted-foreground/60',
-                      'hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
-                    )}
-                  >
-                    <ChevronDown
-                      className={cn(
-                        'h-3 w-3 transition-transform duration-200 ease-out',
-                        open ? 'rotate-180' : 'rotate-0',
-                      )}
-                    />
-                  </button>
-                </CollapsibleTrigger>
-              ) : null}
-            </div>
-            {detail.trim().length > 0 ? (
-              <p
-                className="mt-0.5 truncate text-[11.5px] leading-relaxed text-muted-foreground/90"
-                title={detail}
-              >
-                {detail}
-              </p>
-            ) : null}
+        {hasDetails ? (
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              aria-label={`${open ? 'Hide' : 'Show'} tool details for ${title}`}
+              className={cn(rowClass, 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60')}
+            >
+              <ActionCardHeader title={title} detail={detail} state={state} open={open} />
+            </button>
+          </CollapsibleTrigger>
+        ) : (
+          <div className={rowClass}>
+            <ActionCardHeader title={title} detail={detail} state={state} open={null} />
           </div>
-        </div>
+        )}
         {hasDetails ? (
           <CollapsibleContent
             className={cn(
@@ -498,7 +687,7 @@ function ActionCard({ title, detail, detailRows, state }: ActionCardProps) {
               'data-[state=open]:duration-200 data-[state=closed]:duration-150',
             )}
           >
-            <div className="border-t border-border/30 px-3 pb-2.5 pt-2">
+            <div className="ml-[22px] border-l border-border/25 pl-3 pr-1 pb-1.5 pt-1">
               <ToolDetailRows rows={detailRows} />
             </div>
           </CollapsibleContent>
@@ -508,67 +697,166 @@ function ActionCard({ title, detail, detailRows, state }: ActionCardProps) {
   )
 }
 
+function ActionCardHeader({
+  title,
+  detail,
+  state,
+  open,
+}: {
+  title: string
+  detail: string
+  state: RuntimeStreamToolItemView['toolState'] | null
+  open: boolean | null
+}) {
+  const isFailed = state === 'failed'
+  const hasDetail = detail.trim().length > 0
+  return (
+    <>
+      <ToolStatusIcon state={state} className="shrink-0" />
+      <span
+        className={cn(
+          'min-w-0 shrink truncate text-[12.5px] font-medium tracking-[-0.005em]',
+          isFailed ? 'text-destructive' : 'text-foreground',
+        )}
+        title={title}
+      >
+        {title}
+      </span>
+      {hasDetail ? (
+        <span
+          className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
+          title={detail}
+        >
+          {detail}
+        </span>
+      ) : (
+        <span aria-hidden="true" className="flex-1" />
+      )}
+      {open !== null ? (
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+            'group-hover/tool:text-muted-foreground/80',
+            open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+          )}
+        />
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * Renders the small vertical lines that visually chain consecutive tool-call
+ * rows together at the status-icon column. The line bridges half of the
+ * surrounding gap-5 (20px → 10px each side) and meets the next row's
+ * connector in the middle of the gap.
+ *
+ * Positioning is hard-coded to match the row layout: outer wrapper has no
+ * padding, the inner row uses `px-1` (4px) and a 14px status icon, putting
+ * the icon center at x = 4 + 7 = 11px and y ≈ 10px (icon vertically centered
+ * in a ~20px row with `items-center`).
+ */
+function ToolChainConnectors({
+  connectsTop,
+  connectsBottom,
+}: {
+  connectsTop: boolean
+  connectsBottom: boolean
+}) {
+  if (!connectsTop && !connectsBottom) return null
+  return (
+    <>
+      {connectsTop ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute left-[11px] -top-[10px] h-[20px] w-px bg-muted-foreground/35"
+        />
+      ) : null}
+      {connectsBottom ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute left-[11px] top-[10px] -bottom-[10px] w-px bg-muted-foreground/35"
+        />
+      ) : null}
+    </>
+  )
+}
+
 interface ToolDetailRowsProps {
   rows: Array<{ label: string; value: string }>
 }
 
 function ToolDetailRows({ rows }: ToolDetailRowsProps) {
+  const outputRow = rows.find((row) => /output/i.test(row.label))
+  if (outputRow) {
+    return (
+      <div className="group/output relative">
+        <pre
+          className={cn(
+            'm-0 max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md',
+            'bg-background/40 px-3 py-2.5 pr-9 font-mono text-[12px] leading-[1.6] text-foreground/85',
+            'scrollbar-thin',
+          )}
+        >
+          {outputRow.value}
+        </pre>
+        <ToolOutputCopyAffordance text={outputRow.value} label="Copy tool output" />
+      </div>
+    )
+  }
+
+  const fallback =
+    rows.find((row) => /result/i.test(row.label)) ??
+    rows.find((row) => /input|outcome|cmd|command/i.test(row.label)) ??
+    rows[0]
+  if (!fallback) return null
+
+  const isCommandLike = /^[A-Za-z][\w./-]*\s/.test(fallback.value.trim())
   return (
-    <dl className="grid gap-2">
-      {rows.map((row, index) => {
-        const isCommandLike =
-          /input|command|cmd/i.test(row.label) && /^[A-Za-z][\w./-]*\s/.test(row.value.trim())
-        return (
-          <div key={`${row.label}:${index}`} className="grid gap-1">
-            <dt className="text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">
-              {row.label}
-            </dt>
-            <dd
-              className={cn(
-                'overflow-hidden rounded-md border border-border/40 bg-muted/25 px-2 py-1.5',
-                'whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground/85',
-              )}
-              title={row.value}
-            >
-              {isCommandLike ? (
-                <span className="flex items-start gap-1.5">
-                  <Terminal
-                    aria-hidden="true"
-                    className="mt-[1px] h-3 w-3 shrink-0 text-primary/70"
-                  />
-                  <span className="min-w-0 flex-1">{row.value}</span>
-                </span>
-              ) : (
-                row.value
-              )}
-            </dd>
-          </div>
-        )
-      })}
-    </dl>
+    <div className="group/output relative">
+      <div
+        className={cn(
+          'rounded-md bg-background/40 px-3 py-2 pr-9',
+          'whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.6] text-foreground/80',
+        )}
+      >
+        {isCommandLike ? (
+          <span className="flex items-start gap-2">
+            <Terminal aria-hidden="true" className="mt-[2px] h-3 w-3 shrink-0 text-primary/75" />
+            <span className="min-w-0 flex-1">{fallback.value}</span>
+          </span>
+        ) : (
+          fallback.value
+        )}
+      </div>
+      <ToolOutputCopyAffordance text={fallback.value} label="Copy tool output" />
+    </div>
   )
 }
 
-interface ToolStateLabelProps {
-  state: RuntimeStreamToolItemView['toolState'] | null
-  size?: 'sm' | 'xs'
-}
-
-function ToolStateLabel({ state, size = 'sm' }: ToolStateLabelProps) {
-  if (!state) return null
-  const sizeClass = size === 'sm' ? 'text-[10.5px]' : 'text-[10px]'
+function ToolOutputCopyAffordance({ text, label }: { text: string; label: string }) {
+  if (text.trim().length === 0) return null
   return (
-    <span
-      key={state}
+    <div
       className={cn(
-        'shrink-0 font-medium uppercase tracking-[0.05em] tabular-nums',
-        sizeClass,
-        getToolStateTextClass(state),
-        'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200',
+        'pointer-events-none absolute right-1 top-1',
+        'opacity-0 transition-opacity duration-150',
+        'group-hover/output:opacity-100 focus-within:opacity-100',
       )}
     >
-      {getToolStateLabel(state)}
-    </span>
+      <CopyTextButton
+        text={text}
+        label={label}
+        copiedLabel={`${label} (copied)`}
+        tooltip="Copy output"
+        className={cn(
+          'pointer-events-auto h-5 w-5 rounded-md',
+          'bg-background/85 text-muted-foreground shadow-sm ring-1 ring-border/40',
+          'backdrop-blur hover:bg-background hover:text-foreground',
+        )}
+      />
+    </div>
   )
 }
 
@@ -584,54 +872,68 @@ interface ActionGroupCardProps {
     id: string
     title: string
     detail: string
+    detailRows: Array<{ label: string; value: string }>
     state: RuntimeStreamToolItemView['toolState'] | null
   }>
+  connectsTop?: boolean
+  connectsBottom?: boolean
 }
 
-function ActionGroupCard({ title, detail, state, actions }: ActionGroupCardProps) {
+function ActionGroupCard({
+  title,
+  detail,
+  state,
+  actions,
+  connectsTop = false,
+  connectsBottom = false,
+}: ActionGroupCardProps) {
   const [open, setOpen] = useState(false)
+  const isRunning = state === 'running'
+  const hasDetail = detail.trim().length > 0
 
   return (
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className={cn(
-        'overflow-hidden rounded-lg border bg-card/25 transition-colors',
-        open ? 'border-border/70 bg-card/45' : 'border-border/40 hover:border-border/70 hover:bg-card/45',
-      )}
+      className="group/tool relative"
     >
+      <ToolChainConnectors connectsTop={connectsTop} connectsBottom={connectsBottom} />
       <CollapsibleTrigger asChild>
         <button
           type="button"
           aria-label={`${open ? 'Hide' : 'Show'} grouped tool details for ${title}`}
           className={cn(
-            'flex w-full items-start gap-2 px-3 py-2 text-left',
+            'flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors',
+            'hover:bg-foreground/[0.03]',
+            isRunning && 'bg-primary/[0.025]',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
           )}
         >
-          <ToolStatusIcon state={state} className="mt-[2.5px]" />
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span
-                className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground"
-                title={title}
-              >
-                {title}
-              </span>
-              <ChevronDown
-                className={cn(
-                  'h-3 w-3 shrink-0 text-muted-foreground/60 transition-transform duration-200 ease-out',
-                  open ? 'rotate-180' : 'rotate-0',
-                )}
-              />
-            </div>
-            <p
-              className="mt-0.5 truncate text-[11.5px] leading-relaxed text-muted-foreground/90"
+          <ToolStatusIcon state={state} className="shrink-0" />
+          <span
+            className="min-w-0 shrink truncate text-[12.5px] font-medium tracking-[-0.005em] text-foreground"
+            title={title}
+          >
+            {title}
+          </span>
+          {hasDetail ? (
+            <span
+              className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
               title={detail}
             >
               {detail}
-            </p>
-          </div>
+            </span>
+          ) : (
+            <span aria-hidden="true" className="flex-1" />
+          )}
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+              'group-hover/tool:text-muted-foreground/80',
+              open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+            )}
+          />
         </button>
       </CollapsibleTrigger>
       <CollapsibleContent
@@ -642,38 +944,108 @@ function ActionGroupCard({ title, detail, state, actions }: ActionGroupCardProps
           'data-[state=open]:duration-200 data-[state=closed]:duration-150',
         )}
       >
-        <ol className="divide-y divide-border/25 border-t border-border/30">
+        <ol className="ml-[22px] mt-0.5 flex flex-col gap-px border-l border-border/25 pl-2">
           {actions.map((action) => (
-            <li
-              key={action.id}
-              className={cn(
-                'flex items-start gap-2 px-3 py-1.5',
-                'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150 motion-safe:ease-out',
-              )}
-            >
-              <ToolStatusIcon state={action.state} className="mt-[2.5px]" />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span
-                    className="min-w-0 flex-1 truncate text-[12px] text-foreground"
-                    title={action.title}
-                  >
-                    {action.title}
-                  </span>
-                  <ToolStateLabel state={action.state} size="xs" />
-                </div>
-                <p
-                  className="mt-0.5 truncate text-[11px] leading-relaxed text-muted-foreground/85"
-                  title={action.detail}
-                >
-                  {action.detail}
-                </p>
-              </div>
-            </li>
+            <ActionGroupItem key={action.id} action={action} />
           ))}
         </ol>
       </CollapsibleContent>
     </Collapsible>
+  )
+}
+
+function ActionGroupItem({
+  action,
+}: {
+  action: ActionGroupCardProps['actions'][number]
+}) {
+  const [open, setOpen] = useState(false)
+  const hasDetails = action.detailRows.length > 0
+  const rowClass = cn(
+    'flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors',
+    'hover:bg-foreground/[0.03]',
+    action.state === 'running' && 'bg-primary/[0.025]',
+    action.state === 'failed' && 'bg-destructive/[0.04]',
+  )
+
+  return (
+    <li className="group/sub motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150 motion-safe:ease-out">
+      <Collapsible open={open} onOpenChange={setOpen}>
+        {hasDetails ? (
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              aria-label={`${open ? 'Hide' : 'Show'} tool details for ${action.title}`}
+              className={cn(rowClass, 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60')}
+            >
+              <ActionGroupItemHeader action={action} open={open} />
+            </button>
+          </CollapsibleTrigger>
+        ) : (
+          <div className={rowClass}>
+            <ActionGroupItemHeader action={action} open={null} />
+          </div>
+        )}
+        {hasDetails ? (
+          <CollapsibleContent
+            className={cn(
+              'overflow-hidden',
+              'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1',
+              'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1',
+              'data-[state=open]:duration-150 data-[state=closed]:duration-100',
+            )}
+          >
+            <div className="ml-[20px] border-l border-border/25 pb-1.5 pl-3 pr-1 pt-1">
+              <ToolDetailRows rows={action.detailRows} />
+            </div>
+          </CollapsibleContent>
+        ) : null}
+      </Collapsible>
+    </li>
+  )
+}
+
+function ActionGroupItemHeader({
+  action,
+  open,
+}: {
+  action: ActionGroupCardProps['actions'][number]
+  open: boolean | null
+}) {
+  const isFailed = action.state === 'failed'
+  const hasDetail = action.detail.trim().length > 0
+  return (
+    <>
+      <ToolStatusIcon state={action.state} className="shrink-0" />
+      <span
+        className={cn(
+          'min-w-0 shrink truncate text-[12.5px]',
+          isFailed ? 'text-destructive' : 'text-foreground/95',
+        )}
+        title={action.title}
+      >
+        {action.title}
+      </span>
+      {hasDetail ? (
+        <span
+          className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
+          title={action.detail}
+        >
+          {action.detail}
+        </span>
+      ) : (
+        <span aria-hidden="true" className="flex-1" />
+      )}
+      {open !== null ? (
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+            open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+          )}
+        />
+      ) : null}
+    </>
   )
 }
 
@@ -691,11 +1063,9 @@ interface UserMessageProps {
 function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: UserMessageProps) {
   const hasAttachments = attachments && attachments.length > 0
   return (
-    <div className="flex justify-end gap-2.5">
+    <div className="group/user flex justify-end gap-2.5">
       <div className="flex min-w-0 max-w-[80%] flex-col items-end gap-1">
-        <span className="px-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
-          You
-        </span>
+        <span className="sr-only">You</span>
         {hasAttachments ? (
           <div className="flex max-w-full flex-wrap justify-end gap-1.5">
             {attachments!.map((attachment) => (
@@ -709,10 +1079,27 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
               'rounded-2xl px-3.5 py-2',
               'bg-primary/10 text-foreground',
               'ring-1 ring-inset ring-primary/15',
-              'whitespace-pre-wrap break-words text-[13px] leading-relaxed',
+              'whitespace-pre-wrap break-words text-[14px] leading-relaxed select-text',
             )}
           >
             {text}
+          </div>
+        ) : null}
+        {text.trim().length > 0 ? (
+          <div
+            className={cn(
+              'flex h-4 items-center justify-end pr-0.5',
+              'opacity-0 transition-opacity duration-150',
+              'group-hover/user:opacity-100 focus-within:opacity-100',
+            )}
+          >
+            <CopyTextButton
+              text={text}
+              label="Copy your prompt"
+              copiedLabel="Copied your prompt"
+              tooltip="Copy"
+              className="h-4 w-4 text-muted-foreground/60 hover:text-foreground"
+            />
           </div>
         ) : null}
       </div>
@@ -803,6 +1190,15 @@ function AssistantMessage({
   isStreaming: boolean
 }) {
   const segments = useMemo(() => splitAssistantText(text), [text])
+  const responseCopyText = useMemo(
+    () =>
+      segments
+        .filter((segment) => segment.kind === 'response')
+        .map((segment) => segment.text.trim())
+        .filter(Boolean)
+        .join('\n\n'),
+    [segments],
+  )
   const lastResponseIndex = (() => {
     for (let i = segments.length - 1; i >= 0; i -= 1) {
       if (segments[i].kind === 'response') return i
@@ -811,12 +1207,10 @@ function AssistantMessage({
   })()
 
   return (
-    <div className="flex gap-2.5">
+    <div className="group/agent flex gap-2.5">
       <AgentAvatar pulse={isStreaming} />
       <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
-        <span className="px-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/70">
-          Agent
-        </span>
+        <span className="sr-only">Agent</span>
         <div className="flex w-full min-w-0 flex-col items-start gap-2">
           {segments.map((segment, index) =>
             segment.kind === 'thinking' ? (
@@ -826,11 +1220,29 @@ function AssistantMessage({
                 key={index}
                 messageId={`${messageId}:response:${index}`}
                 text={segment.text}
+                isStreaming={isStreaming && index === lastResponseIndex}
                 showCaret={isStreaming && index === lastResponseIndex}
               />
             ),
           )}
         </div>
+        {responseCopyText.length > 0 ? (
+          <div
+            className={cn(
+              'flex h-4 items-center pl-0.5',
+              'opacity-0 transition-opacity duration-150',
+              'group-hover/agent:opacity-100 focus-within:opacity-100',
+            )}
+          >
+            <CopyTextButton
+              text={responseCopyText}
+              label="Copy agent response"
+              copiedLabel="Copied agent response"
+              tooltip="Copy"
+              className="h-4 w-4 text-muted-foreground/60 hover:text-foreground"
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -839,15 +1251,22 @@ function AssistantMessage({
 function ResponseBlock({
   messageId,
   text,
+  isStreaming = false,
   showCaret = false,
 }: {
   messageId: string
   text: string
+  isStreaming?: boolean
   showCaret?: boolean
 }) {
   return (
-    <div className="w-full min-w-0 px-0.5 text-foreground">
-      <Markdown messageId={messageId} text={text} trailing={showCaret ? <StreamingCaret /> : null} />
+    <div className="w-full min-w-0 px-0.5 text-foreground select-text">
+      <Markdown
+        messageId={messageId}
+        text={text}
+        streaming={isStreaming}
+        trailing={showCaret ? <StreamingCaret /> : null}
+      />
     </div>
   )
 }
@@ -873,8 +1292,8 @@ function ThinkingBlock({ messageId, text }: { messageId?: string; text: string }
   return (
     <div
       className={cn(
-        'relative w-full max-w-full min-w-0 rounded-lg border border-border/40 bg-muted/15 pl-3 pr-2.5 py-1.5',
-        'before:absolute before:inset-y-1.5 before:left-0 before:w-[2px] before:rounded-r-full before:bg-primary/35',
+        'relative w-full max-w-full min-w-0 rounded-lg border border-border/40 bg-muted/15 pl-3.5 pr-3 py-2',
+        'before:absolute before:inset-y-2 before:left-0 before:w-[2px] before:rounded-r-full before:bg-primary/35',
       )}
     >
       <button
@@ -882,17 +1301,17 @@ function ThinkingBlock({ messageId, text }: { messageId?: string; text: string }
         onClick={() => setOpen((prev) => !prev)}
         aria-expanded={open}
         className={cn(
-          'flex w-full items-center gap-1.5 text-left text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/85',
+          'flex w-full items-center gap-1.5 text-left text-[11.5px] font-semibold uppercase tracking-[0.07em] text-muted-foreground/90',
           'hover:text-foreground focus-visible:outline-none focus-visible:text-foreground',
         )}
       >
-        <Brain className="h-3 w-3 text-primary/70" />
+        <Brain className="h-3.5 w-3.5 text-primary/70" />
         <span>Thoughts</span>
         {!open && hiddenLineCount > 0 ? (
           <span
             key={hiddenLineCount}
             className={cn(
-              'rounded-full bg-muted/70 px-1.5 py-px text-[9.5px] normal-case tracking-normal text-muted-foreground/80',
+              'rounded-full bg-muted/70 px-1.5 py-px text-[10.5px] normal-case tracking-normal text-muted-foreground/85',
               'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-90 motion-safe:duration-150',
             )}
           >
@@ -901,7 +1320,7 @@ function ThinkingBlock({ messageId, text }: { messageId?: string; text: string }
         ) : null}
         <ChevronDown
           className={cn(
-            'ml-auto h-3 w-3 transition-transform duration-200 ease-out',
+            'ml-auto h-3.5 w-3.5 transition-transform duration-200 ease-out',
             open ? 'rotate-180' : 'rotate-0',
           )}
         />
@@ -910,20 +1329,14 @@ function ThinkingBlock({ messageId, text }: { messageId?: string; text: string }
         <div
           key="open"
           className={cn(
-            'mt-1.5 border-t border-border/25 pt-1.5',
+            'mt-2 border-t border-border/25 pt-2',
             'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200',
           )}
         >
-          <Markdown messageId={messageId ? `${messageId}:open` : null} text={text} muted compact />
+          <Markdown messageId={messageId ? `${messageId}:open` : null} text={text} muted />
         </div>
       ) : previewText.length > 0 ? (
-        <div
-          key={`preview:${previewText.length}`}
-          className={cn(
-            'mt-1',
-            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150',
-          )}
-        >
+        <div className="mt-1.5">
           <Markdown messageId={messageId ? `${messageId}:preview` : null} text={previewText} muted compact />
         </div>
       ) : null}
@@ -944,11 +1357,11 @@ function AgentActivityIndicator() {
       <AgentAvatar pulse />
       <div
         className={cn(
-          'mt-0.5 flex min-w-0 items-center gap-1.5 rounded-full border border-border/40 bg-card/35 px-2.5 py-1 text-[12px] font-medium text-muted-foreground shadow-sm',
+          'mt-0.5 flex min-w-0 items-center gap-1.5 rounded-full border border-border/40 bg-card/35 px-3 py-1 text-[12.5px] font-medium text-muted-foreground shadow-sm',
           'agent-activity-indicator',
         )}
       >
-        <Loader2 className="h-3 w-3 animate-spin text-primary/80" aria-hidden="true" />
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary/80" aria-hidden="true" />
         <span>Thinking</span>
         <span className="flex items-center gap-0.5" aria-hidden="true">
           <span className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/70 [animation-delay:0ms]" />
@@ -1002,12 +1415,12 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
     >
       <Icon className={cn('mt-[2px] h-3.5 w-3.5 shrink-0', toneStyles.icon)} />
       <div className="min-w-0 flex-1">
-        <p className="m-0 text-[12.5px] font-medium">{title}</p>
-        <p className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed">
+        <p className="m-0 text-[13px] font-medium">{title}</p>
+        <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
           {message}
         </p>
         {code ? (
-          <p className={cn('mt-1 break-words font-mono text-[10px]', toneStyles.codeText)}>
+          <p className={cn('mt-1 break-words font-mono text-[10.5px]', toneStyles.codeText)}>
             code: {code}
           </p>
         ) : null}
@@ -1025,11 +1438,11 @@ function FailureCard({ message, code }: { message: string; code: string }) {
     <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-destructive">
       <XCircle className="mt-[2px] h-3.5 w-3.5 shrink-0" />
       <div className="min-w-0 flex-1">
-        <p className="m-0 text-[12.5px] font-medium">Agent run failed</p>
-        <p className="mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed">
+        <p className="m-0 text-[13px] font-medium">Agent run failed</p>
+        <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
           {message}
         </p>
-        <p className="mt-1 break-words font-mono text-[10px] text-destructive/70">
+        <p className="mt-1 break-words font-mono text-[10.5px] text-destructive/70">
           code: {code}
         </p>
       </div>
@@ -1055,7 +1468,7 @@ function UserAvatar({ avatarUrl, login }: UserAvatarProps) {
       aria-hidden={showImage ? undefined : 'true'}
       aria-label={showImage && login ? `${login}'s avatar` : undefined}
       className={cn(
-        'mt-[16px] flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full',
+        'mt-[2px] flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full',
         showImage
           ? 'ring-1 ring-border/50'
           : 'bg-primary/15 text-primary ring-1 ring-primary/25',
@@ -1112,18 +1525,21 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
         ? 'text-destructive'
         : state === 'succeeded'
           ? 'text-success'
-          : 'text-muted-foreground/60'
+          : 'text-muted-foreground/55'
 
   const pop = state === 'succeeded' || state === 'failed'
+  const iconSize = state === 'pending' || state === null ? 'h-3 w-3' : 'h-3.5 w-3.5'
 
   return (
     <Icon
       key={key}
       aria-hidden="true"
       className={cn(
-        'h-3 w-3 shrink-0',
+        iconSize,
+        'shrink-0',
         tone,
         state === 'running' && 'animate-spin',
+        state === 'succeeded' && 'drop-shadow-[0_0_4px_rgba(34,197,94,0.25)]',
         'motion-safe:animate-in motion-safe:fade-in-0',
         pop ? 'tool-status-icon-pop' : 'motion-safe:zoom-in-95 motion-safe:duration-150',
         className,
@@ -1144,28 +1560,18 @@ interface DenseTurnItemProps {
 
 function DenseTurnItem({ turn }: DenseTurnItemProps) {
   if (turn.kind === 'message') {
-    const isUser = turn.role === 'user'
-    const marker = isUser ? '>' : '◆'
-    const tone = isUser ? 'text-primary/85' : 'text-foreground/90'
     return (
-      <li className="flex items-start gap-1.5 px-1">
-        <span className={cn('shrink-0 select-none font-semibold', tone)}>{marker}</span>
-        <span className="min-w-0 flex-1 truncate text-foreground/85" title={turn.text}>
-          {truncateForLine(turn.text)}
-        </span>
-      </li>
+      <DenseMessageItem
+        id={turn.id}
+        role={turn.role}
+        text={turn.text}
+        attachments={turn.attachments}
+      />
     )
   }
 
   if (turn.kind === 'thinking') {
-    return (
-      <li className="flex items-start gap-1.5 px-1 text-muted-foreground/80">
-        <span className="shrink-0 select-none">~</span>
-        <span className="min-w-0 flex-1 truncate" title={turn.text}>
-          {truncateForLine(turn.text)}
-        </span>
-      </li>
-    )
+    return <DenseThinkingItem id={turn.id} text={turn.text} />
   }
 
   if (turn.kind === 'failure') {
@@ -1179,41 +1585,321 @@ function DenseTurnItem({ turn }: DenseTurnItemProps) {
     )
   }
 
-  const isAction = turn.kind === 'action' || turn.kind === 'action_group'
-  if (!isAction) return null
-  const state = turn.state ?? null
-  const stateClass =
-    state === 'failed'
-      ? 'text-destructive/90'
-      : state === 'running'
-        ? 'text-primary/90'
-        : state === 'succeeded'
-          ? 'text-success/90'
-          : 'text-muted-foreground/70'
+  if (turn.kind === 'action') {
+    return (
+      <DenseActionItem
+        title={turn.title}
+        detail={turn.detail}
+        detailRows={turn.detailRows}
+        state={turn.state ?? null}
+      />
+    )
+  }
+
+  if (turn.kind === 'action_group') {
+    return (
+      <DenseActionGroupItem
+        title={turn.title}
+        detail={turn.detail}
+        state={turn.state ?? null}
+        actions={turn.actions}
+      />
+    )
+  }
+
+  return null
+}
+
+interface DenseMessageItemProps {
+  id: string
+  role: 'user' | 'assistant'
+  text: string
+  attachments?: ConversationMessageAttachment[]
+}
+
+function DenseMessageItem({ id, role, text, attachments }: DenseMessageItemProps) {
+  const isUser = role === 'user'
+  const [open, setOpen] = useState(!isUser)
+  const marker = isUser ? '>' : '◆'
+  const tone = isUser ? 'text-primary/85' : 'text-foreground/90'
+  const normalized = text.trim()
+  const hasAttachments = Boolean(attachments && attachments.length > 0)
+  const hasMore = normalized.length > 240 || /\r?\n/.test(normalized) || hasAttachments
+
   return (
-    <li className="flex items-start gap-1.5 px-1">
-      <span className={cn('shrink-0 select-none font-semibold', stateClass)}>$</span>
-      <span className="min-w-0 flex-1 truncate text-foreground/85" title={`${turn.title} — ${turn.detail}`}>
-        {truncateForLine(turn.title)}
-      </span>
-      {state ? (
-        <span className={cn('shrink-0 text-[9.5px] uppercase tracking-wider tabular-nums', stateClass)}>
-          {getToolStateLabel(state)}
+    <li className="px-1">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={hasMore ? open : undefined}
+        aria-label={hasMore ? `${open ? 'Hide' : 'Show'} full message` : undefined}
+        disabled={!hasMore}
+        className={cn(
+          'flex w-full items-start gap-2 text-left',
+          hasMore ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
+          'focus-visible:outline-none focus-visible:text-foreground',
+        )}
+      >
+        <span className={cn('shrink-0 select-none font-semibold', tone)}>{marker}</span>
+        <span
+          className="min-w-0 flex-1 truncate text-foreground/85"
+          title={hasMore && !open ? text : undefined}
+        >
+          {truncateForLine(text)}
         </span>
+        {hasMore ? (
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
+              open ? 'rotate-180' : 'rotate-0',
+            )}
+          />
+        ) : null}
+      </button>
+      {open && hasMore ? (
+        <div
+          className={cn(
+            'ml-3 mt-1.5 border-l border-border/30 pl-2.5',
+            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
+          )}
+        >
+          {isUser ? (
+            <p className="m-0 whitespace-pre-wrap break-words text-[12px] text-foreground/85">
+              {normalized}
+            </p>
+          ) : (
+            <Markdown messageId={`${id}:dense`} text={text} scale="dense" />
+          )}
+          {hasAttachments ? (
+            <ul className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground/80">
+              {attachments!.map((attachment) => (
+                <li
+                  key={attachment.id}
+                  className="rounded-sm border border-border/40 bg-muted/20 px-1.5 py-0.5"
+                  title={attachment.originalName}
+                >
+                  {attachment.originalName}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
     </li>
   )
 }
 
-function getToolStateTextClass(state: RuntimeStreamToolItemView['toolState']): string {
-  switch (state) {
-    case 'succeeded':
-      return 'text-success/90'
-    case 'failed':
-      return 'text-destructive/90'
-    case 'running':
-      return 'text-primary/90'
-    case 'pending':
-      return 'text-muted-foreground/80'
-  }
+function DenseThinkingItem({ id, text }: { id: string; text: string }) {
+  const [open, setOpen] = useState(false)
+  const normalized = text.trim()
+  const hasMore = normalized.length > 240 || /\r?\n/.test(normalized)
+  return (
+    <li className="px-1 text-muted-foreground/80">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        aria-label={`${open ? 'Hide' : 'Show'} reasoning`}
+        disabled={!hasMore}
+        className={cn(
+          'flex w-full items-start gap-2 text-left',
+          hasMore ? 'cursor-pointer hover:text-foreground/90' : 'cursor-default',
+          'focus-visible:outline-none focus-visible:text-foreground',
+        )}
+      >
+        <span className="shrink-0 select-none">~</span>
+        <span
+          className="min-w-0 flex-1 truncate"
+          title={hasMore && !open ? text : undefined}
+        >
+          {truncateForLine(text)}
+        </span>
+        {hasMore ? (
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
+              open ? 'rotate-180' : 'rotate-0',
+            )}
+          />
+        ) : null}
+      </button>
+      {open && hasMore ? (
+        <div
+          className={cn(
+            'ml-3 mt-1.5 border-l border-border/30 pl-2.5 text-muted-foreground/85',
+            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
+          )}
+        >
+          <Markdown messageId={`${id}:dense`} text={text} muted scale="dense" />
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+interface DenseActionItemProps {
+  title: string
+  detail: string
+  detailRows: Array<{ label: string; value: string }>
+  state: RuntimeStreamToolItemView['toolState'] | null
+}
+
+function DenseActionItem({ title, detail, detailRows, state }: DenseActionItemProps) {
+  const [open, setOpen] = useState(false)
+  const hasDetails = detailRows.length > 0 || detail.trim().length > 0
+
+  return (
+    <li className="px-1">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={hasDetails ? open : undefined}
+        aria-label={hasDetails ? `${open ? 'Hide' : 'Show'} tool details for ${title}` : undefined}
+        disabled={!hasDetails}
+        className={cn(
+          'flex w-full items-start gap-2 text-left',
+          hasDetails ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
+          'focus-visible:outline-none focus-visible:text-foreground',
+        )}
+      >
+        <ToolStatusIcon state={state} className="mt-[1px]" />
+        <span
+          className="min-w-0 flex-1 truncate text-foreground/85"
+          title={`${title}${detail ? ` — ${detail}` : ''}`}
+        >
+          {truncateForLine(title)}
+        </span>
+        {hasDetails ? (
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
+              open ? 'rotate-180' : 'rotate-0',
+            )}
+          />
+        ) : null}
+      </button>
+      {open && hasDetails ? (
+        <div
+          className={cn(
+            'ml-3 mt-1.5 border-l border-border/30 pl-2.5',
+            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
+          )}
+        >
+          <DenseToolDetails detail={detail} detailRows={detailRows} />
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+interface DenseActionGroupItemProps {
+  title: string
+  detail: string
+  state: RuntimeStreamToolItemView['toolState'] | null
+  actions: Array<{
+    id: string
+    title: string
+    detail: string
+    detailRows: Array<{ label: string; value: string }>
+    state: RuntimeStreamToolItemView['toolState'] | null
+  }>
+}
+
+function DenseActionGroupItem({ title, detail, state, actions }: DenseActionGroupItemProps) {
+  const [open, setOpen] = useState(false)
+  const hasChildren = actions.length > 0
+
+  return (
+    <li className="px-1">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={hasChildren ? open : undefined}
+        aria-label={hasChildren ? `${open ? 'Hide' : 'Show'} grouped tool details for ${title}` : undefined}
+        disabled={!hasChildren}
+        className={cn(
+          'flex w-full items-start gap-2 text-left',
+          hasChildren ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
+          'focus-visible:outline-none focus-visible:text-foreground',
+        )}
+      >
+        <ToolStatusIcon state={state} className="mt-[1px]" />
+        <span
+          className="min-w-0 flex-1 truncate text-foreground/85"
+          title={`${title}${detail ? ` — ${detail}` : ''}`}
+        >
+          {truncateForLine(title)}
+        </span>
+        {hasChildren ? (
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'mt-[3px] h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform duration-150',
+              open ? 'rotate-180' : 'rotate-0',
+            )}
+          />
+        ) : null}
+      </button>
+      {open && hasChildren ? (
+        <ol
+          className={cn(
+            'ml-3 mt-1.5 flex flex-col gap-1.5 border-l border-border/30 pl-2.5',
+            'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-150',
+          )}
+        >
+          {actions.map((action) => (
+            <DenseActionItem
+              key={action.id}
+              title={action.title}
+              detail={action.detail}
+              detailRows={action.detailRows}
+              state={action.state}
+            />
+          ))}
+        </ol>
+      ) : null}
+    </li>
+  )
+}
+
+function DenseToolDetails({
+  detail,
+  detailRows,
+}: {
+  detail: string
+  detailRows: Array<{ label: string; value: string }>
+}) {
+  const trimmedDetail = detail.trim()
+  const outputRow = detailRows.find((row) => /output/i.test(row.label))
+  const fallbackRow =
+    outputRow ??
+    detailRows.find((row) => /result/i.test(row.label)) ??
+    detailRows.find((row) => /input|outcome|cmd|command/i.test(row.label)) ??
+    detailRows[0] ??
+    null
+
+  if (!fallbackRow && trimmedDetail.length === 0) return null
+
+  return (
+    <div className="flex flex-col gap-1.5 text-[11.5px]">
+      {trimmedDetail.length > 0 ? (
+        <p className="m-0 whitespace-pre-wrap break-words text-muted-foreground/85">
+          {trimmedDetail}
+        </p>
+      ) : null}
+      {fallbackRow ? (
+        <pre
+          className={cn(
+            'm-0 max-h-[260px] overflow-auto whitespace-pre-wrap break-words rounded-sm',
+            'bg-background/40 px-2 py-1.5 font-mono text-[11.5px] leading-snug text-foreground/85 scrollbar-thin',
+          )}
+        >
+          {fallbackRow.value}
+        </pre>
+      ) : null}
+    </div>
+  )
 }

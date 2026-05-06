@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod notifications;
 pub mod provider_credentials;
 pub mod provider_models;
+pub mod provider_preflight;
 pub mod registry;
 pub mod runtime;
 pub mod state;
@@ -254,6 +255,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::skills::set_plugin_enabled,
             commands::skills::remove_plugin,
             commands::provider_model_catalog::get_provider_model_catalog,
+            commands::provider_preflight::preflight_provider_profile,
             commands::doctor_report::run_doctor_report,
             commands::environment_discovery::get_environment_discovery_status,
             commands::environment_discovery::get_environment_profile_summary,

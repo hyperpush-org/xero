@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use xero_agent_core::ProviderCapabilityCatalog;
+use xero_agent_core::{
+    ProviderCapabilityCatalog, ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot,
+};
 
 use super::agent::AgentAutoCompactPreferenceDto;
 use super::autonomous::{
@@ -7,6 +9,7 @@ use super::autonomous::{
     AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleSourceDto,
     AutonomousSkillLifecycleStageDto, ToolResultSummaryDto,
 };
+use super::error::CommandError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +100,7 @@ pub enum RuntimeAgentIdDto {
     Engineer,
     Debug,
     AgentCreate,
+    Test,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +126,7 @@ pub enum RuntimeAgentBaseCapabilityProfileDto {
     Engineering,
     Debugging,
     AgentBuilder,
+    HarnessTest,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +136,7 @@ pub enum RuntimeAgentPromptPolicyDto {
     Engineer,
     Debug,
     AgentCreate,
+    HarnessTest,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +145,7 @@ pub enum RuntimeAgentToolPolicyDto {
     ObserveOnly,
     Engineering,
     AgentBuilder,
+    HarnessTest,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,6 +155,7 @@ pub enum RuntimeAgentOutputContractDto {
     EngineeringSummary,
     DebugSummary,
     AgentDefinitionDraft,
+    HarnessTestReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +187,7 @@ impl RuntimeAgentIdDto {
             Self::Engineer => "engineer",
             Self::Debug => "debug",
             Self::AgentCreate => "agent_create",
+            Self::Test => "test",
         }
     }
 
@@ -188,6 +197,7 @@ impl RuntimeAgentIdDto {
             Self::Engineer => "Engineer",
             Self::Debug => "Debug",
             Self::AgentCreate => "Agent Create",
+            Self::Test => "Test",
         }
     }
 
@@ -200,12 +210,78 @@ impl RuntimeAgentIdDto {
     }
 
     pub fn allows_engineering_tools(&self) -> bool {
-        matches!(self, Self::Engineer | Self::Debug)
+        matches!(self, Self::Engineer | Self::Debug | Self::Test)
     }
 }
 
 pub fn default_runtime_agent_id() -> RuntimeAgentIdDto {
     RuntimeAgentIdDto::Ask
+}
+
+pub const TEST_RUNTIME_AGENT_ENABLE_ENV: &str = "XERO_ENABLE_TEST_AGENT";
+pub const TEST_RUNTIME_AGENT_CI_ENV: &str = "CI";
+
+pub fn runtime_agent_availability_flag_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on" | "enabled")
+    )
+}
+
+pub fn runtime_test_agent_enabled_for_context(
+    debug_build: bool,
+    test_binary: bool,
+    ci_env: Option<&str>,
+    manual_flag: Option<&str>,
+) -> bool {
+    debug_build
+        || test_binary
+        || runtime_agent_availability_flag_enabled(ci_env)
+        || runtime_agent_availability_flag_enabled(manual_flag)
+}
+
+pub fn runtime_test_agent_enabled() -> bool {
+    let ci_env = std::env::var(TEST_RUNTIME_AGENT_CI_ENV).ok();
+    let manual_flag = std::env::var(TEST_RUNTIME_AGENT_ENABLE_ENV).ok();
+    runtime_test_agent_enabled_for_context(
+        cfg!(debug_assertions),
+        cfg!(test),
+        ci_env.as_deref(),
+        manual_flag.as_deref(),
+    )
+}
+
+pub fn runtime_agent_is_available_for_context(
+    agent_id: RuntimeAgentIdDto,
+    debug_build: bool,
+    test_binary: bool,
+    ci_env: Option<&str>,
+    manual_flag: Option<&str>,
+) -> bool {
+    agent_id != RuntimeAgentIdDto::Test
+        || runtime_test_agent_enabled_for_context(debug_build, test_binary, ci_env, manual_flag)
+}
+
+pub fn runtime_agent_is_available(agent_id: RuntimeAgentIdDto) -> bool {
+    if agent_id != RuntimeAgentIdDto::Test {
+        return true;
+    }
+
+    runtime_test_agent_enabled()
+}
+
+pub fn ensure_runtime_agent_available(agent_id: RuntimeAgentIdDto) -> Result<(), CommandError> {
+    if runtime_agent_is_available(agent_id) {
+        return Ok(());
+    }
+
+    Err(CommandError::user_fixable(
+        "runtime_agent_unavailable",
+        format!(
+            "Xero cannot start the {} agent because the built-in harness is disabled for this build. Use `{TEST_RUNTIME_AGENT_ENABLE_ENV}=true` only for explicit manual release testing.",
+            agent_id.label()
+        ),
+    ))
 }
 
 pub fn default_runtime_agent_approval_mode(
@@ -216,6 +292,7 @@ pub fn default_runtime_agent_approval_mode(
         RuntimeAgentIdDto::Engineer => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Debug => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::AgentCreate => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::Test => RuntimeRunApprovalModeDto::Suggest,
     }
 }
 
@@ -223,7 +300,7 @@ pub fn runtime_agent_allowed_approval_modes(
     agent_id: &RuntimeAgentIdDto,
 ) -> Vec<RuntimeRunApprovalModeDto> {
     match agent_id {
-        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
+        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate | RuntimeAgentIdDto::Test => {
             vec![RuntimeRunApprovalModeDto::Suggest]
         }
         RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => vec![
@@ -239,7 +316,7 @@ pub fn runtime_agent_allows_approval_mode(
     approval_mode: &RuntimeRunApprovalModeDto,
 ) -> bool {
     match agent_id {
-        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
+        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate | RuntimeAgentIdDto::Test => {
             matches!(approval_mode, RuntimeRunApprovalModeDto::Suggest)
         }
         RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
@@ -252,9 +329,17 @@ pub fn builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
         runtime_agent_descriptor(RuntimeAgentIdDto::Engineer),
         runtime_agent_descriptor(RuntimeAgentIdDto::Debug),
         runtime_agent_descriptor(RuntimeAgentIdDto::AgentCreate),
+        runtime_agent_descriptor(RuntimeAgentIdDto::Test),
     ]
     .into_iter()
     .collect()
+}
+
+pub fn available_builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
+    builtin_runtime_agent_descriptors()
+        .into_iter()
+        .filter(|descriptor| runtime_agent_is_available(descriptor.id))
+        .collect()
 }
 
 pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDescriptorDto {
@@ -334,6 +419,25 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             allow_plan_gate: false,
             allow_verification_gate: false,
             allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::Test => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Test".into(),
+            short_label: "Test".into(),
+            description: "Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.".into(),
+            task_purpose: "Trigger and report a deterministic internal harness validation run instead of fulfilling the user prompt as a normal task.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::HarnessTest,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: runtime_agent_allowed_approval_modes(&agent_id),
+            prompt_policy: RuntimeAgentPromptPolicyDto::HarnessTest,
+            tool_policy: RuntimeAgentToolPolicyDto::HarnessTest,
+            output_contract: RuntimeAgentOutputContractDto::HarnessTestReport,
+            allow_plan_gate: false,
+            allow_verification_gate: false,
+            allow_auto_compact: false,
         },
     }
 }
@@ -841,6 +945,24 @@ pub struct CheckProviderProfileRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreflightProviderProfileRequestDto {
+    pub profile_id: String,
+    #[serde(default)]
+    pub force_refresh: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default = "default_provider_preflight_required_features")]
+    pub required_features: ProviderPreflightRequiredFeatures,
+}
+
+pub type ProviderPreflightSnapshotDto = ProviderPreflightSnapshot;
+
+fn default_provider_preflight_required_features() -> ProviderPreflightRequiredFeatures {
+    ProviderPreflightRequiredFeatures::owned_agent_text_turn()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderProfileDiagnosticsDto {
     pub checked_at: String,
     pub profile_id: String,
@@ -851,6 +973,8 @@ pub struct ProviderProfileDiagnosticsDto {
     pub capability_checks: Vec<crate::runtime::XeroDiagnosticCheck>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_catalog: Option<ProviderModelCatalogDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<ProviderPreflightSnapshotDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -957,7 +1081,7 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ask", "engineer", "debug", "agent_create"]
+            vec!["ask", "engineer", "debug", "agent_create", "test"]
         );
 
         let agent_create = descriptors
@@ -985,6 +1109,137 @@ mod tests {
             &RuntimeAgentIdDto::AgentCreate,
             &RuntimeRunApprovalModeDto::AutoEdit
         ));
+
+        let test = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == RuntimeAgentIdDto::Test)
+            .expect("Test descriptor should be seeded");
+
+        assert_eq!(test.label, "Test");
+        assert_eq!(
+            test.base_capability_profile,
+            RuntimeAgentBaseCapabilityProfileDto::HarnessTest
+        );
+        assert_eq!(test.prompt_policy, RuntimeAgentPromptPolicyDto::HarnessTest);
+        assert_eq!(test.tool_policy, RuntimeAgentToolPolicyDto::HarnessTest);
+        assert_eq!(
+            test.output_contract,
+            RuntimeAgentOutputContractDto::HarnessTestReport
+        );
+        assert_eq!(
+            test.allowed_approval_modes,
+            vec![RuntimeRunApprovalModeDto::Suggest]
+        );
+        assert!(!test.allow_plan_gate);
+        assert!(!test.allow_verification_gate);
+        assert!(!test.allow_auto_compact);
+        assert!(RuntimeAgentIdDto::Test.allows_engineering_tools());
+        assert!(runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Test,
+            &RuntimeRunApprovalModeDto::Suggest
+        ));
+        assert!(!runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Test,
+            &RuntimeRunApprovalModeDto::AutoEdit
+        ));
+    }
+
+    #[test]
+    fn runtime_agent_id_dto_serializes_and_deserializes_test() {
+        assert_eq!(
+            serde_json::to_string(&RuntimeAgentIdDto::Test).expect("serialize Test agent id"),
+            r#""test""#
+        );
+        assert_eq!(
+            serde_json::from_str::<RuntimeAgentIdDto>(r#""test""#)
+                .expect("deserialize Test agent id"),
+            RuntimeAgentIdDto::Test
+        );
+
+        let input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Test,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: "test-model".into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let value = serde_json::to_value(&input).expect("serialize Test run controls");
+
+        assert_eq!(value["runtimeAgentId"], "test");
+        assert_eq!(
+            serde_json::from_value::<RuntimeRunControlInputDto>(value)
+                .expect("deserialize Test run controls")
+                .runtime_agent_id,
+            RuntimeAgentIdDto::Test
+        );
+    }
+
+    #[test]
+    fn test_runtime_agent_availability_respects_build_ci_and_manual_context() {
+        assert!(!runtime_test_agent_enabled_for_context(
+            false, false, None, None
+        ));
+        assert!(runtime_test_agent_enabled_for_context(
+            true, false, None, None
+        ));
+        assert!(runtime_test_agent_enabled_for_context(
+            false, true, None, None
+        ));
+        assert!(runtime_test_agent_enabled_for_context(
+            false,
+            false,
+            Some("true"),
+            None
+        ));
+        assert!(runtime_test_agent_enabled_for_context(
+            false,
+            false,
+            None,
+            Some("enabled")
+        ));
+        assert!(!runtime_test_agent_enabled_for_context(
+            false,
+            false,
+            Some("false"),
+            Some("0")
+        ));
+        assert!(runtime_agent_is_available_for_context(
+            RuntimeAgentIdDto::Ask,
+            false,
+            false,
+            None,
+            None
+        ));
+        assert!(!runtime_agent_is_available_for_context(
+            RuntimeAgentIdDto::Test,
+            false,
+            false,
+            None,
+            None
+        ));
+        assert!(runtime_agent_is_available_for_context(
+            RuntimeAgentIdDto::Test,
+            false,
+            false,
+            Some("1"),
+            None
+        ));
+
+        assert_eq!(
+            available_builtin_runtime_agent_descriptors()
+                .iter()
+                .map(|descriptor| descriptor.id)
+                .collect::<Vec<_>>(),
+            vec![
+                RuntimeAgentIdDto::Ask,
+                RuntimeAgentIdDto::Engineer,
+                RuntimeAgentIdDto::Debug,
+                RuntimeAgentIdDto::AgentCreate,
+                RuntimeAgentIdDto::Test
+            ]
+        );
     }
 
     #[test]
@@ -1069,6 +1324,8 @@ pub struct RuntimeStreamItemDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_summary: Option<ToolResultSummaryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_stage: Option<AutonomousSkillLifecycleStageDto>,
@@ -1114,6 +1371,10 @@ pub struct SubscribeRuntimeStreamRequestDto {
     pub agent_session_id: String,
     pub channel: Option<String>,
     pub item_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_limit: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

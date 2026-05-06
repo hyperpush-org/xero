@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -248,6 +251,70 @@ impl Default for ToolExecutionContext {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ToolCancellationToken {
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+impl Default for ToolCancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolExecutionControl {
+    pub deadline: Option<Instant>,
+    pub cancellation_token: ToolCancellationToken,
+}
+
+impl ToolExecutionControl {
+    pub fn new(deadline: Option<Instant>, cancellation_token: ToolCancellationToken) -> Self {
+        Self {
+            deadline,
+            cancellation_token,
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+            || self
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    pub fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub fn ensure_not_cancelled(&self, tool_name: &str) -> ToolRegistryResult<()> {
+        if self.is_cancelled() {
+            return Err(ToolExecutionError::timeout(
+                "agent_tool_call_cancelled",
+                format!("Tool `{tool_name}` was cancelled because its group deadline expired."),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolHandlerOutput {
@@ -388,6 +455,12 @@ impl ToolExecutionError {
     }
 }
 
+impl Default for ToolExecutionControl {
+    fn default() -> Self {
+        Self::new(None, ToolCancellationToken::default())
+    }
+}
+
 pub trait ToolHandler: Send + Sync {
     fn descriptor(&self) -> ToolDescriptorV2;
 
@@ -412,6 +485,16 @@ pub trait ToolHandler: Send + Sync {
         call: &ToolCallInput,
     ) -> ToolRegistryResult<ToolHandlerOutput>;
 
+    fn execute_with_control(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+        control: &ToolExecutionControl,
+    ) -> ToolRegistryResult<ToolHandlerOutput> {
+        let _ = control;
+        self.execute(context, call)
+    }
+
     fn post_hook_payload(
         &self,
         call: &ToolCallInput,
@@ -425,39 +508,52 @@ pub trait ToolHandler: Send + Sync {
     }
 }
 
-pub struct StaticToolHandler<F>
-where
-    F: Fn(&ToolExecutionContext, &ToolCallInput) -> ToolRegistryResult<ToolHandlerOutput>
-        + Send
-        + Sync
-        + 'static,
-{
+type StaticToolExecute = dyn Fn(
+        &ToolExecutionContext,
+        &ToolCallInput,
+        &ToolExecutionControl,
+    ) -> ToolRegistryResult<ToolHandlerOutput>
+    + Send
+    + Sync;
+
+pub struct StaticToolHandler {
     descriptor: ToolDescriptorV2,
-    execute: F,
+    execute: Arc<StaticToolExecute>,
 }
 
-impl<F> StaticToolHandler<F>
-where
-    F: Fn(&ToolExecutionContext, &ToolCallInput) -> ToolRegistryResult<ToolHandlerOutput>
-        + Send
-        + Sync
-        + 'static,
-{
-    pub fn new(descriptor: ToolDescriptorV2, execute: F) -> Self {
+impl StaticToolHandler {
+    pub fn new<F>(descriptor: ToolDescriptorV2, execute: F) -> Self
+    where
+        F: Fn(&ToolExecutionContext, &ToolCallInput) -> ToolRegistryResult<ToolHandlerOutput>
+            + Send
+            + Sync
+            + 'static,
+    {
         Self {
             descriptor,
-            execute,
+            execute: Arc::new(move |context, call, _control| execute(context, call)),
+        }
+    }
+
+    pub fn new_cancellable<F>(descriptor: ToolDescriptorV2, execute: F) -> Self
+    where
+        F: Fn(
+                &ToolExecutionContext,
+                &ToolCallInput,
+                &ToolExecutionControl,
+            ) -> ToolRegistryResult<ToolHandlerOutput>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            descriptor,
+            execute: Arc::new(execute),
         }
     }
 }
 
-impl<F> ToolHandler for StaticToolHandler<F>
-where
-    F: Fn(&ToolExecutionContext, &ToolCallInput) -> ToolRegistryResult<ToolHandlerOutput>
-        + Send
-        + Sync
-        + 'static,
-{
+impl ToolHandler for StaticToolHandler {
     fn descriptor(&self) -> ToolDescriptorV2 {
         self.descriptor.clone()
     }
@@ -467,7 +563,16 @@ where
         context: &ToolExecutionContext,
         call: &ToolCallInput,
     ) -> ToolRegistryResult<ToolHandlerOutput> {
-        (self.execute)(context, call)
+        (self.execute)(context, call, &ToolExecutionControl::default())
+    }
+
+    fn execute_with_control(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+        control: &ToolExecutionControl,
+    ) -> ToolRegistryResult<ToolHandlerOutput> {
+        (self.execute)(context, call, control)
     }
 }
 
@@ -912,7 +1017,8 @@ impl ToolRegistryV2 {
         tracker: &mut ToolBudgetTracker,
         config: &ToolDispatchConfig,
     ) -> ToolDispatchOutcome {
-        self.dispatch_prepared(call, tracker, config)
+        let deadline = group_deadline(&config.budget);
+        self.dispatch_prepared(call, tracker, config, deadline)
     }
 
     pub fn dispatch_batch(
@@ -929,14 +1035,18 @@ impl ToolRegistryV2 {
                 ToolGroupExecutionMode::ParallelReadOnly => {
                     self.dispatch_read_only_group(&group.calls, &mut tracker, config)
                 }
-                ToolGroupExecutionMode::SequentialMutating => group
-                    .calls
-                    .into_iter()
-                    .map(|call| self.dispatch_prepared(call, &mut tracker, config))
-                    .collect(),
+                ToolGroupExecutionMode::SequentialMutating => {
+                    let deadline = group_deadline(&config.budget);
+                    group
+                        .calls
+                        .into_iter()
+                        .map(|call| self.dispatch_prepared(call, &mut tracker, config, deadline))
+                        .collect()
+                }
             };
             let elapsed = started.elapsed();
-            let timeout_error = timeout_error_for_elapsed(elapsed, &config.budget);
+            let group_timed_out = outcomes.iter().any(outcome_is_timeout);
+            let timeout_error = timeout_error_for_elapsed(elapsed, &config.budget, group_timed_out);
             reports.push(ToolGroupDispatchReport {
                 mode: group.mode,
                 elapsed_ms: elapsed.as_millis(),
@@ -954,6 +1064,7 @@ impl ToolRegistryV2 {
         tracker: &mut ToolBudgetTracker,
         config: &ToolDispatchConfig,
     ) -> Vec<ToolDispatchOutcome> {
+        let deadline = group_deadline(&config.budget);
         let mut prepared = Vec::new();
         let mut outcomes = calls
             .iter()
@@ -961,7 +1072,8 @@ impl ToolRegistryV2 {
             .collect::<Vec<Option<ToolDispatchOutcome>>>();
 
         for (index, call) in calls.iter().cloned().enumerate() {
-            match self.prepare_call(&call, tracker, config) {
+            let cancellation_token = ToolCancellationToken::new();
+            match self.prepare_call(&call, tracker, config, deadline, cancellation_token.clone()) {
                 Ok(prepared_call) => prepared.push((index, prepared_call)),
                 Err(mut failure) => {
                     match tracker.record_failure(&call, &failure.error) {
@@ -973,55 +1085,55 @@ impl ToolRegistryV2 {
             }
         }
 
-        let mut executed = Vec::new();
-        thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for (index, prepared_call) in prepared {
-                let context = config.context.clone();
-                let rollback = config.rollback.clone();
+        let mut pending = BTreeMap::new();
+        let (result_tx, result_rx) = mpsc::channel();
+        for (index, prepared_call) in prepared {
+            pending.insert(
+                index,
+                PendingReadOnlyToolCall::from_prepared(&prepared_call),
+            );
+            let context = config.context.clone();
+            let rollback = config.rollback.clone();
+            let result_tx = result_tx.clone();
+            thread::spawn(move || {
                 let call = prepared_call.call.clone();
-                handles.push(scope.spawn(move || {
-                    (
-                        index,
-                        call,
-                        execute_prepared_call(prepared_call, &context, rollback.as_deref()),
-                    )
-                }));
-            }
-            for handle in handles {
-                match handle.join() {
-                    Ok(item) => executed.push(item),
-                    Err(_) => executed.push((
-                        usize::MAX,
-                        ToolCallInput {
-                            tool_call_id: "unknown".into(),
-                            tool_name: "unknown".into(),
-                            input: json!({}),
-                        },
-                        ToolDispatchOutcome::Failed(ToolDispatchFailure {
-                            tool_call_id: "unknown".into(),
-                            tool_name: "unknown".into(),
-                            error: ToolExecutionError::retryable(
-                                "agent_tool_thread_panicked",
-                                "A read-only tool worker panicked.",
-                            ),
-                            doom_loop_signal: None,
-                            rollback_payload: None,
-                            rollback_error: None,
-                            pre_hook_payload: json!({}),
-                            post_hook_payload: json!({ "ok": false }),
-                            elapsed_ms: 0,
-                            sandbox_metadata: None,
-                        }),
-                    )),
-                }
-            }
-        });
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute_prepared_call(prepared_call, &context, rollback.as_deref())
+                }))
+                .unwrap_or_else(|_| panic_failure_outcome(&call));
+                let _ = result_tx.send((index, call, outcome));
+            });
+        }
+        drop(result_tx);
 
-        for (index, call, mut outcome) in executed {
-            if index == usize::MAX {
-                continue;
+        while !pending.is_empty() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
             }
+            match result_rx.recv_timeout(remaining) {
+                Ok((index, call, mut outcome)) => {
+                    pending.remove(&index);
+                    if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
+                        match tracker.record_failure(&call, &failure.error) {
+                            Ok(signal) => failure.doom_loop_signal = signal,
+                            Err(error) => failure.error = error,
+                        }
+                    }
+                    outcomes[index] = Some(outcome);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        for (index, pending_call) in pending {
+            pending_call.cancellation_token.cancel();
+            let call = pending_call.call.clone();
+            let mut outcome = ToolDispatchOutcome::Failed(timeout_failure_from_pending(
+                pending_call,
+                &config.budget,
+            ));
             if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
                 match tracker.record_failure(&call, &failure.error) {
                     Ok(signal) => failure.doom_loop_signal = signal,
@@ -1039,8 +1151,10 @@ impl ToolRegistryV2 {
         call: ToolCallInput,
         tracker: &mut ToolBudgetTracker,
         config: &ToolDispatchConfig,
+        deadline: Instant,
     ) -> ToolDispatchOutcome {
-        match self.prepare_call(&call, tracker, config) {
+        let cancellation_token = ToolCancellationToken::new();
+        match self.prepare_call(&call, tracker, config, deadline, cancellation_token) {
             Ok(prepared) => {
                 let mut outcome =
                     execute_prepared_call(prepared, &config.context, config.rollback.as_deref());
@@ -1071,6 +1185,8 @@ impl ToolRegistryV2 {
         call: &ToolCallInput,
         tracker: &mut ToolBudgetTracker,
         config: &ToolDispatchConfig,
+        deadline: Instant,
+        cancellation_token: ToolCancellationToken,
     ) -> Result<PreparedToolCall, ToolDispatchFailure> {
         let started = Instant::now();
         let Some(handler) = self.handlers.get(&call.tool_name).cloned() else {
@@ -1142,6 +1258,8 @@ impl ToolRegistryV2 {
                     started,
                     budget: config.budget.clone(),
                     sandbox_metadata: Some(sandbox_metadata),
+                    deadline: Some(deadline),
+                    cancellation_token,
                 })
             }
             ToolPolicyDecision::Deny { code, message } => Err(failure_from_error(
@@ -1170,6 +1288,28 @@ struct PreparedToolCall {
     started: Instant,
     budget: ToolBudget,
     sandbox_metadata: Option<SandboxExecutionMetadata>,
+    deadline: Option<Instant>,
+    cancellation_token: ToolCancellationToken,
+}
+
+struct PendingReadOnlyToolCall {
+    call: ToolCallInput,
+    pre_hook_payload: JsonValue,
+    started: Instant,
+    sandbox_metadata: Option<SandboxExecutionMetadata>,
+    cancellation_token: ToolCancellationToken,
+}
+
+impl PendingReadOnlyToolCall {
+    fn from_prepared(prepared: &PreparedToolCall) -> Self {
+        Self {
+            call: prepared.call.clone(),
+            pre_hook_payload: prepared.pre_hook_payload.clone(),
+            started: prepared.started,
+            sandbox_metadata: prepared.sandbox_metadata.clone(),
+            cancellation_token: prepared.cancellation_token.clone(),
+        }
+    }
 }
 
 fn execute_prepared_call(
@@ -1177,6 +1317,11 @@ fn execute_prepared_call(
     context: &ToolExecutionContext,
     rollback: Option<&dyn ToolRollback>,
 ) -> ToolDispatchOutcome {
+    let control = ToolExecutionControl::new(prepared.deadline, prepared.cancellation_token.clone());
+    if control.is_cancelled() {
+        return ToolDispatchOutcome::Failed(timeout_failure_from_prepared(prepared));
+    }
+
     let checkpoint = if prepared.descriptor.mutability == ToolMutability::Mutating {
         match rollback.and_then(|recorder| {
             match recorder.checkpoint_before(&prepared.call, &prepared.descriptor) {
@@ -1191,7 +1336,13 @@ fn execute_prepared_call(
         None
     };
 
-    let raw_result = prepared.handler.execute(context, &prepared.call);
+    if control.is_cancelled() {
+        return ToolDispatchOutcome::Failed(timeout_failure_from_prepared(prepared));
+    }
+
+    let raw_result = prepared
+        .handler
+        .execute_with_control(context, &prepared.call, &control);
     let post_hook_payload = prepared
         .handler
         .post_hook_payload(&prepared.call, &raw_result);
@@ -1257,9 +1408,71 @@ fn execute_prepared_call(
     }
 }
 
+fn timeout_failure_from_prepared(prepared: PreparedToolCall) -> ToolDispatchFailure {
+    let mut sandbox_metadata = prepared.sandbox_metadata;
+    if let Some(metadata) = sandbox_metadata.as_mut() {
+        metadata.exit_classification = crate::SandboxExitClassification::Timeout;
+    }
+    failure_from_error_with_sandbox(
+        &prepared.call,
+        ToolExecutionError::timeout(
+            "agent_tool_group_timeout",
+            format!(
+                "Tool `{}` exceeded the tool-group wall-clock budget before it completed.",
+                prepared.call.tool_name
+            ),
+        ),
+        prepared.pre_hook_payload,
+        json!({ "ok": false, "timedOut": true, "cancelled": true }),
+        prepared.started.elapsed(),
+        sandbox_metadata,
+    )
+}
+
+fn timeout_failure_from_pending(
+    pending: PendingReadOnlyToolCall,
+    budget: &ToolBudget,
+) -> ToolDispatchFailure {
+    let mut sandbox_metadata = pending.sandbox_metadata;
+    if let Some(metadata) = sandbox_metadata.as_mut() {
+        metadata.exit_classification = crate::SandboxExitClassification::Timeout;
+    }
+    failure_from_error_with_sandbox(
+        &pending.call,
+        ToolExecutionError::timeout(
+            "agent_tool_group_timeout",
+            format!(
+                "Tool `{}` exceeded the {}ms read-only tool-group wall-clock budget.",
+                pending.call.tool_name, budget.max_wall_clock_time_per_tool_group_ms
+            ),
+        ),
+        pending.pre_hook_payload,
+        json!({ "ok": false, "timedOut": true, "cancelled": true }),
+        pending.started.elapsed(),
+        sandbox_metadata,
+    )
+}
+
+fn panic_failure_outcome(call: &ToolCallInput) -> ToolDispatchOutcome {
+    ToolDispatchOutcome::Failed(failure_from_error(
+        call,
+        ToolExecutionError::retryable(
+            "agent_tool_thread_panicked",
+            "A read-only tool worker panicked.",
+        ),
+        json!({}),
+        json!({ "ok": false, "panicked": true }),
+        Duration::from_millis(0),
+    ))
+}
+
 fn exit_classification_from_output(output: &JsonValue) -> crate::SandboxExitClassification {
     if bool_field_recursive(output, &["timedOut", "timed_out"]).unwrap_or(false) {
         return crate::SandboxExitClassification::Timeout;
+    }
+
+    if bool_field_recursive(output, &["spawned"]).is_some_and(|spawned| !spawned) {
+        return crate::SandboxExitClassification::NotRun;
     }
 
     match int_field_recursive(output, &["exitCode", "exit_code"]) {
@@ -1341,6 +1554,24 @@ fn failure_from_error(
     post_hook_payload: JsonValue,
     elapsed: Duration,
 ) -> ToolDispatchFailure {
+    failure_from_error_with_sandbox(
+        call,
+        error,
+        pre_hook_payload,
+        post_hook_payload,
+        elapsed,
+        None,
+    )
+}
+
+fn failure_from_error_with_sandbox(
+    call: &ToolCallInput,
+    error: ToolExecutionError,
+    pre_hook_payload: JsonValue,
+    post_hook_payload: JsonValue,
+    elapsed: Duration,
+    sandbox_metadata: Option<SandboxExecutionMetadata>,
+) -> ToolDispatchFailure {
     ToolDispatchFailure {
         tool_call_id: call.tool_call_id.clone(),
         tool_name: call.tool_name.clone(),
@@ -1351,13 +1582,31 @@ fn failure_from_error(
         pre_hook_payload,
         post_hook_payload,
         elapsed_ms: elapsed.as_millis(),
-        sandbox_metadata: None,
+        sandbox_metadata,
     }
 }
 
-fn timeout_error_for_elapsed(elapsed: Duration, budget: &ToolBudget) -> Option<ToolExecutionError> {
+fn group_deadline(budget: &ToolBudget) -> Instant {
+    Instant::now()
+        .checked_add(Duration::from_millis(
+            budget.max_wall_clock_time_per_tool_group_ms,
+        ))
+        .unwrap_or_else(Instant::now)
+}
+
+fn outcome_is_timeout(outcome: &ToolDispatchOutcome) -> bool {
+    outcome
+        .failure()
+        .is_some_and(|failure| failure.error.category == ToolErrorCategory::Timeout)
+}
+
+fn timeout_error_for_elapsed(
+    elapsed: Duration,
+    budget: &ToolBudget,
+    group_timed_out: bool,
+) -> Option<ToolExecutionError> {
     let limit = Duration::from_millis(budget.max_wall_clock_time_per_tool_group_ms);
-    (elapsed > limit).then(|| {
+    (group_timed_out || elapsed > limit).then(|| {
         ToolExecutionError::timeout(
             "agent_tool_group_timeout",
             format!(
@@ -1524,7 +1773,7 @@ fn stable_json_signature(value: &JsonValue) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::{
@@ -1953,6 +2202,45 @@ mod tests {
             ToolGroupExecutionMode::ParallelReadOnly
         );
         assert_eq!(*max_active.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn tool_group_timeout_interrupts_hung_read_only_handler() {
+        let mut registry = ToolRegistryV2::new();
+        for name in ["slow_a", "slow_b"] {
+            registry
+                .register(StaticToolHandler::new(
+                    descriptor(name, ToolMutability::ReadOnly),
+                    |_context, _call| {
+                        thread::sleep(Duration::from_millis(150));
+                        Ok(ToolHandlerOutput::new("late", json!({ "ok": true })))
+                    },
+                ))
+                .expect("register slow read tool");
+        }
+        let config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 20,
+                ..ToolBudget::default()
+            },
+            ..ToolDispatchConfig::default()
+        };
+
+        let started = Instant::now();
+        let report = registry.dispatch_batch(
+            &[call("call-1", "slow_a", "a"), call("call-2", "slow_b", "b")],
+            &config,
+        );
+
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "read-only group budget must interrupt hung handlers instead of waiting for them"
+        );
+        assert!(report.groups[0].outcomes.iter().all(|outcome| {
+            outcome
+                .failure()
+                .is_some_and(|failure| failure.error.category == ToolErrorCategory::Timeout)
+        }));
     }
 
     #[test]

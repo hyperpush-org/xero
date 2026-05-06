@@ -135,8 +135,11 @@ import type {
   ProjectSnapshotResponseDto,
   ProjectUpdatedPayloadDto,
   ProjectUsageSummaryDto,
+  ProviderCapabilityCatalogDto,
   ProviderAuthSessionDto,
   ProviderModelCatalogDto,
+  ProviderPreflightRequiredFeaturesDto,
+  ProviderPreflightSnapshotDto,
   RepositoryDiffResponseDto,
   RepositoryStatusChangedPayloadDto,
   RepositoryStatusResponseDto,
@@ -731,6 +734,130 @@ function buildProviderModelCatalog(profile: ProviderProfileDto): ProviderModelCa
     lastRefreshError,
     models,
   })
+}
+
+function buildProviderCapabilityCatalog(
+  profile: ProviderProfileDto,
+  modelId = profile.modelId,
+): ProviderCapabilityCatalogDto {
+  return {
+    contractVersion: 1,
+    providerId: profile.providerId,
+    providerLabel: profile.label,
+    defaultModelId: modelId,
+    runtimeFamily: profile.runtimeKind,
+    runtimeKind: profile.runtimeKind,
+    authMethod: profile.providerId === 'openai_codex' ? 'oauth' : 'api_key',
+    credentialProof: profile.readiness.ready ? (profile.readiness.proof ?? 'test_ready') : null,
+    transportMode: profile.providerId === 'openai_codex' ? 'external_agent' : 'hosted_api',
+    endpointShape: profile.providerId === 'openai_codex' ? 'codex_session' : 'openai_chat_completions',
+    catalogKind: 'model_provider',
+    modelListStrategy: 'test_fixture',
+    externalAgentAdapter: profile.providerId === 'openai_codex',
+    cache: {
+      source: 'test_fixture',
+      fetchedAt: '2026-04-21T12:00:00Z',
+      lastSuccessAt: '2026-04-21T12:00:00Z',
+      ageSeconds: 0,
+      ttlSeconds: 21_600,
+      stale: false,
+    },
+    requestPreview: {
+      route: 'POST /chat/completions',
+      modelId,
+      enabledFeatures: ['streaming', 'tool_calls'],
+      toolSchemaNames: ['xero_echo_probe'],
+      headers: [],
+      metadata: ['source=test_fixture'],
+    },
+    capabilities: {
+      streaming: {
+        status: 'supported',
+        source: 'test_fixture',
+        detail: 'Streaming provider requests are supported by this fixture.',
+      },
+      toolCalls: {
+        status: 'supported',
+        source: 'test_fixture',
+        strictnessBehavior: 'json_schema',
+        schemaDialect: 'json_schema_object',
+        parallelCallBehavior: 'provider_decides',
+        knownIncompatibilities: [],
+      },
+      reasoning: {
+        status: 'supported',
+        source: 'test_fixture',
+        effortLevels: ['low', 'medium', 'high'],
+        defaultEffort: 'medium',
+        summarySupport: 'provider_default',
+        clamping: 'unsupported_effort_dropped_before_request',
+        unsupportedModelFallback: 'disable_reasoning_control',
+      },
+      attachments: {
+        status: 'unavailable',
+        source: 'test_fixture',
+        imageInput: 'unsupported_in_fixture',
+        documentInput: 'unsupported_in_fixture',
+        supportedTypes: [],
+        limits: ['Attachments are not included in this test fixture.'],
+      },
+      contextLimits: {
+        status: 'supported',
+        source: 'test_fixture',
+        confidence: 'high',
+        contextWindowTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+      costHints: {
+        status: 'unavailable',
+        source: 'test_fixture',
+        detail: 'Cost hints are not included in this fixture.',
+      },
+    },
+    knownLimitations: [],
+    remediations: [],
+  }
+}
+
+function buildProviderPreflightSnapshot(
+  profile: ProviderProfileDto,
+  options: {
+    modelId?: string | null
+    requiredFeatures?: Partial<ProviderPreflightRequiredFeaturesDto>
+  } = {},
+): ProviderPreflightSnapshotDto {
+  const modelId = options.modelId ?? profile.modelId
+  const status = profile.readiness.ready || profile.providerId === 'openai_codex' ? 'passed' : 'warning'
+
+  return {
+    contractVersion: 1,
+    profileId: profile.profileId,
+    providerId: profile.providerId,
+    modelId,
+    source: 'static_manual',
+    checkedAt: '2026-04-21T12:00:00Z',
+    ageSeconds: 0,
+    ttlSeconds: 21_600,
+    stale: false,
+    requiredFeatures: {
+      streaming: options.requiredFeatures?.streaming ?? true,
+      toolCalls: options.requiredFeatures?.toolCalls ?? true,
+      reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
+      attachments: options.requiredFeatures?.attachments ?? false,
+    },
+    capabilities: buildProviderCapabilityCatalog(profile, modelId),
+    checks: [
+      {
+        checkId: `provider-preflight:test:${profile.profileId}`,
+        status,
+        code: 'provider_preflight_test_fixture',
+        message: 'Provider preflight satisfied by the test fixture.',
+        source: 'static_manual',
+        retryable: false,
+      },
+    ],
+    status,
+  }
 }
 
 function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
@@ -1813,6 +1940,17 @@ function createAdapter(options?: {
       currentProviderModelCatalogs[profileId] = nextCatalog
       return nextCatalog
     },
+    preflightProviderProfile: async (profileId, options) => {
+      const currentProfile = currentProviderProfiles.profiles.find((profile) => profile.profileId === profileId)
+      if (!currentProfile) {
+        throw new Error(`Missing provider profile ${profileId}`)
+      }
+
+      return buildProviderPreflightSnapshot(currentProfile, {
+        modelId: options?.modelId ?? null,
+        requiredFeatures: options?.requiredFeatures,
+      })
+    },
     checkProviderProfile: async (profileId) => {
       const currentProfile = currentProviderProfiles.profiles.find((profile) => profile.profileId === profileId)
       if (!currentProfile) {
@@ -2174,14 +2312,14 @@ function ActivatedSurfaceProbe({
 }
 
 describe('useActivatedSurface', () => {
-  it('keeps a prewarmed surface mounted after the warmup window ends', () => {
+  it('mounts a prewarmed surface only during the warmup window', () => {
     const { rerender } = render(<ActivatedSurfaceProbe active={false} prewarm />)
 
     expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
 
     rerender(<ActivatedSurfaceProbe active={false} prewarm={false} />)
 
-    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
+    expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'false')
   })
 
   it('keeps a user-opened surface mounted after it closes', () => {
@@ -2447,6 +2585,48 @@ describe('XeroApp current UI', () => {
     await waitFor(() =>
       expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument(),
     )
+  })
+
+  it('keeps the app shell visible and avoids project reloads during runtime-run activity', async () => {
+    const initialRuntimeRun = makeRuntimeRun('project-1')
+    const { adapter, emitRuntimeRunUpdated } = createAdapter({
+      runtimeRun: initialRuntimeRun,
+    })
+    adapter.getProjectSnapshot = vi.fn(async () => makeSnapshot('project-1', 'Xero'))
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+    expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
+    expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
+
+    act(() => {
+      emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        run: makeRuntimeRun('project-1', {
+          lastCheckpointSequence: 2,
+          lastCheckpointAt: '2026-04-15T20:00:10Z',
+          updatedAt: '2026-04-15T20:00:10Z',
+          checkpoints: [
+            ...initialRuntimeRun.checkpoints,
+            {
+              sequence: 2,
+              kind: 'state',
+              summary: 'Preparing tools and context.',
+              createdAt: '2026-04-15T20:00:10Z',
+            },
+          ],
+        }),
+      })
+    })
+
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+    expect(adapter.getProjectSnapshot).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Workflow' })).toBeVisible()
+    expect(screen.getByLabelText('Agent conversation viewport')).toBeVisible()
   })
 
 

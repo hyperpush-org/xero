@@ -20,28 +20,25 @@ export function Hero() {
       <div className="mx-auto w-full max-w-7xl px-4 pb-16 pt-20 sm:px-6 sm:pt-28 lg:px-8 lg:pb-24">
         <div className="mx-auto max-w-3xl text-center">
           <Link
-            href="#"
+            href="#capabilities"
             className="group inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur transition-colors hover:border-border hover:bg-secondary/70 hover:text-foreground"
           >
             <span className="relative inline-flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
             </span>
-            Beta — persistent agents, multi-pane workspace, BYO models
+            Beta — custom agents, composable workflows, mobile approvals
             <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
           </Link>
 
           <h1 className="mt-6 font-sans text-4xl font-medium tracking-tight text-balance sm:text-6xl lg:text-7xl">
-            A local-first desktop harness{" "}
-            <span className="text-muted-foreground">for serious coding agents.</span>
+            Build the agent.{" "}
+            <span className="text-muted-foreground">Build the workflow.</span>
           </h1>
 
-          <p className="mx-auto mt-6 max-w-2xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Xero runs coding agents on your machine — not just a chat window.
-            Sessions survive long runs, compaction, branch and rewind. Bring your
-            own model from any major provider. Real tools for repo, shell, git,
-            browser, mobile, MCP, and Solana. Decisions pause cleanly and ping
-            you on Discord or Telegram.
+          <p className="mx-auto mt-6 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
+            Custom agents and visual workflows that ship whole projects —
+            pinging your phone only when a real call needs you.
           </p>
 
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -67,23 +64,6 @@ export function Hero() {
               </Link>
             </Button>
           </div>
-
-          <ul className="mx-auto mt-8 flex max-w-3xl flex-wrap items-center justify-center gap-2 text-[11px] font-mono text-muted-foreground">
-            {[
-              "Up to 6 sessions per project",
-              "Persistent across reboots",
-              "10+ model providers",
-              "Discord / Telegram approvals",
-              "Coming soon: agent swarm",
-            ].map((tag) => (
-              <li
-                key={tag}
-                className="rounded-full border border-border/60 bg-secondary/30 px-2.5 py-1 uppercase tracking-wider"
-              >
-                {tag}
-              </li>
-            ))}
-          </ul>
         </div>
 
         <div className="relative mx-auto mt-16 max-w-6xl">

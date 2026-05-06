@@ -166,6 +166,8 @@ export function runtimeAgentIdForCustomBaseCapability(
       return 'debug'
     case 'agent_builder':
       return 'agent_create'
+    case 'harness_test':
+      return 'test'
     case 'observe_only':
       return 'ask'
   }

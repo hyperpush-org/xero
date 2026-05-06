@@ -122,6 +122,7 @@ const COMMAND_BUDGET_KEYS: Record<string, IpcPayloadBudgetKey | undefined> = {
   get_environment_discovery_status: 'notificationDiagnosticsPage',
   get_environment_profile_summary: 'notificationDiagnosticsPage',
   get_provider_model_catalog: 'providerRegistry',
+  preflight_provider_profile: 'providerRegistry',
   get_repository_diff: 'repositoryDiff',
   get_repository_status: 'repositoryStatus',
   list_mcp_servers: 'settingsRegistry',

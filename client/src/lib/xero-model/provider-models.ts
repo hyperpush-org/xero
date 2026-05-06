@@ -187,6 +187,78 @@ export const providerCapabilityCatalogSchema = z
   })
   .strict()
 
+export const providerPreflightStatusSchema = z.enum(['passed', 'warning', 'failed', 'skipped'])
+export const providerPreflightSourceSchema = z.enum([
+  'live_probe',
+  'live_catalog',
+  'cached_probe',
+  'static_manual',
+  'unavailable',
+])
+
+export const providerPreflightRequiredFeaturesSchema = z
+  .object({
+    streaming: z.boolean().default(false),
+    toolCalls: z.boolean().default(false),
+    reasoningControls: z.boolean().default(false),
+    attachments: z.boolean().default(false),
+  })
+  .strict()
+
+export const providerPreflightCheckSchema = z
+  .object({
+    checkId: z.string().trim().min(1),
+    status: providerPreflightStatusSchema,
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    source: providerPreflightSourceSchema,
+    retryable: z.boolean(),
+  })
+  .strict()
+
+export const providerPreflightSnapshotSchema = z
+  .object({
+    contractVersion: z.literal(1),
+    profileId: z.string().trim().min(1),
+    providerId: z.string().trim().min(1),
+    modelId: z.string().trim().min(1),
+    source: providerPreflightSourceSchema,
+    checkedAt: z.string().trim().min(1),
+    ageSeconds: z.number().int().nullable().optional(),
+    ttlSeconds: z.number().int().positive(),
+    stale: z.boolean(),
+    requiredFeatures: providerPreflightRequiredFeaturesSchema,
+    capabilities: providerCapabilityCatalogSchema,
+    checks: z.array(providerPreflightCheckSchema),
+    status: providerPreflightStatusSchema,
+  })
+  .strict()
+  .superRefine((snapshot, ctx) => {
+    for (const [index, check] of snapshot.checks.entries()) {
+      if (check.source !== snapshot.source) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['checks', index, 'source'],
+          message: 'Provider preflight checks must use the same source as the snapshot.',
+        })
+      }
+    }
+  })
+
+export const preflightProviderProfileRequestSchema = z
+  .object({
+    profileId: z.string().trim().min(1),
+    forceRefresh: z.boolean().default(false),
+    modelId: z.string().trim().min(1).nullable().optional(),
+    requiredFeatures: providerPreflightRequiredFeaturesSchema.default({
+      streaming: true,
+      toolCalls: true,
+      reasoningControls: false,
+      attachments: false,
+    }),
+  })
+  .strict()
+
 export const providerModelSchema = z
   .object({
     modelId: z.string().trim().min(1),
@@ -342,9 +414,15 @@ export type ProviderCapabilityFeatureSetDto = z.infer<typeof providerCapabilityF
 export type ProviderCatalogCacheMetadataDto = z.infer<typeof providerCatalogCacheMetadataSchema>
 export type ProviderRedactedRequestPreviewDto = z.infer<typeof providerRedactedRequestPreviewSchema>
 export type ProviderCapabilityCatalogDto = z.infer<typeof providerCapabilityCatalogSchema>
+export type ProviderPreflightStatusDto = z.infer<typeof providerPreflightStatusSchema>
+export type ProviderPreflightSourceDto = z.infer<typeof providerPreflightSourceSchema>
+export type ProviderPreflightRequiredFeaturesDto = z.infer<typeof providerPreflightRequiredFeaturesSchema>
+export type ProviderPreflightCheckDto = z.infer<typeof providerPreflightCheckSchema>
+export type ProviderPreflightSnapshotDto = z.infer<typeof providerPreflightSnapshotSchema>
 export type ProviderModelDto = z.infer<typeof providerModelSchema>
 export type ProviderModelCatalogDto = z.infer<typeof providerModelCatalogSchema>
 export type GetProviderModelCatalogRequestDto = z.infer<typeof getProviderModelCatalogRequestSchema>
+export type PreflightProviderProfileRequestDto = z.infer<typeof preflightProviderProfileRequestSchema>
 
 export function getProviderModelCatalogConfiguredModel(
   catalog: ProviderModelCatalogDto | null | undefined,
@@ -529,5 +607,26 @@ export function createProviderModelCatalogRequest(
   return getProviderModelCatalogRequestSchema.parse({
     profileId,
     forceRefresh: options.forceRefresh ?? false,
+  })
+}
+
+export function createPreflightProviderProfileRequest(
+  profileId: string,
+  options: {
+    forceRefresh?: boolean
+    modelId?: string | null
+    requiredFeatures?: Partial<ProviderPreflightRequiredFeaturesDto>
+  } = {},
+): PreflightProviderProfileRequestDto {
+  return preflightProviderProfileRequestSchema.parse({
+    profileId,
+    forceRefresh: options.forceRefresh ?? false,
+    modelId: options.modelId ?? null,
+    requiredFeatures: {
+      streaming: options.requiredFeatures?.streaming ?? true,
+      toolCalls: options.requiredFeatures?.toolCalls ?? true,
+      reasoningControls: options.requiredFeatures?.reasoningControls ?? false,
+      attachments: options.requiredFeatures?.attachments ?? false,
+    },
   })
 }

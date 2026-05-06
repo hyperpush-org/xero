@@ -753,6 +753,7 @@ fn phase5_provider_turn_manifests_use_tools_first_context_for_all_agents() {
             controls: Some(controls_for_agent(runtime_agent_id)),
             tool_runtime,
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("run owned agent task");
         assert_eq!(
@@ -1042,6 +1043,7 @@ fn phase5_auto_capture_records_and_enabled_memory() {
         controls: Some(controls_for_agent(RuntimeAgentIdDto::Ask)),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("run phase5 capture task");
     assert_eq!(
@@ -1107,6 +1109,7 @@ fn phase5_auto_capture_records_and_enabled_memory() {
             controls: Some(controls_for_agent(runtime_agent_id)),
             tool_runtime,
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         })
         .expect("create run with approved memory");
         assert!(
@@ -1138,6 +1141,7 @@ fn phase5_auto_capture_records_and_enabled_memory() {
         controls: Some(controls_for_agent(RuntimeAgentIdDto::Ask)),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     })
     .expect("run blocked memory task");
 
@@ -1225,6 +1229,7 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
             controls: Some(controls_for_agent(runtime_agent_id)),
             tool_runtime: tool_runtime.clone(),
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
         };
         create_owned_agent_run(&source_request).expect("create source run");
         append_long_context_messages(&repo_root, &project_id, &source_run_id);
@@ -1247,6 +1252,7 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
             controls: Some(controls_for_agent(runtime_agent_id)),
             tool_runtime,
             provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
             answer_pending_actions: false,
             auto_compact: None,
         };
@@ -1381,6 +1387,7 @@ fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
         controls: Some(controls_for_agent(runtime_agent_id)),
         tool_runtime: tool_runtime.clone(),
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
     };
     create_owned_agent_run(&source_request).expect("create source run");
     append_long_context_messages(&repo_root, &project_id, &source_run_id);
@@ -1403,6 +1410,7 @@ fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
         controls: Some(controls_for_agent(runtime_agent_id)),
         tool_runtime: tool_runtime.clone(),
         provider_config: AgentProviderConfig::Fake,
+        provider_preflight: None,
         answer_pending_actions: false,
         auto_compact: None,
     };

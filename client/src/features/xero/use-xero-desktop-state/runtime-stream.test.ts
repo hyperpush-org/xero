@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MutableRefObject } from 'react'
 import {
+  ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
   attachRuntimeStreamSubscription,
   createRuntimeStreamEventBuffer,
   mergeRuntimeStreamEvents,
   RUNTIME_STREAM_BATCH_WINDOW_MS,
 } from './runtime-stream'
 import {
+  MAX_RUNTIME_STREAM_ITEMS,
   createRuntimeStreamView,
   estimateRuntimeStreamViewBytes,
   type RuntimeStreamEventDto,
+  type RuntimeStreamToolItemView,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
 import type { RuntimeSessionView } from '@/src/lib/xero-model/runtime'
@@ -41,6 +44,7 @@ function makeRuntimeStreamEvent(
       toolName: null,
       toolState: null,
       toolSummary: null,
+      toolResultPreview: null,
       skillId: null,
       skillStage: null,
       skillResult: null,
@@ -71,6 +75,32 @@ function makeRuntimeStream(): RuntimeStreamView {
     flowId: 'flow-1',
     subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     status: 'live',
+  })
+}
+
+function makeReasoningRuntimeStreamEvent(sequence: number, text: string): RuntimeStreamEventDto {
+  return makeRuntimeStreamEvent(sequence, {
+    kind: 'activity',
+    text,
+    code: 'owned_agent_reasoning',
+    title: 'Reasoning',
+    detail: text.trim() || 'Owned agent reasoning summary updated.',
+  })
+}
+
+function makeToolRuntimeStreamEvent(
+  sequence: number,
+  toolCallId = `call-${sequence}`,
+  overrides: Partial<RuntimeStreamEventDto['item']> = {},
+): RuntimeStreamEventDto {
+  return makeRuntimeStreamEvent(sequence, {
+    kind: 'tool',
+    text: null,
+    toolCallId,
+    toolName: 'read',
+    toolState: 'succeeded',
+    detail: `Read file ${sequence}.`,
+    ...overrides,
   })
 }
 
@@ -234,16 +264,207 @@ describe('runtime stream event coalescing', () => {
     expect(stream?.transcriptItems[0]?.text).toBe('message-1')
   })
 
-  it('reports sequence gaps once while preserving the latest stream projection', () => {
+  it('accepts sparse stream sequences while preserving the latest stream projection', () => {
     const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
       makeRuntimeStreamEvent(1),
       makeRuntimeStreamEvent(3),
     ])
 
     expect(stream?.lastSequence).toBe(3)
-    expect(stream?.status).toBe('stale')
-    expect(stream?.lastIssue?.code).toBe('runtime_stream_sequence_gap')
-    expect(stream?.lastIssue?.message).toContain('expected 2, received 3')
+    expect(stream?.status).toBe('live')
+    expect(stream?.lastIssue).toBeNull()
+    expect(stream?.transcriptItems[0]?.text).toBe('message-1message-3')
+  })
+
+  it('keeps reasoning bubbles and earlier tools in one ordered timeline', () => {
+    const toolBurst = Array.from({ length: MAX_RUNTIME_STREAM_ITEMS + 8 }, (_, index) =>
+      makeToolRuntimeStreamEvent(index + 3, `call-read-${index}`),
+    )
+
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeRuntimeStreamEvent(1, { transcriptRole: 'user', text: 'Please inspect the repo.' }),
+      makeReasoningRuntimeStreamEvent(2, 'I should inspect the files first.'),
+      ...toolBurst,
+    ])
+
+    const retainedReasoning = stream?.items.find(
+      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
+    )
+    const retainedTools = stream?.items.filter((item) => item.kind === 'tool') ?? []
+
+    expect(retainedReasoning).toMatchObject({
+      kind: 'activity',
+      text: 'I should inspect the files first.',
+    })
+    expect(retainedTools).toHaveLength(MAX_RUNTIME_STREAM_ITEMS + 8)
+    expect(retainedTools[0]?.toolCallId).toBe('call-read-0')
+  })
+
+  it('does not merge reasoning across intervening transcript turns', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeReasoningRuntimeStreamEvent(1, 'First thought.'),
+      makeRuntimeStreamEvent(2, { text: 'Visible assistant update.' }),
+      makeReasoningRuntimeStreamEvent(3, 'Second thought.'),
+    ])
+
+    const reasoningItems = stream?.items.filter(
+      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
+    ) ?? []
+
+    expect(reasoningItems.map((item) => item.text)).toEqual([
+      'First thought.',
+      'Second thought.',
+    ])
+    expect(stream?.items.map((item) => `${item.kind}:${item.sequence}`)).toEqual([
+      'activity:1',
+      'transcript:2',
+      'activity:3',
+    ])
+  })
+
+  it('uses whitespace reasoning deltas as summary boundaries', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeReasoningRuntimeStreamEvent(1, 'Inspecting the repo'),
+      makeReasoningRuntimeStreamEvent(2, '\n\n'),
+      makeReasoningRuntimeStreamEvent(3, 'Inspecting files for details'),
+    ])
+
+    const renderedReasoningItems = stream?.items.filter(
+      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
+    ) ?? []
+
+    expect(renderedReasoningItems.map((item) => item.text)).toEqual([
+      'Inspecting the repo',
+      'Inspecting files for details',
+    ])
+    expect(stream?.items.map((item) => `${item.kind}:${item.sequence}:${item.kind === 'activity' ? item.code : ''}`)).toEqual([
+      'activity:1:owned_agent_reasoning',
+      'activity:2:owned_agent_reasoning_boundary',
+      'activity:3:owned_agent_reasoning',
+    ])
+  })
+
+  it('does not merge assistant transcript deltas across intervening tool calls', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeRuntimeStreamEvent(1, { text: 'Before the tool. ' }),
+      makeToolRuntimeStreamEvent(2, 'call-read'),
+      makeRuntimeStreamEvent(3, { text: 'After the tool.' }),
+    ])
+
+    expect(stream?.transcriptItems.map((item) => item.text)).toEqual([
+      'Before the tool. ',
+      'After the tool.',
+    ])
+    expect(stream?.items.map((item) => `${item.kind}:${item.sequence}`)).toEqual([
+      'transcript:1',
+      'tool:2',
+      'transcript:3',
+    ])
+  })
+
+  it('keeps tool lifecycle updates at their first timeline position', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeReasoningRuntimeStreamEvent(1, 'Inspecting project details'),
+      makeToolRuntimeStreamEvent(2, 'call-read-index', {
+        toolState: 'running',
+        detail: 'Reading client/src/index.ts.',
+      }),
+      makeReasoningRuntimeStreamEvent(3, 'Structuring my research approach'),
+      makeToolRuntimeStreamEvent(4, 'call-read-index', {
+        toolState: 'succeeded',
+        detail: 'Read client/src/index.ts.',
+        toolResultPreview: 'export { App } from "./App"',
+      }),
+    ])
+
+    expect(stream?.items.map((item) => `${item.kind}:${item.sequence}`)).toEqual([
+      'activity:1',
+      'tool:2',
+      'activity:3',
+    ])
+
+    const toolItem = stream?.items.find(
+      (item): item is RuntimeStreamToolItemView => item.kind === 'tool',
+    )
+
+    expect(toolItem).toMatchObject({
+      id: 'tool:run-1:2',
+      sequence: 2,
+      createdAt: '2026-04-16T13:30:02Z',
+      toolCallId: 'call-read-index',
+      toolState: 'succeeded',
+      detail: 'Read client/src/index.ts.',
+      toolResultPreview: 'export { App } from "./App"',
+    })
+  })
+
+  it('does not merge reasoning across a later tool lifecycle update', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeReasoningRuntimeStreamEvent(1, 'Inspecting project details'),
+      makeToolRuntimeStreamEvent(2, 'call-read-index', {
+        toolState: 'running',
+        detail: 'Reading client/src/index.ts.',
+      }),
+      makeReasoningRuntimeStreamEvent(3, 'Inspecting structure deeper'),
+      makeToolRuntimeStreamEvent(4, 'call-read-index', {
+        toolState: 'succeeded',
+        detail: 'Read client/src/index.ts.',
+      }),
+      makeReasoningRuntimeStreamEvent(5, 'Organizing a response'),
+    ])
+
+    const reasoningItems = stream?.items.filter(
+      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
+    ) ?? []
+
+    expect(reasoningItems.map((item) => item.text)).toEqual([
+      'Inspecting project details',
+      'Inspecting structure deeper',
+      'Organizing a response',
+    ])
+    expect(stream?.items.map((item) => `${item.kind}:${item.sequence}`)).toEqual([
+      'activity:1',
+      'tool:2',
+      'activity:3',
+      'activity:5',
+    ])
+  })
+
+  it('does not evict earlier visible tools when later tool bursts exceed the raw cap', () => {
+    const firstToolBurst = Array.from({ length: 7 }, (_, index) =>
+      makeToolRuntimeStreamEvent(index + 2, `call-first-${index}`),
+    )
+    const secondToolBurst = Array.from({ length: MAX_RUNTIME_STREAM_ITEMS + 4 }, (_, index) =>
+      makeToolRuntimeStreamEvent(index + 10, `call-second-${index}`),
+    )
+
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeReasoningRuntimeStreamEvent(1, 'Inspecting project structure'),
+      ...firstToolBurst,
+      makeReasoningRuntimeStreamEvent(9, 'Inspecting structure deeper'),
+      ...secondToolBurst,
+    ])
+
+    const firstThoughtIndex = stream?.items.findIndex(
+      (item) => item.kind === 'activity' && item.text === 'Inspecting project structure',
+    ) ?? -1
+    const firstToolIndex = stream?.items.findIndex(
+      (item) => item.kind === 'tool' && item.toolCallId === 'call-first-0',
+    ) ?? -1
+    const secondThoughtIndex = stream?.items.findIndex(
+      (item) => item.kind === 'activity' && item.text === 'Inspecting structure deeper',
+    ) ?? -1
+    const secondToolIndex = stream?.items.findIndex(
+      (item) => item.kind === 'tool' && item.toolCallId === 'call-second-0',
+    ) ?? -1
+
+    expect(firstThoughtIndex).toBeGreaterThanOrEqual(0)
+    expect(firstToolIndex).toBeGreaterThan(firstThoughtIndex)
+    expect(secondThoughtIndex).toBeGreaterThan(firstToolIndex)
+    expect(secondToolIndex).toBeGreaterThan(secondThoughtIndex)
+    expect(stream?.items.filter((item) => item.kind === 'tool')).toHaveLength(
+      firstToolBurst.length + secondToolBurst.length,
+    )
   })
 
   it('estimates retained bytes for bounded session stream caches', () => {
@@ -339,5 +560,131 @@ describe('runtime stream event coalescing', () => {
     for (const unsubscribe of unsubscribes.values()) {
       expect(unsubscribe).toHaveBeenCalledTimes(1)
     }
+  })
+
+  it('requests a full persisted replay on a cold runtime stream subscription', async () => {
+    let stream: RuntimeStreamView | null = null
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds) => ({
+          response: {
+            projectId,
+            agentSessionId,
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'runtime-session-1',
+            flowId: 'flow-1',
+            subscribedItemKinds: itemKinds,
+          },
+          unsubscribe: vi.fn(),
+        }),
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+
+    const cleanup = attachRuntimeStreamSubscription({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeSession: makeRuntimeSession(),
+      runId: 'run-1',
+      adapter,
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(adapter.subscribeRuntimeStream).toHaveBeenCalledWith(
+      'project-1',
+      'agent-session-main',
+      ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+      expect.any(Function),
+      expect.any(Function),
+      {
+        afterSequence: null,
+        replayLimit: null,
+      },
+    )
+
+    cleanup()
+  })
+
+  it('requests a bounded incremental replay when resubscribing an existing stream', async () => {
+    let stream: RuntimeStreamView | null = {
+      ...makeRuntimeStream(),
+      lastSequence: 42,
+      items: [
+        {
+          id: 'transcript:run-1:42',
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 42,
+          createdAt: '2026-04-16T13:30:42Z',
+          role: 'assistant',
+          text: 'Existing stream item.',
+        },
+      ],
+    }
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds) => ({
+          response: {
+            projectId,
+            agentSessionId,
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'runtime-session-1',
+            flowId: 'flow-1',
+            subscribedItemKinds: itemKinds,
+          },
+          unsubscribe: vi.fn(),
+        }),
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+
+    const cleanup = attachRuntimeStreamSubscription({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeSession: makeRuntimeSession(),
+      runId: 'run-1',
+      adapter,
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(adapter.subscribeRuntimeStream).toHaveBeenCalledWith(
+      'project-1',
+      'agent-session-main',
+      ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+      expect.any(Function),
+      expect.any(Function),
+      {
+        afterSequence: 42,
+        replayLimit: 200,
+      },
+    )
+
+    cleanup()
   })
 })

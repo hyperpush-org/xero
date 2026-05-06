@@ -10280,6 +10280,8 @@ dependencies = [
 name = "xero-agent-core"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -10289,8 +10291,10 @@ dependencies = [
 name = "xero-cli"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "xero-agent-core",
 ]
 

@@ -15,13 +15,12 @@ export function CTA() {
       />
       <div className="mx-auto w-full max-w-5xl px-4 py-24 text-center sm:px-6 lg:px-8 lg:py-32">
         <h2 className="mx-auto max-w-3xl font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl lg:text-6xl">
-          A real harness for serious coding agents. <br className="hidden sm:block" />
-          <span className="text-muted-foreground">Local. Persistent. Yours.</span>
+          Build the agent. <br className="hidden sm:block" />
+          <span className="text-muted-foreground">Ship the project.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-pretty text-muted-foreground">
-          Xero is a free desktop app. No credit card. Bring your own keys for
-          OpenAI, Anthropic, Gemini, OpenRouter, GitHub Models, Azure, Bedrock,
-          Vertex, or a local Ollama and start a session in minutes.
+          Free desktop app. No credit card. Bring keys for OpenAI, Anthropic,
+          Gemini, OpenRouter, GitHub, Azure, Bedrock, Vertex, or a local Ollama.
         </p>
 
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">

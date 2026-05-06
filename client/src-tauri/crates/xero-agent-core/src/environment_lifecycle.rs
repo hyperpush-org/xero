@@ -170,6 +170,52 @@ pub enum EnvironmentHealthStatus {
     Skipped,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentSemanticIndexState {
+    Ready,
+    Indexing,
+    Stale,
+    Empty,
+    Failed,
+    Unavailable,
+}
+
+impl EnvironmentSemanticIndexState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Indexing => "indexing",
+            Self::Stale => "stale",
+            Self::Empty => "empty",
+            Self::Failed => "failed",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "ready" => Some(Self::Ready),
+            "indexing" => Some(Self::Indexing),
+            "stale" => Some(Self::Stale),
+            "empty" => Some(Self::Empty),
+            "failed" => Some(Self::Failed),
+            "unavailable" => Some(Self::Unavailable),
+            _ => None,
+        }
+    }
+
+    pub const fn is_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
+
+impl Default for EnvironmentSemanticIndexState {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentHealthCheck {
@@ -386,6 +432,10 @@ pub struct EnvironmentLifecycleConfig {
     pub semantic_index_required: bool,
     #[serde(default)]
     pub semantic_index_available: bool,
+    #[serde(default)]
+    pub semantic_index_state: EnvironmentSemanticIndexState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_index_requirement_reasons: Vec<String>,
     #[serde(default = "default_project_instructions_loaded")]
     pub project_instructions_loaded: bool,
 }
@@ -410,6 +460,8 @@ impl EnvironmentLifecycleConfig {
             tool_packs: vec!["owned_agent_core".into()],
             semantic_index_required: false,
             semantic_index_available: false,
+            semantic_index_state: EnvironmentSemanticIndexState::Empty,
+            semantic_index_requirement_reasons: Vec::new(),
             project_instructions_loaded: true,
         }
     }
@@ -439,6 +491,14 @@ pub struct EnvironmentLifecycleSnapshot {
     pub health_checks: Vec<EnvironmentHealthCheck>,
     #[serde(default)]
     pub setup_steps: Vec<EnvironmentSetupStep>,
+    #[serde(default)]
+    pub semantic_index_required: bool,
+    #[serde(default)]
+    pub semantic_index_available: bool,
+    #[serde(default)]
+    pub semantic_index_state: EnvironmentSemanticIndexState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_index_requirement_reasons: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<EnvironmentDiagnostic>,
     pub updated_at: String,
@@ -457,6 +517,10 @@ impl EnvironmentLifecycleSnapshot {
             pending_messages: Vec::new(),
             health_checks: Vec::new(),
             setup_steps: Vec::new(),
+            semantic_index_required: config.semantic_index_required,
+            semantic_index_available: semantic_index_ready(config),
+            semantic_index_state: config.semantic_index_state,
+            semantic_index_requirement_reasons: config.semantic_index_requirement_reasons.clone(),
             diagnostic: None,
             updated_at: now_timestamp(),
         }
@@ -602,6 +666,7 @@ where
                 run_id: run_id.into(),
                 role: MessageRole::User,
                 content: content.clone(),
+                provider_metadata: None,
             })?;
             self.store.append_event(NewRuntimeEvent {
                 project_id: project_id.into(),
@@ -705,6 +770,8 @@ where
             None,
         )?;
         if let Err(diagnostic) = self.executor.index_workspace(&config) {
+            snapshot.health_checks = collect_health_checks(&config);
+            self.save_snapshot(snapshot.clone())?;
             return self.fail_environment(&mut snapshot, diagnostic);
         }
 
@@ -989,6 +1056,7 @@ where
                 run_id: snapshot.run_id.clone(),
                 role: message.role,
                 content: message.content.clone(),
+                provider_metadata: None,
             })?;
             self.store.append_event(NewRuntimeEvent {
                 project_id: snapshot.project_id.clone(),
@@ -1028,6 +1096,10 @@ where
                 "pendingMessageCount": snapshot.pending_messages.len(),
                 "healthChecks": snapshot.health_checks,
                 "setupSteps": snapshot.setup_steps,
+                "semanticIndexRequired": snapshot.semantic_index_required,
+                "semanticIndexAvailable": snapshot.semantic_index_available,
+                "semanticIndexState": snapshot.semantic_index_state,
+                "semanticIndexRequirementReasons": snapshot.semantic_index_requirement_reasons,
                 "detail": detail,
                 "diagnostic": diagnostic,
             }),
@@ -1082,6 +1154,58 @@ fn validate_environment_config(config: &EnvironmentLifecycleConfig) -> CoreResul
         }
     }
     Ok(())
+}
+
+pub fn semantic_workspace_prompt_requirement_reasons(prompt: &str) -> Vec<String> {
+    let lowered = prompt.to_lowercase();
+    let mut reasons = Vec::new();
+    if contains_any(
+        &lowered,
+        &[
+            "tool:workspace_index",
+            "tool:workspace_query",
+            "tool:semantic_search",
+            "workspace_index",
+        ],
+    ) {
+        reasons.push("prompt invoked the workspace-index tool".into());
+    }
+    if contains_any(
+        &lowered,
+        &["related-tests", "related tests", "related_tests"],
+    ) {
+        reasons.push("prompt requested related-tests workspace retrieval".into());
+    }
+    if contains_any(
+        &lowered,
+        &[
+            "change impact",
+            "impact analysis",
+            "impact mode",
+            "workspace impact",
+            "change_impact",
+        ],
+    ) {
+        reasons.push("prompt requested change-impact workspace retrieval".into());
+    }
+    if contains_any(
+        &lowered,
+        &[
+            "semantic workspace",
+            "semantic search",
+            "semantic code search",
+            "workspace index",
+        ],
+    ) {
+        reasons.push("prompt requested semantic workspace search".into());
+    }
+    reasons.sort();
+    reasons.dedup();
+    reasons
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 fn collect_health_checks(config: &EnvironmentLifecycleConfig) -> Vec<EnvironmentHealthCheck> {
@@ -1221,29 +1345,94 @@ fn tool_packs_health(config: &EnvironmentLifecycleConfig) -> EnvironmentHealthCh
 }
 
 fn semantic_index_health(config: &EnvironmentLifecycleConfig) -> EnvironmentHealthCheck {
-    if config.semantic_index_available {
+    let state = semantic_index_effective_state(config);
+    if state.is_ready() {
         return EnvironmentHealthCheck::passed(
             EnvironmentHealthCheckKind::SemanticIndexStatus,
-            "Semantic workspace index is available.",
+            "Semantic workspace index is ready.",
         );
     }
-    let diagnostic = EnvironmentDiagnostic::new(
-        "agent_environment_semantic_index_unavailable",
-        "Semantic workspace index is not available yet.",
-    )
-    .with_next_action("Run or wait for workspace indexing when semantic search is required.");
+    let diagnostic = semantic_index_diagnostic(state);
     if config.semantic_index_required {
         EnvironmentHealthCheck::failed(
             EnvironmentHealthCheckKind::SemanticIndexStatus,
-            "Semantic workspace index is required but unavailable.",
+            format!(
+                "Semantic workspace index is required but {}.",
+                semantic_index_not_ready_phrase(state)
+            ),
             diagnostic,
         )
     } else {
-        EnvironmentHealthCheck::skipped(
+        EnvironmentHealthCheck::warning(
             EnvironmentHealthCheckKind::SemanticIndexStatus,
-            "Semantic workspace index is not required for this environment.",
+            format!(
+                "Semantic workspace index is optional and {}.",
+                semantic_index_not_ready_phrase(state)
+            ),
+            diagnostic,
         )
     }
+}
+
+fn semantic_index_ready(config: &EnvironmentLifecycleConfig) -> bool {
+    semantic_index_effective_state(config).is_ready()
+}
+
+fn semantic_index_effective_state(
+    config: &EnvironmentLifecycleConfig,
+) -> EnvironmentSemanticIndexState {
+    if config.semantic_index_state.is_ready() || config.semantic_index_available {
+        EnvironmentSemanticIndexState::Ready
+    } else {
+        config.semantic_index_state
+    }
+}
+
+fn semantic_index_not_ready_phrase(state: EnvironmentSemanticIndexState) -> &'static str {
+    match state {
+        EnvironmentSemanticIndexState::Ready => "ready",
+        EnvironmentSemanticIndexState::Indexing => "currently indexing",
+        EnvironmentSemanticIndexState::Stale => "stale",
+        EnvironmentSemanticIndexState::Empty => "empty",
+        EnvironmentSemanticIndexState::Failed => "failed",
+        EnvironmentSemanticIndexState::Unavailable => "unavailable",
+    }
+}
+
+fn semantic_index_diagnostic(state: EnvironmentSemanticIndexState) -> EnvironmentDiagnostic {
+    let (code, message, next_action) = match state {
+        EnvironmentSemanticIndexState::Ready => (
+            "agent_environment_workspace_index_ready",
+            "Semantic workspace index is ready.",
+            "Continue the agent run.",
+        ),
+        EnvironmentSemanticIndexState::Indexing => (
+            "agent_environment_workspace_index_indexing",
+            "Semantic workspace index is currently rebuilding.",
+            "Wait for workspace indexing to finish before starting a semantic-search-required run.",
+        ),
+        EnvironmentSemanticIndexState::Stale => (
+            "agent_environment_workspace_index_stale",
+            "Semantic workspace index is stale for the current workspace.",
+            "Run workspace indexing before starting a semantic-search-required agent run.",
+        ),
+        EnvironmentSemanticIndexState::Empty => (
+            "agent_environment_workspace_index_empty",
+            "Semantic workspace index has not been built yet.",
+            "Run workspace indexing before starting a semantic-search-required agent run.",
+        ),
+        EnvironmentSemanticIndexState::Failed => (
+            "agent_environment_workspace_index_failed",
+            "Semantic workspace index failed during the previous rebuild.",
+            "Review workspace-index diagnostics, repair the failure, and reindex.",
+        ),
+        EnvironmentSemanticIndexState::Unavailable => (
+            "agent_environment_workspace_index_unavailable",
+            "Semantic workspace index state is unavailable.",
+            "Repair app-data project state permissions and re-run workspace indexing.",
+        ),
+    };
+    EnvironmentDiagnostic::new(code, message).with_next_action(next_action)
 }
 
 fn first_failed_health_diagnostic(
@@ -1340,12 +1529,24 @@ mod tests {
         }
     }
 
+    fn insert_run(store: &crate::InMemoryAgentCoreStore, project_id: &str, run_id: &str) {
+        store
+            .insert_run(run_record(project_id, run_id))
+            .expect("insert run");
+    }
+
+    fn semantic_health(snapshot: &EnvironmentLifecycleSnapshot) -> &EnvironmentHealthCheck {
+        snapshot
+            .health_checks
+            .iter()
+            .find(|check| check.kind == EnvironmentHealthCheckKind::SemanticIndexStatus)
+            .expect("semantic index health check")
+    }
+
     #[test]
     fn lifecycle_queues_pending_messages_until_ready() {
         let store = crate::InMemoryAgentCoreStore::default();
-        store
-            .insert_run(run_record("project-1", "run-1"))
-            .expect("insert run");
+        insert_run(&store, "project-1", "run-1");
         let service = EnvironmentLifecycleService::new(store.clone());
         service
             .save_snapshot(EnvironmentLifecycleSnapshot::new(
@@ -1372,9 +1573,7 @@ mod tests {
     #[test]
     fn setup_failure_marks_run_failed_before_provider_loop() {
         let store = crate::InMemoryAgentCoreStore::default();
-        store
-            .insert_run(run_record("project-1", "run-1"))
-            .expect("insert run");
+        insert_run(&store, "project-1", "run-1");
         let service = EnvironmentLifecycleService::with_executor(
             store.clone(),
             Arc::new(FailingSetupExecutor),
@@ -1407,11 +1606,110 @@ mod tests {
     }
 
     #[test]
+    fn required_empty_semantic_index_blocks_lifecycle() {
+        let store = crate::InMemoryAgentCoreStore::default();
+        insert_run(&store, "project-1", "run-1");
+        let service = EnvironmentLifecycleService::new(store.clone());
+        let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        config.semantic_index_required = true;
+        config.semantic_index_state = EnvironmentSemanticIndexState::Empty;
+        config.semantic_index_requirement_reasons =
+            vec!["prompt requested semantic workspace search".into()];
+
+        let error = service
+            .start_environment(config)
+            .expect_err("empty required semantic index should block startup");
+        assert_eq!(error.code, "agent_environment_startup_failed");
+        let snapshot = service
+            .snapshot("project-1", "run-1")
+            .expect("load lifecycle snapshot");
+        assert_eq!(
+            semantic_health(&snapshot).status,
+            EnvironmentHealthStatus::Failed
+        );
+        assert_eq!(
+            semantic_health(&snapshot)
+                .diagnostic
+                .as_ref()
+                .expect("semantic diagnostic")
+                .code,
+            "agent_environment_workspace_index_empty"
+        );
+    }
+
+    #[test]
+    fn required_stale_semantic_index_blocks_lifecycle() {
+        let store = crate::InMemoryAgentCoreStore::default();
+        insert_run(&store, "project-1", "run-1");
+        let service = EnvironmentLifecycleService::new(store);
+        let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        config.semantic_index_required = true;
+        config.semantic_index_state = EnvironmentSemanticIndexState::Stale;
+        config.semantic_index_requirement_reasons =
+            vec!["prompt requested related-tests workspace retrieval".into()];
+
+        let error = service
+            .start_environment(config)
+            .expect_err("stale required semantic index should block startup");
+        assert_eq!(error.code, "agent_environment_startup_failed");
+        let snapshot = service
+            .snapshot("project-1", "run-1")
+            .expect("load lifecycle snapshot");
+        assert_eq!(
+            semantic_health(&snapshot)
+                .diagnostic
+                .as_ref()
+                .expect("semantic diagnostic")
+                .code,
+            "agent_environment_workspace_index_stale"
+        );
+    }
+
+    #[test]
+    fn optional_empty_semantic_index_warns_without_blocking_lifecycle() {
+        let store = crate::InMemoryAgentCoreStore::default();
+        insert_run(&store, "project-1", "run-1");
+        let service = EnvironmentLifecycleService::new(store);
+        let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        config.semantic_index_required = false;
+        config.semantic_index_state = EnvironmentSemanticIndexState::Empty;
+
+        let snapshot = service
+            .start_environment(config)
+            .expect("optional empty semantic index should not block startup");
+        assert_eq!(snapshot.state, EnvironmentLifecycleState::Ready);
+        assert_eq!(
+            semantic_health(&snapshot).status,
+            EnvironmentHealthStatus::Warning
+        );
+    }
+
+    #[test]
+    fn required_ready_semantic_index_allows_lifecycle() {
+        let store = crate::InMemoryAgentCoreStore::default();
+        insert_run(&store, "project-1", "run-1");
+        let service = EnvironmentLifecycleService::new(store);
+        let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        config.semantic_index_required = true;
+        config.semantic_index_available = true;
+        config.semantic_index_state = EnvironmentSemanticIndexState::Ready;
+        config.semantic_index_requirement_reasons =
+            vec!["prompt requested semantic workspace search".into()];
+
+        let snapshot = service
+            .start_environment(config)
+            .expect("ready required semantic index should allow startup");
+        assert_eq!(snapshot.state, EnvironmentLifecycleState::Ready);
+        assert_eq!(
+            semantic_health(&snapshot).status,
+            EnvironmentHealthStatus::Passed
+        );
+    }
+
+    #[test]
     fn git_hook_setup_pauses_for_approval() {
         let store = crate::InMemoryAgentCoreStore::default();
-        store
-            .insert_run(run_record("project-1", "run-1"))
-            .expect("insert run");
+        insert_run(&store, "project-1", "run-1");
         let service = EnvironmentLifecycleService::new(store.clone());
         let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
         config.git_hooks.push(EnvironmentGitHookSetup {

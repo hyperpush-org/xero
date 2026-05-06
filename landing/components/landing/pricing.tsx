@@ -32,20 +32,20 @@ const tiers: PricingTier[] = [
     price: "$0",
     period: "forever",
     icon: Laptop,
-    description: "The local desktop harness. Bring your own model keys, run as many sessions as your machine can handle.",
+    description: "The desktop app. Build your own agents, bring your own keys, run as much as your machine handles.",
     cta: "Download Xero",
     ctaHref: "#download",
     highlight: true,
     badge: "Available now",
     features: [
-      "Unlimited local projects",
-      "Up to 6 agent sessions per project",
-      "Bring your own model · 10 provider integrations",
-      "Persistent sessions · branch, rewind, compact, handoff",
-      "Real tools · repo, shell, git, browser, mobile, MCP, Solana",
-      "Discord & Telegram approval notifications",
-      "Local-first · credentials in OS keychain, redaction by default",
-      "Community support",
+      "Custom agents with per-agent tools, memory, and approval rules",
+      "Built-in Ask, Engineer, Debug, Agent Create",
+      "10 model providers, BYO keys",
+      "Branch, rewind, compact, handoff",
+      "Repo, shell, git, browser, mobile, MCP, Solana",
+      "Discord and Telegram approvals",
+      "Up to 6 panes per project",
+      "Keys in OS keychain, community support",
     ],
   },
   {
@@ -53,7 +53,7 @@ const tiers: PricingTier[] = [
     price: "$20",
     period: "/ month",
     icon: Cloud,
-    description: "Cloud runtime, sync, and durable background runs. Bring the same model keys you already use.",
+    description: "Cloud runtime, sync, and background runs. Same keys you already use.",
     cta: "Join the waitlist",
     ctaHref: waitlistHref,
     highlight: false,
@@ -61,11 +61,11 @@ const tiers: PricingTier[] = [
     comingSoon: true,
     features: [
       "Everything in Free",
-      "Cloud runtime that keeps a session running while your laptop sleeps",
-      "Sync sessions and project state across devices",
+      "Sessions keep running while your laptop sleeps",
+      "Sync state across devices",
       "Hosted run history and replay",
       "Priority support",
-      "No model markup · use your own provider accounts",
+      "No model markup, your provider accounts",
     ],
   },
   {
@@ -73,7 +73,7 @@ const tiers: PricingTier[] = [
     price: "$50",
     period: "/ month",
     icon: Rocket,
-    description: "Pro plus a managed on-chain workbench bundle for serious Solana builds.",
+    description: "Pro plus a managed Solana stack — RPC, indexer, forks, deploy guardrails.",
     cta: "Join the waitlist",
     ctaHref: waitlistHref,
     highlight: false,
@@ -81,12 +81,11 @@ const tiers: PricingTier[] = [
     comingSoon: true,
     features: [
       "Everything in Pro",
-      "Managed Solana developer-infrastructure bundle",
-      "Agent-usable RPC, indexer, and webhook credentials",
+      "Managed RPC, indexer, and webhook credentials",
       "Hosted forks and reusable snapshots",
       "Tx simulation, fee tuning, ALT and IDL helpers",
-      "Deploy safety, Squads proposals, verified builds",
-      "Program monitoring · drift, logs, cost alerts",
+      "Deploy guardrails, Squads proposals, verified builds",
+      "Program monitoring: drift, logs, cost alerts",
     ],
   },
 ]
@@ -101,12 +100,11 @@ export function Pricing() {
             Pricing
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Free today. Paid plans clearly marked when they ship.
+            Free today. Paid when it ships.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            The desktop harness is free to download and use. The cloud and Solana
-            plans below are on the roadmap — there&apos;s a waitlist instead of a
-            checkout while we build them.
+            The desktop app is free. Cloud and Solana plans are in development —
+            waitlist for now, real checkout when they're ready.
           </p>
         </div>
 
@@ -220,15 +218,13 @@ export function Pricing() {
         </div>
 
         <div className="mx-auto mt-5 max-w-6xl rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 text-center text-xs leading-5 text-muted-foreground">
-          AI model usage stays on your own provider accounts. Pro and Solana Pro
-          are not on sale yet — joining the waitlist is the only honest button
-          we can offer until those services are running.
+          Model usage runs on your own provider accounts. Pro and Solana Pro
+          aren't live yet — the waitlist is the only real button until they
+          are.
         </div>
 
-        {/* Footer note */}
         <p className="mt-8 text-center text-xs text-muted-foreground/60">
-          Need team seats or heavier Solana infrastructure when those plans go
-          live?{" "}
+          Need team seats or larger Solana infrastructure?{" "}
           <Link href="mailto:team@xero.sh" className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
             Talk to us
           </Link>

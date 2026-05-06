@@ -3,6 +3,7 @@ use std::{
     fs,
     path::Path,
     path::PathBuf,
+    time::Instant,
 };
 
 use rand::RngCore;
@@ -249,6 +250,7 @@ pub fn get_session_context_snapshot<R: Runtime>(
     state: State<'_, DesktopState>,
     request: GetSessionContextSnapshotRequestDto,
 ) -> CommandResult<SessionContextSnapshotDto> {
+    let started = Instant::now();
     validate_transcript_request(
         &request.project_id,
         &request.agent_session_id,
@@ -262,7 +264,7 @@ pub fn get_session_context_snapshot<R: Runtime>(
     }
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    build_session_context_snapshot(
+    let snapshot = build_session_context_snapshot(
         &repo_root,
         &request.project_id,
         &request.agent_session_id,
@@ -270,7 +272,15 @@ pub fn get_session_context_snapshot<R: Runtime>(
         request.provider_id.as_deref(),
         request.model_id.as_deref(),
         request.pending_prompt.as_deref(),
-    )
+    )?;
+    eprintln!(
+        "[runtime-latency] get_session_context_snapshot project_id={} agent_session_id={} run_id={} duration_ms={}",
+        request.project_id,
+        request.agent_session_id,
+        request.run_id.as_deref().unwrap_or("none"),
+        started.elapsed().as_millis()
+    );
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -338,6 +348,7 @@ pub fn branch_agent_session<R: Runtime>(
             project_id: request.project_id,
             source_agent_session_id: request.source_agent_session_id,
             source_run_id: request.source_run_id,
+            target_agent_session_id: None,
             title: request.title,
             selected: request.selected,
             boundary: AgentSessionBranchBoundary::Run,
@@ -366,6 +377,7 @@ pub fn rewind_agent_session<R: Runtime>(
             project_id: request.project_id,
             source_agent_session_id: request.source_agent_session_id,
             source_run_id: request.source_run_id,
+            target_agent_session_id: None,
             title: request.title,
             selected: request.selected,
             boundary,
@@ -2371,6 +2383,7 @@ fn context_usage_totals(
 }
 
 fn build_project_code_map(repo_root: &Path) -> CommandResult<SessionContextCodeMapDto> {
+    let started = Instant::now();
     let mut source_roots = BTreeSet::new();
     let mut package_manifests = Vec::new();
     let mut symbols = Vec::new();
@@ -2390,13 +2403,21 @@ fn build_project_code_map(repo_root: &Path) -> CommandResult<SessionContextCodeM
             .chain(symbols.iter().map(|symbol| &symbol.redaction))
             .chain(std::iter::once(&root_redaction)),
     );
-    Ok(SessionContextCodeMapDto {
+    let code_map = SessionContextCodeMapDto {
         generated_from_root: root,
         source_roots: source_roots.into_iter().collect(),
         package_manifests,
         symbols,
         redaction,
-    })
+    };
+    eprintln!(
+        "[runtime-latency] session_context_project_code_map repo_root={} manifests={} symbols={} duration_ms={}",
+        repo_root.display(),
+        code_map.package_manifests.len(),
+        code_map.symbols.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(code_map)
 }
 
 fn collect_project_code_map(
