@@ -674,6 +674,10 @@ fn policy_approval_is_reported_by_handler(call: &ToolCallInput) -> bool {
     matches!(
         call.tool_name.as_str(),
         AUTONOMOUS_TOOL_COMMAND
+            | AUTONOMOUS_TOOL_COMMAND_PROBE
+            | AUTONOMOUS_TOOL_COMMAND_VERIFY
+            | AUTONOMOUS_TOOL_COMMAND_RUN
+            | AUTONOMOUS_TOOL_COMMAND_SESSION
             | AUTONOMOUS_TOOL_COMMAND_SESSION_START
             | AUTONOMOUS_TOOL_PROCESS_MANAGER
             | AUTONOMOUS_TOOL_POWERSHELL

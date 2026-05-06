@@ -1392,6 +1392,12 @@ fn ensure_context_write_allowed(runtime_agent_id: RuntimeAgentIdDto) -> CommandR
             "Agent Create can search and read durable project context, but records agent definitions through the agent_definition tool.",
         ));
     }
+    if runtime_agent_id == RuntimeAgentIdDto::Crawl {
+        return Err(CommandError::user_fixable(
+            "project_context_write_forbidden_for_crawl",
+            "Crawl can search and read durable project context, but persists repository reconnaissance through its structured crawl report.",
+        ));
+    }
     Ok(())
 }
 

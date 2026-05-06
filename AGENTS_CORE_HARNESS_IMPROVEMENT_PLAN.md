@@ -116,7 +116,6 @@ Exit criteria:
 
 - A scoped Rust test can prove every tool has a descriptor, effect class, access-group entry, V2 descriptor, and catalog entry when enabled.
 - Prompt golden diffs identify intentional policy wording changes before they reach a provider.
-- Existing dirty app state is untouched and all new state lives in app-data or test temp directories.
 
 ## Phase 1: Replace Coarse Tools With Action-Level Risk
 

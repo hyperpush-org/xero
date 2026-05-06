@@ -475,6 +475,8 @@ pub trait ToolHandler: Send + Sync {
             "toolName": call.tool_name,
             "effectClass": descriptor.effect_class,
             "mutability": descriptor.mutability,
+            "sandboxRequirement": descriptor.sandbox_requirement,
+            "approvalRequirement": descriptor.approval_requirement,
             "capabilityTags": descriptor.capability_tags,
         })
     }
@@ -1858,6 +1860,28 @@ mod tests {
             .expect_err("empty tool names must be rejected");
 
         assert_eq!(error.category, ToolErrorCategory::InvalidInput);
+    }
+
+    #[test]
+    fn pre_hook_payload_includes_action_level_policy_metadata() {
+        let mut descriptor = descriptor("command_verify", ToolMutability::Mutating);
+        descriptor.effect_class = ToolEffectClass::CommandExecution;
+        descriptor.sandbox_requirement = ToolSandboxRequirement::WorkspaceWrite;
+        descriptor.approval_requirement = ToolApprovalRequirement::Policy;
+        let handler = StaticToolHandler::new(descriptor, |_context, _call| {
+            Ok(ToolHandlerOutput::new("ok", json!({})))
+        });
+
+        let payload = handler.pre_hook_payload(&ToolCallInput {
+            tool_call_id: "call-verify".into(),
+            tool_name: "command_verify".into(),
+            input: json!({ "argv": ["cargo", "test"] }),
+        });
+
+        assert_eq!(payload["toolName"], json!("command_verify"));
+        assert_eq!(payload["effectClass"], json!("command_execution"));
+        assert_eq!(payload["sandboxRequirement"], json!("workspace_write"));
+        assert_eq!(payload["approvalRequirement"], json!("policy"));
     }
 
     #[test]

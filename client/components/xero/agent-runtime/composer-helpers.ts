@@ -164,6 +164,8 @@ export function runtimeAgentIdForCustomBaseCapability(
       return 'engineer'
     case 'debugging':
       return 'debug'
+    case 'repository_recon':
+      return 'crawl'
     case 'agent_builder':
       return 'agent_create'
     case 'harness_test':

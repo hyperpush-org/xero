@@ -4,8 +4,8 @@ use rusqlite::{Connection, Error as SqlError};
 
 use crate::{
     commands::{
-        CommandError, PhaseSummaryDto, ProjectSnapshotResponseDto, ProjectSummaryDto,
-        RepositorySummaryDto,
+        CommandError, PhaseSummaryDto, ProjectOriginDto, ProjectSnapshotResponseDto,
+        ProjectSummaryDto, RepositorySummaryDto, RuntimeAgentIdDto,
     },
     db::database_path_for_repo,
 };
@@ -91,6 +91,7 @@ fn derive_project_summary(
         name: project_row.name,
         description: project_row.description,
         milestone: project_row.milestone,
+        project_origin: project_row.project_origin,
         total_phases: 0,
         completed_phases: 0,
         active_phase: 0,
@@ -168,6 +169,7 @@ pub(crate) fn read_project_row(
                 name,
                 description,
                 milestone,
+                project_origin,
                 branch,
                 runtime
             FROM projects
@@ -180,12 +182,53 @@ pub(crate) fn read_project_row(
                     name: row.get(1)?,
                     description: row.get(2)?,
                     milestone: row.get(3)?,
-                    branch: row.get(4)?,
-                    runtime: row.get(5)?,
+                    project_origin: parse_project_origin(row.get::<_, String>(4)?.as_str()),
+                    branch: row.get(5)?,
+                    runtime: row.get(6)?,
                 })
             },
         )
         .map_err(|error| {
             map_project_query_error(error, database_path, repo_root, expected_project_id)
         })
+}
+
+pub fn load_project_origin(
+    repo_root: &Path,
+    expected_project_id: &str,
+) -> Result<ProjectOriginDto, CommandError> {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_project_database(repo_root, &database_path)?;
+    read_project_row(&connection, &database_path, repo_root, expected_project_id)
+        .map(|row| row.project_origin)
+}
+
+pub fn ensure_runtime_agent_allowed_for_project(
+    repo_root: &Path,
+    expected_project_id: &str,
+    runtime_agent_id: RuntimeAgentIdDto,
+) -> Result<(), CommandError> {
+    if runtime_agent_id != RuntimeAgentIdDto::Crawl {
+        return Ok(());
+    }
+
+    match load_project_origin(repo_root, expected_project_id)? {
+        ProjectOriginDto::Brownfield => Ok(()),
+        ProjectOriginDto::Greenfield => Err(CommandError::user_fixable(
+            "runtime_agent_crawl_unavailable_greenfield",
+            "Crawl is only available for projects imported with Open existing. This project was created as new, so use Ask, Engineer, or Debug instead.",
+        )),
+        ProjectOriginDto::Unknown => Err(CommandError::user_fixable(
+            "runtime_agent_crawl_unavailable_unknown_origin",
+            "Crawl is only available after Xero knows the project came from Open existing. Re-import the existing repository or choose Ask, Engineer, or Debug.",
+        )),
+    }
+}
+
+fn parse_project_origin(value: &str) -> ProjectOriginDto {
+    match value {
+        "brownfield" => ProjectOriginDto::Brownfield,
+        "greenfield" => ProjectOriginDto::Greenfield,
+        _ => ProjectOriginDto::Unknown,
+    }
 }

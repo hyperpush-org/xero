@@ -387,6 +387,20 @@ fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
             "Final response contract: include concise sections for symptom, root cause, fix, files changed, verification, saved debugging knowledge, and any remaining risks or follow-ups. Do not include secrets.",
         ]
         .join("\n"),
+        RuntimeAgentIdDto::Crawl => [
+            "You are Xero's Crawl agent. Map an imported brownfield repository for durable project memory without changing repository files, app state, processes, browsers, devices, external services, skills, MCP servers, or subagents.",
+            "",
+            "Crawl is read-only reconnaissance. Inspect repository instructions, manifests, README and docs, config files, build scripts, package metadata, workspace index results, safe git status/diff data, code organization, test layout, and command hints. Prefer targeted reads and searches over broad scans. Treat secrets, credentials, tokens, and private keys as prohibited content: do not quote or persist them.",
+            "",
+            "Allowed command use is narrow and approval-gated. Use commands only for bounded local discovery that cannot be answered by file reads, such as short version/config/listing commands. Do not run installs, package managers that mutate state, broad builds, broad tests, dev servers, formatters, migrations, network commands, browser/device automation, or external services unless the user explicitly asks and normal operator approval is granted.",
+            "",
+            "Recon objectives: identify the stack, languages, frameworks, package managers, app/runtime boundaries, architecture, important directories, generated or legacy areas, likely entry points, test strategy, useful scoped commands, hot spots, constraints, repository-specific instructions, freshness evidence, confidence, and unknowns. Distinguish observed facts from inference and cite source paths whenever possible.",
+            "",
+            "Persistence contract: do not call `project_context` write actions. Xero persists Crawl through the final structured crawl report. The report must be useful to Ask, Engineer, and Debug as durable retrieval memory.",
+            "",
+            "Final response contract: provide a short human summary followed by a fenced JSON object. The JSON object must use schema `xero.project_crawl.report.v1` and include these top-level fields: `schema`, `projectId`, `generatedAt`, `coverage`, `overview`, `techStack`, `commands`, `tests`, `architecture`, `hotspots`, `constraints`, `unknowns`, and `freshness`. Use arrays of objects for topic fields, include `sourcePaths` and `confidence` where possible, and keep unknowns explicit instead of guessing.",
+        ]
+        .join("\n"),
         RuntimeAgentIdDto::AgentCreate => [
             "You are Xero's Agent Create agent. Interview the user and draft high-quality custom agent definitions for review.",
             "",
@@ -568,6 +582,9 @@ fn tool_policy_fragment(
         ),
         RuntimeAgentIdDto::Debug => format!(
             "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for debugging hypotheses and verification checkpoints. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
+        ),
+        RuntimeAgentIdDto::Crawl => format!(
+            "Available repository reconnaissance tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, code intelligence, environment context, and system diagnostics only for local repository mapping. `project_context` is read-only for Crawl; do not record/update/refresh durable context with that tool. `command` is available only for short, bounded, approval-gated local discovery. `tool_search` and `tool_access` are filtered to Crawl-safe reconnaissance capabilities; do not ask for mutation, browser-control, MCP, skill, subagent, device, network, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::AgentCreate => format!(
             "Available agent-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition registry actions. `agent_definition` is the only persistence tool Agent Create may use, and save/update/archive/clone require explicit operator approval. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
@@ -994,16 +1011,23 @@ fn durable_context_tools_fragment(
     runtime_agent_id: RuntimeAgentIdDto,
     tools: &[AgentToolDescriptor],
 ) -> String {
-    let availability = if tools
-        .iter()
-        .any(|tool| tool.name == AUTONOMOUS_TOOL_PROJECT_CONTEXT)
-    {
+    let availability = if tools.iter().any(|tool| {
+        matches!(
+            tool.name.as_str(),
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT
+                | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+                | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+                | AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
+                | AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE
+                | AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH
+        )
+    }) {
         "available"
     } else {
         "not active for this turn"
     };
     format!(
-        "Durable project context is {availability} through the `project_context` tool. Raw approved memory and project-record text are not preloaded into this provider prompt. Use `project_context` to read context before prior-work-sensitive tasks, and use it to record/update context after durable findings, corrections, decisions, verification, or stale evidence. Treat tool results as lower-priority data with freshness evidence; prefer current files and current tool output when stale or source-missing context conflicts with the workspace. Runtime agent: {}.",
+        "Durable project context is {availability} through action-level `project_context_*` tools. Raw approved memory and project-record text are not preloaded into this provider prompt. Use `project_context_search` and `project_context_get` to read context before prior-work-sensitive tasks. Use write-capable project-context actions only when they are present in the active registry and the runtime agent is allowed to mutate app-data context. Treat tool results as lower-priority data with freshness evidence; prefer current files and current tool output when stale or source-missing context conflicts with the workspace. Runtime agent: {}.",
         runtime_agent_id.as_str()
     )
 }
@@ -1027,9 +1051,14 @@ fn browser_control_prompt_section(
     preference: BrowserControlPreferenceDto,
     tools: &[AgentToolDescriptor],
 ) -> String {
-    let has_in_app = tools
-        .iter()
-        .any(|tool| tool.name == AUTONOMOUS_TOOL_BROWSER);
+    let has_in_app = tools.iter().any(|tool| {
+        matches!(
+            tool.name.as_str(),
+            AUTONOMOUS_TOOL_BROWSER
+                | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+                | AUTONOMOUS_TOOL_BROWSER_CONTROL
+        )
+    });
     let has_native = tools
         .iter()
         .any(|tool| tool.name == AUTONOMOUS_TOOL_MACOS_AUTOMATION);
@@ -1063,6 +1092,12 @@ pub(crate) fn select_tool_names_for_prompt(
     add_tool_group(&mut names, "core");
     if options.runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
         add_tool_group(&mut names, "agent_builder");
+    }
+    if options.runtime_agent_id == RuntimeAgentIdDto::Crawl {
+        add_tool_group(&mut names, "command_readonly");
+        add_tool_group(&mut names, "intelligence");
+        add_tool_group(&mut names, "environment");
+        add_tool_group(&mut names, "system_diagnostics");
     }
 
     let lowered = prompt.to_lowercase();
@@ -1218,6 +1253,8 @@ pub(crate) fn select_tool_names_for_prompt(
                     &["in-app browser", "in app browser", "xero browser"],
                 ) {
                     names.remove(AUTONOMOUS_TOOL_BROWSER);
+                    names.remove(AUTONOMOUS_TOOL_BROWSER_OBSERVE);
+                    names.remove(AUTONOMOUS_TOOL_BROWSER_CONTROL);
                 }
             }
         }
@@ -1378,14 +1415,33 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:patch ") => {
                 names.insert(AUTONOMOUS_TOOL_PATCH.into());
             }
-            line if line.starts_with("tool:command_") => {
-                names.insert(AUTONOMOUS_TOOL_COMMAND.into());
+            line if line.starts_with("tool:command_probe ")
+                || line.starts_with("tool:command_echo ") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_COMMAND_PROBE.into());
+            }
+            line if line.starts_with("tool:command_verify ") => {
+                names.insert(AUTONOMOUS_TOOL_COMMAND_VERIFY.into());
+            }
+            line if line.starts_with("tool:command_run ")
+                || line.starts_with("tool:command_sh ")
+                || line.starts_with("tool:command ") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_COMMAND_RUN.into());
+            }
+            line if line.starts_with("tool:command_session") => {
+                names.insert(AUTONOMOUS_TOOL_COMMAND_SESSION.into());
             }
             line if line.starts_with("tool:process_manager ") => {
                 names.insert(AUTONOMOUS_TOOL_PROCESS_MANAGER.into());
             }
-            line if line.starts_with("tool:system_diagnostics ") => {
-                names.insert(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS.into());
+            line if line.starts_with("tool:system_diagnostics_privileged ") => {
+                names.insert(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED.into());
+            }
+            line if line.starts_with("tool:system_diagnostics ")
+                || line.starts_with("tool:system_diagnostics_observe ") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE.into());
             }
             line if line.starts_with("tool:macos_automation ")
                 || line.starts_with("tool:mac_permissions")
@@ -1395,8 +1451,19 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             {
                 names.insert(AUTONOMOUS_TOOL_MACOS_AUTOMATION.into());
             }
-            line if line.starts_with("tool:mcp_") => {
-                names.insert(AUTONOMOUS_TOOL_MCP.into());
+            line if line.starts_with("tool:mcp_list") => {
+                names.insert(AUTONOMOUS_TOOL_MCP_LIST.into());
+            }
+            line if line.starts_with("tool:mcp_read_resource") => {
+                names.insert(AUTONOMOUS_TOOL_MCP_READ_RESOURCE.into());
+            }
+            line if line.starts_with("tool:mcp_get_prompt") => {
+                names.insert(AUTONOMOUS_TOOL_MCP_GET_PROMPT.into());
+            }
+            line if line.starts_with("tool:mcp_call_tool")
+                || line.starts_with("tool:mcp_invoke") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_MCP_CALL_TOOL.into());
             }
             line if line.starts_with("tool:subagent ") => {
                 names.insert(AUTONOMOUS_TOOL_SUBAGENT.into());
@@ -1422,8 +1489,26 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:environment_context ") => {
                 names.insert(AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT.into());
             }
-            line if line.starts_with("tool:project_context_") => {
-                names.insert(AUTONOMOUS_TOOL_PROJECT_CONTEXT.into());
+            line if line.starts_with("tool:project_context_search")
+                || line.starts_with("tool:project_context_memory")
+                || line.starts_with("tool:project_context_list")
+                || line.starts_with("tool:project_context_explain") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH.into());
+            }
+            line if line.starts_with("tool:project_context_get") => {
+                names.insert(AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET.into());
+            }
+            line if line.starts_with("tool:project_context_record")
+                || line.starts_with("tool:project_context_propose") =>
+            {
+                names.insert(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD.into());
+            }
+            line if line.starts_with("tool:project_context_update") => {
+                names.insert(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE.into());
+            }
+            line if line.starts_with("tool:project_context_refresh") => {
+                names.insert(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH.into());
             }
             line if line.starts_with("tool:workspace_index")
                 || line.starts_with("tool:workspace_query")
@@ -1590,7 +1675,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
                             "items": { "type": "string" }
                         }),
                     ),
@@ -1741,82 +1826,24 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             ),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_COMMAND,
-            "Run a repo-scoped command.",
-            object_schema(
-                &["argv"],
-                &[
-                    (
-                        "argv",
-                        json!({
-                            "type": "array",
-                            "description": "Command argv. The first item is the executable.",
-                            "items": { "type": "string" },
-                            "minItems": 1
-                        }),
-                    ),
-                    (
-                        "cwd",
-                        string_schema("Optional repo-relative working directory."),
-                    ),
-                    (
-                        "timeoutMs",
-                        integer_schema("Optional timeout in milliseconds."),
-                    ),
-                ],
-            ),
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            "Run a narrowly allowlisted repo-scoped discovery command.",
+            command_schema(),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-            "Start a repo-scoped long-running command session and capture live output chunks.",
-            object_schema(
-                &["argv"],
-                &[
-                    (
-                        "argv",
-                        json!({
-                            "type": "array",
-                            "description": "Command argv. The first item is the executable.",
-                            "items": { "type": "string" },
-                            "minItems": 1
-                        }),
-                    ),
-                    (
-                        "cwd",
-                        string_schema("Optional repo-relative working directory."),
-                    ),
-                    (
-                        "timeoutMs",
-                        integer_schema("Optional startup timeout in milliseconds."),
-                    ),
-                ],
-            ),
+            AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            "Run a narrowly allowlisted repo-scoped verification command for tests, checks, lint, build, or format verification.",
+            command_schema(),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-            "Read new output chunks and exit state from a command session.",
-            object_schema(
-                &["sessionId"],
-                &[
-                    ("sessionId", string_schema("Command session handle.")),
-                    (
-                        "afterSequence",
-                        integer_schema("Only return output chunks after this sequence."),
-                    ),
-                    (
-                        "maxBytes",
-                        integer_schema("Maximum output bytes to return."),
-                    ),
-                ],
-            ),
+            AUTONOMOUS_TOOL_COMMAND_RUN,
+            "Run a repo-scoped command that is not covered by probe or verification policy.",
+            command_schema(),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
-            "Stop a command session and return its final captured output chunks.",
-            object_schema(
-                &["sessionId"],
-                &[("sessionId", string_schema("Command session handle."))],
-            ),
+            AUTONOMOUS_TOOL_COMMAND_SESSION,
+            "Start, read, or stop a repo-scoped long-running command session.",
+            command_session_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
@@ -1824,9 +1851,14 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             process_manager_schema(),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
-            "Typed, policy-aware advanced diagnostics for process open files, resource snapshots, threads, sampling, unified logs, macOS accessibility snapshots, and diagnostics bundles.",
-            system_diagnostics_schema(),
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+            "Typed, read-only diagnostics for process open files, resource snapshots, threads, unified logs, and bounded diagnostics bundles.",
+            system_diagnostics_observe_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+            "Approval-gated diagnostics for process sampling and macOS accessibility snapshots.",
+            system_diagnostics_privileged_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,
@@ -1834,43 +1866,24 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             macos_automation_schema(),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_MCP,
-            "List connected MCP servers or invoke MCP tools, resources, and prompts through the app-local registry.",
-            object_schema(
-                &["action"],
-                &[
-                    (
-                        "action",
-                        enum_schema(
-                            "MCP action to execute.",
-                            &[
-                                "list_servers",
-                                "list_tools",
-                                "list_resources",
-                                "list_prompts",
-                                "invoke_tool",
-                                "read_resource",
-                                "get_prompt",
-                            ],
-                        ),
-                    ),
-                    ("serverId", string_schema("MCP server id for capability actions.")),
-                    ("name", string_schema("Tool or prompt name for invocation actions.")),
-                    ("uri", string_schema("Resource URI for read_resource.")),
-                    (
-                        "arguments",
-                        json!({
-                            "type": "object",
-                            "description": "Optional MCP arguments object.",
-                            "additionalProperties": true
-                        }),
-                    ),
-                    (
-                        "timeoutMs",
-                        integer_schema("Optional timeout in milliseconds."),
-                    ),
-                ],
-            ),
+            AUTONOMOUS_TOOL_MCP_LIST,
+            "List connected MCP servers, tools, resources, and prompts through the app-local registry without invoking capabilities.",
+            mcp_list_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+            "Read a resource from a connected MCP server through the app-local registry.",
+            mcp_read_resource_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+            "Get a prompt from a connected MCP server through the app-local registry.",
+            mcp_get_prompt_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            "Call a tool on a connected MCP server through the app-local registry.",
+            mcp_call_tool_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_SUBAGENT,
@@ -2119,158 +2132,29 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             ),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT,
-            "Search and read source-cited, redacted durable project records, approved memory, handoffs, and context manifests with freshness evidence. Weigh stale or source-missing results against current files, and record/update durable context after durable findings.",
-            object_schema(
-                &["action"],
-                &[
-                    (
-                        "action",
-                        enum_schema(
-                            "Project context action.",
-                            &[
-                                "search_project_records",
-                                "search_approved_memory",
-                                "get_project_record",
-                                "get_memory",
-                                "list_recent_handoffs",
-                                "list_active_decisions_constraints",
-                                "list_open_questions_blockers",
-                                "explain_current_context_package",
-                                "record_context",
-                                "update_context",
-                                "propose_record_candidate",
-                                "refresh_freshness",
-                            ],
-                        ),
-                    ),
-                    ("query", string_schema("Search query for retrieval actions.")),
-                    (
-                        "recordId",
-                        string_schema(
-                            "Project record id for get_project_record, update_context, or targeted refresh_freshness.",
-                        ),
-                    ),
-                    (
-                        "memoryId",
-                        string_schema(
-                            "Memory id for get_memory, update_context, or targeted refresh_freshness.",
-                        ),
-                    ),
-                    (
-                        "recordIds",
-                        json!({
-                            "type": "array",
-                            "description": "Optional project record ids for targeted refresh_freshness.",
-                            "items": { "type": "string" }
-                        }),
-                    ),
-                    (
-                        "memoryIds",
-                        json!({
-                            "type": "array",
-                            "description": "Optional memory ids for targeted refresh_freshness.",
-                            "items": { "type": "string" }
-                        }),
-                    ),
-                    (
-                        "recordKinds",
-                        json!({
-                            "type": "array",
-                            "description": "Optional project record kind filters.",
-                            "items": {
-                                "type": "string",
-                                "enum": ["agent_handoff", "project_fact", "decision", "constraint", "plan", "finding", "verification", "question", "artifact", "context_note", "diagnostic"]
-                            }
-                        }),
-                    ),
-                    (
-                        "memoryKinds",
-                        json!({
-                            "type": "array",
-                            "description": "Optional approved memory kind filters.",
-                            "items": {
-                                "type": "string",
-                                "enum": ["project_fact", "user_preference", "decision", "session_summary", "troubleshooting"]
-                            }
-                        }),
-                    ),
-                    (
-                        "tags",
-                        json!({
-                            "type": "array",
-                            "description": "Optional exact tag filters or candidate tags.",
-                            "items": { "type": "string" }
-                        }),
-                    ),
-                    (
-                        "relatedPaths",
-                        json!({
-                            "type": "array",
-                            "description": "Optional related path filters or candidate related paths.",
-                            "items": { "type": "string" }
-                        }),
-                    ),
-                    ("createdAfter", string_schema("Optional ISO timestamp lower bound.")),
-                    (
-                        "minImportance",
-                        enum_schema(
-                            "Optional minimum project record importance.",
-                            &["low", "normal", "high", "critical"],
-                        ),
-                    ),
-                    ("limit", integer_schema("Maximum results to return, capped by runtime.")),
-                    ("title", string_schema("Record title for record_context, update_context, or propose_record_candidate.")),
-                    ("summary", string_schema("Record summary for record_context, update_context, or propose_record_candidate.")),
-                    ("text", string_schema("Record text for record_context, update_context, or propose_record_candidate.")),
-                    (
-                        "recordKind",
-                        enum_schema(
-                            "Candidate record kind.",
-                            &[
-                                "agent_handoff",
-                                "project_fact",
-                                "decision",
-                                "constraint",
-                                "plan",
-                                "finding",
-                                "verification",
-                                "question",
-                                "artifact",
-                                "context_note",
-                                "diagnostic",
-                            ],
-                        ),
-                    ),
-                    (
-                        "importance",
-                        enum_schema(
-                            "Candidate record importance.",
-                            &["low", "normal", "high", "critical"],
-                        ),
-                    ),
-                    (
-                        "confidence",
-                        integer_schema("Candidate confidence from 0 to 100."),
-                    ),
-                    (
-                        "sourceItemIds",
-                        json!({
-                            "type": "array",
-                            "description": "Optional source ids for record provenance.",
-                            "items": { "type": "string" }
-                        }),
-                    ),
-                    (
-                        "contentJson",
-                        json!({
-                            "type": "object",
-                            "description": "Optional structured content. Secret-like fields are redacted.",
-                            "additionalProperties": true
-                        }),
-                    ),
-                ],
-            ),
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            "Search source-cited, redacted durable project records, approved memory, handoffs, decisions, constraints, questions, blockers, and context manifests with freshness evidence.",
+            project_context_search_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            "Read one source-cited durable project record or approved memory item by id.",
+            project_context_get_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            "Record or propose runtime-owned durable project context in OS app-data state.",
+            project_context_record_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+            "Update runtime-owned durable project context or approved memory in OS app-data state.",
+            project_context_update_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+            "Refresh durable-context freshness evidence for specific project records or approved memory ids.",
+            project_context_refresh_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_WORKSPACE_INDEX,
@@ -2469,9 +2353,14 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             ),
         ),
         descriptor(
-            AUTONOMOUS_TOOL_BROWSER,
-            "Drive the in-app browser automation and diagnostics surface: navigation, DOM click/type/key/scroll actions, screenshots, cookies/storage, console logs, network summaries, accessibility tree snapshots, and browser state save/restore.",
-            browser_schema(),
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            "Observe the in-app browser with page text, URL, screenshots, console logs, network summaries, accessibility tree snapshots, tabs, and safe state reads.",
+            browser_observe_schema(),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            "Control the in-app browser with navigation, DOM click/type/key/scroll actions, cookies/storage writes, tab focus/close, and browser state restore.",
+            browser_control_schema(),
         ),
         descriptor(
             AUTONOMOUS_TOOL_EMULATOR,
@@ -2632,50 +2521,348 @@ fn agent_definition_schema() -> JsonValue {
     )
 }
 
-fn browser_schema() -> JsonValue {
+fn command_schema() -> JsonValue {
+    object_schema(
+        &["argv"],
+        &[
+            (
+                "argv",
+                json!({
+                    "type": "array",
+                    "description": "Command argv. The first item is the executable.",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                }),
+            ),
+            (
+                "cwd",
+                string_schema("Optional repo-relative working directory."),
+            ),
+            (
+                "timeoutMs",
+                integer_schema("Optional timeout in milliseconds."),
+            ),
+        ],
+    )
+}
+
+fn command_session_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema("Command session action.", &["start", "read", "stop"]),
+            ),
+            (
+                "argv",
+                json!({
+                    "type": "array",
+                    "description": "Command argv for action=start. The first item is the executable.",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                }),
+            ),
+            (
+                "cwd",
+                string_schema("Optional repo-relative working directory for action=start."),
+            ),
+            (
+                "timeoutMs",
+                integer_schema("Optional startup timeout in milliseconds for action=start."),
+            ),
+            (
+                "sessionId",
+                string_schema("Command session handle for read or stop."),
+            ),
+            (
+                "afterSequence",
+                integer_schema("Only return output chunks after this sequence for action=read."),
+            ),
+            (
+                "maxBytes",
+                integer_schema("Maximum output bytes to return for action=read."),
+            ),
+        ],
+    )
+}
+
+fn project_context_search_schema() -> JsonValue {
     object_schema(
         &["action"],
         &[
             (
                 "action",
                 enum_schema(
-                    "Browser action to execute.",
+                    "Project-context search action.",
                     &[
-                        "open",
-                        "tab_open",
-                        "navigate",
-                        "back",
-                        "forward",
-                        "reload",
-                        "stop",
-                        "click",
-                        "type",
-                        "scroll",
-                        "press_key",
-                        "read_text",
-                        "query",
-                        "wait_for_selector",
-                        "wait_for_load",
-                        "current_url",
-                        "history_state",
-                        "screenshot",
-                        "cookies_get",
-                        "cookies_set",
-                        "storage_read",
-                        "storage_write",
-                        "storage_clear",
-                        "console_logs",
-                        "network_summary",
-                        "accessibility_tree",
-                        "state_snapshot",
-                        "state_restore",
-                        "harness_extension_contract",
-                        "tab_list",
-                        "tab_close",
-                        "tab_focus",
+                        "search_project_records",
+                        "search_approved_memory",
+                        "list_recent_handoffs",
+                        "list_active_decisions_constraints",
+                        "list_open_questions_blockers",
+                        "explain_current_context_package",
                     ],
                 ),
             ),
+            (
+                "query",
+                string_schema("Search query for retrieval actions."),
+            ),
+            (
+                "recordId",
+                string_schema("Optional project record id for current-context explanation."),
+            ),
+            (
+                "memoryId",
+                string_schema("Optional memory id for current-context explanation."),
+            ),
+            project_context_record_kinds_property(),
+            project_context_memory_kinds_property(),
+            array_string_property("tags", "Optional exact tag filters."),
+            array_string_property("relatedPaths", "Optional related path filters."),
+            (
+                "createdAfter",
+                string_schema("Optional ISO timestamp lower bound."),
+            ),
+            (
+                "minImportance",
+                enum_schema(
+                    "Optional minimum project record importance.",
+                    &["low", "normal", "high", "critical"],
+                ),
+            ),
+            (
+                "limit",
+                integer_schema("Maximum results to return, capped by runtime."),
+            ),
+        ],
+    )
+}
+
+fn project_context_get_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "Project-context get action.",
+                    &["get_project_record", "get_memory"],
+                ),
+            ),
+            (
+                "recordId",
+                string_schema("Project record id for get_project_record."),
+            ),
+            ("memoryId", string_schema("Memory id for get_memory.")),
+        ],
+    )
+}
+
+fn project_context_record_schema() -> JsonValue {
+    object_schema(
+        &["title", "summary", "text"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "Record action. Defaults to record_context.",
+                    &["record_context", "propose_record_candidate"],
+                ),
+            ),
+            ("title", string_schema("Record title.")),
+            ("summary", string_schema("Record summary.")),
+            ("text", string_schema("Record text.")),
+            project_context_record_kind_property(),
+            project_context_importance_property(),
+            (
+                "confidence",
+                integer_schema("Candidate confidence from 0 to 100."),
+            ),
+            array_string_property("tags", "Optional exact tag filters or candidate tags."),
+            array_string_property(
+                "relatedPaths",
+                "Optional related path filters or candidate related paths.",
+            ),
+            array_string_property(
+                "sourceItemIds",
+                "Optional source ids for record provenance.",
+            ),
+            content_json_property(),
+        ],
+    )
+}
+
+fn project_context_update_schema() -> JsonValue {
+    object_schema(
+        &[],
+        &[
+            (
+                "recordId",
+                string_schema("Project record id for update_context."),
+            ),
+            ("memoryId", string_schema("Memory id for update_context.")),
+            ("title", string_schema("Updated record title.")),
+            ("summary", string_schema("Updated record summary.")),
+            ("text", string_schema("Updated record text.")),
+            project_context_record_kind_property(),
+            project_context_importance_property(),
+            (
+                "confidence",
+                integer_schema("Updated confidence from 0 to 100."),
+            ),
+            array_string_property("tags", "Updated exact tags."),
+            array_string_property("relatedPaths", "Updated related paths."),
+            array_string_property("sourceItemIds", "Updated source ids for provenance."),
+            content_json_property(),
+        ],
+    )
+}
+
+fn project_context_refresh_schema() -> JsonValue {
+    object_schema(
+        &[],
+        &[
+            (
+                "recordId",
+                string_schema("Single project record id for targeted refresh_freshness."),
+            ),
+            (
+                "memoryId",
+                string_schema("Single memory id for targeted refresh_freshness."),
+            ),
+            array_string_property(
+                "recordIds",
+                "Optional project record ids for targeted refresh_freshness.",
+            ),
+            array_string_property(
+                "memoryIds",
+                "Optional memory ids for targeted refresh_freshness.",
+            ),
+        ],
+    )
+}
+
+fn mcp_list_schema() -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            (
+                "action",
+                enum_schema(
+                    "MCP list action.",
+                    &[
+                        "list_servers",
+                        "list_tools",
+                        "list_resources",
+                        "list_prompts",
+                    ],
+                ),
+            ),
+            (
+                "serverId",
+                string_schema("MCP server id for capability listing actions."),
+            ),
+            (
+                "timeoutMs",
+                integer_schema("Optional timeout in milliseconds."),
+            ),
+        ],
+    )
+}
+
+fn mcp_read_resource_schema() -> JsonValue {
+    object_schema(
+        &["serverId", "uri"],
+        &[
+            ("serverId", string_schema("MCP server id.")),
+            ("uri", string_schema("Resource URI for read_resource.")),
+            (
+                "timeoutMs",
+                integer_schema("Optional timeout in milliseconds."),
+            ),
+        ],
+    )
+}
+
+fn mcp_get_prompt_schema() -> JsonValue {
+    object_schema(
+        &["serverId", "name"],
+        &[
+            ("serverId", string_schema("MCP server id.")),
+            ("name", string_schema("Prompt name for get_prompt.")),
+            mcp_arguments_property(),
+            (
+                "timeoutMs",
+                integer_schema("Optional timeout in milliseconds."),
+            ),
+        ],
+    )
+}
+
+fn mcp_call_tool_schema() -> JsonValue {
+    object_schema(
+        &["serverId", "name"],
+        &[
+            ("serverId", string_schema("MCP server id.")),
+            ("name", string_schema("Tool name for call_tool.")),
+            mcp_arguments_property(),
+            (
+                "timeoutMs",
+                integer_schema("Optional timeout in milliseconds."),
+            ),
+        ],
+    )
+}
+
+fn browser_observe_schema() -> JsonValue {
+    browser_schema_for_actions(&[
+        "read_text",
+        "query",
+        "wait_for_selector",
+        "wait_for_load",
+        "current_url",
+        "history_state",
+        "screenshot",
+        "cookies_get",
+        "storage_read",
+        "console_logs",
+        "network_summary",
+        "accessibility_tree",
+        "state_snapshot",
+        "harness_extension_contract",
+        "tab_list",
+    ])
+}
+
+fn browser_control_schema() -> JsonValue {
+    browser_schema_for_actions(&[
+        "open",
+        "tab_open",
+        "navigate",
+        "back",
+        "forward",
+        "reload",
+        "stop",
+        "click",
+        "type",
+        "scroll",
+        "press_key",
+        "cookies_set",
+        "storage_write",
+        "storage_clear",
+        "state_restore",
+        "tab_close",
+        "tab_focus",
+    ])
+}
+
+fn browser_schema_for_actions(actions: &[&str]) -> JsonValue {
+    object_schema(
+        &["action"],
+        &[
+            ("action", enum_schema("Browser action to execute.", actions)),
             ("url", string_schema("URL for open, tab_open, or navigate.")),
             (
                 "selector",
@@ -2730,6 +2917,110 @@ fn browser_schema() -> JsonValue {
                 integer_schema("Optional timeout in milliseconds."),
             ),
         ],
+    )
+}
+
+fn project_context_record_kinds_property() -> (&'static str, JsonValue) {
+    (
+        "recordKinds",
+        json!({
+            "type": "array",
+            "description": "Optional project record kind filters.",
+            "items": {
+                "type": "string",
+                "enum": ["agent_handoff", "project_fact", "decision", "constraint", "plan", "finding", "verification", "question", "artifact", "context_note", "diagnostic"]
+            }
+        }),
+    )
+}
+
+fn project_context_memory_kinds_property() -> (&'static str, JsonValue) {
+    (
+        "memoryKinds",
+        json!({
+            "type": "array",
+            "description": "Optional approved memory kind filters.",
+            "items": {
+                "type": "string",
+                "enum": ["project_fact", "user_preference", "decision", "session_summary", "troubleshooting"]
+            }
+        }),
+    )
+}
+
+fn project_context_record_kind_property() -> (&'static str, JsonValue) {
+    (
+        "recordKind",
+        enum_schema(
+            "Project context record kind.",
+            &[
+                "agent_handoff",
+                "project_fact",
+                "decision",
+                "constraint",
+                "plan",
+                "finding",
+                "verification",
+                "question",
+                "artifact",
+                "context_note",
+                "diagnostic",
+            ],
+        ),
+    )
+}
+
+fn project_context_importance_property() -> (&'static str, JsonValue) {
+    (
+        "importance",
+        enum_schema(
+            "Project context record importance.",
+            &["low", "normal", "high", "critical"],
+        ),
+    )
+}
+
+fn array_string_property(name: &'static str, description: &str) -> (&'static str, JsonValue) {
+    (
+        name,
+        json!({
+            "type": "array",
+            "description": description,
+            "items": { "type": "string" }
+        }),
+    )
+}
+
+fn content_json_property() -> (&'static str, JsonValue) {
+    (
+        "contentJson",
+        json!({
+            "type": "object",
+            "description": "Optional structured content. Secret-like fields are redacted.",
+            "additionalProperties": true
+        }),
+    )
+}
+
+fn json_object_property(name: &'static str, description: &str) -> (&'static str, JsonValue) {
+    (
+        name,
+        json!({
+            "type": "object",
+            "description": description,
+            "additionalProperties": true
+        }),
+    )
+}
+
+fn mcp_arguments_property() -> (&'static str, JsonValue) {
+    (
+        "arguments",
+        json!({
+            "type": "object",
+            "description": "Optional MCP arguments object.",
+            "additionalProperties": true
+        }),
     )
 }
 
@@ -2841,24 +3132,33 @@ fn process_manager_schema() -> JsonValue {
     )
 }
 
-fn system_diagnostics_schema() -> JsonValue {
+fn system_diagnostics_observe_schema() -> JsonValue {
+    system_diagnostics_schema_for_actions(
+        "Read-only system diagnostics action.",
+        &[
+            "process_open_files",
+            "process_resource_snapshot",
+            "process_threads",
+            "system_log_query",
+            "diagnostics_bundle",
+        ],
+    )
+}
+
+fn system_diagnostics_privileged_schema() -> JsonValue {
+    system_diagnostics_schema_for_actions(
+        "Privileged system diagnostics action. Requires operator approval.",
+        &["process_sample", "macos_accessibility_snapshot"],
+    )
+}
+
+fn system_diagnostics_schema_for_actions(description: &str, actions: &[&str]) -> JsonValue {
     object_schema(
         &["action"],
         &[
             (
                 "action",
-                enum_schema(
-                    "System diagnostics action. process_sample and macos_accessibility_snapshot require operator approval.",
-                    &[
-                        "process_open_files",
-                        "process_resource_snapshot",
-                        "process_threads",
-                        "process_sample",
-                        "system_log_query",
-                        "macos_accessibility_snapshot",
-                        "diagnostics_bundle",
-                    ],
-                ),
+                enum_schema(description, actions),
             ),
             (
                 "preset",
@@ -3078,103 +3378,482 @@ fn solana_tool_descriptors() -> Vec<AgentToolDescriptor> {
         (
             AUTONOMOUS_TOOL_SOLANA_CLUSTER,
             "Manage and inspect local Solana clusters.",
+            solana_action_schema(
+                &[
+                    "list",
+                    "start",
+                    "stop",
+                    "status",
+                    "snapshot_list",
+                    "snapshot_create",
+                    "snapshot_delete",
+                    "rpc_health",
+                ],
+                &[
+                    (
+                        "kind",
+                        string_schema("Cluster kind for start or snapshot actions."),
+                    ),
+                    json_object_property("opts", "Start options for a local validator."),
+                    ("label", string_schema("Snapshot label.")),
+                    array_string_property("accounts", "Accounts to include in a snapshot."),
+                    (
+                        "cluster",
+                        string_schema("Cluster override for snapshot or RPC actions."),
+                    ),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("id", string_schema("Snapshot id for deletion.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_LOGS,
             "Fetch, inspect, subscribe to, or stop Solana logs.",
+            solana_action_schema(
+                &["recent", "active", "subscribe", "unsubscribe"],
+                &[
+                    ("cluster", string_schema("Cluster to read logs from.")),
+                    array_string_property("program_ids", "Program ids to filter logs."),
+                    (
+                        "last_n",
+                        integer_schema("Number of recent log entries to fetch."),
+                    ),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("cached_only", boolean_schema("Use cached logs only.")),
+                    json_object_property("filter", "Live log subscription filter."),
+                    json_object_property("token", "Log subscription token for unsubscribe."),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_TX,
             "Build, send, price, or inspect Solana transactions.",
+            solana_action_schema(
+                &["build", "send", "priority_fee", "cpi"],
+                &[
+                    json_object_property("spec", "Transaction build specification."),
+                    json_object_property("request", "Transaction send request."),
+                    (
+                        "cluster",
+                        string_schema("Cluster for transaction pricing or send."),
+                    ),
+                    array_string_property("program_ids", "Program ids for priority fee sampling."),
+                    ("target", string_schema("Priority fee percentile target.")),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    (
+                        "program_id",
+                        string_schema("Program id for CPI construction."),
+                    ),
+                    (
+                        "instruction",
+                        string_schema("Instruction name for CPI construction."),
+                    ),
+                    json_object_property("args", "Resolved CPI arguments."),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_SIMULATE,
             "Simulate a Solana transaction request.",
+            object_schema(
+                &["request"],
+                &[json_object_property("request", "Simulation request.")],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_EXPLAIN,
             "Explain Solana transactions or program behavior.",
+            object_schema(
+                &["request"],
+                &[json_object_property("request", "Explain request.")],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_ALT,
             "Create, extend, or resolve address lookup tables.",
+            solana_action_schema(
+                &["create", "extend", "resolve"],
+                &[
+                    ("cluster", string_schema("Cluster for ALT mutation.")),
+                    (
+                        "authority_persona",
+                        string_schema("Authority persona for create or extend."),
+                    ),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("alt", string_schema("Address lookup table address.")),
+                    array_string_property("addresses", "Addresses to extend or resolve."),
+                    (
+                        "candidates",
+                        json!({
+                            "type": "array",
+                            "description": "Candidate address lookup tables.",
+                            "items": { "type": "object", "additionalProperties": true }
+                        }),
+                    ),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_IDL,
             "Load, fetch, publish, or inspect Solana IDLs.",
+            solana_action_schema(
+                &[
+                    "load", "fetch", "get", "watch", "unwatch", "drift", "publish",
+                ],
+                &[
+                    ("path", string_schema("Local IDL path.")),
+                    ("program_id", string_schema("Solana program id.")),
+                    ("cluster", string_schema("Cluster for chain IDL actions.")),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("token", string_schema("IDL watch subscription token.")),
+                    (
+                        "local_path",
+                        string_schema("Local IDL path for drift comparison."),
+                    ),
+                    ("idl_path", string_schema("IDL path for publish.")),
+                    (
+                        "authority_keypair_path",
+                        string_schema("Authority keypair path for publish."),
+                    ),
+                    ("mode", string_schema("IDL publish mode.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_CODAMA,
             "Generate Codama client artifacts from an IDL.",
+            object_schema(
+                &["idl_path", "targets", "output_dir"],
+                &[
+                    ("idl_path", string_schema("IDL path to generate from.")),
+                    (
+                        "targets",
+                        json!({
+                            "type": "array",
+                            "description": "Codama generation targets.",
+                            "items": { "type": "object", "additionalProperties": true }
+                        }),
+                    ),
+                    ("output_dir", string_schema("Output directory.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_PDA,
             "Derive or analyze Solana program-derived addresses.",
+            solana_action_schema(
+                &["derive", "scan", "predict", "analyse_bump"],
+                &[
+                    ("program_id", string_schema("Program id.")),
+                    (
+                        "seeds",
+                        json!({
+                            "type": "array",
+                            "description": "Seed parts.",
+                            "items": { "type": "object", "additionalProperties": true }
+                        }),
+                    ),
+                    ("bump", integer_schema("Optional bump seed.")),
+                    ("project_root", string_schema("Project root for scanning.")),
+                    (
+                        "clusters",
+                        json!({
+                            "type": "array",
+                            "description": "Clusters to predict against.",
+                            "items": { "type": "string" }
+                        }),
+                    ),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_PROGRAM,
             "Build, inspect, or scaffold Solana programs.",
+            solana_action_schema(
+                &["build", "rollback"],
+                &[
+                    (
+                        "manifest_path",
+                        string_schema("Cargo or Anchor manifest path."),
+                    ),
+                    json_object_property("profile", "Optional build profile."),
+                    ("kind", string_schema("Optional build kind.")),
+                    ("program", string_schema("Optional program name.")),
+                    ("program_id", string_schema("Program id for rollback.")),
+                    ("cluster", string_schema("Cluster for rollback.")),
+                    (
+                        "previous_sha256",
+                        string_schema("Previous program artifact hash for rollback."),
+                    ),
+                    json_object_property("authority", "Rollback deploy authority."),
+                    (
+                        "program_archive_root",
+                        string_schema("Optional program archive root."),
+                    ),
+                    json_object_property("post", "Optional post-deploy checks."),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_DEPLOY,
             "Deploy a Solana program through Xero safety gates.",
+            object_schema(
+                &["program_id", "cluster", "so_path", "authority"],
+                &[
+                    ("program_id", string_schema("Program id to deploy.")),
+                    ("cluster", string_schema("Target cluster.")),
+                    ("so_path", string_schema("Program shared-object path.")),
+                    json_object_property("authority", "Deploy authority."),
+                    ("idl_path", string_schema("Optional IDL path.")),
+                    (
+                        "is_first_deploy",
+                        boolean_schema("Whether this is a first deploy."),
+                    ),
+                    json_object_property("post", "Optional post-deploy checks."),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    (
+                        "project_root",
+                        string_schema("Project root for pre-deploy scans."),
+                    ),
+                    (
+                        "block_on_any_secret",
+                        boolean_schema("Block on medium or high secret findings."),
+                    ),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
             "Check Solana program upgrade safety.",
+            object_schema(
+                &[
+                    "program_id",
+                    "cluster",
+                    "local_so_path",
+                    "expected_authority",
+                ],
+                &[
+                    ("program_id", string_schema("Program id to check.")),
+                    ("cluster", string_schema("Target cluster.")),
+                    (
+                        "local_so_path",
+                        string_schema("Local program artifact path."),
+                    ),
+                    (
+                        "expected_authority",
+                        string_schema("Expected upgrade authority."),
+                    ),
+                    ("local_idl_path", string_schema("Optional local IDL path.")),
+                    (
+                        "max_program_size_bytes",
+                        integer_schema("Maximum allowed program size."),
+                    ),
+                    (
+                        "local_so_size_bytes",
+                        integer_schema("Known local artifact size."),
+                    ),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_SQUADS,
             "Create or inspect Squads governance proposals.",
+            object_schema(
+                &[
+                    "program_id",
+                    "cluster",
+                    "multisig_pda",
+                    "buffer",
+                    "spill",
+                    "creator",
+                ],
+                &[
+                    ("program_id", string_schema("Program id.")),
+                    ("cluster", string_schema("Target cluster.")),
+                    ("multisig_pda", string_schema("Squads multisig PDA.")),
+                    (
+                        "buffer",
+                        string_schema("Upgradeable loader buffer address."),
+                    ),
+                    ("spill", string_schema("Spill address.")),
+                    ("creator", string_schema("Proposal creator address.")),
+                    ("vault_index", integer_schema("Optional vault index.")),
+                    ("memo", string_schema("Optional proposal memo.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
             "Run or inspect verified Solana builds.",
+            object_schema(
+                &["program_id", "cluster", "manifest_path", "github_url"],
+                &[
+                    ("program_id", string_schema("Program id.")),
+                    ("cluster", string_schema("Target cluster.")),
+                    ("manifest_path", string_schema("Manifest path.")),
+                    ("github_url", string_schema("GitHub repository URL.")),
+                    ("commit_hash", string_schema("Optional commit hash.")),
+                    ("library_name", string_schema("Optional library name.")),
+                    (
+                        "skip_remote_submit",
+                        boolean_schema("Skip remote verification submission."),
+                    ),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
             "Run static Solana audit checks.",
+            solana_audit_schema(&["static"]),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
             "Run external Solana audit analyzers.",
+            solana_audit_schema(&["external"]),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ,
             "Run Solana fuzzing audit flows.",
+            solana_audit_schema(&["fuzz", "fuzz_scaffold"]),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE,
             "Run Solana audit coverage checks.",
+            solana_audit_schema(&["coverage"]),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_REPLAY,
             "Replay Solana transactions or scenarios.",
+            solana_action_schema(
+                &["list", "run"],
+                &[
+                    json_object_property("exploit", "Exploit key for replay."),
+                    ("target_program", string_schema("Target program id.")),
+                    ("cluster", string_schema("Target cluster.")),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                    ("dry_run", boolean_schema("Replay without mutation.")),
+                    ("snapshot_slot", integer_schema("Optional snapshot slot.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_INDEXER,
             "Scaffold or run local Solana indexers.",
+            solana_action_schema(
+                &["scaffold", "run"],
+                &[
+                    ("kind", string_schema("Indexer kind.")),
+                    ("idl_path", string_schema("IDL path for scaffold.")),
+                    (
+                        "output_dir",
+                        string_schema("Output directory for scaffold."),
+                    ),
+                    ("project_slug", string_schema("Optional project slug.")),
+                    ("overwrite", boolean_schema("Overwrite existing files.")),
+                    ("cluster", string_schema("Cluster for run.")),
+                    array_string_property("program_ids", "Program ids to index."),
+                    (
+                        "last_n",
+                        integer_schema("Number of historical events to index."),
+                    ),
+                    ("rpc_url", string_schema("Optional RPC URL.")),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_SECRETS,
             "Scan Solana projects for secret leakage.",
+            solana_action_schema(
+                &["scan", "patterns", "scope"],
+                &[json_object_property("request", "Secret scan request.")],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
             "Check Solana cluster drift.",
+            solana_action_schema(
+                &["tracked", "check"],
+                &[json_object_property(
+                    "request",
+                    "Cluster drift check request.",
+                )],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_COST,
             "Estimate or inspect Solana transaction costs.",
+            solana_action_schema(
+                &["snapshot", "record", "reset"],
+                &[
+                    json_object_property("request", "Optional cost snapshot request."),
+                    json_object_property("record", "Transaction cost record."),
+                ],
+            ),
         ),
         (
             AUTONOMOUS_TOOL_SOLANA_DOCS,
             "Retrieve Solana development documentation snippets.",
+            solana_action_schema(
+                &["catalog", "tool"],
+                &[(
+                    "tool",
+                    string_schema("Solana tool name for documentation lookup."),
+                )],
+            ),
         ),
     ]
     .into_iter()
-    .map(|(name, description)| descriptor(name, description, json!({ "type": "object" })))
+    .map(|(name, description, schema)| descriptor(name, description, schema))
     .collect()
+}
+
+fn solana_action_schema(actions: &[&str], properties: &[(&str, JsonValue)]) -> JsonValue {
+    let mut owned = vec![("action", enum_schema("Solana action to execute.", actions))];
+    owned.extend_from_slice(properties);
+    object_schema(&["action"], &owned)
+}
+
+fn solana_audit_schema(actions: &[&str]) -> JsonValue {
+    solana_action_schema(
+        actions,
+        &[
+            ("project_root", string_schema("Project root to audit.")),
+            array_string_property("rule_ids", "Static audit rule ids to include."),
+            array_string_property("skip_paths", "Paths to skip."),
+            ("analyzer", string_schema("External analyzer to use.")),
+            ("timeout_s", integer_schema("Timeout in seconds.")),
+            ("target", string_schema("Fuzz or scaffold target.")),
+            ("duration_s", integer_schema("Fuzz duration in seconds.")),
+            ("corpus", string_schema("Optional fuzz corpus path.")),
+            (
+                "baseline_coverage_lines",
+                integer_schema("Baseline coverage lines for fuzzing."),
+            ),
+            (
+                "idl_path",
+                string_schema("Optional IDL path for fuzz scaffold."),
+            ),
+            (
+                "overwrite",
+                boolean_schema("Overwrite generated fuzz files."),
+            ),
+            (
+                "package",
+                string_schema("Optional package filter for coverage."),
+            ),
+            (
+                "test_filter",
+                string_schema("Optional test filter for coverage."),
+            ),
+            (
+                "lcov_path",
+                string_schema("Optional LCOV path for coverage."),
+            ),
+            array_string_property("instruction_names", "Instruction names for coverage."),
+        ],
+    )
 }
 
 pub(crate) fn runtime_controls_from_request(
@@ -3337,7 +4016,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if let Some(query) = line.strip_prefix("tool:project_context_search ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-project-context-{}", calls.len() + 1),
-                tool_name: "project_context".into(),
+                tool_name: AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH.into(),
                 input: json!({
                     "action": "search_project_records",
                     "query": query.trim(),
@@ -3349,7 +4028,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if let Some(query) = line.strip_prefix("tool:project_context_memory ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-project-context-{}", calls.len() + 1),
-                tool_name: "project_context".into(),
+                tool_name: AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH.into(),
                 input: json!({
                     "action": "search_approved_memory",
                     "query": query.trim(),
@@ -3361,7 +4040,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if let Some(record_id) = line.strip_prefix("tool:project_context_get_record ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-project-context-{}", calls.len() + 1),
-                tool_name: "project_context".into(),
+                tool_name: AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET.into(),
                 input: json!({
                     "action": "get_project_record",
                     "recordId": record_id.trim()
@@ -3376,7 +4055,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
             let text = parts.next().unwrap_or(summary);
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-project-context-{}", calls.len() + 1),
-                tool_name: "project_context".into(),
+                tool_name: AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD.into(),
                 input: json!({
                     "action": "propose_record_candidate",
                     "title": title,
@@ -3474,7 +4153,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if line == "tool:mcp_list" {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-mcp-{}", calls.len() + 1),
-                tool_name: "mcp".into(),
+                tool_name: AUTONOMOUS_TOOL_MCP_LIST.into(),
                 input: json!({ "action": "list_servers" }),
             });
             continue;
@@ -3482,7 +4161,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if let Some(server_id) = line.strip_prefix("tool:mcp_list_tools ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-mcp-{}", calls.len() + 1),
-                tool_name: "mcp".into(),
+                tool_name: AUTONOMOUS_TOOL_MCP_LIST.into(),
                 input: json!({ "action": "list_tools", "serverId": server_id.trim() }),
             });
             continue;
@@ -3596,7 +4275,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if let Some(text) = line.strip_prefix("tool:command_echo ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-command-{}", calls.len() + 1),
-                tool_name: "command".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_PROBE.into(),
                 input: json!({ "argv": ["echo", text.trim()] }),
             });
             continue;
@@ -3604,7 +4283,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
         if let Some(script) = line.strip_prefix("tool:command_sh ") {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-command-{}", calls.len() + 1),
-                tool_name: "command".into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_RUN.into(),
                 input: json!({ "argv": ["sh", "-c", script.trim()] }),
             });
         }
@@ -3791,10 +4470,11 @@ mod tests {
         let names = registry.descriptor_names();
 
         assert!(names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION));
-        assert!(names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT));
+        assert!(names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH));
+        assert!(names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET));
         assert!(!names.contains(AUTONOMOUS_TOOL_WRITE));
-        assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND));
-        assert!(!names.contains(AUTONOMOUS_TOOL_BROWSER));
+        assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
+        assert!(!names.contains(AUTONOMOUS_TOOL_BROWSER_CONTROL));
 
         let compilation = PromptCompiler::new(
             root.path(),
@@ -4028,7 +4708,8 @@ mod tests {
             AUTONOMOUS_TOOL_GIT_DIFF,
             AUTONOMOUS_TOOL_TOOL_ACCESS,
             AUTONOMOUS_TOOL_TOOL_SEARCH,
-            AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
             AUTONOMOUS_TOOL_LIST,
             AUTONOMOUS_TOOL_HASH,
         ] {
@@ -4036,8 +4717,94 @@ mod tests {
         }
         assert!(!names.contains(AUTONOMOUS_TOOL_TODO));
         assert!(!names.contains(AUTONOMOUS_TOOL_WRITE));
-        assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND));
+        assert!(!names.contains(AUTONOMOUS_TOOL_COMMAND_RUN));
         assert!(!names.contains(AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT));
+        assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD));
+        assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE));
+        assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH));
+    }
+
+    #[test]
+    fn crawl_prompt_toolset_is_repository_recon_only() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Crawl,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let registry = ToolRegistry::for_prompt(root.path(), "Map this repository.", &controls);
+        let names = registry.descriptor_names();
+
+        for expected in [
+            AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_FIND,
+            AUTONOMOUS_TOOL_GIT_STATUS,
+            AUTONOMOUS_TOOL_GIT_DIFF,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_LIST,
+            AUTONOMOUS_TOOL_HASH,
+            AUTONOMOUS_TOOL_COMMAND_PROBE,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            AUTONOMOUS_TOOL_LSP,
+            AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+        ] {
+            assert!(
+                names.contains(expected),
+                "missing Crawl recon tool {expected}"
+            );
+        }
+        for denied in [
+            AUTONOMOUS_TOOL_TODO,
+            AUTONOMOUS_TOOL_AGENT_COORDINATION,
+            AUTONOMOUS_TOOL_WRITE,
+            AUTONOMOUS_TOOL_EDIT,
+            AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_DELETE,
+            AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            AUTONOMOUS_TOOL_MCP_LIST,
+            AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            AUTONOMOUS_TOOL_SUBAGENT,
+            AUTONOMOUS_TOOL_SKILL,
+            AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            AUTONOMOUS_TOOL_EMULATOR,
+            AUTONOMOUS_TOOL_WEB_SEARCH,
+            AUTONOMOUS_TOOL_WEB_FETCH,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+        ] {
+            assert!(!names.contains(denied), "Crawl should not expose {denied}");
+        }
+
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Crawl,
+            BrowserControlPreferenceDto::Default,
+            registry.descriptors(),
+        )
+        .compile()
+        .expect("compile Crawl prompt");
+
+        assert!(compilation.prompt.contains("You are Xero's Crawl agent."));
+        assert!(compilation.prompt.contains("xero.project_crawl.report.v1"));
+        assert!(compilation
+            .prompt
+            .contains("Available repository reconnaissance tools:"));
     }
 
     #[test]

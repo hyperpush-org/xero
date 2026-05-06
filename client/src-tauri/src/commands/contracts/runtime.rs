@@ -99,6 +99,7 @@ pub enum RuntimeAgentIdDto {
     Ask,
     Engineer,
     Debug,
+    Crawl,
     AgentCreate,
     Test,
 }
@@ -123,6 +124,7 @@ pub enum RuntimeAgentLifecycleStateDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentBaseCapabilityProfileDto {
     ObserveOnly,
+    RepositoryRecon,
     Engineering,
     Debugging,
     AgentBuilder,
@@ -135,6 +137,7 @@ pub enum RuntimeAgentPromptPolicyDto {
     Ask,
     Engineer,
     Debug,
+    Crawl,
     AgentCreate,
     HarnessTest,
 }
@@ -143,6 +146,7 @@ pub enum RuntimeAgentPromptPolicyDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentToolPolicyDto {
     ObserveOnly,
+    RepositoryRecon,
     Engineering,
     AgentBuilder,
     HarnessTest,
@@ -152,6 +156,7 @@ pub enum RuntimeAgentToolPolicyDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentOutputContractDto {
     Answer,
+    CrawlReport,
     EngineeringSummary,
     DebugSummary,
     AgentDefinitionDraft,
@@ -186,6 +191,7 @@ impl RuntimeAgentIdDto {
             Self::Ask => "ask",
             Self::Engineer => "engineer",
             Self::Debug => "debug",
+            Self::Crawl => "crawl",
             Self::AgentCreate => "agent_create",
             Self::Test => "test",
         }
@@ -196,6 +202,7 @@ impl RuntimeAgentIdDto {
             Self::Ask => "Ask",
             Self::Engineer => "Engineer",
             Self::Debug => "Debug",
+            Self::Crawl => "Crawl",
             Self::AgentCreate => "Agent Create",
             Self::Test => "Test",
         }
@@ -291,6 +298,7 @@ pub fn default_runtime_agent_approval_mode(
         RuntimeAgentIdDto::Ask => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Engineer => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Debug => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::Crawl => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::AgentCreate => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Test => RuntimeRunApprovalModeDto::Suggest,
     }
@@ -300,7 +308,10 @@ pub fn runtime_agent_allowed_approval_modes(
     agent_id: &RuntimeAgentIdDto,
 ) -> Vec<RuntimeRunApprovalModeDto> {
     match agent_id {
-        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate | RuntimeAgentIdDto::Test => {
+        RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::Crawl
+        | RuntimeAgentIdDto::AgentCreate
+        | RuntimeAgentIdDto::Test => {
             vec![RuntimeRunApprovalModeDto::Suggest]
         }
         RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => vec![
@@ -316,7 +327,10 @@ pub fn runtime_agent_allows_approval_mode(
     approval_mode: &RuntimeRunApprovalModeDto,
 ) -> bool {
     match agent_id {
-        RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate | RuntimeAgentIdDto::Test => {
+        RuntimeAgentIdDto::Ask
+        | RuntimeAgentIdDto::Crawl
+        | RuntimeAgentIdDto::AgentCreate
+        | RuntimeAgentIdDto::Test => {
             matches!(approval_mode, RuntimeRunApprovalModeDto::Suggest)
         }
         RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
@@ -328,6 +342,7 @@ pub fn builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
         runtime_agent_descriptor(RuntimeAgentIdDto::Ask),
         runtime_agent_descriptor(RuntimeAgentIdDto::Engineer),
         runtime_agent_descriptor(RuntimeAgentIdDto::Debug),
+        runtime_agent_descriptor(RuntimeAgentIdDto::Crawl),
         runtime_agent_descriptor(RuntimeAgentIdDto::AgentCreate),
         runtime_agent_descriptor(RuntimeAgentIdDto::Test),
     ]
@@ -399,6 +414,25 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             output_contract: RuntimeAgentOutputContractDto::DebugSummary,
             allow_plan_gate: true,
             allow_verification_gate: true,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::Crawl => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Crawl".into(),
+            short_label: "Crawl".into(),
+            description: "Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.".into(),
+            task_purpose: "Read brownfield repository context and produce a structured crawl report for durable project memory.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::RepositoryRecon,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: runtime_agent_allowed_approval_modes(&agent_id),
+            prompt_policy: RuntimeAgentPromptPolicyDto::Crawl,
+            tool_policy: RuntimeAgentToolPolicyDto::RepositoryRecon,
+            output_contract: RuntimeAgentOutputContractDto::CrawlReport,
+            allow_plan_gate: false,
+            allow_verification_gate: false,
             allow_auto_compact: true,
         },
         RuntimeAgentIdDto::AgentCreate => RuntimeAgentDescriptorDto {
@@ -1081,8 +1115,43 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ask", "engineer", "debug", "agent_create", "test"]
+            vec!["ask", "engineer", "debug", "crawl", "agent_create", "test"]
         );
+
+        let crawl = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == RuntimeAgentIdDto::Crawl)
+            .expect("Crawl descriptor should be seeded");
+
+        assert_eq!(crawl.label, "Crawl");
+        assert_eq!(
+            crawl.base_capability_profile,
+            RuntimeAgentBaseCapabilityProfileDto::RepositoryRecon
+        );
+        assert_eq!(crawl.prompt_policy, RuntimeAgentPromptPolicyDto::Crawl);
+        assert_eq!(
+            crawl.tool_policy,
+            RuntimeAgentToolPolicyDto::RepositoryRecon
+        );
+        assert_eq!(
+            crawl.output_contract,
+            RuntimeAgentOutputContractDto::CrawlReport
+        );
+        assert_eq!(
+            crawl.allowed_approval_modes,
+            vec![RuntimeRunApprovalModeDto::Suggest]
+        );
+        assert!(!crawl.allow_plan_gate);
+        assert!(!crawl.allow_verification_gate);
+        assert!(!RuntimeAgentIdDto::Crawl.allows_engineering_tools());
+        assert!(runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Crawl,
+            &RuntimeRunApprovalModeDto::Suggest
+        ));
+        assert!(!runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Crawl,
+            &RuntimeRunApprovalModeDto::AutoEdit
+        ));
 
         let agent_create = descriptors
             .iter()
@@ -1236,6 +1305,7 @@ mod tests {
                 RuntimeAgentIdDto::Ask,
                 RuntimeAgentIdDto::Engineer,
                 RuntimeAgentIdDto::Debug,
+                RuntimeAgentIdDto::Crawl,
                 RuntimeAgentIdDto::AgentCreate,
                 RuntimeAgentIdDto::Test
             ]

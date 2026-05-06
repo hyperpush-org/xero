@@ -12,11 +12,15 @@ import {
 } from './shared'
 import { providerModelThinkingEffortSchema } from './provider-models'
 
+export const projectOriginSchema = z.enum(['brownfield', 'greenfield', 'unknown'])
+export type ProjectOriginDto = z.infer<typeof projectOriginSchema>
+
 export const projectSummarySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string(),
   milestone: z.string(),
+  projectOrigin: projectOriginSchema.optional(),
   totalPhases: z.number().int().nonnegative(),
   completedPhases: z.number().int().nonnegative(),
   activePhase: z.number().int().nonnegative(),
@@ -604,6 +608,7 @@ export interface ProjectListItem {
   name: string
   description: string
   milestone: string
+  projectOrigin: ProjectOriginDto
   totalPhases: number
   completedPhases: number
   activePhase: number
@@ -685,6 +690,7 @@ export function mapProjectSummary(dto: ProjectSummaryDto): ProjectListItem {
     name: normalizeText(dto.name, 'Untitled project'),
     description: normalizeText(dto.description, 'No description provided.'),
     milestone: normalizeText(dto.milestone, 'No milestone assigned'),
+    projectOrigin: dto.projectOrigin ?? 'unknown',
     totalPhases: dto.totalPhases,
     completedPhases: Math.min(dto.completedPhases, dto.totalPhases),
     activePhase: dto.activePhase,

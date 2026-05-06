@@ -486,11 +486,27 @@ pub struct PayloadBudgetDiagnosticDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ProjectOriginDto {
+    Brownfield,
+    Greenfield,
+    Unknown,
+}
+
+impl Default for ProjectOriginDto {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectSummaryDto {
     pub id: String,
     pub name: String,
     pub description: String,
     pub milestone: String,
+    #[serde(default)]
+    pub project_origin: ProjectOriginDto,
     pub total_phases: u32,
     pub completed_phases: u32,
     pub active_phase: u32,

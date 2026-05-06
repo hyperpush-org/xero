@@ -234,10 +234,10 @@ export default function DocsPage() {
               <p className="mt-2 text-sm text-muted-foreground">
                 Hit a wall, want a feature, or running Xero across a team? Email{" "}
                 <Link
-                  href="mailto:team@xero.sh"
+                  href="mailto:team@xeroshell.com"
                   className="underline underline-offset-2 hover:text-foreground"
                 >
-                  team@xero.sh
+                  team@xeroshell.com
                 </Link>{" "}
                 — we read every message.
               </p>

@@ -12,7 +12,7 @@ use rusqlite_migration::{Error as MigrationError, MigrationDefinitionError};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    commands::{CommandError, ProjectSummaryDto, RepositorySummaryDto},
+    commands::{CommandError, ProjectOriginDto, ProjectSummaryDto, RepositorySummaryDto},
     db::migrations::migrations,
     git::repository::CanonicalRepository,
     state::ImportFailpoints,
@@ -44,6 +44,31 @@ pub struct ImportedProjectRecord {
     pub project: ProjectSummaryDto,
     pub repository: RepositorySummaryDto,
     pub database_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectOrigin {
+    Brownfield,
+    Greenfield,
+    Unknown,
+}
+
+impl ProjectOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Brownfield => "brownfield",
+            Self::Greenfield => "greenfield",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn to_dto(self) -> ProjectOriginDto {
+        match self {
+            Self::Brownfield => ProjectOriginDto::Brownfield,
+            Self::Greenfield => ProjectOriginDto::Greenfield,
+            Self::Unknown => ProjectOriginDto::Unknown,
+        }
+    }
 }
 
 pub fn configure_project_database_paths(global_db_path: &Path) {
@@ -104,6 +129,14 @@ pub fn import_project(
     repository: &CanonicalRepository,
     failpoints: &ImportFailpoints,
 ) -> Result<ImportedProjectRecord, CommandError> {
+    import_project_with_origin(repository, ProjectOrigin::Brownfield, failpoints)
+}
+
+pub fn import_project_with_origin(
+    repository: &CanonicalRepository,
+    project_origin: ProjectOrigin,
+    failpoints: &ImportFailpoints,
+) -> Result<ImportedProjectRecord, CommandError> {
     let database_path = configured_database_path_for_project(&repository.project_id)
         .unwrap_or_else(|| fallback_database_path_for_unconfigured_import(&repository.project_id));
     let database_directory = database_path
@@ -153,7 +186,7 @@ pub fn import_project(
             Err(error) => return Err(state_database_migration_error(&database_path, error)),
         };
 
-        persist_import_rows(&connection, repository)?;
+        persist_import_rows(&connection, repository, project_origin)?;
 
         Ok(ImportedProjectRecord {
             project: ProjectSummaryDto {
@@ -161,6 +194,7 @@ pub fn import_project(
                 name: repository.display_name.clone(),
                 description: String::new(),
                 milestone: String::new(),
+                project_origin: project_origin.to_dto(),
                 total_phases: 0,
                 completed_phases: 0,
                 active_phase: 0,
@@ -288,7 +322,11 @@ pub(crate) fn rebuild_incompatible_project_database(
         .map_err(|error| state_database_migration_error(database_path, error))?;
 
     let repository = crate::git::repository::open_repository_root(repo_root)?;
-    persist_import_rows(&reset_connection, &repository.canonical_repository()?)?;
+    persist_import_rows(
+        &reset_connection,
+        &repository.canonical_repository()?,
+        ProjectOrigin::Brownfield,
+    )?;
     register_project_database_path(repo_root, database_path);
 
     Ok(reset_connection)
@@ -324,6 +362,7 @@ fn remove_database_sidecars(database_path: &Path) {
 fn persist_import_rows(
     connection: &Connection,
     repository: &CanonicalRepository,
+    project_origin: ProjectOrigin,
 ) -> Result<(), CommandError> {
     let transaction = connection.unchecked_transaction().map_err(|error| {
         CommandError::system_fault(
@@ -340,6 +379,7 @@ fn persist_import_rows(
                 name,
                 description,
                 milestone,
+                project_origin,
                 total_phases,
                 completed_phases,
                 active_phase,
@@ -347,15 +387,17 @@ fn persist_import_rows(
                 runtime,
                 updated_at
             )
-            VALUES (?1, ?2, '', '', 0, 0, 0, ?3, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            VALUES (?1, ?2, '', '', ?3, 0, 0, 0, ?4, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
+                project_origin = excluded.project_origin,
                 branch = excluded.branch,
                 updated_at = excluded.updated_at
             "#,
             params![
                 repository.project_id,
                 repository.display_name,
+                project_origin.as_str(),
                 repository.branch_name,
             ],
         )
@@ -624,4 +666,94 @@ fn fallback_database_path_for_unconfigured_import(project_id: &str) -> PathBuf {
         .join(PROJECTS_DIRECTORY)
         .join(project_id)
         .join(STATE_DATABASE_FILE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::{
+        commands::{CommandErrorClass, RuntimeAgentIdDto},
+        state::ImportFailpoints,
+    };
+    use tempfile::tempdir;
+
+    fn canonical_repository(root_path: &Path, project_id: &str) -> CanonicalRepository {
+        let root_path = fs::canonicalize(root_path).expect("canonical repo root");
+        CanonicalRepository {
+            project_id: project_id.into(),
+            repository_id: format!("repo_{project_id}"),
+            root_path: root_path.clone(),
+            root_path_string: root_path.to_string_lossy().into_owned(),
+            common_git_dir: root_path.join(".git"),
+            display_name: project_id.into(),
+            branch_name: Some("main".into()),
+            head_sha: Some("0123456789abcdef".into()),
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        }
+    }
+
+    #[test]
+    fn import_project_marks_existing_repository_brownfield_and_allows_crawl() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("brownfield-repo");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        configure_project_database_paths(&tempdir.path().join("global").join("state.db"));
+
+        let repository = canonical_repository(&repo_root, "project_brownfield_origin");
+        let record =
+            import_project(&repository, &ImportFailpoints::default()).expect("import project");
+
+        assert_eq!(record.project.project_origin, ProjectOriginDto::Brownfield);
+        assert_eq!(
+            project_store::load_project_origin(&repo_root, &repository.project_id)
+                .expect("load origin"),
+            ProjectOriginDto::Brownfield
+        );
+        project_store::ensure_runtime_agent_allowed_for_project(
+            &repo_root,
+            &repository.project_id,
+            RuntimeAgentIdDto::Crawl,
+        )
+        .expect("crawl allowed for brownfield");
+    }
+
+    #[test]
+    fn greenfield_project_origin_is_persisted_and_rejects_crawl() {
+        let tempdir = tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("greenfield-repo");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        configure_project_database_paths(&tempdir.path().join("global").join("state.db"));
+
+        let repository = canonical_repository(&repo_root, "project_greenfield_origin");
+        let record = import_project_with_origin(
+            &repository,
+            ProjectOrigin::Greenfield,
+            &ImportFailpoints::default(),
+        )
+        .expect("import project");
+
+        assert_eq!(record.project.project_origin, ProjectOriginDto::Greenfield);
+        assert_eq!(
+            project_store::load_project_origin(&repo_root, &repository.project_id)
+                .expect("load origin"),
+            ProjectOriginDto::Greenfield
+        );
+
+        let error = project_store::ensure_runtime_agent_allowed_for_project(
+            &repo_root,
+            &repository.project_id,
+            RuntimeAgentIdDto::Crawl,
+        )
+        .expect_err("crawl should be rejected for greenfield");
+        assert_eq!(error.code, "runtime_agent_crawl_unavailable_greenfield");
+        assert_eq!(error.class, CommandErrorClass::UserFixable);
+    }
 }

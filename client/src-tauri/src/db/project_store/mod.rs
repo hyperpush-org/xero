@@ -52,7 +52,10 @@ pub(crate) use operator::{
 pub use plugins::*;
 pub use project_record::*;
 pub(crate) use project_snapshot::read_project_row;
-pub use project_snapshot::{load_project_snapshot, load_project_summary, ProjectSnapshotRecord};
+pub use project_snapshot::{
+    ensure_runtime_agent_allowed_for_project, load_project_origin, load_project_snapshot,
+    load_project_summary, ProjectSnapshotRecord,
+};
 pub use runtime::*;
 pub(crate) use runtime::{
     find_prohibited_runtime_persistence_content, find_prohibited_transition_diagnostic_content,

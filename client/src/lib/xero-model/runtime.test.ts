@@ -4,8 +4,10 @@ import {
   getRuntimeAgentAvailability,
   getRuntimeAgentDescriptor,
   getRuntimeAgentDescriptorsForAvailability,
+  getRuntimeAgentDescriptorsForProjectOrigin,
   mapRuntimeRun,
   RUNTIME_AGENT_DESCRIPTORS,
+  runtimeAgentIsSelectableForProjectOrigin,
   runtimeAgentIdSchema,
   runtimeRunSchema,
   startRuntimeRunRequestSchema,
@@ -68,12 +70,14 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
 describe('runtime run control schemas', () => {
   it('registers built-in runtime agents as descriptor-backed entries', () => {
     expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
+    expect(runtimeAgentIdSchema.parse('crawl')).toBe('crawl')
     expect(runtimeAgentIdSchema.parse('agent_create')).toBe('agent_create')
     expect(runtimeAgentIdSchema.parse('test')).toBe('test')
     expect(ALL_RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual([
       'ask',
       'engineer',
       'debug',
+      'crawl',
       'agent_create',
       'test',
     ])
@@ -90,6 +94,20 @@ describe('runtime run control schemas', () => {
       allowPlanGate: true,
       allowVerificationGate: true,
       allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    })
+    expect(getRuntimeAgentDescriptor('crawl')).toMatchObject({
+      id: 'crawl',
+      label: 'Crawl',
+      shortLabel: 'Crawl',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'repository_recon',
+      promptPolicy: 'crawl',
+      toolPolicy: 'repository_recon',
+      outputContract: 'crawl_report',
+      allowPlanGate: false,
+      allowVerificationGate: false,
+      allowedApprovalModes: ['suggest'],
     })
     expect(getRuntimeAgentDescriptor('agent_create')).toMatchObject({
       id: 'agent_create',
@@ -131,12 +149,12 @@ describe('runtime run control schemas', () => {
       getRuntimeAgentDescriptorsForAvailability({ testAgentEnabled: false }).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'engineer', 'debug', 'agent_create'])
+    ).toEqual(['ask', 'engineer', 'debug', 'crawl', 'agent_create'])
     expect(
       getRuntimeAgentDescriptorsForAvailability({ testAgentEnabled: true }).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'engineer', 'debug', 'agent_create', 'test'])
+    ).toEqual(['ask', 'engineer', 'debug', 'crawl', 'agent_create', 'test'])
 
     expect(
       getRuntimeAgentAvailability({ DEV: true, MODE: 'development' }).testAgentEnabled,
@@ -156,6 +174,24 @@ describe('runtime run control schemas', () => {
         VITE_XERO_ENABLE_TEST_AGENT: 'enabled',
       }).testAgentEnabled,
     ).toBe(true)
+  })
+
+  it('shows Crawl only for brownfield project origins', () => {
+    expect(runtimeAgentIsSelectableForProjectOrigin('crawl', 'brownfield')).toBe(true)
+    expect(runtimeAgentIsSelectableForProjectOrigin('crawl', 'greenfield')).toBe(false)
+    expect(runtimeAgentIsSelectableForProjectOrigin('crawl', 'unknown')).toBe(false)
+    expect(runtimeAgentIsSelectableForProjectOrigin('ask', 'unknown')).toBe(true)
+
+    expect(
+      getRuntimeAgentDescriptorsForProjectOrigin('greenfield', { testAgentEnabled: false }).map(
+        (agent) => agent.id,
+      ),
+    ).toEqual(['ask', 'engineer', 'debug', 'agent_create'])
+    expect(
+      getRuntimeAgentDescriptorsForProjectOrigin('brownfield', { testAgentEnabled: false }).map(
+        (agent) => agent.id,
+      ),
+    ).toEqual(['ask', 'engineer', 'debug', 'crawl', 'agent_create'])
   })
 
   it('maps durable active and pending control snapshots into a selected pending projection', () => {

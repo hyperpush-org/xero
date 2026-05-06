@@ -18,7 +18,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     body: (
       <p>
         These terms cover your use of the Xero desktop app and the website at{" "}
-        <span className="font-mono text-xs text-foreground">xero.sh</span>. By installing the app or
+        <span className="font-mono text-xs text-foreground">xeroshell.com</span>. By installing the app or
         using the site you agree to them. If you don&apos;t agree, don&apos;t use them — that&apos;s
         the whole enforcement mechanism.
       </p>
@@ -142,10 +142,10 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <p>
         Anything to flag — including a takedown, a security report, or just a question? Email{" "}
         <Link
-          href="mailto:team@xero.sh"
+          href="mailto:team@xeroshell.com"
           className="underline underline-offset-2 hover:text-foreground"
         >
-          team@xero.sh
+          team@xeroshell.com
         </Link>
         .
       </p>

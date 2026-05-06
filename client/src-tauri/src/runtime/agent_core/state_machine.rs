@@ -658,11 +658,18 @@ fn is_execution_tool(tool_name: &str) -> bool {
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_TOOL_ACCESS
             | AUTONOMOUS_TOOL_TOOL_SEARCH
-            | AUTONOMOUS_TOOL_PROJECT_CONTEXT
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
             | AUTONOMOUS_TOOL_WORKSPACE_INDEX
             | AUTONOMOUS_TOOL_TODO
             | AUTONOMOUS_TOOL_WEB_SEARCH
             | AUTONOMOUS_TOOL_WEB_FETCH
+            | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+            | AUTONOMOUS_TOOL_MCP_LIST
+            | AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+            | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+            | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
+            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
             | AUTONOMOUS_TOOL_CODE_INTEL
             | AUTONOMOUS_TOOL_LSP
     )
@@ -852,7 +859,7 @@ mod tests {
             &classification,
             &[AgentToolCall {
                 tool_call_id: "call-1".into(),
-                tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
                 input: json!({ "argv": ["pnpm", "test"] }),
             }],
         );

@@ -301,7 +301,7 @@ fn browser_pack_manifest() -> DomainToolPackManifest {
         "Observe and control the in-app browser with screenshots, DOM snapshots, accessibility, console, network, storage, and tab state.",
         "browser_control_with_observe_split",
         &["browser_observe", "browser_control", "web"],
-        &["browser"],
+        &["browser_observe", "browser_control"],
         &[
             "observe_control_split",
             "screenshot_capture",
@@ -330,7 +330,7 @@ fn browser_pack_manifest() -> DomainToolPackManifest {
                 "browser_observe_page",
                 "Observe page state",
                 "Open or focus a tab, read page text, capture a screenshot, and inspect accessibility output.",
-                &["browser"],
+                &["browser_observe"],
                 false,
                 false,
             ),
@@ -338,7 +338,7 @@ fn browser_pack_manifest() -> DomainToolPackManifest {
                 "browser_interaction_trace",
                 "Interaction trace",
                 "Navigate, click, type, and collect console or network evidence for the interaction.",
-                &["browser"],
+                &["browser_control", "browser_observe"],
                 true,
                 true,
             ),
@@ -524,8 +524,18 @@ fn os_automation_pack_manifest() -> DomainToolPackManifest {
         "OS Automation",
         "Inspect and control local OS surfaces through macOS app or window automation, process diagnostics, screenshots, and bounded process management.",
         "local_os_control",
-        &["macos", "system_diagnostics", "process_manager"],
-        &["macos_automation", "system_diagnostics", "process_manager"],
+        &[
+            "macos",
+            "system_diagnostics_observe",
+            "system_diagnostics_privileged",
+            "process_manager",
+        ],
+        &[
+            "macos_automation",
+            "system_diagnostics_observe",
+            "system_diagnostics_privileged",
+            "process_manager",
+        ],
         &[
             "permission_check",
             "app_window_control",
@@ -567,7 +577,7 @@ fn os_automation_pack_manifest() -> DomainToolPackManifest {
             "os_focus_and_capture",
             "Focus and capture",
             "Check permissions, list apps and windows, focus a target, and capture a screenshot after approval.",
-            &["macos_automation", "system_diagnostics"],
+            &["macos_automation", "system_diagnostics_observe"],
             true,
             true,
         )],
@@ -589,14 +599,28 @@ fn project_context_pack_manifest() -> DomainToolPackManifest {
         "Project Context",
         "Use project-specific app-data tools for durable context, semantic workspace search, skills, MCP, custom agents, and active-agent coordination.",
         "project_app_data_state",
-        &["core", "environment", "skills", "mcp", "agent_builder"],
         &[
-            "project_context",
+            "core",
+            "project_context_write",
+            "environment",
+            "skills",
+            "mcp",
+            "agent_builder",
+        ],
+        &[
+            "project_context_search",
+            "project_context_get",
+            "project_context_record",
+            "project_context_update",
+            "project_context_refresh",
             "workspace_index",
             "agent_coordination",
             "environment_context",
             "skill",
-            "mcp",
+            "mcp_list",
+            "mcp_read_resource",
+            "mcp_get_prompt",
+            "mcp_call_tool",
             "agent_definition",
         ],
         &[
@@ -635,7 +659,7 @@ fn project_context_pack_manifest() -> DomainToolPackManifest {
                 "project_context_retrieve_and_record",
                 "Retrieve and record context",
                 "Search reviewed project context, read current files, and record a durable finding with source references.",
-                &["project_context", "read"],
+                &["project_context_search", "project_context_record", "read"],
                 true,
                 false,
             ),
@@ -832,7 +856,14 @@ mod tests {
 
     #[test]
     fn maps_tools_back_to_domain_pack_ids() {
-        assert_eq!(domain_tool_pack_ids_for_tool("browser"), vec!["browser"]);
+        assert_eq!(
+            domain_tool_pack_ids_for_tool("browser_observe"),
+            vec!["browser"]
+        );
+        assert_eq!(
+            domain_tool_pack_ids_for_tool("browser_control"),
+            vec!["browser"]
+        );
         assert_eq!(domain_tool_pack_ids_for_tool("emulator"), vec!["emulator"]);
         assert_eq!(
             domain_tool_pack_ids_for_tool("solana_simulate"),

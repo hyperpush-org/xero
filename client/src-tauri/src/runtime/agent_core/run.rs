@@ -41,6 +41,11 @@ pub fn create_owned_agent_run(
 
     let mut controls = runtime_controls_from_request(request.controls.as_ref());
     ensure_runtime_agent_available(controls.active.runtime_agent_id)?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        &request.repo_root,
+        &request.project_id,
+        controls.active.runtime_agent_id,
+    )?;
     let definition_selection = project_store::resolve_agent_definition_for_run(
         &request.repo_root,
         request
@@ -48,6 +53,11 @@ pub fn create_owned_agent_run(
             .as_ref()
             .and_then(|controls| controls.agent_definition_id.as_deref()),
         controls.active.runtime_agent_id,
+    )?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        &request.repo_root,
+        &request.project_id,
+        definition_selection.runtime_agent_id,
     )?;
     controls.active.runtime_agent_id = definition_selection.runtime_agent_id;
     controls.active.agent_definition_id = Some(definition_selection.definition_id.clone());
@@ -488,6 +498,11 @@ pub fn prepare_owned_agent_continuation_for_drive(
         ));
     }
     ensure_runtime_agent_available(before.run.runtime_agent_id)?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        &request.repo_root,
+        &request.project_id,
+        before.run.runtime_agent_id,
+    )?;
     if matches!(before.run.status, AgentRunStatus::Starting)
         || lifecycle_should_queue_user_message(
             &request.repo_root,
@@ -1803,6 +1818,13 @@ fn agent_specific_handoff(
             "verificationEvidence": verification_status,
             "reusableTroubleshootingFacts": [],
         }),
+        RuntimeAgentIdDto::Crawl => json!({
+            "crawlPrompt": handoff_preview(pending_prompt, 700, redaction_count),
+            "repositoryFactsObserved": completed_work,
+            "sourceFreshnessEvidence": verification_status,
+            "remainingUnknowns": [],
+            "finalReportRequired": "xero.project_crawl.report.v1",
+        }),
         RuntimeAgentIdDto::AgentCreate => json!({
             "agentDefinitionIntent": handoff_preview(pending_prompt, 700, redaction_count),
             "draftSections": completed_work,
@@ -2994,7 +3016,8 @@ mod tests {
             call.tool_name == AUTONOMOUS_TOOL_WRITE && call.state == AgentToolCallState::Succeeded
         }));
         assert!(snapshot.tool_calls.iter().any(|call| {
-            call.tool_name == AUTONOMOUS_TOOL_COMMAND && call.state == AgentToolCallState::Succeeded
+            call.tool_name == AUTONOMOUS_TOOL_COMMAND_PROBE
+                && call.state == AgentToolCallState::Succeeded
         }));
     }
 

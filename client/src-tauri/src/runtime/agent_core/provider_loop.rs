@@ -210,10 +210,9 @@ pub(crate) fn drive_provider_loop(
                         });
                         if controls.active.runtime_agent_id.allows_verification_gate() {
                             tool_registry.expand_with_tool_names([
-                                AUTONOMOUS_TOOL_COMMAND,
-                                AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-                                AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-                                AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+                                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                                AUTONOMOUS_TOOL_COMMAND_RUN,
+                                AUTONOMOUS_TOOL_COMMAND_SESSION,
                             ]);
                         }
                         continue;

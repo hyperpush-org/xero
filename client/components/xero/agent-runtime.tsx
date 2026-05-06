@@ -42,6 +42,7 @@ import type {
 } from '@/src/lib/xero-model'
 import type { SessionContextSnapshotDto } from '@/src/lib/xero-model/session-context'
 import {
+  getRuntimeAgentDescriptorsForProjectOrigin,
   getRuntimeAgentLabel,
   getRuntimeRunThinkingEffortLabel,
   type RuntimeRunControlInputDto,
@@ -1295,6 +1296,26 @@ export const AgentRuntime = memo(function AgentRuntime({
     () => getComposerApprovalOptions(controller.composerRuntimeAgentId),
     [controller.composerRuntimeAgentId],
   )
+  const availableRuntimeAgentIds = useMemo(
+    () =>
+      getRuntimeAgentDescriptorsForProjectOrigin(agent.project.projectOrigin ?? 'unknown').map(
+        (descriptor) => descriptor.id,
+      ),
+    [agent.project.projectOrigin],
+  )
+  useEffect(() => {
+    if (
+      !controller.isRuntimeAgentSwitchDisabled &&
+      !availableRuntimeAgentIds.includes(controller.composerRuntimeAgentId)
+    ) {
+      controller.handleComposerRuntimeAgentChange('ask')
+    }
+  }, [
+    availableRuntimeAgentIds,
+    controller.composerRuntimeAgentId,
+    controller.isRuntimeAgentSwitchDisabled,
+    controller.handleComposerRuntimeAgentChange,
+  ])
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const contextMeterState = useAgentContextMeterSnapshot({
     enabled: foregroundWorkReady && isFocusedPane && runtimeRunActionStatus !== 'running',
@@ -1348,6 +1369,11 @@ export const AgentRuntime = memo(function AgentRuntime({
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
         ? 'Describe the agent you want to create...'
+      : controller.composerRuntimeAgentId === 'crawl' &&
+          !agentRuntimeBlocked &&
+          runtimeSession?.isAuthenticated &&
+          !renderableRuntimeRun?.isTerminal
+        ? 'Map this existing repository...'
       : baseComposerPlaceholder
   const showAgentSetupEmptyState = Boolean(
     agentRuntimeBlocked &&
@@ -1753,6 +1779,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           density={density}
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}
+          availableRuntimeAgentIds={availableRuntimeAgentIds}
           composerAgentDefinitionId={controller.composerAgentDefinitionId}
           composerAgentSelectionKey={controller.composerAgentSelectionKey}
           customAgentDefinitions={customAgentDefinitions}

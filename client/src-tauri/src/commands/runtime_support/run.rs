@@ -245,6 +245,11 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         .filter(|snapshot| is_reconnectable_owned_runtime_run(snapshot))
     {
         ensure_runtime_agent_available(existing.controls.active.runtime_agent_id)?;
+        project_store::ensure_runtime_agent_allowed_for_project(
+            &repo_root,
+            project_id,
+            existing.controls.active.runtime_agent_id,
+        )?;
         reject_runtime_run_provider_profile_switch(existing, requested_controls.as_ref())?;
         return Ok(RuntimeRunLaunchOutcome {
             repo_root,
@@ -260,12 +265,22 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         .map(|controls| controls.runtime_agent_id)
         .unwrap_or_else(default_runtime_agent_id);
     ensure_runtime_agent_available(requested_agent_id)?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        &repo_root,
+        project_id,
+        requested_agent_id,
+    )?;
     let definition_selection = project_store::resolve_agent_definition_for_run(
         &repo_root,
         requested_controls
             .as_ref()
             .and_then(|controls| controls.agent_definition_id.as_deref()),
         requested_agent_id,
+    )?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        &repo_root,
+        project_id,
+        definition_selection.runtime_agent_id,
     )?;
     let mut run_controls = resolve_owned_runtime_run_control_state(
         &active_profile,
@@ -1149,6 +1164,11 @@ pub(crate) fn update_owned_runtime_run_controls(
 ) -> CommandResult<RuntimeRunSnapshotRecord> {
     let active = &snapshot.controls.active;
     ensure_runtime_agent_available(active.runtime_agent_id)?;
+    project_store::ensure_runtime_agent_allowed_for_project(
+        repo_root,
+        &snapshot.run.project_id,
+        active.runtime_agent_id,
+    )?;
     if let Some(requested_agent_id) = controls
         .as_ref()
         .map(|controls| controls.runtime_agent_id)

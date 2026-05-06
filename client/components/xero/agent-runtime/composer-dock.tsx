@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, LoaderCircle, MessageCircle, Mic, Paperclip, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { forwardRef, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
@@ -89,6 +89,7 @@ interface ComposerDockProps {
   isSendDisabled: boolean
   composerRuntimeAgentId: RuntimeAgentIdDto
   composerRuntimeAgentLabel: string
+  availableRuntimeAgentIds?: readonly RuntimeAgentIdDto[]
   composerAgentDefinitionId?: string | null
   composerAgentSelectionKey?: string
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
@@ -134,6 +135,8 @@ function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
       return MessageCircle
     case 'debug':
       return Bug
+    case 'crawl':
+      return Search
     case 'agent_create':
       return Sparkles
     case 'test':
@@ -188,6 +191,7 @@ export function ComposerDock({
   isSendDisabled,
   composerRuntimeAgentId,
   composerRuntimeAgentLabel,
+  availableRuntimeAgentIds,
   composerAgentDefinitionId = null,
   composerAgentSelectionKey,
   customAgentDefinitions = [],
@@ -249,12 +253,23 @@ export function ComposerDock({
   const agentSelectorValue =
     composerAgentSelectionKey ??
     buildComposerAgentSelectionKey(composerRuntimeAgentId, composerAgentDefinitionId)
+  const availableRuntimeAgentIdSet = useMemo(
+    () => (availableRuntimeAgentIds ? new Set(availableRuntimeAgentIds) : null),
+    [availableRuntimeAgentIds],
+  )
+  const selectableRuntimeAgents = useMemo(() => {
+    if (!availableRuntimeAgentIdSet) return RUNTIME_AGENT_DESCRIPTORS
+    return RUNTIME_AGENT_DESCRIPTORS.filter((agent) => availableRuntimeAgentIdSet.has(agent.id))
+  }, [availableRuntimeAgentIdSet])
   const visibleCustomAgents = useMemo(
     () =>
       customAgentDefinitions.filter(
-        (agent) => agent.lifecycleState === 'active' || agent.definitionId === composerAgentDefinitionId,
+        (agent) =>
+          (agent.lifecycleState === 'active' || agent.definitionId === composerAgentDefinitionId) &&
+          (!availableRuntimeAgentIdSet ||
+            availableRuntimeAgentIdSet.has(runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile))),
       ),
-    [composerAgentDefinitionId, customAgentDefinitions],
+    [availableRuntimeAgentIdSet, composerAgentDefinitionId, customAgentDefinitions],
   )
   const projectCustomAgents = useMemo(
     () => visibleCustomAgents.filter((agent) => agent.scope === 'project_custom'),
@@ -291,7 +306,7 @@ export function ComposerDock({
         }
         if (value.startsWith('builtin:')) {
           const builtinId = value.slice('builtin:'.length) as RuntimeAgentIdDto
-          if (RUNTIME_AGENT_DESCRIPTORS.some((agent) => agent.id === builtinId)) {
+          if (selectableRuntimeAgents.some((agent) => agent.id === builtinId)) {
             onComposerRuntimeAgentChange(builtinId)
           }
         }
@@ -316,7 +331,7 @@ export function ComposerDock({
         </TooltipContent>
       </Tooltip>
       <SelectContent className={composerInlineSelectContentClassName}>
-        {RUNTIME_AGENT_DESCRIPTORS.map((agent) => {
+        {selectableRuntimeAgents.map((agent) => {
           const BuiltinAgentIcon = getBuiltinAgentIcon(agent.id)
           return (
             <SelectItem

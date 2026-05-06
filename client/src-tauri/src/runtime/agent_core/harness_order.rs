@@ -663,10 +663,34 @@ fn target_manifest_profile(step: &HarnessStepDefinition, target: &str) -> Harnes
             "todo is absent or runtime planning state is unavailable.",
             "No todo mutation is required for this probe.",
         ),
-        ("planning_runtime_state", AUTONOMOUS_TOOL_PROJECT_CONTEXT) => profile(
+        ("planning_runtime_state", AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH) => profile(
             r#"{"action":"explain_current_context_package","limit":1}"#,
             "Project context explanation is persisted from app-data-backed runtime state.",
-            "project_context is absent or no agent run context is available.",
+            "project_context_search is absent or no agent run context is available.",
+            "None.",
+        ),
+        ("planning_runtime_state", AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET) => profile(
+            r#"{"action":"get_project_record","recordId":"<safe project record id from project_context_search>"}"#,
+            "Project context record retrieval is persisted from app-data-backed runtime state.",
+            "project_context_get is absent or no safe project record id exists.",
+            "None.",
+        ),
+        ("planning_runtime_state", AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD) => profile(
+            r#"{"action":"propose_record_candidate","title":"Harness context probe","summary":"Harness context probe only.","text":"Harness context probe only.","recordKind":"context_note"}"#,
+            "Project context record proposal is persisted without changing repository files.",
+            "project_context_record is absent or durable-context writes are not safe for this harness run.",
+            "Remove or ignore only harness-created context candidates if created.",
+        ),
+        ("planning_runtime_state", AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE) => profile(
+            r#"{"recordId":"<safe harness-created project record id>","summary":"Updated harness context probe."}"#,
+            "Project context update is persisted only for a harness-created context item.",
+            "project_context_update is absent or no harness-created context item exists.",
+            "Remove or restore only harness-created context state if created.",
+        ),
+        ("planning_runtime_state", AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH) => profile(
+            r#"{"recordIds":["<safe project record id>"]}"#,
+            "Project context freshness refresh is persisted for app-data-backed runtime state.",
+            "project_context_refresh is absent or no safe context id exists.",
             "None.",
         ),
         ("scratch_mutation", AUTONOMOUS_TOOL_MKDIR) => profile(
@@ -699,28 +723,28 @@ fn target_manifest_profile(step: &HarnessStepDefinition, target: &str) -> Harnes
             "delete is absent or the scratch file was not created.",
             "Remove any remaining xero-harness-scratch state in cleanup_scratch.",
         ),
-        ("commands", AUTONOMOUS_TOOL_COMMAND) => profile(
-            r#"{"argv":["printf","xero-harness-command-ok"],"timeoutMs":5000}"#,
-            "Short harmless command result is persisted.",
-            "command is absent or safe command execution is unavailable.",
+        ("commands", AUTONOMOUS_TOOL_COMMAND_PROBE) => profile(
+            r#"{"argv":["echo","xero-harness-command-ok"],"timeoutMs":5000}"#,
+            "Short harmless probe command result is persisted.",
+            "command_probe is absent or safe command execution is unavailable.",
             "None.",
         ),
-        ("commands", AUTONOMOUS_TOOL_COMMAND_SESSION_START) => profile(
-            r#"{"argv":["sh","-c","printf xero-harness-session-ok; sleep 30"],"timeoutMs":5000}"#,
-            "Command session start result is persisted with a session id.",
-            "command_session_start is absent or safe session execution is unavailable.",
-            "Stop the session with command_session_stop.",
+        ("commands", AUTONOMOUS_TOOL_COMMAND_VERIFY) => profile(
+            r#"{"argv":["cargo","test","--help"],"timeoutMs":5000}"#,
+            "Verification command result is persisted through the narrowed command_verify policy.",
+            "command_verify is absent, Cargo is unavailable, or safe verification execution is unavailable.",
+            "None.",
         ),
-        ("commands", AUTONOMOUS_TOOL_COMMAND_SESSION_READ) => profile(
-            r#"{"sessionId":"<session id from command_session_start>","afterSequence":0,"maxBytes":4096}"#,
-            "Command session read result is persisted for the harness session id.",
-            "command_session_read is absent or no harness session id exists.",
-            "Stop the session with command_session_stop.",
+        ("commands", AUTONOMOUS_TOOL_COMMAND_RUN) => profile(
+            r#"{"argv":["printf","xero-harness-command-ok"],"timeoutMs":5000}"#,
+            "General command result is persisted.",
+            "command_run is absent or safe command execution is unavailable.",
+            "None.",
         ),
-        ("commands", AUTONOMOUS_TOOL_COMMAND_SESSION_STOP) => profile(
-            r#"{"sessionId":"<session id from command_session_start>"}"#,
-            "Command session stop result is persisted and the harness session is not left running.",
-            "command_session_stop is absent or no harness session id exists.",
+        ("commands", AUTONOMOUS_TOOL_COMMAND_SESSION) => profile(
+            r#"{"action":"start","argv":["sh","-c","printf xero-harness-session-ok; sleep 30"],"timeoutMs":5000}"#,
+            "Command session wrapper start/read/stop lifecycle is persisted with a session id and no leftover process.",
+            "command_session is absent or safe session execution is unavailable.",
             "No harness command session remains running.",
         ),
         ("process_manager", AUTONOMOUS_TOOL_PROCESS_MANAGER) => profile(
@@ -735,22 +759,52 @@ fn target_manifest_profile(step: &HarnessStepDefinition, target: &str) -> Harnes
             "environment_context is absent or the app-data environment profile is unavailable.",
             "None.",
         ),
-        ("environment_diagnostics", AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS) => profile(
+        ("environment_diagnostics", AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE) => profile(
             r#"{"action":"system_log_query","lastMs":60000,"limit":20,"messageContains":"xero"}"#,
             "Bounded diagnostics result is persisted without secrets or unbounded artifacts.",
-            "system_diagnostics is absent or the platform probe is unsupported or unsafe.",
+            "system_diagnostics_observe is absent or the platform probe is unsupported or unsafe.",
             "Remove only harness-created diagnostic artifacts, if any.",
         ),
-        ("browser_tools", AUTONOMOUS_TOOL_BROWSER) => profile(
+        ("environment_diagnostics", AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED) => profile(
+            r#"{"action":"process_sample","pid":0,"durationMs":1000,"sampleCount":1}"#,
+            "Privileged diagnostics approval or result is persisted with action-level metadata.",
+            "system_diagnostics_privileged is absent or no safe approved target process exists.",
+            "Remove only harness-created diagnostic artifacts, if any.",
+        ),
+        ("browser_tools", AUTONOMOUS_TOOL_BROWSER_OBSERVE) => profile(
             r#"{"action":"current_url"}"#,
             "Browser observation result is persisted without navigating away from user state.",
-            "browser is absent, closed, or no local/safe target is available.",
+            "browser_observe is absent, closed, or no local/safe target is available.",
             "Restore or close only harness-created browser state when possible.",
         ),
-        ("mcp_tools", AUTONOMOUS_TOOL_MCP) => profile(
+        ("browser_tools", AUTONOMOUS_TOOL_BROWSER_CONTROL) => profile(
+            r#"{"action":"reload"}"#,
+            "Browser control result is persisted only for a local or fixture-safe target.",
+            "browser_control is absent or no local/safe target is available.",
+            "Restore or close only harness-created browser state when possible.",
+        ),
+        ("mcp_tools", AUTONOMOUS_TOOL_MCP_LIST) => profile(
             r#"{"action":"list_servers"}"#,
             "MCP server list result is persisted without invoking external tools.",
-            "mcp is absent or no MCP registry is configured.",
+            "mcp_list is absent or no MCP registry is configured.",
+            "None.",
+        ),
+        ("mcp_tools", AUTONOMOUS_TOOL_MCP_READ_RESOURCE) => profile(
+            r#"{"serverId":"<safe fixture MCP server id>","uri":"<safe fixture resource uri>"}"#,
+            "MCP resource read result is persisted only for a safe fixture resource.",
+            "mcp_read_resource is absent or no safe fixture resource exists.",
+            "None.",
+        ),
+        ("mcp_tools", AUTONOMOUS_TOOL_MCP_GET_PROMPT) => profile(
+            r#"{"serverId":"<safe fixture MCP server id>","name":"<safe fixture prompt name>","arguments":{}}"#,
+            "MCP prompt retrieval result is persisted only for a safe fixture prompt.",
+            "mcp_get_prompt is absent or no safe fixture prompt exists.",
+            "None.",
+        ),
+        ("mcp_tools", AUTONOMOUS_TOOL_MCP_CALL_TOOL) => profile(
+            r#"{"serverId":"<safe fixture MCP server id>","name":"<safe fixture tool name>","arguments":{}}"#,
+            "MCP tool invocation result is persisted only for a safe fixture tool.",
+            "mcp_call_tool is absent or no safe fixture tool exists.",
             "None.",
         ),
         ("skills", AUTONOMOUS_TOOL_SKILL) => profile(
@@ -879,7 +933,14 @@ fn canonical_step_definitions() -> &'static [HarnessStepDefinition] {
         },
         HarnessStepDefinition {
             step_id: "planning_runtime_state",
-            targets: &[AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_PROJECT_CONTEXT],
+            targets: &[
+                AUTONOMOUS_TOOL_TODO,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+            ],
             safe_input: "Use runtime-owned planning or durable-context read/list actions.",
             pass_condition: "Runtime-state interaction result is persisted.",
             skip_condition: "Runtime-state tool is absent or has no harmless action.",
@@ -902,10 +963,10 @@ fn canonical_step_definitions() -> &'static [HarnessStepDefinition] {
         HarnessStepDefinition {
             step_id: "commands",
             targets: &[
-                AUTONOMOUS_TOOL_COMMAND,
-                AUTONOMOUS_TOOL_COMMAND_SESSION_START,
-                AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
-                AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                AUTONOMOUS_TOOL_COMMAND_SESSION,
             ],
             safe_input: "Use short harmless commands and bounded session probes.",
             pass_condition: "Command result is persisted.",
@@ -924,7 +985,8 @@ fn canonical_step_definitions() -> &'static [HarnessStepDefinition] {
             step_id: "environment_diagnostics",
             targets: &[
                 AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
-                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
             ],
             safe_input: "Read redacted environment and bounded diagnostics.",
             pass_condition: "Diagnostics result is persisted without secrets.",
@@ -933,7 +995,10 @@ fn canonical_step_definitions() -> &'static [HarnessStepDefinition] {
         },
         HarnessStepDefinition {
             step_id: "browser_tools",
-            targets: &[AUTONOMOUS_TOOL_BROWSER],
+            targets: &[
+                AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            ],
             safe_input: "Observe first; control only a local or fixture-safe target.",
             pass_condition: "Browser result is persisted.",
             skip_condition: "Browser tool is absent or no local/safe target is available.",
@@ -941,7 +1006,12 @@ fn canonical_step_definitions() -> &'static [HarnessStepDefinition] {
         },
         HarnessStepDefinition {
             step_id: "mcp_tools",
-            targets: &[AUTONOMOUS_TOOL_MCP],
+            targets: &[
+                AUTONOMOUS_TOOL_MCP_LIST,
+                AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+                AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+                AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+            ],
             safe_input: "List MCP servers/resources/tools; invoke only safe fixtures.",
             pass_condition: "MCP result is persisted.",
             skip_condition: "MCP tool is absent or no safe fixture server/tool exists.",
@@ -1113,6 +1183,7 @@ mod tests {
             RuntimeAgentIdDto::Ask,
             RuntimeAgentIdDto::Engineer,
             RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Crawl,
             RuntimeAgentIdDto::AgentCreate,
         ] {
             assert!(
@@ -1157,15 +1228,23 @@ mod tests {
                 AUTONOMOUS_TOOL_TOOL_ACCESS,
                 AUTONOMOUS_TOOL_GIT_STATUS,
                 AUTONOMOUS_TOOL_TODO,
-                AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
                 AUTONOMOUS_TOOL_MKDIR,
                 AUTONOMOUS_TOOL_WRITE,
                 AUTONOMOUS_TOOL_DELETE,
-                AUTONOMOUS_TOOL_COMMAND,
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                AUTONOMOUS_TOOL_COMMAND_RUN,
+                AUTONOMOUS_TOOL_COMMAND_SESSION,
                 AUTONOMOUS_TOOL_PROCESS_MANAGER,
                 AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
-                AUTONOMOUS_TOOL_BROWSER,
-                AUTONOMOUS_TOOL_MCP,
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+                AUTONOMOUS_TOOL_BROWSER_CONTROL,
+                AUTONOMOUS_TOOL_MCP_LIST,
+                AUTONOMOUS_TOOL_MCP_CALL_TOOL,
                 AUTONOMOUS_TOOL_SKILL,
                 AUTONOMOUS_TOOL_EMULATOR,
                 AUTONOMOUS_TOOL_SOLANA_CLUSTER,
@@ -1205,7 +1284,7 @@ mod tests {
                 .position(|item| item.target == target)
                 .expect("manifest target")
         };
-        assert!(target_index(AUTONOMOUS_TOOL_MCP) < target_index(dynamic_mcp));
+        assert!(target_index(AUTONOMOUS_TOOL_MCP_LIST) < target_index(dynamic_mcp));
         assert!(target_index(dynamic_mcp) < target_index(AUTONOMOUS_TOOL_SKILL));
 
         for item in &items {
@@ -1248,13 +1327,13 @@ mod tests {
             r#"# Harness Test Report
 | Step | Target | Status | Evidence | Skip reason |
 | --- | --- | --- | --- | --- |
-| browser_tools | browser | skipped_with_reason | none | no local target |
+| browser_tools | browser_observe | skipped_with_reason | none | no local target |
 "#,
         );
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].step_id, "browser_tools");
-        assert_eq!(rows[0].target, "browser");
+        assert_eq!(rows[0].target, "browser_observe");
         assert_eq!(rows[0].status, HarnessStepStatus::SkippedWithReason);
         assert_eq!(rows[0].skip_reason, "no local target");
     }

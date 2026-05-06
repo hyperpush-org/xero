@@ -71,8 +71,8 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
         </p>
         <p>
           When you email{" "}
-          <Link href="mailto:team@xero.sh" className="underline underline-offset-2 hover:text-foreground">
-            team@xero.sh
+          <Link href="mailto:team@xeroshell.com" className="underline underline-offset-2 hover:text-foreground">
+            team@xeroshell.com
           </Link>{" "}
           we hold the contents of your email to reply. That&apos;s it.
         </p>
@@ -119,10 +119,10 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
           it. For anything we hold server-side — emails to support, the analytics record of your
           page views — you can request access or deletion at{" "}
           <Link
-            href="mailto:team@xero.sh"
+            href="mailto:team@xeroshell.com"
             className="underline underline-offset-2 hover:text-foreground"
           >
-            team@xero.sh
+            team@xeroshell.com
           </Link>
           .
         </p>
@@ -137,10 +137,10 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
         <p>
           Questions about this policy? Email{" "}
           <Link
-            href="mailto:team@xero.sh"
+            href="mailto:team@xeroshell.com"
             className="underline underline-offset-2 hover:text-foreground"
           >
-            team@xero.sh
+            team@xeroshell.com
           </Link>
           . We read every message.
         </p>

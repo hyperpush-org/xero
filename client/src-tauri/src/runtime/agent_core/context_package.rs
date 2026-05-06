@@ -138,7 +138,10 @@ pub(crate) fn assemble_provider_context_package(
         "sourceMissingContextRowsAvailable": source_missing_context_rows_available,
         "supersededContextRowsAvailable": superseded_context_rows_available,
         "toolAvailability": {
-            "project_context": input.tools.iter().any(|tool| tool.name == AUTONOMOUS_TOOL_PROJECT_CONTEXT),
+            "project_context": input.tools.iter().any(|tool| matches!(
+                tool.name.as_str(),
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+            )),
         },
         "resultCount": retrieved_project_context.results.len(),
         "results": retrieved_project_context.results.iter().map(retrieval_result_manifest_json).collect::<Vec<_>>(),

@@ -5,10 +5,12 @@ use xero_agent_core::{domain_tool_pack_manifest, domain_tool_pack_tools};
 use super::{
     tool_access_group_tools, tool_effect_class, AutonomousToolEffectClass, AutonomousToolOutput,
     AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
-    AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LSP,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND,
+    AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HASH,
+    AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE, AUTONOMOUS_TOOL_TOOL_ACCESS,
+    AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
 };
 use crate::{
     auth::now_timestamp,
@@ -731,12 +733,18 @@ fn validate_definition_snapshot(snapshot: &JsonValue) -> AutonomousAgentDefiniti
         ));
     }
     let base_profile = snapshot_text(snapshot, "baseCapabilityProfile").unwrap_or_default();
-    if !["observe_only", "engineering", "debugging", "agent_builder"]
-        .contains(&base_profile.as_str())
+    if ![
+        "observe_only",
+        "repository_recon",
+        "engineering",
+        "debugging",
+        "agent_builder",
+    ]
+    .contains(&base_profile.as_str())
     {
         diagnostics.push(diagnostic(
             "agent_definition_base_profile_invalid",
-            "Base capability profile must be observe_only, engineering, debugging, or agent_builder.",
+            "Base capability profile must be observe_only, repository_recon, engineering, debugging, or agent_builder.",
             "baseCapabilityProfile",
         ));
     }
@@ -835,12 +843,14 @@ fn validate_approval_modes(
             "allowedApprovalModes",
         ));
     }
-    if matches!(base_profile, "observe_only" | "agent_builder")
-        && (default_mode != "suggest" || allowed_modes.iter().any(|mode| mode != "suggest"))
+    if matches!(
+        base_profile,
+        "observe_only" | "repository_recon" | "agent_builder"
+    ) && (default_mode != "suggest" || allowed_modes.iter().any(|mode| mode != "suggest"))
     {
         diagnostics.push(diagnostic(
             "agent_definition_approval_exceeds_profile",
-            "observe_only and agent_builder profiles can only use suggest approval mode.",
+            "observe_only, repository_recon, and agent_builder profiles can only use suggest approval mode.",
             "allowedApprovalModes",
         ));
     }
@@ -862,6 +872,7 @@ fn validate_tool_policy(
     if let Some(policy) = value.as_str() {
         let allowed = match base_profile {
             "observe_only" => policy == "observe_only",
+            "repository_recon" => policy == "repository_recon" || policy == "observe_only",
             "agent_builder" => policy == "agent_builder" || policy == "observe_only",
             "engineering" | "debugging" => ["observe_only", "engineering"].contains(&policy),
             _ => false,
@@ -1119,12 +1130,21 @@ fn tool_allowed_by_profile(base_profile: &str, tool: &str) -> bool {
     if tool == AUTONOMOUS_TOOL_AGENT_DEFINITION {
         return base_profile == "agent_builder";
     }
+    if base_profile == "repository_recon" {
+        return repository_recon_tool_allowed(tool);
+    }
     effect_allowed_by_profile(base_profile, tool_effect_class(tool).as_str())
 }
 
 fn effect_allowed_by_profile(base_profile: &str, effect_class: &str) -> bool {
     match base_profile {
         "observe_only" => effect_class == AutonomousToolEffectClass::Observe.as_str(),
+        "repository_recon" => {
+            matches!(
+                effect_class,
+                "observe" | "runtime_state" | "command" | "process_control"
+            )
+        }
         "agent_builder" => matches!(effect_class, "observe" | "runtime_state"),
         "engineering" | "debugging" => matches!(
             effect_class,
@@ -1142,6 +1162,29 @@ fn effect_allowed_by_profile(base_profile: &str, effect_class: &str) -> bool {
         ),
         _ => false,
     }
+}
+
+fn repository_recon_tool_allowed(tool: &str) -> bool {
+    matches!(
+        tool,
+        AUTONOMOUS_TOOL_READ
+            | AUTONOMOUS_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_FIND
+            | AUTONOMOUS_TOOL_GIT_STATUS
+            | AUTONOMOUS_TOOL_GIT_DIFF
+            | AUTONOMOUS_TOOL_TOOL_ACCESS
+            | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+            | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+            | AUTONOMOUS_TOOL_WORKSPACE_INDEX
+            | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_HASH
+            | AUTONOMOUS_TOOL_COMMAND_PROBE
+            | AUTONOMOUS_TOOL_CODE_INTEL
+            | AUTONOMOUS_TOOL_LSP
+            | AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
+            | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
+    )
 }
 
 fn ensure_custom_definition_summary(
@@ -1401,6 +1444,38 @@ fn default_tool_policy(profile: &str) -> JsonValue {
             "commandAllowed": false,
             "destructiveWriteAllowed": false
         }),
+        "repository_recon" => json!({
+            "allowedEffectClasses": ["observe", "runtime_state", "command", "process_control"],
+            "allowedToolGroups": [],
+            "allowedToolPacks": [],
+            "allowedTools": [
+                AUTONOMOUS_TOOL_READ,
+                AUTONOMOUS_TOOL_SEARCH,
+                AUTONOMOUS_TOOL_FIND,
+                AUTONOMOUS_TOOL_GIT_STATUS,
+                AUTONOMOUS_TOOL_GIT_DIFF,
+                AUTONOMOUS_TOOL_TOOL_ACCESS,
+                AUTONOMOUS_TOOL_TOOL_SEARCH,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+                AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+                AUTONOMOUS_TOOL_LIST,
+                AUTONOMOUS_TOOL_HASH,
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                AUTONOMOUS_TOOL_CODE_INTEL,
+                AUTONOMOUS_TOOL_LSP,
+                AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
+            ],
+            "deniedTools": [],
+            "deniedToolPacks": [],
+            "externalServiceAllowed": false,
+            "browserControlAllowed": false,
+            "skillRuntimeAllowed": false,
+            "subagentAllowed": false,
+            "commandAllowed": true,
+            "destructiveWriteAllowed": false
+        }),
         _ => json!({
             "allowedEffectClasses": ["observe"],
             "allowedToolGroups": [],
@@ -1416,7 +1491,8 @@ fn default_tool_policy(profile: &str) -> JsonValue {
                 AUTONOMOUS_TOOL_CODE_INTEL,
                 AUTONOMOUS_TOOL_LSP,
                 AUTONOMOUS_TOOL_TOOL_SEARCH,
-                AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
                 AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT
             ],
             "deniedTools": [],
@@ -1567,8 +1643,8 @@ mod tests {
             "toolPolicy": {
                 "allowedEffectClasses": ["observe"],
                 "allowedToolGroups": [],
-                "allowedTools": ["read", "search", "find", "git_status", "git_diff", "project_context", "tool_search"],
-                "deniedTools": ["write", "patch", "command", "browser", "emulator"],
+                "allowedTools": ["read", "search", "find", "git_status", "git_diff", "project_context_search", "project_context_get", "tool_search"],
+                "deniedTools": ["write", "patch", "command_run", "browser_control", "emulator"],
                 "externalServiceAllowed": false,
                 "browserControlAllowed": false,
                 "skillRuntimeAllowed": false,
@@ -1688,6 +1764,7 @@ mod tests {
             RuntimeAgentIdDto::Ask,
             RuntimeAgentIdDto::Engineer,
             RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Crawl,
         ] {
             let registry = ToolRegistry::for_tool_names_with_options(
                 [AUTONOMOUS_TOOL_AGENT_DEFINITION.to_string()].into(),

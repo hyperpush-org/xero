@@ -44,10 +44,11 @@ export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'op
 export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
-export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'engineer', 'debug', 'agent_create', 'test'] as const
+export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'engineer', 'debug', 'crawl', 'agent_create', 'test'] as const
 export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
 export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'ask'
 export const TEST_RUNTIME_AGENT_ENABLE_ENV = 'VITE_XERO_ENABLE_TEST_AGENT'
+export type RuntimeAgentProjectOrigin = 'brownfield' | 'greenfield' | 'unknown' | null | undefined
 
 export interface RuntimeAgentAvailabilityEnvironment {
   DEV?: boolean
@@ -72,16 +73,18 @@ export interface RuntimeAgentDescriptor {
   lifecycleState: 'draft' | 'active' | 'archived'
   baseCapabilityProfile:
     | 'observe_only'
+    | 'repository_recon'
     | 'engineering'
     | 'debugging'
     | 'agent_builder'
     | 'harness_test'
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'engineer' | 'debug' | 'agent_create' | 'harness_test'
-  toolPolicy: 'observe_only' | 'engineering' | 'agent_builder' | 'harness_test'
+  promptPolicy: 'ask' | 'engineer' | 'debug' | 'crawl' | 'agent_create' | 'harness_test'
+  toolPolicy: 'observe_only' | 'repository_recon' | 'engineering' | 'agent_builder' | 'harness_test'
   outputContract:
     | 'answer'
+    | 'crawl_report'
     | 'engineering_summary'
     | 'debug_summary'
     | 'agent_definition_draft'
@@ -255,6 +258,55 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
     allowAutoCompact: true,
   },
   {
+    id: 'crawl',
+    version: 1,
+    label: 'Crawl',
+    shortLabel: 'Crawl',
+    description:
+      'Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.',
+    taskPurpose: 'Read brownfield repository context and produce a structured crawl report for durable project memory.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'repository_recon',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest'],
+    promptPolicy: 'crawl',
+    toolPolicy: 'repository_recon',
+    outputContract: 'crawl_report',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'project_fact',
+        'constraint',
+        'finding',
+        'verification',
+        'question',
+        'artifact',
+        'context_note',
+        'diagnostic',
+      ],
+      structuredSchemas: [
+        'xero.project_record.v1',
+        'xero.project_crawl.report.v1',
+        'xero.project_crawl.project_overview.v1',
+        'xero.project_crawl.tech_stack.v1',
+        'xero.project_crawl.command_map.v1',
+        'xero.project_crawl.test_map.v1',
+        'xero.project_crawl.architecture_map.v1',
+        'xero.project_crawl.hotspots.v1',
+        'xero.project_crawl.constraints.v1',
+        'xero.project_crawl.unknowns.v1',
+        'xero.project_crawl.freshness.v1',
+      ],
+      unstructuredScopes: ['answer_note', 'session_summary', 'artifact_excerpt', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: false,
+    allowVerificationGate: false,
+    allowAutoCompact: true,
+  },
+  {
     id: 'agent_create',
     version: 1,
     label: 'Agent Create',
@@ -342,6 +394,22 @@ export function getRuntimeAgentDescriptorsForAvailability(
 }
 
 export const RUNTIME_AGENT_DESCRIPTORS = getRuntimeAgentDescriptorsForAvailability()
+
+export function runtimeAgentIsSelectableForProjectOrigin(
+  agentId: RuntimeAgentIdDto,
+  projectOrigin: RuntimeAgentProjectOrigin,
+): boolean {
+  return agentId !== 'crawl' || projectOrigin === 'brownfield'
+}
+
+export function getRuntimeAgentDescriptorsForProjectOrigin(
+  projectOrigin: RuntimeAgentProjectOrigin,
+  availability: RuntimeAgentAvailability = getRuntimeAgentAvailability(),
+): RuntimeAgentDescriptor[] {
+  return getRuntimeAgentDescriptorsForAvailability(availability).filter((descriptor) =>
+    runtimeAgentIsSelectableForProjectOrigin(descriptor.id, projectOrigin),
+  )
+}
 
 export function getRuntimeAgentDescriptor(agentId: RuntimeAgentIdDto): RuntimeAgentDescriptor {
   return (
