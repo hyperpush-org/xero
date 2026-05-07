@@ -2,6 +2,10 @@
 import { z } from 'zod'
 import { estimateUtf16Bytes } from '@/lib/byte-budget-cache'
 import {
+  codePatchAvailabilitySchema,
+  type CodePatchAvailabilityDto,
+} from './code-history'
+import {
   isoTimestampSchema,
   nonEmptyOptionalTextSchema,
   normalizeOptionalText,
@@ -96,6 +100,9 @@ export const runtimeStreamItemSchema = z
     toolName: nonEmptyOptionalTextSchema,
     toolState: runtimeToolCallStateSchema.nullable().optional(),
     codeChangeGroupId: nonEmptyOptionalTextSchema,
+    codeCommitId: nonEmptyOptionalTextSchema,
+    codeWorkspaceEpoch: z.number().int().nonnegative().nullable().optional(),
+    codePatchAvailability: codePatchAvailabilitySchema.nullable().optional(),
     toolSummary: toolResultSummarySchema.nullable().optional(),
     toolResultPreview: z.string().nullable().optional(),
     skillId: nonEmptyOptionalTextSchema,
@@ -416,6 +423,9 @@ interface RuntimeStreamBaseItemView {
   updatedSequence?: number
   createdAt: string
   codeChangeGroupId?: string | null
+  codeCommitId?: string | null
+  codeWorkspaceEpoch?: number | null
+  codePatchAvailability?: CodePatchAvailabilityDto | null
 }
 
 export interface RuntimeStreamTranscriptItemView extends RuntimeStreamBaseItemView {
@@ -560,6 +570,21 @@ function latestRuntimeTimelineItem(
     }
   }
   return latestItem
+}
+
+function normalizeRuntimeCodeHistoryMetadata(
+  item: RuntimeStreamItemDto,
+): Pick<
+  RuntimeStreamBaseItemView,
+  'codeChangeGroupId' | 'codeCommitId' | 'codeWorkspaceEpoch' | 'codePatchAvailability'
+> {
+  return {
+    codeChangeGroupId: normalizeOptionalText(item.codeChangeGroupId),
+    codeCommitId: normalizeOptionalText(item.codeCommitId),
+    codeWorkspaceEpoch:
+      typeof item.codeWorkspaceEpoch === 'number' ? item.codeWorkspaceEpoch : null,
+    codePatchAvailability: item.codePatchAvailability ?? null,
+  }
 }
 
 function mergeRuntimeTimelineToolItem(
@@ -839,13 +864,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
   switch (event.item.kind) {
     case 'transcript': {
       const text = ensureRuntimeTranscriptText(event.item.text)
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamItemId('transcript', itemRunId, event.item.sequence),
         kind: 'transcript',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
-        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
+        ...codeHistory,
         text,
         role: event.item.transcriptRole ?? 'assistant',
       }
@@ -858,13 +884,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         throw new Error('Xero received a runtime tool item without a toolState value.')
       }
 
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamItemId('tool', itemRunId, event.item.sequence),
         kind: 'tool',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
-        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
+        ...codeHistory,
         toolCallId,
         toolName,
         toolState,
@@ -890,13 +917,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         throw new Error('Xero received a runtime skill item without skillSource metadata.')
       }
 
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamItemId('skill', itemRunId, event.item.sequence),
         kind: 'skill',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
-        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
+        ...codeHistory,
         skillId,
         stage,
         result,
@@ -916,13 +944,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         code === OWNED_AGENT_REASONING_ACTIVITY_CODE &&
         text != null &&
         text.trim().length === 0
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamItemId('activity', itemRunId, event.item.sequence),
         kind: 'activity',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
-        codeChangeGroupId: normalizeOptionalText(event.item.codeChangeGroupId),
+        ...codeHistory,
         code: isReasoningBoundary ? OWNED_AGENT_REASONING_BOUNDARY_CODE : code,
         title,
         text,
@@ -935,12 +964,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
       const title = ensureRuntimeStreamText(event.item.title, 'title', 'action-required')
       const detail = ensureRuntimeStreamText(event.item.detail, 'detail', 'action-required')
       const options = event.item.options ?? null
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamActionRequiredItemId(itemRunId, actionId),
         kind: 'action_required',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        ...codeHistory,
         actionId,
         boundaryId: normalizeOptionalText(event.item.boundaryId),
         actionType,
@@ -961,12 +992,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
     case 'plan': {
       const planId = ensureRuntimeStreamText(event.item.planId, 'planId', 'plan')
       const planItems = Array.isArray(event.item.planItems) ? event.item.planItems : []
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamPlanItemId(itemRunId, planId),
         kind: 'plan',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        ...codeHistory,
         planId,
         items: planItems.map((planItem) => ({
           id: planItem.id,
@@ -984,12 +1017,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
     }
     case 'complete': {
       const detail = ensureRuntimeStreamText(event.item.detail, 'detail', 'complete')
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamItemId('complete', itemRunId, event.item.sequence),
         kind: 'complete',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        ...codeHistory,
         detail,
       }
     }
@@ -1000,12 +1035,14 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         throw new Error('Xero received a runtime failure item without a retryable flag.')
       }
 
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
       return {
         id: runtimeStreamItemId('failure', itemRunId, event.item.sequence),
         kind: 'failure',
         runId: itemRunId,
         sequence: event.item.sequence,
         createdAt: event.item.createdAt,
+        ...codeHistory,
         code,
         message,
         retryable: event.item.retryable,
@@ -1266,6 +1303,24 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
   bytes += estimateUtf16Bytes(item.createdAt)
   bytes += estimateUtf16Bytes(item.kind)
   bytes += estimateOptionalTextBytes(item.codeChangeGroupId)
+  bytes += estimateOptionalTextBytes(item.codeCommitId)
+  if (item.codeWorkspaceEpoch != null) {
+    bytes += 8
+  }
+  if (item.codePatchAvailability) {
+    bytes += estimateUtf16Bytes(item.codePatchAvailability.projectId)
+    bytes += estimateUtf16Bytes(item.codePatchAvailability.targetChangeGroupId)
+    bytes += estimateOptionalTextBytes(item.codePatchAvailability.unavailableReason)
+    for (const path of item.codePatchAvailability.affectedPaths) {
+      bytes += estimateUtf16Bytes(path)
+    }
+    for (const hunk of item.codePatchAvailability.textHunks ?? []) {
+      bytes += 40
+      bytes += estimateUtf16Bytes(hunk.hunkId)
+      bytes += estimateOptionalTextBytes(hunk.patchFileId)
+      bytes += estimateUtf16Bytes(hunk.filePath)
+    }
+  }
 
   switch (item.kind) {
     case 'transcript':

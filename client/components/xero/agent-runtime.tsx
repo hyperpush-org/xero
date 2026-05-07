@@ -29,8 +29,8 @@ import type {
 import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import type {
   AgentDefinitionSummaryDto,
-  ApplyCodeRollbackResponseDto,
   AgentSessionView,
+  CodeHistoryOperationDto,
   RuntimeRunView,
   RuntimeAgentProjectOrigin,
   RuntimeAutoCompactPreferenceDto,
@@ -41,6 +41,8 @@ import type {
   RuntimeStreamFailureItemView,
   RuntimeStreamToolItemView,
   RuntimeStreamViewItem,
+  ReturnSessionToHereResponseDto,
+  SelectiveUndoResponseDto,
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/xero-model'
 import type { SessionContextSnapshotDto } from '@/src/lib/xero-model/session-context'
@@ -77,9 +79,13 @@ import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
 import { AgentCreateDraftSection } from './agent-runtime/agent-create-draft-section'
 import {
   ConversationSection,
-  type CodeRollbackRequest,
-  type CodeRollbackUiState,
+  getCodeUndoStateKey,
+  getReturnSessionToHereStateKey,
+  type CodeUndoRequest,
+  type CodeUndoConflictSummary,
+  type CodeUndoUiState,
   type ConversationTurn,
+  type ReturnSessionToHereUiRequest,
 } from './agent-runtime/conversation-section'
 import { EmptySessionState } from './agent-runtime/empty-session-state'
 import {
@@ -97,7 +103,8 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
   Partial<
     Pick<
       XeroDesktopAdapter,
-      | 'applyCodeRollback'
+      | 'applySelectiveUndo'
+      | 'returnSessionToHere'
       | 'getSessionContextSnapshot'
       | 'stageAgentAttachment'
       | 'discardAgentAttachment'
@@ -129,7 +136,7 @@ export interface AgentRuntimeProps {
   onSubmitManualCallback?: (flowId: string, manualInput: string) => Promise<ProviderAuthSessionView | null>
   onLogout?: () => Promise<RuntimeSessionView | null>
   onRetryStream?: () => Promise<void>
-  onCodeRollbackApplied?: () => Promise<unknown> | unknown
+  onCodeUndoApplied?: () => Promise<unknown> | unknown
   onResolveOperatorAction?: (
     actionId: string,
     decision: 'approve' | 'reject',
@@ -328,6 +335,7 @@ function fileChangeTurnFromItem(item: RuntimeStreamActivityItemView): Conversati
   return {
     id: item.id,
     kind: 'file_change',
+    runId: item.runId,
     sequence: item.sequence,
     title: item.title,
     detail,
@@ -335,6 +343,8 @@ function fileChangeTurnFromItem(item: RuntimeStreamActivityItemView): Conversati
     path: parsed.path,
     toPath: parsed.toPath,
     changeGroupId: item.codeChangeGroupId ?? null,
+    workspaceEpoch: item.codeWorkspaceEpoch ?? null,
+    patchAvailability: item.codePatchAvailability ?? null,
   }
 }
 
@@ -890,7 +900,7 @@ function toContextMeterError(error: unknown): {
   }
 }
 
-function getCodeRollbackErrorMessage(error: unknown): string {
+function getCodeUndoErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message
   }
@@ -904,7 +914,7 @@ function getCodeRollbackErrorMessage(error: unknown): string {
     return maybeError.message
   }
 
-  return 'Xero could not roll back this change.'
+  return 'Xero could not undo this change.'
 }
 
 function getAgentProjectOrigin(project: AgentPaneView['project']): RuntimeAgentProjectOrigin {
@@ -912,20 +922,118 @@ function getAgentProjectOrigin(project: AgentPaneView['project']): RuntimeAgentP
     .projectOrigin ?? 'unknown'
 }
 
-function formatCodeRollbackSuccess(response: ApplyCodeRollbackResponseDto): string {
-  const restoredCount = response.restoredPaths.length
-  const removedCount = response.removedPaths.length
-  const affectedCount = response.affectedFiles.length
-  if (restoredCount > 0 && removedCount > 0) {
-    return `Rolled back ${restoredCount} restored and ${removedCount} removed paths.`
+function createCodeHistoryOperationId(prefix: string): string {
+  const randomId = globalThis.crypto?.randomUUID?.()
+  if (randomId) {
+    return `${prefix}-${randomId}`
   }
-  if (restoredCount > 0) {
-    return `Rolled back ${restoredCount} restored ${restoredCount === 1 ? 'path' : 'paths'}.`
+
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function formatCodeHistoryTargetLabel(operation: CodeHistoryOperationDto): string {
+  switch (operation.target.targetKind) {
+    case 'file_change':
+      return `Selected file: ${operation.target.targetId}`
+    case 'hunks': {
+      const hunkLabel =
+        operation.target.hunkIds.length > 0
+          ? operation.target.hunkIds.join(', ')
+          : operation.target.targetId
+      return `Selected hunks: ${hunkLabel}`
+    }
+    case 'change_group':
+      return `Selected change group: ${operation.target.targetId}`
+    case 'run_boundary':
+      return `Selected run boundary: ${operation.target.targetId}`
+    case 'session_boundary':
+      return `Selected session boundary: ${operation.target.targetId}`
+    default:
+      return `Selected target: ${operation.target.targetId}`
   }
-  if (removedCount > 0) {
-    return `Rolled back ${removedCount} removed ${removedCount === 1 ? 'path' : 'paths'}.`
+}
+
+function buildCodeHistoryConflictSummary(
+  operation: CodeHistoryOperationDto,
+  title: string,
+): CodeUndoConflictSummary | undefined {
+  if (operation.status !== 'conflicted' || operation.conflicts.length === 0) {
+    return undefined
   }
-  return `Rolled back ${affectedCount || 1} ${affectedCount === 1 ? 'file' : 'files'}.`
+
+  return {
+    title,
+    targetLabel: formatCodeHistoryTargetLabel(operation),
+    affectedPaths: operation.affectedPaths,
+    conflicts: operation.conflicts,
+  }
+}
+
+function formatCodeUndoResult(response: SelectiveUndoResponseDto): CodeUndoUiState {
+  const { operation } = response
+  const affectedCount = operation.affectedPaths.length || 1
+  if (operation.status === 'completed') {
+    return {
+      status: 'succeeded',
+      message: `Undid ${affectedCount} ${affectedCount === 1 ? 'path' : 'paths'}.`,
+    }
+  }
+
+  if (operation.status === 'conflicted') {
+    const conflict = operation.conflicts[0]
+    const path = conflict?.path ?? operation.affectedPaths[0] ?? 'the selected change'
+    const detail = conflict?.message ? ` ${conflict.message}` : ''
+    return {
+      status: 'failed',
+      message: `Undo blocked by conflict in ${path}.${detail}`,
+      conflictSummary: buildCodeHistoryConflictSummary(operation, 'Undo conflict'),
+    }
+  }
+
+  if (operation.status === 'pending' || operation.status === 'planning' || operation.status === 'applying') {
+    return {
+      status: 'pending',
+      message: 'Undo is still applying...',
+    }
+  }
+
+  return {
+    status: 'failed',
+    message: 'Undo failed before changing files.',
+  }
+}
+
+function formatReturnSessionToHereResult(response: ReturnSessionToHereResponseDto): CodeUndoUiState {
+  const { operation } = response
+  if (operation.status === 'completed') {
+    return {
+      status: 'succeeded',
+      message: 'Return session history event added. Other sessions are unchanged.',
+    }
+  }
+
+  if (operation.status === 'conflicted') {
+    const conflict = operation.conflicts[0]
+    const path = conflict?.path ?? operation.affectedPaths[0] ?? 'the selected boundary'
+    const detail = conflict?.message ? ` ${conflict.message}` : ''
+    return {
+      status: 'failed',
+      message: `Return session blocked by conflict in ${path}.${detail}`,
+      conflictSummary: buildCodeHistoryConflictSummary(operation, 'Return session conflict'),
+    }
+  }
+
+  if (operation.status === 'pending' || operation.status === 'planning' || operation.status === 'applying') {
+    return {
+      status: 'pending',
+      message: 'Return session is still applying...',
+    }
+  }
+
+  return {
+    status: 'failed',
+    message: 'Xero could not return this session to here.',
+  }
 }
 
 function useAgentContextMeterSnapshot(options: {
@@ -1087,7 +1195,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   onResolveOperatorAction,
   onResumeOperatorRun,
   desktopAdapter,
-  onCodeRollbackApplied,
+  onCodeUndoApplied,
   accountAvatarUrl = null,
   accountLogin = null,
   onCreateSession,
@@ -1191,7 +1299,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
   const hasSelectedAgentSession = Boolean(selectedAgentSessionId?.trim())
-  const [codeRollbackStates, setCodeRollbackStates] = useState<Record<string, CodeRollbackUiState>>({})
+  const [codeUndoStates, setCodeUndoStates] = useState<Record<string, CodeUndoUiState>>({})
+  const [returnSessionToHereStates, setReturnSessionToHereStates] = useState<Record<string, CodeUndoUiState>>({})
 
   const selectedProviderId =
     agent.selectedModel?.providerId ?? agent.selectedProviderId ?? runtimeSession?.providerId ?? 'openai_codex'
@@ -1666,44 +1775,86 @@ export const AgentRuntime = memo(function AgentRuntime({
       restore()
     }
   }, [hasConversationViewportContent])
-  const handleRollbackChangeGroup = useCallback(async ({ changeGroupId }: CodeRollbackRequest) => {
-    const applyCodeRollback = desktopAdapter?.applyCodeRollback
-    if (!applyCodeRollback) {
-      setCodeRollbackStates((current) => ({
+  const handleUndoCodeChange = useCallback(async ({
+    targetKind,
+    changeGroupId,
+    path,
+    filePath,
+    hunkIds = [],
+    expectedWorkspaceEpoch,
+  }: CodeUndoRequest) => {
+    const applySelectiveUndo = desktopAdapter?.applySelectiveUndo
+    const undoStateKey = getCodeUndoStateKey({ targetKind, changeGroupId, filePath })
+    if (!applySelectiveUndo) {
+      setCodeUndoStates((current) => ({
         ...current,
-        [changeGroupId]: {
+        [undoStateKey]: {
           status: 'failed',
-          message: 'Rollback is unavailable in this runtime.',
+          message: 'Undo is unavailable in this runtime.',
         },
       }))
       return
     }
 
     const restoreScrollPosition = preserveConversationScrollPosition()
-    setCodeRollbackStates((current) => ({
+    setCodeUndoStates((current) => ({
       ...current,
-      [changeGroupId]: {
+      [undoStateKey]: {
         status: 'pending',
-        message: 'Rolling back code change...',
+        message:
+          targetKind === 'hunks'
+            ? 'Undoing selected hunks...'
+            : targetKind === 'file_change'
+              ? 'Undoing file change...'
+              : 'Undoing change group...',
       },
     }))
 
     try {
-      const response = await applyCodeRollback(agent.project.id, changeGroupId)
-      setCodeRollbackStates((current) => ({
+      const undoFilePath = filePath ?? path
+      const selectedHunkIds = Array.from(new Set(hunkIds))
+      const response = await applySelectiveUndo({
+        projectId: agent.project.id,
+        operationId: createCodeHistoryOperationId('code-undo'),
+        target:
+          targetKind === 'hunks'
+            ? {
+                targetKind: 'hunks',
+                targetId: `${changeGroupId}:${undoFilePath}:hunks`,
+                changeGroupId,
+                filePath: undoFilePath,
+                hunkIds: selectedHunkIds,
+              }
+            : targetKind === 'file_change'
+              ? {
+                  targetKind: 'file_change',
+                  targetId: undoFilePath,
+                  changeGroupId,
+                  filePath: undoFilePath,
+                  hunkIds: [],
+                }
+              : {
+                  targetKind: 'change_group',
+                  targetId: changeGroupId,
+                  changeGroupId,
+                  hunkIds: [],
+                },
+        expectedWorkspaceEpoch: expectedWorkspaceEpoch ?? undefined,
+      })
+      const result = formatCodeUndoResult(response)
+      setCodeUndoStates((current) => ({
         ...current,
-        [changeGroupId]: {
-          status: 'succeeded',
-          message: formatCodeRollbackSuccess(response),
-        },
+        [undoStateKey]: result,
       }))
-      await onCodeRollbackApplied?.()
+      if (result.status === 'succeeded') {
+        await onCodeUndoApplied?.()
+      }
     } catch (error) {
-      setCodeRollbackStates((current) => ({
+      setCodeUndoStates((current) => ({
         ...current,
-        [changeGroupId]: {
+        [undoStateKey]: {
           status: 'failed',
-          message: getCodeRollbackErrorMessage(error),
+          message: getCodeUndoErrorMessage(error),
         },
       }))
     } finally {
@@ -1712,8 +1863,91 @@ export const AgentRuntime = memo(function AgentRuntime({
   }, [
     agent.project.id,
     desktopAdapter,
-    onCodeRollbackApplied,
+    onCodeUndoApplied,
     preserveConversationScrollPosition,
+  ])
+  const handleReturnSessionToHere = useCallback(async ({
+    targetKind,
+    targetId,
+    boundaryId,
+    runId,
+    changeGroupId,
+    expectedWorkspaceEpoch,
+  }: ReturnSessionToHereUiRequest) => {
+    const returnSessionToHere = desktopAdapter?.returnSessionToHere
+    const agentSessionId = selectedAgentSessionId?.trim() ?? ''
+    const stateKey = getReturnSessionToHereStateKey({ targetKind, boundaryId, runId, changeGroupId })
+
+    if (!returnSessionToHere) {
+      setReturnSessionToHereStates((current) => ({
+        ...current,
+        [stateKey]: {
+          status: 'failed',
+          message: 'Return session is unavailable in this runtime.',
+        },
+      }))
+      return
+    }
+
+    if (!agentSessionId) {
+      setReturnSessionToHereStates((current) => ({
+        ...current,
+        [stateKey]: {
+          status: 'failed',
+          message: 'Select an agent session before returning it to a code boundary.',
+        },
+      }))
+      return
+    }
+
+    const restoreScrollPosition = preserveConversationScrollPosition()
+    setReturnSessionToHereStates((current) => ({
+      ...current,
+      [stateKey]: {
+        status: 'pending',
+        message: 'Returning this session to here...',
+      },
+    }))
+
+    try {
+      const response = await returnSessionToHere({
+        projectId: agent.project.id,
+        operationId: createCodeHistoryOperationId('code-return-session'),
+        target: {
+          targetKind,
+          targetId,
+          agentSessionId,
+          boundaryId,
+          runId: runId ?? undefined,
+          changeGroupId: changeGroupId ?? undefined,
+        },
+        expectedWorkspaceEpoch: expectedWorkspaceEpoch ?? undefined,
+      })
+      const result = formatReturnSessionToHereResult(response)
+      setReturnSessionToHereStates((current) => ({
+        ...current,
+        [stateKey]: result,
+      }))
+      if (result.status === 'succeeded') {
+        await onCodeUndoApplied?.()
+      }
+    } catch (error) {
+      setReturnSessionToHereStates((current) => ({
+        ...current,
+        [stateKey]: {
+          status: 'failed',
+          message: getCodeUndoErrorMessage(error),
+        },
+      }))
+    } finally {
+      restoreScrollPosition()
+    }
+  }, [
+    agent.project.id,
+    desktopAdapter,
+    onCodeUndoApplied,
+    preserveConversationScrollPosition,
+    selectedAgentSessionId,
   ])
   const handleConversationWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
     const viewport = scrollViewportRef.current
@@ -2008,9 +2242,13 @@ export const AgentRuntime = memo(function AgentRuntime({
                     accountAvatarUrl={accountAvatarUrl}
                     accountLogin={accountLogin}
                     variant={isDense ? 'dense' : 'default'}
-                    codeRollbackStates={codeRollbackStates}
-                    onRollbackChangeGroup={
-                      desktopAdapter?.applyCodeRollback ? handleRollbackChangeGroup : undefined
+                    codeUndoStates={codeUndoStates}
+                    returnSessionToHereStates={returnSessionToHereStates}
+                    onUndoChangeGroup={
+                      desktopAdapter?.applySelectiveUndo ? handleUndoCodeChange : undefined
+                    }
+                    onReturnSessionToHere={
+                      desktopAdapter?.returnSessionToHere ? handleReturnSessionToHere : undefined
                     }
                   />
                 </ActionPromptDispatchProvider>

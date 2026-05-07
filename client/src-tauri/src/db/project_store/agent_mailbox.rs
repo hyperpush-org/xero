@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use rand::RngCore;
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -36,6 +36,10 @@ pub enum AgentMailboxItemType {
     FindingInProgress,
     VerificationNote,
     HandoffLiteSummary,
+    HistoryRewriteNotice,
+    UndoConflictNotice,
+    WorkspaceEpochAdvanced,
+    ReservationInvalidated,
 }
 
 impl AgentMailboxItemType {
@@ -49,6 +53,10 @@ impl AgentMailboxItemType {
             Self::FindingInProgress => "finding_in_progress",
             Self::VerificationNote => "verification_note",
             Self::HandoffLiteSummary => "handoff_lite_summary",
+            Self::HistoryRewriteNotice => "history_rewrite_notice",
+            Self::UndoConflictNotice => "undo_conflict_notice",
+            Self::WorkspaceEpochAdvanced => "workspace_epoch_advanced",
+            Self::ReservationInvalidated => "reservation_invalidated",
         }
     }
 }
@@ -353,7 +361,9 @@ pub fn list_agent_mailbox_inbox(
     let limit = limit.clamp(1, MAX_MAILBOX_CONTEXT_ITEMS);
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
-    let actor = mailbox_actor_for_run(&connection, repo_root, project_id, run_id)?;
+    let Some(actor) = mailbox_actor_for_run(&connection, repo_root, project_id, run_id)? else {
+        return Ok(Vec::new());
+    };
     let mut statement = connection
         .prepare(
             r#"
@@ -445,7 +455,7 @@ pub fn acknowledge_agent_mailbox_item(
     let item = get_agent_mailbox_item(repo_root, project_id, item_id, acknowledged_at)?;
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
-    let actor = mailbox_actor_for_run(&connection, repo_root, project_id, run_id)?;
+    let actor = require_mailbox_actor_for_run(&connection, repo_root, project_id, run_id)?;
     connection
         .execute(
             r#"
@@ -496,7 +506,7 @@ pub fn resolve_agent_mailbox_item(
     )?;
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
-    mailbox_actor_for_run(
+    require_mailbox_actor_for_run(
         &connection,
         repo_root,
         &record.project_id,
@@ -858,7 +868,7 @@ fn mailbox_actor_for_run(
     repo_root: &Path,
     project_id: &str,
     run_id: &str,
-) -> CommandResult<AgentMailboxActor> {
+) -> CommandResult<Option<AgentMailboxActor>> {
     let database_path = database_path_for_repo(repo_root);
     connection
         .query_row(
@@ -888,9 +898,26 @@ fn mailbox_actor_for_run(
                 })
             },
         )
+        .optional()
         .map_err(|error| {
             map_mailbox_query_error(&database_path, "agent_mailbox_actor_read_failed", error)
         })
+}
+
+fn require_mailbox_actor_for_run(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> CommandResult<AgentMailboxActor> {
+    mailbox_actor_for_run(connection, repo_root, project_id, run_id)?.ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_mailbox_run_missing",
+            format!(
+                "Xero could not update mailbox state for missing run `{run_id}` in project `{project_id}`."
+            ),
+        )
+    })
 }
 
 fn read_agent_mailbox_item(
@@ -991,6 +1018,10 @@ fn parse_mailbox_item_type(value: &str) -> AgentMailboxItemType {
         "finding_in_progress" => AgentMailboxItemType::FindingInProgress,
         "verification_note" => AgentMailboxItemType::VerificationNote,
         "handoff_lite_summary" => AgentMailboxItemType::HandoffLiteSummary,
+        "history_rewrite_notice" => AgentMailboxItemType::HistoryRewriteNotice,
+        "undo_conflict_notice" => AgentMailboxItemType::UndoConflictNotice,
+        "workspace_epoch_advanced" => AgentMailboxItemType::WorkspaceEpochAdvanced,
+        "reservation_invalidated" => AgentMailboxItemType::ReservationInvalidated,
         _ => AgentMailboxItemType::HeadsUp,
     }
 }
@@ -1020,9 +1051,12 @@ fn project_record_kind_for_mailbox(item_type: AgentMailboxItemType) -> ProjectRe
         AgentMailboxItemType::VerificationNote => ProjectRecordKind::Verification,
         AgentMailboxItemType::HandoffLiteSummary => ProjectRecordKind::AgentHandoff,
         AgentMailboxItemType::FileOwnershipNote => ProjectRecordKind::ContextNote,
-        AgentMailboxItemType::HeadsUp | AgentMailboxItemType::Answer => {
-            ProjectRecordKind::ContextNote
-        }
+        AgentMailboxItemType::UndoConflictNotice => ProjectRecordKind::Diagnostic,
+        AgentMailboxItemType::HeadsUp
+        | AgentMailboxItemType::Answer
+        | AgentMailboxItemType::HistoryRewriteNotice
+        | AgentMailboxItemType::WorkspaceEpochAdvanced
+        | AgentMailboxItemType::ReservationInvalidated => ProjectRecordKind::ContextNote,
     }
 }
 
@@ -1391,6 +1425,47 @@ mod tests {
         )
         .expect("expired target inbox")
         .is_empty());
+    }
+
+    #[test]
+    fn mailbox_inbox_for_missing_run_is_empty_context() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-missing-run-context";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+
+        publish_agent_mailbox_item(
+            &repo_root,
+            &NewAgentMailboxItemRecord {
+                project_id: project_id.into(),
+                sender_run_id: "run-sender".into(),
+                item_type: AgentMailboxItemType::HeadsUp,
+                parent_item_id: None,
+                target_agent_session_id: None,
+                target_run_id: None,
+                target_role: None,
+                title: "Shared heads up".into(),
+                body: "This should not make missing run context fail.".into(),
+                related_paths: Vec::new(),
+                priority: AgentMailboxPriority::Normal,
+                created_at: "2026-05-03T00:00:00Z".into(),
+                ttl_seconds: Some(600),
+            },
+        )
+        .expect("publish mailbox item");
+
+        let inbox = list_agent_mailbox_inbox(
+            &repo_root,
+            project_id,
+            "run-not-persisted-yet",
+            "2026-05-03T00:00:30Z",
+            10,
+        )
+        .expect("missing run inbox context");
+
+        assert!(inbox.is_empty());
     }
 
     #[test]

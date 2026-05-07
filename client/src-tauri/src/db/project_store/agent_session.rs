@@ -610,6 +610,14 @@ pub fn delete_agent_session(
         )
     })?;
 
+    prepare_code_history_for_agent_session_delete(
+        &transaction,
+        &database_path,
+        project_id,
+        agent_session_id,
+        now.as_str(),
+    )?;
+
     transaction
         .execute(
             r#"
@@ -651,6 +659,192 @@ pub fn delete_agent_session(
     if !cascade_run_ids.is_empty() {
         clear_memory_runs_for_deletion(repo_root, project_id, &cascade_run_ids)?;
     }
+
+    Ok(())
+}
+
+fn prepare_code_history_for_agent_session_delete(
+    transaction: &Transaction<'_>,
+    database_path: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    updated_at: &str,
+) -> Result<(), CommandError> {
+    transaction
+        .execute(
+            r#"
+            UPDATE code_commits
+            SET parent_commit_id = NULL
+            WHERE project_id = ?1
+              AND parent_commit_id IN (
+                SELECT commit_id
+                FROM code_commits
+                WHERE project_id = ?1
+                  AND agent_session_id = ?2
+              )
+            "#,
+            params![project_id, agent_session_id],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not detach code commit parent links for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    transaction
+        .execute(
+            r#"
+            UPDATE code_workspace_heads
+            SET head_id = NULL,
+                tree_id = NULL,
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND head_id IN (
+                SELECT commit_id
+                FROM code_commits
+                WHERE project_id = ?1
+                  AND agent_session_id = ?2
+              )
+            "#,
+            params![project_id, agent_session_id, updated_at],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not clear code workspace head for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    transaction
+        .execute(
+            r#"
+            UPDATE code_path_epochs
+            SET commit_id = NULL,
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND commit_id IN (
+                SELECT commit_id
+                FROM code_commits
+                WHERE project_id = ?1
+                  AND agent_session_id = ?2
+              )
+            "#,
+            params![project_id, agent_session_id, updated_at],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not clear code path epochs for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    transaction
+        .execute(
+            r#"
+            UPDATE code_history_operations
+            SET result_commit_id = NULL,
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND result_commit_id IN (
+                SELECT commit_id
+                FROM code_commits
+                WHERE project_id = ?1
+                  AND agent_session_id = ?2
+              )
+            "#,
+            params![project_id, agent_session_id, updated_at],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not clear code history commit references for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    transaction
+        .execute(
+            r#"
+            UPDATE code_history_operations
+            SET target_change_group_id = CASE
+                    WHEN target_change_group_id IN (
+                        SELECT change_group_id
+                        FROM code_change_groups
+                        WHERE project_id = ?1
+                          AND agent_session_id = ?2
+                    )
+                    THEN NULL
+                    ELSE target_change_group_id
+                END,
+                result_change_group_id = CASE
+                    WHEN result_change_group_id IN (
+                        SELECT change_group_id
+                        FROM code_change_groups
+                        WHERE project_id = ?1
+                          AND agent_session_id = ?2
+                    )
+                    THEN NULL
+                    ELSE result_change_group_id
+                END,
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND (
+                target_change_group_id IN (
+                    SELECT change_group_id
+                    FROM code_change_groups
+                    WHERE project_id = ?1
+                      AND agent_session_id = ?2
+                )
+                OR result_change_group_id IN (
+                    SELECT change_group_id
+                    FROM code_change_groups
+                    WHERE project_id = ?1
+                      AND agent_session_id = ?2
+                )
+              )
+            "#,
+            params![project_id, agent_session_id, updated_at],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not clear code history change-group references for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    transaction
+        .execute(
+            r#"
+            DELETE FROM code_commits
+            WHERE project_id = ?1
+              AND agent_session_id = ?2
+            "#,
+            params![project_id, agent_session_id],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_persist_failed",
+                format!(
+                    "Xero could not delete code commits for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
 
     Ok(())
 }

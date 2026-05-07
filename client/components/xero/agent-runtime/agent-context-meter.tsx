@@ -104,15 +104,22 @@ export function AgentContextMeter({
   const ringTone = hideBaselineUsage ? 'stroke-primary/65 text-primary' : getRingTone(budget, status)
   const fillOffset = RING_CIRCUMFERENCE * (1 - pressure / 100)
   const errorMessage = status === 'error' && !snapshot ? getErrorMessage(error) : null
-  const rollbackContributorCount =
-    snapshot?.contributors.filter((contributor) => contributor.kind === 'code_rollback').length ?? 0
-  const rollbackContext =
-    rollbackContributorCount > 0
-      ? `Code rollback is in context; current files are authoritative and history stayed visible.`
+  const undoContributorCount =
+    snapshot?.contributors?.filter((contributor) =>
+      [
+        'code_rollback',
+        'code_history_operation',
+        'code_history_notice',
+        'code_history_mailbox_notice',
+      ].includes(contributor.kind),
+    ).length ?? 0
+  const undoContext =
+    undoContributorCount > 0
+      ? `Code undo is in context; current files are authoritative and history stayed visible.`
       : null
   const tooltip =
     errorMessage ??
-    rollbackContext ??
+    undoContext ??
     (remainingPercent != null ? `${remainingPercent}% remaining` : label)
   const ariaValueText = knownBudget
     ? `${remainingPercent} percent context remaining for ${snapshot?.modelId ?? 'the selected model'}`

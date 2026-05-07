@@ -1877,7 +1877,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     ) => upsertNotificationRoute(request),
     [upsertNotificationRoute],
   )
-  const handleAgentCodeRollbackApplied = useCallback(() => retry(), [retry])
+  const handleAgentCodeUndoApplied = useCallback(() => retry(), [retry])
   const handleStartWorkflowRun = useCallback(() => startRuntimeRun(), [startRuntimeRun])
   const handleCreateWorkflow = useCallback(() => {
     if (!workflowsOpen) {
@@ -2146,7 +2146,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onStopRuntimeRun={handleAgentStopRuntimeRun}
                 onSubmitManualCallback={handleAgentSubmitManualCallback}
                 onUpsertNotificationRoute={handleAgentUpsertNotificationRoute}
-                onCodeRollbackApplied={handleAgentCodeRollbackApplied}
+                onCodeUndoApplied={handleAgentCodeUndoApplied}
               />
             </LazyActivityPane>
           ) : null}
@@ -2542,7 +2542,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 }
                 onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
                 onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
-                onCodeRollbackApplied={handleAgentCodeRollbackApplied}
+                onCodeUndoApplied={handleAgentCodeUndoApplied}
                 onRetryStream={retry}
               />
             </Suspense>

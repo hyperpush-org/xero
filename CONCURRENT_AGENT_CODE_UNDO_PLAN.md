@@ -350,7 +350,7 @@ Goal: all durable projections understand undo without teaching agents false fact
   - Prevent memory extraction from promoting rolled-back implementation details as durable facts unless the undo operation provenance is included.
   - Acceptance: tests show reverted code facts are rejected, scoped, or explicitly marked as historical.
 
-- [ ] **S32: Update User And Support Docs** `risk:low` `depends:[S29,S31]`
+- [x] **S32: Update User And Support Docs** `risk:low` `depends:[S29,S31]`
   - Update session memory/context documentation to distinguish conversation rewind, selective undo, and session rollback.
   - Acceptance: docs explain that code undo preserves unrelated current work and that external side effects are out of scope.
 
@@ -358,19 +358,19 @@ Goal: all durable projections understand undo without teaching agents false fact
 
 Goal: remove snapshot-restore behavior and harden performance, retention, and edge cases.
 
-- [ ] **S33: Remove User-Reachable Hard Snapshot Apply** `risk:medium` `depends:[S12,S29]`
+- [x] **S33: Remove User-Reachable Hard Snapshot Apply** `risk:medium` `depends:[S12,S29]`
   - Delete or privatize code paths that apply a whole old snapshot to the project as a user rollback action.
   - Acceptance: no public Tauri command or frontend method can trigger destructive whole-project restore by selecting an old change group.
 
-- [ ] **S34: Storage Retention For Patch History** `risk:medium` `depends:[S03,S17]`
+- [x] **S34: Storage Retention For Patch History** `risk:medium` `depends:[S03,S17]`
   - Update blob/tree pruning so no blob reachable from commits, patchsets, undo operations, or conflict diagnostics is deleted.
   - Acceptance: retention tests keep reachable before/after blobs and prune only unreachable old blobs.
 
-- [ ] **S35: Performance Budget For Large Repos** `risk:medium` `depends:[S05,S16]`
+- [x] **S35: Performance Budget For Large Repos** `risk:medium` `depends:[S05,S16]`
   - Add bounded scanning, diff limits, and payload budget behavior for broad patch capture and session rollback planning.
   - Acceptance: large synthetic tree tests avoid unbounded payloads and preserve exact explicit edits even under skip rules.
 
-- [ ] **S36: End-To-End Multi-Agent Harness** `risk:high` `depends:[S23,S28,S31]`
+- [x] **S36: End-To-End Multi-Agent Harness** `risk:high` `depends:[S23,S28,S31]`
   - Add a Tauri/Rust integration scenario with two active sessions editing adjacent and overlapping paths, then selective undo and session rollback.
   - Acceptance: adjacent changes are preserved, overlapping changes conflict, mailbox notices are delivered, stale writes are blocked, and acknowledgements allow continued work.
 

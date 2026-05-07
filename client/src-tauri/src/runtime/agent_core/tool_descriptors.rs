@@ -3087,7 +3087,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_AGENT_COORDINATION,
-            "Read and manage Xero's temporary active-agent coordination bus and swarm mailbox. Use it to inspect active sibling runs, check advisory file-reservation conflicts, claim/release reservations, publish/read/ack/reply/resolve temporary mailbox items, promote an item to a durable-context review candidate, and explain recent same-project activity. This is TTL-scoped app-data runtime state, not durable project memory.",
+            "Read and manage Xero's temporary active-agent coordination bus and swarm mailbox. Use it to inspect active sibling runs, check advisory file-reservation conflicts, claim/release reservations, publish/read/ack/reply/resolve temporary mailbox items, promote an item to a durable-context review candidate, and explain recent same-project activity. Acknowledging code-history notices refreshes this run's observed code workspace epoch; re-read affected files first, then claim reservations again to renew stale leases. This is TTL-scoped app-data runtime state, not durable project memory.",
             object_schema(
                 &["action"],
                 &[
@@ -3171,7 +3171,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "itemId",
-                        string_schema("Mailbox item id to acknowledge, reply to, resolve, or promote."),
+                        string_schema("Mailbox item id to acknowledge, reply to, resolve, or promote. Acknowledging a code-history notice records the current code workspace epoch for stale-write preflight."),
                     ),
                     (
                         "targetAgentSessionId",

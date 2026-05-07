@@ -41,6 +41,7 @@ pub(crate) fn drive_provider_loop(
         let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
         let agent_definition_snapshot =
             load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
+        workspace_guard.record_current_code_workspace_epoch(repo_root, project_id)?;
         let turn_context_package = assemble_provider_context_package(
             ProviderContextPackageInput {
                 repo_root,
@@ -2439,6 +2440,8 @@ fn compact_agent_coordination_output(output: &JsonValue) -> JsonValue {
             "action",
             "message",
             "mailboxItem",
+            "codeWorkspaceEpoch",
+            "refreshedPaths",
             "promotedRecordId",
             "overrideRecorded",
         ],

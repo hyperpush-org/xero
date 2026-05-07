@@ -15,6 +15,7 @@ export const codeHistoryOperationStatusSchema = z.enum([
   'applying',
   'completed',
   'failed',
+  'repair_needed',
 ])
 export const codeHistoryTargetKindSchema = z.enum([
   'change_group',
@@ -33,6 +34,19 @@ export const codeHistoryConflictKindSchema = z.enum([
   'stale_workspace',
   'storage_error',
 ])
+
+export const codePatchTextHunkSchema = z
+  .object({
+    hunkId: nonEmptyTextSchema,
+    patchFileId: nonEmptyOptionalTextSchema,
+    filePath: historyPathSchema,
+    hunkIndex: z.number().int().nonnegative(),
+    baseStartLine: z.number().int().nonnegative(),
+    baseLineCount: z.number().int().nonnegative(),
+    resultStartLine: z.number().int().nonnegative(),
+    resultLineCount: z.number().int().nonnegative(),
+  })
+  .strict()
 
 export const codeWorkspaceHeadSchema = z
   .object({
@@ -53,6 +67,7 @@ export const codePatchAvailabilitySchema = z
     affectedPaths: z.array(historyPathSchema),
     fileChangeCount: z.number().int().nonnegative(),
     textHunkCount: z.number().int().nonnegative(),
+    textHunks: z.array(codePatchTextHunkSchema).default([]),
     unavailableReason: nonEmptyOptionalTextSchema,
   })
   .strict()
@@ -120,7 +135,7 @@ export const selectiveUndoTargetSchema = z
     }
   })
 
-export const sessionRollbackTargetSchema = z
+export const returnSessionToHereTargetSchema = z
   .object({
     targetKind: codeHistoryTargetKindSchema,
     targetId: nonEmptyTextSchema,
@@ -138,7 +153,7 @@ export const sessionRollbackTargetSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['targetKind'],
-        message: 'Session rollback targets must select a session or run boundary.',
+        message: 'Return session to here targets must select a session or run boundary.',
       })
     }
 
@@ -146,17 +161,29 @@ export const sessionRollbackTargetSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['runId'],
-        message: 'Run-boundary rollback targets must include a runId.',
+        message: 'Run-boundary return session to here targets must include a runId.',
       })
     }
   })
+
+export const sessionRollbackTargetSchema = returnSessionToHereTargetSchema
 
 export const codeHistoryOperationTargetSchema = z
   .object({
     targetKind: codeHistoryTargetKindSchema,
     targetId: nonEmptyTextSchema,
+    hunkIds: z.array(nonEmptyTextSchema).default([]),
   })
   .strict()
+  .superRefine((target, ctx) => {
+    if (target.targetKind === 'hunks' && target.hunkIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['hunkIds'],
+        message: 'Hunk operation targets must record selected hunk ids.',
+      })
+    }
+  })
 
 export const codeHistoryConflictSchema = z
   .object({
@@ -249,16 +276,18 @@ export const selectiveUndoResponseSchema = z
     }
   })
 
-export const sessionRollbackRequestSchema = z
+export const returnSessionToHereRequestSchema = z
   .object({
     projectId: nonEmptyTextSchema,
     operationId: nonEmptyTextSchema,
-    target: sessionRollbackTargetSchema,
+    target: returnSessionToHereTargetSchema,
     expectedWorkspaceEpoch: z.number().int().nonnegative().nullable().optional(),
   })
   .strict()
 
-export const sessionRollbackResponseSchema = z
+export const sessionRollbackRequestSchema = returnSessionToHereRequestSchema
+
+export const returnSessionToHereResponseSchema = z
   .object({
     operation: codeHistoryOperationSchema,
   })
@@ -268,10 +297,12 @@ export const sessionRollbackResponseSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['operation', 'mode'],
-        message: 'Session rollback responses must carry a session_rollback operation.',
+        message: 'Return session to here responses must carry a session_rollback operation.',
       })
     }
   })
+
+export const sessionRollbackResponseSchema = returnSessionToHereResponseSchema
 
 export const codeHistoryOperationStatusRequestSchema = z
   .object({
@@ -292,13 +323,17 @@ export type CodeHistoryTargetKindDto = z.infer<typeof codeHistoryTargetKindSchem
 export type CodeHistoryConflictKindDto = z.infer<typeof codeHistoryConflictKindSchema>
 export type CodeWorkspaceHeadDto = z.infer<typeof codeWorkspaceHeadSchema>
 export type CodePatchAvailabilityDto = z.infer<typeof codePatchAvailabilitySchema>
+export type CodePatchTextHunkDto = z.infer<typeof codePatchTextHunkSchema>
 export type SelectiveUndoTargetDto = z.infer<typeof selectiveUndoTargetSchema>
+export type ReturnSessionToHereTargetDto = z.infer<typeof returnSessionToHereTargetSchema>
 export type SessionRollbackTargetDto = z.infer<typeof sessionRollbackTargetSchema>
 export type CodeHistoryOperationTargetDto = z.infer<typeof codeHistoryOperationTargetSchema>
 export type CodeHistoryConflictDto = z.infer<typeof codeHistoryConflictSchema>
 export type CodeHistoryOperationDto = z.infer<typeof codeHistoryOperationSchema>
 export type SelectiveUndoRequestDto = z.infer<typeof selectiveUndoRequestSchema>
 export type SelectiveUndoResponseDto = z.infer<typeof selectiveUndoResponseSchema>
+export type ReturnSessionToHereRequestDto = z.infer<typeof returnSessionToHereRequestSchema>
+export type ReturnSessionToHereResponseDto = z.infer<typeof returnSessionToHereResponseSchema>
 export type SessionRollbackRequestDto = z.infer<typeof sessionRollbackRequestSchema>
 export type SessionRollbackResponseDto = z.infer<typeof sessionRollbackResponseSchema>
 export type CodeHistoryOperationStatusRequestDto = z.infer<typeof codeHistoryOperationStatusRequestSchema>

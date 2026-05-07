@@ -85,6 +85,10 @@ pub struct AutonomousAgentCoordinationOutput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mailbox_item: Option<project_store::AgentMailboxItemRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_workspace_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refreshed_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_record_id: Option<String>,
     pub override_recorded: bool,
 }
@@ -134,27 +138,52 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
             }
             AutonomousAgentCoordinationAction::ListReservations => {
-                let reservations = project_store::list_active_agent_file_reservations(
+                let mut reservations = project_store::list_active_agent_file_reservations(
                     self.repo_root(),
                     &run_context.project_id,
                     Some(&run_context.run_id),
                     &now,
                     request.limit.unwrap_or(50),
                 )?;
+                let invalidated_owned = project_store::list_agent_file_reservations_for_run(
+                    self.repo_root(),
+                    &run_context.project_id,
+                    &run_context.run_id,
+                    &now,
+                    request.limit.unwrap_or(50),
+                )?
+                .into_iter()
+                .filter(|reservation| {
+                    reservation.invalidated_at.is_some() && reservation.released_at.is_none()
+                })
+                .collect::<Vec<_>>();
+                let invalidated_count = invalidated_owned.len();
+                reservations.extend(invalidated_owned);
                 Ok(AutonomousAgentCoordinationOutput {
                     action: request.action,
-                    message: format!("Found {} active file reservation(s).", reservations.len()),
+                    message: if invalidated_count == 0 {
+                        format!("Found {} active file reservation(s).", reservations.len())
+                    } else {
+                        format!(
+                            "Found {} file reservation(s), including {invalidated_count} invalidated reservation(s) owned by this run.",
+                            reservations.len()
+                        )
+                    },
                     active_agents: Vec::new(),
                     reservations,
                     conflicts: Vec::new(),
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -177,6 +206,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -215,6 +246,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: claim.override_recorded,
                 })
@@ -243,6 +276,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -269,6 +304,8 @@ impl AutonomousToolRuntime {
                     events: context.events,
                     mailbox: context.mailbox,
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -305,6 +342,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -326,6 +365,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox,
                     mailbox_item: None,
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -339,15 +380,34 @@ impl AutonomousToolRuntime {
                     &item_id,
                     &now,
                 )?;
+                let history_refresh = history_notice_acknowledgement_refresh(
+                    self.repo_root(),
+                    &run_context.project_id,
+                    &item,
+                )?;
                 Ok(AutonomousAgentCoordinationOutput {
                     action: request.action,
-                    message: format!("Acknowledged mailbox item `{}`.", item.item_id),
+                    message: history_refresh
+                        .as_ref()
+                        .map(|refresh| {
+                            format!(
+                                "Acknowledged history mailbox item `{}` and refreshed observed code workspace epoch {}.",
+                                item.item_id, refresh.code_workspace_epoch
+                            )
+                        })
+                        .unwrap_or_else(|| format!("Acknowledged mailbox item `{}`.", item.item_id)),
                     active_agents: Vec::new(),
                     reservations: Vec::new(),
                     conflicts: Vec::new(),
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    code_workspace_epoch: history_refresh
+                        .as_ref()
+                        .map(|refresh| refresh.code_workspace_epoch),
+                    refreshed_paths: history_refresh
+                        .map(|refresh| refresh.refreshed_paths)
+                        .unwrap_or_default(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -380,6 +440,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -408,6 +470,8 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(item),
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: None,
                     override_recorded: false,
                 })
@@ -436,12 +500,47 @@ impl AutonomousToolRuntime {
                     events: Vec::new(),
                     mailbox: Vec::new(),
                     mailbox_item: Some(promotion.item),
+                    code_workspace_epoch: None,
+                    refreshed_paths: Vec::new(),
                     promoted_record_id: Some(promotion.promoted_record_id),
                     override_recorded: false,
                 })
             }
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HistoryNoticeAcknowledgementRefresh {
+    code_workspace_epoch: u64,
+    refreshed_paths: Vec<String>,
+}
+
+fn history_notice_acknowledgement_refresh(
+    repo_root: &std::path::Path,
+    project_id: &str,
+    item: &project_store::AgentMailboxItemRecord,
+) -> CommandResult<Option<HistoryNoticeAcknowledgementRefresh>> {
+    if !is_code_history_mailbox_item_type(item.item_type) {
+        return Ok(None);
+    }
+    let code_workspace_epoch = project_store::read_code_workspace_head(repo_root, project_id)?
+        .map(|head| head.workspace_epoch)
+        .unwrap_or(0);
+    Ok(Some(HistoryNoticeAcknowledgementRefresh {
+        code_workspace_epoch,
+        refreshed_paths: item.related_paths.clone(),
+    }))
+}
+
+fn is_code_history_mailbox_item_type(item_type: project_store::AgentMailboxItemType) -> bool {
+    matches!(
+        item_type,
+        project_store::AgentMailboxItemType::HistoryRewriteNotice
+            | project_store::AgentMailboxItemType::UndoConflictNotice
+            | project_store::AgentMailboxItemType::WorkspaceEpochAdvanced
+            | project_store::AgentMailboxItemType::ReservationInvalidated
+    )
 }
 
 fn coordination_paths_from_request(

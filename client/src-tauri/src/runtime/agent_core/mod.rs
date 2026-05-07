@@ -12,6 +12,7 @@ mod events;
 mod facade;
 mod harness_contract;
 mod harness_order;
+mod memory_guardrails;
 mod provider_adapters;
 mod supervisor;
 
@@ -60,6 +61,7 @@ pub use types::*;
 pub(crate) use context_package::*;
 pub(crate) use environment_lifecycle::*;
 pub(crate) use harness_order::*;
+pub(crate) use memory_guardrails::*;
 pub(crate) use persistence::*;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;

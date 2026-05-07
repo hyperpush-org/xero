@@ -194,6 +194,107 @@ describe('XeroDesktopAdapter dictation', () => {
   })
 })
 
+describe('XeroDesktopAdapter code history', () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset()
+    mocks.isTauri.mockReturnValue(true)
+    mocks.listen.mockReset()
+    mocks.channels.length = 0
+  })
+
+  it('invokes selective undo and return session to here through the new frontend contract names', async () => {
+    const { XeroDesktopAdapter } = await import('./xero-desktop')
+
+    mocks.invoke.mockResolvedValueOnce({
+      operation: makeCodeHistoryOperation({
+        operationId: 'code-undo-1',
+        mode: 'selective_undo',
+      }),
+    })
+
+    await expect(
+      XeroDesktopAdapter.applySelectiveUndo({
+        projectId: 'project-1',
+        operationId: 'code-undo-1',
+        target: {
+          targetKind: 'change_group',
+          targetId: 'code-change-1',
+          changeGroupId: 'code-change-1',
+          hunkIds: [],
+        },
+        expectedWorkspaceEpoch: 7,
+      }),
+    ).resolves.toMatchObject({
+      operation: {
+        mode: 'selective_undo',
+        status: 'completed',
+      },
+    })
+
+    expect(mocks.invoke).toHaveBeenLastCalledWith('apply_selective_undo', {
+      request: {
+        projectId: 'project-1',
+        operationId: 'code-undo-1',
+        target: {
+          targetKind: 'change_group',
+          targetId: 'code-change-1',
+          changeGroupId: 'code-change-1',
+          hunkIds: [],
+        },
+        expectedWorkspaceEpoch: 7,
+      },
+    })
+
+    mocks.invoke.mockResolvedValueOnce({
+      operation: makeCodeHistoryOperation({
+        operationId: 'return-session-1',
+        mode: 'session_rollback',
+        target: {
+          targetKind: 'run_boundary',
+          targetId: 'run-1:boundary-1',
+        },
+      }),
+    })
+
+    await expect(
+      XeroDesktopAdapter.returnSessionToHere({
+        projectId: 'project-1',
+        operationId: 'return-session-1',
+        target: {
+          targetKind: 'run_boundary',
+          targetId: 'run-1:boundary-1',
+          agentSessionId: 'agent-session-1',
+          boundaryId: 'boundary-1',
+          runId: 'run-1',
+          changeGroupId: 'code-change-1',
+        },
+        expectedWorkspaceEpoch: 8,
+      }),
+    ).resolves.toMatchObject({
+      operation: {
+        mode: 'session_rollback',
+      },
+    })
+
+    expect(mocks.invoke).toHaveBeenLastCalledWith('apply_session_rollback', {
+      request: {
+        projectId: 'project-1',
+        operationId: 'return-session-1',
+        target: {
+          targetKind: 'run_boundary',
+          targetId: 'run-1:boundary-1',
+          agentSessionId: 'agent-session-1',
+          boundaryId: 'boundary-1',
+          runId: 'run-1',
+          changeGroupId: 'code-change-1',
+        },
+        expectedWorkspaceEpoch: 8,
+      },
+    })
+    expect('applyCodeRollback' in XeroDesktopAdapter).toBe(false)
+  })
+})
+
 describe('XeroDesktopAdapter event listeners', () => {
   beforeEach(() => {
     mocks.invoke.mockReset()
@@ -219,6 +320,27 @@ describe('XeroDesktopAdapter event listeners', () => {
     expect(rawUnlisten).toHaveBeenCalledTimes(1)
   })
 })
+
+function makeCodeHistoryOperation(overrides: Record<string, unknown> = {}) {
+  return {
+    projectId: 'project-1',
+    operationId: 'code-undo-1',
+    mode: 'selective_undo',
+    status: 'completed',
+    target: {
+      targetKind: 'change_group',
+      targetId: 'code-change-1',
+      hunkIds: [],
+    },
+    affectedPaths: ['src/app.ts'],
+    conflicts: [],
+    resultCommitId: 'code-commit-undo-1',
+    resultChangeGroupId: 'code-change-undo-1',
+    createdAt: '2026-05-06T12:00:00Z',
+    updatedAt: '2026-05-06T12:00:01Z',
+    ...overrides,
+  }
+}
 
 function makeRuntimeStreamItem(sequence: number, text: string) {
   return {

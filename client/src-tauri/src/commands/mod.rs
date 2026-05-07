@@ -95,7 +95,7 @@ pub use browser::{
     BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
-pub use code_rollback::apply_code_rollback;
+pub use code_rollback::{apply_selective_undo, apply_session_rollback};
 pub use complete_oauth_callback::complete_oauth_callback;
 pub use create_repository::create_repository;
 pub use development_storage::{developer_storage_overview, developer_storage_read_table};

@@ -31,7 +31,8 @@ pub const GET_AUTONOMOUS_RUN_COMMAND: &str = "get_autonomous_run";
 pub const GET_PROJECT_SNAPSHOT_COMMAND: &str = "get_project_snapshot";
 pub const GET_REPOSITORY_STATUS_COMMAND: &str = "get_repository_status";
 pub const GET_REPOSITORY_DIFF_COMMAND: &str = "get_repository_diff";
-pub const APPLY_CODE_ROLLBACK_COMMAND: &str = "apply_code_rollback";
+pub const APPLY_SELECTIVE_UNDO_COMMAND: &str = "apply_selective_undo";
+pub const APPLY_SESSION_ROLLBACK_COMMAND: &str = "apply_session_rollback";
 pub const GIT_GENERATE_COMMIT_MESSAGE_COMMAND: &str = "git_generate_commit_message";
 pub const WORKSPACE_INDEX_COMMAND: &str = "workspace_index";
 pub const WORKSPACE_STATUS_COMMAND: &str = "workspace_status";
@@ -113,7 +114,8 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     GET_PROJECT_SNAPSHOT_COMMAND,
     GET_REPOSITORY_STATUS_COMMAND,
     GET_REPOSITORY_DIFF_COMMAND,
-    APPLY_CODE_ROLLBACK_COMMAND,
+    APPLY_SELECTIVE_UNDO_COMMAND,
+    APPLY_SESSION_ROLLBACK_COMMAND,
     WORKSPACE_INDEX_COMMAND,
     WORKSPACE_STATUS_COMMAND,
     WORKSPACE_QUERY_COMMAND,
@@ -250,41 +252,6 @@ pub struct ListProjectFilesRequestDto {
 pub struct RepositoryDiffRequestDto {
     pub project_id: String,
     pub scope: RepositoryDiffScope,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApplyCodeRollbackRequestDto {
-    pub project_id: String,
-    pub target_change_group_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CodeRollbackAffectedFileDto {
-    pub path_before: Option<String>,
-    pub path_after: Option<String>,
-    pub operation: String,
-    pub before_hash: Option<String>,
-    pub after_hash: Option<String>,
-    pub explicitly_edited: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ApplyCodeRollbackResponseDto {
-    pub project_id: String,
-    pub agent_session_id: String,
-    pub run_id: String,
-    pub operation_id: String,
-    pub target_change_group_id: String,
-    pub target_snapshot_id: String,
-    pub pre_rollback_snapshot_id: String,
-    pub result_change_group_id: String,
-    pub restored_paths: Vec<String>,
-    pub removed_paths: Vec<String>,
-    pub affected_files: Vec<CodeRollbackAffectedFileDto>,
-    pub repository_status: RepositoryStatusResponseDto,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

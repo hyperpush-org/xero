@@ -80,7 +80,7 @@ export interface AgentDockSidebarProps {
   onRefreshNotificationRoutes?: AgentRuntimeProps["onRefreshNotificationRoutes"]
   onUpsertNotificationRoute?: AgentRuntimeProps["onUpsertNotificationRoute"]
   onRetryStream?: AgentRuntimeProps["onRetryStream"]
-  onCodeRollbackApplied?: AgentRuntimeProps["onCodeRollbackApplied"]
+  onCodeUndoApplied?: AgentRuntimeProps["onCodeUndoApplied"]
 }
 
 export function AgentDockSidebar({

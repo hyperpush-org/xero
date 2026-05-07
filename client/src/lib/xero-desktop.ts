@@ -130,12 +130,20 @@ import {
   type ResumeOperatorRunResponseDto,
 } from '@/src/lib/xero-model/operator-actions'
 import {
+  returnSessionToHereRequestSchema,
+  returnSessionToHereResponseSchema,
+  selectiveUndoRequestSchema,
+  selectiveUndoResponseSchema,
+  type ReturnSessionToHereRequestDto,
+  type ReturnSessionToHereResponseDto,
+  type SelectiveUndoRequestDto,
+  type SelectiveUndoResponseDto,
+} from '@/src/lib/xero-model/code-history'
+import {
+  importRepositoryResponseSchema,
   createProjectEntryRequestSchema,
   createProjectEntryResponseSchema,
   deleteProjectEntryResponseSchema,
-  applyCodeRollbackRequestSchema,
-  applyCodeRollbackResponseSchema,
-  importRepositoryResponseSchema,
   listProjectFilesRequestSchema,
   listProjectFilesResponseSchema,
   listProjectsResponseSchema,
@@ -172,7 +180,6 @@ import {
   gitPullResponseSchema,
   gitPushResponseSchema,
   gitRemoteRequestSchema,
-  type ApplyCodeRollbackResponseDto,
   type CreateProjectEntryRequestDto,
   type CreateProjectEntryResponseDto,
   type DeleteProjectEntryResponseDto,
@@ -397,7 +404,8 @@ const COMMANDS = {
   getProjectUsageSummary: 'get_project_usage_summary',
   getRepositoryStatus: 'get_repository_status',
   getRepositoryDiff: 'get_repository_diff',
-  applyCodeRollback: 'apply_code_rollback',
+  applySelectiveUndo: 'apply_selective_undo',
+  returnSessionToHere: 'apply_session_rollback',
   gitStagePaths: 'git_stage_paths',
   gitUnstagePaths: 'git_unstage_paths',
   gitDiscardChanges: 'git_discard_changes',
@@ -721,7 +729,8 @@ export interface XeroDesktopAdapter {
   getProjectUsageSummary(projectId: string): Promise<ProjectUsageSummaryDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
-  applyCodeRollback(projectId: string, targetChangeGroupId: string): Promise<ApplyCodeRollbackResponseDto>
+  applySelectiveUndo(request: SelectiveUndoRequestDto): Promise<SelectiveUndoResponseDto>
+  returnSessionToHere(request: ReturnSessionToHereRequestDto): Promise<ReturnSessionToHereResponseDto>
   gitStagePaths(projectId: string, paths: string[]): Promise<void>
   gitUnstagePaths(projectId: string, paths: string[]): Promise<void>
   gitDiscardChanges(projectId: string, paths: string[]): Promise<void>
@@ -1577,9 +1586,14 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
-  applyCodeRollback(projectId, targetChangeGroupId) {
-    const request = applyCodeRollbackRequestSchema.parse({ projectId, targetChangeGroupId })
-    return invokeTyped(COMMANDS.applyCodeRollback, applyCodeRollbackResponseSchema, { request })
+  applySelectiveUndo(request) {
+    const parsedRequest = selectiveUndoRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.applySelectiveUndo, selectiveUndoResponseSchema, { request: parsedRequest })
+  },
+
+  returnSessionToHere(request) {
+    const parsedRequest = returnSessionToHereRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.returnSessionToHere, returnSessionToHereResponseSchema, { request: parsedRequest })
   },
 
   async gitStagePaths(projectId, paths) {

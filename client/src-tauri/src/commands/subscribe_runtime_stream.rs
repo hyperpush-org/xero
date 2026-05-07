@@ -13,14 +13,14 @@ use tauri::{
 use crate::{
     commands::{
         validate_non_empty, BrowserComputerUseActionStatusDto, BrowserComputerUseSurfaceDto,
-        BrowserComputerUseToolResultSummaryDto, CommandError, CommandResult,
-        CommandToolResultSummaryDto, FileToolResultSummaryDto, GitToolResultScopeDto,
-        GitToolResultSummaryDto, McpCapabilityKindDto, McpCapabilityToolResultSummaryDto,
-        RuntimeActionAnswerShape, RuntimeActionRequiredOptionDto, RuntimeStreamItemDto,
-        RuntimeStreamItemKind, RuntimeStreamPlanItemDto, RuntimeStreamPlanItemStatus,
-        RuntimeStreamTranscriptRole, RuntimeToolCallState, SubscribeRuntimeStreamRequestDto,
-        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto, WebToolResultContentKindDto,
-        WebToolResultSummaryDto,
+        BrowserComputerUseToolResultSummaryDto, CodePatchAvailabilityDto, CommandError,
+        CommandResult, CommandToolResultSummaryDto, FileToolResultSummaryDto,
+        GitToolResultScopeDto, GitToolResultSummaryDto, McpCapabilityKindDto,
+        McpCapabilityToolResultSummaryDto, RuntimeActionAnswerShape,
+        RuntimeActionRequiredOptionDto, RuntimeStreamItemDto, RuntimeStreamItemKind,
+        RuntimeStreamPlanItemDto, RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole,
+        RuntimeToolCallState, SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
+        ToolResultSummaryDto, WebToolResultContentKindDto, WebToolResultSummaryDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
@@ -268,6 +268,7 @@ fn owned_agent_event_runtime_item(
 ) -> Option<RuntimeStreamItemDto> {
     let event_id = event.id;
     let event_kind = event.event_kind.clone();
+    let project_id = event.project_id.clone();
     let payload = serde_json::from_str::<serde_json::Value>(&event.payload_json).unwrap_or_else(
         |error| {
             serde_json::json!({
@@ -289,6 +290,9 @@ fn owned_agent_event_runtime_item(
         tool_name: None,
         tool_state: None,
         code_change_group_id: None,
+        code_commit_id: None,
+        code_workspace_epoch: None,
+        code_patch_availability: None,
         tool_summary: None,
         tool_result_preview: None,
         skill_id: None,
@@ -314,6 +318,13 @@ fn owned_agent_event_runtime_item(
         created_at: event.created_at,
     };
     item.code_change_group_id = code_change_group_id_from_payload(&payload);
+    item.code_commit_id = code_commit_id_from_payload(&payload);
+    item.code_workspace_epoch = code_workspace_epoch_from_payload(&payload);
+    item.code_patch_availability = code_patch_availability_from_payload(
+        &payload,
+        &project_id,
+        item.code_change_group_id.as_deref(),
+    );
 
     match event_kind {
         AgentRunEventKind::RunStarted => {
@@ -1442,14 +1453,142 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> Option<String> {
 }
 
 fn code_change_group_id_from_payload(payload: &serde_json::Value) -> Option<String> {
-    payload_string(payload, "codeChangeGroupId").or_else(|| {
+    code_history_payload_string(payload, "codeChangeGroupId", "xero.code_change_group_id")
+}
+
+fn code_commit_id_from_payload(payload: &serde_json::Value) -> Option<String> {
+    code_history_payload_string(payload, "codeCommitId", "xero.code_commit_id")
+}
+
+fn code_workspace_epoch_from_payload(payload: &serde_json::Value) -> Option<u64> {
+    payload
+        .get("codeWorkspaceEpoch")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            code_history_payload_string(payload, "codeWorkspaceEpoch", "xero.code_workspace_epoch")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+}
+
+fn code_patch_availability_from_payload(
+    payload: &serde_json::Value,
+    project_id: &str,
+    change_group_id: Option<&str>,
+) -> Option<CodePatchAvailabilityDto> {
+    if let Some(value) = payload.get("codePatchAvailability") {
+        if let Ok(availability) = serde_json::from_value::<CodePatchAvailabilityDto>(value.clone())
+        {
+            return Some(availability);
+        }
+    }
+
+    let available =
+        code_history_payload_bool(payload, "codePatchAvailable", "xero.code_patch_available")?;
+    let target_change_group_id = change_group_id?.to_string();
+    let affected_paths = code_patch_affected_paths_from_payload(payload);
+    let file_change_count = code_history_payload_u32(
+        payload,
+        "codePatchFileChangeCount",
+        "xero.code_patch_file_change_count",
+    )
+    .unwrap_or_else(|| affected_paths.len().try_into().unwrap_or(u32::MAX));
+    let text_hunk_count = code_history_payload_u32(
+        payload,
+        "codePatchTextHunkCount",
+        "xero.code_patch_text_hunk_count",
+    )
+    .unwrap_or(0);
+    let unavailable_reason = code_history_payload_string(
+        payload,
+        "codePatchUnavailableReason",
+        "xero.code_patch_unavailable_reason",
+    );
+
+    Some(CodePatchAvailabilityDto {
+        project_id: project_id.to_string(),
+        target_change_group_id,
+        available,
+        affected_paths,
+        file_change_count,
+        text_hunk_count,
+        text_hunks: Vec::new(),
+        unavailable_reason,
+    })
+}
+
+fn code_patch_affected_paths_from_payload(payload: &serde_json::Value) -> Vec<String> {
+    if let Some(paths) = payload
+        .get("codePatchAffectedPaths")
+        .and_then(serde_json::Value::as_array)
+    {
+        return paths
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+    }
+    code_history_payload_string(
+        payload,
+        "codePatchAffectedPaths",
+        "xero.code_patch_affected_paths",
+    )
+    .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+    .unwrap_or_default()
+    .into_iter()
+    .map(|path| path.trim().to_string())
+    .filter(|path| !path.is_empty())
+    .collect()
+}
+
+fn code_history_payload_string(
+    payload: &serde_json::Value,
+    direct_key: &str,
+    telemetry_key: &str,
+) -> Option<String> {
+    payload_string(payload, direct_key).or_else(|| {
         payload
-            .pointer("/dispatch/telemetry/xero.code_change_group_id")
+            .pointer(&format!("/dispatch/telemetry/{telemetry_key}"))
             .and_then(|value| value.as_str())
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
     })
+}
+
+fn code_history_payload_bool(
+    payload: &serde_json::Value,
+    direct_key: &str,
+    telemetry_key: &str,
+) -> Option<bool> {
+    payload
+        .get(direct_key)
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| {
+            code_history_payload_string(payload, direct_key, telemetry_key).and_then(|value| {
+                match value.as_str() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                }
+            })
+        })
+}
+
+fn code_history_payload_u32(
+    payload: &serde_json::Value,
+    direct_key: &str,
+    telemetry_key: &str,
+) -> Option<u32> {
+    payload
+        .get(direct_key)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| {
+            code_history_payload_string(payload, direct_key, telemetry_key)
+                .and_then(|value| value.parse::<u32>().ok())
+        })
 }
 
 fn payload_verbatim_string(payload: &serde_json::Value, key: &str) -> Option<String> {
@@ -1638,6 +1777,29 @@ mod tests {
         assert_eq!(tool.tool_state, Some(RuntimeToolCallState::Failed));
         assert_eq!(tool.code.as_deref(), Some("tool_failed"));
         assert_eq!(tool.detail.as_deref(), Some("nope"));
+
+        let code_tool = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-code","toolName":"write","ok":true,"dispatch":{"telemetry":{"xero.code_change_group_id":"code-change-1","xero.code_commit_id":"code-commit-1","xero.code_workspace_epoch":"7","xero.code_patch_available":"true","xero.code_patch_affected_paths":"[\"src/app.ts\"]","xero.code_patch_file_change_count":"1","xero.code_patch_text_hunk_count":"2"}}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("code tool item");
+        assert_eq!(
+            code_tool.code_change_group_id.as_deref(),
+            Some("code-change-1")
+        );
+        assert_eq!(code_tool.code_commit_id.as_deref(), Some("code-commit-1"));
+        assert_eq!(code_tool.code_workspace_epoch, Some(7));
+        assert_eq!(
+            code_tool
+                .code_patch_availability
+                .as_ref()
+                .map(|availability| availability.affected_paths.clone()),
+            Some(vec!["src/app.ts".to_string()])
+        );
 
         let action = owned_agent_event_runtime_item(
             event(

@@ -510,17 +510,41 @@ fn active_coordination_manifest_entries(
         });
     }
     for event in &context.events {
-        let summary = format!("{} {} {}", event.run_id, event.event_kind, event.summary);
+        let is_history_event = is_history_coordination_event(&event.event_kind);
+        let summary = if is_history_event {
+            format!(
+                "{} {} {} {}",
+                event.run_id,
+                event.event_kind,
+                event.summary,
+                coordination_path_preview(&history_event_affected_paths(event))
+            )
+        } else {
+            format!("{} {} {}", event.run_id, event.event_kind, event.summary)
+        };
         contributors.push(project_store::AgentContextManifestContributorRecord {
             contributor_id: format!("agent_coordination_event:{}", event.id),
-            kind: "active_agent_coordination_event".into(),
+            kind: if is_history_event {
+                "active_code_history_coordination_event"
+            } else {
+                "active_agent_coordination_event"
+            }
+            .into(),
             source_id: Some(event.id.to_string()),
             estimated_tokens: estimate_tokens(&summary),
-            reason: Some("recent_active_coordination_event".into()),
+            reason: Some(
+                if is_history_event {
+                    "recent_code_history_coordination_event"
+                } else {
+                    "recent_active_coordination_event"
+                }
+                .into(),
+            ),
         });
     }
     for delivery in &context.mailbox {
         let item = &delivery.item;
+        let is_history_mailbox = is_history_mailbox_item_type(item.item_type);
         let summary = format!(
             "{} {} {} {}",
             item.item_id,
@@ -530,12 +554,27 @@ fn active_coordination_manifest_entries(
         );
         contributors.push(project_store::AgentContextManifestContributorRecord {
             contributor_id: format!("agent_mailbox_item:{}", item.item_id),
-            kind: "active_agent_mailbox_item".into(),
+            kind: if is_history_mailbox {
+                "active_code_history_mailbox_notice"
+            } else {
+                "active_agent_mailbox_item"
+            }
+            .into(),
             source_id: Some(item.item_id.clone()),
             estimated_tokens: estimate_tokens(&summary),
-            reason: Some("temporary_swarm_mailbox_delivery".into()),
+            reason: Some(
+                if is_history_mailbox {
+                    "temporary_code_history_mailbox_notice"
+                } else {
+                    "temporary_swarm_mailbox_delivery"
+                }
+                .into(),
+            ),
         });
     }
+    let history_notices = coordination_history_notice_manifest_entries(context);
+    let stale_paths = coordination_stale_paths(context);
+    let history_notice_types = coordination_history_notice_types(context);
 
     let manifest = json!({
         "deliveryModel": "prompt_fragment_and_tool",
@@ -552,12 +591,190 @@ fn active_coordination_manifest_entries(
         "reservationCount": context.reservations.len(),
         "eventCount": context.events.len(),
         "mailboxCount": context.mailbox.len(),
+        "historyNoticeCount": history_notices.len(),
+        "historyNoticeTypes": history_notice_types,
+        "stalePathCount": stale_paths.len(),
+        "stalePaths": stale_paths,
+        "stalePathGuidance": if history_notices.is_empty() {
+            JsonValue::Null
+        } else {
+            JsonValue::String("History notices are temporary coordination state; re-read current files before overlapping writes on affected paths.".into())
+        },
         "presence": context.presence.iter().map(coordination_presence_manifest_json).collect::<Vec<_>>(),
         "reservations": context.reservations.iter().map(coordination_reservation_manifest_json).collect::<Vec<_>>(),
         "events": context.events.iter().map(coordination_event_manifest_json).collect::<Vec<_>>(),
         "mailbox": context.mailbox.iter().map(coordination_mailbox_manifest_json).collect::<Vec<_>>(),
+        "historyNotices": history_notices,
     });
     (contributors, manifest)
+}
+
+fn coordination_history_notice_manifest_entries(
+    context: &project_store::AgentCoordinationContext,
+) -> Vec<JsonValue> {
+    let mut notices = Vec::new();
+    for event in context
+        .events
+        .iter()
+        .filter(|event| is_history_coordination_event(&event.event_kind))
+    {
+        let affected_paths = history_event_affected_paths(event);
+        notices.push(json!({
+            "source": "coordination_event",
+            "eventId": event.id,
+            "eventKind": event.event_kind,
+            "operationId": event.payload.get("operationId").and_then(JsonValue::as_str),
+            "mode": event.payload.get("mode").and_then(JsonValue::as_str),
+            "status": event.payload.get("status").and_then(JsonValue::as_str),
+            "affectedPaths": affected_paths,
+            "summary": event.summary,
+            "guidance": history_event_guidance(event),
+            "createdAt": event.created_at,
+            "expiresAt": event.expires_at,
+        }));
+    }
+    for delivery in context
+        .mailbox
+        .iter()
+        .filter(|delivery| is_history_mailbox_item_type(delivery.item.item_type))
+    {
+        let item = &delivery.item;
+        notices.push(json!({
+            "source": "mailbox",
+            "itemId": item.item_id,
+            "itemType": item.item_type.as_str(),
+            "priority": item.priority.as_str(),
+            "title": item.title,
+            "relatedPaths": item.related_paths,
+            "guidance": history_mailbox_guidance(item.item_type),
+            "acknowledgedAt": delivery.acknowledged_at,
+            "createdAt": item.created_at,
+            "expiresAt": item.expires_at,
+        }));
+    }
+    notices
+}
+
+fn coordination_stale_paths(context: &project_store::AgentCoordinationContext) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for event in context
+        .events
+        .iter()
+        .filter(|event| is_history_coordination_event(&event.event_kind))
+    {
+        paths.extend(history_event_affected_paths(event));
+    }
+    for delivery in context
+        .mailbox
+        .iter()
+        .filter(|delivery| is_history_mailbox_item_type(delivery.item.item_type))
+    {
+        paths.extend(delivery.item.related_paths.iter().cloned());
+    }
+    paths.into_iter().collect()
+}
+
+fn coordination_history_notice_types(
+    context: &project_store::AgentCoordinationContext,
+) -> Vec<String> {
+    let mut notice_types = BTreeSet::new();
+    for event in context
+        .events
+        .iter()
+        .filter(|event| is_history_coordination_event(&event.event_kind))
+    {
+        notice_types.insert(event.event_kind.clone());
+    }
+    for delivery in context
+        .mailbox
+        .iter()
+        .filter(|delivery| is_history_mailbox_item_type(delivery.item.item_type))
+    {
+        notice_types.insert(delivery.item.item_type.as_str().to_string());
+    }
+    notice_types.into_iter().collect()
+}
+
+fn is_history_coordination_event(event_kind: &str) -> bool {
+    matches!(
+        event_kind,
+        "history_rewrite_notice"
+            | "undo_conflict_notice"
+            | "history_operation_failed"
+            | "history_operation_repair_needed"
+    )
+}
+
+fn is_history_mailbox_item_type(item_type: project_store::AgentMailboxItemType) -> bool {
+    matches!(
+        item_type,
+        project_store::AgentMailboxItemType::HistoryRewriteNotice
+            | project_store::AgentMailboxItemType::UndoConflictNotice
+            | project_store::AgentMailboxItemType::WorkspaceEpochAdvanced
+            | project_store::AgentMailboxItemType::ReservationInvalidated
+    )
+}
+
+fn history_event_affected_paths(
+    event: &project_store::AgentCoordinationEventRecord,
+) -> Vec<String> {
+    event
+        .payload
+        .get("affectedPaths")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(JsonValue::as_str)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn history_event_guidance(event: &project_store::AgentCoordinationEventRecord) -> &'static str {
+    match event
+        .payload
+        .get("status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default()
+    {
+        "conflicted" => {
+            "The undo/session rollback conflicted before writing; inspect current files before overlapping work."
+        }
+        "failed" => "The history operation failed; inspect current workspace state before acting on affected paths.",
+        "repair_needed" => {
+            "The history operation needs repair; re-read current files before overlapping writes on affected paths."
+        }
+        _ => "Re-read current files before overlapping writes on affected paths.",
+    }
+}
+
+fn history_mailbox_guidance(item_type: project_store::AgentMailboxItemType) -> &'static str {
+    match item_type {
+        project_store::AgentMailboxItemType::UndoConflictNotice => {
+            "The undo/session rollback conflicted before writing; inspect current files before overlapping work."
+        }
+        project_store::AgentMailboxItemType::WorkspaceEpochAdvanced => {
+            "Workspace epoch advanced; refresh context before writing affected paths."
+        }
+        project_store::AgentMailboxItemType::ReservationInvalidated => {
+            "Existing reservations on affected paths are stale; re-read current files before renewing or writing."
+        }
+        project_store::AgentMailboxItemType::HistoryRewriteNotice => {
+            "Re-read current files before overlapping writes on affected paths."
+        }
+        _ => "Treat this mailbox item as temporary coordination state.",
+    }
+}
+
+fn coordination_path_preview(paths: &[String]) -> String {
+    if paths.is_empty() {
+        return "general work".into();
+    }
+    let mut preview = paths.iter().take(6).cloned().collect::<Vec<_>>();
+    if paths.len() > preview.len() {
+        preview.push(format!("and {} more", paths.len() - preview.len()));
+    }
+    preview.join(", ")
 }
 
 fn active_coordination_prompt_summary(
@@ -610,18 +827,101 @@ fn active_coordination_prompt_summary(
             ));
         }
     }
-    if !context.events.is_empty() {
+    let history_event_count = context
+        .events
+        .iter()
+        .filter(|event| is_history_coordination_event(&event.event_kind))
+        .count();
+    let history_mailbox_count = context
+        .mailbox
+        .iter()
+        .filter(|delivery| is_history_mailbox_item_type(delivery.item.item_type))
+        .count();
+    if history_event_count > 0 || history_mailbox_count > 0 {
+        lines.push("Code history notices:".into());
+        for event in context
+            .events
+            .iter()
+            .filter(|event| is_history_coordination_event(&event.event_kind))
+        {
+            let operation_id = event
+                .payload
+                .get("operationId")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unknown-operation");
+            let mode = event
+                .payload
+                .get("mode")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("history_operation");
+            let status = event
+                .payload
+                .get("status")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("unknown");
+            let affected_paths = history_event_affected_paths(event);
+            lines.push(format!(
+                "- {} {} {} `{}` status {} affected {}: {} {}",
+                event.created_at,
+                event.run_id,
+                mode,
+                operation_id,
+                status,
+                coordination_path_preview(&affected_paths),
+                event.summary,
+                history_event_guidance(event)
+            ));
+        }
+        for delivery in context
+            .mailbox
+            .iter()
+            .filter(|delivery| is_history_mailbox_item_type(delivery.item.item_type))
+        {
+            let item = &delivery.item;
+            lines.push(format!(
+                "- {} {} from {} priority {} affected {}: {} {}",
+                item.created_at,
+                item.item_type.as_str(),
+                item.sender_run_id,
+                item.priority.as_str(),
+                coordination_path_preview(&item.related_paths),
+                item.title,
+                history_mailbox_guidance(item.item_type)
+            ));
+        }
+        lines.push(
+            "History mailbox notices are temporary coordination state, not durable memory; current files remain authoritative."
+                .into(),
+        );
+    }
+    if context
+        .events
+        .iter()
+        .any(|event| !is_history_coordination_event(&event.event_kind))
+    {
         lines.push("Recent activity events:".into());
-        for event in &context.events {
+        for event in context
+            .events
+            .iter()
+            .filter(|event| !is_history_coordination_event(&event.event_kind))
+        {
             lines.push(format!(
                 "- {} {} {}: {}",
                 event.created_at, event.run_id, event.event_kind, event.summary
             ));
         }
     }
-    if !context.mailbox.is_empty() {
+    if context
+        .mailbox
+        .iter()
+        .any(|delivery| !is_history_mailbox_item_type(delivery.item.item_type))
+    {
         lines.push("Temporary swarm mailbox:".into());
-        for delivery in &context.mailbox {
+        for delivery in context
+            .mailbox
+            .iter()
+            .filter(|delivery| !is_history_mailbox_item_type(delivery.item.item_type))
+        {
             let item = &delivery.item;
             lines.push(format!(
                 "- {} {} from {} priority {} about {}: {}",
@@ -1599,6 +1899,155 @@ mod tests {
         );
         assert_eq!(package.manifest.manifest["coordination"]["eventCount"], 1);
         assert_eq!(package.manifest.manifest["coordination"]["mailboxCount"], 1);
+    }
+
+    #[test]
+    fn provider_context_package_includes_history_notices_without_durable_memory_promotion() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.clone(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-history-owner".into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Apply a code history operation.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed history owner run");
+        let event = project_store::append_agent_coordination_event(
+            &repo_root,
+            &project_store::NewAgentCoordinationEventRecord {
+                project_id: project_id.clone(),
+                run_id: "run-history-owner".into(),
+                event_kind: "history_rewrite_notice".into(),
+                summary: "Session rollback completed across one path.".into(),
+                payload: json!({
+                    "operationId": "history-op-context",
+                    "mode": "session_rollback",
+                    "status": "completed",
+                    "affectedPaths": ["src/shared.rs"],
+                    "resultCommitId": "code-commit-history-context",
+                }),
+                created_at: "2099-05-01T12:01:00Z".into(),
+                lease_seconds: Some(600),
+            },
+        )
+        .expect("append history event");
+        let mailbox = project_store::publish_agent_mailbox_item(
+            &repo_root,
+            &project_store::NewAgentMailboxItemRecord {
+                project_id: project_id.clone(),
+                sender_run_id: "run-history-owner".into(),
+                item_type: project_store::AgentMailboxItemType::ReservationInvalidated,
+                parent_item_id: None,
+                target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                target_run_id: Some("run-context-package".into()),
+                target_role: None,
+                title: "Session rollback changed your reserved path".into(),
+                body: "Code history operation `history-op-context` completed. Re-read current files before overlapping writes.".into(),
+                related_paths: vec!["src/shared.rs".into()],
+                priority: project_store::AgentMailboxPriority::High,
+                created_at: "2099-05-01T12:02:00Z".into(),
+                ttl_seconds: Some(600),
+            },
+        )
+        .expect("publish history mailbox item");
+
+        let messages = vec![ProviderMessage::User {
+            content: "Continue after any code history changes.".into(),
+            attachments: Vec::new(),
+        }];
+        let tools = builtin_tool_descriptors()
+            .into_iter()
+            .filter(|tool| tool.name == AUTONOMOUS_TOOL_AGENT_COORDINATION)
+            .collect::<Vec<_>>();
+        let package = assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root: &repo_root,
+                project_id: &project_id,
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                run_id: "run-context-package",
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer",
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_definition_snapshot: None,
+                provider_id: OPENAI_CODEX_PROVIDER_ID,
+                model_id: OPENAI_CODEX_PROVIDER_ID,
+                turn_index: 0,
+                browser_control_preference: BrowserControlPreferenceDto::Default,
+                soul_settings: None,
+                tools: &tools,
+                tool_exposure_plan: None,
+                messages: &messages,
+                owned_process_summary: None,
+                provider_preflight: None,
+            },
+            Vec::new(),
+        )
+        .expect("assemble provider package");
+
+        assert!(package.system_prompt.contains("Code history notices:"));
+        assert!(package.system_prompt.contains("history-op-context"));
+        assert!(package.system_prompt.contains("src/shared.rs"));
+        assert!(package
+            .system_prompt
+            .contains("Re-read current files before overlapping writes"));
+        assert!(package
+            .system_prompt
+            .contains("temporary coordination state, not durable memory"));
+        assert_eq!(
+            package.manifest.manifest["coordination"]["rawDurableMemoryInjected"],
+            false
+        );
+        assert_eq!(
+            package.manifest.manifest["coordination"]["historyNoticeCount"],
+            2
+        );
+        assert_eq!(
+            package.manifest.manifest["coordination"]["stalePaths"],
+            json!(["src/shared.rs"])
+        );
+        assert_eq!(
+            package.manifest.manifest["coordination"]["stalePathGuidance"],
+            "History notices are temporary coordination state; re-read current files before overlapping writes on affected paths."
+        );
+        assert!(package.manifest.manifest["coordination"]["historyNotices"]
+            .as_array()
+            .expect("history notices")
+            .iter()
+            .any(|notice| notice["eventId"] == event.id));
+        assert!(package.manifest.manifest["coordination"]["historyNotices"]
+            .as_array()
+            .expect("history notices")
+            .iter()
+            .any(|notice| notice["itemId"] == mailbox.item_id));
+
+        let included = package.manifest.manifest["contributors"]["included"]
+            .as_array()
+            .expect("included contributors");
+        let mailbox_contributor = included
+            .iter()
+            .find(|contributor| {
+                contributor["contributorId"] == format!("agent_mailbox_item:{}", mailbox.item_id)
+            })
+            .expect("history mailbox contributor");
+        assert_eq!(
+            mailbox_contributor["kind"],
+            "active_code_history_mailbox_notice"
+        );
+        assert_eq!(
+            mailbox_contributor["reason"],
+            "temporary_code_history_mailbox_notice"
+        );
     }
 
     #[test]

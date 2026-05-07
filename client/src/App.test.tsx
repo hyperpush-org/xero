@@ -1601,6 +1601,44 @@ function createAdapter(options?: {
     }),
     getRepositoryStatus: async () => currentStatus,
     getRepositoryDiff: async (_projectId, scope) => ({ ...currentDiff, scope }),
+    applySelectiveUndo: async () => ({
+      operation: {
+        projectId: 'project-1',
+        operationId: 'code-undo-test',
+        mode: 'selective_undo' as const,
+        status: 'completed' as const,
+        target: {
+          targetKind: 'change_group' as const,
+          targetId: 'code-change-1',
+          hunkIds: [],
+        },
+        affectedPaths: ['client/src/file.ts'],
+        conflicts: [],
+        resultCommitId: 'code-commit-undo-test',
+        resultChangeGroupId: 'code-change-undo-test',
+        createdAt: '2026-05-06T12:00:00Z',
+        updatedAt: '2026-05-06T12:00:01Z',
+      },
+    }),
+    returnSessionToHere: async () => ({
+      operation: {
+        projectId: 'project-1',
+        operationId: 'return-session-test',
+        mode: 'session_rollback' as const,
+        status: 'completed' as const,
+        target: {
+          targetKind: 'run_boundary' as const,
+          targetId: 'run-1:boundary-1',
+          hunkIds: [],
+        },
+        affectedPaths: ['client/src/file.ts'],
+        conflicts: [],
+        resultCommitId: 'code-commit-return-session-test',
+        resultChangeGroupId: 'code-change-return-session-test',
+        createdAt: '2026-05-06T12:00:00Z',
+        updatedAt: '2026-05-06T12:00:01Z',
+      },
+    }),
     gitStagePaths: async () => undefined,
     gitUnstagePaths: async () => undefined,
     gitDiscardChanges: async () => undefined,
@@ -2916,11 +2954,11 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    expect(document.querySelector('aside[aria-label="Workflows"]')).toBeNull()
+    expect(document.querySelector('aside[aria-label="Library"]')).toBeNull()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 
-    const workflowsPanel = await screen.findByLabelText('Workflows')
+    const workflowsPanel = await screen.findByLabelText('Library')
     fireEvent.click(within(workflowsPanel).getByRole('button', { name: 'Search workflows' }))
     fireEvent.change(within(workflowsPanel).getByRole('searchbox', { name: 'Search workflows' }), {
       target: { value: 'review' },
@@ -2929,9 +2967,9 @@ describe('XeroApp current UI', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Close workflows' })[0])
 
     await waitFor(() =>
-      expect(screen.queryByRole('complementary', { name: 'Workflows' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('complementary', { name: 'Library' })).not.toBeInTheDocument(),
     )
-    expect(document.querySelector('aside[aria-label="Workflows"]')).toHaveAttribute('aria-hidden', 'true')
+    expect(document.querySelector('aside[aria-label="Library"]')).toHaveAttribute('aria-hidden', 'true')
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 

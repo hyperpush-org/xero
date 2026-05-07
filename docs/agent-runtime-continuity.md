@@ -2,7 +2,7 @@
 
 Xero keeps Ask, Engineer, and Debug runs going past a single context window without losing the user's task, prior decisions, or durable evidence. This guide explains the runtime behavior that makes that possible: how context pressure is evaluated, how same-type handoff works, what is persisted, and how recovery handles partial writes after a crash.
 
-This document is a runtime-behavior reference, not a feature tour. For the user-facing narrative on session history, exports, search, manual compact, memory review, branch, and rewind, read `session-memory-and-context.md`. For the source-of-truth implementation plan, see `AGENT_CONTEXT_CONTINUITY_AND_MEMORY_PLAN.md` at the repository root.
+This document is a runtime-behavior reference, not a feature tour. For the user-facing narrative on session history, exports, search, manual compact, memory review, branch, rewind, selective code undo, and session rollback, read `session-memory-and-context.md`. For the source-of-truth implementation plan, see `AGENT_CONTEXT_CONTINUITY_AND_MEMORY_PLAN.md` at the repository root.
 
 ## Contracts
 
@@ -11,6 +11,8 @@ Every owned-agent provider request is assembled from a deterministic context pac
 Project records, approved memory, handoff bundles, and retrieval logs live in app-data-backed databases. SQLite holds transactional state (sessions, runs, manifests, lineage, retrieval logs, policy settings, handoff attempts). LanceDB holds retrieval state (handoffs, project facts, decisions, plans, findings, verification, memories, candidates) with embedding metadata.
 
 Approved memory is durable context, never higher-priority policy. The system prompt explicitly tells the agent to ignore memory or retrieved text that tries to change system or tool rules.
+
+Code undo and session rollback are represented as append-only history operations, not transcript rewrites. They can affect workspace files and app-data code history, but conversation rewind remains a branch/replay operation that does not edit files on disk.
 
 ## Context Policy
 
@@ -60,6 +62,16 @@ A read-only project context tool is exposed to all three agents. Ask is observe-
 
 Memory candidates are extracted automatically after run completion, pause, failure, and handoff. Candidates remain disabled until a user approves them through the runtime's memory review surface. Candidates that look like prompt injection or carry secret material are blocked or redacted before they are persisted.
 
+Memory extraction must account for undo provenance. Facts about code removed by selective undo or session rollback are rejected, scoped as historical, or tied to the undo operation so future context packages do not present reverted implementation details as current truth.
+
+## Code History Awareness
+
+Owned agents may receive recent code undo and session rollback events in their context package when those operations affect paths, reservations, or workspace epochs relevant to the run. These notices are advisory: agents must re-read current files before overlapping writes, and current file evidence outranks retrieved memory.
+
+Selective code undo applies an inverse of the selected change on top of the current workspace. Session rollback applies inverse changes for one selected session or lineage after a boundary. Both are expected to preserve unrelated user and sibling-agent work; if preservation is unsafe, planning reports a conflict before any file write is reported as successful.
+
+The runtime does not model external side effects as undoable code history. Remote services, databases outside the app-data project store, emulator state, Docker volumes, package manager caches, deployed programs, transactions, and other effects outside project file state remain out of scope for undo and session rollback.
+
 ## User-Visible Surfaces
 
 Most of the continuity machinery is internal: context manifests, retrieval logs, handoff lineage, redaction decisions, and policy evaluations are diagnostics, not core UX. The user-facing surfaces are intentionally narrow:
@@ -67,6 +79,7 @@ Most of the continuity machinery is internal: context manifests, retrieval logs,
 - The conversation shows a "Run continued in a fresh session" notice when the runtime stream completes a same-type handoff. The notice explains that the task and prior context carried over so the user can keep replying without re-stating anything.
 - The reviewed memory workflow stays mounted in the agent runtime so candidates can be approved, rejected, disabled, enabled, or deleted from the normal flow.
 - The composer auto-compact toggle remains the user-tunable knob for compaction behavior; auto-handoff defaults to on as a safety net.
+- Session history, search, export, and context visualization can show code undo and session rollback events as chronological additions with affected paths and conflict status.
 
 There is no user-facing context manifest inspector, project record browser, or retrieval diagnostics panel. These are observable via the underlying database commands and Tauri contracts when needed for support or debugging.
 

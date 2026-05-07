@@ -52,7 +52,8 @@ use crate::{
         agent_core::{
             compile_system_prompt_for_session, create_provider_adapter,
             provider_messages_from_snapshot, runtime_controls_from_request,
-            skill_contexts_from_provider_messages, tool_registry_for_snapshot, PromptCompilation,
+            skill_contexts_from_provider_messages, tool_registry_for_snapshot,
+            CodeHistoryMemoryGuard, CodeHistoryMemoryGuardOutcome, PromptCompilation,
             PromptFragment, ProviderAdapter, ProviderCompactionRequest, ProviderMemoryCandidate,
             ProviderMemoryExtractionRequest, ToolRegistry, ToolRegistryOptions,
         },
@@ -80,6 +81,8 @@ const MIN_MEMORY_CONFIDENCE: u8 = 50;
 const MAX_CODE_MAP_FILES: usize = 240;
 const MAX_CODE_SYMBOLS: usize = 160;
 const LARGE_CONTEXT_NODE_TOKENS: u64 = 700;
+const MAX_CODE_HISTORY_CONTEXT_CHARS: usize = 800;
+const MAX_CODE_HISTORY_CONTEXT_TOKENS: u64 = 220;
 
 #[tauri::command]
 pub fn get_session_transcript<R: Runtime>(
@@ -629,7 +632,78 @@ fn run_transcripts_with_rollback_events(
         .map(|(snapshot, usage)| run_transcript_from_agent_snapshot(snapshot, usage.as_ref()))
         .collect::<Vec<_>>();
     append_rollback_transcript_items(repo_root, project_id, agent_session_id, run_id, &mut runs)?;
+    append_code_history_operation_transcript_items(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+        &mut runs,
+    )?;
+    sort_run_transcript_items(&mut runs);
+    enrich_code_history_transcript_items(repo_root, project_id, &mut runs)?;
     Ok(runs)
+}
+
+fn enrich_code_history_transcript_items(
+    repo_root: &Path,
+    project_id: &str,
+    runs: &mut [crate::commands::RunTranscriptDto],
+) -> CommandResult<()> {
+    let mut metadata_by_group: HashMap<
+        String,
+        Option<project_store::CodeChangeGroupHistoryMetadataRecord>,
+    > = HashMap::new();
+
+    for item in runs.iter_mut().flat_map(|run| run.items.iter_mut()) {
+        let Some(change_group_id) = item.code_change_group_id.clone() else {
+            continue;
+        };
+        if !metadata_by_group.contains_key(&change_group_id) {
+            let metadata = project_store::read_code_change_group_history_metadata(
+                repo_root,
+                project_id,
+                &change_group_id,
+            )?;
+            metadata_by_group.insert(change_group_id.clone(), metadata);
+        }
+        let Some(Some(metadata)) = metadata_by_group.get(&change_group_id) else {
+            continue;
+        };
+        if item.code_commit_id.is_none() {
+            item.code_commit_id = metadata.commit_id.clone();
+        }
+        if item.code_workspace_epoch.is_none() {
+            item.code_workspace_epoch = metadata.workspace_epoch;
+        }
+        if item.code_patch_availability.is_none() {
+            item.code_patch_availability = Some(crate::commands::CodePatchAvailabilityDto {
+                project_id: metadata.patch_availability.project_id.clone(),
+                target_change_group_id: metadata.patch_availability.target_change_group_id.clone(),
+                available: metadata.patch_availability.available,
+                affected_paths: metadata.patch_availability.affected_paths.clone(),
+                file_change_count: metadata.patch_availability.file_change_count,
+                text_hunk_count: metadata.patch_availability.text_hunk_count,
+                text_hunks: metadata
+                    .patch_availability
+                    .text_hunks
+                    .iter()
+                    .map(|hunk| crate::commands::CodePatchTextHunkDto {
+                        hunk_id: hunk.hunk_id.clone(),
+                        patch_file_id: hunk.patch_file_id.clone(),
+                        file_path: hunk.file_path.clone(),
+                        hunk_index: hunk.hunk_index,
+                        base_start_line: hunk.base_start_line,
+                        base_line_count: hunk.base_line_count,
+                        result_start_line: hunk.result_start_line,
+                        result_line_count: hunk.result_line_count,
+                    })
+                    .collect(),
+                unavailable_reason: metadata.patch_availability.unavailable_reason.clone(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn append_rollback_transcript_items(
@@ -653,6 +727,43 @@ fn append_rollback_transcript_items(
         run.items.push(item);
     }
     Ok(())
+}
+
+fn append_code_history_operation_transcript_items(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    run_id: Option<&str>,
+    runs: &mut [crate::commands::RunTranscriptDto],
+) -> CommandResult<()> {
+    let operations = project_store::list_code_history_operations_for_session(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+    )?;
+    for operation in operations {
+        let Some(run) = runs.iter_mut().find(|run| run.run_id == operation.run_id) else {
+            continue;
+        };
+        let item = code_history_operation_transcript_item(&operation, run);
+        run.items.push(item);
+    }
+    Ok(())
+}
+
+fn sort_run_transcript_items(runs: &mut [crate::commands::RunTranscriptDto]) {
+    for run in runs {
+        run.items.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.sequence.cmp(&right.sequence))
+                .then_with(|| left.item_id.cmp(&right.item_id))
+        });
+        for (index, item) in run.items.iter_mut().enumerate() {
+            item.sequence = (index as u64).saturating_add(1);
+        }
+    }
 }
 
 fn rollback_transcript_item(
@@ -693,6 +804,9 @@ fn rollback_transcript_item(
             .result_change_group_id
             .clone()
             .or_else(|| Some(operation.target_change_group_id.clone())),
+        code_commit_id: None,
+        code_workspace_epoch: None,
+        code_patch_availability: None,
         checkpoint_kind: None,
         action_id: None,
         redaction: text_redaction,
@@ -780,6 +894,386 @@ fn rollback_operation_primary_path(
         .affected_files
         .iter()
         .find_map(|file| file.path_after.as_deref().or(file.path_before.as_deref()))
+}
+
+fn code_history_operation_transcript_item(
+    operation: &project_store::CodeHistoryOperationRecord,
+    run: &crate::commands::RunTranscriptDto,
+) -> SessionTranscriptItemDto {
+    let raw_text = code_history_operation_text(operation);
+    let (text, text_redaction) = redact_session_context_text(&raw_text);
+    let file_path = code_history_operation_primary_path(operation)
+        .map(|path| redact_session_context_text(path).0)
+        .filter(|path| !path.trim().is_empty());
+    SessionTranscriptItemDto {
+        contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        item_id: format!("code_history_operation:{}", operation.operation_id),
+        project_id: operation.project_id.clone(),
+        agent_session_id: operation.agent_session_id.clone(),
+        run_id: operation.run_id.clone(),
+        provider_id: run.provider_id.clone(),
+        model_id: run.model_id.clone(),
+        source_kind: crate::commands::SessionTranscriptSourceKindDto::OwnedAgent,
+        source_table: "code_history_operations".into(),
+        source_id: operation.operation_id.clone(),
+        sequence: run.items.len() as u64 + 1,
+        created_at: operation
+            .completed_at
+            .clone()
+            .unwrap_or_else(|| operation.updated_at.clone()),
+        kind: SessionTranscriptItemKindDto::CodeHistoryOperation,
+        actor: SessionTranscriptActorDto::Xero,
+        title: Some(code_history_operation_title(operation)),
+        text: Some(text),
+        summary: Some(code_history_operation_summary(operation)),
+        tool_call_id: None,
+        tool_name: None,
+        tool_state: None,
+        file_path,
+        code_change_group_id: operation.result_change_group_id.clone(),
+        code_commit_id: operation.result_commit_id.clone(),
+        code_workspace_epoch: None,
+        code_patch_availability: None,
+        checkpoint_kind: None,
+        action_id: None,
+        redaction: text_redaction,
+    }
+}
+
+fn code_history_operation_title(operation: &project_store::CodeHistoryOperationRecord) -> String {
+    match (operation.mode.as_str(), operation.status.as_str()) {
+        ("selective_undo", "completed") => "Code undo applied".into(),
+        ("selective_undo", "conflicted") => "Code undo conflicted".into(),
+        ("selective_undo", "failed") => "Code undo failed".into(),
+        ("selective_undo", "repair_needed") => "Code undo needs repair".into(),
+        ("selective_undo", status) => format!("Code undo {status}"),
+        ("session_rollback", "completed") => "Session returned to here".into(),
+        ("session_rollback", "conflicted") => "Return session to here conflicted".into(),
+        ("session_rollback", "failed") => "Return session to here failed".into(),
+        ("session_rollback", "repair_needed") => "Return session to here needs repair".into(),
+        ("session_rollback", status) => format!("Return session to here {status}"),
+        (_, "completed") => "Code history operation completed".into(),
+        (_, "conflicted") => "Code history operation conflicted".into(),
+        (_, "failed") => "Code history operation failed".into(),
+        (_, "repair_needed") => "Code history operation needs repair".into(),
+        _ => "Code history operation".into(),
+    }
+}
+
+fn code_history_operation_summary(operation: &project_store::CodeHistoryOperationRecord) -> String {
+    let mut summary = format!(
+        "{} `{}` recorded mode `{}` for {} target `{}`",
+        code_history_operation_title(operation),
+        operation.operation_id,
+        operation.mode,
+        operation.target_kind,
+        operation.target_id
+    );
+    if let Some(commit_id) = operation.result_commit_id.as_deref() {
+        summary.push_str(&format!(" with result commit `{commit_id}`"));
+    }
+    if !operation.affected_paths.is_empty() {
+        summary.push_str(&format!(
+            " affecting {}",
+            format_history_path_preview(&operation.affected_paths)
+        ));
+    }
+    summary.push('.');
+    summary
+}
+
+fn code_history_operation_text(operation: &project_store::CodeHistoryOperationRecord) -> String {
+    let mut parts = vec![
+        format!("Operation id: {}.", operation.operation_id),
+        format!("Mode: {}.", operation.mode),
+        format!("Status: {}.", operation.status),
+        format!(
+            "Target: {} `{}`.",
+            operation.target_kind, operation.target_id
+        ),
+    ];
+
+    if let Some(change_group_id) = operation.target_change_group_id.as_deref() {
+        parts.push(format!("Target change group: {change_group_id}."));
+    }
+    if let Some(summary) = operation.target_summary_label.as_deref() {
+        parts.push(format!("Target summary: {summary}."));
+    }
+    if let Some(file_path) = operation.target_file_path.as_deref() {
+        parts.push(format!("Target file: {file_path}."));
+    }
+    if !operation.target_hunk_ids.is_empty() {
+        parts.push(format!(
+            "Selected hunks: {}.",
+            operation.target_hunk_ids.join(", ")
+        ));
+    }
+    if let Some(change_group_id) = operation.result_change_group_id.as_deref() {
+        parts.push(format!("Result change group: {change_group_id}."));
+    } else {
+        parts.push("Result change group was not recorded.".into());
+    }
+    if let Some(commit_id) = operation.result_commit_id.as_deref() {
+        parts.push(format!("Result commit: {commit_id}."));
+    } else {
+        parts.push("Result commit was not recorded.".into());
+    }
+    if let Some(summary) = operation.result_summary_label.as_deref() {
+        parts.push(format!("Result summary: {summary}."));
+    }
+    if let Some(epoch) = operation.expected_workspace_epoch {
+        parts.push(format!("Expected workspace epoch: {epoch}."));
+    }
+    if let (Some(code), Some(message)) = (
+        operation.failure_code.as_deref(),
+        operation.failure_message.as_deref(),
+    ) {
+        parts.push(format!("Failure: {code}: {message}."));
+    }
+    if let (Some(code), Some(message)) = (
+        operation.repair_code.as_deref(),
+        operation.repair_message.as_deref(),
+    ) {
+        parts.push(format!("Repair needed: {code}: {message}."));
+    }
+    if operation.conflicts.is_empty() {
+        parts.push("No conflicts were recorded.".into());
+    } else {
+        let details = operation
+            .conflicts
+            .iter()
+            .take(4)
+            .map(|conflict| format!("{} {}: {}", conflict.path, conflict.kind, conflict.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let remaining = operation.conflicts.len().saturating_sub(4);
+        let suffix = if remaining == 0 {
+            String::new()
+        } else {
+            format!("; and {remaining} more")
+        };
+        parts.push(format!("Conflicts: {}{}.", details, suffix));
+    }
+    if operation.affected_paths.is_empty() {
+        parts.push("No affected paths were recorded.".into());
+    } else {
+        parts.push(format!(
+            "Affected paths: {}.",
+            operation.affected_paths.join(", ")
+        ));
+    }
+    parts.push(
+        "Conversation history was preserved. This append-only history item records the code undo operation without modifying earlier transcript rows."
+            .into(),
+    );
+    parts.join(" ")
+}
+
+fn code_history_operation_primary_path(
+    operation: &project_store::CodeHistoryOperationRecord,
+) -> Option<&str> {
+    operation
+        .affected_paths
+        .first()
+        .map(String::as_str)
+        .or(operation.target_file_path.as_deref())
+}
+
+fn format_history_path_preview(paths: &[String]) -> String {
+    let mut preview = paths.iter().take(6).cloned().collect::<Vec<_>>();
+    if paths.len() > preview.len() {
+        preview.push(format!("and {} more", paths.len() - preview.len()));
+    }
+    preview.join(", ")
+}
+
+fn bounded_code_history_estimate(raw_text: &str) -> (String, u64) {
+    let (safe_text, _) = redact_session_context_text(raw_text);
+    let estimate_text = bounded_context_text(&safe_text, MAX_CODE_HISTORY_CONTEXT_CHARS);
+    let estimated_tokens = estimate_tokens(&estimate_text).min(MAX_CODE_HISTORY_CONTEXT_TOKENS);
+    (estimate_text, estimated_tokens)
+}
+
+fn bounded_context_text(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+
+    let mut preview = trimmed.chars().take(max_chars).collect::<String>();
+    preview.push_str("...");
+    preview
+}
+
+fn code_history_event_context_label(event: &project_store::AgentCoordinationEventRecord) -> String {
+    let mode = event
+        .payload
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("history_operation");
+    let status = event
+        .payload
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    format!("Code history notice: {mode} {status}")
+}
+
+fn code_history_mailbox_context_label(item: &project_store::AgentMailboxItemRecord) -> String {
+    let (safe_title, _) = redact_session_context_text(&item.title);
+    let title = bounded_context_text(&safe_title, 96);
+    if title.is_empty() {
+        "Code history mailbox notice".into()
+    } else {
+        format!("Code history mailbox notice: {title}")
+    }
+}
+
+fn code_history_event_context_text(event: &project_store::AgentCoordinationEventRecord) -> String {
+    let operation_id = event
+        .payload
+        .get("operationId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown-operation");
+    let mode = event
+        .payload
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("history_operation");
+    let status = event
+        .payload
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let affected_paths = context_history_event_affected_paths(event);
+    [
+        format!("Coordination event id: {}.", event.id),
+        format!("Kind: {}.", event.event_kind),
+        format!("Run: {}.", event.run_id),
+        format!("Operation id: {operation_id}."),
+        format!("Mode: {mode}."),
+        format!("Status: {status}."),
+        format!(
+            "Affected paths: {}.",
+            if affected_paths.is_empty() {
+                "none recorded".into()
+            } else {
+                format_history_path_preview(&affected_paths)
+            }
+        ),
+        format!("Summary: {}.", event.summary),
+        format!("Guidance: {}.", context_history_event_guidance(event)),
+        "Temporary coordination state; current files remain authoritative and this content is not durable memory."
+            .into(),
+    ]
+    .join(" ")
+}
+
+fn code_history_mailbox_context_text(
+    delivery: &project_store::AgentMailboxDeliveryRecord,
+) -> String {
+    let item = &delivery.item;
+    [
+        format!("Mailbox item id: {}.", item.item_id),
+        format!("Type: {}.", item.item_type.as_str()),
+        format!("Priority: {}.", item.priority.as_str()),
+        format!("Sender run: {}.", item.sender_run_id),
+        format!("Title: {}.", item.title),
+        format!("Body: {}.", item.body),
+        format!(
+            "Related paths: {}.",
+            if item.related_paths.is_empty() {
+                "none recorded".into()
+            } else {
+                format_history_path_preview(&item.related_paths)
+            }
+        ),
+        format!(
+            "Acknowledgement: {}.",
+            delivery
+                .acknowledged_at
+                .as_deref()
+                .unwrap_or("not acknowledged")
+        ),
+        format!("Guidance: {}.", context_history_mailbox_guidance(item.item_type)),
+        "Temporary mailbox notice; re-read current files before overlapping writes and do not promote this notice to durable memory."
+            .into(),
+    ]
+    .join(" ")
+}
+
+fn context_history_event_affected_paths(
+    event: &project_store::AgentCoordinationEventRecord,
+) -> Vec<String> {
+    event
+        .payload
+        .get("affectedPaths")
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect()
+}
+
+fn is_context_history_coordination_event(event_kind: &str) -> bool {
+    matches!(
+        event_kind,
+        "history_rewrite_notice"
+            | "undo_conflict_notice"
+            | "history_operation_failed"
+            | "history_operation_repair_needed"
+    )
+}
+
+fn is_context_history_mailbox_item_type(item_type: project_store::AgentMailboxItemType) -> bool {
+    matches!(
+        item_type,
+        project_store::AgentMailboxItemType::HistoryRewriteNotice
+            | project_store::AgentMailboxItemType::UndoConflictNotice
+            | project_store::AgentMailboxItemType::WorkspaceEpochAdvanced
+            | project_store::AgentMailboxItemType::ReservationInvalidated
+    )
+}
+
+fn context_history_event_guidance(
+    event: &project_store::AgentCoordinationEventRecord,
+) -> &'static str {
+    match event.event_kind.as_str() {
+        "undo_conflict_notice" => {
+            "The requested undo or session return conflicted; current workspace files were left unchanged."
+        }
+        "history_rewrite_notice" => {
+            "A code undo or session return changed workspace paths; re-read affected files before overlapping writes."
+        }
+        "history_operation_failed" => {
+            "A code history operation failed; inspect the operation before assuming workspace state changed."
+        }
+        "history_operation_repair_needed" => {
+            "A code history operation needs repair; avoid overlapping writes until the affected paths are refreshed."
+        }
+        _ => "Review the code history notice and re-read affected files before overlapping writes.",
+    }
+}
+
+fn context_history_mailbox_guidance(
+    item_type: project_store::AgentMailboxItemType,
+) -> &'static str {
+    match item_type {
+        project_store::AgentMailboxItemType::UndoConflictNotice => {
+            "The undo or session return conflicted; current files were preserved."
+        }
+        project_store::AgentMailboxItemType::ReservationInvalidated => {
+            "A path reservation was invalidated by code history; refresh before writing."
+        }
+        project_store::AgentMailboxItemType::WorkspaceEpochAdvanced => {
+            "The workspace epoch advanced; refresh observed paths before mutating them."
+        }
+        project_store::AgentMailboxItemType::HistoryRewriteNotice => {
+            "Code history changed workspace paths; re-read affected files before overlapping writes."
+        }
+        _ => "Review the mailbox notice before overlapping writes.",
+    }
 }
 
 fn build_session_context_snapshot(
@@ -887,6 +1381,35 @@ fn build_session_context_snapshot(
         agent_session_id,
         &rollback_operations,
     );
+    let code_history_operations = project_store::list_code_history_operations_for_session(
+        repo_root,
+        project_id,
+        agent_session_id,
+        run_id,
+    )?;
+    append_code_history_operation_contributors(
+        &mut contributors,
+        project_id,
+        agent_session_id,
+        &code_history_operations,
+    );
+    if let Some(context_run_id) =
+        run_id.or_else(|| latest_snapshot.map(|snapshot| snapshot.run.run_id.as_str()))
+    {
+        let active_coordination_context = project_store::active_agent_coordination_context(
+            repo_root,
+            project_id,
+            context_run_id,
+            &now_timestamp(),
+        )?;
+        append_code_history_notice_contributors(
+            &mut contributors,
+            project_id,
+            agent_session_id,
+            context_run_id,
+            &active_coordination_context,
+        );
+    }
     append_usage_contributors(&mut contributors, project_id, agent_session_id, &snapshots);
     append_pending_prompt_contributor(
         &mut contributors,
@@ -1265,6 +1788,7 @@ struct MemoryExtractionSource {
     transcript: String,
     source_run_id: Option<String>,
     source_item_ids: Vec<String>,
+    code_history_guard: CodeHistoryMemoryGuard,
 }
 
 fn build_memory_extraction_source(
@@ -1284,13 +1808,15 @@ fn build_memory_extraction_source(
         run_id,
         snapshots,
     )?;
+    let code_history_guard =
+        CodeHistoryMemoryGuard::for_session(repo_root, project_id, agent_session_id, run_id)?;
     let source_run_id = run_transcripts.last().map(|run| run.run_id.clone());
     let mut source_item_ids = Vec::new();
     let mut transcript = String::from(
         "Review this completed Xero session transcript for durable memory candidates.\n",
     );
     transcript.push_str(
-        "Code rollback rows are provenance: do not promote implementation details from turns before a rollback as durable facts unless the memory text explicitly notes the rollback state and cites rollback provenance.\n",
+        "Code history operation rows are provenance: do not promote implementation details from turns before an undo or session return as durable facts unless the memory text explicitly notes the history operation and cites its provenance.\n",
     );
     for run in &run_transcripts {
         transcript.push_str(&format!(
@@ -1321,6 +1847,7 @@ fn build_memory_extraction_source(
         transcript,
         source_run_id,
         source_item_ids,
+        code_history_guard,
     })
 }
 
@@ -1381,12 +1908,30 @@ fn prepare_new_memory_candidate(
         let (code, message) = memory_candidate_blocked_diagnostic(&redaction);
         return Err(session_memory_diagnostic_dto(code, message));
     }
-    let mut source_item_ids = candidate
+    let source_item_ids = candidate
         .source_item_ids
         .into_iter()
         .map(|item_id| item_id.trim().to_string())
         .filter(|item_id| !item_id.is_empty())
         .collect::<Vec<_>>();
+    let (scope, kind, text, mut source_item_ids) =
+        match source
+            .code_history_guard
+            .apply(scope, kind, text, source_item_ids)
+        {
+            CodeHistoryMemoryGuardOutcome::Accepted {
+                scope,
+                kind,
+                text,
+                source_item_ids,
+            } => (scope, kind, text, source_item_ids),
+            CodeHistoryMemoryGuardOutcome::Rejected(diagnostic) => {
+                return Err(session_memory_diagnostic_dto(
+                    diagnostic.code,
+                    diagnostic.message,
+                ));
+            }
+        };
     if source_item_ids.is_empty() {
         source_item_ids = source.source_item_ids.iter().take(8).cloned().collect();
     }
@@ -2243,6 +2788,109 @@ fn append_code_rollback_contributors(
     }
 }
 
+fn append_code_history_operation_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    operations: &[project_store::CodeHistoryOperationRecord],
+) {
+    for operation in operations {
+        let raw_text = code_history_operation_text(operation);
+        let (estimate_text, estimated_tokens) = bounded_code_history_estimate(&raw_text);
+        append_context_contributor(
+            contributors,
+            ContextContributorParts {
+                contributor_id: format!("code_history_operation:{}", operation.operation_id),
+                kind: SessionContextContributorKindDto::CodeHistoryOperation,
+                label: code_history_operation_title(operation),
+                prompt_fragment_id: None,
+                prompt_fragment_priority: None,
+                prompt_fragment_hash: None,
+                prompt_fragment_provenance: None,
+                project_id: Some(project_id),
+                agent_session_id: Some(agent_session_id),
+                run_id: Some(operation.run_id.as_str()),
+                source_id: Some(operation.operation_id.as_str()),
+                raw_text: Some(raw_text.as_str()),
+                estimate_text: Some(estimate_text.as_str()),
+                estimated_tokens: Some(estimated_tokens),
+                included: true,
+                model_visible: true,
+            },
+        );
+    }
+}
+
+fn append_code_history_notice_contributors(
+    contributors: &mut Vec<SessionContextContributorDto>,
+    project_id: &str,
+    agent_session_id: &str,
+    context_run_id: &str,
+    context: &project_store::AgentCoordinationContext,
+) {
+    for event in context
+        .events
+        .iter()
+        .filter(|event| is_context_history_coordination_event(&event.event_kind))
+    {
+        let raw_text = code_history_event_context_text(event);
+        let (estimate_text, estimated_tokens) = bounded_code_history_estimate(&raw_text);
+        let source_id = event.id.to_string();
+        append_context_contributor(
+            contributors,
+            ContextContributorParts {
+                contributor_id: format!("code_history_notice:{}", event.id),
+                kind: SessionContextContributorKindDto::CodeHistoryNotice,
+                label: code_history_event_context_label(event),
+                prompt_fragment_id: None,
+                prompt_fragment_priority: None,
+                prompt_fragment_hash: None,
+                prompt_fragment_provenance: None,
+                project_id: Some(project_id),
+                agent_session_id: Some(agent_session_id),
+                run_id: Some(context_run_id),
+                source_id: Some(source_id.as_str()),
+                raw_text: Some(raw_text.as_str()),
+                estimate_text: Some(estimate_text.as_str()),
+                estimated_tokens: Some(estimated_tokens),
+                included: true,
+                model_visible: true,
+            },
+        );
+    }
+
+    for delivery in context
+        .mailbox
+        .iter()
+        .filter(|delivery| is_context_history_mailbox_item_type(delivery.item.item_type))
+    {
+        let item = &delivery.item;
+        let raw_text = code_history_mailbox_context_text(delivery);
+        let (estimate_text, estimated_tokens) = bounded_code_history_estimate(&raw_text);
+        append_context_contributor(
+            contributors,
+            ContextContributorParts {
+                contributor_id: format!("code_history_mailbox_notice:{}", item.item_id),
+                kind: SessionContextContributorKindDto::CodeHistoryMailboxNotice,
+                label: code_history_mailbox_context_label(item),
+                prompt_fragment_id: None,
+                prompt_fragment_priority: None,
+                prompt_fragment_hash: None,
+                prompt_fragment_provenance: None,
+                project_id: Some(project_id),
+                agent_session_id: Some(agent_session_id),
+                run_id: Some(context_run_id),
+                source_id: Some(item.item_id.as_str()),
+                raw_text: Some(raw_text.as_str()),
+                estimate_text: Some(estimate_text.as_str()),
+                estimated_tokens: Some(estimated_tokens),
+                included: true,
+                model_visible: true,
+            },
+        );
+    }
+}
+
 fn append_code_map_contributors(
     contributors: &mut Vec<SessionContextContributorDto>,
     project_id: &str,
@@ -2448,6 +3096,9 @@ fn authority_score(kind: &SessionContextContributorKindDto) -> u8 {
         SessionContextContributorKindDto::CompactionSummary => 78,
         SessionContextContributorKindDto::FileObservation => 76,
         SessionContextContributorKindDto::CodeRollback => 76,
+        SessionContextContributorKindDto::CodeHistoryOperation => 76,
+        SessionContextContributorKindDto::CodeHistoryNotice => 76,
+        SessionContextContributorKindDto::CodeHistoryMailboxNotice => 76,
         SessionContextContributorKindDto::DependencyMetadata => 70,
         SessionContextContributorKindDto::CodeSymbol => 66,
         SessionContextContributorKindDto::ConversationTail => 62,
@@ -2509,6 +3160,9 @@ fn task_phase_for_kind(kind: &SessionContextContributorKindDto) -> SessionContex
         | SessionContextContributorKindDto::CodeSymbol => SessionContextTaskPhaseDto::ContextGather,
         SessionContextContributorKindDto::FileObservation
         | SessionContextContributorKindDto::CodeRollback
+        | SessionContextContributorKindDto::CodeHistoryOperation
+        | SessionContextContributorKindDto::CodeHistoryNotice
+        | SessionContextContributorKindDto::CodeHistoryMailboxNotice
         | SessionContextContributorKindDto::ToolResult
         | SessionContextContributorKindDto::ToolSummary => SessionContextTaskPhaseDto::Execute,
         SessionContextContributorKindDto::CompactionSummary
@@ -2528,6 +3182,9 @@ fn is_required_context(kind: &SessionContextContributorKindDto) -> bool {
             | SessionContextContributorKindDto::CompactionSummary
             | SessionContextContributorKindDto::FileObservation
             | SessionContextContributorKindDto::CodeRollback
+            | SessionContextContributorKindDto::CodeHistoryOperation
+            | SessionContextContributorKindDto::CodeHistoryNotice
+            | SessionContextContributorKindDto::CodeHistoryMailboxNotice
     )
 }
 
@@ -3186,6 +3843,9 @@ fn item_kind_label(item: &SessionTranscriptItemDto) -> &'static str {
         crate::commands::SessionTranscriptItemKindDto::ToolResult => "Tool result",
         crate::commands::SessionTranscriptItemKindDto::FileChange => "File change",
         crate::commands::SessionTranscriptItemKindDto::CodeRollback => "Code rollback",
+        crate::commands::SessionTranscriptItemKindDto::CodeHistoryOperation => {
+            "Code history operation"
+        }
         crate::commands::SessionTranscriptItemKindDto::Checkpoint => "Checkpoint",
         crate::commands::SessionTranscriptItemKindDto::ActionRequest => "Action request",
         crate::commands::SessionTranscriptItemKindDto::Activity => "Activity",
@@ -3654,5 +4314,189 @@ fn fallback_snippet(content: &str, query: &str) -> String {
         "Matched transcript item.".into()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PROJECT_ID: &str = "project-history";
+    const AGENT_SESSION_ID: &str = "agent-session-history";
+    const RUN_ID: &str = "run-history";
+    const PROVIDER_ID: &str = "test-provider";
+    const MODEL_ID: &str = "test-model";
+
+    #[test]
+    fn code_history_operation_items_are_append_only_and_chronological() {
+        let mut runs = vec![base_run_transcript()];
+        let operation = code_history_operation_record(
+            "history-op-1",
+            "selective_undo",
+            "completed",
+            "2026-05-06T12:00:05Z",
+        );
+        let item = code_history_operation_transcript_item(&operation, &runs[0]);
+        runs[0].items.push(item);
+        sort_run_transcript_items(&mut runs);
+
+        assert_eq!(
+            runs[0].items[0].item_id,
+            "code_history_operation:history-op-1"
+        );
+        assert_eq!(
+            runs[0].items[0].kind,
+            SessionTranscriptItemKindDto::CodeHistoryOperation
+        );
+        assert_eq!(runs[0].items[0].sequence, 1);
+        assert_eq!(runs[0].items[1].item_id, "message:1");
+        let text = runs[0].items[0].text.as_deref().unwrap_or_default();
+        assert!(text.contains("Mode: selective_undo."));
+        assert!(text.contains("Target: change_group `code-change-1`."));
+        assert!(text.contains("Result commit: code-commit-undo-1."));
+        assert!(text.contains("Affected paths: src/tracked.txt."));
+    }
+
+    #[test]
+    fn export_and_search_include_code_history_operations() {
+        let mut runs = vec![base_run_transcript()];
+        let operation = code_history_operation_record(
+            "history-op-export",
+            "session_rollback",
+            "completed",
+            "2026-05-06T12:00:20Z",
+        );
+        let item = code_history_operation_transcript_item(&operation, &runs[0]);
+        runs[0].items.push(item);
+        sort_run_transcript_items(&mut runs);
+
+        let session = agent_session_record();
+        let transcript = session_transcript_from_runs(&session, runs);
+        let payload = SessionTranscriptExportPayloadDto {
+            contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+            export_id: "session-export-test".into(),
+            generated_at: "2026-05-06T12:01:00Z".into(),
+            scope: SessionTranscriptScopeDto::Session,
+            format: SessionTranscriptExportFormatDto::Markdown,
+            transcript: transcript.clone(),
+            context_snapshot: None,
+            redaction: SessionContextRedactionDto::public(),
+        };
+        let markdown = render_markdown_export(&payload);
+        assert!(markdown.contains("Session returned to here"));
+        assert!(markdown.contains("Mode: session_rollback."));
+        assert!(markdown.contains("Result commit: code-commit-undo-1."));
+
+        let mut rows = Vec::new();
+        append_session_search_rows(&mut rows, &session, &transcript);
+        let results = search_rows_fallback("session_rollback", &rows, 10);
+        assert!(results.iter().any(|result| {
+            result.item_id == "code_history_operation:history-op-export"
+                && result.matched_fields.iter().any(|field| field == "text")
+        }));
+    }
+
+    fn base_run_transcript() -> crate::commands::RunTranscriptDto {
+        crate::commands::RunTranscriptDto {
+            contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+            project_id: PROJECT_ID.into(),
+            agent_session_id: AGENT_SESSION_ID.into(),
+            run_id: RUN_ID.into(),
+            provider_id: PROVIDER_ID.into(),
+            model_id: MODEL_ID.into(),
+            status: "completed".into(),
+            source_kind: crate::commands::SessionTranscriptSourceKindDto::OwnedAgent,
+            started_at: "2026-05-06T12:00:00Z".into(),
+            completed_at: Some("2026-05-06T12:00:30Z".into()),
+            items: vec![message_item()],
+            usage_totals: None,
+            redaction: SessionContextRedactionDto::public(),
+        }
+    }
+
+    fn message_item() -> SessionTranscriptItemDto {
+        SessionTranscriptItemDto {
+            contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+            item_id: "message:1".into(),
+            project_id: PROJECT_ID.into(),
+            agent_session_id: AGENT_SESSION_ID.into(),
+            run_id: RUN_ID.into(),
+            provider_id: PROVIDER_ID.into(),
+            model_id: MODEL_ID.into(),
+            source_kind: crate::commands::SessionTranscriptSourceKindDto::OwnedAgent,
+            source_table: "agent_messages".into(),
+            source_id: "1".into(),
+            sequence: 1,
+            created_at: "2026-05-06T12:00:10Z".into(),
+            kind: SessionTranscriptItemKindDto::Message,
+            actor: SessionTranscriptActorDto::Assistant,
+            title: Some("Assistant message".into()),
+            text: Some("Earlier transcript row remains unchanged.".into()),
+            summary: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_state: None,
+            file_path: None,
+            code_change_group_id: None,
+            code_commit_id: None,
+            code_workspace_epoch: None,
+            code_patch_availability: None,
+            checkpoint_kind: None,
+            action_id: None,
+            redaction: SessionContextRedactionDto::public(),
+        }
+    }
+
+    fn code_history_operation_record(
+        operation_id: &str,
+        mode: &str,
+        status: &str,
+        completed_at: &str,
+    ) -> project_store::CodeHistoryOperationRecord {
+        project_store::CodeHistoryOperationRecord {
+            project_id: PROJECT_ID.into(),
+            operation_id: operation_id.into(),
+            mode: mode.into(),
+            status: status.into(),
+            target_kind: "change_group".into(),
+            target_id: "code-change-1".into(),
+            target_change_group_id: Some("code-change-1".into()),
+            target_file_path: None,
+            target_hunk_ids: Vec::new(),
+            agent_session_id: AGENT_SESSION_ID.into(),
+            run_id: RUN_ID.into(),
+            expected_workspace_epoch: Some(7),
+            affected_paths: vec!["src/tracked.txt".into()],
+            conflicts: Vec::new(),
+            result_change_group_id: Some("code-change-undo-1".into()),
+            result_commit_id: Some("code-commit-undo-1".into()),
+            failure_code: None,
+            failure_message: None,
+            repair_code: None,
+            repair_message: None,
+            target_summary_label: Some("Changed tracked file".into()),
+            result_summary_label: Some("Undo tracked file".into()),
+            created_at: "2026-05-06T12:00:01Z".into(),
+            updated_at: completed_at.into(),
+            completed_at: Some(completed_at.into()),
+        }
+    }
+
+    fn agent_session_record() -> AgentSessionRecord {
+        AgentSessionRecord {
+            project_id: PROJECT_ID.into(),
+            agent_session_id: AGENT_SESSION_ID.into(),
+            title: "History session".into(),
+            summary: String::new(),
+            status: project_store::AgentSessionStatus::Active,
+            selected: true,
+            created_at: "2026-05-06T12:00:00Z".into(),
+            updated_at: "2026-05-06T12:00:30Z".into(),
+            archived_at: None,
+            last_run_id: Some(RUN_ID.into()),
+            last_runtime_kind: Some("owned_agent".into()),
+            last_provider_id: Some(PROVIDER_ID.into()),
+            lineage: None,
+        }
     }
 }

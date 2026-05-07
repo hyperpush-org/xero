@@ -9,6 +9,7 @@ const projects = [
     name: 'mesh-lang',
     description: 'Xero desktop shell',
     milestone: 'No milestone assigned',
+    projectOrigin: 'unknown' as const,
     totalPhases: 1,
     completedPhases: 0,
     activePhase: 0,

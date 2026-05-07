@@ -537,23 +537,54 @@ function makeFileChangeItem(
   }
 }
 
-type CodeRollbackResponse = Awaited<ReturnType<NonNullable<AgentRuntimeDesktopAdapter['applyCodeRollback']>>>
+type CodeUndoResponse = Awaited<ReturnType<NonNullable<AgentRuntimeDesktopAdapter['applySelectiveUndo']>>>
+type ReturnSessionToHereResponse = Awaited<ReturnType<NonNullable<AgentRuntimeDesktopAdapter['returnSessionToHere']>>>
 
-function makeCodeRollbackResponse(overrides: Partial<CodeRollbackResponse> = {}): CodeRollbackResponse {
+function makeCodeUndoResponse(overrides: Partial<CodeUndoResponse['operation']> = {}): CodeUndoResponse {
   return {
-    projectId: 'project-1',
-    agentSessionId: 'agent-session-main',
-    runId: 'run-1',
-    operationId: 'rollback-operation-1',
-    targetChangeGroupId: 'code-change-1',
-    targetSnapshotId: 'snapshot-before-change',
-    preRollbackSnapshotId: 'snapshot-before-rollback',
-    resultChangeGroupId: 'code-change-rollback-1',
-    restoredPaths: ['client/src/file.ts'],
-    removedPaths: [],
-    affectedFiles: [],
-    repositoryStatus: {} as CodeRollbackResponse['repositoryStatus'],
-    ...overrides,
+    operation: {
+      projectId: 'project-1',
+      operationId: 'code-undo-operation-1',
+      mode: 'selective_undo',
+      status: 'completed',
+      target: {
+        targetKind: 'change_group',
+        targetId: 'code-change-1',
+        hunkIds: [],
+      },
+      affectedPaths: ['client/src/file.ts'],
+      conflicts: [],
+      resultCommitId: 'code-commit-undo-1',
+      resultChangeGroupId: 'code-change-undo-1',
+      createdAt: '2026-05-06T12:00:00Z',
+      updatedAt: '2026-05-06T12:00:01Z',
+      ...overrides,
+    },
+  }
+}
+
+function makeReturnSessionToHereResponse(
+  overrides: Partial<ReturnSessionToHereResponse['operation']> = {},
+): ReturnSessionToHereResponse {
+  return {
+    operation: {
+      projectId: 'project-1',
+      operationId: 'code-return-session-operation-1',
+      mode: 'session_rollback',
+      status: 'completed',
+      target: {
+        targetKind: 'run_boundary',
+        targetId: 'run-1:change_group:code-change-1',
+        hunkIds: [],
+      },
+      affectedPaths: ['client/src/file.ts'],
+      conflicts: [],
+      resultCommitId: 'code-commit-return-session-1',
+      resultChangeGroupId: 'code-change-return-session-1',
+      createdAt: '2026-05-06T12:00:00Z',
+      updatedAt: '2026-05-06T12:00:01Z',
+      ...overrides,
+    },
   }
 }
 
@@ -588,6 +619,28 @@ function renderRuntimeStreamItems(runtimeStreamItems: NonNullable<AgentPaneView[
       })}
     />,
   )
+}
+
+function openUndoMenu(path = 'client/src/file.ts') {
+  fireEvent.pointerDown(screen.getByRole('button', { name: `Open undo menu for ${path}` }), {
+    button: 0,
+    ctrlKey: false,
+  })
+}
+
+function clickUndoFileChange(path = 'client/src/file.ts') {
+  openUndoMenu(path)
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Undo this file change' }))
+}
+
+function clickUndoChangeGroup(path = 'client/src/file.ts') {
+  openUndoMenu(path)
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Undo entire change group' }))
+}
+
+function clickReturnSessionToHere(path = 'client/src/file.ts') {
+  openUndoMenu(path)
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Return this session to here' }))
 }
 
 function installClipboardWriteMock() {
@@ -931,11 +984,11 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByLabelText('Agent conversation', { selector: 'section' })).toHaveClass('select-text')
   })
 
-  it('enables rollback on changed file entries with captured change groups', () => {
+  it('enables the undo action menu on changed file entries with captured change groups', () => {
     const dictation = createDictationAdapter()
     const desktopAdapter: AgentRuntimeDesktopAdapter = {
       ...dictation.adapter,
-      applyCodeRollback: vi.fn(async () => makeCodeRollbackResponse()),
+      applySelectiveUndo: vi.fn(async () => makeCodeUndoResponse()),
     }
 
     render(
@@ -958,14 +1011,19 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByText('client/src/file.ts')).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Rollback client/src/file.ts' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Open undo menu for client/src/file.ts' })).toBeEnabled()
+
+    openUndoMenu()
+
+    expect(screen.getByRole('menuitem', { name: 'Undo this file change' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'Undo entire change group' })).toBeVisible()
   })
 
-  it('disables rollback when a changed file entry has no restorable change group', () => {
+  it('disables the undo action menu when a changed file entry has no undoable change group', () => {
     const dictation = createDictationAdapter()
     const desktopAdapter: AgentRuntimeDesktopAdapter = {
       ...dictation.adapter,
-      applyCodeRollback: vi.fn(async () => makeCodeRollbackResponse()),
+      applySelectiveUndo: vi.fn(async () => makeCodeUndoResponse()),
     }
 
     render(
@@ -987,15 +1045,243 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('button', { name: 'Rollback unavailable for client/src/file.ts' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Undo unavailable for client/src/file.ts' })).toBeDisabled()
   })
 
-  it('calls the rollback command from the changed file entry', async () => {
-    const applyCodeRollback = vi.fn(async () => makeCodeRollbackResponse())
+  it('calls the selective file undo command from the changed file entry menu', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
     const dictation = createDictationAdapter()
     const desktopAdapter: AgentRuntimeDesktopAdapter = {
       ...dictation.adapter,
-      applyCodeRollback,
+      applySelectiveUndo,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+              codeWorkspaceEpoch: 7,
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    clickUndoFileChange()
+
+    await waitFor(() =>
+      expect(applySelectiveUndo).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        operationId: expect.stringMatching(/^code-undo-/),
+        target: {
+          targetKind: 'file_change',
+          targetId: 'client/src/file.ts',
+          changeGroupId: 'code-change-1',
+          filePath: 'client/src/file.ts',
+          hunkIds: [],
+        },
+        expectedWorkspaceEpoch: 7,
+      }),
+    )
+  })
+
+  it('calls the whole-change undo command from the changed file entry menu', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+              codeWorkspaceEpoch: 7,
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    clickUndoChangeGroup()
+
+    await waitFor(() =>
+      expect(applySelectiveUndo).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        operationId: expect.stringMatching(/^code-undo-/),
+        target: {
+          targetKind: 'change_group',
+          targetId: 'code-change-1',
+          changeGroupId: 'code-change-1',
+          hunkIds: [],
+        },
+        expectedWorkspaceEpoch: 7,
+      }),
+    )
+  })
+
+  it('calls return session to here from the changed file entry menu with a run boundary target', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
+    const returnSessionToHere = vi.fn(async () => makeReturnSessionToHereResponse())
+    const onCodeUndoApplied = vi.fn(async () => undefined)
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
+      returnSessionToHere,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+              codeWorkspaceEpoch: 7,
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+        onCodeUndoApplied={onCodeUndoApplied}
+      />,
+    )
+
+    clickReturnSessionToHere()
+
+    await waitFor(() =>
+      expect(returnSessionToHere).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        operationId: expect.stringMatching(/^code-return-session-/),
+        target: {
+          targetKind: 'run_boundary',
+          targetId: 'run-1:change_group:code-change-1',
+          agentSessionId: 'agent-session-main',
+          boundaryId: 'change_group:code-change-1',
+          runId: 'run-1',
+          changeGroupId: 'code-change-1',
+        },
+        expectedWorkspaceEpoch: 7,
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByText('Return session history event added. Other sessions are unchanged.')).toBeVisible(),
+    )
+    expect(applySelectiveUndo).not.toHaveBeenCalled()
+    expect(onCodeUndoApplied).toHaveBeenCalled()
+  })
+
+  it('calls the hunk-level undo command with selected diff hunks', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+              codeWorkspaceEpoch: 7,
+              codePatchAvailability: {
+                projectId: 'project-1',
+                targetChangeGroupId: 'code-change-1',
+                available: true,
+                affectedPaths: ['client/src/file.ts'],
+                fileChangeCount: 1,
+                textHunkCount: 2,
+                textHunks: [
+                  {
+                    hunkId: 'hunk-first',
+                    patchFileId: 'patch-file-1',
+                    filePath: 'client/src/file.ts',
+                    hunkIndex: 0,
+                    baseStartLine: 10,
+                    baseLineCount: 2,
+                    resultStartLine: 12,
+                    resultLineCount: 2,
+                  },
+                  {
+                    hunkId: 'hunk-second',
+                    patchFileId: 'patch-file-1',
+                    filePath: 'client/src/file.ts',
+                    hunkIndex: 1,
+                    baseStartLine: 30,
+                    baseLineCount: 1,
+                    resultStartLine: 33,
+                    resultLineCount: 1,
+                  },
+                ],
+                unavailableReason: null,
+              },
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    openUndoMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /Hunk 1.*new lines 12-13/ }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /Hunk 2.*new line 33/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Undo selected hunks/ }))
+
+    await waitFor(() =>
+      expect(applySelectiveUndo).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        operationId: expect.stringMatching(/^code-undo-/),
+        target: {
+          targetKind: 'hunks',
+          targetId: 'code-change-1:client/src/file.ts:hunks',
+          changeGroupId: 'code-change-1',
+          filePath: 'client/src/file.ts',
+          hunkIds: ['hunk-first', 'hunk-second'],
+        },
+        expectedWorkspaceEpoch: 7,
+      }),
+    )
+  })
+
+  it('shows undo success and refreshes after undo resolves', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
+    const onCodeUndoApplied = vi.fn(async () => undefined)
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
     }
 
     render(
@@ -1014,52 +1300,19 @@ describe('AgentRuntime current UI', () => {
           ],
         })}
         desktopAdapter={desktopAdapter}
+        onCodeUndoApplied={onCodeUndoApplied}
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+    clickUndoFileChange()
 
-    await waitFor(() => expect(applyCodeRollback).toHaveBeenCalledWith('project-1', 'code-change-1'))
+    expect(screen.getByRole('button', { name: 'Undoing client/src/file.ts' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByText('Undid 1 path.')).toBeVisible())
+    expect(onCodeUndoApplied).toHaveBeenCalled()
   })
 
-  it('shows rollback success and refreshes after rollback resolves', async () => {
-    const applyCodeRollback = vi.fn(async () => makeCodeRollbackResponse())
-    const onCodeRollbackApplied = vi.fn(async () => undefined)
-    const dictation = createDictationAdapter()
-    const desktopAdapter: AgentRuntimeDesktopAdapter = {
-      ...dictation.adapter,
-      applyCodeRollback,
-    }
-
-    render(
-      <AgentRuntime
-        agent={makeAgent({
-          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
-          runtimeRun: makeRuntimeRun(),
-          runtimeStreamStatus: 'live',
-          runtimeStreamStatusLabel: 'Live stream',
-          runtimeStreamItems: [
-            makeFileChangeItem({
-              sequence: 2,
-              detail: 'modify: client/src/file.ts',
-              codeChangeGroupId: 'code-change-1',
-            }),
-          ],
-        })}
-        desktopAdapter={desktopAdapter}
-        onCodeRollbackApplied={onCodeRollbackApplied}
-      />,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
-
-    expect(screen.getByRole('button', { name: 'Rolling back client/src/file.ts' })).toBeDisabled()
-    await waitFor(() => expect(screen.getByText('Rolled back 1 restored path.')).toBeVisible())
-    expect(onCodeRollbackApplied).toHaveBeenCalled()
-  })
-
-  it('preserves conversation scroll position after rollback succeeds', async () => {
-    const applyCodeRollback = vi.fn(async () => makeCodeRollbackResponse())
+  it('preserves conversation scroll position after undo succeeds', async () => {
+    const applySelectiveUndo = vi.fn(async () => makeCodeUndoResponse())
     const originalRequestAnimationFrame = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame')
     Object.defineProperty(window, 'requestAnimationFrame', {
       configurable: true,
@@ -1072,7 +1325,7 @@ describe('AgentRuntime current UI', () => {
     const dictation = createDictationAdapter()
     const desktopAdapter: AgentRuntimeDesktopAdapter = {
       ...dictation.adapter,
-      applyCodeRollback,
+      applySelectiveUndo,
     }
 
     try {
@@ -1103,9 +1356,9 @@ describe('AgentRuntime current UI', () => {
         clientHeight: 360,
       })
 
-      fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+      clickUndoFileChange()
 
-      await waitFor(() => expect(screen.getByText('Rolled back 1 restored path.')).toBeVisible())
+      await waitFor(() => expect(screen.getByText('Undid 1 path.')).toBeVisible())
       expect(viewport.scrollTop).toBe(128)
     } finally {
       if (originalRequestAnimationFrame) {
@@ -1116,14 +1369,14 @@ describe('AgentRuntime current UI', () => {
     }
   })
 
-  it('shows rollback failure on the changed file entry', async () => {
-    const applyCodeRollback = vi.fn(async () => {
-      throw new Error('Snapshot blob is missing.')
+  it('shows undo failure on the changed file entry', async () => {
+    const applySelectiveUndo = vi.fn(async () => {
+      throw new Error('Patch data is missing.')
     })
     const dictation = createDictationAdapter()
     const desktopAdapter: AgentRuntimeDesktopAdapter = {
       ...dictation.adapter,
-      applyCodeRollback,
+      applySelectiveUndo,
     }
 
     render(
@@ -1145,10 +1398,182 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rollback client/src/file.ts' }))
+    clickUndoFileChange()
 
-    await waitFor(() => expect(screen.getByText('Snapshot blob is missing.')).toBeVisible())
-    expect(screen.getByRole('button', { name: 'Retry rollback for client/src/file.ts' })).toBeEnabled()
+    await waitFor(() => expect(screen.getByText('Patch data is missing.')).toBeVisible())
+    expect(screen.getByRole('button', { name: 'Open undo menu for client/src/file.ts' })).toBeEnabled()
+
+    openUndoMenu()
+
+    expect(screen.getByRole('menuitem', { name: 'Retry undo for this file change' })).toBeVisible()
+  })
+
+  it('shows selective undo conflicts with user-facing conflict details', async () => {
+    const applySelectiveUndo = vi.fn(async () =>
+      makeCodeUndoResponse({
+        status: 'conflicted',
+        target: {
+          targetKind: 'file_change',
+          targetId: 'client/src/file.ts',
+          hunkIds: [],
+        },
+        conflicts: [
+          {
+            operationId: 'code-undo-operation-1',
+            targetId: 'client/src/file.ts',
+            path: 'client/src/file.ts',
+            kind: 'text_overlap',
+            message: 'Current content changed lines selected for undo.',
+            baseHash: null,
+            selectedHash: null,
+            currentHash: null,
+            hunkIds: [],
+          },
+        ],
+      }),
+    )
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    clickUndoFileChange()
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'Undo blocked by conflict in client/src/file.ts. Current content changed lines selected for undo.',
+        ),
+      ).toBeVisible(),
+    )
+    expect(screen.getByRole('alert', { name: 'Undo conflict' })).toBeVisible()
+    expect(screen.getByText('Selected file: client/src/file.ts')).toBeVisible()
+    expect(screen.getByText('Affected paths')).toBeVisible()
+    expect(screen.getByText('Overlapping text')).toBeVisible()
+    expect(screen.getByText('Current content changed lines selected for undo.')).toBeVisible()
+    expect(
+      screen.getByRole('button', { name: 'Hide conflict details for Selected file: client/src/file.ts' }),
+    ).toBeVisible()
+  })
+
+  it('shows selected hunk ids inside hunk-level undo conflicts', async () => {
+    const applySelectiveUndo = vi.fn(async () =>
+      makeCodeUndoResponse({
+        status: 'conflicted',
+        target: {
+          targetKind: 'hunks',
+          targetId: 'code-change-1:client/src/file.ts:hunks',
+          hunkIds: ['hunk-first', 'hunk-second'],
+        },
+        conflicts: [
+          {
+            operationId: 'code-undo-operation-1',
+            targetId: 'code-change-1:client/src/file.ts:hunks',
+            path: 'client/src/file.ts',
+            kind: 'text_overlap',
+            message: 'A later edit changed one of the selected hunks.',
+            baseHash: null,
+            selectedHash: null,
+            currentHash: null,
+            hunkIds: ['hunk-second'],
+          },
+        ],
+      }),
+    )
+    const dictation = createDictationAdapter()
+    const desktopAdapter: AgentRuntimeDesktopAdapter = {
+      ...dictation.adapter,
+      applySelectiveUndo,
+    }
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            makeFileChangeItem({
+              sequence: 2,
+              detail: 'modify: client/src/file.ts',
+              codeChangeGroupId: 'code-change-1',
+              codePatchAvailability: {
+                projectId: 'project-1',
+                targetChangeGroupId: 'code-change-1',
+                available: true,
+                affectedPaths: ['client/src/file.ts'],
+                fileChangeCount: 1,
+                textHunkCount: 2,
+                textHunks: [
+                  {
+                    hunkId: 'hunk-first',
+                    patchFileId: 'patch-file-1',
+                    filePath: 'client/src/file.ts',
+                    hunkIndex: 0,
+                    baseStartLine: 10,
+                    baseLineCount: 2,
+                    resultStartLine: 12,
+                    resultLineCount: 2,
+                  },
+                  {
+                    hunkId: 'hunk-second',
+                    patchFileId: 'patch-file-1',
+                    filePath: 'client/src/file.ts',
+                    hunkIndex: 1,
+                    baseStartLine: 30,
+                    baseLineCount: 1,
+                    resultStartLine: 33,
+                    resultLineCount: 1,
+                  },
+                ],
+                unavailableReason: null,
+              },
+            }),
+          ],
+        })}
+        desktopAdapter={desktopAdapter}
+      />,
+    )
+
+    openUndoMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /Hunk 1.*new lines 12-13/ }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /Hunk 2.*new line 33/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Undo selected hunks/ }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert', { name: 'Undo conflict' })).toBeVisible(),
+    )
+    expect(screen.getByText('Selected hunks: hunk-first, hunk-second')).toBeVisible()
+    expect(screen.getByText('A later edit changed one of the selected hunks.')).toBeVisible()
+    expect(screen.getByText('hunk-second')).toBeVisible()
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Hide conflict details for Selected hunks: hunk-first, hunk-second',
+      }),
+    )
+    expect(screen.queryByText('Affected paths')).not.toBeInTheDocument()
   })
 
   it('copies user prompts, agent responses, and the visible conversation', async () => {
