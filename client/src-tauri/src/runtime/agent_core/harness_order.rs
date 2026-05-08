@@ -611,9 +611,9 @@ fn harness_runner_compare_report(items: &[HarnessManifestItem], final_report: &s
 
     for (index, row) in rows.iter().enumerate() {
         let expected_at_index = expected.get(index);
-        if expected_at_index.map_or(true, |item| {
-            item.step_id != row.step_id.as_str() || item.target != row.target
-        }) {
+        if expected_at_index
+            .is_none_or(|item| item.step_id != row.step_id.as_str() || item.target != row.target)
+        {
             out_of_order_rows.push(json!({
                 "index": index,
                 "stepId": row.step_id,

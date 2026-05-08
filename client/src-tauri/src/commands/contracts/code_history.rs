@@ -16,6 +16,7 @@ pub enum CodeHistoryOperationStatusDto {
     Applying,
     Completed,
     Failed,
+    RepairNeeded,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +55,19 @@ pub struct CodeWorkspaceHeadDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodePatchTextHunkDto {
+    pub hunk_id: String,
+    pub patch_file_id: Option<String>,
+    pub file_path: String,
+    pub hunk_index: u32,
+    pub base_start_line: u32,
+    pub base_line_count: u32,
+    pub result_start_line: u32,
+    pub result_line_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodePatchAvailabilityDto {
     pub project_id: String,
     pub target_change_group_id: String,
@@ -61,6 +75,8 @@ pub struct CodePatchAvailabilityDto {
     pub affected_paths: Vec<String>,
     pub file_change_count: u32,
     pub text_hunk_count: u32,
+    #[serde(default)]
+    pub text_hunks: Vec<CodePatchTextHunkDto>,
     pub unavailable_reason: Option<String>,
 }
 
@@ -91,6 +107,8 @@ pub struct SessionRollbackTargetDto {
 pub struct CodeHistoryOperationTargetDto {
     pub target_kind: CodeHistoryTargetKindDto,
     pub target_id: String,
+    #[serde(default)]
+    pub hunk_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -288,7 +306,12 @@ fn validate_session_rollback_target(target: &SessionRollbackTargetDto) -> Result
 }
 
 fn validate_target_summary(target: &CodeHistoryOperationTargetDto) -> Result<(), String> {
-    require_non_empty(&target.target_id, "target.targetId")
+    require_non_empty(&target.target_id, "target.targetId")?;
+    validate_non_empty_items_when_present(&target.hunk_ids, "target.hunkIds")?;
+    if target.target_kind == CodeHistoryTargetKindDto::Hunks && target.hunk_ids.is_empty() {
+        return Err("hunk operation targets must record selected hunk ids".into());
+    }
+    Ok(())
 }
 
 fn validate_conflict(
@@ -348,6 +371,15 @@ fn validate_patch_availability(availability: &CodePatchAvailabilityDto) -> Resul
             &availability.unavailable_reason,
             "patchAvailability.unavailableReason",
         )?;
+    }
+
+    for hunk in &availability.text_hunks {
+        require_non_empty(&hunk.hunk_id, "patchAvailability.textHunks[].hunkId")?;
+        validate_optional_non_empty(
+            &hunk.patch_file_id,
+            "patchAvailability.textHunks[].patchFileId",
+        )?;
+        require_non_empty(&hunk.file_path, "patchAvailability.textHunks[].filePath")?;
     }
 
     Ok(())

@@ -22,7 +22,8 @@ import type {
 
 const MIN_WIDTH = 320
 const MAX_WIDTH = 720
-const DEFAULT_WIDTH = 460
+const DEFAULT_WIDTH = 560
+const COMPACT_WIDTH_THRESHOLD = 400
 const WIDTH_STORAGE_KEY = "xero.agentDock.width"
 
 function readPersistedWidth(): number | null {
@@ -80,7 +81,7 @@ export interface AgentDockSidebarProps {
   onRefreshNotificationRoutes?: AgentRuntimeProps["onRefreshNotificationRoutes"]
   onUpsertNotificationRoute?: AgentRuntimeProps["onUpsertNotificationRoute"]
   onRetryStream?: AgentRuntimeProps["onRetryStream"]
-  onCodeRollbackApplied?: AgentRuntimeProps["onCodeRollbackApplied"]
+  onCodeUndoApplied?: AgentRuntimeProps["onCodeUndoApplied"]
 }
 
 export function AgentDockSidebar({
@@ -194,7 +195,7 @@ export function AgentDockSidebar({
               active={open}
               agent={agent}
               highChurnStore={highChurnStore}
-              density="compact"
+              density={width < COMPACT_WIDTH_THRESHOLD ? "compact" : "comfortable"}
               onCreateSession={onCreateSession}
               isCreatingSession={isCreatingSession}
               inSidebar

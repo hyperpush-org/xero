@@ -1,0 +1,750 @@
+/* Reskin ReactFlow chrome to match the app's theme.
+   The default styles ship a white background and white minimap which look
+   detached from our dark-by-default design. */
+
+.agent-visualization {
+  /* Background dot tint. Toned down from the foreground-mix default so the
+     grid reads as ambient texture rather than the brightest thing on screen. */
+  --xy-background-color: transparent;
+  --xy-background-pattern-dots-color: color-mix(in oklab, var(--foreground) 18%, transparent);
+
+  /* ReactFlow uses these to colour the default node container. We override to
+     transparent so any padding outside our card-styled children does not bleed
+     a white rectangle into the dark canvas. */
+  --xy-node-background-color: transparent;
+  --xy-node-background-color-default: transparent;
+  --xy-node-color: var(--card-foreground);
+  --xy-node-color-default: var(--card-foreground);
+  --xy-node-border: transparent;
+  --xy-node-border-default: transparent;
+
+  /* Edge / connection line colour — opaque mix with the canvas background so
+     overlapping segments do not compound into brighter spots. */
+  --xy-edge-stroke: color-mix(in oklab, var(--foreground) 42%, var(--background));
+  --xy-edge-stroke-default: color-mix(in oklab, var(--foreground) 42%, var(--background));
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--primary);
+
+  --xy-handle-background-color: var(--primary);
+  --xy-handle-border-color: var(--background);
+
+  /* Shared card surface tokens used by every node card. Centralizing here
+     keeps the borders and shadows visually coherent without each node
+     component having to redeclare them. */
+  --agent-card-radius: 8px;
+  --agent-card-border: color-mix(in oklab, var(--foreground) 14%, transparent);
+  --agent-card-bg: color-mix(in oklab, var(--card) 96%, var(--foreground) 4%);
+  --agent-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --agent-card-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.22);
+  --agent-card-shadow-expanded: 0 4px 10px rgba(0, 0, 0, 0.3);
+  --agent-layout-duration: 240ms;
+  --agent-layout-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --agent-mode-duration: 180ms;
+  --agent-mode-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.agent-visualization .react-flow {
+  background: transparent;
+}
+
+.agent-visualization .react-flow__viewport {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.agent-visualization .react-flow__background {
+  background: transparent;
+  pointer-events: none;
+}
+
+.agent-visualization .agent-visualization__dots {
+  --agent-dot-color: color-mix(in oklab, var(--foreground) 18%, transparent);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(100% + 64px);
+  height: calc(100% + 64px);
+  z-index: -1;
+  pointer-events: none;
+  contain: layout style paint;
+  backface-visibility: hidden;
+  background-image: radial-gradient(
+    circle,
+    var(--agent-dot-color) 0 1px,
+    transparent 1.1px
+  );
+  background-size: 32px 32px;
+  transform: translate3d(0, 0, 0) scale(1);
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.agent-visualization__empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  contain: layout style paint;
+  transform: translate3d(0, -4px, 0) scale(0.985);
+  opacity: 0;
+  transition-property: opacity, transform;
+  transition-duration: var(--agent-mode-duration);
+  transition-timing-function: var(--agent-mode-ease);
+  will-change: opacity, transform;
+}
+
+.agent-visualization__empty-state.is-visible {
+  transform: translate3d(0, 0, 0) scale(1);
+  opacity: 1;
+}
+
+.agent-visualization__empty-state.is-visible .workflow-empty-state {
+  animation: agent-empty-state-enter 340ms var(--agent-mode-ease) both;
+  will-change: opacity, transform, filter;
+}
+
+.agent-visualization__empty-state.is-hidden .workflow-empty-state {
+  pointer-events: none;
+}
+
+@keyframes agent-empty-state-enter {
+  from {
+    transform: translate3d(0, 14px, 0) scale(0.94);
+    opacity: 0;
+    filter: blur(4px);
+  }
+
+  to {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.agent-visualization .react-flow__edges {
+  z-index: 0;
+}
+
+.agent-visualization .react-flow__nodes,
+.agent-visualization .react-flow__edges,
+.agent-visualization .react-flow__edge-labels,
+.agent-visualization .react-flow__controls {
+  transition-property: opacity, transform;
+  transition-duration: var(--agent-mode-duration);
+  transition-timing-function: var(--agent-mode-ease);
+}
+
+.agent-visualization.is-agent-exiting .react-flow__nodes,
+.agent-visualization.is-agent-exiting .react-flow__edges,
+.agent-visualization.is-agent-exiting .react-flow__edge-labels {
+  transform: translate3d(0, -6px, 0) scale(0.985);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-visualization.is-agent-exiting .react-flow__controls {
+  transform: translate3d(0, 6px, 0) scale(0.985);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-visualization .react-flow__edges,
+.agent-visualization .react-flow__edges * {
+  pointer-events: none !important;
+}
+
+.agent-visualization .react-flow__nodes {
+  z-index: 1;
+}
+
+/* Strip default node container styling so only our card children paint a surface.
+   The transform transition lets neighbouring nodes glide into their new positions
+   when one card expands and the layout reflows around it. */
+.agent-visualization .react-flow__node {
+  background: transparent;
+  border: none;
+  padding: 0;
+  width: auto;
+  text-align: left;
+  contain: layout style;
+  transition: transform var(--agent-layout-duration) var(--agent-layout-ease);
+}
+
+/* Drag operations should feel snappy — disable the transition while the user
+   is actively moving a node so it tracks the cursor 1:1. */
+.agent-visualization .react-flow__node.dragging,
+.agent-visualization .react-flow__node.selected:active,
+.agent-visualization.is-dragging .react-flow__node {
+  transition: none;
+}
+
+.agent-visualization .react-flow__panel {
+  /* Default Panels include a white background. Make them transparent so our card-styled
+     children control their own surface. */
+  background: transparent;
+  border: none;
+}
+
+.agent-visualization .react-flow__controls {
+  background: var(--card);
+  border: 1px solid color-mix(in oklab, var(--foreground) 12%, transparent);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.agent-visualization .react-flow__controls-button {
+  background: transparent;
+  color: var(--muted-foreground);
+  border: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--foreground) 8%, transparent);
+  width: 30px;
+  height: 30px;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.agent-visualization .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.agent-visualization .react-flow__controls-button:hover {
+  background: color-mix(in oklab, var(--foreground) 8%, transparent);
+  color: var(--foreground);
+}
+
+.agent-visualization .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.agent-visualization .react-flow__edge-path {
+  /* Opaque stroke (no transparent endpoint) so overlapping lines do not
+     compound into brighter sections at intersections. */
+  stroke: color-mix(in oklab, var(--foreground) 42%, var(--background));
+  stroke-width: 1.5;
+  shape-rendering: geometricPrecision;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 200ms ease, stroke-width 160ms ease, opacity 160ms ease;
+}
+
+.agent-visualization .react-flow__edge {
+  transition: opacity 120ms ease;
+}
+
+/* Per-category edge colour. Each category uses a desaturated, opaque tint so
+   the four edge bundles read as distinct families without appearing bright.
+   Ownership edges (header → child) sit at lower opacity than functional
+   cross-edges so the latter read as the primary flow signal. */
+.agent-visualization .react-flow__edge.agent-edge-prompt .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
+  opacity: 0.72;
+}
+.agent-visualization .react-flow__edge.agent-edge-tool .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 50%, var(--background));
+  opacity: 0.72;
+}
+.agent-visualization .react-flow__edge.agent-edge-db .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-emerald-500, #10b981) 50%, var(--background));
+  opacity: 0.72;
+}
+.agent-visualization .react-flow__edge.agent-edge-output .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--foreground) 45%, var(--background));
+  opacity: 0.72;
+}
+
+/* Functional cross-edges. These describe causation (tool → db, section → db,
+   upstream-artifact → db). Repainted in a distinct hue from the amber
+   prompt-ownership family so the two semantics (causation vs ownership)
+   don't collide on the same colour. The same information is also rendered
+   as in-card chips ("Tool: Edit", "Section: handoff_context") on each DB
+   card, so the edges here are *ambient* flow indicators — they confirm a
+   relationship exists at a glance, and the on-hover focus mode surfaces
+   the specific cluster at full opacity when the user wants to trace it. */
+.agent-visualization .react-flow__edge.agent-edge-trigger .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 65%, var(--foreground));
+  stroke-width: 1;
+  opacity: 0.28;
+}
+
+/* Trigger-edge labels are rendered in a separate DOM portal via React Flow's
+   `EdgeLabelRenderer` (see `edges/trigger-edge.tsx`). That portal sits in
+   `.react-flow__edge-labels` which is positioned above the node layer, so
+   labels never fall behind a card the edge happens to cross — every label
+   reads at uniform brightness regardless of what's underneath. */
+.agent-visualization .react-flow__edge-labels {
+  position: absolute;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.agent-visualization .agent-edge-trigger-label {
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--background) 92%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 32%, var(--background));
+  color: color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 85%, var(--foreground));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  /* Anchor the centred translate(-50%, -50%) the inline transform applies. */
+  transform-origin: 0 0;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 0s;
+}
+
+/* Direction marker tinting — markers inherit fill via SVG so each edge family
+   keeps its colour identity at the arrowhead too. */
+.agent-visualization .react-flow__edge.agent-edge-prompt .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-prompt .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
+}
+.agent-visualization .react-flow__edge.agent-edge-tool .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-tool .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 50%, var(--background));
+  stroke: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 50%, var(--background));
+}
+.agent-visualization .react-flow__edge.agent-edge-db .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-db .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-emerald-500, #10b981) 50%, var(--background));
+  stroke: color-mix(in oklab, var(--color-emerald-500, #10b981) 50%, var(--background));
+}
+.agent-visualization .react-flow__edge.agent-edge-output .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-output .react-flow__arrowhead polygon,
+.agent-visualization .react-flow__edge.agent-edge-output-section .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-output-section .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--foreground) 55%, var(--background));
+  stroke: color-mix(in oklab, var(--foreground) 55%, var(--background));
+}
+.agent-visualization .react-flow__edge.agent-edge-trigger .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-trigger .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 75%, var(--foreground));
+  stroke: color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 75%, var(--foreground));
+}
+.agent-visualization .react-flow__edge.agent-edge-consume .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-consume .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, #14b8a6 75%, var(--foreground));
+  stroke: color-mix(in oklab, #14b8a6 75%, var(--foreground));
+}
+
+/* Consumed-artifact edges (upstream agent → header) — dashed teal so the
+   inbound handoff visually contrasts with intra-agent ownership. */
+.agent-visualization .react-flow__edge.agent-edge-consume .react-flow__edge-path {
+  stroke: color-mix(in oklab, #14b8a6 75%, var(--foreground));
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  opacity: 0.85;
+}
+
+/* Focus mode — when the user hovers a node we light up its directly-related
+   trigger edges and drop everything unrelated. The node itself also dims, so
+   the related cluster pops out of the canvas at a glance.
+
+   React Flow's edge renderer stays under the node layer at all times, including
+   focus mode. The active edge still gets brighter, but it never rises above
+   any card. */
+.agent-visualization.is-focusing .react-flow__edges,
+.agent-visualization.is-focusing .react-flow__edges * {
+  pointer-events: none !important;
+}
+.agent-visualization.is-focusing .react-flow__edge:not(.is-active) {
+  opacity: 0;
+}
+.agent-visualization.is-focusing .react-flow__edge.is-active {
+  opacity: 1;
+}
+.agent-visualization.is-focusing .agent-edge-trigger-label:not(.is-active) {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 80ms ease,
+    visibility 0s linear 80ms;
+}
+.agent-visualization.is-focusing .agent-edge-trigger-label.is-active {
+  opacity: 1;
+  visibility: visible;
+}
+.agent-visualization .react-flow__edge.agent-edge-trigger.is-active .react-flow__edge-path {
+  opacity: 1;
+  stroke-width: 2.25;
+}
+.agent-visualization .react-flow__edge.is-active:not(.agent-edge-trigger) .react-flow__edge-path {
+  opacity: 1;
+  stroke-width: 2.25;
+}
+.agent-visualization.is-focusing
+  .react-flow__node:not(.is-focused):not(.react-flow__node-lane-label):not(.react-flow__node-tool-group-frame) {
+  opacity: 0.3;
+  transition:
+    transform var(--agent-layout-duration) var(--agent-layout-ease),
+    opacity 160ms ease;
+}
+.agent-visualization .react-flow__node.is-focused {
+  opacity: 1;
+  transition:
+    transform var(--agent-layout-duration) var(--agent-layout-ease),
+    opacity 160ms ease;
+}
+
+.agent-visualization.is-focusing
+  .react-flow__node-tool-group-frame:not(.is-focused)
+  .agent-tool-group-frame {
+  opacity: 0.3;
+}
+
+.agent-visualization .react-flow__node-tool-group-frame.is-focused .agent-tool-group-frame {
+  border-color: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 78%,
+    var(--background)
+  );
+  background: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 11%,
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 18%, transparent);
+}
+
+/* Output → output-section parent links: subtle but legible. The spatial
+   grouping under the output node already conveys the relationship, so these
+   stay quieter than functional cross-edges, but visible against the canvas. */
+.agent-visualization .react-flow__edge.agent-edge-output-section .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--foreground) 55%, var(--background));
+  stroke-width: 1.25;
+  opacity: 0.6;
+}
+
+.agent-visualization .react-flow__edge.selected .react-flow__edge-path,
+.agent-visualization .react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--primary);
+}
+
+.agent-visualization .react-flow__handle {
+  border: 1.5px solid var(--background);
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.agent-visualization .react-flow__node.is-focused .react-flow__handle {
+  opacity: 1;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Card surface — shared visual treatment for every card-style node.       */
+/* ----------------------------------------------------------------------- */
+
+.agent-visualization .agent-card {
+  contain: layout style;
+  background: var(--agent-card-bg);
+  border: 1px solid var(--agent-card-border);
+  border-radius: var(--agent-card-radius);
+  box-shadow: var(--agent-card-shadow);
+}
+
+/* Lane labels — the primary affordance for dragging an entire lane. They sit
+   above each lane's content (Prompts, Tools, Database, Output, Output
+   Sections, Consumes) and are coloured with a small bar matching the edge
+   family for that lane, so the user can link the lane to its edges visually. */
+.agent-visualization .agent-graph-lane-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 6px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--muted-foreground) 80%, var(--foreground));
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--foreground) 10%, transparent);
+  border-radius: 4px;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.agent-visualization .agent-graph-lane-label:hover {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--foreground) 4%, transparent);
+}
+
+.agent-visualization .agent-graph-lane-label__bar {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--foreground) 30%, transparent);
+}
+
+.agent-visualization .agent-graph-lane-label--prompt .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--color-amber-500, #f59e0b) 60%, var(--background));
+}
+.agent-visualization .agent-graph-lane-label--tool .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 60%, var(--background));
+}
+.agent-visualization .agent-graph-lane-label--db .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--color-emerald-500, #10b981) 60%, var(--background));
+}
+.agent-visualization .agent-graph-lane-label--output .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--foreground) 55%, var(--background));
+}
+.agent-visualization .agent-graph-lane-label--consume .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, #14b8a6 70%, var(--foreground));
+}
+
+.agent-visualization .agent-graph-lane-label__text {
+  flex: 1;
+  text-align: left;
+}
+
+.agent-visualization .agent-graph-lane-label__count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+  padding: 1px 6px;
+  border-radius: 999px;
+  line-height: 1.2;
+}
+
+.agent-visualization .react-flow__node-lane-label.dragging .agent-graph-lane-label {
+  cursor: grabbing;
+}
+
+/* Tool category frames: dashed sky-tinted box drawn behind each group of
+   tools. The visible label is the drag handle; the frame itself deliberately
+   does not add a full-size hit surface, because tool cards inside the frame
+   must keep first claim on hover and expand clicks. */
+.agent-visualization .react-flow__node.react-flow__node-tool-group-frame {
+  z-index: 0 !important;
+  cursor: default;
+  pointer-events: none;
+}
+
+.agent-visualization .react-flow__node.react-flow__node-tool-group-frame.dragging {
+  cursor: grabbing;
+}
+
+.agent-visualization .react-flow__node.react-flow__node-tool {
+  z-index: 1 !important;
+  pointer-events: auto;
+}
+
+.agent-visualization .agent-tool-group-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed
+    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 40%, var(--background));
+  border-radius: 10px;
+  background: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 5%,
+    transparent
+  );
+  box-sizing: border-box;
+  pointer-events: none;
+  transition:
+    width var(--agent-layout-duration) var(--agent-layout-ease),
+    height var(--agent-layout-duration) var(--agent-layout-ease),
+    border-color 160ms ease,
+    background 160ms ease,
+    opacity 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.agent-visualization .agent-tool-group-frame__drag-handle {
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.agent-visualization .react-flow__node-tool-group-frame.dragging
+  .agent-tool-group-frame__drag-handle {
+  cursor: grabbing;
+}
+
+/* When the frame is hovered (excluding when hovering inner tools), brighten
+   the dashed border so it's clear the entire group is grabbable. */
+.agent-visualization .react-flow__node-tool-group-frame:hover .agent-tool-group-frame {
+  border-color: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 68%,
+    var(--background)
+  );
+  background: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 8%,
+    transparent
+  );
+}
+
+.agent-visualization .agent-tool-group-frame__label {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: none;
+  padding: 3px 10px 3px 6px;
+  border-radius: 999px;
+  background: var(--background);
+  border: 1px solid color-mix(in oklab, var(--color-sky-500, #0ea5e9) 38%, var(--background));
+  color: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 80%, var(--foreground));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.agent-visualization .agent-tool-group-frame__label:hover {
+  background: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 8%, var(--background));
+  border-color: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 60%, var(--background));
+  color: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 95%, var(--foreground));
+}
+
+.agent-visualization .agent-tool-group-frame__grip {
+  width: 11px;
+  height: 11px;
+  color: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 65%, var(--foreground));
+  flex-shrink: 0;
+}
+
+.agent-visualization .agent-tool-group-frame__label-text {
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.agent-visualization .agent-tool-group-frame__count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+  padding: 1px 6px;
+  border-radius: 999px;
+  line-height: 1.1;
+}
+
+/* Expandable card body: animated open/close via the grid-template-rows trick.
+   The wrapper transitions between 0fr (collapsed, body has 0 height) and 1fr
+   (expanded, body uses its natural content height). The canvas reflows the
+   layout in parallel using an enlarged size for the expanded node, so the
+   expanding card visibly displaces its neighbours rather than overlapping
+   them. The two transitions share duration + easing so they stay in sync. */
+.agent-visualization .agent-card-body-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--agent-layout-duration) var(--agent-layout-ease);
+}
+
+.agent-visualization .agent-card-body-wrapper.is-open {
+  grid-template-rows: 1fr;
+}
+
+.agent-visualization .agent-card-body-wrapper > .agent-card-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Lift the expanded card visually so the new content reads as the focused
+   element. Layered above the z-index ladder ReactFlow assigns by render order. */
+.agent-visualization .react-flow__node.agent-node-expanded {
+  z-index: 1000 !important;
+}
+
+.agent-visualization .is-card-expanded {
+  box-shadow: var(--agent-card-shadow-expanded) !important;
+  border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+}
+
+/* Agent header — the canvas centerpiece. Slightly primary-tinted border
+   separates it from the satellite cards without a halo. Border weight
+   stays at 1px to match the rest of the canvas. */
+.agent-visualization .agent-card-header {
+  border-color: color-mix(in oklab, var(--primary) 35%, var(--agent-card-border));
+}
+
+/* Subtle gradient header strip used by cards that have a category-tinted
+   top section — driven by data-tone on the wrapper element. Each tone keeps
+   the saturation low so the header band reads as accent rather than a fill. */
+.agent-visualization .agent-card-tone-strip {
+  height: 2px;
+  width: 100%;
+  border-top-left-radius: var(--agent-card-radius);
+  border-top-right-radius: var(--agent-card-radius);
+}
+
+.agent-visualization .agent-card-tone-strip[data-tone='amber'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, transparent),
+    color-mix(in oklab, var(--color-amber-500, #f59e0b) 30%, transparent)
+  );
+}
+.agent-visualization .agent-card-tone-strip[data-tone='sky'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 70%, transparent),
+    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 30%, transparent)
+  );
+}
+.agent-visualization .agent-card-tone-strip[data-tone='emerald'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-emerald-500, #10b981) 70%, transparent),
+    color-mix(in oklab, var(--color-emerald-500, #10b981) 30%, transparent)
+  );
+}
+.agent-visualization .agent-card-tone-strip[data-tone='rose'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-rose-500, #f43f5e) 70%, transparent),
+    color-mix(in oklab, var(--color-rose-500, #f43f5e) 30%, transparent)
+  );
+}
+.agent-visualization .agent-card-tone-strip[data-tone='violet'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-violet-500, #8b5cf6) 70%, transparent),
+    color-mix(in oklab, var(--color-violet-500, #8b5cf6) 30%, transparent)
+  );
+}
+.agent-visualization .agent-card-tone-strip[data-tone='teal'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, #14b8a6 70%, transparent),
+    color-mix(in oklab, #14b8a6 30%, transparent)
+  );
+}
+.agent-visualization .agent-card-tone-strip[data-tone='foreground'] {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--foreground) 60%, transparent),
+    color-mix(in oklab, var(--foreground) 25%, transparent)
+  );
+}

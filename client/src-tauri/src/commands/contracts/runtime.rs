@@ -9,6 +9,7 @@ use super::autonomous::{
     AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleSourceDto,
     AutonomousSkillLifecycleStageDto, ToolResultSummaryDto,
 };
+use super::code_history::CodePatchAvailabilityDto;
 use super::error::CommandError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1531,6 +1532,12 @@ pub struct RuntimeStreamItemDto {
     pub tool_state: Option<RuntimeToolCallState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_change_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_commit_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_workspace_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_patch_availability: Option<CodePatchAvailabilityDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_summary: Option<ToolResultSummaryDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

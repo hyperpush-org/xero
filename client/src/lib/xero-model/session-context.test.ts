@@ -75,12 +75,58 @@ describe('session context contract', () => {
           toolState: null,
           filePath: 'src/tracked.txt',
           codeChangeGroupId: 'code-change-rollback-result',
+          codeCommitId: 'code-commit-rollback-result',
+          codeWorkspaceEpoch: 13,
+          codePatchAvailability: {
+            projectId,
+            targetChangeGroupId: 'code-change-rollback-result',
+            available: true,
+            affectedPaths: ['src/tracked.txt'],
+            fileChangeCount: 1,
+            textHunkCount: 1,
+            unavailableReason: null,
+          },
         },
       ],
     })
     expect(rollbackTranscript.items[2]).toMatchObject({
       kind: 'code_rollback',
       codeChangeGroupId: 'code-change-rollback-result',
+      codeCommitId: 'code-commit-rollback-result',
+      codeWorkspaceEpoch: 13,
+    })
+    const historyOperationTranscript = runTranscriptSchema.parse({
+      ...transcript,
+      items: [
+        ...transcript.items,
+        {
+          ...transcript.items[1],
+          itemId: 'code_history_operation:undo-1',
+          sourceTable: 'code_history_operations',
+          sourceId: 'undo-1',
+          sequence: 3,
+          createdAt: '2026-04-26T10:00:21Z',
+          kind: 'code_history_operation',
+          actor: 'xero',
+          title: 'Code undo applied',
+          text: 'Mode: selective_undo. Target: change_group `code-change-1`. Result commit: code-commit-undo-1. Affected paths: src/tracked.txt.',
+          summary: 'Code undo applied `undo-1` recorded mode `selective_undo`.',
+          toolCallId: null,
+          toolName: null,
+          toolState: null,
+          filePath: 'src/tracked.txt',
+          codeChangeGroupId: 'code-change-undo-result',
+          codeCommitId: 'code-commit-undo-1',
+          codeWorkspaceEpoch: 14,
+          codePatchAvailability: null,
+        },
+      ],
+    })
+    expect(historyOperationTranscript.items[2]).toMatchObject({
+      kind: 'code_history_operation',
+      codeChangeGroupId: 'code-change-undo-result',
+      codeCommitId: 'code-commit-undo-1',
+      codeWorkspaceEpoch: 14,
     })
 
     expect(() =>
@@ -341,6 +387,44 @@ describe('session context contract', () => {
         memoryId: memory.memoryId,
       }).memoryId,
     ).toBe(memory.memoryId)
+  })
+
+  it('accepts undo history visualization contributors with bounded estimates and redaction', () => {
+    const historyNotice = sessionContextContributorSchema.parse(
+      makeContributor('code_history_notice:1', 1, {
+        kind: 'code_history_notice',
+        label: 'Code history notice: selective_undo completed',
+        sourceId: '1',
+        estimatedTokens: 48,
+        estimatedChars: 180,
+        authorityScore: 76,
+        rankScore: 604,
+        taskPhase: 'execute',
+        text: 'History notice affected src/tracked.txt and asks the agent to re-read current files.',
+      }),
+    )
+    const redactedMailbox = createRedactedSessionContextText(
+      'Reservation invalidated for src/tracked.txt with token sk-context-secret.',
+    )
+    const mailboxNotice = sessionContextContributorSchema.parse(
+      makeContributor('code_history_mailbox_notice:mailbox-1', 2, {
+        kind: 'code_history_mailbox_notice',
+        label: 'Code history mailbox notice',
+        sourceId: 'mailbox-1',
+        estimatedTokens: 16,
+        estimatedChars: redactedMailbox.value.length,
+        authorityScore: 76,
+        rankScore: 612,
+        taskPhase: 'execute',
+        text: redactedMailbox.value,
+        redaction: redactedMailbox.redaction,
+      }),
+    )
+
+    expect(historyNotice.estimatedTokens).toBeLessThanOrEqual(220)
+    expect(mailboxNotice.estimatedTokens).toBeLessThanOrEqual(220)
+    expect(mailboxNotice.redaction.redacted).toBe(true)
+    expect(JSON.stringify([historyNotice, mailboxNotice])).not.toContain('sk-context-secret')
   })
 
   it('validates transcript command request, export, save, and search DTOs', () => {

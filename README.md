@@ -278,7 +278,7 @@ OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Togethe
 
 ## Session Memory And Context
 
-Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, reviewed memory, branch, and rewind workflows. See `docs/session-memory-and-context.md` for the user workflow, privacy guarantees, and support triage guidance.
+Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, reviewed memory, branch, rewind, selective code undo, and session rollback workflows. See `docs/session-memory-and-context.md` for the user workflow, privacy guarantees, and support triage guidance.
 
 ## Agent Harness Benchmarking
 

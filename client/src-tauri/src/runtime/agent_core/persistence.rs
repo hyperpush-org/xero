@@ -1657,6 +1657,7 @@ struct RuntimeMemoryExtractionSource {
     transcript: String,
     source_run_id: String,
     source_item_ids: Vec<String>,
+    code_history_guard: CodeHistoryMemoryGuard,
 }
 
 fn build_runtime_memory_extraction_source(
@@ -1664,6 +1665,12 @@ fn build_runtime_memory_extraction_source(
     snapshot: &AgentRunSnapshotRecord,
 ) -> CommandResult<RuntimeMemoryExtractionSource> {
     let transcript = crate::commands::run_transcript_from_agent_snapshot(snapshot, None);
+    let code_history_guard = CodeHistoryMemoryGuard::for_session(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+        Some(&snapshot.run.run_id),
+    )?;
     let mut source_item_ids = Vec::new();
     let mut text = format!(
         "Review this Xero owned-agent run for durable memory candidates. Run {} provider={} model={} status={:?}.\n",
@@ -1672,7 +1679,7 @@ fn build_runtime_memory_extraction_source(
         snapshot.run.model_id,
         snapshot.run.status,
     );
-    text.push_str("Code rollback rows are provenance: do not promote implementation details from turns before a rollback as durable facts unless the memory text explicitly notes the rollback state and cites rollback provenance.\n");
+    text.push_str("Code history operation rows are provenance: do not promote implementation details from turns before an undo or session return as durable facts unless the memory text explicitly notes the history operation and cites its provenance.\n");
     for item in &transcript.items {
         source_item_ids.push(item.item_id.clone());
         let body = item
@@ -1692,47 +1699,20 @@ fn build_runtime_memory_extraction_source(
             truncate_memory_source_text(body, 600)
         ));
     }
-    for operation in project_store::list_code_rollback_operations_for_session(
-        repo_root,
-        &snapshot.run.project_id,
-        &snapshot.run.agent_session_id,
-        Some(&snapshot.run.run_id),
-    )? {
-        let operation_source_id = format!("code_rollback_operations:{}", operation.operation_id);
+    for (operation_source_id, operation_line) in code_history_guard.operation_lines() {
         source_item_ids.push(operation_source_id.clone());
         text.push_str(&format!(
-            "- [{}] code rollback {}: {}\n",
+            "- [{}] code history operation: {}\n",
             operation_source_id,
-            operation.status,
-            truncate_memory_source_text(&runtime_rollback_memory_line(&operation), 600)
+            truncate_memory_source_text(&operation_line, 600)
         ));
     }
     Ok(RuntimeMemoryExtractionSource {
         transcript: text,
         source_run_id: snapshot.run.run_id.clone(),
         source_item_ids,
+        code_history_guard,
     })
-}
-
-fn runtime_rollback_memory_line(operation: &project_store::CodeRollbackOperationRecord) -> String {
-    let paths = operation
-        .affected_files
-        .iter()
-        .filter_map(|file| file.path_after.as_deref().or(file.path_before.as_deref()))
-        .collect::<BTreeSet<_>>();
-    let path_text = if paths.is_empty() {
-        "no affected paths recorded".into()
-    } else {
-        paths.into_iter().collect::<Vec<_>>().join(", ")
-    };
-    format!(
-        "operationId={} targetChangeGroupId={} targetSnapshotId={} resultChangeGroupId={} paths={}. Conversation history stayed append-only; project files were restored independently.",
-        operation.operation_id,
-        operation.target_change_group_id,
-        operation.target_snapshot_id,
-        operation.result_change_group_id.as_deref().unwrap_or("none"),
-        path_text,
-    )
 }
 
 fn prepare_automatic_memory_candidate(
@@ -1772,12 +1752,30 @@ fn prepare_automatic_memory_candidate(
     if redaction.redacted {
         return Err(memory_candidate_blocked_diagnostic(&redaction));
     }
-    let mut source_item_ids = candidate
+    let source_item_ids = candidate
         .source_item_ids
         .into_iter()
         .map(|item_id| item_id.trim().to_string())
         .filter(|item_id| !item_id.is_empty())
         .collect::<Vec<_>>();
+    let (scope, kind, text, mut source_item_ids) =
+        match source
+            .code_history_guard
+            .apply(scope, kind, text, source_item_ids)
+        {
+            CodeHistoryMemoryGuardOutcome::Accepted {
+                scope,
+                kind,
+                text,
+                source_item_ids,
+            } => (scope, kind, text, source_item_ids),
+            CodeHistoryMemoryGuardOutcome::Rejected(diagnostic) => {
+                return Err(agent_memory_candidate_diagnostic(
+                    diagnostic.code,
+                    diagnostic.message,
+                ));
+            }
+        };
     if source_item_ids.is_empty() {
         source_item_ids = source.source_item_ids.iter().take(8).cloned().collect();
     }
@@ -1972,6 +1970,10 @@ fn cached_repo_fingerprint(repo_root: &Path, build: impl FnOnce() -> JsonValue) 
     value
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "file-change events carry tool, run, output, and optional history context"
+)]
 pub(crate) fn record_file_change_event(
     repo_root: &Path,
     project_id: &str,
@@ -1983,6 +1985,7 @@ pub(crate) fn record_file_change_event(
     code_change_group: Option<&project_store::CompletedCodeChangeGroup>,
 ) -> CommandResult<()> {
     let code_change_group_id = code_change_group.map(|group| group.change_group_id.as_str());
+    let history_metadata = code_change_group.and_then(|group| group.history_metadata.as_ref());
     if let AutonomousToolOutput::Patch(output) = output {
         if !output.applied {
             return Ok(());
@@ -2001,6 +2004,7 @@ pub(crate) fn record_file_change_event(
                     tool_call_id,
                     tool_name,
                     code_change_group_id,
+                    history_metadata,
                 },
             )?;
         }
@@ -2043,6 +2047,7 @@ pub(crate) fn record_file_change_event(
             tool_call_id,
             tool_name,
             code_change_group_id,
+            history_metadata,
         },
     )
 }
@@ -2079,6 +2084,7 @@ pub(crate) fn record_code_change_group_file_change_events(
                 tool_call_id,
                 tool_name,
                 code_change_group_id: Some(group.change_group_id.as_str()),
+                history_metadata: group.history_metadata.as_ref(),
             },
         )?;
     }
@@ -2120,6 +2126,7 @@ struct FileChangeEvent<'a> {
     tool_call_id: &'a str,
     tool_name: &'a str,
     code_change_group_id: Option<&'a str>,
+    history_metadata: Option<&'a project_store::CodeChangeGroupHistoryMetadataRecord>,
 }
 
 fn record_single_file_change_event(
@@ -2173,6 +2180,10 @@ fn record_single_file_change_event(
             "toolCallId": change.tool_call_id,
             "toolName": change.tool_name,
             "codeChangeGroupId": change.code_change_group_id,
+            "codeCommitId": change.history_metadata.and_then(|metadata| metadata.commit_id.as_deref()),
+            "codeWorkspaceEpoch": change.history_metadata.and_then(|metadata| metadata.workspace_epoch),
+            "codePatchAvailability": change.history_metadata.map(|metadata| &metadata.patch_availability),
+            "projectId": project_id,
             "traceId": stored_change.trace_id,
             "topLevelRunId": stored_change.top_level_run_id,
             "subagentId": stored_change.subagent_id,
@@ -2878,6 +2889,7 @@ pub(crate) fn sanitize_action_id(value: &str) -> String {
 #[derive(Debug, Default)]
 pub(crate) struct AgentWorkspaceGuard {
     observed_hashes: BTreeMap<String, Option<String>>,
+    observed_code_workspace_epoch: Option<u64>,
     subagent_write_scope: Option<AutonomousSubagentWriteScope>,
 }
 
@@ -2885,8 +2897,67 @@ impl AgentWorkspaceGuard {
     pub(crate) fn new(subagent_write_scope: Option<AutonomousSubagentWriteScope>) -> Self {
         Self {
             observed_hashes: BTreeMap::new(),
+            observed_code_workspace_epoch: None,
             subagent_write_scope,
         }
+    }
+
+    pub(crate) fn record_current_code_workspace_epoch(
+        &mut self,
+        repo_root: &Path,
+        project_id: &str,
+    ) -> CommandResult<u64> {
+        let workspace_epoch = project_store::read_code_workspace_head(repo_root, project_id)?
+            .map(|head| head.workspace_epoch)
+            .unwrap_or(0);
+        self.record_code_workspace_epoch(workspace_epoch);
+        Ok(workspace_epoch)
+    }
+
+    pub(crate) fn record_code_workspace_epoch(&mut self, workspace_epoch: u64) {
+        self.observed_code_workspace_epoch = Some(
+            self.observed_code_workspace_epoch
+                .map(|observed| observed.max(workspace_epoch))
+                .unwrap_or(workspace_epoch),
+        );
+    }
+
+    pub(crate) fn validate_code_workspace_epoch_intent(
+        &self,
+        repo_root: &Path,
+        project_id: &str,
+        request: &AutonomousToolRequest,
+    ) -> CommandResult<()> {
+        let paths = planned_code_workspace_epoch_paths(request);
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let mut seen_paths = BTreeSet::new();
+        let mut path_keys = Vec::new();
+        for path in paths {
+            let Some(path_key) = relative_path_key(path) else {
+                return Err(CommandError::new(
+                    "agent_file_path_invalid",
+                    CommandErrorClass::PolicyDenied,
+                    format!(
+                        "Xero refused to modify `{path}` because it is not a safe repo-relative path."
+                    ),
+                    false,
+                ));
+            };
+            if !seen_paths.insert(path_key.clone()) {
+                continue;
+            }
+            path_keys.push(path_key);
+        }
+
+        project_store::validate_code_workspace_epoch_for_paths(
+            repo_root,
+            project_id,
+            self.observed_code_workspace_epoch.unwrap_or(0),
+            &path_keys,
+        )
     }
 
     pub(crate) fn validate_write_intent(
@@ -2999,6 +3070,11 @@ impl AgentWorkspaceGuard {
         repo_root: &Path,
         output: &AutonomousToolOutput,
     ) -> CommandResult<()> {
+        if let AutonomousToolOutput::AgentCoordination(output) = output {
+            if let Some(workspace_epoch) = output.code_workspace_epoch {
+                self.record_code_workspace_epoch(workspace_epoch);
+            }
+        }
         for path in observed_paths_from_output(output) {
             self.record_path_observation(repo_root, &path)?;
         }
@@ -3039,6 +3115,16 @@ fn planned_file_change_paths(request: &AutonomousToolRequest) -> Vec<&str> {
         AutonomousToolRequest::Delete(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Rename(request) => vec![request.from_path.as_str()],
         _ => Vec::new(),
+    }
+}
+
+fn planned_code_workspace_epoch_paths(request: &AutonomousToolRequest) -> Vec<&str> {
+    match request {
+        AutonomousToolRequest::Rename(request) => {
+            vec![request.from_path.as_str(), request.to_path.as_str()]
+        }
+        AutonomousToolRequest::Mkdir(request) => vec![request.path.as_str()],
+        _ => planned_file_change_paths(request),
     }
 }
 
@@ -3220,10 +3306,14 @@ pub(crate) fn validate_prompt(prompt: &str) -> CommandResult<()> {
 mod tests {
     use super::*;
     use crate::runtime::{
-        AutonomousPatchOperation, AutonomousPatchRequest, AutonomousSearchMatch,
-        AutonomousSearchOutput,
+        AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput, AutonomousLineEnding,
+        AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
+        AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOutput,
     };
+    use crate::{db, git::repository::CanonicalRepository, state::DesktopState};
     use tempfile::tempdir;
+
+    static PROJECT_DB_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parses_fenced_crawl_report_payload() {
@@ -3428,5 +3518,216 @@ Repository map captured.
 
         assert!(!root.join("notes/new.txt").exists());
         assert_eq!(outcome["restoredCount"], json!(1));
+    }
+
+    #[test]
+    fn workspace_epoch_preflight_blocks_stale_path_until_context_refresh() {
+        let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
+        let tempdir = tempdir().expect("tempdir");
+        let app_data_dir = tempdir.path().join("app-data");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("src")).expect("repo src");
+        let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
+        let project_id = "project-workspace-epoch-preflight";
+        db::configure_project_database_paths(&app_data_dir.join("global.db"));
+        db::import_project(
+            &CanonicalRepository {
+                project_id: project_id.into(),
+                repository_id: "repo-workspace-epoch-preflight".into(),
+                root_path: canonical_root.clone(),
+                root_path_string: canonical_root.to_string_lossy().into_owned(),
+                common_git_dir: canonical_root.join(".git"),
+                display_name: "repo".into(),
+                branch_name: Some("main".into()),
+                head_sha: Some("abc123".into()),
+                branch: None,
+                last_commit: None,
+                status_entries: Vec::new(),
+                has_staged_changes: false,
+                has_unstaged_changes: false,
+                has_untracked_changes: false,
+                additions: 0,
+                deletions: 0,
+            },
+            DesktopState::default().import_failpoints(),
+        )
+        .expect("import project");
+        fs::write(canonical_root.join("src/stale.rs"), "current\n").expect("source file");
+
+        let mut guard = AgentWorkspaceGuard::default();
+        assert_eq!(
+            guard
+                .record_current_code_workspace_epoch(&canonical_root, project_id)
+                .expect("record initial workspace epoch"),
+            0
+        );
+        guard
+            .record_path_observation(&canonical_root, "src/stale.rs")
+            .expect("record file observation");
+
+        project_store::advance_code_workspace_epoch(
+            &canonical_root,
+            &project_store::AdvanceCodeWorkspaceEpochRequest {
+                project_id: project_id.into(),
+                head_id: Some("code-commit-stale".into()),
+                tree_id: Some("code-tree-stale".into()),
+                commit_id: Some("code-commit-stale".into()),
+                latest_history_operation_id: Some("history-op-stale".into()),
+                affected_paths: vec!["src/stale.rs".into()],
+                updated_at: "2026-05-06T12:00:00Z".into(),
+            },
+        )
+        .expect("advance path epoch");
+
+        let request = AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
+            path: "src/stale.rs".into(),
+            content: "next\n".into(),
+        });
+        let error = guard
+            .validate_code_workspace_epoch_intent(&canonical_root, project_id, &request)
+            .expect_err("stale workspace epoch should block write preflight");
+        assert_eq!(error.code, "agent_workspace_epoch_stale");
+        assert!(error.message.contains("history-op-stale"));
+
+        assert_eq!(
+            guard
+                .record_current_code_workspace_epoch(&canonical_root, project_id)
+                .expect("refresh workspace epoch"),
+            1
+        );
+        guard
+            .validate_code_workspace_epoch_intent(&canonical_root, project_id, &request)
+            .expect("refreshed context can pass workspace epoch preflight");
+        guard
+            .validate_write_intent(&canonical_root, &request, false)
+            .expect("unchanged observed file can still pass hash preflight");
+    }
+
+    #[test]
+    fn history_notice_acknowledgement_refreshes_epoch_but_still_requires_current_read() {
+        let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
+        let tempdir = tempdir().expect("tempdir");
+        let app_data_dir = tempdir.path().join("app-data");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("src")).expect("repo src");
+        let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
+        let project_id = "project-history-ack-refresh";
+        db::configure_project_database_paths(&app_data_dir.join("global.db"));
+        db::import_project(
+            &CanonicalRepository {
+                project_id: project_id.into(),
+                repository_id: "repo-history-ack-refresh".into(),
+                root_path: canonical_root.clone(),
+                root_path_string: canonical_root.to_string_lossy().into_owned(),
+                common_git_dir: canonical_root.join(".git"),
+                display_name: "repo".into(),
+                branch_name: Some("main".into()),
+                head_sha: Some("abc123".into()),
+                branch: None,
+                last_commit: None,
+                status_entries: Vec::new(),
+                has_staged_changes: false,
+                has_unstaged_changes: false,
+                has_untracked_changes: false,
+                additions: 0,
+                deletions: 0,
+            },
+            DesktopState::default().import_failpoints(),
+        )
+        .expect("import project");
+        fs::write(canonical_root.join("src/stale.rs"), "before\n").expect("source file");
+
+        let mut guard = AgentWorkspaceGuard::default();
+        guard
+            .record_current_code_workspace_epoch(&canonical_root, project_id)
+            .expect("record initial workspace epoch");
+        guard
+            .record_path_observation(&canonical_root, "src/stale.rs")
+            .expect("record initial file observation");
+
+        fs::write(canonical_root.join("src/stale.rs"), "after history\n")
+            .expect("simulate history write");
+        project_store::advance_code_workspace_epoch(
+            &canonical_root,
+            &project_store::AdvanceCodeWorkspaceEpochRequest {
+                project_id: project_id.into(),
+                head_id: Some("code-commit-history-ack".into()),
+                tree_id: Some("code-tree-history-ack".into()),
+                commit_id: Some("code-commit-history-ack".into()),
+                latest_history_operation_id: Some("history-op-ack".into()),
+                affected_paths: vec!["src/stale.rs".into()],
+                updated_at: "2026-05-06T13:00:00Z".into(),
+            },
+        )
+        .expect("advance path epoch");
+
+        let request = AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
+            path: "src/stale.rs".into(),
+            content: "next\n".into(),
+        });
+        guard
+            .validate_code_workspace_epoch_intent(&canonical_root, project_id, &request)
+            .expect_err("stale epoch should block before acknowledgement");
+
+        guard
+            .record_tool_output(
+                &canonical_root,
+                &AutonomousToolOutput::AgentCoordination(AutonomousAgentCoordinationOutput {
+                    action: AutonomousAgentCoordinationAction::Acknowledge,
+                    message: "Acknowledged history mailbox item `mailbox-history-ack`.".into(),
+                    active_agents: Vec::new(),
+                    reservations: Vec::new(),
+                    conflicts: Vec::new(),
+                    events: Vec::new(),
+                    mailbox: Vec::new(),
+                    mailbox_item: None,
+                    code_workspace_epoch: Some(1),
+                    refreshed_paths: vec!["src/stale.rs".into()],
+                    promoted_record_id: None,
+                    override_recorded: false,
+                }),
+            )
+            .expect("record history acknowledgement output");
+
+        guard
+            .validate_code_workspace_epoch_intent(&canonical_root, project_id, &request)
+            .expect("acknowledged history notice refreshes workspace epoch");
+        let error = guard
+            .validate_write_intent(&canonical_root, &request, false)
+            .expect_err("acknowledgement alone should not replace file evidence");
+        assert_eq!(error.code, "agent_file_changed_since_observed");
+
+        guard
+            .record_tool_output(
+                &canonical_root,
+                &AutonomousToolOutput::Read(AutonomousReadOutput {
+                    path: "src/stale.rs".into(),
+                    start_line: 1,
+                    line_count: 1,
+                    total_lines: 1,
+                    truncated: false,
+                    content: "after history\n".into(),
+                    content_kind: Some(AutonomousReadContentKind::Text),
+                    total_bytes: Some(14),
+                    byte_offset: None,
+                    byte_count: None,
+                    sha256: None,
+                    line_hashes: Vec::new(),
+                    encoding: Some("utf-8".into()),
+                    line_ending: Some(AutonomousLineEnding::Lf),
+                    has_bom: Some(false),
+                    media_type: Some("text/plain; charset=utf-8".into()),
+                    image_width: None,
+                    image_height: None,
+                    preview_base64: None,
+                    preview_bytes: None,
+                    binary_excerpt_base64: None,
+                }),
+            )
+            .expect("record current file read");
+
+        guard
+            .validate_write_intent(&canonical_root, &request, false)
+            .expect("current file evidence lets write preflight continue");
     }
 }

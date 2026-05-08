@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { mailto } from "@/lib/site"
 
 type PricingTier = {
   name: string
@@ -24,7 +25,7 @@ type PricingTier = {
   features: string[]
 }
 
-const waitlistHref = "mailto:team@xeroshell.com?subject=Xero%20paid%20plan%20waitlist"
+const waitlistHref = mailto("Xero paid plan waitlist")
 
 const tiers: PricingTier[] = [
   {
@@ -237,7 +238,7 @@ export function Pricing() {
 
         <p className="mt-8 text-center text-xs text-muted-foreground/60">
           Need team seats or larger Solana infrastructure?{" "}
-          <Link href="mailto:team@xeroshell.com" className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
+          <Link href={mailto()} className="underline underline-offset-2 transition-colors hover:text-muted-foreground">
             Talk to us
           </Link>
           .

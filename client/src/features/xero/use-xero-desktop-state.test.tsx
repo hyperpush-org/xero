@@ -1000,6 +1000,10 @@ function createMockAdapter(options?: {
     throw new Error('archiveAgentDefinition not stubbed in test adapter')
   })
   const getAgentDefinitionVersion = vi.fn(async () => null)
+  const listWorkflowAgents = vi.fn(async () => ({ agents: [] }))
+  const getWorkflowAgentDetail = vi.fn(async () => {
+    throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
+  })
   const updateAgentSession = vi.fn(async (request: {
     projectId: string
     agentSessionId: string
@@ -1985,6 +1989,44 @@ function createMockAdapter(options?: {
     getProjectUsageSummary,
     getRepositoryStatus,
     getRepositoryDiff,
+    applySelectiveUndo: vi.fn(async () => ({
+      operation: {
+        projectId: 'project-1',
+        operationId: 'code-undo-test',
+        mode: 'selective_undo' as const,
+        status: 'completed' as const,
+        target: {
+          targetKind: 'change_group' as const,
+          targetId: 'code-change-1',
+          hunkIds: [],
+        },
+        affectedPaths: ['client/src/file.ts'],
+        conflicts: [],
+        resultCommitId: 'code-commit-undo-test',
+        resultChangeGroupId: 'code-change-undo-test',
+        createdAt: '2026-05-06T12:00:00Z',
+        updatedAt: '2026-05-06T12:00:01Z',
+      },
+    })),
+    returnSessionToHere: vi.fn(async () => ({
+      operation: {
+        projectId: 'project-1',
+        operationId: 'return-session-test',
+        mode: 'session_rollback' as const,
+        status: 'completed' as const,
+        target: {
+          targetKind: 'run_boundary' as const,
+          targetId: 'run-1:boundary-1',
+          hunkIds: [],
+        },
+        affectedPaths: ['client/src/file.ts'],
+        conflicts: [],
+        resultCommitId: 'code-commit-return-session-test',
+        resultChangeGroupId: 'code-change-return-session-test',
+        createdAt: '2026-05-06T12:00:00Z',
+        updatedAt: '2026-05-06T12:00:01Z',
+      },
+    })),
     gitStagePaths: async () => undefined,
     gitUnstagePaths: async () => undefined,
     gitDiscardChanges: async () => undefined,
@@ -2016,6 +2058,8 @@ function createMockAdapter(options?: {
     listAgentDefinitions,
     archiveAgentDefinition,
     getAgentDefinitionVersion,
+    listWorkflowAgents,
+    getWorkflowAgentDetail,
     listAgentSessions,
     getAgentSession,
     updateAgentSession,

@@ -260,10 +260,75 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
         .text
         .as_deref()
         .is_some_and(|text| text.contains("src/tracked.txt")));
+    let history_operation_item = transcript
+        .items
+        .iter()
+        .find(|item| item.item_id == format!("code_history_operation:{}", rollback.operation_id))
+        .expect("code history operation transcript item");
+    assert_eq!(
+        history_operation_item.kind,
+        SessionTranscriptItemKindDto::CodeHistoryOperation
+    );
+    assert_eq!(
+        history_operation_item.source_table,
+        "code_history_operations"
+    );
+    assert_eq!(
+        history_operation_item.code_change_group_id.as_deref(),
+        Some(rollback.result_change_group_id.as_str())
+    );
+    assert!(history_operation_item.code_commit_id.is_some());
+    assert!(history_operation_item
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("Mode: selective_undo.")));
+    assert!(history_operation_item
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("Result commit:")));
 
     let serialized = serde_json::to_string(&transcript).expect("serialize transcript");
     assert!(!serialized.contains("sk-history-secret"));
     assert!(!serialized.contains("/Users/sn0w/.config"));
+
+    let history_notice = project_store::append_agent_coordination_event(
+        &repo_root,
+        &project_store::NewAgentCoordinationEventRecord {
+            project_id: project_id.clone(),
+            run_id: "run-history-2".into(),
+            event_kind: "history_rewrite_notice".into(),
+            summary: "Code undo completed for the tracked file.".into(),
+            payload: json!({
+                "operationId": rollback.operation_id.clone(),
+                "mode": "selective_undo",
+                "status": "completed",
+                "affectedPaths": ["src/tracked.txt"],
+                "resultCommitId": "code-commit-history-context",
+            }),
+            created_at: "2099-05-01T12:01:00Z".into(),
+            lease_seconds: Some(600),
+        },
+    )
+    .expect("append history coordination notice");
+    let history_mailbox = project_store::publish_agent_mailbox_item(
+        &repo_root,
+        &project_store::NewAgentMailboxItemRecord {
+            project_id: project_id.clone(),
+            sender_run_id: "run-history-2".into(),
+            item_type: project_store::AgentMailboxItemType::ReservationInvalidated,
+            parent_item_id: None,
+            target_agent_session_id: Some(SESSION_ID.into()),
+            target_run_id: Some("run-history-1".into()),
+            target_role: None,
+            title: "Code undo changed your reserved path".into(),
+            body: "Re-read src/tracked.txt before writing. Local path /Users/sn0w/.config/xero/state.json must stay redacted.".into(),
+            related_paths: vec!["src/tracked.txt".into()],
+            priority: project_store::AgentMailboxPriority::High,
+            created_at: "2099-05-01T12:02:00Z".into(),
+            ttl_seconds: Some(600),
+        },
+    )
+    .expect("publish history mailbox notice");
 
     let context_snapshot = get_session_context_snapshot(
         app.handle().clone(),
@@ -345,6 +410,56 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
         .text
         .as_deref()
         .is_some_and(|text| text.contains("Project files were restored independently")));
+    let history_operation_contributor = context_snapshot
+        .contributors
+        .iter()
+        .find(|contributor| {
+            contributor.kind == SessionContextContributorKindDto::CodeHistoryOperation
+                && contributor.source_id.as_deref() == Some(rollback.operation_id.as_str())
+        })
+        .expect("code history operation context contributor");
+    assert!(history_operation_contributor.included);
+    assert!(history_operation_contributor.model_visible);
+    assert!(history_operation_contributor.estimated_tokens <= 220);
+    assert!(history_operation_contributor
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains("Mode: selective_undo.")));
+    let history_notice_source_id = history_notice.id.to_string();
+    let history_notice_contributor = context_snapshot
+        .contributors
+        .iter()
+        .find(|contributor| {
+            contributor.kind == SessionContextContributorKindDto::CodeHistoryNotice
+                && contributor.source_id.as_deref() == Some(history_notice_source_id.as_str())
+        })
+        .expect("code history coordination notice contributor");
+    assert!(history_notice_contributor.included);
+    assert!(history_notice_contributor.model_visible);
+    assert!(history_notice_contributor.estimated_tokens <= 220);
+    assert!(history_notice_contributor
+        .text
+        .as_deref()
+        .is_some_and(|text| {
+            text.contains("history_rewrite_notice") && text.contains("src/tracked.txt")
+        }));
+    let history_mailbox_contributor = context_snapshot
+        .contributors
+        .iter()
+        .find(|contributor| {
+            contributor.kind == SessionContextContributorKindDto::CodeHistoryMailboxNotice
+                && contributor.source_id.as_deref() == Some(history_mailbox.item_id.as_str())
+        })
+        .expect("code history mailbox notice contributor");
+    assert!(history_mailbox_contributor.included);
+    assert!(history_mailbox_contributor.model_visible);
+    assert!(history_mailbox_contributor.estimated_tokens <= 220);
+    assert!(history_mailbox_contributor.redaction.redacted);
+    assert!(!history_mailbox_contributor
+        .text
+        .as_deref()
+        .unwrap_or_default()
+        .contains("/Users/sn0w/.config"));
     let context_json = serde_json::to_string(&context_snapshot).expect("serialize context");
     assert!(!context_json.contains("sk-history-secret"));
     assert!(!context_json.contains("/Users/sn0w/.config"));
@@ -371,6 +486,8 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
         .content
         .contains("Validation passed after cargo test."));
     assert!(markdown_export.content.contains("Code rollback applied"));
+    assert!(markdown_export.content.contains("Code undo applied"));
+    assert!(markdown_export.content.contains("Mode: selective_undo."));
     assert!(markdown_export.content.contains(&rollback.operation_id));
     assert!(markdown_export
         .content
@@ -456,6 +573,25 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             "rollback search for `{query}` should find the rollback event"
         );
     }
+    let undo_search = search_session_transcripts(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SearchSessionTranscriptsRequestDto {
+            project_id: project_id.clone(),
+            query: "selective_undo".into(),
+            agent_session_id: Some(SESSION_ID.into()),
+            run_id: None,
+            include_archived: false,
+            limit: Some(10),
+        },
+    )
+    .expect("code history operation search");
+    assert!(
+        undo_search.results.iter().any(|result| {
+            result.item_id == format!("code_history_operation:{}", rollback.operation_id)
+        }),
+        "search should find the append-only code history operation"
+    );
 
     project_store::archive_agent_session(&repo_root, &project_id, SESSION_ID)
         .expect("archive session");
@@ -961,7 +1097,7 @@ fn rewind_agent_session_branches_from_message_and_checkpoint_boundaries() {
     assert!(checkpoint_rewind
         .lineage
         .file_change_summary
-        .contains("Branching does not roll files back automatically."));
+        .contains("code rollback is a separate workspace restore action."));
 
     let invalid = rewind_agent_session(
         app.handle().clone(),
@@ -1204,6 +1340,98 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
         .memories
         .iter()
         .any(|memory| memory.memory_id == reenabled.memory_id));
+}
+
+#[test]
+fn memory_extraction_rejects_reverted_code_facts_without_history_provenance() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_fake_provider_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let run_id = "run-memory-undo-1";
+    let started_at = "2026-04-26T14:00:00Z";
+    seed_minimal_run_with_provider(
+        &repo_root,
+        &project_id,
+        SESSION_ID,
+        FAKE_PROVIDER_ID,
+        FAKE_MODEL_ID,
+        run_id,
+        started_at,
+        "Review memory extraction around code undo.",
+    );
+    project_store::append_agent_message(
+        &repo_root,
+        &project_store::NewAgentMessageRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.into(),
+            role: project_store::AgentMessageRole::Assistant,
+            content:
+                "Project fact: src/tracked.txt uses rollback candidate content after the temporary implementation."
+                    .into(),
+            created_at: plus_seconds(started_at, 1),
+            attachments: Vec::new(),
+        },
+    )
+    .expect("append reverted code fact");
+    project_store::append_agent_message(
+        &repo_root,
+        &project_store::NewAgentMessageRecord {
+            project_id: project_id.clone(),
+            run_id: run_id.into(),
+            role: project_store::AgentMessageRole::Assistant,
+            content:
+                "Project fact: Historical before code undo operation: src/tracked.txt temporarily used rollback candidate content."
+                    .into(),
+            created_at: plus_seconds(started_at, 2),
+            attachments: Vec::new(),
+        },
+    )
+    .expect("append historical code fact");
+    seed_code_rollback_operation(&repo_root, &project_id, run_id);
+    let _ = project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        run_id,
+        project_store::AgentRunStatus::Completed,
+        None,
+        &plus_seconds(started_at, 20),
+    )
+    .expect("complete undo memory run");
+
+    let extracted = extract_session_memory_candidates(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ExtractSessionMemoryCandidatesRequestDto {
+            project_id,
+            agent_session_id: SESSION_ID.into(),
+            run_id: Some(run_id.into()),
+        },
+    )
+    .expect("extract undo memory candidates");
+
+    assert_eq!(extracted.created_count, 1);
+    assert_eq!(extracted.rejected_count, 1);
+    assert!(extracted.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "session_memory_candidate_code_history_provenance_required"
+    }));
+    assert!(!extracted.memories.iter().any(|memory| {
+        memory.text
+            == "src/tracked.txt uses rollback candidate content after the temporary implementation."
+    }));
+    let historical = extracted
+        .memories
+        .iter()
+        .find(|memory| {
+            memory
+                .text
+                .contains("Historical before code undo operation")
+        })
+        .expect("historical memory with provenance");
+    assert_eq!(historical.scope, SessionMemoryScopeDto::Project);
+    assert!(historical
+        .source_item_ids
+        .iter()
+        .any(|source_item_id| source_item_id.starts_with("code_history_operation:")));
 }
 
 #[test]
@@ -1469,7 +1697,11 @@ fn seed_code_rollback_operation(
     fs::write(&tracked_path, "rollback candidate content\n").expect("write candidate content");
     let completed = project_store::complete_exact_path_capture(repo_root, handle)
         .expect("complete rollback candidate capture");
-    fs::write(&tracked_path, "later overwritten content\n").expect("write later content");
+    fs::write(
+        repo_root.join("src").join("unrelated.txt"),
+        "later unrelated content\n",
+    )
+    .expect("write later unrelated content");
 
     let rollback =
         project_store::apply_code_rollback(repo_root, project_id, &completed.change_group_id)

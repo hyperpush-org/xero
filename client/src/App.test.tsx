@@ -1601,6 +1601,44 @@ function createAdapter(options?: {
     }),
     getRepositoryStatus: async () => currentStatus,
     getRepositoryDiff: async (_projectId, scope) => ({ ...currentDiff, scope }),
+    applySelectiveUndo: async () => ({
+      operation: {
+        projectId: 'project-1',
+        operationId: 'code-undo-test',
+        mode: 'selective_undo' as const,
+        status: 'completed' as const,
+        target: {
+          targetKind: 'change_group' as const,
+          targetId: 'code-change-1',
+          hunkIds: [],
+        },
+        affectedPaths: ['client/src/file.ts'],
+        conflicts: [],
+        resultCommitId: 'code-commit-undo-test',
+        resultChangeGroupId: 'code-change-undo-test',
+        createdAt: '2026-05-06T12:00:00Z',
+        updatedAt: '2026-05-06T12:00:01Z',
+      },
+    }),
+    returnSessionToHere: async () => ({
+      operation: {
+        projectId: 'project-1',
+        operationId: 'return-session-test',
+        mode: 'session_rollback' as const,
+        status: 'completed' as const,
+        target: {
+          targetKind: 'run_boundary' as const,
+          targetId: 'run-1:boundary-1',
+          hunkIds: [],
+        },
+        affectedPaths: ['client/src/file.ts'],
+        conflicts: [],
+        resultCommitId: 'code-commit-return-session-test',
+        resultChangeGroupId: 'code-change-return-session-test',
+        createdAt: '2026-05-06T12:00:00Z',
+        updatedAt: '2026-05-06T12:00:01Z',
+      },
+    }),
     gitStagePaths: async () => undefined,
     gitUnstagePaths: async () => undefined,
     gitDiscardChanges: async () => undefined,
@@ -1765,6 +1803,10 @@ function createAdapter(options?: {
       throw new Error('archiveAgentDefinition not stubbed in test adapter')
     },
     getAgentDefinitionVersion: async () => null,
+    listWorkflowAgents: async () => ({ agents: [] }),
+    getWorkflowAgentDetail: async () => {
+      throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
+    },
     createAgentSession: async (request) => {
       const now = '2026-04-23T12:00:00Z'
       const selected = request.selected ?? true
@@ -2570,12 +2612,11 @@ describe('XeroApp current UI', () => {
     expect(await screen.findByRole('button', { name: 'Workflow' })).toBeVisible()
     expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('Orchestra').closest('button') as HTMLElement)
+    fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
 
     await waitFor(() => expect(adapter.getProjectSnapshot).toHaveBeenCalledWith('project-2'))
     expect(screen.queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Workflow' })).toBeVisible()
-    expect(screen.getByText('Refreshing…')).toBeInTheDocument()
 
     await act(async () => {
       resolveProjectTwo(makeSnapshot('project-2', 'Orchestra'))
@@ -2878,7 +2919,7 @@ describe('XeroApp current UI', () => {
     )
   })
 
-  it('opens the sessions peek from the project rail in compact and expanded states', async () => {
+  it('opens the sessions peek from the compact project rail', async () => {
     window.localStorage.setItem('xero.explorer.collapsed', 'collapsed')
     const { adapter } = createAdapter()
 
@@ -2900,11 +2941,6 @@ describe('XeroApp current UI', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Main session' })).not.toBeInTheDocument(),
     )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Expand project sidebar' }))
-    await waitFor(() => expect(getProjectRail()).toHaveAttribute('data-collapsed', 'false'))
-    fireEvent.pointerEnter(getProjectRail())
-    expect(await screen.findByRole('button', { name: 'Main session' })).toBeVisible()
   })
 
   it('lazy-mounts the workflows sidebar and preserves its local search state while hidden', async () => {
@@ -2916,11 +2952,11 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    expect(document.querySelector('aside[aria-label="Workflows"]')).toBeNull()
+    expect(document.querySelector('aside[aria-label="Library"]')).toBeNull()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 
-    const workflowsPanel = await screen.findByLabelText('Workflows')
+    const workflowsPanel = await screen.findByLabelText('Library')
     fireEvent.click(within(workflowsPanel).getByRole('button', { name: 'Search workflows' }))
     fireEvent.change(within(workflowsPanel).getByRole('searchbox', { name: 'Search workflows' }), {
       target: { value: 'review' },
@@ -2929,9 +2965,9 @@ describe('XeroApp current UI', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Close workflows' })[0])
 
     await waitFor(() =>
-      expect(screen.queryByRole('complementary', { name: 'Workflows' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('complementary', { name: 'Library' })).not.toBeInTheDocument(),
     )
-    expect(document.querySelector('aside[aria-label="Workflows"]')).toHaveAttribute('aria-hidden', 'true')
+    expect(document.querySelector('aside[aria-label="Library"]')).toHaveAttribute('aria-hidden', 'true')
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 
@@ -3099,7 +3135,7 @@ describe('XeroApp current UI', () => {
     expect(screen.getByText('No agent runs recorded for this project yet.')).toBeVisible()
   })
 
-  it('collapses the project rail into a compact icon strip from the titlebar toggle', async () => {
+  it('renders the project rail as a compact icon strip', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3108,16 +3144,12 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    const collapseButton = screen.getByRole('button', { name: 'Collapse project sidebar' })
-    fireEvent.click(collapseButton)
-
-    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
     expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
     expect(screen.queryByRole('button', { name: 'Project actions for xero' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /xero/i })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open Xero (active)' })).toBeVisible()
   })
 
-  it('keeps the project rail animated on the workflow canvas view', async () => {
+  it('keeps the compact project rail on the workflow canvas view', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3129,7 +3161,8 @@ describe('XeroApp current UI', () => {
     const rail = document.querySelector('aside[data-collapsed]') as HTMLElement
 
     expect(screen.getByLabelText('Workflow canvas')).toBeInTheDocument()
-    expect(rail.style.transition).toContain('width')
+    expect(rail).toHaveAttribute('data-collapsed', 'true')
+    expect(rail).toHaveClass('sidebar-layout-island')
   })
 
   it('opens the Solana workbench from the titlebar in the normal app shell', async () => {
@@ -3141,11 +3174,10 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Open Solana workbench' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open Solana workbench' }))
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Tools' })).toHaveAttribute('aria-pressed', 'true'),
+      expect(screen.getByRole('button', { name: 'Close Solana workbench' })).toHaveAttribute('aria-pressed', 'true'),
     )
     const breadcrumb = await screen.findByRole('navigation', {
       name: 'Solana Workbench breadcrumb',
@@ -3181,8 +3213,7 @@ describe('XeroApp current UI', () => {
         expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
       )
 
-      fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-      fireEvent.click(screen.getByRole('menuitem', { name: 'Open Solana workbench' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Open Solana workbench' }))
 
       const breadcrumb = screen.getByRole('navigation', {
         name: 'Solana Workbench breadcrumb',
@@ -3201,7 +3232,7 @@ describe('XeroApp current UI', () => {
     }
   })
 
-  it('auto-collapses the project rail for a non-floating right sidebar but allows manual expansion', async () => {
+  it('keeps the project rail compact while a non-floating right sidebar is open', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3210,26 +3241,18 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull()
+    expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Open browser' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open browser' }))
 
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
-    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand project sidebar' }))
-    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
-    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close browser' }))
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Tools' }), { button: 0, ctrlKey: false })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Close browser' }))
-
-    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
-    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
   })
 
-  it('starts GitHub auth from the titlebar without opening Account settings', async () => {
+  it('omits the GitHub account button from the titlebar', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3238,14 +3261,14 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in with GitHub' }))
-
-    await waitFor(() => expect(githubLoginMock).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('button', { name: 'Sign in with GitHub' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open browser' })).toBeVisible()
+    expect(githubLoginMock).not.toHaveBeenCalled()
     expect(screen.queryByRole('heading', { name: 'Account' })).not.toBeInTheDocument()
     expect(screen.queryByText('Connect your GitHub account to identify this install.')).not.toBeInTheDocument()
   })
 
-  it('auto-collapses the project rail in Editor and restores it when leaving if it started expanded', async () => {
+  it('keeps the project rail compact in Editor and after returning to Workflow', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3254,20 +3277,18 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull()
+    expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
 
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
-    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
 
-    await waitFor(() => expect(document.querySelector('aside[data-collapsed="false"]')).not.toBeNull())
-    expect(screen.getByRole('button', { name: 'Collapse project sidebar' })).toBeVisible()
+    await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
   })
 
-  it('keeps the project rail collapsed after leaving Editor when it was already collapsed', async () => {
+  it('keeps the project rail compact after leaving Editor for Agent', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3276,7 +3297,6 @@ describe('XeroApp current UI', () => {
       expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse project sidebar' }))
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
 
     fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
@@ -3284,7 +3304,6 @@ describe('XeroApp current UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
     await waitFor(() => expect(document.querySelector('aside[data-collapsed="true"]')).not.toBeNull())
-    expect(screen.getByRole('button', { name: 'Expand project sidebar' })).toBeVisible()
   })
 
 
@@ -3375,7 +3394,7 @@ describe('XeroApp current UI', () => {
     )
     await act(async () => {})
     await waitFor(() => expect(setup.onProjectUpdated).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('button', { name: 'Xero' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open Xero (active)' })).toBeVisible()
 
     act(() => {
       setup.emitProjectUpdated({
@@ -3385,9 +3404,9 @@ describe('XeroApp current UI', () => {
     })
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Xero Prime' })).toBeVisible(),
+      expect(screen.getByRole('button', { name: 'Open Xero Prime (active)' })).toBeVisible(),
     )
-    expect(screen.queryByRole('button', { name: 'Xero' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open Xero (active)' })).not.toBeInTheDocument()
   })
 
 

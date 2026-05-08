@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { openUrlMock } = vi.hoisted(() => ({
@@ -7,6 +7,10 @@ const { openUrlMock } = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: openUrlMock,
+}))
+
+vi.mock('@/components/xero/workflow-canvas/agent-visualization', () => ({
+  AgentVisualization: () => null,
 }))
 
 afterEach(() => {
@@ -30,6 +34,7 @@ import {
   type RuntimeSessionView,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model'
+import type { WorkflowAgentDetailDto } from '@/src/lib/xero-model/workflow-agents'
 
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
   return {
@@ -100,6 +105,45 @@ function makeWorkflow(project = makeProject(), overrides: Partial<WorkflowPaneVi
     selectedProviderLabel: overrides.selectedProviderLabel ?? 'OpenAI Codex',
     selectedModelId: overrides.selectedModelId ?? 'openai_codex',
     providerMismatch: overrides.providerMismatch ?? false,
+    ...overrides,
+  }
+}
+
+function makeWorkflowAgentDetail(
+  overrides: Partial<WorkflowAgentDetailDto> = {},
+): WorkflowAgentDetailDto {
+  return {
+    ref: { kind: 'built_in', runtimeAgentId: 'plan', version: 1 },
+    header: {
+      displayName: 'Plan',
+      shortLabel: 'Planning',
+      description: 'Turns ambiguous work into an accepted implementation plan.',
+      taskPurpose: 'Draft a durable plan before repository mutation.',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'planning',
+      defaultApprovalMode: 'suggest',
+      allowedApprovalModes: ['suggest'],
+      allowPlanGate: true,
+      allowVerificationGate: false,
+      allowAutoCompact: true,
+    },
+    promptPolicy: 'plan',
+    toolPolicy: 'planning',
+    prompts: [],
+    tools: [],
+    dbTouchpoints: {
+      reads: [],
+      writes: [],
+      encouraged: [],
+    },
+    output: {
+      contract: 'plan_pack',
+      label: 'Plan Pack',
+      description: 'Implementation plan output.',
+      sections: [],
+    },
+    consumes: [],
     ...overrides,
   }
 }
@@ -450,6 +494,26 @@ describe('live views', () => {
     render(<PhaseView workflow={makeWorkflow()} />)
 
     expect(screen.getByLabelText('Workflow canvas')).toBeInTheDocument()
+  })
+
+  it('shows the selected agent name in the workflow header', () => {
+    render(
+      <PhaseView
+        workflow={makeWorkflow()}
+        agentDetail={makeWorkflowAgentDetail()}
+        agentDetailStatus="ready"
+        onClearAgentSelection={vi.fn()}
+        onCreateWorkflow={vi.fn()}
+      />,
+    )
+
+    const selectedAgent = screen.getByLabelText('Selected agent')
+    expect(within(selectedAgent).getByRole('img', { name: 'Agent' })).toBeVisible()
+    expect(within(selectedAgent).getByText('Plan')).toBeVisible()
+    expect(within(selectedAgent).getByText('system')).toBeVisible()
+    expect(within(selectedAgent).getByText('Planning')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Close agent inspector' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Create workflow' })).toBeVisible()
   })
 
   it('does not render the mock pipeline controls on the workflow tab', () => {

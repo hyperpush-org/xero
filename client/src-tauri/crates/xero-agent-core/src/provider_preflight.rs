@@ -212,82 +212,88 @@ pub fn provider_preflight_snapshot(input: ProviderPreflightInput) -> ProviderPre
         .unwrap_or(DEFAULT_PROVIDER_PREFLIGHT_TTL_SECONDS);
     let stale = input.age_seconds.is_some_and(|age| age > ttl_seconds)
         || matches!(input.source, ProviderPreflightSource::Unavailable);
-    let mut checks = Vec::new();
-
-    checks.push(boolean_check(
-        &input,
-        "provider_preflight_credentials",
-        "credentials",
-        input.credential_ready,
-        "Credential or ambient auth is available for the selected provider path.",
-        "Credential or ambient auth was not verified for the selected provider path.",
-        "Credential or ambient auth is missing for the selected provider path.",
-        true,
-    ));
-    checks.push(boolean_check(
-        &input,
-        "provider_preflight_endpoint",
-        "endpoint",
-        input.endpoint_reachable,
-        "Provider endpoint reachability was verified.",
-        "Provider endpoint reachability has not been verified by a live probe.",
-        "Provider endpoint reachability failed for the selected provider path.",
-        true,
-    ));
-    checks.push(boolean_check(
-        &input,
-        "provider_preflight_model",
-        "model",
-        input.model_available,
-        "Selected model was verified on the selected provider path.",
-        "Selected model existence has not been verified by a live provider source.",
-        "Selected model is unavailable on the selected provider path.",
-        false,
-    ));
-
-    checks.push(feature_check(
-        &input,
-        "provider_preflight_streaming",
-        "streaming route",
-        input.required_features.streaming,
-        input.streaming_route_available,
-        input.capabilities.capabilities.streaming.status.as_str(),
-    ));
-    checks.push(feature_check(
-        &input,
-        "provider_preflight_tool_schema",
-        "minimal tool-call schema",
-        input.required_features.tool_calls,
-        input.tool_schema_accepted,
-        input.capabilities.capabilities.tool_calls.status.as_str(),
-    ));
-    checks.push(feature_check(
-        &input,
-        "provider_preflight_reasoning",
-        "reasoning controls",
-        input.required_features.reasoning_controls,
-        input.reasoning_controls_accepted,
-        input.capabilities.capabilities.reasoning.status.as_str(),
-    ));
-    checks.push(feature_check(
-        &input,
-        "provider_preflight_attachments",
-        "attachment route",
-        input.required_features.attachments,
-        input.attachments_accepted,
-        input.capabilities.capabilities.attachments.status.as_str(),
-    ));
-
-    checks.push(boolean_check(
-        &input,
-        "provider_preflight_context_limit",
-        "context limit",
-        input.context_limit_known,
-        "Context-limit source and confidence are available for the selected model.",
-        "Context-limit source or confidence is only partially known for the selected model.",
-        "Context limits are unavailable for the selected model.",
-        false,
-    ));
+    let mut checks = vec![
+        boolean_check(
+            &input,
+            "provider_preflight_credentials",
+            "credentials",
+            input.credential_ready,
+            BooleanCheckMessages {
+                passed: "Credential or ambient auth is available for the selected provider path.",
+                unknown: "Credential or ambient auth was not verified for the selected provider path.",
+                failed: "Credential or ambient auth is missing for the selected provider path.",
+            },
+            true,
+        ),
+        boolean_check(
+            &input,
+            "provider_preflight_endpoint",
+            "endpoint",
+            input.endpoint_reachable,
+            BooleanCheckMessages {
+                passed: "Provider endpoint reachability was verified.",
+                unknown: "Provider endpoint reachability has not been verified by a live probe.",
+                failed: "Provider endpoint reachability failed for the selected provider path.",
+            },
+            true,
+        ),
+        boolean_check(
+            &input,
+            "provider_preflight_model",
+            "model",
+            input.model_available,
+            BooleanCheckMessages {
+                passed: "Selected model was verified on the selected provider path.",
+                unknown: "Selected model existence has not been verified by a live provider source.",
+                failed: "Selected model is unavailable on the selected provider path.",
+            },
+            false,
+        ),
+        feature_check(
+            &input,
+            "provider_preflight_streaming",
+            "streaming route",
+            input.required_features.streaming,
+            input.streaming_route_available,
+            input.capabilities.capabilities.streaming.status.as_str(),
+        ),
+        feature_check(
+            &input,
+            "provider_preflight_tool_schema",
+            "minimal tool-call schema",
+            input.required_features.tool_calls,
+            input.tool_schema_accepted,
+            input.capabilities.capabilities.tool_calls.status.as_str(),
+        ),
+        feature_check(
+            &input,
+            "provider_preflight_reasoning",
+            "reasoning controls",
+            input.required_features.reasoning_controls,
+            input.reasoning_controls_accepted,
+            input.capabilities.capabilities.reasoning.status.as_str(),
+        ),
+        feature_check(
+            &input,
+            "provider_preflight_attachments",
+            "attachment route",
+            input.required_features.attachments,
+            input.attachments_accepted,
+            input.capabilities.capabilities.attachments.status.as_str(),
+        ),
+        boolean_check(
+            &input,
+            "provider_preflight_context_limit",
+            "context limit",
+            input.context_limit_known,
+            BooleanCheckMessages {
+                passed: "Context-limit source and confidence are available for the selected model.",
+                unknown: "Context-limit source or confidence is only partially known for the selected model.",
+                failed: "Context limits are unavailable for the selected model.",
+            },
+            false,
+        ),
+    ];
 
     if let Some(error) = input.provider_error.as_ref() {
         checks.push(ProviderPreflightCheck {
@@ -737,14 +743,18 @@ pub fn openai_compatible_preflight_chat_url(base_url: &str) -> CoreResult<String
     })
 }
 
+struct BooleanCheckMessages<'a> {
+    passed: &'a str,
+    unknown: &'a str,
+    failed: &'a str,
+}
+
 fn boolean_check(
     input: &ProviderPreflightInput,
     code: &str,
     label: &str,
     value: Option<bool>,
-    passed: &str,
-    unknown: &str,
-    failed: &str,
+    messages: BooleanCheckMessages<'_>,
     retryable_on_failure: bool,
 ) -> ProviderPreflightCheck {
     match value {
@@ -752,7 +762,7 @@ fn boolean_check(
             check_id: check_id(input, code),
             status: ProviderPreflightStatus::Passed,
             code: code.into(),
-            message: passed.into(),
+            message: messages.passed.into(),
             source: input.source,
             retryable: false,
         },
@@ -760,7 +770,7 @@ fn boolean_check(
             check_id: check_id(input, code),
             status: ProviderPreflightStatus::Failed,
             code: code.into(),
-            message: failed.into(),
+            message: messages.failed.into(),
             source: input.source,
             retryable: retryable_on_failure,
         },
@@ -768,7 +778,7 @@ fn boolean_check(
             check_id: check_id(input, code),
             status: ProviderPreflightStatus::Warning,
             code: code.into(),
-            message: format!("{unknown} Required check: {label}."),
+            message: format!("{} Required check: {label}.", messages.unknown),
             source: input.source,
             retryable: false,
         },

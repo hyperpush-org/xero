@@ -1,11 +1,18 @@
 'use client'
 
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Plus, Workflow as WorkflowIcon } from 'lucide-react'
+import { memo, type ReactNode } from 'react'
+import { Bot, Plus, Workflow as WorkflowIcon, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
+import { AgentVisualization } from '@/components/xero/workflow-canvas/agent-visualization'
 import { cn } from '@/lib/utils'
 import type { WorkflowPaneView } from '@/src/features/xero/use-xero-desktop-state'
+import type {
+  AgentDetailStatus,
+  AgentListStatus,
+} from '@/src/features/xero/use-workflow-agent-inspector'
+import type { WorkflowAgentDetailDto } from '@/src/lib/xero-model/workflow-agents'
 
 interface PhaseViewProps {
   workflow?: WorkflowPaneView
@@ -17,11 +24,12 @@ interface PhaseViewProps {
   workflowsOpen?: boolean
   onCreateWorkflow?: () => void
   onCreateAgent?: () => void
+  agentDetail?: WorkflowAgentDetailDto | null
+  agentDetailStatus?: AgentDetailStatus | AgentListStatus
+  agentDetailError?: Error | null
+  onClearAgentSelection?: () => void
+  onReloadAgentDetail?: () => Promise<void>
 }
-
-const BASE_GRID_SIZE = 28
-const MIN_ZOOM = 0.25
-const MAX_ZOOM = 4
 
 export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
   const {
@@ -29,123 +37,108 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     workflowsOpen = false,
     onCreateWorkflow,
     onCreateAgent,
+    agentDetail = null,
+    agentDetailStatus = 'idle',
+    agentDetailError = null,
+    onClearAgentSelection,
+    onReloadAgentDetail,
   } = props
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [offset, setOffset] = useState({ x: 0, y: 0 })
-  const [zoom, setZoom] = useState(1)
-  const [isDragging, setIsDragging] = useState(false)
-  const dragRef = useRef<{
-    pointerId: number
-    startX: number
-    startY: number
-    offsetX: number
-    offsetY: number
-  } | null>(null)
 
-  const handlePointerDown = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return
-      event.currentTarget.setPointerCapture(event.pointerId)
-      dragRef.current = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        offsetX: offset.x,
-        offsetY: offset.y,
+  const showAgentVisualization =
+    agentDetailStatus === 'ready' && agentDetail !== null
+  const selectedAgent = showAgentVisualization ? agentDetail : null
+  const selectedAgentHeader = selectedAgent?.header ?? null
+  const selectedAgentIsSystem = selectedAgent?.ref.kind === 'built_in'
+  const emptyCanvasState = (
+    <WorkflowCanvasEmptyState
+      onCreateWorkflow={onCreateWorkflow}
+      onCreateAgent={onCreateAgent}
+      onBrowseWorkflows={
+        onToggleWorkflows && !workflowsOpen ? onToggleWorkflows : undefined
       }
-      setIsDragging(true)
-    },
-    [offset.x, offset.y],
+    />
   )
-
-  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
-    setOffset({
-      x: drag.offsetX + (event.clientX - drag.startX),
-      y: drag.offsetY + (event.clientY - drag.startY),
-    })
-  }, [])
-
-  const endDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    dragRef.current = null
-    setIsDragging(false)
-  }, [])
-
-  // Wheel needs to be a native non-passive listener so we can preventDefault
-  // and keep the page from scrolling while the user zooms over the canvas.
-  useEffect(() => {
-    const node = containerRef.current
-    if (!node) return
-    const handleWheel = (event: WheelEvent) => {
-      event.preventDefault()
-      const rect = node.getBoundingClientRect()
-      const cx = event.clientX - rect.left
-      const cy = event.clientY - rect.top
-      const factor = Math.exp(-event.deltaY * 0.0015)
-      setZoom((prevZoom) => {
-        const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prevZoom * factor))
-        if (nextZoom === prevZoom) return prevZoom
-        const ratio = nextZoom / prevZoom
-        setOffset((prevOffset) => ({
-          x: cx - (cx - prevOffset.x) * ratio,
-          y: cy - (cy - prevOffset.y) * ratio,
-        }))
-        return nextZoom
-      })
-    }
-    node.addEventListener('wheel', handleWheel, { passive: false })
-    return () => {
-      node.removeEventListener('wheel', handleWheel)
-    }
-  }, [])
-
-  const gridSize = BASE_GRID_SIZE * zoom
-  const bgX = ((offset.x % gridSize) + gridSize) % gridSize
-  const bgY = ((offset.y % gridSize) + gridSize) % gridSize
-  const dotRadius = Math.max(0.6, Math.min(1.6, 0.9 * Math.sqrt(zoom)))
+  const agentErrorState =
+    agentDetailStatus === 'error' ? (
+      <AgentDetailErrorState
+        error={agentDetailError}
+        onClearAgentSelection={onClearAgentSelection}
+        onReloadAgentDetail={onReloadAgentDetail}
+      />
+    ) : null
 
   return (
     <div
-      ref={containerRef}
       aria-label="Workflow canvas"
       className={cn(
-        'workflow-canvas relative h-full w-full select-none overflow-hidden bg-background touch-none',
-        isDragging ? 'cursor-grabbing' : 'cursor-grab',
+        'relative flex h-full w-full select-none flex-col overflow-hidden bg-background',
       )}
-      onPointerCancel={endDrag}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={endDrag}
       role="presentation"
-      style={{
-        ['--workflow-grid-size' as string]: `${gridSize}px`,
-        ['--workflow-grid-x' as string]: `${bgX}px`,
-        ['--workflow-grid-y' as string]: `${bgY}px`,
-        // CSS custom property for the dot radius so the gradient stops stay in sync.
-        ['--workflow-dot-size' as string]: `${dotRadius}px`,
-      }}
     >
-      <div aria-hidden="true" className="workflow-canvas-grid" />
+      {showAgentVisualization ? (
+        <div
+          aria-label="Selected agent"
+          className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_18rem)))] items-center gap-2 rounded-md px-2"
+        >
+          <Bot
+            aria-label="Agent"
+            role="img"
+            className="size-3.5 shrink-0 text-foreground/65"
+          />
+          <span className="min-w-0 truncate text-[12.5px] font-semibold text-foreground/80">
+            {selectedAgentHeader?.displayName}
+          </span>
+          {selectedAgentIsSystem ? (
+            <Badge
+              variant="secondary"
+              className="h-[18px] rounded px-1.5 py-0 text-[10px] font-semibold text-muted-foreground"
+            >
+              system
+            </Badge>
+          ) : null}
+          {selectedAgentHeader?.shortLabel &&
+          selectedAgentHeader.shortLabel !== selectedAgentHeader.displayName ? (
+            <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/70">
+              {selectedAgentHeader.shortLabel}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
-      <WorkflowCanvasEmptyState
-        onCreateWorkflow={onCreateWorkflow}
-        onCreateAgent={onCreateAgent}
-        onBrowseWorkflows={
-          onToggleWorkflows && !workflowsOpen ? onToggleWorkflows : undefined
-        }
+      <AgentVisualization
+        detail={selectedAgent}
+        emptyState={agentErrorState ?? emptyCanvasState}
+        emptyStateVisible={!showAgentVisualization && agentDetailStatus !== 'loading'}
       />
 
-      {onToggleWorkflows || onCreateWorkflow ? (
+      {onToggleWorkflows || onCreateWorkflow || showAgentVisualization ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 z-[5] h-20 bg-gradient-to-b from-background to-transparent"
+        />
+      ) : null}
+
+      {onToggleWorkflows || onCreateWorkflow || showAgentVisualization ? (
         <div
           className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {showAgentVisualization && onClearAgentSelection ? (
+            <Button
+              type="button"
+              aria-label="Close agent inspector"
+              onClick={onClearAgentSelection}
+              size="sm"
+              variant="ghost"
+              className={cn(
+                'h-[30px] cursor-pointer gap-1 rounded-md bg-transparent px-2 text-[12.5px] font-semibold has-[>svg]:px-2',
+                'text-foreground/70 hover:bg-transparent hover:text-foreground',
+              )}
+            >
+              <X className="size-3.5" />
+              <span>Close</span>
+            </Button>
+          ) : null}
           {onCreateWorkflow ? (
             <Button
               type="button"
@@ -189,3 +182,55 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     </div>
   )
 })
+
+function PhaseCanvasFallback({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-full w-full flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+      {children}
+    </div>
+  )
+}
+
+function AgentDetailErrorState({
+  error,
+  onClearAgentSelection,
+  onReloadAgentDetail,
+}: {
+  error?: Error | null
+  onClearAgentSelection?: () => void
+  onReloadAgentDetail?: () => Promise<void>
+}) {
+  return (
+    <PhaseCanvasFallback>
+      <div
+        className="pointer-events-auto flex flex-col items-center gap-3"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <p className="text-sm font-medium text-destructive">
+          Failed to load agent details.
+        </p>
+        {error ? (
+          <p className="text-xs text-muted-foreground">{error.message}</p>
+        ) : null}
+        <div className="flex gap-2 pt-2">
+          {onReloadAgentDetail ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                void onReloadAgentDetail()
+              }}
+            >
+              Retry
+            </Button>
+          ) : null}
+          {onClearAgentSelection ? (
+            <Button size="sm" variant="ghost" onClick={onClearAgentSelection}>
+              Clear selection
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </PhaseCanvasFallback>
+  )
+}

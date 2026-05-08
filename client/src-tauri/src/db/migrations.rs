@@ -19,6 +19,9 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_010_CODE_ROLLBACK_STORAGE_SQL),
             M::up(MIGRATION_011_CODE_HISTORY_WORKSPACE_HEAD_SQL),
             M::up(MIGRATION_012_CODE_HISTORY_COMMIT_PATCHSET_SQL),
+            M::up(MIGRATION_013_CODE_HISTORY_OPERATIONS_SQL),
+            M::up(MIGRATION_014_AGENT_RESERVATION_INVALIDATIONS_SQL),
+            M::up_with_hook("", migrate_agent_trace_columns_repair),
         ])
     });
 
@@ -262,7 +265,11 @@ const MIGRATION_004_AGENT_MAILBOX_SQL: &str = r#"
             'file_ownership_note',
             'finding_in_progress',
             'verification_note',
-            'handoff_lite_summary'
+            'handoff_lite_summary',
+            'history_rewrite_notice',
+            'undo_conflict_notice',
+            'workspace_epoch_advanced',
+            'reservation_invalidated'
         )),
         CHECK (parent_item_id IS NULL OR parent_item_id <> ''),
         CHECK (sender_agent_session_id <> ''),
@@ -335,6 +342,15 @@ const MIGRATION_004_AGENT_MAILBOX_SQL: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_agent_mailbox_acknowledgements_run
         ON agent_mailbox_acknowledgements(project_id, run_id, acknowledged_at DESC);
+"#;
+
+const MIGRATION_014_AGENT_RESERVATION_INVALIDATIONS_SQL: &str = r#"
+    ALTER TABLE agent_file_reservations ADD COLUMN invalidated_at TEXT;
+    ALTER TABLE agent_file_reservations ADD COLUMN invalidation_reason TEXT;
+    ALTER TABLE agent_file_reservations ADD COLUMN invalidating_history_operation_id TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_agent_file_reservations_invalidated
+        ON agent_file_reservations(project_id, invalidated_at, invalidating_history_operation_id);
 "#;
 
 const MIGRATION_005_AGENT_PLAN_PACKS_SQL: &str = r#"
@@ -924,6 +940,81 @@ const MIGRATION_012_CODE_HISTORY_COMMIT_PATCHSET_SQL: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_code_patch_hunks_file
         ON code_patch_hunks(project_id, patch_file_id, hunk_index ASC);
+"#;
+
+const MIGRATION_013_CODE_HISTORY_OPERATIONS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS code_history_operations (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        operation_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        status TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        target_change_group_id TEXT,
+        target_file_path TEXT,
+        target_hunk_ids_json TEXT NOT NULL DEFAULT '[]',
+        agent_session_id TEXT,
+        run_id TEXT,
+        expected_workspace_epoch INTEGER,
+        affected_paths_json TEXT NOT NULL DEFAULT '[]',
+        conflicts_json TEXT NOT NULL DEFAULT '[]',
+        result_change_group_id TEXT,
+        result_commit_id TEXT,
+        failure_code TEXT,
+        failure_message TEXT,
+        repair_code TEXT,
+        repair_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (project_id, operation_id),
+        CHECK (operation_id <> ''),
+        CHECK (mode IN ('selective_undo', 'session_rollback')),
+        CHECK (status IN ('pending', 'planning', 'conflicted', 'applying', 'completed', 'failed', 'repair_needed')),
+        CHECK (target_kind IN ('change_group', 'file_change', 'hunks', 'session_boundary', 'run_boundary')),
+        CHECK (target_id <> ''),
+        CHECK (target_change_group_id IS NULL OR target_change_group_id <> ''),
+        CHECK (target_file_path IS NULL OR target_file_path <> ''),
+        CHECK (target_hunk_ids_json <> '' AND json_valid(target_hunk_ids_json)),
+        CHECK (agent_session_id IS NULL OR agent_session_id <> ''),
+        CHECK (run_id IS NULL OR run_id <> ''),
+        CHECK (expected_workspace_epoch IS NULL OR expected_workspace_epoch >= 0),
+        CHECK (affected_paths_json <> '' AND json_valid(affected_paths_json)),
+        CHECK (conflicts_json <> '' AND json_valid(conflicts_json)),
+        CHECK (result_change_group_id IS NULL OR result_change_group_id <> ''),
+        CHECK (result_commit_id IS NULL OR result_commit_id <> ''),
+        CHECK (failure_code IS NULL OR failure_code <> ''),
+        CHECK (failure_message IS NULL OR failure_message <> ''),
+        CHECK (repair_code IS NULL OR repair_code <> ''),
+        CHECK (repair_message IS NULL OR repair_message <> ''),
+        CHECK (
+            (status IN ('pending', 'planning', 'applying') AND completed_at IS NULL)
+            OR (status IN ('conflicted', 'completed', 'failed', 'repair_needed') AND completed_at IS NOT NULL)
+        ),
+        CHECK (
+            (status = 'failed' AND failure_code IS NOT NULL AND failure_message IS NOT NULL)
+            OR (status <> 'failed')
+        ),
+        CHECK (
+            (status = 'repair_needed' AND repair_code IS NOT NULL AND repair_message IS NOT NULL)
+            OR (status <> 'repair_needed')
+        ),
+        FOREIGN KEY (project_id, target_change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE SET NULL,
+        FOREIGN KEY (project_id, result_change_group_id)
+            REFERENCES code_change_groups(project_id, change_group_id) ON DELETE SET NULL,
+        FOREIGN KEY (project_id, result_commit_id)
+            REFERENCES code_commits(project_id, commit_id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_code_history_operations_project_status
+        ON code_history_operations(project_id, status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_code_history_operations_target
+        ON code_history_operations(project_id, target_change_group_id, created_at DESC)
+        WHERE target_change_group_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_code_history_operations_result_commit
+        ON code_history_operations(project_id, result_commit_id)
+        WHERE result_commit_id IS NOT NULL;
 "#;
 
 const BASELINE_SCHEMA_SQL: &str = r#"
@@ -2382,6 +2473,12 @@ fn migrate_agent_trace_columns(transaction: &Transaction<'_>) -> rusqlite_migrat
     Ok(())
 }
 
+fn migrate_agent_trace_columns_repair(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    migrate_agent_trace_columns(transaction)
+}
+
 fn migrate_environment_lifecycle_schema(
     transaction: &Transaction<'_>,
 ) -> rusqlite_migration::HookResult {
@@ -2827,10 +2924,11 @@ mod tests {
                 "code_change_groups",
                 "code_commits",
                 "code_file_versions",
-                "code_path_epochs",
+                "code_history_operations",
                 "code_patch_files",
                 "code_patch_hunks",
                 "code_patchsets",
+                "code_path_epochs",
                 "code_rollback_operations",
                 "code_snapshots",
                 "code_workspace_heads",
@@ -3416,6 +3514,96 @@ mod tests {
     }
 
     #[test]
+    fn v15_project_state_repairs_missing_agent_file_change_group_id() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE agent_runs (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    trace_id TEXT NOT NULL,
+                    lineage_kind TEXT NOT NULL,
+                    parent_run_id TEXT,
+                    parent_trace_id TEXT,
+                    parent_subagent_id TEXT,
+                    subagent_role TEXT,
+                    PRIMARY KEY (project_id, run_id)
+                );
+
+                CREATE TABLE agent_file_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    trace_id TEXT NOT NULL,
+                    top_level_run_id TEXT NOT NULL,
+                    subagent_id TEXT,
+                    subagent_role TEXT,
+                    path TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    old_hash TEXT,
+                    new_hash TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                INSERT INTO agent_runs (
+                    project_id,
+                    run_id,
+                    trace_id,
+                    lineage_kind
+                )
+                VALUES (
+                    'project-v15',
+                    'run-v15',
+                    '0123456789abcdef0123456789abcdef',
+                    'top_level'
+                );
+
+                INSERT INTO agent_file_changes (
+                    project_id,
+                    run_id,
+                    trace_id,
+                    top_level_run_id,
+                    path,
+                    operation,
+                    created_at
+                )
+                VALUES (
+                    'project-v15',
+                    'run-v15',
+                    '0123456789abcdef0123456789abcdef',
+                    'run-v15',
+                    'src/lib.rs',
+                    'edit',
+                    '2026-05-07T12:34:00Z'
+                );
+
+                PRAGMA user_version = 15;
+                "#,
+            )
+            .expect("seed v15 schema missing change_group_id");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("repair v15 schema");
+
+        let file_change_columns = table_columns(&connection, "agent_file_changes");
+        assert!(
+            file_change_columns.contains(&"change_group_id".to_string()),
+            "agent_file_changes should include change_group_id after repair"
+        );
+
+        connection
+            .prepare(
+                "SELECT id, project_id, run_id, trace_id, top_level_run_id, subagent_id, subagent_role, change_group_id
+                 FROM agent_file_changes",
+            )
+            .expect("owned-agent file change query prepares after repair");
+    }
+
+    #[test]
     fn legacy_v5_project_state_migrates_agent_trace_columns() {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
         connection
@@ -3462,6 +3650,18 @@ mod tests {
                     run_id TEXT NOT NULL,
                     trace_id TEXT NOT NULL
                 );
+
+                CREATE TABLE agent_file_reservations (
+                    project_id TEXT NOT NULL
+                );
+
+                CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL
+                );
+
+                INSERT INTO projects (id, name)
+                VALUES ('project-legacy', 'Legacy project');
 
                 INSERT INTO agent_runs (
                     runtime_agent_id,

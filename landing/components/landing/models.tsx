@@ -1,4 +1,4 @@
-import { Check, Cloud, Github, KeyRound, Laptop, Route, Server, Sparkles, Webhook } from "lucide-react"
+import { Check, Cloud, Github, KeyRound, Route, Server, Sparkles, Webhook } from "lucide-react"
 import {
   AnthropicIcon,
   GoogleIcon,
@@ -162,10 +162,33 @@ export function Models() {
   )
 }
 
+/* Constellation: a single point (you) at center casts direct rays to a
+   surrounding ring of provider points. No middleman, no relay node. */
 function DirectConnectionVisual() {
+  const cx = 200
+  const cy = 110
+  const ringR = 78
+  const providers = [
+    { c: "#10a37f", deg: 0 },
+    { c: "#cc785c", deg: 36 },
+    { c: "#4285f4", deg: 72 },
+    { c: "#0078d4", deg: 108 },
+    { c: "#ff9900", deg: 144 },
+    { c: "#1a73e8", deg: 180 },
+    { c: "#f8f9fa", deg: 216 },
+    { c: "var(--primary)", deg: 252 },
+    { c: "#cc785c", deg: 288 },
+    { c: "#10a37f", deg: 324 },
+  ]
+  const pt = (deg: number, r: number) => {
+    const a = ((deg - 90) * Math.PI) / 180
+    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }
+  }
+
   return (
-    <div className="relative mt-6 overflow-hidden rounded-xl border border-border/70 bg-background/40 p-4">
-      <div className="flex items-center justify-between">
+    <div className="relative mt-6 overflow-hidden rounded-xl border border-border/70 bg-background/40">
+      {/* Header chrome */}
+      <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
           <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
           no relay · no markup
@@ -176,69 +199,73 @@ function DirectConnectionVisual() {
         </span>
       </div>
 
-      <div className="mt-5 flex items-center gap-3">
-        {/* You */}
-        <div className="flex shrink-0 flex-col items-center gap-1.5">
-          <span className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg border border-primary/40 bg-primary/[0.08] text-primary shadow-[0_0_0_4px_color-mix(in_oklab,var(--primary)_8%,transparent)]">
-            <Laptop className="h-4 w-4" />
-            <span
-              aria-hidden
-              className="absolute -bottom-1 -right-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-primary/40 bg-card text-primary"
-            >
-              <KeyRound className="h-2.5 w-2.5" />
-            </span>
-          </span>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            your machine
-          </span>
-        </div>
+      <svg viewBox="0 0 400 220" className="h-auto w-full" aria-hidden>
+        <defs>
+          <radialGradient id="dc-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+          </radialGradient>
+          <linearGradient id="dc-beam" x1="0" x2="1">
+            <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 65%, transparent)" />
+            <stop offset="100%" stopColor="color-mix(in oklab, var(--primary) 5%, transparent)" />
+          </linearGradient>
+          <pattern id="dc-grid" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="color-mix(in oklab, var(--border) 50%, transparent)" strokeWidth="0.4" />
+          </pattern>
+        </defs>
 
-        {/* Direct line with traveling pulse */}
-        <div className="relative flex h-12 flex-1 items-center">
-          <div
-            aria-hidden
-            className="relative h-px w-full bg-gradient-to-r from-primary/30 via-primary/70 to-primary"
-          />
-          {/* arrowhead */}
-          <span
-            aria-hidden
-            className="absolute right-0 top-1/2 -translate-y-1/2"
-          >
-            <span className="block h-0 w-0 border-y-[5px] border-l-[7px] border-y-transparent border-l-primary" />
-          </span>
-          {/* label */}
-          <span className="absolute left-1/2 top-0 -translate-x-1/2 rounded-full border border-border/70 bg-background px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">
-            direct
-          </span>
-          {/* sub label */}
-          <span className="absolute left-1/2 bottom-0 -translate-x-1/2 font-mono text-[9px] tracking-wider text-muted-foreground/60">
-            tls · streaming
-          </span>
-        </div>
+        {/* Background grid */}
+        <rect width="400" height="220" fill="url(#dc-grid)" opacity="0.45" />
 
-        {/* Providers cluster */}
-        <div className="flex shrink-0 flex-col items-center gap-1.5">
-          <div className="grid grid-cols-3 gap-1 rounded-lg border border-border/60 bg-card p-1.5 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.6)]">
-            {[
-              "bg-[#10a37f]",
-              "bg-[#cc785c]",
-              "bg-[#4285f4]",
-              "bg-foreground",
-              "bg-[#0078d4]",
-              "bg-[#ff9900]",
-            ].map((c, i) => (
-              <span
-                key={i}
-                className={`h-2.5 w-2.5 rounded-sm ${c} opacity-90`}
-                aria-hidden
-              />
-            ))}
-          </div>
-          <span className="font-mono text-[10px] text-muted-foreground">
-            10 providers
-          </span>
-        </div>
-      </div>
+        {/* Center halo */}
+        <circle cx={cx} cy={cy} r="100" fill="url(#dc-glow)" />
+
+        {/* Outer ring boundary */}
+        <circle cx={cx} cy={cy} r={ringR + 4} fill="none" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.6" strokeDasharray="2 5" />
+
+        {/* Direct beams */}
+        {providers.map((p, i) => {
+          const e = pt(p.deg, ringR)
+          return (
+            <g key={i}>
+              <line x1={cx} y1={cy} x2={e.x} y2={e.y} stroke="url(#dc-beam)" strokeWidth="1" />
+              {/* tiny traveling notches midway */}
+              <circle cx={(cx + e.x) / 2} cy={(cy + e.y) / 2} r="1.2" fill="color-mix(in oklab, var(--primary) 70%, transparent)" />
+            </g>
+          )
+        })}
+
+        {/* Provider nodes */}
+        {providers.map((p, i) => {
+          const e = pt(p.deg, ringR)
+          return (
+            <g key={`n-${i}`}>
+              <circle cx={e.x} cy={e.y} r="9" fill="var(--card)" stroke={p.c} strokeWidth="1.4" />
+              <circle cx={e.x} cy={e.y} r="4" fill={p.c} />
+            </g>
+          )
+        })}
+
+        {/* You — central glyph (laptop-ish rounded square w/ keyhole) */}
+        <g transform={`translate(${cx} ${cy})`}>
+          <rect x="-22" y="-16" width="44" height="28" rx="4" fill="color-mix(in oklab, var(--primary) 18%, var(--card))" stroke="var(--primary)" strokeWidth="1.4" />
+          <rect x="-26" y="13" width="52" height="3" rx="1.5" fill="color-mix(in oklab, var(--primary) 55%, transparent)" />
+          <circle cx="0" cy="-2" r="4" fill="var(--card)" stroke="var(--primary)" strokeWidth="1" />
+          <rect x="-1" y="-2" width="2" height="8" fill="var(--primary)" />
+        </g>
+
+        {/* Annotation tick — center label */}
+        <g fontFamily="var(--font-mono)" fontSize="9" fill="var(--muted-foreground)" letterSpacing="2">
+          <line x1={cx} y1={cy + 22} x2={cx} y2={cy + 38} stroke="color-mix(in oklab, var(--primary) 50%, transparent)" strokeWidth="0.7" />
+          <text x={cx} y={cy + 50} textAnchor="middle" fill="var(--foreground)" opacity="0.8">YOUR MACHINE</text>
+        </g>
+
+        {/* Footer label */}
+        <g fontFamily="var(--font-mono)" fontSize="9" fill="var(--muted-foreground)" letterSpacing="2">
+          <text x="20" y="208">10 PROVIDERS</text>
+          <text x="380" y="208" textAnchor="end" fill="var(--primary)" opacity="0.85">DIRECT · TLS</text>
+        </g>
+      </svg>
     </div>
   )
 }

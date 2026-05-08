@@ -103,6 +103,9 @@ pub struct AgentFileReservationRecord {
     pub expires_at: String,
     pub released_at: Option<String>,
     pub release_reason: Option<String>,
+    pub invalidated_at: Option<String>,
+    pub invalidation_reason: Option<String>,
+    pub invalidating_history_operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -165,6 +168,14 @@ pub struct ReleaseAgentFileReservationRequest {
     pub paths: Vec<String>,
     pub release_reason: String,
     pub released_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidateAgentFileReservationsRequest {
+    pub project_id: String,
+    pub history_operation_id: String,
+    pub affected_paths: Vec<String>,
+    pub invalidated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -482,10 +493,14 @@ pub fn list_active_agent_file_reservations(
                 last_heartbeat_at,
                 expires_at,
                 released_at,
-                release_reason
+                release_reason,
+                invalidated_at,
+                invalidation_reason,
+                invalidating_history_operation_id
             FROM agent_file_reservations
             WHERE project_id = ?1
               AND released_at IS NULL
+              AND invalidated_at IS NULL
               AND expires_at > ?2
               AND (?3 IS NULL OR owner_run_id <> ?3)
             ORDER BY claimed_at DESC, reservation_id ASC
@@ -893,6 +908,208 @@ pub fn release_agent_file_reservations(
         .collect()
 }
 
+pub fn invalidate_overlapping_agent_file_reservations(
+    repo_root: &Path,
+    request: &InvalidateAgentFileReservationsRequest,
+) -> CommandResult<Vec<AgentFileReservationRecord>> {
+    validate_non_empty_text(
+        &request.project_id,
+        "projectId",
+        "agent_file_reservation_invalidation_invalid",
+    )?;
+    validate_non_empty_text(
+        &request.history_operation_id,
+        "historyOperationId",
+        "agent_file_reservation_invalidation_invalid",
+    )?;
+    validate_non_empty_text(
+        &request.invalidated_at,
+        "invalidatedAt",
+        "agent_file_reservation_invalidation_invalid",
+    )?;
+    let affected_paths = normalize_reservation_paths(&request.affected_paths)?;
+    if affected_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT reservation_id, path
+            FROM agent_file_reservations
+            WHERE project_id = ?1
+              AND released_at IS NULL
+              AND invalidated_at IS NULL
+              AND expires_at > ?2
+            ORDER BY claimed_at DESC, reservation_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_coordination_query_error(
+                &database_path,
+                "agent_file_reservation_invalidation_prepare_failed",
+                error,
+            )
+        })?;
+    let rows = statement
+        .query_map(params![request.project_id, request.invalidated_at], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| {
+            map_coordination_query_error(
+                &database_path,
+                "agent_file_reservation_invalidation_query_failed",
+                error,
+            )
+        })?;
+
+    let mut invalidation_targets = Vec::<(String, Vec<String>)>::new();
+    for row in rows {
+        let (reservation_id, reservation_path) = row.map_err(|error| {
+            map_coordination_query_error(
+                &database_path,
+                "agent_file_reservation_invalidation_decode_failed",
+                error,
+            )
+        })?;
+        let matching_paths = affected_paths
+            .iter()
+            .filter(|affected_path| coordination_paths_overlap(affected_path, &reservation_path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !matching_paths.is_empty() {
+            invalidation_targets.push((reservation_id, matching_paths));
+        }
+    }
+    drop(statement);
+
+    let mut invalidated = Vec::with_capacity(invalidation_targets.len());
+    for (reservation_id, matching_paths) in invalidation_targets {
+        let reason =
+            history_reservation_invalidation_reason(&request.history_operation_id, &matching_paths);
+        connection
+            .execute(
+                r#"
+                UPDATE agent_file_reservations
+                SET invalidated_at = ?3,
+                    invalidation_reason = ?4,
+                    invalidating_history_operation_id = ?5
+                WHERE project_id = ?1
+                  AND reservation_id = ?2
+                  AND released_at IS NULL
+                  AND invalidated_at IS NULL
+                "#,
+                params![
+                    request.project_id,
+                    reservation_id,
+                    request.invalidated_at,
+                    reason,
+                    request.history_operation_id,
+                ],
+            )
+            .map_err(|error| {
+                map_coordination_write_error(
+                    &database_path,
+                    "agent_file_reservation_invalidation_update_failed",
+                    error,
+                )
+            })?;
+        invalidated.push(read_reservation(
+            &connection,
+            repo_root,
+            &request.project_id,
+            &reservation_id,
+        )?);
+    }
+
+    Ok(invalidated)
+}
+
+pub fn list_agent_file_reservations_for_run(
+    repo_root: &Path,
+    project_id: &str,
+    owner_run_id: &str,
+    now: &str,
+    limit: usize,
+) -> CommandResult<Vec<AgentFileReservationRecord>> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_coordination_request_invalid",
+    )?;
+    validate_non_empty_text(
+        owner_run_id,
+        "ownerRunId",
+        "agent_coordination_request_invalid",
+    )?;
+    cleanup_expired_agent_coordination(repo_root, project_id, now)?;
+    let limit = bounded_limit(limit, MAX_COORDINATION_CONTEXT_RESERVATIONS);
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                reservation_id,
+                project_id,
+                path,
+                path_kind,
+                operation,
+                owner_agent_session_id,
+                owner_run_id,
+                owner_child_run_id,
+                owner_role,
+                owner_pane_id,
+                owner_trace_id,
+                note,
+                override_reason,
+                claimed_at,
+                last_heartbeat_at,
+                expires_at,
+                released_at,
+                release_reason,
+                invalidated_at,
+                invalidation_reason,
+                invalidating_history_operation_id
+            FROM agent_file_reservations
+            WHERE project_id = ?1
+              AND (owner_run_id = ?2 OR owner_child_run_id = ?2)
+              AND (released_at IS NULL OR invalidated_at IS NOT NULL)
+            ORDER BY COALESCE(invalidated_at, released_at, last_heartbeat_at) DESC,
+                     reservation_id ASC
+            LIMIT ?3
+            "#,
+        )
+        .map_err(|error| {
+            map_coordination_query_error(
+                &database_path,
+                "agent_file_reservation_owner_list_prepare_failed",
+                error,
+            )
+        })?;
+    let rows = statement
+        .query_map(
+            params![project_id, owner_run_id, limit as i64],
+            read_reservation_row,
+        )
+        .map_err(|error| {
+            map_coordination_query_error(
+                &database_path,
+                "agent_file_reservation_owner_list_query_failed",
+                error,
+            )
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_coordination_query_error(
+            &database_path,
+            "agent_file_reservation_owner_list_decode_failed",
+            error,
+        )
+    })
+}
+
 pub fn heartbeat_agent_coordination(
     repo_root: &Path,
     project_id: &str,
@@ -938,6 +1155,7 @@ pub fn heartbeat_agent_coordination(
             WHERE project_id = ?1
               AND (owner_run_id = ?2 OR owner_child_run_id = ?2)
               AND released_at IS NULL
+              AND invalidated_at IS NULL
             "#,
             params![project_id, run_id, timestamp, reservation_expires_at],
         )
@@ -1178,6 +1396,27 @@ fn normalize_reservation_path(path: &str) -> CommandResult<String> {
     Ok(parts.join("/"))
 }
 
+fn history_reservation_invalidation_reason(
+    operation_id: &str,
+    matching_paths: &[String],
+) -> String {
+    let path_preview = reservation_path_preview(matching_paths);
+    format!(
+        "Invalidated by code history operation `{operation_id}` after it changed overlapping path(s): {path_preview}. Re-read current files and renew this reservation before overlapping writes."
+    )
+}
+
+fn reservation_path_preview(paths: &[String]) -> String {
+    if paths.is_empty() {
+        return "none".into();
+    }
+    let mut preview = paths.iter().take(6).cloned().collect::<Vec<_>>();
+    if paths.len() > preview.len() {
+        preview.push(format!("and {} more", paths.len() - preview.len()));
+    }
+    preview.join(", ")
+}
+
 fn reservations_for_owner(
     connection: &Connection,
     repo_root: &Path,
@@ -1208,10 +1447,14 @@ fn reservations_for_owner(
                 last_heartbeat_at,
                 expires_at,
                 released_at,
-                release_reason
+                release_reason,
+                invalidated_at,
+                invalidation_reason,
+                invalidating_history_operation_id
             FROM agent_file_reservations
             WHERE project_id = ?1
               AND released_at IS NULL
+              AND invalidated_at IS NULL
               AND (?2 IS NULL OR reservation_id = ?2)
               AND (owner_run_id = ?3 OR owner_child_run_id = ?3)
             ORDER BY claimed_at DESC, reservation_id ASC
@@ -1345,7 +1588,10 @@ fn read_reservation(
                 last_heartbeat_at,
                 expires_at,
                 released_at,
-                release_reason
+                release_reason,
+                invalidated_at,
+                invalidation_reason,
+                invalidating_history_operation_id
             FROM agent_file_reservations
             WHERE project_id = ?1
               AND reservation_id = ?2
@@ -1424,6 +1670,9 @@ fn read_reservation_row(row: &Row<'_>) -> rusqlite::Result<AgentFileReservationR
         expires_at: row.get(15)?,
         released_at: row.get(16)?,
         release_reason: row.get(17)?,
+        invalidated_at: row.get(18)?,
+        invalidation_reason: row.get(19)?,
+        invalidating_history_operation_id: row.get(20)?,
     })
 }
 

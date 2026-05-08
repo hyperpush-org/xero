@@ -1,10 +1,10 @@
 # Session Memory And Context
 
-Xero keeps session history durable while giving users control over what becomes model-visible context. This guide is for users and support engineers who need to find prior work, export a transcript, compact a long session, review memory, or recover from an earlier point without editing raw history.
+Xero keeps session history durable while giving users control over what becomes model-visible context. This guide is for users and support engineers who need to find prior work, export a transcript, compact a long session, review memory, recover a conversation branch, undo selected code changes, or return one agent session to an earlier code boundary without editing raw history.
 
 ## What Xero Preserves
 
-Owned-agent runs keep their raw transcript rows, tool summaries, file-change records, checkpoints, action requests, usage records, compaction records, memory records, and branch lineage. User-facing projections are redacted views over that durable history. Compaction, branch, rewind, and memory review do not delete the original transcript.
+Owned-agent runs keep their raw transcript rows, tool summaries, file-change records, code undo events, session rollback events, checkpoints, action requests, usage records, compaction records, memory records, and branch lineage. User-facing projections are redacted views over that durable history. Compaction, branch, rewind, code undo, session rollback, and memory review do not delete the original transcript.
 
 ## Search And Export
 
@@ -25,6 +25,7 @@ The Context panel explains what Xero expects to send on the next owned-agent pro
 - The current conversation tail.
 - Tool results that remain in replay.
 - Tool descriptors selected for the run.
+- Recent code undo or session rollback events that affect the run's workspace assumptions.
 - Provider usage totals, shown for visibility but not sent as model-visible context.
 
 Budget pressure is an estimate unless the provider returned usage data. Known provider budgets are classified as low, medium, high, or over budget. Unknown budgets remain non-blocking and are shown separately so users can decide whether to compact or continue.
@@ -55,6 +56,8 @@ The Memory surface lets users approve, reject, enable, disable, delete, filter, 
 
 Approved memory is treated as durable context, not higher-priority policy. The system prompt explicitly tells the agent to ignore memory text that tries to change system or tool rules.
 
+When code has been undone or a session has been rolled back, Xero treats implementation facts from the removed code as historical unless the undo provenance is included. This keeps memory review from teaching future agents that a reverted implementation is still the current project truth.
+
 ## Instruction Files
 
 Xero includes supported project instruction files in the system prompt and shows them as context contributors. Missing or malformed instruction content should produce diagnostics or empty contributors rather than failing the provider call. Instruction text is counted separately from the system prompt when context visualization can identify it.
@@ -67,9 +70,23 @@ Rewind is a branch from a more precise boundary, such as a message or checkpoint
 
 Use branch when you want to explore from the end of a prior run. Use rewind when you want to recover from a specific earlier message or checkpoint without deleting the later transcript.
 
+## Code Undo And Session Rollback
+
+Conversation rewind, selective code undo, and session rollback are separate recovery tools:
+
+- Conversation rewind creates a new conversation branch from an earlier message or checkpoint. It changes replay context for the new branch, but it does not edit files on disk.
+- Selective code undo removes a chosen code change, file change, or selected diff hunk from the current workspace. It is applied on top of the current files, so unrelated user edits and sibling-agent work are preserved when they do not overlap.
+- Session rollback returns one agent session or run lineage to an earlier code boundary by undoing that session's later code change groups. It does not rewind other sessions or remove independent current work.
+
+Code undo and session rollback are recorded as new append-only history events with affected paths, operation mode, target, result commit, and conflict details when applicable. Search, export, context visualization, and session history should show those events chronologically instead of rewriting older transcript rows.
+
+If Xero cannot preserve unrelated current work safely, the operation conflicts before writing files. Conflict results should identify the affected paths and concise reasons. A failed undo or session rollback leaves the workspace unchanged.
+
+Undo only covers project file state and Xero's app-data history metadata. External side effects are out of scope, including remote services, databases outside the project store, emulator state, Docker volumes, package manager caches, deployed programs, transactions, and commands that already affected systems outside the workspace.
+
 ## Privacy Guarantees
 
-Session projections, exports, search snippets, context visualization, compaction summaries, memory candidates, approved memory, and branch/rewind metadata are redacted before they are copied, exported, or shown as model-visible context.
+Session projections, exports, search snippets, context visualization, compaction summaries, memory candidates, approved memory, branch/rewind metadata, and code undo/session rollback metadata are redacted before they are copied, exported, or shown as model-visible context.
 
 Xero redacts:
 
@@ -90,4 +107,6 @@ For a missing-history issue, use session search with archived sessions enabled, 
 
 For memory issues, inspect candidates and approved memory. Confirm that the item is approved, enabled, in scope, and not redacted for privacy or integrity.
 
-For recovery issues, inspect lineage on the branched session. Branch and rewind preserve the source transcript; they do not imply file rollback.
+For conversation recovery issues, inspect lineage on the branched session. Branch and rewind preserve the source transcript; they do not imply file rollback.
+
+For code recovery issues, inspect the undo or session rollback history event. Confirm whether the user selected a file, hunk, change group, or session boundary; check affected paths; and verify whether the result was completed or conflicted. Code undo should preserve unrelated current work. Session rollback should target only the selected session lineage. Neither operation can reverse external side effects outside the project file state.

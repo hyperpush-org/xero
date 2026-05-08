@@ -22,8 +22,10 @@ import {
   Circle,
   Copy,
   FileText,
+  History,
   Info,
   Loader2,
+  MoreHorizontal,
   Terminal,
   Undo2,
   User,
@@ -31,6 +33,7 @@ import {
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
@@ -42,7 +45,19 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import type {
+  CodeHistoryConflictDto,
+  CodePatchAvailabilityDto,
+  CodePatchTextHunkDto,
   RuntimeActionAnswerShapeDto,
   RuntimeActionRequiredOptionDto,
   RuntimeRunView,
@@ -113,6 +128,7 @@ export type ConversationTurn =
   | {
       id: string
       kind: 'file_change'
+      runId: string
       sequence: number
       title: string
       detail: string
@@ -120,6 +136,8 @@ export type ConversationTurn =
       path: string
       toPath: string | null
       changeGroupId: string | null
+      workspaceEpoch: number | null
+      patchAvailability: CodePatchAvailabilityDto | null
     }
   | {
       id: string
@@ -143,14 +161,39 @@ export type ConversationTurn =
       isResolved: boolean
     }
 
-export interface CodeRollbackRequest {
+export type CodeUndoTargetKind = 'change_group' | 'file_change' | 'hunks'
+
+export interface CodeUndoRequest {
+  targetKind: CodeUndoTargetKind
   changeGroupId: string
   path: string
+  filePath?: string | null
+  hunkIds?: string[]
+  expectedWorkspaceEpoch?: number | null
 }
 
-export interface CodeRollbackUiState {
+export interface CodeUndoUiState {
   status: 'pending' | 'succeeded' | 'failed'
   message: string
+  conflictSummary?: CodeUndoConflictSummary
+}
+
+export interface CodeUndoConflictSummary {
+  title: string
+  targetLabel: string
+  affectedPaths: string[]
+  conflicts: CodeHistoryConflictDto[]
+}
+
+export type ReturnSessionToHereTargetKind = 'session_boundary' | 'run_boundary'
+
+export interface ReturnSessionToHereUiRequest {
+  targetKind: ReturnSessionToHereTargetKind
+  targetId: string
+  boundaryId: string
+  runId?: string | null
+  changeGroupId?: string | null
+  expectedWorkspaceEpoch?: number | null
 }
 
 interface ConversationSectionProps {
@@ -167,8 +210,50 @@ interface ConversationSectionProps {
   accountLogin?: string | null
   /** Visual density. `dense` collapses each turn into a single PTY-style line. */
   variant?: 'default' | 'dense'
-  codeRollbackStates?: Record<string, CodeRollbackUiState>
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  codeUndoStates?: Record<string, CodeUndoUiState>
+  returnSessionToHereStates?: Record<string, CodeUndoUiState>
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+}
+
+export function getCodeUndoStateKey({
+  targetKind,
+  changeGroupId,
+  filePath,
+}: {
+  targetKind: CodeUndoTargetKind
+  changeGroupId: string
+  filePath?: string | null
+}): string {
+  if (targetKind === 'file_change') {
+    return `${changeGroupId}:file:${filePath ?? ''}`
+  }
+
+  if (targetKind === 'hunks') {
+    return `${changeGroupId}:file:${filePath ?? ''}:hunks`
+  }
+
+  return changeGroupId
+}
+
+export function getReturnSessionToHereStateKey({
+  targetKind,
+  boundaryId,
+  runId,
+  changeGroupId,
+}: {
+  targetKind: ReturnSessionToHereTargetKind
+  boundaryId: string
+  runId?: string | null
+  changeGroupId?: string | null
+}): string {
+  return [
+    'return-session',
+    targetKind,
+    runId ?? '',
+    boundaryId,
+    changeGroupId ?? '',
+  ].join(':')
 }
 
 /**
@@ -195,8 +280,10 @@ export const ConversationSection = memo(function ConversationSection({
   accountAvatarUrl = null,
   accountLogin = null,
   variant = 'default',
-  codeRollbackStates = {},
-  onRollbackChangeGroup,
+  codeUndoStates = {},
+  returnSessionToHereStates = {},
+  onUndoChangeGroup,
+  onReturnSessionToHere,
 }: ConversationSectionProps) {
   const runFailureCode = runtimeRun?.lastError?.code ?? runtimeRun?.lastErrorCode ?? null
   const runFailureMessage =
@@ -244,8 +331,10 @@ export const ConversationSection = memo(function ConversationSection({
               <DenseTurnItem
                 key={turn.id}
                 turn={turn}
-                codeRollbackStates={codeRollbackStates}
-                onRollbackChangeGroup={onRollbackChangeGroup}
+                codeUndoStates={codeUndoStates}
+                returnSessionToHereStates={returnSessionToHereStates}
+                onUndoChangeGroup={onUndoChangeGroup}
+                onReturnSessionToHere={onReturnSessionToHere}
               />
             ))}
           </ol>
@@ -311,8 +400,10 @@ export const ConversationSection = memo(function ConversationSection({
                 isStreaming={index === visibleTurns.length - 1 && isLastTurnStreamingAssistant}
                 connectsTop={isToolTurnKind(prev)}
                 connectsBottom={isToolTurnKind(next)}
-                codeRollbackStates={codeRollbackStates}
-                onRollbackChangeGroup={onRollbackChangeGroup}
+                codeUndoStates={codeUndoStates}
+                returnSessionToHereStates={returnSessionToHereStates}
+                onUndoChangeGroup={onUndoChangeGroup}
+                onReturnSessionToHere={onReturnSessionToHere}
               />
             )
           })}
@@ -569,8 +660,10 @@ interface ConversationTurnItemProps {
   connectsTop: boolean
   /** Next visible turn is also a tool call; render a connector down to it. */
   connectsBottom: boolean
-  codeRollbackStates: Record<string, CodeRollbackUiState>
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  codeUndoStates: Record<string, CodeUndoUiState>
+  returnSessionToHereStates: Record<string, CodeUndoUiState>
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
 }
 
 // Custom keyframes (see globals.css `.agent-turn-soft-enter`) give each new
@@ -587,8 +680,10 @@ function ConversationTurnItem({
   isStreaming,
   connectsTop,
   connectsBottom,
-  codeRollbackStates,
-  onRollbackChangeGroup,
+  codeUndoStates,
+  returnSessionToHereStates,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
 }: ConversationTurnItemProps) {
   return (
     <li className={TURN_ENTRY_CLASS}>
@@ -599,8 +694,10 @@ function ConversationTurnItem({
         isStreaming={isStreaming}
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
-        codeRollbackStates={codeRollbackStates}
-        onRollbackChangeGroup={onRollbackChangeGroup}
+        codeUndoStates={codeUndoStates}
+        returnSessionToHereStates={returnSessionToHereStates}
+        onUndoChangeGroup={onUndoChangeGroup}
+        onReturnSessionToHere={onReturnSessionToHere}
       />
     </li>
   )
@@ -613,8 +710,10 @@ interface ConversationTurnRowProps {
   isStreaming: boolean
   connectsTop: boolean
   connectsBottom: boolean
-  codeRollbackStates: Record<string, CodeRollbackUiState>
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  codeUndoStates: Record<string, CodeUndoUiState>
+  returnSessionToHereStates: Record<string, CodeUndoUiState>
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
 }
 
 function ConversationTurnRow({
@@ -624,8 +723,10 @@ function ConversationTurnRow({
   isStreaming,
   connectsTop,
   connectsBottom,
-  codeRollbackStates,
-  onRollbackChangeGroup,
+  codeUndoStates,
+  returnSessionToHereStates,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
 }: ConversationTurnRowProps) {
   if (turn.kind === 'message') {
     return turn.role === 'user' ? (
@@ -657,11 +758,44 @@ function ConversationTurnRow({
   }
 
   if (turn.kind === 'file_change') {
+    const fileUndoState = turn.changeGroupId
+      ? codeUndoStates[getCodeUndoStateKey({
+          targetKind: 'file_change',
+          changeGroupId: turn.changeGroupId,
+          filePath: fileChangeUndoFilePath(turn),
+        })]
+      : undefined
+    const changeGroupUndoState = turn.changeGroupId
+      ? codeUndoStates[getCodeUndoStateKey({
+          targetKind: 'change_group',
+          changeGroupId: turn.changeGroupId,
+        })]
+      : undefined
+    const hunkUndoState = turn.changeGroupId
+      ? codeUndoStates[getCodeUndoStateKey({
+          targetKind: 'hunks',
+          changeGroupId: turn.changeGroupId,
+          filePath: fileChangeUndoFilePath(turn),
+        })]
+      : undefined
+    const returnSessionState = turn.changeGroupId
+      ? returnSessionToHereStates[getReturnSessionToHereStateKey({
+          targetKind: 'run_boundary',
+          boundaryId: codeChangeGroupBoundaryId(turn.changeGroupId),
+          runId: turn.runId,
+          changeGroupId: turn.changeGroupId,
+        })]
+      : undefined
+
     return (
       <FileChangeRow
         turn={turn}
-        rollbackState={turn.changeGroupId ? codeRollbackStates[turn.changeGroupId] : undefined}
-        onRollbackChangeGroup={onRollbackChangeGroup}
+        fileUndoState={fileUndoState}
+        changeGroupUndoState={changeGroupUndoState}
+        hunkUndoState={hunkUndoState}
+        returnSessionState={returnSessionState}
+        onUndoChangeGroup={onUndoChangeGroup}
+        onReturnSessionToHere={onReturnSessionToHere}
       />
     )
   }
@@ -719,22 +853,229 @@ function fileChangeTargetLabel(turn: Extract<ConversationTurn, { kind: 'file_cha
   return turn.toPath ? `${turn.path} -> ${turn.toPath}` : turn.path
 }
 
+function fileChangeUndoFilePath(turn: Extract<ConversationTurn, { kind: 'file_change' }>): string {
+  return turn.toPath ?? turn.path
+}
+
+function codeChangeGroupBoundaryId(changeGroupId: string): string {
+  return `change_group:${changeGroupId}`
+}
+
+function visibleCodeUndoState(
+  fileUndoState: CodeUndoUiState | undefined,
+  changeGroupUndoState: CodeUndoUiState | undefined,
+  hunkUndoState?: CodeUndoUiState,
+  returnSessionState?: CodeUndoUiState,
+): CodeUndoUiState | undefined {
+  if (returnSessionState?.status === 'pending') return returnSessionState
+  if (changeGroupUndoState?.status === 'pending') return changeGroupUndoState
+  if (fileUndoState?.status === 'pending') return fileUndoState
+  if (hunkUndoState?.status === 'pending') return hunkUndoState
+  return returnSessionState ?? hunkUndoState ?? fileUndoState ?? changeGroupUndoState
+}
+
+function fileChangeTextHunks(
+  turn: Extract<ConversationTurn, { kind: 'file_change' }>,
+): CodePatchTextHunkDto[] {
+  const availability = turn.patchAvailability
+  if (!turn.changeGroupId || !availability?.available) return []
+  if (availability.targetChangeGroupId !== turn.changeGroupId) return []
+
+  const undoFilePath = fileChangeUndoFilePath(turn)
+  return (availability.textHunks ?? [])
+    .filter((hunk) => hunk.filePath === undoFilePath)
+    .slice()
+    .sort((left, right) => left.hunkIndex - right.hunkIndex || left.hunkId.localeCompare(right.hunkId))
+}
+
+function formatHunkLineLabel(hunk: CodePatchTextHunkDto): string {
+  const useResultLines = hunk.resultLineCount > 0
+  const startLine = useResultLines ? hunk.resultStartLine : hunk.baseStartLine
+  const lineCount = useResultLines ? hunk.resultLineCount : hunk.baseLineCount
+  const side = useResultLines ? 'new' : 'old'
+  if (lineCount <= 1) {
+    return `${side} line ${startLine}`
+  }
+
+  return `${side} lines ${startLine}-${startLine + lineCount - 1}`
+}
+
+function uniqueNonEmptyStrings(values: readonly string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+}
+
+function humanizeConflictKind(kind: CodeHistoryConflictDto['kind']): string {
+  switch (kind) {
+    case 'text_overlap':
+      return 'Overlapping text'
+    case 'file_missing':
+      return 'File missing'
+    case 'file_exists':
+      return 'File already exists'
+    case 'content_mismatch':
+      return 'Content changed'
+    case 'metadata_mismatch':
+      return 'Metadata changed'
+    case 'unsupported_operation':
+      return 'Unsupported change'
+    case 'stale_workspace':
+      return 'Workspace changed'
+    case 'storage_error':
+      return 'History storage issue'
+    default:
+      return 'Conflict'
+  }
+}
+
+function CodeUndoConflictDetails({
+  summary,
+  dense = false,
+}: {
+  summary?: CodeUndoConflictSummary
+  dense?: boolean
+}) {
+  const [open, setOpen] = useState(true)
+  if (!summary || summary.conflicts.length === 0) return null
+
+  const affectedPaths = uniqueNonEmptyStrings(summary.affectedPaths)
+
+  return (
+    <div
+      role="alert"
+      aria-label={summary.title}
+      className={cn(
+        'mt-2 rounded-md border border-destructive/25 bg-destructive/8 text-destructive shadow-sm',
+        dense ? 'px-2 py-1.5' : 'px-2.5 py-2',
+      )}
+    >
+      <Collapsible open={open} onOpenChange={setOpen}>
+        <div className="flex items-start gap-2">
+          <AlertTriangle
+            aria-hidden="true"
+            className={cn('mt-[2px] shrink-0', dense ? 'h-3 w-3' : 'h-3.5 w-3.5')}
+          />
+          <div className="min-w-0 flex-1">
+            <p className={cn('font-medium', dense ? 'text-[11.5px]' : 'text-[12px]')}>
+              {summary.title}
+            </p>
+            <p className={cn('mt-0.5 break-words text-destructive/85', dense ? 'text-[11px]' : 'text-[11.5px]')}>
+              {summary.targetLabel}
+            </p>
+          </div>
+          <CollapsibleTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`${open ? 'Hide' : 'Show'} conflict details for ${summary.targetLabel}`}
+              className={cn(
+                'h-5 w-5 shrink-0 rounded-md text-destructive/70 hover:bg-destructive/10 hover:text-destructive',
+                'focus-visible:ring-destructive/35 [&_svg]:size-3',
+              )}
+            >
+              <ChevronDown
+                aria-hidden="true"
+                className={cn('transition-transform duration-150', open && 'rotate-180')}
+              />
+            </Button>
+          </CollapsibleTrigger>
+        </div>
+        <CollapsibleContent>
+          <div className={cn('mt-2 space-y-2 border-t border-destructive/15 pt-2', dense && 'mt-1.5 pt-1.5')}>
+            {affectedPaths.length > 0 ? (
+              <div>
+                <p className="text-[10.5px] font-medium uppercase text-destructive/70">
+                  Affected paths
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {affectedPaths.map((path) => (
+                    <Badge
+                      key={path}
+                      variant="outline"
+                      className="max-w-full border-destructive/25 bg-background/50 px-1.5 py-0 font-mono text-[10.5px] text-destructive"
+                      title={path}
+                    >
+                      <span className="truncate">{path}</span>
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <ul className="space-y-1.5">
+              {summary.conflicts.map((conflict, index) => {
+                const hunkIds = uniqueNonEmptyStrings(conflict.hunkIds)
+                return (
+                  <li
+                    key={`${conflict.path}:${conflict.kind}:${index}`}
+                    className="rounded-md bg-background/45 px-2 py-1.5 text-destructive"
+                  >
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      <span className="min-w-0 truncate font-mono text-[11px]" title={conflict.path}>
+                        {conflict.path}
+                      </span>
+                      <Badge
+                        variant="outline"
+                        className="border-destructive/25 px-1.5 py-0 text-[10px] text-destructive"
+                      >
+                        {humanizeConflictKind(conflict.kind)}
+                      </Badge>
+                    </div>
+                    <p className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-destructive/90">
+                      {conflict.message}
+                    </p>
+                    {hunkIds.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        <span className="text-[10.5px] text-destructive/70">Selected hunks</span>
+                        {hunkIds.map((hunkId) => (
+                          <Badge
+                            key={hunkId}
+                            variant="outline"
+                            className="border-destructive/20 bg-background/50 px-1.5 py-0 font-mono text-[10px] text-destructive"
+                          >
+                            {hunkId}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  )
+}
+
 function FileChangeRow({
   turn,
-  rollbackState,
-  onRollbackChangeGroup,
+  fileUndoState,
+  changeGroupUndoState,
+  hunkUndoState,
+  returnSessionState,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
 }: {
   turn: Extract<ConversationTurn, { kind: 'file_change' }>
-  rollbackState?: CodeRollbackUiState
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  fileUndoState?: CodeUndoUiState
+  changeGroupUndoState?: CodeUndoUiState
+  hunkUndoState?: CodeUndoUiState
+  returnSessionState?: CodeUndoUiState
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
 }) {
   const operationLabel = humanizeFileChangeOperation(turn.operation)
   const targetLabel = fileChangeTargetLabel(turn)
-  const canRollback = Boolean(turn.changeGroupId && onRollbackChangeGroup)
+  const undoFilePath = fileChangeUndoFilePath(turn)
+  const canUndo = Boolean(turn.changeGroupId && onUndoChangeGroup)
+  const canReturnSessionToHere = Boolean(turn.changeGroupId && turn.runId && onReturnSessionToHere)
+  const textHunks = fileChangeTextHunks(turn)
+  const undoState = visibleCodeUndoState(fileUndoState, changeGroupUndoState, hunkUndoState, returnSessionState)
   const statusTone =
-    rollbackState?.status === 'failed'
+    undoState?.status === 'failed'
       ? 'text-destructive'
-      : rollbackState?.status === 'succeeded'
+      : undoState?.status === 'succeeded'
         ? 'text-success'
         : 'text-muted-foreground'
 
@@ -758,87 +1099,278 @@ function FileChangeRow({
         <p className="mt-0.5 min-w-0 truncate text-[11.5px] text-muted-foreground/75" title={turn.detail}>
           {turn.detail}
         </p>
-        {rollbackState ? (
-          <p
-            className={cn('mt-1 text-[11.5px]', statusTone)}
-            role="status"
-            aria-live="polite"
-          >
-            {rollbackState.message}
-          </p>
+        {undoState ? (
+          <>
+            <p
+              className={cn('mt-1 text-[11.5px]', statusTone)}
+              role="status"
+              aria-live="polite"
+            >
+              {undoState.message}
+            </p>
+            <CodeUndoConflictDetails summary={undoState.conflictSummary} />
+          </>
         ) : null}
       </div>
-      <CodeRollbackButton
+      <CodeUndoMenu
         path={targetLabel}
+        filePath={undoFilePath}
         changeGroupId={turn.changeGroupId}
-        state={rollbackState}
-        enabled={canRollback}
-        onRollbackChangeGroup={onRollbackChangeGroup}
+        expectedWorkspaceEpoch={turn.workspaceEpoch}
+        fileState={fileUndoState}
+        changeGroupState={changeGroupUndoState}
+        hunkState={hunkUndoState}
+        returnSessionState={returnSessionState}
+        textHunks={textHunks}
+        enabled={canUndo}
+        canReturnSessionToHere={canReturnSessionToHere}
+        runId={turn.runId}
+        onUndoChangeGroup={onUndoChangeGroup}
+        onReturnSessionToHere={onReturnSessionToHere}
       />
     </div>
   )
 }
 
-function CodeRollbackButton({
+function CodeUndoMenu({
   path,
+  filePath,
   changeGroupId,
-  state,
+  expectedWorkspaceEpoch,
+  fileState,
+  changeGroupState,
+  hunkState,
+  returnSessionState,
+  textHunks,
   enabled,
-  onRollbackChangeGroup,
+  canReturnSessionToHere,
+  runId,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
   dense = false,
 }: {
   path: string
+  filePath: string
   changeGroupId: string | null
-  state?: CodeRollbackUiState
+  expectedWorkspaceEpoch?: number | null
+  fileState?: CodeUndoUiState
+  changeGroupState?: CodeUndoUiState
+  hunkState?: CodeUndoUiState
+  returnSessionState?: CodeUndoUiState
+  textHunks: CodePatchTextHunkDto[]
   enabled: boolean
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  canReturnSessionToHere: boolean
+  runId: string | null
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
   dense?: boolean
 }) {
-  const isPending = state?.status === 'pending'
-  const isSucceeded = state?.status === 'succeeded'
-  const canClick = enabled && Boolean(changeGroupId) && !isPending && !isSucceeded
+  const [selectedHunkIds, setSelectedHunkIds] = useState<string[]>([])
+  const visibleState = visibleCodeUndoState(fileState, changeGroupState, hunkState, returnSessionState)
+  const isPending =
+    fileState?.status === 'pending'
+    || changeGroupState?.status === 'pending'
+    || hunkState?.status === 'pending'
+    || returnSessionState?.status === 'pending'
+  const isChangeGroupSucceeded = changeGroupState?.status === 'succeeded'
+  const isFileSucceeded = fileState?.status === 'succeeded'
+  const isReturnSessionSucceeded = returnSessionState?.status === 'succeeded'
+  const hasMenuAction = enabled || canReturnSessionToHere
+  const canOpen =
+    hasMenuAction
+    && Boolean(changeGroupId)
+    && !isPending
+    && !isChangeGroupSucceeded
+    && !isReturnSessionSucceeded
+  const hasTextHunks = textHunks.length > 0
   const label = (() => {
-    if (!enabled || !changeGroupId) return `Rollback unavailable for ${path}`
-    if (isPending) return `Rolling back ${path}`
-    if (isSucceeded) return `Rolled back ${path}`
-    if (state?.status === 'failed') return `Retry rollback for ${path}`
-    return `Rollback ${path}`
+    if (!hasMenuAction || !changeGroupId) return `Undo unavailable for ${path}`
+    if (isPending) return returnSessionState?.status === 'pending' ? `Returning session to here for ${path}` : `Undoing ${path}`
+    if (isReturnSessionSucceeded) return `Returned session to here for ${path}`
+    if (isChangeGroupSucceeded) return `Undone ${path}`
+    return `Open undo menu for ${path}`
   })()
   const tooltip = (() => {
-    if (!changeGroupId) return 'Snapshot unavailable'
-    if (!enabled) return 'Rollback unavailable'
-    if (isPending) return 'Rolling back'
-    if (isSucceeded) return 'Rolled back'
-    if (state?.status === 'failed') return 'Retry rollback'
-    return 'Rollback file change'
+    if (!changeGroupId) return 'Code history data unavailable'
+    if (!hasMenuAction) return 'Code history unavailable'
+    if (isPending) return returnSessionState?.status === 'pending' ? 'Returning session' : 'Undoing'
+    if (isReturnSessionSucceeded) return 'Session returned'
+    if (isChangeGroupSucceeded) return 'Undone'
+    return 'Code history options'
   })()
-  const Icon = isPending ? Loader2 : isSucceeded ? CheckCircle2 : Undo2
+  const TriggerIcon = isPending ? Loader2 : isChangeGroupSucceeded || isReturnSessionSucceeded ? CheckCircle2 : MoreHorizontal
+  const undoActionsDisabled = !enabled || !changeGroupId || !canOpen
+  const fileActionDisabled = undoActionsDisabled || isFileSucceeded
+  const changeGroupActionDisabled = undoActionsDisabled || isChangeGroupSucceeded
+  const selectedHunkCount = selectedHunkIds.length
+  const hunkActionDisabled = undoActionsDisabled || selectedHunkCount === 0
+  const returnSessionActionDisabled =
+    !canReturnSessionToHere || !changeGroupId || !runId || !canOpen || isReturnSessionSucceeded
+  const fileActionLabel =
+    fileState?.status === 'failed'
+      ? 'Retry undo for this file change'
+      : isFileSucceeded
+        ? 'File change undone'
+        : 'Undo this file change'
+  const changeGroupActionLabel =
+    changeGroupState?.status === 'failed'
+      ? 'Retry undo for entire change group'
+      : isChangeGroupSucceeded
+        ? 'Change group undone'
+        : 'Undo entire change group'
+  const hunkActionLabel =
+    hunkState?.status === 'failed'
+      ? 'Retry undo for selected hunks'
+      : hunkState?.status === 'succeeded'
+        ? 'Undo selected hunks'
+        : 'Undo selected hunks'
+  const returnSessionActionLabel =
+    returnSessionState?.status === 'failed'
+      ? 'Retry return session to here'
+      : isReturnSessionSucceeded
+        ? 'Session returned here'
+        : 'Return this session to here'
+  const menuWidthClass = dense ? 'min-w-56' : 'min-w-72'
+
+  useEffect(() => {
+    const availableIds = new Set(textHunks.map((hunk) => hunk.hunkId))
+    setSelectedHunkIds((current) => current.filter((hunkId) => availableIds.has(hunkId)))
+  }, [textHunks])
+
+  const toggleSelectedHunk = useCallback((hunkId: string, checked: boolean) => {
+    setSelectedHunkIds((current) => {
+      if (checked) {
+        return current.includes(hunkId) ? current : [...current, hunkId]
+      }
+
+      return current.filter((selectedHunkId) => selectedHunkId !== hunkId)
+    })
+  }, [])
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={!canOpen}>
         <Button
           type="button"
           variant="ghost"
           size="icon-sm"
           aria-label={label}
-          disabled={!canClick}
-          onClick={() => {
-            if (!changeGroupId || !canClick) return
-            onRollbackChangeGroup?.({ changeGroupId, path })
-          }}
+          title={tooltip}
+          disabled={!canOpen}
           className={cn(
             'mt-[1px] shrink-0 rounded-md text-muted-foreground/70 hover:text-foreground',
             dense ? 'h-5 w-5 [&_svg]:size-[11px]' : 'h-6 w-6 [&_svg]:size-3',
-            state?.status === 'failed' && 'text-destructive hover:text-destructive',
-            isSucceeded && 'text-success',
+            visibleState?.status === 'failed' && 'text-destructive hover:text-destructive',
+            (isChangeGroupSucceeded || isReturnSessionSucceeded) && 'text-success',
           )}
         >
-          <Icon aria-hidden="true" className={cn(isPending && 'animate-spin')} />
+          <TriggerIcon aria-hidden="true" className={cn(isPending && 'animate-spin')} />
         </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top">{tooltip}</TooltipContent>
-    </Tooltip>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className={menuWidthClass}>
+        <DropdownMenuItem
+          disabled={fileActionDisabled}
+          onSelect={() => {
+            if (!changeGroupId || fileActionDisabled) return
+            onUndoChangeGroup?.({
+              targetKind: 'file_change',
+              changeGroupId,
+              path,
+              filePath,
+              expectedWorkspaceEpoch,
+            })
+          }}
+        >
+          {isFileSucceeded ? <CheckCircle2 aria-hidden="true" /> : <FileText aria-hidden="true" />}
+          <span>{fileActionLabel}</span>
+        </DropdownMenuItem>
+        {hasTextHunks ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="px-2 py-1 text-[11px] font-medium text-muted-foreground">
+              Select hunks
+            </DropdownMenuLabel>
+            {textHunks.map((hunk) => {
+              const checked = selectedHunkIds.includes(hunk.hunkId)
+              return (
+                <DropdownMenuCheckboxItem
+                  key={hunk.hunkId}
+                  checked={checked}
+                  disabled={!canOpen || !enabled}
+                  className="text-[12px]"
+                  onCheckedChange={(nextChecked) => {
+                    toggleSelectedHunk(hunk.hunkId, nextChecked === true)
+                  }}
+                  onSelect={(event) => event.preventDefault()}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {`Hunk ${hunk.hunkIndex + 1} · ${formatHunkLineLabel(hunk)}`}
+                  </span>
+                </DropdownMenuCheckboxItem>
+              )
+            })}
+            <DropdownMenuItem
+              disabled={hunkActionDisabled}
+              onSelect={() => {
+                if (!changeGroupId || hunkActionDisabled) return
+                onUndoChangeGroup?.({
+                  targetKind: 'hunks',
+                  changeGroupId,
+                  path,
+                  filePath,
+                  hunkIds: selectedHunkIds,
+                  expectedWorkspaceEpoch,
+                })
+              }}
+            >
+              <Undo2 aria-hidden="true" />
+              <span>{hunkActionLabel}</span>
+              {selectedHunkCount > 0 ? (
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  {selectedHunkCount}
+                </span>
+              ) : null}
+            </DropdownMenuItem>
+          </>
+        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={changeGroupActionDisabled}
+          onSelect={() => {
+            if (!changeGroupId || changeGroupActionDisabled) return
+            onUndoChangeGroup?.({
+              targetKind: 'change_group',
+              changeGroupId,
+              path,
+              filePath,
+              expectedWorkspaceEpoch,
+            })
+          }}
+        >
+          {isChangeGroupSucceeded ? <CheckCircle2 aria-hidden="true" /> : <Undo2 aria-hidden="true" />}
+          <span>{changeGroupActionLabel}</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={returnSessionActionDisabled}
+          onSelect={() => {
+            if (!changeGroupId || !runId || returnSessionActionDisabled) return
+            const boundaryId = codeChangeGroupBoundaryId(changeGroupId)
+            onReturnSessionToHere?.({
+              targetKind: 'run_boundary',
+              targetId: `${runId}:${boundaryId}`,
+              boundaryId,
+              runId,
+              changeGroupId,
+              expectedWorkspaceEpoch,
+            })
+          }}
+        >
+          {isReturnSessionSucceeded ? <CheckCircle2 aria-hidden="true" /> : <History aria-hidden="true" />}
+          <span>{returnSessionActionLabel}</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1806,14 +2338,18 @@ function truncateForLine(text: string, max = 240): string {
 
 interface DenseTurnItemProps {
   turn: ConversationTurn
-  codeRollbackStates: Record<string, CodeRollbackUiState>
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  codeUndoStates: Record<string, CodeUndoUiState>
+  returnSessionToHereStates: Record<string, CodeUndoUiState>
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
 }
 
 function DenseTurnItem({
   turn,
-  codeRollbackStates,
-  onRollbackChangeGroup,
+  codeUndoStates,
+  returnSessionToHereStates,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
 }: DenseTurnItemProps) {
   if (turn.kind === 'message') {
     return (
@@ -1842,11 +2378,44 @@ function DenseTurnItem({
   }
 
   if (turn.kind === 'file_change') {
+    const fileUndoState = turn.changeGroupId
+      ? codeUndoStates[getCodeUndoStateKey({
+          targetKind: 'file_change',
+          changeGroupId: turn.changeGroupId,
+          filePath: fileChangeUndoFilePath(turn),
+        })]
+      : undefined
+    const changeGroupUndoState = turn.changeGroupId
+      ? codeUndoStates[getCodeUndoStateKey({
+          targetKind: 'change_group',
+          changeGroupId: turn.changeGroupId,
+        })]
+      : undefined
+    const hunkUndoState = turn.changeGroupId
+      ? codeUndoStates[getCodeUndoStateKey({
+          targetKind: 'hunks',
+          changeGroupId: turn.changeGroupId,
+          filePath: fileChangeUndoFilePath(turn),
+        })]
+      : undefined
+    const returnSessionState = turn.changeGroupId
+      ? returnSessionToHereStates[getReturnSessionToHereStateKey({
+          targetKind: 'run_boundary',
+          boundaryId: codeChangeGroupBoundaryId(turn.changeGroupId),
+          runId: turn.runId,
+          changeGroupId: turn.changeGroupId,
+        })]
+      : undefined
+
     return (
       <DenseFileChangeItem
         turn={turn}
-        rollbackState={turn.changeGroupId ? codeRollbackStates[turn.changeGroupId] : undefined}
-        onRollbackChangeGroup={onRollbackChangeGroup}
+        fileUndoState={fileUndoState}
+        changeGroupUndoState={changeGroupUndoState}
+        hunkUndoState={hunkUndoState}
+        returnSessionState={returnSessionState}
+        onUndoChangeGroup={onUndoChangeGroup}
+        onReturnSessionToHere={onReturnSessionToHere}
       />
     )
   }
@@ -1889,19 +2458,31 @@ function DenseTurnItem({
 
 function DenseFileChangeItem({
   turn,
-  rollbackState,
-  onRollbackChangeGroup,
+  fileUndoState,
+  changeGroupUndoState,
+  hunkUndoState,
+  returnSessionState,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
 }: {
   turn: Extract<ConversationTurn, { kind: 'file_change' }>
-  rollbackState?: CodeRollbackUiState
-  onRollbackChangeGroup?: (request: CodeRollbackRequest) => void
+  fileUndoState?: CodeUndoUiState
+  changeGroupUndoState?: CodeUndoUiState
+  hunkUndoState?: CodeUndoUiState
+  returnSessionState?: CodeUndoUiState
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
 }) {
   const targetLabel = fileChangeTargetLabel(turn)
-  const canRollback = Boolean(turn.changeGroupId && onRollbackChangeGroup)
+  const undoFilePath = fileChangeUndoFilePath(turn)
+  const canUndo = Boolean(turn.changeGroupId && onUndoChangeGroup)
+  const canReturnSessionToHere = Boolean(turn.changeGroupId && turn.runId && onReturnSessionToHere)
+  const textHunks = fileChangeTextHunks(turn)
+  const undoState = visibleCodeUndoState(fileUndoState, changeGroupUndoState, hunkUndoState, returnSessionState)
   const statusTone =
-    rollbackState?.status === 'failed'
+    undoState?.status === 'failed'
       ? 'text-destructive'
-      : rollbackState?.status === 'succeeded'
+      : undoState?.status === 'succeeded'
         ? 'text-success'
         : 'text-muted-foreground'
 
@@ -1913,22 +2494,34 @@ function DenseFileChangeItem({
           <span className="block truncate" title={turn.detail}>
             {truncateForLine(`${humanizeFileChangeOperation(turn.operation)} ${targetLabel}`)}
           </span>
-          {rollbackState ? (
-            <span
-              className={cn('mt-0.5 block truncate text-[11px]', statusTone)}
-              role="status"
-              aria-live="polite"
-            >
-              {rollbackState.message}
-            </span>
+          {undoState ? (
+            <>
+              <span
+                className={cn('mt-0.5 block truncate text-[11px]', statusTone)}
+                role="status"
+                aria-live="polite"
+              >
+                {undoState.message}
+              </span>
+              <CodeUndoConflictDetails summary={undoState.conflictSummary} dense />
+            </>
           ) : null}
         </div>
-        <CodeRollbackButton
+        <CodeUndoMenu
           path={targetLabel}
+          filePath={undoFilePath}
           changeGroupId={turn.changeGroupId}
-          state={rollbackState}
-          enabled={canRollback}
-          onRollbackChangeGroup={onRollbackChangeGroup}
+          expectedWorkspaceEpoch={turn.workspaceEpoch}
+          fileState={fileUndoState}
+          changeGroupState={changeGroupUndoState}
+          hunkState={hunkUndoState}
+          returnSessionState={returnSessionState}
+          textHunks={textHunks}
+          enabled={canUndo}
+          canReturnSessionToHere={canReturnSessionToHere}
+          runId={turn.runId}
+          onUndoChangeGroup={onUndoChangeGroup}
+          onReturnSessionToHere={onReturnSessionToHere}
           dense
         />
       </div>

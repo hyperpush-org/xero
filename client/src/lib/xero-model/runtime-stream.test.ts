@@ -87,4 +87,63 @@ describe('runtime stream contracts', () => {
       handoffNote: 'Start with runtime descriptors.',
     })
   })
+
+  it('parses code history metadata and keeps it available on stream items', () => {
+    const item = runtimeStreamItemSchema.parse({
+      kind: 'activity',
+      runId: 'run-code-1',
+      sequence: 1,
+      code: 'owned_agent_file_changed',
+      title: 'File changed',
+      detail: 'write: src/app.ts',
+      codeChangeGroupId: 'code-change-1',
+      codeCommitId: 'code-commit-1',
+      codeWorkspaceEpoch: 7,
+      codePatchAvailability: {
+        projectId: 'project-1',
+        targetChangeGroupId: 'code-change-1',
+        available: true,
+        affectedPaths: ['src/app.ts'],
+        fileChangeCount: 1,
+        textHunkCount: 2,
+        textHunks: [
+          {
+            hunkId: 'hunk-1',
+            patchFileId: 'patch-file-1',
+            filePath: 'src/app.ts',
+            hunkIndex: 0,
+            baseStartLine: 4,
+            baseLineCount: 1,
+            resultStartLine: 4,
+            resultLineCount: 2,
+          },
+        ],
+        unavailableReason: null,
+      },
+      createdAt: '2026-05-06T12:02:00Z',
+    })
+    expect(item.codeCommitId).toBe('code-commit-1')
+    expect(item.codePatchAvailability?.textHunks[0]?.hunkId).toBe('hunk-1')
+
+    const stream = mergeRuntimeStreamEvent(null, {
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-1',
+      runtimeKind: 'openai_codex',
+      runId: 'run-code-1',
+      sessionId: 'owned-agent:run-code-1',
+      flowId: null,
+      subscribedItemKinds: ['activity'],
+      item,
+    })
+
+    expect(stream.activityItems[0]).toMatchObject({
+      codeChangeGroupId: 'code-change-1',
+      codeCommitId: 'code-commit-1',
+      codeWorkspaceEpoch: 7,
+      codePatchAvailability: {
+        available: true,
+        affectedPaths: ['src/app.ts'],
+      },
+    })
+  })
 })

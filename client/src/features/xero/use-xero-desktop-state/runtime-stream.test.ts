@@ -12,6 +12,7 @@ import {
   createRuntimeStreamView,
   estimateRuntimeStreamViewBytes,
   type RuntimeStreamEventDto,
+  type RuntimeStreamActivityItemView,
   type RuntimeStreamToolItemView,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
@@ -86,6 +87,12 @@ function makeReasoningRuntimeStreamEvent(sequence: number, text: string): Runtim
     title: 'Reasoning',
     detail: text.trim() || 'Owned agent reasoning summary updated.',
   })
+}
+
+function isReasoningActivityItem(
+  item: RuntimeStreamView['items'][number],
+): item is RuntimeStreamActivityItemView {
+  return item.kind === 'activity' && item.code === 'owned_agent_reasoning'
 }
 
 function makeToolRuntimeStreamEvent(
@@ -307,9 +314,7 @@ describe('runtime stream event coalescing', () => {
       makeReasoningRuntimeStreamEvent(3, 'Second thought.'),
     ])
 
-    const reasoningItems = stream?.items.filter(
-      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
-    ) ?? []
+    const reasoningItems = stream?.items.filter(isReasoningActivityItem) ?? []
 
     expect(reasoningItems.map((item) => item.text)).toEqual([
       'First thought.',
@@ -329,9 +334,7 @@ describe('runtime stream event coalescing', () => {
       makeReasoningRuntimeStreamEvent(3, 'Inspecting files for details'),
     ])
 
-    const renderedReasoningItems = stream?.items.filter(
-      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
-    ) ?? []
+    const renderedReasoningItems = stream?.items.filter(isReasoningActivityItem) ?? []
 
     expect(renderedReasoningItems.map((item) => item.text)).toEqual([
       'Inspecting the repo',
@@ -413,9 +416,7 @@ describe('runtime stream event coalescing', () => {
       makeReasoningRuntimeStreamEvent(5, 'Organizing a response'),
     ])
 
-    const reasoningItems = stream?.items.filter(
-      (item) => item.kind === 'activity' && item.code === 'owned_agent_reasoning',
-    ) ?? []
+    const reasoningItems = stream?.items.filter(isReasoningActivityItem) ?? []
 
     expect(reasoningItems.map((item) => item.text)).toEqual([
       'Inspecting project details',

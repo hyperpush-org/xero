@@ -40,6 +40,7 @@ import {
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { mapAgentSession, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
 import type { AgentDefinitionSummaryDto } from '@/src/lib/xero-model/agent-definition'
+import { useWorkflowAgentInspector } from '@/src/features/xero/use-workflow-agent-inspector'
 import type {
   SessionTranscriptSearchResultSnippetDto,
 } from '@/src/lib/xero-model/session-context'
@@ -59,6 +60,8 @@ import {
 } from '@/src/features/xero/use-xero-desktop-state'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
+import { SHORTCUT_DEFINITIONS, type ShortcutId } from '@/src/features/shortcuts/shortcuts-definitions'
+import { useShortcutListener } from '@/src/features/shortcuts/use-shortcut-listener'
 import { startLayoutShiftGuard } from '@/lib/layout-shift-guard'
 import { cn } from '@/lib/utils'
 
@@ -93,7 +96,6 @@ const SOLANA_WORKBENCH_WIDTH_STORAGE_KEY = 'xero.solana.workbench.width'
 const SOLANA_WORKBENCH_MIN_WIDTH = 360
 const SOLANA_WORKBENCH_DEFAULT_WIDTH = 440
 const SOLANA_WORKBENCH_MAX_WIDTH = 900
-const SIDEBAR_WIDTH_DURATION_MS = 200
 const STARTUP_SURFACE_PREWARM_SETTLE_MS = 320
 const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
   'browser',
@@ -130,13 +132,6 @@ function readPersistedSolanaWorkbenchWidth(): number {
 
 function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   if (import.meta.env.MODE === 'test') {
-    return
-  }
-
-  if (target === 'tools') {
-    preloadSurfaceChunk('browser')
-    preloadSurfaceChunk('solana')
-    preloadSurfaceChunk('ios')
     return
   }
 
@@ -800,6 +795,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
       cancelLayoutShiftGuardRef.current = null
     }
   }, [])
+
+  useShortcutListener(
+    useCallback(
+      (id: ShortcutId) => {
+        const def = SHORTCUT_DEFINITIONS.find((entry) => entry.id === id)
+        if (def?.view) {
+          setActiveView(def.view)
+        }
+      },
+      [setActiveView],
+    ),
+  )
+
   const {
     highChurnStore,
     projects,
@@ -931,6 +939,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [solanaOpen, setSolanaOpen] = useState(false)
   const [vcsOpen, setVcsOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
+  const workflowAgentInspector = useWorkflowAgentInspector({
+    adapter: resolvedAdapter,
+    projectId: activeProjectId,
+  })
   const [usageOpen, setUsageOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
   const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
@@ -945,68 +957,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const refreshCustomAgentDefinitions = useCallback(() => {
     setCustomAgentDefinitionsRevision((current) => current + 1)
   }, [])
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [projectRailSnapWidth, setProjectRailSnapWidth] = useState(false)
-  const projectRailSnapWidthTimerRef = useRef<number | null>(null)
-  const shouldRestoreSidebarFromAutoCollapseRef = useRef(false)
   const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
-  const previousViewRef = useRef<View>(activeView)
   const previousBrowserOpenRef = useRef<boolean>(browserOpen)
-  const shouldRestoreSidebarFromRightSidebarRef = useRef(false)
-  const previousNonFloatingRightSidebarOpenRef = useRef(false)
-  const projectRailViewAutoCollapseActive = activeView === 'execution' || activeView === 'agent'
-  const nonFloatingRightSidebarOpen =
-    browserOpen ||
-    iosOpen ||
-    solanaOpen ||
-    workflowsOpen ||
-    agentDockOpen
-  const snapProjectRailWidthForRightSidebar = useCallback(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    if (projectRailSnapWidthTimerRef.current !== null) {
-      window.clearTimeout(projectRailSnapWidthTimerRef.current)
-    }
-
-    setProjectRailSnapWidth(true)
-    projectRailSnapWidthTimerRef.current = window.setTimeout(() => {
-      projectRailSnapWidthTimerRef.current = null
-      setProjectRailSnapWidth(false)
-    }, SIDEBAR_WIDTH_DURATION_MS + 40)
-  }, [])
-  const restoreProjectRailForRightSidebarClose = useCallback(() => {
-    if (projectRailViewAutoCollapseActive) {
-      return
-    }
-
-    const shouldRestoreSidebar =
-      shouldRestoreSidebarFromRightSidebarRef.current ||
-      shouldRestoreSidebarFromAutoCollapseRef.current
-    shouldRestoreSidebarFromRightSidebarRef.current = false
-    shouldRestoreSidebarFromAutoCollapseRef.current = false
-
-    if (shouldRestoreSidebar && sidebarCollapsed) {
-      snapProjectRailWidthForRightSidebar()
-      setSidebarCollapsed(false)
-    }
-  }, [projectRailViewAutoCollapseActive, sidebarCollapsed, snapProjectRailWidthForRightSidebar])
-  const toggleSidebarCollapsed = useCallback(() => {
-    setSidebarCollapsed((current) => {
-      if (nonFloatingRightSidebarOpen) {
-        shouldRestoreSidebarFromRightSidebarRef.current = false
-      }
-      return !current
-    })
-  }, [nonFloatingRightSidebarOpen])
-  useEffect(() => {
-    return () => {
-      if (projectRailSnapWidthTimerRef.current !== null) {
-        window.clearTimeout(projectRailSnapWidthTimerRef.current)
-      }
-    }
-  }, [])
 
   useEffect(() => {
     setAgentComposerControls(null)
@@ -1138,7 +1090,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   const toggleBrowser = useCallback(() => {
     if (browserOpen) {
-      restoreProjectRailForRightSidebarClose()
       setBrowserOpen(false)
       return
     }
@@ -1148,11 +1099,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setBrowserOpen(true)
-  }, [browserOpen, restoreProjectRailForRightSidebarClose])
+  }, [browserOpen])
 
   const toggleIos = useCallback(() => {
     if (iosOpen) {
-      restoreProjectRailForRightSidebarClose()
       setIosOpen(false)
       return
     }
@@ -1162,11 +1112,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setIosOpen(true)
-  }, [iosOpen, restoreProjectRailForRightSidebarClose])
+  }, [iosOpen])
 
   const toggleSolana = useCallback(() => {
     if (solanaOpen) {
-      restoreProjectRailForRightSidebarClose()
       setSolanaOpen(false)
       return
     }
@@ -1176,11 +1125,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setSolanaOpen(true)
-  }, [restoreProjectRailForRightSidebarClose, solanaOpen])
+  }, [solanaOpen])
 
   const toggleVcs = useCallback(() => {
     if (vcsOpen) {
-      restoreProjectRailForRightSidebarClose()
       setVcsOpen(false)
       return
     }
@@ -1190,11 +1138,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setVcsOpen(true)
-  }, [restoreProjectRailForRightSidebarClose, vcsOpen])
+  }, [vcsOpen])
 
   const toggleWorkflows = useCallback(() => {
     if (workflowsOpen) {
-      restoreProjectRailForRightSidebarClose()
       setWorkflowsOpen(false)
       return
     }
@@ -1204,11 +1151,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setVcsOpen(false)
     setAgentDockOpen(false)
     setWorkflowsOpen(true)
-  }, [restoreProjectRailForRightSidebarClose, workflowsOpen])
+  }, [workflowsOpen])
 
   const toggleAgentDock = useCallback(() => {
     if (agentDockOpen) {
-      restoreProjectRailForRightSidebarClose()
       setAgentDockOpen(false)
       return
     }
@@ -1219,7 +1165,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setWorkflowsOpen(false)
     setUsageOpen(false)
     setAgentDockOpen(true)
-  }, [agentDockOpen, restoreProjectRailForRightSidebarClose])
+  }, [agentDockOpen])
   useEffect(() => {
     if (activeView === 'agent' && agentDockOpen) {
       setAgentDockOpen(false)
@@ -1351,68 +1297,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
     () => getVcsCommitMessageModel(agentView, agentComposerControls),
     [agentComposerControls, agentView],
   )
-
-  useEffect(() => {
-    const previousView = previousViewRef.current
-    const wasAutoCollapseView = previousView === 'execution' || previousView === 'agent'
-
-    if (projectRailViewAutoCollapseActive && !wasAutoCollapseView) {
-      shouldRestoreSidebarFromAutoCollapseRef.current = !sidebarCollapsed
-      if (!sidebarCollapsed) {
-        setSidebarCollapsed(true)
-      }
-    }
-
-    if (!projectRailViewAutoCollapseActive && wasAutoCollapseView && !nonFloatingRightSidebarOpen) {
-      const shouldRestoreSidebar =
-        shouldRestoreSidebarFromAutoCollapseRef.current ||
-        shouldRestoreSidebarFromRightSidebarRef.current
-      shouldRestoreSidebarFromAutoCollapseRef.current = false
-      shouldRestoreSidebarFromRightSidebarRef.current = false
-      if (shouldRestoreSidebar && sidebarCollapsed) {
-        setSidebarCollapsed(false)
-      }
-    }
-
-    if (!projectRailViewAutoCollapseActive && !wasAutoCollapseView) {
-      shouldRestoreSidebarFromAutoCollapseRef.current = false
-    }
-
-    previousViewRef.current = activeView
-  }, [activeView, nonFloatingRightSidebarOpen, projectRailViewAutoCollapseActive, sidebarCollapsed])
-
-  useEffect(() => {
-    const wasOpen = previousNonFloatingRightSidebarOpenRef.current
-
-    if (nonFloatingRightSidebarOpen && !wasOpen && !sidebarCollapsed) {
-      shouldRestoreSidebarFromRightSidebarRef.current = !sidebarCollapsed
-      snapProjectRailWidthForRightSidebar()
-      setSidebarCollapsed(true)
-    }
-
-    if (!nonFloatingRightSidebarOpen && wasOpen && !projectRailViewAutoCollapseActive) {
-      const shouldRestoreSidebar =
-        shouldRestoreSidebarFromRightSidebarRef.current ||
-        shouldRestoreSidebarFromAutoCollapseRef.current
-      shouldRestoreSidebarFromRightSidebarRef.current = false
-      shouldRestoreSidebarFromAutoCollapseRef.current = false
-      if (shouldRestoreSidebar && sidebarCollapsed) {
-        snapProjectRailWidthForRightSidebar()
-        setSidebarCollapsed(false)
-      }
-    }
-
-    if (!nonFloatingRightSidebarOpen && !wasOpen && !projectRailViewAutoCollapseActive) {
-      shouldRestoreSidebarFromRightSidebarRef.current = false
-    }
-
-    previousNonFloatingRightSidebarOpenRef.current = nonFloatingRightSidebarOpen
-  }, [
-    nonFloatingRightSidebarOpen,
-    projectRailViewAutoCollapseActive,
-    sidebarCollapsed,
-    snapProjectRailWidthForRightSidebar,
-  ])
 
   useEffect(() => {
     if (!onboardingDismissed && !isLoading && projects.length === 0) {
@@ -1877,7 +1761,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     ) => upsertNotificationRoute(request),
     [upsertNotificationRoute],
   )
-  const handleAgentCodeRollbackApplied = useCallback(() => retry(), [retry])
+  const handleAgentCodeUndoApplied = useCallback(() => retry(), [retry])
   const handleStartWorkflowRun = useCallback(() => startRuntimeRun(), [startRuntimeRun])
   const handleCreateWorkflow = useCallback(() => {
     if (!workflowsOpen) {
@@ -2098,6 +1982,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 workflowsOpen={workflowsOpen}
                 onCreateWorkflow={handleCreateWorkflow}
                 onCreateAgent={handleCreateAgentSession}
+                agentDetail={workflowAgentInspector.detail}
+                agentDetailStatus={workflowAgentInspector.detailStatus}
+                agentDetailError={workflowAgentInspector.detailError}
+                onClearAgentSelection={() => workflowAgentInspector.selectAgent(null)}
+                onReloadAgentDetail={workflowAgentInspector.reloadDetail}
               />
             </LazyActivityPane>
           ) : null}
@@ -2146,7 +2035,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onStopRuntimeRun={handleAgentStopRuntimeRun}
                 onSubmitManualCallback={handleAgentSubmitManualCallback}
                 onUpsertNotificationRoute={handleAgentUpsertNotificationRoute}
-                onCodeRollbackApplied={handleAgentCodeRollbackApplied}
+                onCodeUndoApplied={handleAgentCodeUndoApplied}
               />
             </LazyActivityPane>
           ) : null}
@@ -2248,14 +2137,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onViewPreload={preloadViewChunk}
         onSurfacePreload={preloadSurfaceChunk}
         projectName={activeProject?.name}
-        onOpenSettings={() => openSettings('providers')}
-        onOpenAccount={() => openSettings('account')}
-        onAccountLogin={() => {
-          void loginWithGithub()
-        }}
-        accountAuthenticating={githubAuthStatus === 'authenticating'}
-        accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
-        accountLogin={githubSession?.user.login ?? null}
         onToggleBrowser={toggleBrowser}
         browserOpen={browserOpen}
         onToggleIos={toggleIos}
@@ -2272,8 +2153,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
         vcsChangeCount={repositoryStatus?.statusCount ?? 0}
         vcsAdditions={repositoryStatus?.additions ?? 0}
         vcsDeletions={repositoryStatus?.deletions ?? 0}
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={toggleSidebarCollapsed}
         platformOverride={platformOverride}
         footer={statusFooter}
         chromeOnly
@@ -2330,14 +2209,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onViewPreload={preloadViewChunk}
           onSurfacePreload={preloadSurfaceChunk}
           projectName={activeProject?.name}
-          onOpenSettings={() => openSettings('providers')}
-          onOpenAccount={() => openSettings('account')}
-          onAccountLogin={() => {
-            void loginWithGithub()
-          }}
-          accountAuthenticating={githubAuthStatus === 'authenticating'}
-          accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
-          accountLogin={githubSession?.user.login ?? null}
           onToggleBrowser={toggleBrowser}
           browserOpen={browserOpen}
           onToggleIos={toggleIos}
@@ -2354,25 +2225,22 @@ export function XeroApp({ adapter }: XeroAppProps) {
           vcsChangeCount={repositoryStatus?.statusCount ?? 0}
           vcsAdditions={repositoryStatus?.additions ?? 0}
           vcsDeletions={repositoryStatus?.deletions ?? 0}
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={toggleSidebarCollapsed}
           platformOverride={platformOverride}
           footer={statusFooter}
         >
           <ProjectRail
             activeProjectId={activeProjectId}
-            collapsed={sidebarCollapsed}
             errorMessage={errorMessage}
             isImporting={isImporting}
             isLoading={isLoading || (isProjectLoading && foregroundProjectLoad)}
             onImportProject={() => setProjectAddOpen(true)}
+            onOpenSettings={() => openSettings('providers')}
             onRemoveProject={handleRemoveProject}
             onSelectProject={handleSelectProject}
             pendingProjectSelectionId={pendingProjectSelectionId}
             pendingProjectRemovalId={pendingProjectRemovalId}
             projectRemovalStatus={projectRemovalStatus}
             projects={projects}
-            snapWidth={projectRailSnapWidth}
             onSessionsHoverEnter={
               activeView === 'agent' && explorerCollapsed && Boolean(activeProject)
                 ? requestExplorerPeek
@@ -2451,7 +2319,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 />
               }
             >
-              <LazyWorkflowsSidebar open={workflowsOpen} />
+              <LazyWorkflowsSidebar
+                open={workflowsOpen}
+                agents={workflowAgentInspector.agents}
+                agentsLoading={workflowAgentInspector.agentsStatus === 'loading'}
+                agentsError={workflowAgentInspector.agentsError}
+                selectedAgentRef={workflowAgentInspector.selectedRef}
+                onSelectAgent={workflowAgentInspector.selectAgent}
+              />
             </Suspense>
           </LazyPrerenderedSurface>
           <LazyPrerenderedSurface
@@ -2542,7 +2417,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 }
                 onRefreshNotificationRoutes={(options) => refreshNotificationRoutes(options)}
                 onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
-                onCodeRollbackApplied={handleAgentCodeRollbackApplied}
+                onCodeUndoApplied={handleAgentCodeUndoApplied}
                 onRetryStream={retry}
               />
             </Suspense>

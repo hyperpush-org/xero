@@ -7,7 +7,8 @@ use xero_desktop_lib::commands::{
     validate_session_rollback_request_contract, validate_session_rollback_response_contract,
     CodeHistoryOperationDto, CodeHistoryOperationStatusRequestDto,
     CodeHistoryOperationStatusResponseDto, SelectiveUndoRequestDto, SelectiveUndoResponseDto,
-    SessionRollbackRequestDto, SessionRollbackResponseDto,
+    SessionRollbackRequestDto, SessionRollbackResponseDto, APPLY_SELECTIVE_UNDO_COMMAND,
+    APPLY_SESSION_ROLLBACK_COMMAND, REGISTERED_COMMAND_NAMES,
 };
 
 #[test]
@@ -32,6 +33,23 @@ fn code_history_contracts_accept_selective_undo_and_session_rollback_shapes() {
     }))
     .expect("selective undo response");
     validate_selective_undo_response_contract(&undo_response).expect("valid undo response");
+
+    let mut hunk_operation = sample_operation();
+    hunk_operation["target"] = json!({
+        "targetKind": "hunks",
+        "targetId": "code-change-1:src/app.ts:hunk-1",
+        "hunkIds": ["hunk-1"]
+    });
+    hunk_operation["conflicts"][0]["targetId"] = json!("code-change-1:src/app.ts:hunk-1");
+    let hunk_response: SelectiveUndoResponseDto = serde_json::from_value(json!({
+        "operation": hunk_operation
+    }))
+    .expect("hunk selective undo response");
+    assert_eq!(
+        hunk_response.operation.target.hunk_ids,
+        vec!["hunk-1".to_string()]
+    );
+    validate_selective_undo_response_contract(&hunk_response).expect("valid hunk undo response");
 
     let rollback_request: SessionRollbackRequestDto = serde_json::from_value(json!({
         "projectId": "project-1",
@@ -91,6 +109,13 @@ fn code_history_operation_contract_rejects_unknown_modes_and_statuses() {
     let mut unknown_status = sample_operation();
     unknown_status["status"] = json!("restored");
     assert!(serde_json::from_value::<CodeHistoryOperationDto>(unknown_status).is_err());
+}
+
+#[test]
+fn code_history_command_surface_exposes_undo_without_legacy_snapshot_rollback() {
+    assert!(REGISTERED_COMMAND_NAMES.contains(&APPLY_SELECTIVE_UNDO_COMMAND));
+    assert!(REGISTERED_COMMAND_NAMES.contains(&APPLY_SESSION_ROLLBACK_COMMAND));
+    assert!(!REGISTERED_COMMAND_NAMES.contains(&"apply_code_rollback"));
 }
 
 #[test]

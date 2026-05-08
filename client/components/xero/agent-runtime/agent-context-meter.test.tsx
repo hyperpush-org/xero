@@ -197,7 +197,7 @@ describe('AgentContextMeter', () => {
     expect(progress.querySelector('circle:last-child')).toHaveClass('stroke-destructive')
   })
 
-  it('explains rollback context when rollback state is model-visible', async () => {
+  it('explains undo context when undo state is model-visible', async () => {
     vi.stubGlobal(
       'ResizeObserver',
       class {
@@ -211,12 +211,12 @@ describe('AgentContextMeter', () => {
       ...snapshot.contributors,
       {
         ...snapshot.contributors[0],
-        contributorId: 'code_rollback:rollback-1',
-        kind: 'code_rollback',
-        label: 'Code rollback applied',
-        sourceId: 'rollback-1',
+        contributorId: 'code_history_operation:undo-1',
+        kind: 'code_history_operation',
+        label: 'Code undo applied',
+        sourceId: 'undo-1',
         sequence: 2,
-        text: 'Project files were restored independently of conversation history.',
+        text: 'Code undo applied on top of the current workspace.',
       },
     ]
     render(
@@ -229,7 +229,7 @@ describe('AgentContextMeter', () => {
     fireEvent.focus(screen.getByRole('button', { name: /context meter:/i }))
 
     const tooltipText = await screen.findAllByText(
-      'Code rollback is in context; current files are authoritative and history stayed visible.',
+      'Code undo is in context; current files are authoritative and history stayed visible.',
     )
     expect(
       tooltipText.some((element) => element.getAttribute('data-slot') === 'tooltip-content'),

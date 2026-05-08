@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { codePatchAvailabilitySchema } from './code-history'
 import { isoTimestampSchema, nonEmptyOptionalTextSchema } from './shared'
 import { agentSessionLineageSchema, agentSessionSchema } from './runtime'
 
@@ -14,6 +15,7 @@ export const sessionTranscriptItemKindSchema = z.enum([
   'tool_result',
   'file_change',
   'code_rollback',
+  'code_history_operation',
   'checkpoint',
   'action_request',
   'activity',
@@ -105,6 +107,9 @@ export const sessionTranscriptItemSchema = z
     toolState: sessionTranscriptToolStateSchema.nullable().optional(),
     filePath: nonEmptyOptionalTextSchema,
     codeChangeGroupId: nonEmptyOptionalTextSchema,
+    codeCommitId: nonEmptyOptionalTextSchema,
+    codeWorkspaceEpoch: z.number().int().nonnegative().nullable().optional(),
+    codePatchAvailability: codePatchAvailabilitySchema.nullable().optional(),
     checkpointKind: nonEmptyOptionalTextSchema,
     actionId: nonEmptyOptionalTextSchema,
     redaction: sessionContextRedactionSchema,
@@ -300,6 +305,9 @@ export const sessionContextContributorKindSchema = z.enum([
   'tool_descriptor',
   'file_observation',
   'code_rollback',
+  'code_history_operation',
+  'code_history_notice',
+  'code_history_mailbox_notice',
   'code_symbol',
   'dependency_metadata',
   'run_artifact',

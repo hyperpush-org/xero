@@ -80,6 +80,8 @@ export interface ComposerPendingAttachment {
 
 interface ComposerDockProps {
   density?: 'comfortable' | 'compact'
+  /** Tighten paddings, gaps, and control sizes for the narrower sidebar surface. */
+  inSidebar?: boolean
   placeholder: string
   draftPrompt: string
   promptInputRef: RefObject<HTMLTextAreaElement | null>
@@ -184,6 +186,7 @@ const ComposerInlineTrigger = forwardRef<HTMLButtonElement, ComposerInlineTrigge
 
 export function ComposerDock({
   density = 'comfortable',
+  inSidebar = false,
   placeholder,
   draftPrompt,
   promptInputRef,
@@ -296,6 +299,8 @@ export function ComposerDock({
   }
 
   const isCompact = density === 'compact'
+  const inlineTriggerClassName = inSidebar ? 'h-6 px-1.5 gap-1.5 text-[11.5px]' : undefined
+  const actionButtonClassName = inSidebar ? 'h-7 w-7' : 'h-8 w-8'
 
   const agentSelector = (
     <Select
@@ -319,6 +324,7 @@ export function ComposerDock({
           <SelectPrimitive.Trigger asChild>
             <ComposerInlineTrigger
               aria-label="Agent selector"
+              className={inlineTriggerClassName}
               icon={<AgentTriggerIcon aria-hidden="true" className="size-3" />}
               label={agentTriggerLabel}
             />
@@ -409,6 +415,7 @@ export function ComposerDock({
     <ModelSelectorCombobox
       disabled={!hasComposerModelOptions || controlsDisabled}
       groups={composerModelGroups}
+      triggerClassName={inlineTriggerClassName}
       value={composerModelId}
       onChange={handleComposerModelChange}
     />
@@ -425,6 +432,7 @@ export function ComposerDock({
           <SelectPrimitive.Trigger asChild>
             <ComposerInlineTrigger
               aria-label="Thinking level selector"
+              className={inlineTriggerClassName}
               icon={<Brain aria-hidden="true" className="size-3" />}
               label={thinkingTriggerLabel}
             />
@@ -449,6 +457,7 @@ export function ComposerDock({
           <SelectPrimitive.Trigger asChild>
             <ComposerInlineTrigger
               aria-label="Approval mode selector"
+              className={inlineTriggerClassName}
               icon={<ShieldCheck aria-hidden="true" className="size-3" />}
               label={approvalTriggerLabel}
             />
@@ -473,7 +482,8 @@ export function ComposerDock({
           aria-label="Auto-compact before sending"
           aria-pressed={autoCompactEnabled}
           className={cn(
-            'h-8 w-8 rounded-md px-0 text-muted-foreground/70 hover:text-foreground',
+            actionButtonClassName,
+            'rounded-md px-0 text-muted-foreground/70 hover:text-foreground',
             autoCompactEnabled ? 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary' : null,
           )}
           disabled={runtimeRunActionStatus === 'running'}
@@ -498,7 +508,8 @@ export function ComposerDock({
           aria-label={dictation.ariaLabel}
           aria-pressed={dictation.isListening}
           className={cn(
-            'relative h-8 w-8 rounded-md px-0',
+            'relative rounded-md px-0',
+            actionButtonClassName,
             dictation.isListening
               ? 'border-destructive/35 bg-destructive/10 text-destructive hover:bg-destructive/15'
               : null,
@@ -528,7 +539,7 @@ export function ComposerDock({
       <TooltipTrigger asChild>
         <Button
           aria-label={sendButtonLabel}
-          className="h-8 w-8 rounded-md px-0"
+          className={cn(actionButtonClassName, 'rounded-md px-0')}
           disabled={isSendDisabled}
           onClick={onSubmitDraftPrompt}
           size="icon-sm"
@@ -645,10 +656,22 @@ export function ComposerDock({
   }
 
   return (
-    <div className="relative shrink-0 px-4 pb-3 pt-0">
-      <div className="relative mx-auto flex w-full max-w-[720px] items-end justify-center gap-3">
-        <div className="w-full max-w-[720px]">
-          <div className="group/composer relative overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur transition-colors supports-[backdrop-filter]:bg-card/75 hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]">
+    <div className={cn('relative shrink-0 pt-0', inSidebar ? 'px-0 pb-0' : 'px-4 pb-3')}>
+      <div
+        className={cn(
+          'relative mx-auto flex w-full items-end justify-center',
+          inSidebar ? 'max-w-full gap-0' : 'max-w-[720px] gap-3',
+        )}
+      >
+        <div className={cn('w-full', inSidebar ? 'max-w-full' : 'max-w-[720px]')}>
+          <div
+            className={cn(
+              'group/composer relative overflow-hidden bg-card/90 transition-colors supports-[backdrop-filter]:bg-card/75',
+              inSidebar
+                ? 'border-t border-border/60 focus-within:border-primary/40'
+                : 'rounded-xl border border-border/60 shadow-[0_8px_24px_-12px_rgba(15,23,42,0.12),0_1px_3px_-1px_rgba(15,23,42,0.06)] ring-1 ring-inset ring-foreground/[0.03] backdrop-blur hover:border-border focus-within:border-primary/40 focus-within:ring-primary/20 dark:shadow-[0_20px_60px_-20px_rgba(0,0,0,0.6),0_2px_8px_-2px_rgba(0,0,0,0.3)]',
+            )}
+          >
             {attachmentsRow ? <div className="px-3 pt-2">{attachmentsRow}</div> : null}
             <div className="pb-1.5 pt-2.5">
               <Textarea
@@ -663,15 +686,15 @@ export function ComposerDock({
                 value={draftPrompt}
               />
             </div>
-            <div className="border-t border-border/40 px-2 py-1.5">
-              <div className="flex items-center justify-between gap-2">
+            <div className={cn('border-t border-border/40', inSidebar ? 'px-1.5 py-1' : 'px-2 py-1.5')}>
+              <div className={cn('flex items-center justify-between', inSidebar ? 'gap-1.5' : 'gap-2')}>
                 <div className="flex min-w-0 items-center gap-0.5 overflow-x-auto pb-0.5">
                   {agentSelector}
                   {modelSelector}
                   {thinkingSelector}
                   {approvalSelector}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className={cn('flex items-center', inSidebar ? 'gap-0.5' : 'gap-1')}>
                   {contextMeter ? <div className="shrink-0">{contextMeter}</div> : null}
                   {autoCompactToggle}
                   {dictationToggle}
@@ -736,11 +759,12 @@ function CompactGearPopover({ children }: CompactGearPopoverProps) {
 interface ModelSelectorComboboxProps {
   disabled: boolean
   groups: ComposerModelGroup[]
+  triggerClassName?: string
   value: string | null
   onChange: (value: string) => void
 }
 
-const ModelSelectorCombobox = memo(function ModelSelectorCombobox({ disabled, groups, value, onChange }: ModelSelectorComboboxProps) {
+const ModelSelectorCombobox = memo(function ModelSelectorCombobox({ disabled, groups, triggerClassName, value, onChange }: ModelSelectorComboboxProps) {
   const [open, setOpen] = useState(false)
   const selectedLabel = useMemo(() => {
     for (const group of groups) {
@@ -758,6 +782,7 @@ const ModelSelectorCombobox = memo(function ModelSelectorCombobox({ disabled, gr
           aria-label="Model selector"
           aria-expanded={open}
           aria-haspopup="listbox"
+          className={triggerClassName}
           disabled={disabled}
           icon={<Cpu aria-hidden="true" className="size-3" />}
           label={selectedLabel ?? 'Model not configured'}

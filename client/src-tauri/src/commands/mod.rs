@@ -64,6 +64,7 @@ pub mod update_runtime_run_controls;
 pub mod upsert_mcp_server;
 pub mod upsert_notification_route;
 pub mod upsert_notification_route_credentials;
+pub mod workflow_agents;
 pub mod workspace_index;
 
 mod contracts;
@@ -95,7 +96,7 @@ pub use browser::{
     BROWSER_TAB_PREFIX, BROWSER_TAB_UPDATED_EVENT, BROWSER_URL_CHANGED_EVENT,
 };
 pub use cancel_autonomous_run::cancel_autonomous_run;
-pub use code_rollback::apply_code_rollback;
+pub use code_rollback::{apply_selective_undo, apply_session_rollback};
 pub use complete_oauth_callback::complete_oauth_callback;
 pub use create_repository::create_repository;
 pub use development_storage::{developer_storage_overview, developer_storage_read_table};
@@ -205,6 +206,7 @@ pub use update_runtime_run_controls::update_runtime_run_controls;
 pub use upsert_mcp_server::upsert_mcp_server;
 pub use upsert_notification_route::upsert_notification_route;
 pub use upsert_notification_route_credentials::upsert_notification_route_credentials;
+pub use workflow_agents::{get_workflow_agent_detail, list_workflow_agents};
 pub use workspace_index::{
     workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,
 };
@@ -213,6 +215,7 @@ pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{
     agent::*, autonomous::*, code_history::*, dictation::*, error::*, mcp::*, notifications::*,
     runtime::*, session_context::*, skills::*, surface::*, usage::*, workflow::*,
+    workflow_agents::*,
 };
 
 pub(crate) use contracts::{

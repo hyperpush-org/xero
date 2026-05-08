@@ -10,6 +10,7 @@ use crate::db::project_store::{
     AgentToolCallState, AgentUsageRecord,
 };
 
+use super::code_history::CodePatchAvailabilityDto;
 use super::runtime::{
     AgentSessionDto, AgentSessionLineageBoundaryKindDto, AgentSessionLineageDto,
     RuntimeStreamItemDto, RuntimeStreamItemKind, RuntimeToolCallState,
@@ -51,6 +52,7 @@ pub enum SessionTranscriptItemKindDto {
     ToolResult,
     FileChange,
     CodeRollback,
+    CodeHistoryOperation,
     Checkpoint,
     ActionRequest,
     Activity,
@@ -178,6 +180,12 @@ pub struct SessionTranscriptItemDto {
     pub file_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_change_group_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_commit_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_workspace_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_patch_availability: Option<CodePatchAvailabilityDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -378,6 +386,9 @@ pub enum SessionContextContributorKindDto {
     ToolDescriptor,
     FileObservation,
     CodeRollback,
+    CodeHistoryOperation,
+    CodeHistoryNotice,
+    CodeHistoryMailboxNotice,
     CodeSymbol,
     DependencyMetadata,
     RunArtifact,
@@ -1024,6 +1035,9 @@ pub fn run_transcript_from_agent_snapshot(
             tool_state: None,
             file_path: None,
             code_change_group_id: None,
+            code_commit_id: None,
+            code_workspace_epoch: None,
+            code_patch_availability: None,
             checkpoint_kind: None,
             action_id: None,
             redaction: prompt_redaction,
@@ -1059,6 +1073,9 @@ pub fn run_transcript_from_agent_snapshot(
                 tool_state: None,
                 file_path: None,
                 code_change_group_id: None,
+                code_commit_id: None,
+                code_workspace_epoch: None,
+                code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
                 redaction,
@@ -1070,6 +1087,7 @@ pub fn run_transcript_from_agent_snapshot(
         let payload =
             serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null);
         let (title, text, summary, redaction) = transcript_parts_from_event(event, &payload);
+        let code_change_group_id = code_change_group_id_from_payload(&payload);
         candidates.push(TimelineCandidate {
             created_at: event.created_at.clone(),
             source_rank: 20,
@@ -1096,7 +1114,14 @@ pub fn run_transcript_from_agent_snapshot(
                 tool_name: payload_string(&payload, "toolName"),
                 tool_state: transcript_tool_state_from_event(event, &payload),
                 file_path: sanitize_optional_path(payload_string(&payload, "path")).0,
-                code_change_group_id: payload_string(&payload, "codeChangeGroupId"),
+                code_change_group_id: code_change_group_id.clone(),
+                code_commit_id: code_commit_id_from_payload(&payload),
+                code_workspace_epoch: code_workspace_epoch_from_payload(&payload),
+                code_patch_availability: code_patch_availability_from_payload(
+                    &payload,
+                    &event.project_id,
+                    code_change_group_id.as_deref(),
+                ),
                 checkpoint_kind: None,
                 action_id: payload_string(&payload, "actionId"),
                 redaction,
@@ -1133,6 +1158,9 @@ pub fn run_transcript_from_agent_snapshot(
                 tool_state: Some(tool_state_from_agent_tool_call(&tool_call.state)),
                 file_path: None,
                 code_change_group_id: None,
+                code_commit_id: None,
+                code_workspace_epoch: None,
+                code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
                 redaction,
@@ -1169,6 +1197,9 @@ pub fn run_transcript_from_agent_snapshot(
                 tool_state: None,
                 file_path: Some(path),
                 code_change_group_id: file_change.change_group_id.clone(),
+                code_commit_id: None,
+                code_workspace_epoch: None,
+                code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: None,
                 redaction: path_redaction,
@@ -1205,6 +1236,9 @@ pub fn run_transcript_from_agent_snapshot(
                 tool_state: None,
                 file_path: None,
                 code_change_group_id: None,
+                code_commit_id: None,
+                code_workspace_epoch: None,
+                code_patch_availability: None,
                 checkpoint_kind: Some(checkpoint.checkpoint_kind.clone()),
                 action_id: None,
                 redaction,
@@ -1241,6 +1275,9 @@ pub fn run_transcript_from_agent_snapshot(
                 tool_state: None,
                 file_path: None,
                 code_change_group_id: None,
+                code_commit_id: None,
+                code_workspace_epoch: None,
+                code_patch_availability: None,
                 checkpoint_kind: None,
                 action_id: Some(action.action_id.clone()),
                 redaction,
@@ -2220,6 +2257,9 @@ fn runtime_stream_transcript_item(
         tool_state: item.tool_state.as_ref().map(tool_state_from_runtime_stream),
         file_path: None,
         code_change_group_id: item.code_change_group_id.clone(),
+        code_commit_id: item.code_commit_id.clone(),
+        code_workspace_epoch: item.code_workspace_epoch,
+        code_patch_availability: item.code_patch_availability.clone(),
         checkpoint_kind: None,
         action_id: item.action_id.clone(),
         redaction,
@@ -2304,6 +2344,145 @@ fn payload_string(payload: &JsonValue, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn code_commit_id_from_payload(payload: &JsonValue) -> Option<String> {
+    code_history_payload_string(payload, "codeCommitId", "xero.code_commit_id")
+}
+
+fn code_change_group_id_from_payload(payload: &JsonValue) -> Option<String> {
+    code_history_payload_string(payload, "codeChangeGroupId", "xero.code_change_group_id")
+}
+
+fn code_workspace_epoch_from_payload(payload: &JsonValue) -> Option<u64> {
+    payload
+        .get("codeWorkspaceEpoch")
+        .and_then(JsonValue::as_u64)
+        .or_else(|| {
+            code_history_payload_string(payload, "codeWorkspaceEpoch", "xero.code_workspace_epoch")
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+}
+
+fn code_patch_availability_from_payload(
+    payload: &JsonValue,
+    project_id: &str,
+    change_group_id: Option<&str>,
+) -> Option<CodePatchAvailabilityDto> {
+    if let Some(value) = payload.get("codePatchAvailability") {
+        if let Ok(availability) = serde_json::from_value::<CodePatchAvailabilityDto>(value.clone())
+        {
+            return Some(availability);
+        }
+    }
+
+    let available =
+        code_history_payload_bool(payload, "codePatchAvailable", "xero.code_patch_available")?;
+    let target_change_group_id = change_group_id?.to_string();
+    let affected_paths = code_patch_affected_paths_from_payload(payload);
+    let file_change_count = code_history_payload_u32(
+        payload,
+        "codePatchFileChangeCount",
+        "xero.code_patch_file_change_count",
+    )
+    .unwrap_or_else(|| affected_paths.len().try_into().unwrap_or(u32::MAX));
+    let text_hunk_count = code_history_payload_u32(
+        payload,
+        "codePatchTextHunkCount",
+        "xero.code_patch_text_hunk_count",
+    )
+    .unwrap_or(0);
+    let unavailable_reason = code_history_payload_string(
+        payload,
+        "codePatchUnavailableReason",
+        "xero.code_patch_unavailable_reason",
+    );
+
+    Some(CodePatchAvailabilityDto {
+        project_id: project_id.to_string(),
+        target_change_group_id,
+        available,
+        affected_paths,
+        file_change_count,
+        text_hunk_count,
+        text_hunks: Vec::new(),
+        unavailable_reason,
+    })
+}
+
+fn code_patch_affected_paths_from_payload(payload: &JsonValue) -> Vec<String> {
+    if let Some(paths) = payload
+        .get("codePatchAffectedPaths")
+        .and_then(JsonValue::as_array)
+    {
+        return paths
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+    }
+    code_history_payload_string(
+        payload,
+        "codePatchAffectedPaths",
+        "xero.code_patch_affected_paths",
+    )
+    .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+    .unwrap_or_default()
+    .into_iter()
+    .map(|path| path.trim().to_string())
+    .filter(|path| !path.is_empty())
+    .collect()
+}
+
+fn code_history_payload_string(
+    payload: &JsonValue,
+    direct_key: &str,
+    telemetry_key: &str,
+) -> Option<String> {
+    payload_string(payload, direct_key).or_else(|| {
+        payload
+            .pointer(&format!("/dispatch/telemetry/{telemetry_key}"))
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn code_history_payload_bool(
+    payload: &JsonValue,
+    direct_key: &str,
+    telemetry_key: &str,
+) -> Option<bool> {
+    payload
+        .get(direct_key)
+        .and_then(JsonValue::as_bool)
+        .or_else(|| {
+            code_history_payload_string(payload, direct_key, telemetry_key).and_then(|value| {
+                match value.as_str() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                }
+            })
+        })
+}
+
+fn code_history_payload_u32(
+    payload: &JsonValue,
+    direct_key: &str,
+    telemetry_key: &str,
+) -> Option<u32> {
+    payload
+        .get(direct_key)
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| {
+            code_history_payload_string(payload, direct_key, telemetry_key)
+                .and_then(|value| value.parse::<u32>().ok())
+        })
 }
 
 fn sanitize_context_text(value: &str) -> (String, SessionContextRedactionDto) {

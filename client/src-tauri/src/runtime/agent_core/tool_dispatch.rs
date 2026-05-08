@@ -520,6 +520,13 @@ impl AutonomousToolHandlerShared {
             guard
                 .record_tool_output(&self.repo_root, &tool_result.output)
                 .map_err(command_error_to_tool_execution_error)?;
+            if let Some(workspace_epoch) = completed_code_change
+                .as_ref()
+                .and_then(|completed| completed.history_metadata.as_ref())
+                .and_then(|metadata| metadata.workspace_epoch)
+            {
+                guard.record_code_workspace_epoch(workspace_epoch);
+            }
         }
 
         let summary = tool_result.summary.clone();
@@ -536,12 +543,47 @@ impl AutonomousToolHandlerShared {
         if let Some(completed) = completed_code_change {
             handler_output.telemetry_attributes.insert(
                 "xero.code_change_group_id".into(),
-                completed.change_group_id,
+                completed.change_group_id.clone(),
             );
             handler_output.telemetry_attributes.insert(
                 "xero.code_change_file_version_count".into(),
                 completed.file_version_count.to_string(),
             );
+            if let Some(metadata) = completed.history_metadata.as_ref() {
+                if let Some(commit_id) = metadata.commit_id.as_ref() {
+                    handler_output
+                        .telemetry_attributes
+                        .insert("xero.code_commit_id".into(), commit_id.clone());
+                }
+                if let Some(workspace_epoch) = metadata.workspace_epoch {
+                    handler_output.telemetry_attributes.insert(
+                        "xero.code_workspace_epoch".into(),
+                        workspace_epoch.to_string(),
+                    );
+                }
+                handler_output.telemetry_attributes.insert(
+                    "xero.code_patch_available".into(),
+                    metadata.patch_availability.available.to_string(),
+                );
+                handler_output.telemetry_attributes.insert(
+                    "xero.code_patch_affected_paths".into(),
+                    serde_json::to_string(&metadata.patch_availability.affected_paths)
+                        .unwrap_or_else(|_| "[]".into()),
+                );
+                handler_output.telemetry_attributes.insert(
+                    "xero.code_patch_file_change_count".into(),
+                    metadata.patch_availability.file_change_count.to_string(),
+                );
+                handler_output.telemetry_attributes.insert(
+                    "xero.code_patch_text_hunk_count".into(),
+                    metadata.patch_availability.text_hunk_count.to_string(),
+                );
+                if let Some(reason) = metadata.patch_availability.unavailable_reason.as_ref() {
+                    handler_output
+                        .telemetry_attributes
+                        .insert("xero.code_patch_unavailable_reason".into(), reason.clone());
+                }
+            }
         }
         Ok(handler_output)
     }
@@ -559,16 +601,23 @@ impl AutonomousToolHandlerShared {
         let approved_existing_write = self
             .approved_existing_write_call_ids
             .contains(&call.tool_call_id);
-        let write_observations = if planned.is_empty() {
-            Vec::new()
-        } else {
+        let write_observations = {
             let guard = self.workspace_guard.lock().map_err(|_| {
                 CommandError::system_fault(
                     "agent_workspace_guard_lock_failed",
                     "Xero could not lock owned-agent workspace observation state.",
                 )
             })?;
-            guard.validate_write_intent(&self.repo_root, &request, approved_existing_write)?
+            guard.validate_code_workspace_epoch_intent(
+                &self.repo_root,
+                &self.project_id,
+                &request,
+            )?;
+            if planned.is_empty() {
+                Vec::new()
+            } else {
+                guard.validate_write_intent(&self.repo_root, &request, approved_existing_write)?
+            }
         };
         let rollback_checkpoints =
             rollback_checkpoints_for_request(&self.repo_root, &request, &write_observations)?;

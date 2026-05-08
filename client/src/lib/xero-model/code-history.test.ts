@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   codeHistoryOperationSchema,
+  returnSessionToHereRequestSchema,
+  returnSessionToHereResponseSchema,
   selectiveUndoRequestSchema,
   selectiveUndoResponseSchema,
-  sessionRollbackRequestSchema,
-  sessionRollbackResponseSchema,
 } from './code-history'
 
 const conflictedOperation = {
@@ -54,7 +54,7 @@ const conflictedOperation = {
 }
 
 describe('code history contracts', () => {
-  it('accepts selective undo and session rollback request/response contracts', () => {
+  it('accepts selective undo and return session to here request/response contracts', () => {
     const undoRequest = selectiveUndoRequestSchema.parse({
       projectId: 'project-1',
       operationId: 'history-op-1',
@@ -72,8 +72,25 @@ describe('code history contracts', () => {
     expect(selectiveUndoResponseSchema.parse({ operation: conflictedOperation }).operation.mode).toBe(
       'selective_undo',
     )
+    const hunkUndoOperation = {
+      ...conflictedOperation,
+      target: {
+        targetKind: 'hunks',
+        targetId: 'code-change-1:src/app.ts:hunk-1',
+        hunkIds: ['hunk-1'],
+      },
+      conflicts: [
+        {
+          ...conflictedOperation.conflicts[0],
+          targetId: 'code-change-1:src/app.ts:hunk-1',
+        },
+      ],
+    }
+    expect(
+      selectiveUndoResponseSchema.parse({ operation: hunkUndoOperation }).operation.target.hunkIds,
+    ).toEqual(['hunk-1'])
 
-    const rollbackRequest = sessionRollbackRequestSchema.parse({
+    const returnSessionRequest = returnSessionToHereRequestSchema.parse({
       projectId: 'project-1',
       operationId: 'history-op-2',
       target: {
@@ -86,9 +103,9 @@ describe('code history contracts', () => {
       },
       expectedWorkspaceEpoch: 12,
     })
-    expect(rollbackRequest.target.runId).toBe('run-1')
+    expect(returnSessionRequest.target.runId).toBe('run-1')
 
-    const rollbackOperation = {
+    const returnSessionOperation = {
       ...conflictedOperation,
       operationId: 'history-op-2',
       mode: 'session_rollback',
@@ -104,9 +121,28 @@ describe('code history contracts', () => {
         },
       ],
     }
-    expect(sessionRollbackResponseSchema.parse({ operation: rollbackOperation }).operation.mode).toBe(
+    expect(returnSessionToHereResponseSchema.parse({ operation: returnSessionOperation }).operation.mode).toBe(
       'session_rollback',
     )
+  })
+
+  it('uses return session to here terminology for session-boundary validation copy', () => {
+    const wrongBoundary = returnSessionToHereRequestSchema.safeParse({
+      projectId: 'project-1',
+      operationId: 'history-op-3',
+      target: {
+        targetKind: 'change_group',
+        targetId: 'code-change-1',
+        agentSessionId: 'agent-session-1',
+        boundaryId: 'boundary-1',
+      },
+    })
+
+    expect(wrongBoundary.success).toBe(false)
+    if (wrongBoundary.success) {
+      throw new Error('Expected return session to here validation to fail.')
+    }
+    expect(wrongBoundary.error.issues[0]?.message).toContain('Return session to here')
   })
 
   it('rejects unknown modes and statuses', () => {
@@ -131,6 +167,14 @@ describe('code history contracts', () => {
       ...conflictedOperation,
       target: {
         targetKind: 'file_change',
+      },
+    }).success).toBe(false)
+
+    expect(codeHistoryOperationSchema.safeParse({
+      ...conflictedOperation,
+      target: {
+        targetKind: 'hunks',
+        targetId: 'code-change-1:src/app.ts:hunk-1',
       },
     }).success).toBe(false)
 

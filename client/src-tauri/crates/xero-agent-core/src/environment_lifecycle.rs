@@ -170,12 +170,13 @@ pub enum EnvironmentHealthStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentSemanticIndexState {
     Ready,
     Indexing,
     Stale,
+    #[default]
     Empty,
     Failed,
     Unavailable,
@@ -207,12 +208,6 @@ impl EnvironmentSemanticIndexState {
 
     pub const fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
-    }
-}
-
-impl Default for EnvironmentSemanticIndexState {
-    fn default() -> Self {
-        Self::Empty
     }
 }
 

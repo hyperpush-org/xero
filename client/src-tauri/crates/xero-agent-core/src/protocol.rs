@@ -172,24 +172,24 @@ impl RuntimeTraceContext {
             && self
                 .parent_span_id
                 .as_deref()
-                .map_or(true, |span_id| is_lower_hex_len(span_id, 16))
+                .is_none_or(|span_id| is_lower_hex_len(span_id, 16))
             && self.run_trace_id == self.trace_id
             && self
                 .provider_turn_trace_id
                 .as_deref()
-                .map_or(true, |trace_id| is_lower_hex_len(trace_id, 32))
+                .is_none_or(|trace_id| is_lower_hex_len(trace_id, 32))
             && self
                 .tool_call_trace_id
                 .as_deref()
-                .map_or(true, |trace_id| is_lower_hex_len(trace_id, 32))
+                .is_none_or(|trace_id| is_lower_hex_len(trace_id, 32))
             && self
                 .approval_decision_trace_id
                 .as_deref()
-                .map_or(true, |trace_id| is_lower_hex_len(trace_id, 32))
+                .is_none_or(|trace_id| is_lower_hex_len(trace_id, 32))
             && self
                 .storage_write_trace_id
                 .as_deref()
-                .map_or(true, |trace_id| is_lower_hex_len(trace_id, 32))
+                .is_none_or(|trace_id| is_lower_hex_len(trace_id, 32))
     }
 }
 
@@ -1273,9 +1273,7 @@ fn diagnose_trace(
             }
             RuntimeProtocolEventPayload::SandboxLifecycleUpdate { phase, detail, .. } => {
                 if text_indicates_denial(phase)
-                    || detail
-                        .as_deref()
-                        .is_some_and(|detail| text_indicates_denial(detail))
+                    || detail.as_deref().is_some_and(text_indicates_denial)
                 {
                     signals.push(event_signal(
                         trace,
@@ -2417,7 +2415,7 @@ fn redaction_category_for_key(
     parent_unapproved_memory: bool,
 ) -> Option<TraceRedactionCategory> {
     let key = key?;
-    let normalized = key.to_ascii_lowercase().replace('_', "").replace('-', "");
+    let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
     if parent_unapproved_memory
         && matches!(
             normalized.as_str(),

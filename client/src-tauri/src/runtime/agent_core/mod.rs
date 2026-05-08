@@ -5,13 +5,17 @@ use std::{
     sync::Arc,
 };
 
+mod consumed_artifacts;
 mod context_package;
+mod db_touchpoints;
 mod environment_lifecycle;
 mod evals;
 mod events;
 mod facade;
 mod harness_contract;
 mod harness_order;
+mod memory_guardrails;
+mod output_sections;
 mod provider_adapters;
 mod supervisor;
 
@@ -57,9 +61,16 @@ pub use supervisor::{
 };
 pub use types::*;
 
+pub use consumed_artifacts::{consumed_artifacts_for, ConsumedArtifactEntry};
+pub use db_touchpoints::{
+    db_touchpoints_for_runtime_agent, DbTouchpointEntry, DbTouchpoints, TriggerRef,
+};
+pub use output_sections::{output_sections_for, OutputSectionEntry};
+
 pub(crate) use context_package::*;
 pub(crate) use environment_lifecycle::*;
 pub(crate) use harness_order::*;
+pub(crate) use memory_guardrails::*;
 pub(crate) use persistence::*;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;

@@ -658,15 +658,18 @@ where
     ) -> CoreResult<Vec<HeadlessToolResultMessage>> {
         let mut results = Vec::new();
         for group in report.groups {
+            let persistence_group = HeadlessToolPersistenceGroup {
+                mode: group.mode.clone(),
+                elapsed_ms: group.elapsed_ms,
+                timeout_error: group.timeout_error.as_ref(),
+            };
             for outcome in group.outcomes {
                 match outcome {
                     ToolDispatchOutcome::Succeeded(success) => {
                         self.persist_headless_tool_success(
                             snapshot,
                             success,
-                            group.mode.clone(),
-                            group.elapsed_ms,
-                            group.timeout_error.as_ref(),
+                            &persistence_group,
                             parent_assistant_message_id,
                             &mut results,
                         )?;
@@ -675,9 +678,7 @@ where
                         self.persist_headless_tool_failure(
                             snapshot,
                             failure,
-                            group.mode.clone(),
-                            group.elapsed_ms,
-                            group.timeout_error.as_ref(),
+                            &persistence_group,
                             parent_assistant_message_id,
                             &mut results,
                         )?;
@@ -692,17 +693,15 @@ where
         &self,
         snapshot: &RunSnapshot,
         success: ToolDispatchSuccess,
-        group_mode: ToolGroupExecutionMode,
-        group_elapsed_ms: u128,
-        timeout_error: Option<&ToolExecutionError>,
+        group: &HeadlessToolPersistenceGroup<'_>,
         parent_assistant_message_id: &str,
         results: &mut Vec<HeadlessToolResultMessage>,
     ) -> CoreResult<()> {
         let dispatch = headless_dispatch_success_metadata(
             &success,
-            group_mode,
-            group_elapsed_ms,
-            timeout_error,
+            group.mode.clone(),
+            group.elapsed_ms,
+            group.timeout_error,
         );
         let tool_call_id = success.tool_call_id.clone();
         let tool_name = success.tool_name.clone();
@@ -773,17 +772,15 @@ where
         &self,
         snapshot: &RunSnapshot,
         failure: ToolDispatchFailure,
-        group_mode: ToolGroupExecutionMode,
-        group_elapsed_ms: u128,
-        timeout_error: Option<&ToolExecutionError>,
+        group: &HeadlessToolPersistenceGroup<'_>,
         parent_assistant_message_id: &str,
         results: &mut Vec<HeadlessToolResultMessage>,
     ) -> CoreResult<()> {
         let dispatch = headless_dispatch_failure_metadata(
             &failure,
-            group_mode,
-            group_elapsed_ms,
-            timeout_error,
+            group.mode.clone(),
+            group.elapsed_ms,
+            group.timeout_error,
         );
         let tool_call_id = failure.tool_call_id.clone();
         let tool_name = failure.tool_name.clone();
@@ -1194,6 +1191,13 @@ impl From<&OpenAiToolCall> for RuntimeProviderToolCallMetadata {
             arguments: call.arguments.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct HeadlessToolPersistenceGroup<'a> {
+    mode: ToolGroupExecutionMode,
+    elapsed_ms: u128,
+    timeout_error: Option<&'a ToolExecutionError>,
 }
 
 #[derive(Debug, Clone)]

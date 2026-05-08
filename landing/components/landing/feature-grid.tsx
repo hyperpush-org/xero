@@ -1,28 +1,3 @@
-import {
-  Bot,
-  CheckCircle2,
-  Code2,
-  Globe,
-  KeyRound,
-  Laptop,
-  Loader2,
-  PauseCircle,
-  Plus,
-  PuzzleIcon,
-  Smartphone,
-  Sparkles,
-  Terminal,
-  Wrench,
-  GitFork,
-} from "lucide-react"
-import {
-  AnthropicIcon,
-  DiscordIcon,
-  GoogleIcon,
-  OpenAIIcon,
-  TelegramIcon,
-} from "@/components/landing/brand-icons"
-
 export function FeatureGrid() {
   return (
     <section id="capabilities" className="relative">
@@ -38,69 +13,47 @@ export function FeatureGrid() {
 
         {/* Bento */}
         <div className="mt-14 grid auto-rows-[minmax(0,1fr)] grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-12">
-          {/* Custom agents — hero card */}
           <BentoCard
             className="lg:col-span-7 lg:row-span-2"
             title="Agents you actually design"
             caption="Pick the tools, memory, and approval rules per agent."
-            visual={<CustomAgentsMock />}
-            visualClassName="min-h-[280px]"
+            visual={<AgentBlueprintVisual />}
+            visualClassName="min-h-[360px]"
           />
 
-          {/* Workflow graph */}
           <BentoCard
             className="lg:col-span-5"
             title="Composable workflows"
             caption="Steps, branches, loops, gates."
-            visual={<WorkflowGraphMock />}
+            visual={<InfinityFlowVisual />}
           />
 
-          {/* Mobile approvals */}
           <BentoCard
             className="lg:col-span-5"
             title="Approve from your phone"
             caption="Discord and Telegram, with the actual diff."
-            visual={<MobileApprovalsMock />}
+            visual={<PingWaveVisual />}
           />
 
-          {/* Six panes */}
           <BentoCard
             className="lg:col-span-4"
             title="Six-pane workspace"
             caption="Mix roles and models per project."
-            visual={<SixPanesMock />}
+            visual={<DotMatrixVisual />}
           />
 
-          {/* Branch & rewind */}
           <BentoCard
             className="lg:col-span-4"
             title="Branch & rewind"
             caption="Fork sessions, roll back checkpoints."
-            visual={<BranchRewindMock />}
+            visual={<BranchTreeVisual />}
           />
 
-          {/* Run timeline */}
           <BentoCard
             className="lg:col-span-4"
             title="Run timeline"
             caption="Every call, change, and approval."
-            visual={<RunTimelineMock />}
-          />
-
-          {/* MCP & integrations */}
-          <BentoCard
-            className="lg:col-span-6"
-            title="MCP, Solana, mobile, browser"
-            caption="The tools your projects actually need."
-            visual={<IntegrationsMock />}
-          />
-
-          {/* Local credentials */}
-          <BentoCard
-            className="lg:col-span-6"
-            title="Keys local. Models direct."
-            caption="OS keychain. No relay. 10 providers."
-            visual={<KeysDirectMock />}
+            visual={<WaveformVisual />}
           />
         </div>
       </div>
@@ -144,600 +97,771 @@ function BentoCard({
   )
 }
 
-/* -------- Visual mocks -------- */
+/* ---------- Visuals ---------- */
 
-function CustomAgentsMock() {
-  const tools: { t: string; icon: React.ReactNode; on: boolean; dashed?: boolean }[] = [
-    { t: "repo", icon: <Code2 className="h-2.5 w-2.5" />, on: true },
-    { t: "shell", icon: <Terminal className="h-2.5 w-2.5" />, on: true },
-    { t: "git", icon: <GitFork className="h-2.5 w-2.5" />, on: true },
-    { t: "browser", icon: <Globe className="h-2.5 w-2.5" />, on: true },
-    { t: "mobile", icon: <Smartphone className="h-2.5 w-2.5" />, on: false },
-    { t: "mcp", icon: <Sparkles className="h-2.5 w-2.5" />, on: true },
-    { t: "solana", icon: <Sparkles className="h-2.5 w-2.5" />, on: true },
-    { t: "skills", icon: <PuzzleIcon className="h-2.5 w-2.5" />, on: true },
-    { t: "add", icon: <Plus className="h-2.5 w-2.5" />, on: false, dashed: true },
-  ]
+/* Hero card — blueprint of an agent. Annotated technical drawing
+   with a central core, three labeled sub-systems wired in, dimension marks. */
+function AgentBlueprintVisual() {
   return (
-    <div className="grid w-full max-w-[520px] grid-cols-12 gap-3">
-      {/* Agent header */}
-      <div className="relative col-span-12 flex items-center justify-between overflow-hidden rounded-lg border border-primary/40 bg-primary/[0.06] px-3 py-2">
-        <div className="flex items-center gap-2">
-          <span className="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/15 text-primary ring-1 ring-inset ring-primary/30">
-            <Bot className="h-4 w-4" />
-            <span
-              aria-hidden
-              className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-card bg-primary"
-            />
-          </span>
-          <div>
-            <div className="font-mono text-[12px] text-foreground">solana-ops</div>
-            <div className="font-mono text-[10px] text-muted-foreground">
-              custom · project scope
-            </div>
-          </div>
-        </div>
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-primary">
-          <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-          live
-        </span>
-      </div>
+    <div className="relative w-full">
+      <svg viewBox="0 0 600 360" className="h-auto w-full" aria-hidden>
+        <defs>
+          <radialGradient id="bp-core" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.55" />
+            <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+          </radialGradient>
+          <pattern id="bp-grid" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+            <path d="M 24 0 L 0 0 0 24" fill="none" stroke="color-mix(in oklab, var(--border) 60%, transparent)" strokeWidth="0.4" />
+          </pattern>
+          <linearGradient id="bp-conn" x1="0" x2="1">
+            <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 25%, transparent)" />
+            <stop offset="100%" stopColor="var(--primary)" />
+          </linearGradient>
+        </defs>
 
-      {/* Tools panel */}
-      <div className="col-span-7 rounded-lg border border-border/60 bg-background/60 p-3">
-        <div className="mb-2 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-          <span className="inline-flex items-center gap-1">
-            <Wrench className="h-2.5 w-2.5" /> tools
-          </span>
-          <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] text-primary">
-            7 wired
-          </span>
-        </div>
-        <div className="grid grid-cols-3 gap-1.5">
-          {tools.map((c, i) => (
-            <span
-              key={i}
-              className={`flex items-center justify-center gap-1 truncate rounded border px-1.5 py-1 font-mono text-[10px] transition-colors ${
-                c.on
-                  ? "border-primary/30 bg-primary/[0.08] text-primary"
-                  : c.dashed
-                    ? "border-dashed border-border/60 bg-transparent text-muted-foreground/60"
-                    : "border-border/60 bg-secondary/30 text-muted-foreground/70"
-              }`}
-            >
-              {c.icon}
-              {c.t}
-            </span>
-          ))}
-        </div>
-      </div>
+        {/* Blueprint grid */}
+        <rect width="600" height="360" fill="url(#bp-grid)" opacity="0.7" />
 
-      {/* Memory + approval */}
-      <div className="col-span-5 flex flex-col gap-2">
-        <div className="rounded-lg border border-border/60 bg-background/60 p-3">
-          <div className="flex items-center justify-between">
-            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-              memory
-            </span>
-            <span className="font-mono text-[9px] text-muted-foreground/60">2 / 3</span>
-          </div>
-          <div className="mt-1.5 space-y-1">
-            {[
-              { l: "session", v: "on" as const },
-              { l: "cross-run", v: "on" as const },
-              { l: "global", v: "off" as const },
-            ].map((row) => (
-              <div
-                key={row.l}
-                className="flex items-center justify-between font-mono text-[10px]"
-              >
-                <span className="text-foreground/80">{row.l}</span>
-                <ToggleDot on={row.v === "on"} />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/60 bg-background/60 p-3">
-          <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-            approvals
-          </div>
-          <div className="mt-1.5 space-y-1 font-mono text-[10px]">
-            {[
-              { l: "git push", v: "ask" as const },
-              { l: "tx send", v: "ask" as const },
-              { l: "repo edit", v: "auto" as const },
-            ].map((row) => (
-              <div key={row.l} className="flex items-center justify-between">
-                <span className="text-foreground/80">{row.l}</span>
-                <span
-                  className={`rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${
-                    row.v === "ask"
-                      ? "bg-primary/15 text-primary"
-                      : "bg-secondary/60 text-muted-foreground/70"
-                  }`}
-                >
-                  {row.v}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+        {/* Core glow */}
+        <circle cx="300" cy="180" r="120" fill="url(#bp-core)" />
+
+        {/* Frame border (technical drawing) */}
+        <rect x="20" y="20" width="560" height="320" fill="none" stroke="color-mix(in oklab, var(--border) 90%, transparent)" strokeWidth="0.7" />
+        <rect x="28" y="28" width="544" height="304" fill="none" stroke="color-mix(in oklab, var(--border) 60%, transparent)" strokeWidth="0.4" strokeDasharray="2 4" />
+
+        {/* Title block */}
+        <g fontFamily="var(--font-mono)" fontSize="9" fill="var(--muted-foreground)" letterSpacing="2">
+          <rect x="28" y="28" width="170" height="26" fill="color-mix(in oklab, var(--primary) 6%, transparent)" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.5" />
+          <text x="38" y="45" fill="var(--primary)">AGENT — solana-ops</text>
+          <rect x="402" y="28" width="170" height="26" fill="color-mix(in oklab, var(--primary) 6%, transparent)" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.5" />
+          <text x="412" y="45">REV · 0.4 · project</text>
+        </g>
+
+        {/* Sub-system: TOOLS (left) */}
+        <SubSystem
+          x={70}
+          y={120}
+          w={130}
+          h={120}
+          label="01 · TOOLS"
+          rows={[
+            { t: "repo", on: true },
+            { t: "shell", on: true },
+            { t: "git", on: true },
+            { t: "browser", on: true },
+            { t: "mcp", on: true },
+            { t: "mobile", on: false },
+          ]}
+        />
+
+        {/* Sub-system: MEMORY (top right) */}
+        <SubSystem
+          x={400}
+          y={70}
+          w={130}
+          h={88}
+          label="02 · MEMORY"
+          rows={[
+            { t: "session", on: true },
+            { t: "cross-run", on: true },
+            { t: "global", on: false },
+          ]}
+        />
+
+        {/* Sub-system: APPROVALS (bottom right) */}
+        <SubSystem
+          x={400}
+          y={200}
+          w={130}
+          h={88}
+          label="03 · APPROVALS"
+          rows={[
+            { t: "git push", on: false, note: "ASK" },
+            { t: "tx send", on: false, note: "ASK" },
+            { t: "repo edit", on: true, note: "AUTO" },
+          ]}
+        />
+
+        {/* Connectors → core */}
+        <path d="M 200 180 C 240 180, 260 180, 280 180" stroke="url(#bp-conn)" strokeWidth="1.4" fill="none" />
+        <path d="M 400 114 C 360 114, 350 160, 320 170" stroke="url(#bp-conn)" strokeWidth="1.4" fill="none" />
+        <path d="M 400 244 C 360 244, 350 200, 320 190" stroke="url(#bp-conn)" strokeWidth="1.4" fill="none" />
+
+        {/* Core (the agent) */}
+        <g>
+          <circle cx="300" cy="180" r="42" fill="color-mix(in oklab, var(--primary) 18%, var(--card))" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" strokeWidth="1.2" />
+          <circle cx="300" cy="180" r="26" fill="color-mix(in oklab, var(--primary) 35%, var(--card))" />
+          <circle cx="300" cy="180" r="11" fill="var(--primary)" />
+          <text x="300" y="244" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="10" fill="var(--primary)" letterSpacing="2" fontWeight="600">CORE</text>
+        </g>
+
+        {/* Dimension marks (decorative) */}
+        <g stroke="color-mix(in oklab, var(--muted-foreground) 30%, transparent)" strokeWidth="0.5" fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" opacity="0.7">
+          <line x1="70" y1="108" x2="200" y2="108" />
+          <line x1="70" y1="104" x2="70" y2="112" />
+          <line x1="200" y1="104" x2="200" y2="112" />
+          <text x="135" y="102" textAnchor="middle" letterSpacing="1.5">tools[6]</text>
+          <line x1="400" y1="298" x2="530" y2="298" />
+          <line x1="400" y1="294" x2="400" y2="302" />
+          <line x1="530" y1="294" x2="530" y2="302" />
+          <text x="465" y="292" textAnchor="middle" letterSpacing="1.5">rules[3]</text>
+        </g>
+
+        {/* Status footer */}
+        <g fontFamily="var(--font-mono)" fontSize="9" fill="var(--muted-foreground)" letterSpacing="1.5">
+          <line x1="28" y1="316" x2="572" y2="316" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.5" />
+          <text x="38" y="328">SCALE 1:1</text>
+          <text x="200" y="328">SCOPE · project</text>
+          <text x="332" y="328">VISUAL BUILDER</text>
+          <text x="490" y="328" fill="var(--primary)">● LIVE</text>
+        </g>
+      </svg>
     </div>
   )
 }
 
-function ToggleDot({ on }: { on: boolean }) {
+function SubSystem({
+  x,
+  y,
+  w,
+  h,
+  label,
+  rows,
+}: {
+  x: number
+  y: number
+  w: number
+  h: number
+  label: string
+  rows: { t: string; on: boolean; note?: string }[]
+}) {
   return (
-    <span
-      className={`inline-flex h-3 w-5 items-center rounded-full p-0.5 transition-colors ${
-        on ? "bg-primary/40" : "bg-secondary/60"
-      }`}
-    >
-      <span
-        className={`block h-2 w-2 rounded-full transition-transform ${
-          on ? "translate-x-2 bg-primary" : "translate-x-0 bg-muted-foreground/60"
-        }`}
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        rx="6"
+        fill="color-mix(in oklab, var(--card) 90%, transparent)"
+        stroke="color-mix(in oklab, var(--border) 90%, transparent)"
+        strokeWidth="0.8"
       />
-    </span>
+      <line
+        x1={x}
+        y1={y + 22}
+        x2={x + w}
+        y2={y + 22}
+        stroke="color-mix(in oklab, var(--border) 80%, transparent)"
+        strokeWidth="0.5"
+      />
+      <text
+        x={x + 8}
+        y={y + 15}
+        fontFamily="var(--font-mono)"
+        fontSize="8.5"
+        fill="var(--primary)"
+        letterSpacing="1.8"
+      >
+        {label}
+      </text>
+      {rows.map((r, i) => {
+        const ry = y + 36 + i * 14
+        return (
+          <g key={i} fontFamily="var(--font-mono)" fontSize="9">
+            <circle
+              cx={x + 12}
+              cy={ry - 3}
+              r="2.5"
+              fill={r.on ? "var(--primary)" : "var(--card)"}
+              stroke={r.on ? "var(--primary)" : "color-mix(in oklab, var(--border) 90%, transparent)"}
+              strokeWidth="0.8"
+            />
+            <text
+              x={x + 22}
+              y={ry}
+              fill={r.on ? "var(--foreground)" : "var(--muted-foreground)"}
+              opacity={r.on ? 0.9 : 0.65}
+              letterSpacing="0.5"
+            >
+              {r.t}
+            </text>
+            {r.note && (
+              <text
+                x={x + w - 8}
+                y={ry}
+                textAnchor="end"
+                fill={r.note === "AUTO" ? "var(--muted-foreground)" : "var(--primary)"}
+                opacity="0.85"
+                letterSpacing="1.5"
+                fontSize="8"
+              >
+                {r.note}
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </g>
   )
 }
 
-function WorkflowGraphMock() {
+/* Composable workflows — figure-eight loop with two branching choices */
+function InfinityFlowVisual() {
   return (
-    <svg
-      viewBox="0 0 280 180"
-      className="h-[180px] w-full max-w-[300px]"
-      aria-hidden
-    >
+    <svg viewBox="0 0 280 180" className="h-auto w-full max-w-[320px]" aria-hidden>
       <defs>
-        <linearGradient id="cap-edge" x1="0" x2="1">
-          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.25" />
-          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.85" />
+        <linearGradient id="if-edge" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 20%, transparent)" />
+          <stop offset="100%" stopColor="var(--primary)" />
         </linearGradient>
-        <radialGradient id="cap-glow" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.35" />
+        <radialGradient id="if-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.42" />
           <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
         </radialGradient>
       </defs>
 
-      {/* gate glow */}
-      <circle cx="157" cy="90" r="34" fill="url(#cap-glow)" />
+      {/* Loop glow */}
+      <ellipse cx="140" cy="90" rx="100" ry="48" fill="url(#if-glow)" />
 
-      {/* edges */}
-      <path d="M 74 40 C 110 40, 120 90, 138 90" stroke="url(#cap-edge)" strokeWidth="1.4" fill="none" />
-      <path d="M 74 140 C 110 140, 120 90, 138 90" stroke="url(#cap-edge)" strokeWidth="1.4" fill="none" />
-      <path d="M 176 90 C 200 90, 210 40, 232 40" stroke="url(#cap-edge)" strokeWidth="1.4" fill="none" />
-      <path d="M 176 90 C 200 90, 210 140, 232 140" stroke="url(#cap-edge)" strokeWidth="1.4" fill="none" />
-      {/* loop dashed back-edge */}
+      {/* Figure-eight */}
       <path
-        d="M 232 140 C 200 156, 90 156, 74 140"
-        stroke="color-mix(in oklab, var(--primary) 70%, transparent)"
-        strokeWidth="1.2"
-        strokeDasharray="3 3"
+        d="M 60 90 C 60 50, 110 50, 140 90 C 170 130, 220 130, 220 90 C 220 50, 170 50, 140 90 C 110 130, 60 130, 60 90 Z"
         fill="none"
+        stroke="url(#if-edge)"
+        strokeWidth="1.6"
       />
 
-      {/* node A — ask */}
+      {/* Animated traveling dash */}
+      <path
+        d="M 60 90 C 60 50, 110 50, 140 90 C 170 130, 220 130, 220 90 C 220 50, 170 50, 140 90 C 110 130, 60 130, 60 90 Z"
+        fill="none"
+        stroke="color-mix(in oklab, var(--primary) 70%, transparent)"
+        strokeWidth="1.4"
+        strokeDasharray="3 8"
+        className="animate-flow-dash"
+      />
+
+      {/* Center gate */}
       <g>
-        <rect x="14" y="24" width="60" height="32" rx="8" fill="var(--card)" stroke="var(--border)" />
-        <circle cx="26" cy="40" r="3" fill="color-mix(in oklab, var(--primary) 80%, transparent)" />
-        <text x="48" y="44" textAnchor="middle" fontSize="11" fill="var(--foreground)" fontFamily="var(--font-mono)">
-          ask
-        </text>
-      </g>
-      {/* node B — engineer */}
-      <g>
-        <rect x="14" y="124" width="60" height="32" rx="8" fill="var(--card)" stroke="var(--border)" />
-        <circle cx="26" cy="140" r="3" fill="color-mix(in oklab, var(--primary) 80%, transparent)" />
-        <text x="48" y="144" textAnchor="middle" fontSize="11" fill="var(--foreground)" fontFamily="var(--font-mono)">
-          engineer
-        </text>
-      </g>
-      {/* gate */}
-      <g>
-        <rect
-          x="138"
-          y="74"
-          width="38"
-          height="32"
-          rx="8"
-          fill="color-mix(in oklab, var(--primary) 14%, var(--card))"
-          stroke="color-mix(in oklab, var(--primary) 55%, transparent)"
-        />
-        <text x="157" y="94" textAnchor="middle" fontSize="10.5" fill="var(--primary)" fontFamily="var(--font-mono)" fontWeight="600">
-          gate
-        </text>
-      </g>
-      {/* node C — ship */}
-      <g>
-        <rect x="232" y="24" width="36" height="32" rx="8" fill="var(--card)" stroke="var(--border)" />
-        <text x="250" y="44" textAnchor="middle" fontSize="11" fill="var(--foreground)" fontFamily="var(--font-mono)">
-          ship
-        </text>
-      </g>
-      {/* node D — retry */}
-      <g>
-        <rect x="232" y="124" width="36" height="32" rx="8" fill="var(--card)" stroke="var(--border)" />
-        <text x="250" y="144" textAnchor="middle" fontSize="11" fill="var(--muted-foreground)" fontFamily="var(--font-mono)">
-          retry
-        </text>
+        <rect x="125" y="79" width="30" height="22" rx="4" fill="color-mix(in oklab, var(--primary) 18%, var(--card))" stroke="color-mix(in oklab, var(--primary) 65%, transparent)" />
+        <text x="140" y="94" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="9" fill="var(--primary)" fontWeight="600" letterSpacing="1.5">if</text>
       </g>
 
+      {/* Step nodes on the loop */}
+      {[
+        { cx: 60, cy: 90, label: "ask" },
+        { cx: 220, cy: 90, label: "ship" },
+        { cx: 100, cy: 50, label: "" },
+        { cx: 180, cy: 130, label: "" },
+        { cx: 100, cy: 130, label: "" },
+        { cx: 180, cy: 50, label: "" },
+      ].map((n, i) => (
+        <g key={i}>
+          <circle cx={n.cx} cy={n.cy} r="6" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" strokeWidth="1.2" />
+          <circle cx={n.cx} cy={n.cy} r="2" fill="var(--primary)" />
+          {n.label && (
+            <text
+              x={n.cx}
+              y={n.cy - 14}
+              textAnchor="middle"
+              fontFamily="var(--font-mono)"
+              fontSize="9"
+              fill="var(--muted-foreground)"
+              letterSpacing="1.5"
+            >
+              {n.label}
+            </text>
+          )}
+        </g>
+      ))}
+
+      {/* Caption */}
+      <text x="140" y="170" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8.5" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        steps · branches · gates · loops
+      </text>
     </svg>
   )
 }
 
-function MobileApprovalsMock() {
+/* Approve from your phone — radiating signal/ripple from a phone-shaped glyph */
+function PingWaveVisual() {
   return (
-    <div className="flex w-full max-w-[300px] flex-col items-center gap-2">
-      {/* Phone frame */}
-      <div className="relative w-full rounded-[28px] border border-border/70 bg-background/60 p-1.5 shadow-[0_30px_60px_-25px_rgba(0,0,0,0.7)]">
-        {/* notch */}
-        <span
-          aria-hidden
-          className="absolute left-1/2 top-1.5 z-10 h-1.5 w-16 -translate-x-1/2 rounded-full bg-secondary/80"
-        />
-        <div className="overflow-hidden rounded-[22px] border border-border/40 bg-card">
-          {/* status bar */}
-          <div className="flex items-center justify-between px-3 pt-3 pb-1.5 font-mono text-[9px] text-muted-foreground/70">
-            <span>9:41</span>
-            <span className="flex items-center gap-1">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/60" />
-            </span>
-          </div>
-          {/* notification card */}
-          <div className="mx-2 mb-2 overflow-hidden rounded-xl border border-border/60 bg-background/70 shadow-[0_10px_24px_-15px_rgba(0,0,0,0.6)]">
-            <div className="flex items-center gap-2 border-b border-border/60 bg-secondary/30 px-2.5 py-1.5">
-              <span
-                className="inline-flex h-4 w-4 items-center justify-center rounded text-white"
-                style={{ backgroundColor: "#5865F2" }}
-              >
-                <DiscordIcon className="h-2.5 w-2.5 text-white" />
-              </span>
-              <span className="font-mono text-[10px] text-foreground/80">
-                #xero-approvals
-              </span>
-              <span className="ml-auto inline-flex items-center gap-1 font-mono text-[9px] text-muted-foreground/70">
-                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                now
-              </span>
-            </div>
-            <div className="px-2.5 py-2">
-              <p className="font-mono text-[11px] leading-relaxed text-foreground/90">
-                <span className="font-medium text-foreground">acme-saas</span> · push branch{" "}
-                <code className="rounded bg-primary/15 px-1 py-0.5 text-[10px] text-primary">
-                  try-pg
-                </code>{" "}
-                → origin
-              </p>
-              <div className="mt-2 overflow-hidden rounded border border-border/60 bg-secondary/15 font-mono text-[10px] leading-snug">
-                <div className="flex items-center gap-1 bg-secondary/30 px-2 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground/70">
-                  <Code2 className="h-2.5 w-2.5" />
-                  diff · src/billing.ts
-                </div>
-                <pre className="px-2 py-1.5 text-muted-foreground">
-                  <span className="text-primary">+</span> retry helper · 12 lines
-                  {"\n"}
-                  <span className="text-destructive/80">-</span> inline retry · 4
-                </pre>
-              </div>
-              <div className="mt-2 grid grid-cols-3 gap-1">
-                <span className="rounded bg-primary px-2 py-1 text-center text-[10px] font-medium text-primary-foreground shadow-[0_4px_12px_-4px_color-mix(in_oklab,var(--primary)_60%,transparent)]">
-                  Approve
-                </span>
-                <span className="rounded border border-border/70 bg-secondary/40 px-2 py-1 text-center text-[10px]">
-                  Skip
-                </span>
-                <span className="rounded border border-border/70 bg-secondary/40 px-2 py-1 text-center text-[10px]">
-                  Diff
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">
-        <span>also on</span>
-        <span
-          className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-white"
-          style={{ backgroundColor: "#26A5E4" }}
-        >
-          <TelegramIcon className="h-2 w-2 text-white" />
-        </span>
-      </div>
-    </div>
-  )
-}
-
-function SixPanesMock() {
-  type Pane = { role: string; state: "running" | "idle" | "decision"; icon: React.ReactNode }
-  const panes: Pane[] = [
-    { role: "Engineer", state: "running", icon: <Code2 className="h-2.5 w-2.5" /> },
-    { role: "Debug", state: "running", icon: <Wrench className="h-2.5 w-2.5" /> },
-    { role: "Ask", state: "idle", icon: <Bot className="h-2.5 w-2.5" /> },
-    { role: "Engineer", state: "running", icon: <Code2 className="h-2.5 w-2.5" /> },
-    { role: "solana-ops", state: "decision", icon: <Sparkles className="h-2.5 w-2.5" /> },
-    { role: "Engineer", state: "idle", icon: <Code2 className="h-2.5 w-2.5" /> },
-  ]
-  return (
-    <div className="grid w-full max-w-[260px] grid-cols-3 gap-1.5">
-      {panes.map((p, i) => {
-        const isDecision = p.state === "decision"
-        const isRunning = p.state === "running"
-        const isLive = isRunning || isDecision
-        return (
-          <div
-            key={i}
-            className={`relative flex aspect-[4/3] flex-col justify-between overflow-hidden rounded-md border p-2 ${
-              isDecision
-                ? "border-primary/45 bg-primary/[0.08] shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_18%,transparent)]"
-                : "border-border/60 bg-background/40"
-            }`}
-          >
-            <div className="flex items-center gap-1">
-              <span
-                className={`inline-flex h-3.5 w-3.5 items-center justify-center rounded ${
-                  isLive
-                    ? "bg-primary/15 text-primary"
-                    : "bg-secondary/60 text-muted-foreground/70"
-                }`}
-              >
-                {p.icon}
-              </span>
-              <span className="truncate font-mono text-[9px] text-foreground/80">
-                {p.role}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span
-                className={`font-mono text-[8px] uppercase tracking-wider ${
-                  isLive ? "text-primary" : "text-muted-foreground/60"
-                }`}
-              >
-                {p.state}
-              </span>
-              {(isDecision || isRunning) && (
-                <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-              )}
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function BranchRewindMock() {
-  return (
-    <svg
-      viewBox="0 0 220 140"
-      className="h-[140px] w-full max-w-[260px]"
-      aria-hidden
-    >
+    <svg viewBox="0 0 280 200" className="h-auto w-full max-w-[280px]" aria-hidden>
       <defs>
-        <linearGradient id="bm-main" x1="0" x2="1">
-          <stop offset="0%" stopColor="var(--border)" stopOpacity="0.4" />
-          <stop offset="50%" stopColor="var(--border)" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.9" />
+        <radialGradient id="pw-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.4" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {/* Glow */}
+      <circle cx="140" cy="100" r="90" fill="url(#pw-glow)" />
+
+      {/* Ripple rings */}
+      {[35, 55, 75, 95].map((r, i) => (
+        <circle
+          key={i}
+          cx="140"
+          cy="100"
+          r={r}
+          fill="none"
+          stroke="color-mix(in oklab, var(--primary) 55%, transparent)"
+          strokeWidth={i === 0 ? 1.4 : 0.9}
+          strokeDasharray={i === 3 ? "2 4" : undefined}
+          opacity={1 - i * 0.18}
+        />
+      ))}
+
+      {/* Phone glyph (abstract rounded rect with notch) */}
+      <g>
+        <rect
+          x="120"
+          y="74"
+          width="40"
+          height="62"
+          rx="7"
+          fill="color-mix(in oklab, var(--primary) 18%, var(--card))"
+          stroke="var(--primary)"
+          strokeWidth="1.2"
+        />
+        <line x1="132" y1="80" x2="148" y2="80" stroke="color-mix(in oklab, var(--primary) 60%, transparent)" strokeWidth="1.2" strokeLinecap="round" />
+        {/* Inner check icon */}
+        <path
+          d="M 132 108 L 138 114 L 150 100"
+          fill="none"
+          stroke="var(--primary)"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </g>
+
+      {/* Approve / Skip glyphs as small badges to the sides */}
+      <g fontFamily="var(--font-mono)" fontSize="8.5" letterSpacing="1.5">
+        <g transform="translate(56 96)">
+          <rect width="36" height="14" rx="3" fill="color-mix(in oklab, var(--primary) 15%, var(--card))" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" />
+          <text x="18" y="10" textAnchor="middle" fill="var(--primary)" fontWeight="600">YES</text>
+        </g>
+        <g transform="translate(188 96)">
+          <rect width="36" height="14" rx="3" fill="var(--card)" stroke="color-mix(in oklab, var(--border) 90%, transparent)" />
+          <text x="18" y="10" textAnchor="middle" fill="var(--muted-foreground)">SKIP</text>
+        </g>
+      </g>
+
+      {/* Caption */}
+      <text x="140" y="186" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8.5" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        notification · diff · one tap
+      </text>
+    </svg>
+  )
+}
+
+/* Six-pane workspace — heatmap-style dot matrix */
+function DotMatrixVisual() {
+  // 8 cols × 5 rows of dots; six are "live" (gold), rest are dim
+  const cols = 8
+  const rows = 5
+  const live = new Set(["1,1", "3,0", "4,2", "6,1", "2,3", "5,4"])
+  const decision = "4,2"
+  const dots: { x: number; y: number; key: string }[] = []
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      dots.push({ x: 30 + c * 24, y: 30 + r * 24, key: `${c},${r}` })
+    }
+  }
+  return (
+    <svg viewBox="0 0 240 160" className="h-auto w-full max-w-[280px]" aria-hidden>
+      <defs>
+        <radialGradient id="dm-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.42" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {dots.map((d) => {
+        const isLive = live.has(d.key)
+        const isDecision = d.key === decision
+        if (isDecision) {
+          return (
+            <g key={d.key}>
+              <circle cx={d.x} cy={d.y} r="11" fill="url(#dm-glow)" />
+              <circle cx={d.x} cy={d.y} r="6" fill="var(--primary)" />
+              <circle cx={d.x} cy={d.y} r="9" fill="none" stroke="var(--primary)" strokeWidth="1" opacity="0.6" />
+            </g>
+          )
+        }
+        if (isLive) {
+          return <circle key={d.key} cx={d.x} cy={d.y} r="3.6" fill="var(--primary)" />
+        }
+        return <circle key={d.key} cx={d.x} cy={d.y} r="2" fill="color-mix(in oklab, var(--muted-foreground) 30%, transparent)" />
+      })}
+
+      {/* Caption */}
+      <text x="120" y="148" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8.5" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        6 panes · running, idle, deciding
+      </text>
+    </svg>
+  )
+}
+
+/* Branch & rewind — branching tree with a circular rewind arrow */
+function BranchTreeVisual() {
+  return (
+    <svg viewBox="0 0 280 180" className="h-auto w-full max-w-[300px]" aria-hidden>
+      <defs>
+        <linearGradient id="bt-trunk" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--border) 50%, transparent)" />
+          <stop offset="100%" stopColor="var(--primary)" />
         </linearGradient>
-        <linearGradient id="bm-fork" x1="0" x2="1">
-          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.3" />
-          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.9" />
+        <linearGradient id="bt-fork" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 35%, transparent)" />
+          <stop offset="100%" stopColor="var(--primary)" />
         </linearGradient>
       </defs>
 
-      {/* main branch */}
-      <line x1="20" y1="40" x2="200" y2="40" stroke="url(#bm-main)" strokeWidth="1.5" />
-      {/* fork branch */}
-      <path
-        d="M 80 40 C 100 40, 100 100, 120 100 L 180 100"
-        stroke="url(#bm-fork)"
-        strokeWidth="1.5"
-        fill="none"
-      />
+      {/* main trunk */}
+      <line x1="20" y1="90" x2="260" y2="90" stroke="url(#bt-trunk)" strokeWidth="1.6" />
+      {/* fork up */}
+      <path d="M 110 90 C 130 90, 130 50, 150 50 L 240 50" stroke="url(#bt-fork)" strokeWidth="1.4" fill="none" />
+      {/* fork down */}
+      <path d="M 150 90 C 170 90, 170 130, 190 130 L 240 130" stroke="url(#bt-fork)" strokeWidth="1.2" fill="none" strokeDasharray="2 3" />
 
-      {/* main commits */}
-      {[20, 50, 80, 110, 140, 170, 200].map((cx, i) => (
+      {/* commit dots on trunk */}
+      {[20, 50, 80, 110, 150, 180, 210, 240, 260].map((x, i) => {
+        const isHead = i === 8
+        return (
+          <circle
+            key={i}
+            cx={x}
+            cy={90}
+            r={isHead ? 5 : 3.2}
+            fill={isHead ? "var(--primary)" : "var(--card)"}
+            stroke={isHead ? "var(--primary)" : "color-mix(in oklab, var(--border) 90%, transparent)"}
+            strokeWidth="1.2"
+          />
+        )
+      })}
+      {/* fork dots up */}
+      {[180, 210, 240].map((x, i) => (
         <circle
-          key={i}
-          cx={cx}
-          cy={40}
-          r={i === 6 ? 5 : 4}
-          fill={i === 6 ? "var(--primary)" : "var(--card)"}
-          stroke={i === 6 ? "var(--primary)" : "var(--border)"}
-          strokeWidth="1.5"
+          key={`u-${i}`}
+          cx={x}
+          cy={50}
+          r="3.2"
+          fill="color-mix(in oklab, var(--primary) 25%, var(--card))"
+          stroke="color-mix(in oklab, var(--primary) 80%, transparent)"
+          strokeWidth="1.2"
         />
       ))}
-      {/* fork commits */}
-      {[120, 150, 180].map((cx, i) => (
+      {/* fork dots down (lighter / pending) */}
+      {[210, 240].map((x, i) => (
         <circle
-          key={i}
-          cx={cx}
-          cy={100}
-          r="4"
-          fill="color-mix(in oklab, var(--primary) 22%, var(--card))"
-          stroke="color-mix(in oklab, var(--primary) 70%, transparent)"
-          strokeWidth="1.5"
+          key={`d-${i}`}
+          cx={x}
+          cy={130}
+          r="2.6"
+          fill="var(--card)"
+          stroke="color-mix(in oklab, var(--muted-foreground) 50%, transparent)"
+          strokeWidth="1"
+          strokeDasharray="2 2"
         />
       ))}
 
-      {/* HEAD ring on main */}
-      <circle cx="200" cy="40" r="8" fill="none" stroke="var(--primary)" strokeWidth="1" opacity="0.5" />
+      {/* HEAD ring */}
+      <circle cx="260" cy="90" r="9" fill="none" stroke="var(--primary)" strokeWidth="1" opacity="0.5" />
 
-      {/* labels */}
-      <g>
-        <rect x="14" y="12" width="36" height="14" rx="3" fill="var(--card)" stroke="var(--border)" />
-        <text x="32" y="22" fontSize="9" fill="var(--muted-foreground)" textAnchor="middle" fontFamily="var(--font-mono)">
-          main
-        </text>
-      </g>
-      <g>
-        <rect x="116" y="116" width="40" height="14" rx="3" fill="color-mix(in oklab, var(--primary) 14%, var(--card))" stroke="color-mix(in oklab, var(--primary) 50%, transparent)" />
-        <text x="136" y="126" fontSize="9" fill="var(--primary)" textAnchor="middle" fontFamily="var(--font-mono)">
-          try-pg
-        </text>
+      {/* Rewind glyph (circular arrow) at an earlier commit */}
+      <g transform="translate(80 90)">
+        <circle r="13" fill="none" stroke="var(--primary)" strokeWidth="1.2" strokeDasharray="3 3" />
+        <path
+          d="M -7 -4 A 8 8 0 1 0 0 -8"
+          fill="none"
+          stroke="var(--primary)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+        <polygon points="-7,-7 -3,-2 -10,-1" fill="var(--primary)" />
       </g>
 
-      {/* rewind marker */}
-      <g>
-        <circle cx="110" cy="40" r="10" fill="none" stroke="var(--primary)" strokeWidth="1.2" strokeDasharray="3 3" />
-        <text x="110" y="68" fontSize="8" fill="var(--primary)" textAnchor="middle" fontFamily="var(--font-mono)" fontWeight="600">
-          rewind
-        </text>
+      {/* Labels */}
+      <g fontFamily="var(--font-mono)" fontSize="9" fill="var(--muted-foreground)" letterSpacing="1.5">
+        <text x="20" y="80" opacity="0.7">main</text>
+        <text x="200" y="42" fill="var(--primary)">try-pg</text>
+        <text x="200" y="148" opacity="0.6">retry</text>
+        <text x="80" y="120" textAnchor="middle" fill="var(--primary)" fontWeight="600">rewind</text>
       </g>
     </svg>
   )
 }
 
-function RunTimelineMock() {
-  const events: { kind: string; label: string; state: "done" | "running" | "paused"; t: string }[] = [
-    { kind: "tool", label: "repo.edit · billing.ts", state: "done", t: "00:42" },
-    { kind: "tool", label: "shell · cargo test", state: "done", t: "01:18" },
-    { kind: "tool", label: "git.commit", state: "done", t: "01:24" },
-    { kind: "tool", label: "browser · /billing", state: "running", t: "01:30" },
-    { kind: "ask", label: "approval · push origin?", state: "paused", t: "01:31" },
+/* Run timeline — seismograph waveform with event markers */
+function WaveformVisual() {
+  // Generate a deterministic-looking waveform
+  const points: string[] = []
+  const samples = 80
+  const w = 260
+  const h = 50
+  const baseY = 90
+  for (let i = 0; i <= samples; i++) {
+    const x = 10 + (i / samples) * w
+    const t = i / samples
+    const env = Math.sin(t * Math.PI) * 0.9 + 0.1
+    const y =
+      baseY -
+      env *
+        h *
+        0.5 *
+        (Math.sin(t * 22) * 0.6 +
+          Math.sin(t * 8 + 1.7) * 0.3 +
+          Math.sin(t * 36 + 0.3) * 0.15)
+    points.push(`${x},${y}`)
+  }
+
+  // Event markers (vertical ticks)
+  const events = [
+    { x: 38, kind: "done" as const },
+    { x: 92, kind: "done" as const },
+    { x: 142, kind: "done" as const },
+    { x: 196, kind: "running" as const },
+    { x: 246, kind: "ask" as const },
   ]
+
   return (
-    <ol className="relative w-full max-w-[280px] space-y-1 pl-5">
-      <span
-        aria-hidden
-        className="pointer-events-none absolute left-[7px] top-2 bottom-2 w-px bg-gradient-to-b from-border/40 via-border/70 to-primary/40"
+    <svg viewBox="0 0 280 160" className="h-auto w-full max-w-[300px]" aria-hidden>
+      <defs>
+        <linearGradient id="wv-line" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 25%, transparent)" />
+          <stop offset="100%" stopColor="var(--primary)" />
+        </linearGradient>
+      </defs>
+
+      {/* Baseline */}
+      <line x1="10" y1="90" x2="270" y2="90" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.6" strokeDasharray="2 3" />
+
+      {/* Waveform */}
+      <polyline
+        points={points.join(" ")}
+        fill="none"
+        stroke="url(#wv-line)"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
       />
-      {events.map((e, i) => (
-        <li key={i} className="relative">
-          <span
-            aria-hidden
-            className={`absolute -left-[14px] top-[7px] inline-flex h-3.5 w-3.5 items-center justify-center rounded-full ring-4 ring-background ${
-              e.state === "paused"
-                ? "bg-primary/15 text-primary"
-                : e.state === "running"
-                  ? "bg-primary/15 text-primary"
-                  : "bg-primary/10 text-primary/80"
-            }`}
-          >
-            {e.state === "done" && <CheckCircle2 className="h-2.5 w-2.5" />}
-            {e.state === "running" && <Loader2 className="h-2.5 w-2.5" />}
-            {e.state === "paused" && <PauseCircle className="h-2.5 w-2.5" />}
-          </span>
-          <div
-            className={`flex items-center gap-2 rounded-md border px-2 py-1.5 ${
-              e.state === "paused"
-                ? "border-primary/40 bg-primary/[0.08]"
-                : "border-border/60 bg-background/40"
-            }`}
-          >
-            <span className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground/60">
-              {e.kind}
-            </span>
-            <span className="flex-1 truncate font-mono text-[10px] text-foreground/85">
-              {e.label}
-            </span>
-            <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground/50">
-              {e.t}
-            </span>
-          </div>
-        </li>
-      ))}
-    </ol>
+
+      {/* Event ticks */}
+      {events.map((e, i) => {
+        const isAsk = e.kind === "ask"
+        const isRunning = e.kind === "running"
+        return (
+          <g key={i}>
+            <line
+              x1={e.x}
+              y1={50}
+              x2={e.x}
+              y2={130}
+              stroke={isAsk ? "var(--primary)" : "color-mix(in oklab, var(--primary) 50%, transparent)"}
+              strokeWidth={isAsk ? 1.2 : 0.8}
+              strokeDasharray={isAsk ? undefined : "2 2"}
+            />
+            <circle
+              cx={e.x}
+              cy={130}
+              r={isAsk ? 5 : 3}
+              fill={isAsk || isRunning ? "var(--primary)" : "color-mix(in oklab, var(--primary) 65%, transparent)"}
+              stroke={isAsk ? "var(--primary)" : undefined}
+            />
+            {isAsk && (
+              <circle cx={e.x} cy={130} r="9" fill="none" stroke="var(--primary)" strokeWidth="0.8" opacity="0.55" />
+            )}
+          </g>
+        )
+      })}
+
+      {/* Tick labels */}
+      <g fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" letterSpacing="1">
+        <text x="38" y="146" textAnchor="middle">edit</text>
+        <text x="92" y="146" textAnchor="middle">test</text>
+        <text x="142" y="146" textAnchor="middle">commit</text>
+        <text x="196" y="146" textAnchor="middle" fill="var(--primary)" opacity="0.85">browser</text>
+        <text x="246" y="146" textAnchor="middle" fill="var(--primary)" fontWeight="600">ask</text>
+      </g>
+    </svg>
   )
 }
 
-function IntegrationsMock() {
-  const tiles: { label: string; caption: string; icon: React.ReactNode }[] = [
-    { label: "browser", caption: "tabs · console", icon: <Globe className="h-3 w-3" /> },
-    { label: "mobile", caption: "iOS · Android", icon: <Smartphone className="h-3 w-3" /> },
-    { label: "solana", caption: "sim · deploy", icon: <Sparkles className="h-3 w-3" /> },
-    { label: "mcp", caption: "external tools", icon: <PuzzleIcon className="h-3 w-3" /> },
-    { label: "skills", caption: "plugins", icon: <Wrench className="h-3 w-3" /> },
-    { label: "shell", caption: "scripts · CI", icon: <Terminal className="h-3 w-3" /> },
+/* MCP / integrations — radial hub with spokes to symbolic nodes */
+function HubSpokeVisual() {
+  const cx = 140
+  const cy = 100
+  const r = 68
+  const items = [
+    { deg: 0, label: "shell", glyph: ">_" },
+    { deg: 60, label: "browser", glyph: "◯" },
+    { deg: 120, label: "mobile", glyph: "▭" },
+    { deg: 180, label: "skills", glyph: "◇" },
+    { deg: 240, label: "solana", glyph: "◈" },
+    { deg: 300, label: "mcp", glyph: "✸" },
   ]
+  const pt = (deg: number, rr: number) => {
+    const a = ((deg - 90) * Math.PI) / 180
+    return { x: cx + rr * Math.cos(a), y: cy + rr * Math.sin(a) }
+  }
   return (
-    <div className="grid w-full max-w-[480px] grid-cols-3 gap-2">
-      {tiles.map((t) => (
-        <div
-          key={t.label}
-          className="flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-2.5 py-2"
-        >
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary ring-1 ring-inset ring-primary/20">
-            {t.icon}
-          </span>
-          <div className="min-w-0 flex flex-col">
-            <span className="truncate font-mono text-[10px] text-foreground/85">
-              {t.label}
-            </span>
-            <span className="truncate font-mono text-[9px] text-muted-foreground/70">
-              {t.caption}
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
+    <svg viewBox="0 0 280 200" className="h-auto w-full max-w-[300px]" aria-hidden>
+      <defs>
+        <radialGradient id="hs-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.45" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {/* Ring */}
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="color-mix(in oklab, var(--border) 90%, transparent)" strokeWidth="0.7" strokeDasharray="2 4" />
+      <circle cx={cx} cy={cy} r="42" fill="url(#hs-glow)" />
+
+      {/* Spokes */}
+      {items.map((it, i) => {
+        const p = pt(it.deg, r)
+        return (
+          <line
+            key={i}
+            x1={cx}
+            y1={cy}
+            x2={p.x}
+            y2={p.y}
+            stroke="color-mix(in oklab, var(--primary) 50%, transparent)"
+            strokeWidth="1"
+          />
+        )
+      })}
+
+      {/* Outer nodes */}
+      {items.map((it, i) => {
+        const p = pt(it.deg, r)
+        return (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r="13" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 60%, transparent)" />
+            <text
+              x={p.x}
+              y={p.y + 3}
+              textAnchor="middle"
+              fontFamily="var(--font-mono)"
+              fontSize="9"
+              fill="var(--primary)"
+              fontWeight="600"
+            >
+              {it.glyph}
+            </text>
+            <text
+              x={p.x}
+              y={p.y + 26}
+              textAnchor="middle"
+              fontFamily="var(--font-mono)"
+              fontSize="8.5"
+              fill="var(--muted-foreground)"
+              letterSpacing="1.5"
+            >
+              {it.label}
+            </text>
+          </g>
+        )
+      })}
+
+      {/* Hub */}
+      <g>
+        <circle cx={cx} cy={cy} r="22" fill="color-mix(in oklab, var(--primary) 18%, var(--card))" stroke="var(--primary)" strokeWidth="1" />
+        <circle cx={cx} cy={cy} r="9" fill="var(--primary)" />
+      </g>
+
+      {/* Caption */}
+      <text x={cx} y="190" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8.5" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        one agent · many tool surfaces
+      </text>
+    </svg>
   )
 }
 
-function KeysDirectMock() {
+/* Keys local — central key glyph with light beams to provider color swatches */
+function KeyRayVisual() {
+  const cx = 140
+  const cy = 100
+  // Provider color rings around the key
+  const providers = [
+    "#10a37f", // openai
+    "#cc785c", // anthropic
+    "#4285f4", // gemini
+    "#0078d4", // azure
+    "#ff9900", // bedrock
+    "#1a73e8", // vertex
+    "#f8f9fa", // ollama / local
+    "#d4a574", // generic
+  ]
+  const pt = (deg: number, r: number) => {
+    const a = ((deg - 90) * Math.PI) / 180
+    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }
+  }
   return (
-    <div className="flex w-full max-w-[480px] items-center gap-3">
-      {/* Machine */}
-      <div className="flex shrink-0 flex-col items-center gap-1.5">
-        <div className="relative flex h-12 w-12 items-center justify-center rounded-xl border border-primary/40 bg-primary/[0.08] text-primary shadow-[0_0_0_4px_color-mix(in_oklab,var(--primary)_8%,transparent)]">
-          <Laptop className="h-5 w-5" />
-          <span
-            aria-hidden
-            className="absolute -bottom-1 -right-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-primary/40 bg-card text-primary"
-          >
-            <KeyRound className="h-2.5 w-2.5" />
-          </span>
-        </div>
-        <span className="font-mono text-[10px] text-muted-foreground">
-          your machine
-        </span>
-        <span className="rounded-full border border-border/60 bg-secondary/30 px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
-          keychain
-        </span>
-      </div>
+    <svg viewBox="0 0 280 200" className="h-auto w-full max-w-[320px]" aria-hidden>
+      <defs>
+        <radialGradient id="kr-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.5" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+        <linearGradient id="kr-beam" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 60%, transparent)" />
+          <stop offset="100%" stopColor="color-mix(in oklab, var(--primary) 0%, transparent)" />
+        </linearGradient>
+      </defs>
 
-      {/* Direct lines */}
-      <div className="relative flex flex-1 flex-col justify-center gap-2.5 py-2">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="relative flex items-center">
-            <div className="relative h-px flex-1 bg-gradient-to-r from-primary/30 to-primary/80" />
-            <span className="absolute right-0 top-1/2 -translate-y-1/2">
-              <span className="block h-0 w-0 border-y-[4px] border-l-[6px] border-y-transparent border-l-primary" />
-            </span>
-          </div>
-        ))}
-        <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-border/70 bg-background px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground">
-          direct
-        </span>
-      </div>
+      {/* Glow */}
+      <circle cx={cx} cy={cy} r="86" fill="url(#kr-glow)" />
 
-      {/* Providers */}
-      <div className="flex shrink-0 flex-col items-end gap-1.5">
-        {[
-          { icon: <OpenAIIcon className="h-3 w-3" />, name: "openai", bg: "bg-[#10a37f]" },
-          { icon: <AnthropicIcon className="h-3 w-3" />, name: "anthropic", bg: "bg-[#cc785c]" },
-          { icon: <GoogleIcon className="h-3 w-3" />, name: "gemini", bg: "bg-[#4285f4]" },
-          { icon: <Sparkles className="h-3 w-3" />, name: "+ 7 more", bg: "bg-secondary" },
-        ].map((p, i) => (
-          <div
+      {/* Beams */}
+      {providers.map((_, i) => {
+        const deg = (360 / providers.length) * i + 22.5
+        const p = pt(deg, 80)
+        return (
+          <line
             key={i}
-            className="flex items-center gap-1.5 rounded-md border border-border/60 bg-background/40 px-2 py-1"
-          >
-            <span
-              className={`inline-flex h-4 w-4 items-center justify-center rounded text-white ${p.bg}`}
-            >
-              {p.icon}
-            </span>
-            <span className="font-mono text-[10px] text-foreground/85">
-              {p.name}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+            x1={cx}
+            y1={cy}
+            x2={p.x}
+            y2={p.y}
+            stroke="url(#kr-beam)"
+            strokeWidth="1"
+          />
+        )
+      })}
+
+      {/* Provider color dots */}
+      {providers.map((c, i) => {
+        const deg = (360 / providers.length) * i + 22.5
+        const p = pt(deg, 80)
+        return (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r="7" fill="var(--card)" stroke={c} strokeWidth="1.4" />
+            <circle cx={p.x} cy={p.y} r="3" fill={c} />
+          </g>
+        )
+      })}
+
+      {/* Outer dashed boundary */}
+      <circle cx={cx} cy={cy} r="80" fill="none" stroke="color-mix(in oklab, var(--border) 70%, transparent)" strokeWidth="0.6" strokeDasharray="2 5" />
+
+      {/* Key glyph */}
+      <g transform={`translate(${cx} ${cy})`}>
+        <circle r="20" fill="color-mix(in oklab, var(--primary) 20%, var(--card))" stroke="var(--primary)" strokeWidth="1.4" />
+        <circle r="7" fill="var(--card)" stroke="var(--primary)" strokeWidth="1.2" />
+        <rect x="14" y="-3" width="22" height="6" rx="1" fill="var(--primary)" />
+        <rect x="32" y="-1" width="2" height="6" fill="var(--card)" />
+        <rect x="28" y="-1" width="2" height="6" fill="var(--card)" />
+      </g>
+
+      {/* Caption */}
+      <text x={cx} y="190" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8.5" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        keys local · 10 providers · no relay
+      </text>
+    </svg>
   )
 }

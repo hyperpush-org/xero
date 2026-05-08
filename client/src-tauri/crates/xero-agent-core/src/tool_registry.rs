@@ -1082,7 +1082,7 @@ impl ToolRegistryV2 {
                         Ok(signal) => failure.doom_loop_signal = signal,
                         Err(error) => failure.error = error,
                     }
-                    outcomes[index] = Some(ToolDispatchOutcome::Failed(failure));
+                    outcomes[index] = Some(ToolDispatchOutcome::Failed(*failure));
                 }
             }
         }
@@ -1177,7 +1177,7 @@ impl ToolRegistryV2 {
                     Ok(signal) => failure.doom_loop_signal = signal,
                     Err(error) => failure.error = error,
                 }
-                ToolDispatchOutcome::Failed(failure)
+                ToolDispatchOutcome::Failed(*failure)
             }
         }
     }
@@ -1189,10 +1189,10 @@ impl ToolRegistryV2 {
         config: &ToolDispatchConfig,
         deadline: Instant,
         cancellation_token: ToolCancellationToken,
-    ) -> Result<PreparedToolCall, ToolDispatchFailure> {
+    ) -> Result<PreparedToolCall, Box<ToolDispatchFailure>> {
         let started = Instant::now();
         let Some(handler) = self.handlers.get(&call.tool_name).cloned() else {
-            return Err(failure_from_error(
+            return Err(Box::new(failure_from_error(
                 call,
                 ToolExecutionError::unavailable(
                     "agent_tool_unavailable",
@@ -1201,37 +1201,37 @@ impl ToolRegistryV2 {
                 json!({}),
                 json!({ "ok": false }),
                 started.elapsed(),
-            ));
+            )));
         };
         let descriptor = handler.descriptor();
         let pre_hook_payload = handler.pre_hook_payload(call);
 
         if let Err(error) = descriptor.validate() {
-            return Err(failure_from_error(
+            return Err(Box::new(failure_from_error(
                 call,
                 error,
                 pre_hook_payload,
                 json!({ "ok": false }),
                 started.elapsed(),
-            ));
+            )));
         }
         if let Err(error) = tracker.record_call(call) {
-            return Err(failure_from_error(
+            return Err(Box::new(failure_from_error(
                 call,
                 error,
                 pre_hook_payload,
                 json!({ "ok": false }),
                 started.elapsed(),
-            ));
+            )));
         }
         if let Err(error) = handler.validate_input(&call.input) {
-            return Err(failure_from_error(
+            return Err(Box::new(failure_from_error(
                 call,
                 error,
                 pre_hook_payload,
                 json!({ "ok": false }),
                 started.elapsed(),
-            ));
+            )));
         }
 
         match config.policy.evaluate(&descriptor, call) {
@@ -1247,8 +1247,8 @@ impl ToolRegistryV2 {
                                 json!({ "ok": false }),
                                 started.elapsed(),
                             );
-                            failure.sandbox_metadata = Some(denied.metadata);
-                            return Err(failure);
+                            failure.sandbox_metadata = Some(*denied.metadata);
+                            return Err(Box::new(failure));
                         }
                     };
 
@@ -1264,20 +1264,22 @@ impl ToolRegistryV2 {
                     cancellation_token,
                 })
             }
-            ToolPolicyDecision::Deny { code, message } => Err(failure_from_error(
+            ToolPolicyDecision::Deny { code, message } => Err(Box::new(failure_from_error(
                 call,
                 ToolExecutionError::policy_denied(code, message),
                 pre_hook_payload,
                 json!({ "ok": false }),
                 started.elapsed(),
-            )),
-            ToolPolicyDecision::RequireApproval { action_id, message } => Err(failure_from_error(
-                call,
-                ToolExecutionError::approval_required(action_id, message),
-                pre_hook_payload,
-                json!({ "ok": false }),
-                started.elapsed(),
-            )),
+            ))),
+            ToolPolicyDecision::RequireApproval { action_id, message } => {
+                Err(Box::new(failure_from_error(
+                    call,
+                    ToolExecutionError::approval_required(action_id, message),
+                    pre_hook_payload,
+                    json!({ "ok": false }),
+                    started.elapsed(),
+                )))
+            }
         }
     }
 }
