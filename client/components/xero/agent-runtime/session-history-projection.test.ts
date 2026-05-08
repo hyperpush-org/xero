@@ -203,7 +203,7 @@ describe('buildHistoricalConversationTurns', () => {
     expect(turns.map((turn) => turn.kind)).toEqual(['message', 'message'])
   })
 
-  it('skips active-run items when projecting a session whose source run is handed off', () => {
+  it('skips active-run items and emits a trailing handoff_notice when the active run is the handoff target', () => {
     const transcript = makeTranscript(
       [
         makeRun('run-A', 'handed_off', '2026-05-08T09:00:00Z', 2),
@@ -221,9 +221,17 @@ describe('buildHistoricalConversationTurns', () => {
       activeRunId: 'run-B',
     })
 
-    expect(turns).toHaveLength(2)
+    expect(turns.map((turn) => turn.kind)).toEqual([
+      'message',
+      'message',
+      'handoff_notice',
+    ])
     expect(turns[0]).toMatchObject({ role: 'user', text: 'over budget prompt' })
     expect(turns[1]).toMatchObject({ role: 'assistant', text: 'final source answer' })
+    if (turns[2].kind === 'handoff_notice') {
+      expect(turns[2].sourceRunId).toBe('run-A')
+      expect(turns[2].targetRunId).toBe('run-B')
+    }
   })
 
   it('ignores non-message items so historical context only carries user/assistant turns', () => {

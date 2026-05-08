@@ -43,12 +43,21 @@ export function buildHistoricalConversationTurns(
     runsById.set(run.runId, run)
   }
 
+  // The successor lookup is keyed off the run order returned by the transcript
+  // so we can attach a trailing handoff_notice when the active run *is* the
+  // handoff target and therefore has no items in the historical projection.
+  const successorByRunId = new Map<string, string>()
+  for (let index = 0; index < transcript.runs.length - 1; index += 1) {
+    successorByRunId.set(transcript.runs[index].runId, transcript.runs[index + 1].runId)
+  }
+
   const eligibleItems = transcript.items
     .filter((item) => item.runId !== activeRunId)
     .filter((item) => isUserOrAssistantMessage(item))
 
   const turns: ConversationTurn[] = []
   let previousRunId: string | null = null
+  let lastSequence = 0
 
   for (const item of eligibleItems) {
     if (previousRunId && previousRunId !== item.runId) {
@@ -64,8 +73,32 @@ export function buildHistoricalConversationTurns(
       }
     }
     previousRunId = item.runId
+    lastSequence = item.sequence
 
     turns.push(toMessageTurn(item))
+  }
+
+  // Trailing handoff_notice: covers the case where the final emitted item
+  // belongs to a handed_off run whose successor is filtered out (typically
+  // because the successor *is* the active run, so its items live in the live
+  // stream). Without this row the user would see source-run items end abruptly
+  // with no marker that the conversation continues in a different run below.
+  if (previousRunId) {
+    const previousRun = runsById.get(previousRunId)
+    const successorRunId = successorByRunId.get(previousRunId)
+    if (
+      previousRun?.status === HANDED_OFF_RUN_STATUS &&
+      successorRunId &&
+      successorRunId === activeRunId
+    ) {
+      turns.push({
+        id: `handoff_notice:${previousRunId}->${successorRunId}:trailing`,
+        kind: 'handoff_notice',
+        sequence: lastSequence + 1,
+        sourceRunId: previousRunId,
+        targetRunId: successorRunId,
+      })
+    }
   }
 
   return turns

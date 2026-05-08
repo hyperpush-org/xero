@@ -309,7 +309,14 @@ export const ConversationSection = memo(function ConversationSection({
   const showRunFailure = Boolean(runFailureMessage)
   const showStreamFailure = Boolean(streamFailure && !streamFailureIsDuplicate)
   const showStreamIssue = Boolean(streamIssue && !streamIssueIsDuplicate)
-  const showHandoffNotice = !showRunFailure && isHandoffCompletion(streamCompletion)
+  // Suppress the footer handoff notice if an inline `handoff_notice` turn is
+  // already in the conversation. The inline turn is the steady-state marker
+  // (rendered after the runtime run snapshot rebinds to the target run); the
+  // footer only fires when the pane is still subscribed to the source run's
+  // stream, which is the transient pre-rebind state.
+  const hasInlineHandoffNotice = visibleTurns.some((turn) => turn.kind === 'handoff_notice')
+  const showHandoffNotice =
+    !showRunFailure && !hasInlineHandoffNotice && isHandoffCompletion(streamCompletion)
   const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
   const showAnyTurn = visibleTurns.length > 0
   const copyableConversationText = useMemo(

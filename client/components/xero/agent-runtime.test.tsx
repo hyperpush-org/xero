@@ -925,6 +925,73 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText('Latest saved run failed')).not.toBeInTheDocument()
   })
 
+  it('prepends historicalConversationTurns ahead of live stream turns and renders the inline handoff notice', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          runtimeStreamItems: [
+            {
+              id: 'transcript:run-2:1',
+              kind: 'transcript',
+              runId: 'run-2',
+              sequence: 1,
+              createdAt: '2026-04-29T00:48:10Z',
+              role: 'assistant',
+              text: 'Continuing in a fresh run.',
+            },
+          ],
+        })}
+        historicalConversationTurns={[
+          {
+            id: 'history:run-1:1',
+            kind: 'message',
+            role: 'user',
+            sequence: 1,
+            text: 'First-run prompt',
+          },
+          {
+            id: 'history:run-1:2',
+            kind: 'message',
+            role: 'assistant',
+            sequence: 2,
+            text: 'First-run reply',
+          },
+          {
+            id: 'handoff_notice:run-1->run-2',
+            kind: 'handoff_notice',
+            sequence: 3,
+            sourceRunId: 'run-1',
+            targetRunId: 'run-2',
+          },
+        ]}
+      />,
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(conversation).getByText('First-run prompt')).toBeVisible()
+    expect(within(conversation).getByText('First-run reply')).toBeVisible()
+    expect(within(conversation).getByText('Continuing in a fresh run.')).toBeVisible()
+    expect(
+      within(conversation).getByRole('note', { name: 'Run continued in a fresh session' }),
+    ).toBeVisible()
+
+    const items = within(conversation).getAllByRole('listitem')
+    const textIndex = (text: string) =>
+      items.findIndex((item) => item.textContent?.includes(text) ?? false)
+    const firstPromptIdx = textIndex('First-run prompt')
+    const firstReplyIdx = textIndex('First-run reply')
+    const noticeIdx = items.findIndex((item) => Boolean(item.querySelector('[role="note"]')))
+    const continuationIdx = textIndex('Continuing in a fresh run.')
+    expect(firstPromptIdx).toBeGreaterThanOrEqual(0)
+    expect(firstReplyIdx).toBeGreaterThan(firstPromptIdx)
+    expect(noticeIdx).toBeGreaterThan(firstReplyIdx)
+    expect(continuationIdx).toBeGreaterThan(noticeIdx)
+  })
+
   it('renders runtime stream messages as chronological conversation turns', () => {
     render(
       <AgentRuntime
