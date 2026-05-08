@@ -82,7 +82,10 @@
 .agent-visualization__empty-state {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  /* React Flow's renderer layer is z-index: 4; keep the empty card above it
+     so its buttons win pointer hit-testing while the rest of the overlay
+     still lets pane gestures pass through. */
+  z-index: 7;
   pointer-events: none;
   contain: layout style paint;
   transform: translate3d(0, -4px, 0) scale(0.985);

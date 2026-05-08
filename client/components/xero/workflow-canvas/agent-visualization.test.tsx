@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { act, fireEvent, render, within } from '@testing-library/react'
 import type { Node } from '@xyflow/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { WorkflowAgentDetailDto } from '@/src/lib/xero-model/workflow-agents'
+import { WorkflowCanvasEmptyState } from '../workflow-canvas-empty-state'
 
 const updateNodeInternalsSpy = vi.hoisted(() => vi.fn())
 const fitViewSpy = vi.hoisted(() => vi.fn())
@@ -32,6 +36,14 @@ import {
 } from './agent-visualization'
 
 const originalElementFromPoint = document.elementFromPoint
+const AGENT_VISUALIZATION_CSS = readFileSync(
+  resolve(process.cwd(), 'components/xero/workflow-canvas/agent-visualization.css'),
+  'utf8',
+)
+const REACT_FLOW_CSS = readFileSync(
+  resolve(process.cwd(), 'node_modules/@xyflow/react/dist/style.css'),
+  'utf8',
+)
 
 function installResizeObserverStub() {
   if ((globalThis as { ResizeObserver?: unknown }).ResizeObserver) return
@@ -41,6 +53,13 @@ function installResizeObserverStub() {
     disconnect() {}
   }
   ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub
+}
+
+function zIndexForSelector(css: string, selector: string): number {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{[^}]*z-index:\\s*(-?\\d+)`, 'm'))
+  expect(match).not.toBeNull()
+  return Number.parseInt(match![1], 10)
 }
 
 afterEach(() => {
@@ -346,6 +365,37 @@ describe('AgentVisualization', () => {
     expect(container.querySelector('.agent-visualization__empty-state.is-visible')).not.toBeNull()
     expect(getByText('Start with a workflow')).toBeTruthy()
     expect(queryByLabelText('Reset layout')).toBeNull()
+  })
+
+  it('layers the empty workflow state above the canvas renderer so actions receive clicks', () => {
+    installResizeObserverStub()
+    vi.useFakeTimers()
+    const onCreateWorkflow = vi.fn()
+
+    const { container, getByRole } = render(
+      <AgentVisualization
+        detail={null}
+        emptyState={<WorkflowCanvasEmptyState onCreateWorkflow={onCreateWorkflow} />}
+      />,
+    )
+
+    act(() => {
+      vi.advanceTimersByTime(50)
+    })
+
+    const emptyStateLayer = container.querySelector('.agent-visualization__empty-state')
+    const rendererLayer = container.querySelector('.react-flow__renderer')
+    expect(emptyStateLayer).not.toBeNull()
+    expect(rendererLayer).not.toBeNull()
+    expect(
+      zIndexForSelector(AGENT_VISUALIZATION_CSS, '.agent-visualization__empty-state'),
+    ).toBeGreaterThan(zIndexForSelector(REACT_FLOW_CSS, '.react-flow__renderer'))
+
+    const createWorkflow = getByRole('button', { name: 'Create workflow' })
+    fireEvent.pointerDown(createWorkflow)
+    fireEvent.click(createWorkflow)
+
+    expect(onCreateWorkflow).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the selected graph mounted while closing back to the empty canvas', () => {
