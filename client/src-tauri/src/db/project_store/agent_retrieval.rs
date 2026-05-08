@@ -196,6 +196,11 @@ pub fn search_agent_context_with_embedding_service(
         || candidates
             .iter()
             .any(|candidate| candidate.embedding.as_ref().is_none());
+    let retrieval_semantics = if fallback_used {
+        "deterministic_lexical_hash"
+    } else {
+        "local_hash_vector_hybrid"
+    };
     let method = if fallback_used {
         "keyword_fallback"
     } else {
@@ -212,6 +217,14 @@ pub fn search_agent_context_with_embedding_service(
         freshness_diagnostics,
         collection.blocked_excluded_count,
         collection.freshness_reason_counts.clone(),
+        RetrievalStorageDiagnostics {
+            scanned_project_records: collection.scanned_project_records,
+            scanned_approved_memories: collection.scanned_approved_memories,
+            candidate_count: candidates.len(),
+            returned_count: candidates.len().min(request.limit_count as usize),
+            limit_count: request.limit_count,
+        },
+        retrieval_semantics,
     );
 
     let filters_json = retrieval_filters_json(&request.filters);
@@ -575,6 +588,8 @@ fn collect_candidates(
     let mut candidates = Vec::new();
     let mut blocked_excluded_count = 0_usize;
     let mut freshness_reason_counts = BTreeMap::new();
+    let mut scanned_project_records = 0_usize;
+    let mut scanned_approved_memories = 0_usize;
     if matches!(
         request.search_scope,
         AgentRetrievalSearchScope::ProjectRecords
@@ -582,6 +597,7 @@ fn collect_candidates(
             | AgentRetrievalSearchScope::Handoffs
     ) {
         for row in record_store.list_rows()? {
+            scanned_project_records += 1;
             if row.redaction_state
                 == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked)
             {
@@ -605,6 +621,7 @@ fn collect_candidates(
             .as_deref()
             .or(request.agent_session_id.as_deref());
         for row in memory_store.list_rows(session_filter, AgentMemoryListFilterOwned::default())? {
+            scanned_approved_memories += 1;
             if let Some(candidate) = memory_candidate(row, request, query_embedding, query_tokens)?
             {
                 record_candidate_freshness_reason(&candidate, &mut freshness_reason_counts);
@@ -626,6 +643,8 @@ fn collect_candidates(
         candidates,
         blocked_excluded_count,
         freshness_reason_counts,
+        scanned_project_records,
+        scanned_approved_memories,
     })
 }
 
@@ -712,9 +731,10 @@ fn project_record_candidate(
     if keyword_score == 0.0 && vector_score == 0.0 {
         return Ok(None);
     }
+    let freshness_adjustment = freshness_score_adjustment(&row.freshness_state);
     let score = keyword_score.mul_add(2.0, vector_score)
         + f64::from(importance_rank(&row.importance)) * 0.05;
-    let score = (score + freshness_score_adjustment(&row.freshness_state)).max(0.0);
+    let score = (score + freshness_adjustment).max(0.0);
     let (snippet, snippet_redaction) = retrieval_snippet(&row.text);
     let redaction_state = if row.redaction_state
         == project_record_redaction_state_value(&ProjectRecordRedactionState::Redacted)
@@ -729,6 +749,9 @@ fn project_record_candidate(
         } else {
             AgentRetrievalResultSourceKind::ProjectRecord
         };
+    let source_kind_label = retrieval_source_kind_label(&source_kind);
+    let citation_source_id = row.record_id.clone();
+    let citation_title = row.title.clone();
     let freshness = freshness_metadata_json(FreshnessMetadata {
         freshness_state: &row.freshness_state,
         freshness_checked_at: row.freshness_checked_at.as_deref(),
@@ -778,8 +801,21 @@ fn project_record_candidate(
             "embeddingVersion": row.embedding_version,
             "keywordScore": keyword_score,
             "semanticScore": vector_score,
+            "vectorScore": vector_score,
+            "scoreBreakdown": {
+                "keywordScore": keyword_score,
+                "vectorScore": vector_score,
+                "freshnessAdjustment": freshness_adjustment,
+            },
             "freshness": freshness,
-            "trust": trust
+            "trust": trust,
+            "citation": {
+                "sourceKind": source_kind_label,
+                "sourceId": citation_source_id,
+                "title": citation_title,
+                "relatedPaths": trust["relatedPaths"].clone(),
+                "sourceItemIds": trust["sourceItemIds"].clone(),
+            }
         }),
     }))
 }
@@ -822,12 +858,13 @@ fn memory_candidate(
     if keyword_score == 0.0 && vector_score == 0.0 {
         return Ok(None);
     }
+    let freshness_adjustment = freshness_score_adjustment(&row.freshness_state);
     let score = keyword_score.mul_add(2.0, vector_score)
         + row
             .confidence
             .map(|value| f64::from(value) / 500.0)
             .unwrap_or(0.0);
-    let score = (score + freshness_score_adjustment(&row.freshness_state)).max(0.0);
+    let score = (score + freshness_adjustment).max(0.0);
     let (snippet, redaction_state) = retrieval_snippet(&row.text);
     let scope = memory_scope_sql_value(&row.scope);
     let kind = memory_kind_sql_value(&row.kind);
@@ -842,6 +879,7 @@ fn memory_candidate(
         fact_key: row.fact_key.as_deref(),
     })?;
     let related_paths = source_fingerprint_paths(&row.source_fingerprints_json)?;
+    let citation_source_id = row.memory_id.clone();
     let trust = json!({
         "freshnessState": row.freshness_state,
         "staleReason": row.stale_reason,
@@ -878,8 +916,21 @@ fn memory_candidate(
             "embeddingVersion": row.embedding_version,
             "keywordScore": keyword_score,
             "semanticScore": vector_score,
+            "vectorScore": vector_score,
+            "scoreBreakdown": {
+                "keywordScore": keyword_score,
+                "vectorScore": vector_score,
+                "freshnessAdjustment": freshness_adjustment,
+            },
             "freshness": freshness,
-            "trust": trust
+            "trust": trust,
+            "citation": {
+                "sourceKind": "approved_memory",
+                "sourceId": citation_source_id,
+                "memoryKind": kind,
+                "relatedPaths": trust["relatedPaths"].clone(),
+                "sourceItemIds": trust["sourceItemIds"].clone(),
+            }
         }),
     }))
 }
@@ -889,6 +940,8 @@ struct CandidateCollection {
     candidates: Vec<SearchCandidate>,
     blocked_excluded_count: usize,
     freshness_reason_counts: BTreeMap<String, usize>,
+    scanned_project_records: usize,
+    scanned_approved_memories: usize,
 }
 
 #[derive(Debug)]
@@ -1273,6 +1326,8 @@ fn retrieval_diagnostic(
     mut freshness: FreshnessRefreshSummary,
     blocked_excluded_count: usize,
     freshness_reason_counts: BTreeMap<String, usize>,
+    storage: RetrievalStorageDiagnostics,
+    retrieval_semantics: &str,
 ) -> Option<JsonValue> {
     freshness.blocked_count = freshness.blocked_count.max(blocked_excluded_count);
     let mut freshness_json = freshness.as_json();
@@ -1288,22 +1343,47 @@ fn retrieval_diagnostic(
                 .collect::<Vec<_>>()),
         );
     }
+    let storage_json = json!({
+        "scannedProjectRecords": storage.scanned_project_records,
+        "scannedApprovedMemories": storage.scanned_approved_memories,
+        "candidateCount": storage.candidate_count,
+        "returnedCount": storage.returned_count,
+        "limitCount": storage.limit_count,
+    });
     match base {
         Some(mut diagnostic) => {
             if let Some(object) = diagnostic.as_object_mut() {
                 object.insert("freshnessDiagnostics".into(), freshness_json);
+                object.insert("storageDiagnostics".into(), storage_json);
+                object.insert("retrievalSemantics".into(), json!(retrieval_semantics));
+                object.insert("embeddingProvider".into(), json!("local_hash"));
                 Some(diagnostic)
             } else {
                 Some(json!({
                     "detail": diagnostic,
                     "freshnessDiagnostics": freshness_json,
+                    "storageDiagnostics": storage_json,
+                    "retrievalSemantics": retrieval_semantics,
+                    "embeddingProvider": "local_hash",
                 }))
             }
         }
         None => Some(json!({
             "freshnessDiagnostics": freshness_json,
+            "storageDiagnostics": storage_json,
+            "retrievalSemantics": retrieval_semantics,
+            "embeddingProvider": "local_hash",
         })),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetrievalStorageDiagnostics {
+    scanned_project_records: usize,
+    scanned_approved_memories: usize,
+    candidate_count: usize,
+    returned_count: usize,
+    limit_count: u32,
 }
 
 fn retrieval_filters_json(filters: &AgentContextRetrievalFilters) -> JsonValue {
@@ -1424,6 +1504,15 @@ fn freshness_score_adjustment(freshness_state: &str) -> f64 {
         "source_missing" => -0.25,
         "superseded" => -0.30,
         _ => 0.0,
+    }
+}
+
+fn retrieval_source_kind_label(source_kind: &AgentRetrievalResultSourceKind) -> &'static str {
+    match source_kind {
+        AgentRetrievalResultSourceKind::ProjectRecord => "project_record",
+        AgentRetrievalResultSourceKind::ApprovedMemory => "approved_memory",
+        AgentRetrievalResultSourceKind::Handoff => "handoff",
+        AgentRetrievalResultSourceKind::ContextManifest => "context_manifest",
     }
 }
 

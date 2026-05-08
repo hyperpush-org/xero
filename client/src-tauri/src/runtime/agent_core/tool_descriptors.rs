@@ -916,16 +916,9 @@ fn repository_instruction_fragment_candidates(
     repo_root: &Path,
     relevant_paths: &BTreeSet<String>,
 ) -> Vec<PromptFragmentCandidate> {
-    let started = Instant::now();
     let fragments = cached_prompt_context(&REPOSITORY_INSTRUCTION_CACHE, repo_root, || {
         build_repository_instruction_fragments(repo_root)
     });
-    eprintln!(
-        "[runtime-latency] repository_instruction_fragments repo_root={} fragments={} duration_ms={}",
-        repo_root.display(),
-        fragments.len(),
-        started.elapsed().as_millis()
-    );
     fragments
         .into_iter()
         .map(|fragment| {
@@ -1266,17 +1259,9 @@ fn repository_instructions_fragment(relative_path: &str, body: &str) -> String {
 }
 
 fn project_workspace_manifest_fragment(repo_root: &Path) -> String {
-    let started = Instant::now();
-    let fragment = cached_prompt_context(&PROJECT_WORKSPACE_MANIFEST_CACHE, repo_root, || {
+    cached_prompt_context(&PROJECT_WORKSPACE_MANIFEST_CACHE, repo_root, || {
         build_project_workspace_manifest_fragment(repo_root)
-    });
-    eprintln!(
-        "[runtime-latency] project_workspace_manifest_fragment repo_root={} bytes={} duration_ms={}",
-        repo_root.display(),
-        fragment.len(),
-        started.elapsed().as_millis()
-    );
-    fragment
+    })
 }
 
 fn build_project_workspace_manifest_fragment(repo_root: &Path) -> String {

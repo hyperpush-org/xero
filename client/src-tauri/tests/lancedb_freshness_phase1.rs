@@ -19,7 +19,9 @@ use xero_desktop_lib::{
         AutonomousProjectContextAction, AutonomousProjectContextRecordImportance,
         AutonomousProjectContextRecordKind, AutonomousProjectContextRequest, AutonomousToolOutput,
         AutonomousToolRequest, AutonomousToolRuntime, OwnedAgentRunRequest, ToolRegistry,
-        ToolRegistryOptions, AUTONOMOUS_TOOL_PROJECT_CONTEXT,
+        ToolRegistryOptions, AUTONOMOUS_TOOL_AGENT_DEFINITION, AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD, AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
     },
     state::DesktopState,
 };
@@ -170,6 +172,51 @@ fn seed_project_record(
         },
     )
     .expect("seed project record");
+}
+
+fn seed_project_record_with_contract(
+    repo_root: &Path,
+    project_id: &str,
+    record_id: &str,
+    record_kind: project_store::ProjectRecordKind,
+    runtime_agent_id: RuntimeAgentIdDto,
+    importance: project_store::ProjectRecordImportance,
+    tags: Vec<String>,
+    related_paths: Vec<String>,
+    created_at: &str,
+) {
+    let agent_definition_id = runtime_agent_id.as_str().to_string();
+    project_store::insert_project_record(
+        repo_root,
+        &project_store::NewProjectRecordRecord {
+            record_id: record_id.into(),
+            project_id: project_id.into(),
+            record_kind,
+            runtime_agent_id,
+            agent_definition_id,
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            run_id: format!("{record_id}-run"),
+            workflow_run_id: None,
+            workflow_step_id: None,
+            title: format!("freshcontract filtered retrieval {record_id}"),
+            summary: format!("freshcontract filtered retrieval {record_id} summary"),
+            text: format!("freshcontract filtered retrieval target body {record_id}."),
+            content_json: Some(json!({"phase": "filtered_retrieval"})),
+            schema_name: Some("xero.test.filtered_retrieval".into()),
+            schema_version: 1,
+            importance,
+            confidence: Some(0.93),
+            tags,
+            source_item_ids: vec![format!("test:{record_id}")],
+            related_paths,
+            produced_artifact_refs: Vec::new(),
+            redaction_state: project_store::ProjectRecordRedactionState::Clean,
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+            created_at: created_at.into(),
+        },
+    )
+    .expect("seed filtered project record");
 }
 
 fn search_context(
@@ -562,79 +609,171 @@ fn lancedb_freshness_phase1_provider_turn_prompts_do_not_preload_raw_memory_or_r
 }
 
 #[test]
-fn lancedb_freshness_phase1_all_agents_can_read_record_and_update_context() {
+fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_policy() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
     for runtime_agent_id in [
         RuntimeAgentIdDto::Ask,
+        RuntimeAgentIdDto::Plan,
         RuntimeAgentIdDto::Engineer,
         RuntimeAgentIdDto::Debug,
+        RuntimeAgentIdDto::Crawl,
+        RuntimeAgentIdDto::AgentCreate,
+        RuntimeAgentIdDto::Test,
     ] {
         let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             runtime_agent_id,
             ..ToolRegistryOptions::default()
         });
-        let descriptor = registry
-            .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT)
-            .expect("project_context descriptor");
-        let actions = descriptor.input_schema["properties"]["action"]["enum"]
-            .as_array()
-            .expect("action enum")
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<BTreeSet<_>>();
-        for expected in [
-            "search_project_records",
-            "search_approved_memory",
-            "get_project_record",
-            "get_memory",
-            "record_context",
-            "update_context",
-            "refresh_freshness",
-        ] {
-            assert!(
-                actions.contains(expected),
-                "{runtime_agent_id:?} should receive durable-context action `{expected}`"
-            );
-        }
-
-        seed_agent_run_for_agent(
-            &repo_root,
-            &project_id,
-            &format!("fresh-tool-{}-run", runtime_agent_id.as_str()),
-            runtime_agent_id,
+        let names = registry.descriptor_names();
+        assert!(
+            names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH),
+            "{runtime_agent_id:?} should receive project_context_search"
         );
+        assert!(
+            names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET),
+            "{runtime_agent_id:?} should receive project_context_get"
+        );
+        match runtime_agent_id {
+            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => {
+                for expected in [
+                    AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+                    AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+                    AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+                ] {
+                    assert!(
+                        names.contains(expected),
+                        "{runtime_agent_id:?} should receive write-capable durable-context action {expected}"
+                    );
+                }
+            }
+            RuntimeAgentIdDto::Plan => {
+                assert!(names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH));
+            }
+            RuntimeAgentIdDto::AgentCreate => {
+                assert!(names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH));
+            }
+            RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::Crawl => {
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE));
+                assert!(!names.contains(AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH));
+            }
+        }
+    }
+
+    for runtime_agent_id in [
+        RuntimeAgentIdDto::Ask,
+        RuntimeAgentIdDto::Engineer,
+        RuntimeAgentIdDto::Debug,
+        RuntimeAgentIdDto::Crawl,
+        RuntimeAgentIdDto::AgentCreate,
+        RuntimeAgentIdDto::Test,
+    ] {
+        let run_id = format!("fresh-tool-{}-run", runtime_agent_id.as_str());
+        seed_agent_run_for_agent(&repo_root, &project_id, &run_id, runtime_agent_id);
         let runtime = AutonomousToolRuntime::new(&repo_root)
             .expect("tool runtime")
             .with_runtime_run_controls(control_state_for_agent(runtime_agent_id))
             .with_agent_run_context(
                 &project_id,
                 project_store::DEFAULT_AGENT_SESSION_ID,
-                format!("fresh-tool-{}-run", runtime_agent_id.as_str()),
+                run_id.clone(),
             );
         let mut request =
             AutonomousProjectContextRequest::new(AutonomousProjectContextAction::RecordContext);
         request.title = Some(format!("freshcontract {:?} context", runtime_agent_id));
-        request.summary = Some("All agents can record durable context corrections.".into());
+        request.summary = Some("Runtime-agent context write matrix.".into());
         request.text = Some("freshcontract durable-context update from agent tool.".into());
         request.record_kind = Some(AutonomousProjectContextRecordKind::ContextNote);
         request.importance = Some(AutonomousProjectContextRecordImportance::Normal);
-        let output = runtime
-            .execute(AutonomousToolRequest::ProjectContext(request))
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{runtime_agent_id:?} should be allowed to record/update durable context: {error:?}"
-                )
-            });
-        let output = match output.output {
-            AutonomousToolOutput::ProjectContext(output) => output,
-            other => panic!("unexpected output: {other:?}"),
-        };
-        let record = output.record.expect("record_context output record");
-        assert_eq!(record.visibility, "retrieval");
-    }
-}
 
+        let result = runtime.execute(AutonomousToolRequest::ProjectContext(request));
+        match runtime_agent_id {
+            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => {
+                let output = result.unwrap_or_else(|error| {
+                    panic!(
+                        "{runtime_agent_id:?} should be allowed to record durable context: {error:?}"
+                    )
+                });
+                let output = match output.output {
+                    AutonomousToolOutput::ProjectContext(output) => output,
+                    other => panic!("unexpected output: {other:?}"),
+                };
+                let record = output.record.expect("record_context output record");
+                assert_eq!(record.visibility, "retrieval");
+            }
+            RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::Crawl | RuntimeAgentIdDto::AgentCreate => {
+                let error = result.expect_err("read-only agents must not write context");
+                let expected_code = match runtime_agent_id {
+                    RuntimeAgentIdDto::Ask => "project_context_write_forbidden_for_ask",
+                    RuntimeAgentIdDto::Crawl => "project_context_write_forbidden_for_crawl",
+                    RuntimeAgentIdDto::AgentCreate => {
+                        "project_context_write_forbidden_for_agent_create"
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(error.code, expected_code);
+            }
+            RuntimeAgentIdDto::Plan => unreachable!(),
+        }
+    }
+
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "fresh-tool-plan-run",
+        RuntimeAgentIdDto::Plan,
+    );
+    let plan_runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Plan))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-tool-plan-run",
+        );
+    let mut generic_plan_note =
+        AutonomousProjectContextRequest::new(AutonomousProjectContextAction::RecordContext);
+    generic_plan_note.title = Some("freshcontract plan generic note".into());
+    generic_plan_note.summary = Some("Plan generic note must be rejected.".into());
+    generic_plan_note.text = Some("freshcontract plan generic context note.".into());
+    generic_plan_note.record_kind = Some(AutonomousProjectContextRecordKind::ContextNote);
+    let error = plan_runtime
+        .execute(AutonomousToolRequest::ProjectContext(generic_plan_note))
+        .expect_err("Plan generic notes must be rejected");
+    assert_eq!(error.code, "project_context_write_forbidden_for_plan");
+
+    let mut accepted_plan =
+        AutonomousProjectContextRequest::new(AutonomousProjectContextAction::RecordContext);
+    accepted_plan.title = Some("freshcontract accepted plan pack".into());
+    accepted_plan.summary = Some("Accepted plan pack durable context.".into());
+    accepted_plan.text = Some("freshcontract accepted plan pack handoff.".into());
+    accepted_plan.record_kind = Some(AutonomousProjectContextRecordKind::Plan);
+    accepted_plan.content_json = Some(json!({
+        "schema": "xero.plan_pack.v1",
+        "status": "accepted",
+        "sections": []
+    }));
+    let output = plan_runtime
+        .execute(AutonomousToolRequest::ProjectContext(accepted_plan))
+        .expect("Plan accepted plan-pack context write");
+    let output = match output.output {
+        AutonomousToolOutput::ProjectContext(output) => output,
+        other => panic!("unexpected output: {other:?}"),
+    };
+    assert_eq!(
+        output
+            .record
+            .expect("accepted plan pack record")
+            .record_kind,
+        "plan"
+    );
+}
 #[test]
 fn lancedb_freshness_phase7_update_context_supersedes_target_record_automatically() {
     let root = tempfile::tempdir().expect("temp dir");
@@ -806,23 +945,43 @@ fn lancedb_freshness_phase1_tool_guidance_requires_read_before_prior_work_and_re
                 .contains("read context before prior-work-sensitive tasks"),
             "{runtime_agent_id:?} prompt should require context reads before prior-work-sensitive tasks"
         );
-        assert!(
-            created
-                .run
-                .system_prompt
-                .contains("record/update context after durable findings"),
-            "{runtime_agent_id:?} prompt should require context recording after durable findings"
-        );
-        let descriptor = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+        let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             runtime_agent_id,
             ..ToolRegistryOptions::default()
-        })
-        .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT)
-        .expect("project_context descriptor")
-        .clone();
-        assert!(descriptor.description.contains("freshness evidence"));
-        assert!(descriptor.description.contains("stale"));
-        assert!(descriptor.description.contains("record/update"));
+        });
+        let search_descriptor = registry
+            .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH)
+            .expect("project_context_search descriptor");
+        assert!(search_descriptor.description.contains("freshness evidence"));
+        assert!(registry
+            .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET)
+            .is_some());
+        if matches!(
+            runtime_agent_id,
+            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug
+        ) {
+            assert!(
+                created
+                    .run
+                    .system_prompt
+                    .contains("record/update context after durable findings"),
+                "{runtime_agent_id:?} prompt should require context recording after durable findings"
+            );
+            assert!(registry
+                .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD)
+                .is_some());
+        } else {
+            assert!(
+                created
+                    .run
+                    .system_prompt
+                    .contains("Durable-context writes are not part of Ask's default surface"),
+                "Ask prompt should make context writes unavailable by default"
+            );
+            assert!(registry
+                .descriptor(AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD)
+                .is_none());
+        }
     }
 }
 
@@ -954,6 +1113,82 @@ fn lancedb_freshness_phase1_project_context_tool_returns_every_freshness_state()
 }
 
 #[test]
+fn lancedb_freshness_phase1_project_context_search_result_can_be_followed_by_get_with_retrieval_logs(
+) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    let related_path = "src/search_get_round_trip.rs";
+    write_repo_file(
+        &repo_root,
+        related_path,
+        "pub fn search_get_round_trip() {}\n",
+    );
+    seed_project_record(
+        &repo_root,
+        &project_id,
+        "fresh-search-get-record",
+        "freshcontract search get round trip",
+        "freshcontract search get round trip model-visible citation.",
+        vec![related_path.into()],
+        "2026-05-03T12:18:00Z",
+    );
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "fresh-search-get-run",
+        RuntimeAgentIdDto::Engineer,
+    );
+    let runtime = AutonomousToolRuntime::new(&repo_root)
+        .expect("tool runtime")
+        .with_runtime_run_controls(control_state_for_agent(RuntimeAgentIdDto::Engineer))
+        .with_agent_run_context(
+            &project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            "fresh-search-get-run",
+        );
+
+    let mut search_request =
+        AutonomousProjectContextRequest::new(AutonomousProjectContextAction::SearchProjectRecords);
+    search_request.query = Some("freshcontract search get round trip".into());
+    search_request.limit = Some(5);
+    let search_output = execute_project_context(&runtime, search_request);
+    let search_query_id = search_output.query_id.expect("search query id");
+    let search_result = search_output
+        .results
+        .iter()
+        .find(|result| result.source_id == "fresh-search-get-record")
+        .expect("search result for seeded record");
+    assert!(search_result.citation.contains(&search_query_id));
+    let search_logs =
+        project_store::list_agent_retrieval_results(&repo_root, &project_id, &search_query_id)
+            .expect("search retrieval logs");
+    assert!(search_logs
+        .iter()
+        .any(|log| log.source_id == "fresh-search-get-record"));
+
+    let mut get_request =
+        AutonomousProjectContextRequest::new(AutonomousProjectContextAction::GetProjectRecord);
+    get_request.record_id = Some(search_result.source_id.clone());
+    let get_output = execute_project_context(&runtime, get_request);
+    let get_record = get_output.record.as_ref().expect("get project record");
+    assert_eq!(get_record.record_id, "fresh-search-get-record");
+    assert_eq!(
+        get_record.citation,
+        "project_records:fresh-search-get-record"
+    );
+    let get_query_id = get_output.query_id.expect("get query id");
+    let get_logs =
+        project_store::list_agent_retrieval_results(&repo_root, &project_id, &get_query_id)
+            .expect("get retrieval logs");
+    assert_eq!(get_logs.len(), 1);
+    assert_eq!(get_logs[0].source_id, "fresh-search-get-record");
+    assert_eq!(
+        get_logs[0].metadata.as_ref().expect("get metadata")["citation"],
+        "project_records:fresh-search-get-record"
+    );
+}
+
+#[test]
 fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshness_diagnostics() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
@@ -1000,6 +1235,389 @@ fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshnes
         .get("staleCount")
         .is_some());
     assert!(manifest["retrieval"]["toolAvailability"]["project_context"].is_boolean());
+    assert_eq!(
+        manifest["retrieval"]["diagnostic"]["embeddingProvider"],
+        "local_hash"
+    );
+    assert!(manifest["retrieval"]["diagnostic"]["retrievalSemantics"]
+        .as_str()
+        .expect("retrieval semantics")
+        .contains("hash"));
+    assert!(manifest["retrieval"]["diagnostic"]["storageDiagnostics"]
+        .get("scannedProjectRecords")
+        .is_some());
+
+    let snapshot = project_store::load_agent_run(&repo_root, &project_id, "fresh-manifest-run")
+        .expect("load run snapshot");
+    let manifest_event = snapshot
+        .events
+        .iter()
+        .find(|event| event.event_kind == project_store::AgentRunEventKind::ContextManifestRecorded)
+        .expect("context manifest event");
+    let manifest_payload: serde_json::Value =
+        serde_json::from_str(&manifest_event.payload_json).expect("manifest event payload");
+    assert_eq!(
+        manifest_payload["admittedProviderPreflightHash"],
+        manifest["admittedProviderPreflightHash"]
+    );
+    assert_eq!(manifest_payload["rawContextInjected"], false);
+
+    let retrieval_event = snapshot
+        .events
+        .iter()
+        .find(|event| event.event_kind == project_store::AgentRunEventKind::RetrievalPerformed)
+        .expect("retrieval event");
+    let retrieval_payload: serde_json::Value =
+        serde_json::from_str(&retrieval_event.payload_json).expect("retrieval event payload");
+    assert_eq!(
+        retrieval_payload["queryIds"],
+        manifest["retrieval"]["queryIds"]
+    );
+    assert_eq!(
+        retrieval_payload["freshnessDiagnostics"]["currentCount"],
+        manifest["retrieval"]["freshnessDiagnostics"]["currentCount"]
+    );
+}
+
+#[test]
+fn lancedb_freshness_phase1_retrieval_results_include_score_trust_citation_and_local_hash_contract()
+{
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    let related_path = "src/retrieval_contract.rs";
+    write_repo_file(&repo_root, related_path, "pub fn retrieval_contract() {}\n");
+    seed_project_record(
+        &repo_root,
+        &project_id,
+        "fresh-retrieval-contract-record",
+        "freshcontract score metadata",
+        "freshcontract score metadata project record result.",
+        vec![related_path.into()],
+        "2026-05-03T12:20:00Z",
+    );
+    project_store::insert_agent_memory(
+        &repo_root,
+        &project_store::NewAgentMemoryRecord {
+            memory_id: "fresh-retrieval-contract-memory".into(),
+            project_id: project_id.clone(),
+            agent_session_id: None,
+            scope: project_store::AgentMemoryScope::Project,
+            kind: project_store::AgentMemoryKind::Decision,
+            text: "freshcontract score metadata approved memory result.".into(),
+            review_state: project_store::AgentMemoryReviewState::Approved,
+            enabled: true,
+            confidence: Some(88),
+            source_run_id: Some("fresh-retrieval-contract-run".into()),
+            source_item_ids: vec!["fresh:retrieval-memory".into()],
+            diagnostic: None,
+            created_at: "2026-05-03T12:21:00Z".into(),
+        },
+    )
+    .expect("insert approved memory");
+
+    let response = search_context(
+        &repo_root,
+        &project_id,
+        "fresh-retrieval-contract-query",
+        "freshcontract score metadata",
+        project_store::AgentRetrievalSearchScope::HybridContext,
+    );
+
+    assert_eq!(
+        response.diagnostic.as_ref().unwrap()["embeddingProvider"],
+        "local_hash"
+    );
+    assert_eq!(
+        response.diagnostic.as_ref().unwrap()["retrievalSemantics"],
+        "local_hash_vector_hybrid"
+    );
+    assert_eq!(
+        response.diagnostic.as_ref().unwrap()["storageDiagnostics"]["scannedProjectRecords"],
+        1
+    );
+    assert_eq!(
+        response.diagnostic.as_ref().unwrap()["storageDiagnostics"]["scannedApprovedMemories"],
+        1
+    );
+
+    for source_id in [
+        "fresh-retrieval-contract-record",
+        "fresh-retrieval-contract-memory",
+    ] {
+        let result = result_by_source(&response, source_id);
+        assert!(result.metadata["keywordScore"].is_number());
+        assert!(result.metadata["vectorScore"].is_number());
+        assert!(result.metadata["scoreBreakdown"]["freshnessAdjustment"].is_number());
+        assert!(result.metadata["freshness"]["state"].is_string());
+        assert!(result.metadata["trust"]["sourceItemIds"].is_array());
+        assert_eq!(result.metadata["citation"]["sourceId"], source_id);
+    }
+
+    let record = result_by_source(&response, "fresh-retrieval-contract-record");
+    assert_eq!(record.metadata["citation"]["sourceKind"], "project_record");
+    assert_eq!(record.metadata["citation"]["relatedPaths"][0], related_path);
+    let memory = result_by_source(&response, "fresh-retrieval-contract-memory");
+    assert_eq!(memory.metadata["citation"]["sourceKind"], "approved_memory");
+    assert_eq!(memory.metadata["citation"]["memoryKind"], "decision");
+}
+
+#[test]
+fn lancedb_freshness_phase1_filtered_retrieval_preserves_filters_and_limit_contract() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+    let matching_path = "src/filter_match.rs";
+    let other_path = "src/filter_other.rs";
+    write_repo_file(&repo_root, matching_path, "pub fn filter_match() {}\n");
+    write_repo_file(&repo_root, other_path, "pub fn filter_other() {}\n");
+
+    let matching_tags = vec!["freshness-phase1".into(), "filter-contract".into()];
+    for (record_id, created_at) in [
+        ("fresh-filter-match-a", "2026-05-03T12:41:00Z"),
+        ("fresh-filter-match-b", "2026-05-03T12:42:00Z"),
+    ] {
+        seed_project_record_with_contract(
+            &repo_root,
+            &project_id,
+            record_id,
+            project_store::ProjectRecordKind::Decision,
+            RuntimeAgentIdDto::Engineer,
+            project_store::ProjectRecordImportance::High,
+            matching_tags.clone(),
+            vec![matching_path.into()],
+            created_at,
+        );
+    }
+    seed_project_record_with_contract(
+        &repo_root,
+        &project_id,
+        "fresh-filter-tag-mismatch",
+        project_store::ProjectRecordKind::Decision,
+        RuntimeAgentIdDto::Engineer,
+        project_store::ProjectRecordImportance::High,
+        vec!["freshness-phase1".into()],
+        vec![matching_path.into()],
+        "2026-05-03T12:43:00Z",
+    );
+    seed_project_record_with_contract(
+        &repo_root,
+        &project_id,
+        "fresh-filter-path-mismatch",
+        project_store::ProjectRecordKind::Decision,
+        RuntimeAgentIdDto::Engineer,
+        project_store::ProjectRecordImportance::High,
+        matching_tags.clone(),
+        vec![other_path.into()],
+        "2026-05-03T12:44:00Z",
+    );
+    seed_project_record_with_contract(
+        &repo_root,
+        &project_id,
+        "fresh-filter-kind-mismatch",
+        project_store::ProjectRecordKind::Finding,
+        RuntimeAgentIdDto::Engineer,
+        project_store::ProjectRecordImportance::High,
+        matching_tags.clone(),
+        vec![matching_path.into()],
+        "2026-05-03T12:45:00Z",
+    );
+    seed_project_record_with_contract(
+        &repo_root,
+        &project_id,
+        "fresh-filter-agent-mismatch",
+        project_store::ProjectRecordKind::Decision,
+        RuntimeAgentIdDto::Debug,
+        project_store::ProjectRecordImportance::High,
+        matching_tags.clone(),
+        vec![matching_path.into()],
+        "2026-05-03T12:46:00Z",
+    );
+    seed_project_record_with_contract(
+        &repo_root,
+        &project_id,
+        "fresh-filter-created-mismatch",
+        project_store::ProjectRecordKind::Decision,
+        RuntimeAgentIdDto::Engineer,
+        project_store::ProjectRecordImportance::High,
+        matching_tags.clone(),
+        vec![matching_path.into()],
+        "2026-05-03T12:39:00Z",
+    );
+    seed_project_record_with_contract(
+        &repo_root,
+        &project_id,
+        "fresh-filter-importance-mismatch",
+        project_store::ProjectRecordKind::Decision,
+        RuntimeAgentIdDto::Engineer,
+        project_store::ProjectRecordImportance::Low,
+        matching_tags.clone(),
+        vec![matching_path.into()],
+        "2026-05-03T12:47:00Z",
+    );
+
+    let project_filters = project_store::AgentContextRetrievalFilters {
+        record_kinds: vec![project_store::ProjectRecordKind::Decision],
+        tags: vec!["filter-contract".into()],
+        related_paths: vec!["filter_match.rs".into()],
+        runtime_agent_id: Some(RuntimeAgentIdDto::Engineer),
+        created_after: Some("2026-05-03T12:40:00Z".into()),
+        min_importance: Some(project_store::ProjectRecordImportance::High),
+        ..Default::default()
+    };
+    let project_response = project_store::search_agent_context(
+        &repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: "fresh-filter-project-query".into(),
+            project_id: project_id.clone(),
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            run_id: None,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            query_text: "freshcontract filtered retrieval target".into(),
+            search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
+            filters: project_filters.clone(),
+            limit_count: 10,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-03T12:48:00Z".into(),
+        },
+    )
+    .expect("filtered project retrieval");
+    assert_eq!(
+        project_response
+            .results
+            .iter()
+            .map(|result| result.source_id.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "fresh-filter-match-a".to_string(),
+            "fresh-filter-match-b".to_string()
+        ])
+    );
+    assert_eq!(
+        project_response.query.filters["recordKinds"],
+        json!(["decision"])
+    );
+    assert_eq!(
+        project_response.query.filters["tags"],
+        json!(["filter-contract"])
+    );
+    assert_eq!(
+        project_response.query.filters["relatedPaths"],
+        json!(["filter_match.rs"])
+    );
+    assert_eq!(project_response.query.filters["runtimeAgentId"], "engineer");
+    assert_eq!(
+        project_response.query.filters["createdAfter"],
+        "2026-05-03T12:40:00Z"
+    );
+    assert_eq!(project_response.query.filters["minImportance"], "high");
+
+    let limited_response = project_store::search_agent_context(
+        &repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: "fresh-filter-project-limit-query".into(),
+            project_id: project_id.clone(),
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            run_id: None,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            query_text: "freshcontract filtered retrieval target".into(),
+            search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
+            filters: project_filters,
+            limit_count: 1,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-03T12:49:00Z".into(),
+        },
+    )
+    .expect("limited filtered project retrieval");
+    assert_eq!(limited_response.results.len(), 1);
+    assert_eq!(limited_response.query.limit_count, 1);
+    assert_eq!(
+        limited_response.diagnostic.as_ref().unwrap()["storageDiagnostics"]["limitCount"],
+        1
+    );
+    assert_eq!(
+        limited_response.diagnostic.as_ref().unwrap()["storageDiagnostics"]["returnedCount"],
+        1
+    );
+
+    for (memory_id, kind, created_at) in [
+        (
+            "fresh-filter-memory-match",
+            project_store::AgentMemoryKind::Decision,
+            "2026-05-03T12:50:00Z",
+        ),
+        (
+            "fresh-filter-memory-kind-mismatch",
+            project_store::AgentMemoryKind::Troubleshooting,
+            "2026-05-03T12:51:00Z",
+        ),
+        (
+            "fresh-filter-memory-created-mismatch",
+            project_store::AgentMemoryKind::Decision,
+            "2026-05-03T12:39:00Z",
+        ),
+    ] {
+        project_store::insert_agent_memory(
+            &repo_root,
+            &project_store::NewAgentMemoryRecord {
+                memory_id: memory_id.into(),
+                project_id: project_id.clone(),
+                agent_session_id: None,
+                scope: project_store::AgentMemoryScope::Project,
+                kind,
+                text: format!("freshcontract filtered memory target body {memory_id}."),
+                review_state: project_store::AgentMemoryReviewState::Approved,
+                enabled: true,
+                confidence: Some(86),
+                source_run_id: Some(format!("{memory_id}-run")),
+                source_item_ids: vec![format!("test:{memory_id}")],
+                diagnostic: None,
+                created_at: created_at.into(),
+            },
+        )
+        .expect("insert filtered memory");
+    }
+    let memory_response = project_store::search_agent_context(
+        &repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: "fresh-filter-memory-query".into(),
+            project_id: project_id.clone(),
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            run_id: None,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            query_text: "freshcontract filtered memory target".into(),
+            search_scope: project_store::AgentRetrievalSearchScope::ApprovedMemory,
+            filters: project_store::AgentContextRetrievalFilters {
+                memory_kinds: vec![project_store::AgentMemoryKind::Decision],
+                created_after: Some("2026-05-03T12:40:00Z".into()),
+                ..Default::default()
+            },
+            limit_count: 10,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-03T12:52:00Z".into(),
+        },
+    )
+    .expect("filtered memory retrieval");
+    assert_eq!(
+        memory_response
+            .results
+            .iter()
+            .map(|result| result.source_id.clone())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["fresh-filter-memory-match".to_string()])
+    );
+    assert_eq!(
+        memory_response.query.filters["memoryKinds"],
+        json!(["decision"])
+    );
+    assert_eq!(
+        memory_response.query.filters["createdAfter"],
+        "2026-05-03T12:40:00Z"
+    );
 }
 
 #[test]

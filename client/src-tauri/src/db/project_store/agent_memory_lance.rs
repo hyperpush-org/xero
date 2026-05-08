@@ -35,7 +35,7 @@ use super::agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM;
 use super::agent_memory::{
     AgentMemoryKind, AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope,
 };
-use super::{FreshnessUpdate, SupersessionUpdate};
+use super::{lance_health, FreshnessUpdate, SupersessionUpdate};
 
 /// Reserved fixed dimension for opt-in semantic embeddings. Picked to match the
 /// most common embedding sizes (768 = MiniLM/E5; OpenAI text-embedding-3-small
@@ -265,21 +265,76 @@ async fn ensure_connection(dataset_dir: &Path) -> Result<Connection, CommandErro
 
 async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandError> {
     match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
+        Ok(table) => ensure_current_table_schema(connection, table).await,
+        Err(_) => create_agent_memories_table(connection).await,
+    }
+}
+
+async fn ensure_current_table_schema(
+    connection: &Connection,
+    table: Table,
+) -> Result<Table, CommandError> {
+    let table_schema = match table.schema().await {
+        Ok(table_schema) => table_schema,
+        Err(_) => return reset_agent_memories_table(connection).await,
+    };
+    if table_schema_supports_current_memories(&table_schema) {
+        return Ok(table);
+    }
+    reset_agent_memories_table(connection).await
+}
+
+fn table_schema_supports_current_memories(table_schema: &Schema) -> bool {
+    lance_health::table_schema_supports_expected(table_schema, schema().as_ref())
+}
+
+async fn reset_agent_memories_table(connection: &Connection) -> Result<Table, CommandError> {
+    connection
+        .drop_table(AGENT_MEMORIES_TABLE, &[])
+        .await
+        .map_err(|error| map_lance_error("agent_memory_lance_schema_reset_failed", error))?;
+    create_agent_memories_table(connection).await
+}
+
+async fn create_agent_memories_table(connection: &Connection) -> Result<Table, CommandError> {
+    let schema = schema();
+    let empty = RecordBatch::new_empty(schema.clone());
+    let iter = RecordBatchIterator::new(
+        std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
+        schema,
+    );
+    let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> = Box::new(iter);
+    match connection
+        .create_table(AGENT_MEMORIES_TABLE, reader)
+        .execute()
+        .await
+    {
         Ok(table) => Ok(table),
-        Err(_) => {
-            let schema = schema();
-            let empty = RecordBatch::new_empty(schema.clone());
-            let iter = RecordBatchIterator::new(
-                std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
-                schema,
-            );
-            let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> = Box::new(iter);
-            connection
-                .create_table(AGENT_MEMORIES_TABLE, reader)
-                .execute()
-                .await
-                .map_err(|error| map_lance_error("agent_memory_lance_create_table_failed", error))
-        }
+        Err(create_error) => match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
+            Ok(table) => match table.schema().await {
+                Ok(table_schema) if table_schema_supports_current_memories(&table_schema) => {
+                    Ok(table)
+                }
+                Ok(_) => Err(CommandError::retryable(
+                    "agent_memory_lance_create_table_failed",
+                    format!(
+                        "Xero agent_memory lance store failed: {create_error}; retry open found a stale schema"
+                    ),
+                )),
+                Err(schema_error) => Err(CommandError::retryable(
+                    "agent_memory_lance_create_table_failed",
+                    format!(
+                        "Xero agent_memory lance store failed: {create_error}; retry open schema failed: {schema_error}"
+                    ),
+                )),
+            },
+            Err(open_error) => Err(CommandError::retryable(
+                "agent_memory_lance_create_table_failed",
+                format!(
+                    "Xero agent_memory lance store failed: {create_error}; retry open failed: {open_error}"
+                ),
+            )),
+        },
     }
 }
 
@@ -607,10 +662,7 @@ fn column_embedding<'a>(
 }
 
 fn missing_column(name: &str) -> CommandError {
-    CommandError::system_fault(
-        "agent_memory_lance_schema_drift",
-        format!("Xero lance dataset is missing expected column `{name}`."),
-    )
+    lance_health::schema_drift_error("agent_memory_lance_schema_drift", "agent-memory", name)
 }
 
 fn require_str<'a>(
@@ -1189,10 +1241,7 @@ fn stamp_project(mut row: AgentMemoryRow, project_id: &str) -> AgentMemoryRow {
 
 async fn scan_all(dataset_dir: &Path) -> Result<Vec<AgentMemoryRow>, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
-        Ok(table) => table,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let table = open_or_create_table(&connection).await?;
     let stream = table
         .query()
         .execute()
@@ -1237,10 +1286,7 @@ async fn replace_row(dataset_dir: &Path, row: AgentMemoryRow) -> Result<(), Comm
 
 async fn delete_row(dataset_dir: &Path, memory_id: &str) -> Result<bool, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
-        Ok(table) => table,
-        Err(_) => return Ok(false),
-    };
+    let table = open_or_create_table(&connection).await?;
     let predicate = format!("memory_id = {}", quote_string_literal(memory_id));
     table
         .delete(&predicate)
@@ -1403,6 +1449,60 @@ mod tests {
             enabled: true,
             ..sample_row(memory_id, AgentMemoryScope::Project)
         }
+    }
+
+    fn legacy_schema_missing_freshness_state() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(
+            "memory_id",
+            DataType::Utf8,
+            false,
+        )]))
+    }
+
+    #[test]
+    fn stale_lance_schema_is_reset_before_listing_and_insert() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let database_path = tempdir.path().join("state.db");
+        let dataset_dir = dataset_dir_for_database_path(&database_path);
+
+        runtime()
+            .block_on(async {
+                let connection = connect_dataset(&dataset_dir).await?;
+                let legacy_schema = legacy_schema_missing_freshness_state();
+                let empty = RecordBatch::new_empty(legacy_schema.clone());
+                let iter = RecordBatchIterator::new(
+                    std::iter::once(Ok::<_, arrow_schema::ArrowError>(empty)),
+                    legacy_schema,
+                );
+                let reader: Box<dyn arrow_array::RecordBatchReader + Send + 'static> =
+                    Box::new(iter);
+                connection
+                    .create_table(AGENT_MEMORIES_TABLE, reader)
+                    .execute()
+                    .await
+                    .map_err(|error| map_lance_error("test_legacy_lance_create_failed", error))?;
+                Ok::<_, CommandError>(())
+            })
+            .expect("create legacy lance table");
+
+        let store = open_for_database_path(&database_path, "project-schema-reset");
+
+        let rows = store
+            .list(None, AgentMemoryListFilterOwned::default())
+            .expect("list resets stale schema");
+        assert!(rows.is_empty());
+
+        let inserted = store
+            .insert(approved_project_row("memory-schema-reset"))
+            .expect("insert after schema reset");
+        assert_eq!(inserted.memory_id, "memory-schema-reset");
+
+        let rows = store
+            .list(None, AgentMemoryListFilterOwned::default())
+            .expect("list inserted memory");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].freshness_state, "source_unknown");
     }
 
     #[test]

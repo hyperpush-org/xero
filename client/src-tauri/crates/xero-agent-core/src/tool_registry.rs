@@ -1786,74 +1786,314 @@ fn validate_input_against_schema(
     descriptor: &ToolDescriptorV2,
     input: &JsonValue,
 ) -> ToolRegistryResult<()> {
-    if descriptor
-        .input_schema
-        .get("type")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("object")
-        != "object"
-    {
-        return Ok(());
+    validate_json_value_against_schema(descriptor, "$", &descriptor.input_schema, input)
+}
+
+fn validate_json_value_against_schema(
+    descriptor: &ToolDescriptorV2,
+    path: &str,
+    schema: &JsonValue,
+    value: &JsonValue,
+) -> ToolRegistryResult<()> {
+    if let Some(branches) = schema.get("oneOf").and_then(JsonValue::as_array) {
+        if branches.iter().any(|branch| {
+            validate_json_value_against_schema(descriptor, path, branch, value).is_ok()
+        }) {
+            return Ok(());
+        }
+        return schema_error(
+            descriptor,
+            path,
+            "must match at least one declared schema branch.",
+        );
     }
-    let Some(input_object) = input.as_object() else {
-        return Err(ToolExecutionError::invalid_input(
-            "agent_tool_input_invalid",
-            format!("Tool `{}` expects an object input.", descriptor.name),
-        ));
+
+    if let Some(branches) = schema.get("anyOf").and_then(JsonValue::as_array) {
+        if branches.iter().any(|branch| {
+            validate_json_value_against_schema(descriptor, path, branch, value).is_ok()
+        }) {
+            return Ok(());
+        }
+        return schema_error(
+            descriptor,
+            path,
+            "must match at least one declared schema branch.",
+        );
+    }
+
+    if let Some(branches) = schema.get("allOf").and_then(JsonValue::as_array) {
+        for branch in branches {
+            validate_json_value_against_schema(descriptor, path, branch, value)?;
+        }
+    }
+
+    if let Some(enum_values) = schema.get("enum").and_then(JsonValue::as_array) {
+        if !enum_values.iter().any(|allowed| allowed == value) {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must be one of {}.", enum_values_for_message(enum_values)),
+            );
+        }
+    }
+
+    if let Some(expected_type) = schema.get("type").and_then(JsonValue::as_str) {
+        if !schema_type_matches(expected_type, value) {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must be `{expected_type}`, got {}.", json_type_name(value)),
+            );
+        }
+    }
+
+    if value.is_object()
+        && (schema.get("properties").is_some()
+            || schema.get("required").is_some()
+            || schema.get("additionalProperties").is_some())
+    {
+        validate_object_against_schema(descriptor, path, schema, value)?;
+    }
+
+    if value.is_array() {
+        validate_array_against_schema(descriptor, path, schema, value)?;
+    }
+
+    if value.is_number() {
+        validate_number_bounds(descriptor, path, schema, value)?;
+    }
+
+    if value.is_string() {
+        validate_string_bounds(descriptor, path, schema, value)?;
+    }
+
+    Ok(())
+}
+
+fn validate_object_against_schema(
+    descriptor: &ToolDescriptorV2,
+    path: &str,
+    schema: &JsonValue,
+    value: &JsonValue,
+) -> ToolRegistryResult<()> {
+    let Some(object) = value.as_object() else {
+        return schema_error(descriptor, path, "must be `object`.");
     };
 
-    if let Some(required) = descriptor
-        .input_schema
-        .get("required")
-        .and_then(JsonValue::as_array)
-    {
+    if let Some(required) = schema.get("required").and_then(JsonValue::as_array) {
         for field in required.iter().filter_map(JsonValue::as_str) {
-            if !input_object.contains_key(field) {
-                return Err(ToolExecutionError::invalid_input(
-                    "agent_tool_input_invalid",
-                    format!(
-                        "Tool `{}` input is missing required field `{field}`.",
-                        descriptor.name
-                    ),
-                ));
+            if !object.contains_key(field) {
+                return schema_error(
+                    descriptor,
+                    path,
+                    format!("is missing required field `{field}`."),
+                );
             }
         }
     }
 
-    let Some(properties) = descriptor
-        .input_schema
-        .get("properties")
-        .and_then(JsonValue::as_object)
-    else {
-        return Ok(());
-    };
-
-    for (field, schema) in properties {
-        let Some(value) = input_object.get(field) else {
-            continue;
-        };
-        if let Some(expected_type) = schema.get("type").and_then(JsonValue::as_str) {
-            let matches = match expected_type {
-                "array" => value.is_array(),
-                "boolean" => value.is_boolean(),
-                "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-                "number" => value.is_number(),
-                "object" => value.is_object(),
-                "string" => value.is_string(),
-                _ => true,
+    let properties = schema.get("properties").and_then(JsonValue::as_object);
+    if let Some(properties) = properties {
+        for (field, field_schema) in properties {
+            let Some(field_value) = object.get(field) else {
+                continue;
             };
-            if !matches {
-                return Err(ToolExecutionError::invalid_input(
-                    "agent_tool_input_invalid",
-                    format!(
-                        "Tool `{}` field `{field}` must be `{expected_type}`.",
-                        descriptor.name
-                    ),
-                ));
+            let field_path = child_path(path, field);
+            validate_json_value_against_schema(descriptor, &field_path, field_schema, field_value)?;
+        }
+    }
+
+    match schema.get("additionalProperties") {
+        Some(JsonValue::Bool(false)) => {
+            for field in object.keys() {
+                let declared = properties
+                    .map(|properties| properties.contains_key(field))
+                    .unwrap_or(false);
+                if !declared {
+                    return schema_error(
+                        descriptor,
+                        &child_path(path, field),
+                        "is not declared by this tool schema.",
+                    );
+                }
             }
+        }
+        Some(additional_schema) if additional_schema.is_object() => {
+            for (field, field_value) in object {
+                if properties.is_some_and(|properties| properties.contains_key(field)) {
+                    continue;
+                }
+                let field_path = child_path(path, field);
+                validate_json_value_against_schema(
+                    descriptor,
+                    &field_path,
+                    additional_schema,
+                    field_value,
+                )?;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn validate_array_against_schema(
+    descriptor: &ToolDescriptorV2,
+    path: &str,
+    schema: &JsonValue,
+    value: &JsonValue,
+) -> ToolRegistryResult<()> {
+    let Some(items) = value.as_array() else {
+        return schema_error(descriptor, path, "must be `array`.");
+    };
+    if let Some(min_items) = schema.get("minItems").and_then(JsonValue::as_u64) {
+        if items.len() < min_items as usize {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must contain at least {min_items} item(s)."),
+            );
+        }
+    }
+    if let Some(max_items) = schema.get("maxItems").and_then(JsonValue::as_u64) {
+        if items.len() > max_items as usize {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must contain at most {max_items} item(s)."),
+            );
+        }
+    }
+    if let Some(item_schema) = schema.get("items").filter(|schema| schema.is_object()) {
+        for (index, item) in items.iter().enumerate() {
+            validate_json_value_against_schema(
+                descriptor,
+                &format!("{path}[{index}]"),
+                item_schema,
+                item,
+            )?;
         }
     }
     Ok(())
+}
+
+fn validate_number_bounds(
+    descriptor: &ToolDescriptorV2,
+    path: &str,
+    schema: &JsonValue,
+    value: &JsonValue,
+) -> ToolRegistryResult<()> {
+    let Some(actual) = value.as_f64() else {
+        return Ok(());
+    };
+    if let Some(minimum) = schema.get("minimum").and_then(JsonValue::as_f64) {
+        if actual < minimum {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must be greater than or equal to {minimum}."),
+            );
+        }
+    }
+    if let Some(maximum) = schema.get("maximum").and_then(JsonValue::as_f64) {
+        if actual > maximum {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must be less than or equal to {maximum}."),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_string_bounds(
+    descriptor: &ToolDescriptorV2,
+    path: &str,
+    schema: &JsonValue,
+    value: &JsonValue,
+) -> ToolRegistryResult<()> {
+    let Some(actual) = value.as_str() else {
+        return Ok(());
+    };
+    if let Some(min_length) = schema.get("minLength").and_then(JsonValue::as_u64) {
+        if actual.chars().count() < min_length as usize {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must contain at least {min_length} character(s)."),
+            );
+        }
+    }
+    if let Some(max_length) = schema.get("maxLength").and_then(JsonValue::as_u64) {
+        if actual.chars().count() > max_length as usize {
+            return schema_error(
+                descriptor,
+                path,
+                format!("must contain at most {max_length} character(s)."),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn schema_type_matches(expected_type: &str, value: &JsonValue) -> bool {
+    match expected_type {
+        "array" => value.is_array(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "null" => value.is_null(),
+        "number" => value.is_number(),
+        "object" => value.is_object(),
+        "string" => value.is_string(),
+        _ => true,
+    }
+}
+
+fn schema_error(
+    descriptor: &ToolDescriptorV2,
+    path: &str,
+    message: impl Into<String>,
+) -> ToolRegistryResult<()> {
+    Err(ToolExecutionError::invalid_input(
+        "agent_tool_input_invalid",
+        format!(
+            "Tool `{}` input at `{path}` {}",
+            descriptor.name,
+            message.into()
+        ),
+    ))
+}
+
+fn child_path(parent: &str, child: &str) -> String {
+    if parent == "$" {
+        format!("$.{child}")
+    } else {
+        format!("{parent}.{child}")
+    }
+}
+
+fn enum_values_for_message(values: &[JsonValue]) -> String {
+    values
+        .iter()
+        .map(stable_json_signature)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn json_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Number(number) if number.as_i64().is_some() || number.as_u64().is_some() => {
+            "integer"
+        }
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
 }
 
 fn tool_call_signature(call: &ToolCallInput) -> String {
@@ -2022,6 +2262,152 @@ mod tests {
             outcome.failure().unwrap().error.category,
             ToolErrorCategory::InvalidInput
         );
+    }
+
+    #[test]
+    fn dispatch_rejects_enum_violations_and_undeclared_properties() {
+        let mut descriptor = descriptor("project_context_search", ToolMutability::ReadOnly);
+        descriptor.input_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action"],
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["search_project_records", "search_approved_memory"]
+                },
+                "query": { "type": "string" }
+            }
+        });
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(descriptor, |_context, _call| {
+                Ok(ToolHandlerOutput::new("ok", json!({})))
+            }))
+            .expect("register project context search");
+        let mut tracker = ToolBudgetTracker::new(ToolBudget::default());
+
+        let invalid_enum = registry.dispatch_call(
+            ToolCallInput {
+                tool_call_id: "call-invalid-enum".into(),
+                tool_name: "project_context_search".into(),
+                input: json!({ "action": "delete_everything", "query": "context" }),
+            },
+            &mut tracker,
+            &ToolDispatchConfig::default(),
+        );
+        assert_eq!(
+            invalid_enum.failure().unwrap().error.category,
+            ToolErrorCategory::InvalidInput
+        );
+
+        let unexpected_field = registry.dispatch_call(
+            ToolCallInput {
+                tool_call_id: "call-extra".into(),
+                tool_name: "project_context_search".into(),
+                input: json!({
+                    "action": "search_project_records",
+                    "query": "context",
+                    "surprise": true
+                }),
+            },
+            &mut tracker,
+            &ToolDispatchConfig::default(),
+        );
+        assert_eq!(
+            unexpected_field.failure().unwrap().error.category,
+            ToolErrorCategory::InvalidInput
+        );
+    }
+
+    #[test]
+    fn dispatch_validates_nested_objects_arrays_and_integer_bounds() {
+        let mut descriptor = descriptor("structured_tool", ToolMutability::ReadOnly);
+        descriptor.input_schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["config", "paths", "limit"],
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["mode"],
+                    "properties": {
+                        "mode": { "type": "string", "enum": ["fast", "thorough"] },
+                        "dryRun": { "type": "boolean" }
+                    }
+                },
+                "paths": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": { "type": "string" }
+                },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 5 }
+            }
+        });
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(descriptor, |_context, _call| {
+                Ok(ToolHandlerOutput::new("ok", json!({ "accepted": true })))
+            }))
+            .expect("register structured tool");
+
+        let valid = registry.dispatch_call(
+            ToolCallInput {
+                tool_call_id: "call-valid".into(),
+                tool_name: "structured_tool".into(),
+                input: json!({
+                    "config": { "mode": "fast", "dryRun": true },
+                    "paths": ["src/lib.rs"],
+                    "limit": 3
+                }),
+            },
+            &mut ToolBudgetTracker::new(ToolBudget::default()),
+            &ToolDispatchConfig::default(),
+        );
+        assert!(matches!(valid, ToolDispatchOutcome::Succeeded(_)));
+
+        for (id, input) in [
+            (
+                "call-bad-array",
+                json!({
+                    "config": { "mode": "fast" },
+                    "paths": ["src/lib.rs", 42],
+                    "limit": 3
+                }),
+            ),
+            (
+                "call-bad-nested",
+                json!({
+                    "config": { "mode": "sideways" },
+                    "paths": ["src/lib.rs"],
+                    "limit": 3
+                }),
+            ),
+            (
+                "call-bad-bound",
+                json!({
+                    "config": { "mode": "fast" },
+                    "paths": ["src/lib.rs"],
+                    "limit": 9
+                }),
+            ),
+        ] {
+            let outcome = registry.dispatch_call(
+                ToolCallInput {
+                    tool_call_id: id.into(),
+                    tool_name: "structured_tool".into(),
+                    input,
+                },
+                &mut ToolBudgetTracker::new(ToolBudget::default()),
+                &ToolDispatchConfig::default(),
+            );
+            assert_eq!(
+                outcome.failure().unwrap().error.category,
+                ToolErrorCategory::InvalidInput
+            );
+        }
     }
 
     #[test]

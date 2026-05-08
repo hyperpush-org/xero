@@ -16,7 +16,7 @@ pub mod usage_events;
 pub use agent_core::{
     append_user_message, cancel_owned_agent_run, cancelled_error, continue_owned_agent_run,
     create_owned_agent_run, create_provider_adapter, drive_owned_agent_continuation,
-    drive_owned_agent_run, prepare_owned_agent_continuation,
+    drive_owned_agent_run, export_harness_contract, prepare_owned_agent_continuation,
     prepare_owned_agent_continuation_for_drive, run_agent_definition_quality_eval_suite,
     run_agent_harness_eval_suite, run_owned_agent_task, run_xero_quality_eval_suites,
     subscribe_agent_events, AgentAutoCompactPreference, AgentDefinitionEvalFixtureKind,

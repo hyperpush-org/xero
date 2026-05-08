@@ -1912,14 +1912,7 @@ fn agent_memory_kind_from_provider(value: &str) -> Option<project_store::AgentMe
 }
 
 pub(crate) fn repo_fingerprint(repo_root: &Path) -> JsonValue {
-    let started = Instant::now();
-    let fingerprint = cached_repo_fingerprint(repo_root, || build_repo_fingerprint(repo_root));
-    eprintln!(
-        "[runtime-latency] repo_fingerprint repo_root={} duration_ms={}",
-        repo_root.display(),
-        started.elapsed().as_millis()
-    );
-    fingerprint
+    cached_repo_fingerprint(repo_root, || build_repo_fingerprint(repo_root))
 }
 
 fn build_repo_fingerprint(repo_root: &Path) -> JsonValue {

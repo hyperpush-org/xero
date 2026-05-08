@@ -1,6 +1,5 @@
 use super::*;
 use sha2::{Digest, Sha256};
-use std::time::Instant;
 use xero_agent_core::{
     production_runtime_trace_metadata, validate_production_runtime_contract,
     ProductionRuntimeContract, RuntimeStoreDescriptor,
@@ -73,7 +72,6 @@ pub fn create_owned_agent_run(
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_selection.snapshot, &request.tool_runtime);
-    let tool_registry_started = Instant::now();
     let tool_registry = ToolRegistry::for_prompt_with_options(
         &request.repo_root,
         &request.prompt,
@@ -85,13 +83,6 @@ pub fn create_owned_agent_run(
             agent_tool_policy: agent_tool_policy.clone(),
         },
     );
-    eprintln!(
-        "[runtime-latency] ToolRegistry::for_prompt_with_options project_id={} run_id={} duration_ms={}",
-        request.project_id,
-        request.run_id,
-        tool_registry_started.elapsed().as_millis()
-    );
-    let system_prompt_started = Instant::now();
     let system_prompt = assemble_system_prompt_for_session(
         &request.repo_root,
         Some(&request.project_id),
@@ -102,12 +93,6 @@ pub fn create_owned_agent_run(
         Some(&definition_selection.snapshot),
         Some(request.tool_runtime.soul_settings()),
     )?;
-    eprintln!(
-        "[runtime-latency] compile_system_prompt_for_session project_id={} run_id={} duration_ms={}",
-        request.project_id,
-        request.run_id,
-        system_prompt_started.elapsed().as_millis()
-    );
     let provider = create_provider_adapter(request.provider_config.clone())?;
     let runtime_contract = if matches!(&request.provider_config, AgentProviderConfig::Fake) {
         None

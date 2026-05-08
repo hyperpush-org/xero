@@ -1,7 +1,6 @@
 use std::{
     path::{Path, PathBuf},
     thread,
-    time::Instant,
 };
 
 use rand::RngCore;
@@ -235,7 +234,6 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     initial_prompt: Option<String>,
     initial_attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
 ) -> CommandResult<RuntimeRunLaunchOutcome> {
-    let started = Instant::now();
     let repo_root = resolve_project_root(app, state, project_id)?;
     project_store::ensure_agent_session_active(&repo_root, project_id, agent_session_id)?;
     let before = load_persisted_runtime_run(&repo_root, project_id, agent_session_id)?;
@@ -354,11 +352,6 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
         }
     }
 
-    eprintln!(
-        "[runtime-latency] start_runtime_run accepted project_id={project_id} agent_session_id={agent_session_id} run_id={run_id} duration_ms={}",
-        started.elapsed().as_millis()
-    );
-
     Ok(RuntimeRunLaunchOutcome {
         repo_root,
         snapshot,
@@ -372,12 +365,7 @@ pub(crate) fn spawn_owned_runtime_prompt_start<R: Runtime + 'static>(
     task: OwnedRuntimePromptStart,
 ) {
     thread::spawn(move || {
-        if let Err(error) = bootstrap_and_drive_owned_runtime_prompt(&app, &state, task) {
-            eprintln!(
-                "[runtime-latency] owned runtime background bootstrap failed before durable failure update: {}: {}",
-                error.code, error.message
-            );
-        }
+        let _ = bootstrap_and_drive_owned_runtime_prompt(&app, &state, task);
     });
 }
 
@@ -386,7 +374,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
     state: &DesktopState,
     task: OwnedRuntimePromptStart,
 ) -> CommandResult<()> {
-    let total_started = Instant::now();
     let mut runtime_snapshot = task.accepted_snapshot.clone();
 
     runtime_snapshot = emit_owned_runtime_progress(
@@ -398,7 +385,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         "Checking provider.",
     )?;
 
-    let preflight_started = Instant::now();
     let provider_preflight = match ensure_owned_runtime_provider_turn_capabilities(
         app,
         state,
@@ -408,15 +394,7 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         &task.run_controls.active.model_id,
         &task.attachments,
     ) {
-        Ok(snapshot) => {
-            eprintln!(
-                "[runtime-latency] provider_preflight project_id={} run_id={} duration_ms={}",
-                task.project_id,
-                task.run_id,
-                preflight_started.elapsed().as_millis()
-            );
-            snapshot
-        }
+        Ok(snapshot) => snapshot,
         Err(error) => {
             let _ = emit_owned_runtime_failure(
                 app,
@@ -499,7 +477,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         }
     };
 
-    let create_started = Instant::now();
     if let Err(error) = create_owned_agent_run(&owned_request) {
         drop(lease);
         let _ = emit_owned_runtime_failure(
@@ -511,13 +488,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         );
         return Ok(());
     }
-    eprintln!(
-        "[runtime-latency] create_owned_agent_run project_id={} run_id={} duration_ms={}",
-        task.project_id,
-        task.run_id,
-        create_started.elapsed().as_millis()
-    );
-
     runtime_snapshot = apply_owned_runtime_run_pending_controls_with_status(
         &task.repo_root,
         &runtime_snapshot,
@@ -566,12 +536,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         emit_runtime_run_updated(app, Some(&runtime_run))?;
     }
     drop(lease);
-    eprintln!(
-        "[runtime-latency] owned_runtime_prompt_background project_id={} run_id={} duration_ms={}",
-        task.project_id,
-        task.run_id,
-        total_started.elapsed().as_millis()
-    );
     Ok(())
 }
 
@@ -952,7 +916,6 @@ pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
                 model_id,
                 &required_features,
             )?;
-        let cache_started = Instant::now();
         let reusable_snapshot = match crate::provider_preflight::latest_provider_preflight_snapshot(
             app,
             state,
@@ -967,11 +930,6 @@ pub(crate) fn ensure_owned_runtime_provider_turn_capabilities<R: Runtime>(
             ),
             None => None,
         };
-        eprintln!(
-            "[runtime-latency] provider_preflight_cache_lookup profile_id={profile_id} provider_id={provider_id} model_id={model_id} hit={} duration_ms={}",
-            reusable_snapshot.is_some(),
-            cache_started.elapsed().as_millis()
-        );
         match reusable_snapshot {
             Some(snapshot) => snapshot,
             None => crate::provider_preflight::run_selected_provider_preflight(

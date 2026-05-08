@@ -1392,6 +1392,12 @@ fn ensure_context_write_allowed(
     runtime_agent_id: RuntimeAgentIdDto,
     request: &AutonomousProjectContextRequest,
 ) -> CommandResult<()> {
+    if runtime_agent_id == RuntimeAgentIdDto::Ask {
+        return Err(CommandError::user_fixable(
+            "project_context_write_forbidden_for_ask",
+            "Ask can search and read durable project context, but its default runtime surface cannot record or update context.",
+        ));
+    }
     if runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
         return Err(CommandError::user_fixable(
             "project_context_write_forbidden_for_agent_create",

@@ -67,6 +67,39 @@ pub(crate) fn drive_provider_loop(
         )?;
         let _manifest_id = turn_context_package.manifest.manifest_id.as_str();
         let _fragment_count = turn_context_package.compilation.fragments.len();
+        append_event(
+            repo_root,
+            project_id,
+            run_id,
+            AgentRunEventKind::ContextManifestRecorded,
+            json!({
+                "kind": "provider_context_manifest",
+                "manifestId": turn_context_package.manifest.manifest_id.clone(),
+                "contextHash": turn_context_package.manifest.context_hash.clone(),
+                "turnIndex": turn_index,
+                "retrievalQueryIds": turn_context_package.manifest.retrieval_query_ids.clone(),
+                "retrievalResultIds": turn_context_package.manifest.retrieval_result_ids.clone(),
+                "deliveryModel": turn_context_package.manifest.manifest["retrieval"]["deliveryModel"].clone(),
+                "rawContextInjected": turn_context_package.manifest.manifest["retrieval"]["rawContextInjected"].clone(),
+                "admittedProviderPreflightHash": turn_context_package.manifest.manifest["admittedProviderPreflightHash"].clone(),
+            }),
+        )?;
+        append_event(
+            repo_root,
+            project_id,
+            run_id,
+            AgentRunEventKind::RetrievalPerformed,
+            json!({
+                "kind": "provider_context_retrieval",
+                "manifestId": turn_context_package.manifest.manifest_id.clone(),
+                "turnIndex": turn_index,
+                "queryIds": turn_context_package.manifest.manifest["retrieval"]["queryIds"].clone(),
+                "resultIds": turn_context_package.manifest.manifest["retrieval"]["resultIds"].clone(),
+                "method": turn_context_package.manifest.manifest["retrieval"]["method"].clone(),
+                "diagnostic": turn_context_package.manifest.manifest["retrieval"]["diagnostic"].clone(),
+                "freshnessDiagnostics": turn_context_package.manifest.manifest["retrieval"]["freshnessDiagnostics"].clone(),
+            }),
+        )?;
         fail_closed_if_context_over_budget(
             repo_root,
             project_id,

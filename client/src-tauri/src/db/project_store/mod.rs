@@ -15,6 +15,7 @@ mod code_history;
 mod code_rollback;
 mod connection;
 mod freshness;
+mod lance_health;
 mod notifications;
 mod operator;
 mod plugins;

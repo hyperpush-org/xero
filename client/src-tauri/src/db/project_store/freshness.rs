@@ -582,6 +582,51 @@ mod tests {
     }
 
     #[test]
+    fn capture_source_fingerprints_normalizes_absolute_paths_inside_repo() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path();
+        fs::create_dir_all(repo_root.join("src")).expect("src dir");
+        let source_path = repo_root.join("src/absolute.rs");
+        fs::write(&source_path, "pub fn absolute() {}\n").expect("write source");
+
+        let captured = capture_source_fingerprints(
+            repo_root,
+            [SourceFingerprintInput::related_path(
+                source_path.to_string_lossy().into_owned(),
+            )],
+            "2026-05-03T00:00:00Z",
+        )
+        .expect("capture fingerprints");
+        let document: SourceFingerprintDocument =
+            serde_json::from_str(&captured.source_fingerprints_json).expect("fingerprints json");
+
+        assert_eq!(captured.freshness_state, FreshnessState::Current);
+        assert_eq!(document.fingerprints[0].path, "src/absolute.rs");
+    }
+
+    #[test]
+    fn capture_source_fingerprints_ignores_parent_dir_attempts_and_directories() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path();
+        fs::create_dir_all(repo_root.join("src/nested")).expect("nested dir");
+
+        let captured = capture_source_fingerprints(
+            repo_root,
+            [
+                SourceFingerprintInput::related_path("../outside.rs"),
+                SourceFingerprintInput::related_path("src/nested"),
+            ],
+            "2026-05-03T00:00:00Z",
+        )
+        .expect("capture fingerprints");
+        let document: SourceFingerprintDocument =
+            serde_json::from_str(&captured.source_fingerprints_json).expect("fingerprints json");
+
+        assert_eq!(captured.freshness_state, FreshnessState::SourceUnknown);
+        assert!(document.fingerprints.is_empty());
+    }
+
+    #[test]
     fn evaluate_freshness_marks_changed_hash_stale() {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path();

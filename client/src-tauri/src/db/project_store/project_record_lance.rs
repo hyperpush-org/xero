@@ -25,7 +25,7 @@ use crate::commands::{CommandError, RuntimeAgentIdDto};
 
 use super::{
     agent_embeddings::AGENT_RETRIEVAL_EMBEDDING_DIM, agent_memory_lance::PROJECT_LANCE_SUBDIR,
-    FreshnessUpdate, SupersessionUpdate,
+    lance_health, FreshnessUpdate, SupersessionUpdate,
 };
 
 pub const PROJECT_RECORD_EMBEDDING_DIM: i32 = AGENT_RETRIEVAL_EMBEDDING_DIM;
@@ -240,12 +240,7 @@ async fn ensure_current_table_schema(
 }
 
 fn table_schema_supports_current_records(table_schema: &Schema) -> bool {
-    schema().fields().iter().all(|expected| {
-        let Ok(actual) = table_schema.field_with_name(expected.name()) else {
-            return false;
-        };
-        actual.data_type() == expected.data_type() && actual.is_nullable() == expected.is_nullable()
-    })
+    lance_health::table_schema_supports_expected(table_schema, schema().as_ref())
 }
 
 async fn reset_project_records_table(connection: &Connection) -> Result<Table, CommandError> {
@@ -844,10 +839,7 @@ fn column_embedding<'a>(
 }
 
 fn missing_column(name: &str) -> CommandError {
-    CommandError::system_fault(
-        "project_record_lance_schema_drift",
-        format!("Xero project-record lance dataset is missing column `{name}`."),
-    )
+    lance_health::schema_drift_error("project_record_lance_schema_drift", "project-record", name)
 }
 
 fn require_str<'a>(

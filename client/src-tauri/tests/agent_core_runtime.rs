@@ -21,9 +21,11 @@ use xero_agent_core::{
     ProductionReadinessFocusedTestResult, ProductionReadinessFocusedTestStatus,
     ProductionReadinessStatus, ProviderCapabilityCatalogInput, ProviderPreflightInput,
     ProviderPreflightRequiredFeatures, ProviderPreflightSource, RuntimeEventKind,
-    StaticToolHandler, ToolBudget, ToolCallInput, ToolDispatchConfig, ToolErrorCategory,
+    RuntimeExecutionMode, RuntimeStoreDescriptor, RuntimeStoreKind, StaticToolHandler,
+    ToolApprovalRequirement, ToolBudget, ToolCallInput, ToolDispatchConfig, ToolErrorCategory,
     ToolGroupExecutionMode, ToolHandlerOutput, ToolMutability, ToolRegistryV2,
-    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS, PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS,
+    ToolSandboxRequirement, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
+    PRODUCTION_READINESS_REQUIRED_TEST_COMMANDS,
 };
 use xero_desktop_lib::{
     commands::{
@@ -39,14 +41,14 @@ use xero_desktop_lib::{
     registry::{self, RegistryProjectRecord},
     runtime::{
         continue_owned_agent_run, create_owned_agent_run, drive_owned_agent_run,
-        run_owned_agent_task, AgentAutoCompactPreference, AgentProviderConfig,
-        AgentRunCancellationToken, AgentRunSupervisor, AgentToolCall, AutonomousCommandRequest,
-        AutonomousCommandSessionOperation, AutonomousCommandSessionStartRequest,
-        AutonomousCommandSessionStopRequest, AutonomousToolOutput, AutonomousToolRuntime,
-        ContinueOwnedAgentRunRequest, DesktopAgentCoreRuntime, DesktopCompactSessionRequest,
-        DesktopForkSessionRequest, DesktopRejectActionRequest, DesktopRunDriveMode,
-        DesktopStartRunRequest, OpenAiCompatibleProviderConfig, OwnedAgentRunRequest, ToolRegistry,
-        ToolRegistryOptions,
+        export_harness_contract, run_owned_agent_task, AgentAutoCompactPreference,
+        AgentProviderConfig, AgentRunCancellationToken, AgentRunSupervisor, AgentToolCall,
+        AutonomousCommandRequest, AutonomousCommandSessionOperation,
+        AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
+        AutonomousToolOutput, AutonomousToolRuntime, ContinueOwnedAgentRunRequest,
+        DesktopAgentCoreRuntime, DesktopCompactSessionRequest, DesktopForkSessionRequest,
+        DesktopRejectActionRequest, DesktopRunDriveMode, DesktopStartRunRequest,
+        OpenAiCompatibleProviderConfig, OwnedAgentRunRequest, ToolRegistry, ToolRegistryOptions,
     },
     state::DesktopState,
 };
@@ -1157,6 +1159,94 @@ fn desktop_facade_compact_session_persists_artifact_and_trace() {
 }
 
 #[test]
+fn core_runtime_contract_inventory_covers_store_modes_tools_and_manifest_metadata() {
+    let root = TempDir::new().unwrap();
+    let contract = export_harness_contract(root.path(), Default::default())
+        .expect("export harness contract inventory");
+
+    assert!(contract
+        .tool_registry_snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.descriptors_v2.iter())
+        .any(|descriptor| descriptor.name == "project_context_search"
+            && descriptor.input_schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("project_context_search actions")
+                .contains(&json!("search_project_records"))));
+    assert!(contract
+        .tool_registry_snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.descriptors_v2.iter())
+        .any(|descriptor| descriptor.name == "project_context_get"
+            && descriptor.input_schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("project_context_get actions")
+                .contains(&json!("get_project_record"))));
+    assert!(contract
+        .tool_registry_snapshots
+        .iter()
+        .any(|snapshot| !snapshot.descriptors_v2.is_empty()
+            && !snapshot.descriptors_v2_sha256.is_empty()));
+
+    let real_store = RuntimeStoreDescriptor::app_data_project_state(
+        "project-contract",
+        root.path()
+            .join("app-data")
+            .join("projects")
+            .join("project-contract")
+            .join("state.db"),
+    );
+    let real_contract = xero_agent_core::ProductionRuntimeContract::real_provider(
+        "desktop_owned_agent",
+        "project-contract",
+        "openai_api",
+        "gpt-5.4",
+        real_store,
+    );
+    assert_eq!(
+        real_contract.execution_mode,
+        RuntimeExecutionMode::ProductionRealProvider
+    );
+    assert_eq!(
+        real_contract.store.kind,
+        RuntimeStoreKind::AppDataProjectState
+    );
+    xero_agent_core::validate_production_runtime_contract(&real_contract)
+        .expect("real provider contract requires app-data state.db");
+
+    let harness_contract = xero_agent_core::ProductionRuntimeContract::fake_provider_harness(
+        "headless_harness",
+        "project-contract",
+        "fake-model",
+        RuntimeStoreDescriptor::file_backed_headless_json(
+            "project-contract",
+            root.path().join("agent-core-runs.json"),
+        ),
+    );
+    assert_eq!(
+        harness_contract.execution_mode,
+        RuntimeExecutionMode::HarnessFakeProvider
+    );
+    assert_eq!(
+        harness_contract.store.kind,
+        RuntimeStoreKind::FileBackedHeadlessJson
+    );
+    xero_agent_core::validate_production_runtime_contract(&harness_contract)
+        .expect("fake harness may use file-backed harness storage");
+
+    let manifest = json!({
+        "retrieval": {
+            "deliveryModel": "tool_mediated",
+            "rawContextInjected": false,
+            "queryIds": ["context-retrieval-contract"],
+            "resultIds": ["context-retrieval-contract-result-1"]
+        }
+    });
+    assert_eq!(manifest["retrieval"]["deliveryModel"], "tool_mediated");
+    assert_eq!(manifest["retrieval"]["rawContextInjected"], false);
+}
+
+#[test]
 fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
     let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -1371,6 +1461,124 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         })
         .expect_err("unknown tools should be rejected");
     assert_eq!(unknown.code, "agent_tool_call_unknown");
+}
+
+#[test]
+fn tool_registry_v2_validates_every_builtin_descriptor_sample() {
+    fn sample_for_schema(schema: &serde_json::Value) -> serde_json::Value {
+        if let Some(branch) = schema
+            .get("oneOf")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|branches| branches.first())
+        {
+            return sample_for_schema(branch);
+        }
+        match schema
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("object")
+        {
+            "array" => json!([sample_for_schema(
+                schema
+                    .get("items")
+                    .unwrap_or(&serde_json::Value::String("sample".into()))
+            )]),
+            "boolean" => json!(true),
+            "integer" => json!(schema
+                .get("minimum")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(1)
+                .max(1)),
+            "number" => json!(1.0),
+            "object" => {
+                let mut object = serde_json::Map::new();
+                let properties = schema
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object);
+                if let (Some(required), Some(properties)) = (
+                    schema.get("required").and_then(serde_json::Value::as_array),
+                    properties,
+                ) {
+                    for field in required.iter().filter_map(serde_json::Value::as_str) {
+                        if let Some(field_schema) = properties.get(field) {
+                            object.insert(field.to_string(), sample_for_schema(field_schema));
+                        }
+                    }
+                }
+                serde_json::Value::Object(object)
+            }
+            "string" => schema
+                .get("enum")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|values| values.first())
+                .cloned()
+                .unwrap_or_else(|| json!("sample")),
+            _ => serde_json::Value::Null,
+        }
+    }
+
+    fn invalid_for_schema(schema: &serde_json::Value) -> serde_json::Value {
+        if schema.get("oneOf").is_some() {
+            return json!({"xeroUnexpected": true});
+        }
+        let mut sample = sample_for_schema(schema);
+        if let Some(object) = sample.as_object_mut() {
+            object.insert("xeroUnexpected".into(), json!(true));
+            return sample;
+        }
+        json!(null)
+    }
+
+    let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
+        skill_tool_enabled: true,
+        ..ToolRegistryOptions::default()
+    });
+    let mut registry_v2 = ToolRegistryV2::new();
+    let descriptors = registry.descriptors_v2();
+    for descriptor in descriptors.iter().cloned() {
+        let mut descriptor = descriptor;
+        descriptor.approval_requirement = ToolApprovalRequirement::Never;
+        descriptor.sandbox_requirement = ToolSandboxRequirement::None;
+        registry_v2
+            .register(StaticToolHandler::new(descriptor, |_context, _call| {
+                Ok(ToolHandlerOutput::new("ok", json!({ "accepted": true })))
+            }))
+            .expect("register builtin descriptor");
+    }
+
+    for descriptor in &descriptors {
+        let valid = registry_v2.dispatch_call(
+            ToolCallInput {
+                tool_call_id: format!("valid-{}", descriptor.name),
+                tool_name: descriptor.name.clone(),
+                input: sample_for_schema(&descriptor.input_schema),
+            },
+            &mut xero_agent_core::ToolBudgetTracker::new(ToolBudget::default()),
+            &ToolDispatchConfig::default(),
+        );
+        assert!(
+            matches!(valid, xero_agent_core::ToolDispatchOutcome::Succeeded(_)),
+            "valid sample failed for {}: {valid:#?}",
+            descriptor.name
+        );
+
+        let invalid = registry_v2.dispatch_call(
+            ToolCallInput {
+                tool_call_id: format!("invalid-{}", descriptor.name),
+                tool_name: descriptor.name.clone(),
+                input: invalid_for_schema(&descriptor.input_schema),
+            },
+            &mut xero_agent_core::ToolBudgetTracker::new(ToolBudget::default()),
+            &ToolDispatchConfig::default(),
+        );
+        assert_eq!(
+            invalid.failure().unwrap().error.category,
+            ToolErrorCategory::InvalidInput,
+            "invalid sample should fail for {}",
+            descriptor.name
+        );
+    }
 }
 
 #[test]
