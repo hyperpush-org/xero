@@ -215,8 +215,29 @@
   color: var(--foreground);
 }
 
+.agent-visualization .react-flow__controls-button:disabled {
+  cursor: not-allowed;
+  color: color-mix(in oklab, var(--muted-foreground) 46%, transparent);
+}
+
+.agent-visualization .react-flow__controls-button:disabled:hover {
+  background: transparent;
+}
+
 .agent-visualization .react-flow__controls-button svg {
   fill: currentColor;
+}
+
+.agent-visualization.is-locked .react-flow__pane {
+  cursor: grab;
+}
+
+.agent-visualization.is-locked .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.agent-visualization.is-locked .react-flow__nodes {
+  pointer-events: none;
 }
 
 .agent-visualization .react-flow__edge-path {

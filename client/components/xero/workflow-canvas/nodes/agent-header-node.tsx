@@ -30,7 +30,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
   const [showPurpose, setShowPurpose] = useState(false)
   const hasPurpose = Boolean(header.taskPurpose)
   const expanded = hasPurpose && showPurpose
-  const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
 
   useEffect(() => {
     reportExpanded(id, expanded)
@@ -139,7 +139,11 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
         {hasPurpose ? (
           <button
             type="button"
-            onClick={() => setShowPurpose((v) => !v)}
+            onClick={() => {
+              if (locked) return
+              setShowPurpose((v) => !v)
+            }}
+            disabled={locked}
             className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors border-t border-border/40"
           >
             {expanded ? (

@@ -89,7 +89,7 @@ const COLLAPSED_TRIGGER_LIMIT = 3
 export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbTableFlowNode>) {
   const { table, touchpoint, purpose, triggers, columns } = data
   const [expanded, setExpanded] = useState(false)
-  const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
   const canExpand = columns.length > 0
   const isExpanded = canExpand && expanded
 
@@ -161,7 +161,11 @@ export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbT
             {hiddenCount > 0 ? (
               <button
                 type="button"
-                onClick={() => setExpanded(true)}
+                onClick={() => {
+                  if (locked) return
+                  setExpanded(true)
+                }}
+                disabled={locked}
                 className="text-[9px] px-1 py-0.5 rounded border border-dashed border-border/60 text-muted-foreground hover:bg-muted/40"
               >
                 +{hiddenCount} more
@@ -182,7 +186,11 @@ export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbT
         {canExpand ? (
           <button
             type="button"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => {
+              if (locked) return
+              setExpanded((v) => !v)
+            }}
+            disabled={locked}
             className="agent-card-base flex w-full items-center gap-1 px-2.5 py-1 text-left text-[10px] text-muted-foreground hover:bg-muted/40 border-t border-border/50"
           >
             {isExpanded ? (

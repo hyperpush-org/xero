@@ -27,7 +27,7 @@ export const PromptNode = memo(function PromptNode({ id, data }: NodeProps<Promp
   const { prompt } = data
   const [expanded, setExpanded] = useState(false)
   const tokenEstimate = Math.ceil(prompt.body.length / 4)
-  const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
 
   useEffect(() => {
     reportExpanded(id, expanded)
@@ -71,7 +71,11 @@ export const PromptNode = memo(function PromptNode({ id, data }: NodeProps<Promp
         </div>
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => {
+            if (locked) return
+            setExpanded((v) => !v)
+          }}
+          disabled={locked}
           className="agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
         >
           <span

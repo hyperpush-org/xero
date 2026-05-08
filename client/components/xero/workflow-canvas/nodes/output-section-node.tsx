@@ -31,7 +31,7 @@ const EMPHASIS_LABEL: Record<string, string> = {
 export const OutputSectionNode = memo(function OutputSectionNode({ id, data }: NodeProps<OutputSectionFlowNode>) {
   const { section } = data
   const [expanded, setExpanded] = useState(false)
-  const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
 
   useEffect(() => {
     reportExpanded(id, expanded)
@@ -57,11 +57,14 @@ export const OutputSectionNode = memo(function OutputSectionNode({ id, data }: N
       >
         <button
           type="button"
-          onClick={() => hasDetail && setExpanded((v) => !v)}
-          disabled={!hasDetail}
+          onClick={() => {
+            if (locked || !hasDetail) return
+            setExpanded((v) => !v)
+          }}
+          disabled={locked || !hasDetail}
           className={cn(
             'flex w-full items-center gap-2 px-2 py-1.5 text-left',
-            hasDetail && 'hover:bg-muted/40 cursor-pointer',
+            hasDetail && !locked && 'hover:bg-muted/40 cursor-pointer',
           )}
         >
           <span

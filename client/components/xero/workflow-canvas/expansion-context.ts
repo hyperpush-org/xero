@@ -8,11 +8,13 @@ import { createContext, useContext } from 'react'
  * height for expanded nodes so neighbours visibly shift to make room.
  */
 export interface AgentCanvasExpansionContextValue {
+  locked: boolean
   setExpanded: (nodeId: string, expanded: boolean) => void
 }
 
 export const AgentCanvasExpansionContext =
   createContext<AgentCanvasExpansionContextValue>({
+    locked: false,
     setExpanded: () => {},
   })
 

@@ -758,6 +758,47 @@ describe('AgentVisualization', () => {
     }
   })
 
+  it('locks card interactions while leaving viewport controls available', () => {
+    installResizeObserverStub()
+
+    const { container, getByLabelText } = render(<AgentVisualization detail={detail()} />)
+    const canvas = container.querySelector<HTMLElement>('.agent-visualization')
+    const lockButton = getByLabelText('Lock canvas') as HTMLButtonElement
+    const snapButton = getByLabelText(/snap to grid/i) as HTMLButtonElement
+    const resetButton = getByLabelText('Reset layout') as HTMLButtonElement
+    const toolButton = container.querySelector<HTMLButtonElement>(
+      '.react-flow__node[data-id="tool:Read"] button',
+    )
+    const toolCard = toolButton?.closest<HTMLElement>('.agent-card')
+
+    expect(canvas).not.toBeNull()
+    expect(toolButton).not.toBeNull()
+    expect(toolCard).not.toBeNull()
+
+    fireEvent.click(lockButton)
+
+    expect(canvas!.classList.contains('is-locked')).toBe(true)
+    expect(getByLabelText('Unlock canvas')).toBe(lockButton)
+    expect(lockButton.getAttribute('aria-pressed')).toBe('true')
+    expect(snapButton.disabled).toBe(true)
+    expect(resetButton.disabled).toBe(true)
+    expect(toolButton!.disabled).toBe(true)
+
+    fireEvent.click(toolButton!)
+    expect(toolCard!.classList.contains('is-card-expanded')).toBe(false)
+
+    fireEvent.click(lockButton)
+
+    expect(canvas!.classList.contains('is-locked')).toBe(false)
+    expect(getByLabelText('Lock canvas')).toBe(lockButton)
+    expect(snapButton.disabled).toBe(false)
+    expect(resetButton.disabled).toBe(false)
+    expect(toolButton!.disabled).toBe(false)
+
+    fireEvent.click(toolButton!)
+    expect(toolCard!.classList.contains('is-card-expanded')).toBe(true)
+  })
+
   it('expands a tool card when its row is clicked inside a category frame', () => {
     installResizeObserverStub()
 

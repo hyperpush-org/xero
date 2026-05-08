@@ -106,6 +106,7 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
       | 'applySelectiveUndo'
       | 'returnSessionToHere'
       | 'getSessionContextSnapshot'
+      | 'getSessionTranscript'
       | 'stageAgentAttachment'
       | 'discardAgentAttachment'
     >
@@ -193,6 +194,14 @@ export interface AgentRuntimeProps {
   onSelectSidebarSession?: (agentSessionId: string) => void
   /** Close the sidebar from the agent header (X button). */
   onCloseSidebar?: () => void
+  /**
+   * Historical conversation turns from prior runs in this agent session
+   * (loaded from the persisted session transcript). When provided, they are
+   * prepended ahead of the live stream so a same-session handoff reads as a
+   * continuous conversation. Items belonging to the active run must already
+   * be excluded by the caller.
+   */
+  historicalConversationTurns?: readonly ConversationTurn[]
 }
 
 const EMPTY_RUNTIME_STREAM_ITEMS: RuntimeStreamViewItem[] = []
@@ -1215,6 +1224,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   sidebarSessions,
   onSelectSidebarSession,
   onCloseSidebar,
+  historicalConversationTurns,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -1244,12 +1254,24 @@ export const AgentRuntime = memo(function AgentRuntime({
     [runtimeStreamItemsForTurns],
   )
   const visibleTurns = conversationProjection.visibleTurns
+  // Historical turns from prior runs in this agent session (loaded from the
+  // persisted session transcript) are prepended so the conversation reads as
+  // a continuous thread across same-session handoffs. The active run's items
+  // come from the live stream and are excluded from `historicalConversationTurns`
+  // by the caller, so there is no duplication to dedupe here.
+  const visibleTurnsWithHistory = useMemo(
+    () =>
+      historicalConversationTurns && historicalConversationTurns.length > 0
+        ? [...historicalConversationTurns, ...visibleTurns]
+        : visibleTurns,
+    [historicalConversationTurns, visibleTurns],
+  )
   const visibleTurnsForDisplay = useMemo(
     () =>
       useBackgroundPaneFastPath
-        ? sliceBackgroundPaneTurns(visibleTurns)
-        : visibleTurns,
-    [useBackgroundPaneFastPath, visibleTurns],
+        ? sliceBackgroundPaneTurns(visibleTurnsWithHistory)
+        : visibleTurnsWithHistory,
+    [useBackgroundPaneFastPath, visibleTurnsWithHistory],
   )
   const [optimisticPromptTurn, setOptimisticPromptTurn] = useState<PendingPromptTurn | null>(null)
   const selectedQueuedPromptTurn = useMemo<PendingPromptTurn | null>(() => {

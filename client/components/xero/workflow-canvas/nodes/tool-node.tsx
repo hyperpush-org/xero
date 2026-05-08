@@ -44,7 +44,7 @@ const EFFECT_DOT: Record<string, string> = {
 export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowNode>) {
   const { tool, directConnectionHandles } = data
   const [expanded, setExpanded] = useState(false)
-  const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
   const displayName = humanizeIdentifier(tool.name)
   const displayCategory = toolCategoryPresentationForGroup(tool.group).label
 
@@ -80,8 +80,10 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation()
+            if (locked) return
             setExpanded((v) => !v)
           }}
+          disabled={locked}
           className="nodrag nopan agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
           aria-expanded={expanded}
         >

@@ -160,6 +160,13 @@ export type ConversationTurn =
       pendingDecision: 'approve' | 'reject' | 'resume' | null
       isResolved: boolean
     }
+  | {
+      id: string
+      kind: 'handoff_notice'
+      sequence: number
+      sourceRunId: string
+      targetRunId: string
+    }
 
 export type CodeUndoTargetKind = 'change_group' | 'file_change' | 'hunks'
 
@@ -523,6 +530,8 @@ function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
           return `Agent run failed:\n${turn.message}${turn.code.trim().length > 0 ? `\nCode: ${turn.code}` : ''}`
         case 'action_prompt':
           return `Agent prompt:\n${turn.title}${turn.detail.trim().length > 0 ? `\n${turn.detail}` : ''}`
+        case 'handoff_notice':
+          return '— Run continued in a fresh session —'
         default:
           return ''
       }
@@ -828,6 +837,10 @@ function ConversationTurnRow({
     )
   }
 
+  if (turn.kind === 'handoff_notice') {
+    return <HandoffNoticeRow />
+  }
+
   return (
       <ActionCard
         title={turn.title}
@@ -838,6 +851,21 @@ function ConversationTurnRow({
         connectsTop={connectsTop}
         connectsBottom={connectsBottom}
       />
+  )
+}
+
+function HandoffNoticeRow() {
+  return (
+    <div
+      role="note"
+      aria-label="Run continued in a fresh session"
+      className="flex items-center gap-2.5 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground"
+    >
+      <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" aria-hidden />
+      <span className="min-w-0">
+        Run continued in a fresh session — context budget filled, so Xero handed this conversation off to a new same-type run. Earlier turns above are from the previous run; the conversation continues below.
+      </span>
+    </div>
   )
 }
 
@@ -2448,6 +2476,17 @@ function DenseTurnItem({
         <span className="shrink-0 select-none text-primary/80">?</span>
         <span className="min-w-0 flex-1 truncate" title={`${turn.title}: ${turn.detail}`}>
           {truncateForLine(turn.title)}
+        </span>
+      </li>
+    )
+  }
+
+  if (turn.kind === 'handoff_notice') {
+    return (
+      <li className="flex items-start gap-1.5 px-1 text-muted-foreground">
+        <span className="shrink-0 select-none">⤳</span>
+        <span className="min-w-0 flex-1 truncate" title="Run continued in a fresh session">
+          handed off to a fresh same-type session
         </span>
       </li>
     )

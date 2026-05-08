@@ -14,7 +14,7 @@ import { useAgentCanvasExpansion } from '../expansion-context'
 export const ConsumedArtifactNode = memo(function ConsumedArtifactNode({ id, data }: NodeProps<ConsumedArtifactFlowNode>) {
   const { artifact } = data
   const [expanded, setExpanded] = useState(false)
-  const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
 
   useEffect(() => {
     reportExpanded(id, expanded)
@@ -36,7 +36,11 @@ export const ConsumedArtifactNode = memo(function ConsumedArtifactNode({ id, dat
       >
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => {
+            if (locked) return
+            setExpanded((v) => !v)
+          }}
+          disabled={locked}
           className="flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40"
         >
           <GitMerge className="h-3.5 w-3.5 shrink-0 text-teal-500" />

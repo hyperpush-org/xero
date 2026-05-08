@@ -29,7 +29,7 @@ import {
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
-import { LayoutGrid, Magnet } from 'lucide-react'
+import { LayoutGrid, Lock, Magnet, Unlock } from 'lucide-react'
 
 import '@xyflow/react/dist/style.css'
 
@@ -1069,11 +1069,15 @@ function AgentVisualizationInner({
   // computation re-runs even when storage was already empty.
   const [resetNonce, setResetNonce] = useState(0)
   const [snapToGrid, setSnapToGrid] = useState<boolean>(() => readSnapToGridPreference())
+  const [canvasLocked, setCanvasLocked] = useState(false)
   useEffect(() => {
     writeSnapToGridPreference(snapToGrid)
   }, [snapToGrid])
   const handleToggleSnapToGrid = useCallback(() => {
     setSnapToGrid((prev) => !prev)
+  }, [])
+  const handleToggleCanvasLock = useCallback(() => {
+    setCanvasLocked((prev) => !prev)
   }, [])
   const storedPositionsRef = useRef<{ key: string; positions: StoredPositions } | null>(
     null,
@@ -1253,9 +1257,10 @@ function AgentVisualizationInner({
 
   const expansionValue = useMemo<AgentCanvasExpansionContextValue>(
     () => ({
+      locked: canvasLocked,
       setExpanded: setNodeExpanded,
     }),
-    [setNodeExpanded],
+    [canvasLocked, setNodeExpanded],
   )
 
   const layoutResult = useMemo(() => {
@@ -1612,6 +1617,10 @@ function AgentVisualizationInner({
 
   const handlePointerMove = useCallback(
     (event: PointerEvent) => {
+      if (canvasLocked) {
+        clearFocus()
+        return
+      }
       if (event.buttons !== 0 || canvasInteractingRef.current) {
         clearFocus()
         return
@@ -1644,6 +1653,7 @@ function AgentVisualizationInner({
     },
     [
       applyFocusForNode,
+      canvasLocked,
       clearFocus,
       resolveNodeIdAtPoint,
       resolveNodeIdFromElement,
@@ -1703,6 +1713,13 @@ function AgentVisualizationInner({
     clearFocus()
   }, [clearFocus, computedEdges, computedNodes])
 
+  useEffect(() => {
+    if (!canvasLocked) return
+    clearFocus()
+    canvasInteractingRef.current = false
+    canvasRef.current?.classList.remove('is-dragging')
+  }, [canvasLocked, clearFocus])
+
   // Persist positions when the user finishes a drag. Avoids hammering
   // localStorage on every intermediate position event during the gesture.
   // ALSO captures dimension measurements from React Flow so the layout can
@@ -1719,6 +1736,8 @@ function AgentVisualizationInner({
           if (change.dimensions) scheduleMeasuredSize(change.id, change.dimensions)
           continue
         }
+
+        if (canvasLocked) continue
 
         if (change.type === 'position') {
           if (isLaneLabelNodeId(change.id)) {
@@ -1763,6 +1782,7 @@ function AgentVisualizationInner({
       if (nextPositions) commitStoredPositions(nextPositions)
     },
     [
+      canvasLocked,
       commitStoredPositions,
       getStoredPositions,
       persistableNodeIds,
@@ -1905,11 +1925,7 @@ function AgentVisualizationInner({
     <AgentCanvasExpansionContext.Provider value={expansionValue}>
       <div
         ref={canvasRef}
-        className={
-          isAgentExiting
-            ? 'agent-visualization is-agent-exiting h-full w-full'
-            : 'agent-visualization h-full w-full'
-        }
+        className={`agent-visualization${isAgentExiting ? ' is-agent-exiting' : ''}${canvasLocked ? ' is-locked' : ''} h-full w-full`}
       >
         <ReactFlow
           nodes={nodes}
@@ -1917,7 +1933,7 @@ function AgentVisualizationInner({
           onNodesChange={handleNodesChange}
           nodeTypes={NODE_TYPES}
           edgeTypes={EDGE_TYPES}
-          nodesDraggable
+          nodesDraggable={!canvasLocked}
           nodesConnectable={false}
           nodesFocusable={false}
           edgesFocusable={false}
@@ -1961,16 +1977,26 @@ function AgentVisualizationInner({
               className="!bg-card !border !border-border !rounded-md !shadow-sm"
             >
               <ControlButton
+                onClick={handleToggleCanvasLock}
+                aria-label={canvasLocked ? 'Unlock canvas' : 'Lock canvas'}
+                aria-pressed={canvasLocked}
+                style={canvasLocked ? { color: 'var(--primary)' } : undefined}
+              >
+                {canvasLocked ? <Lock /> : <Unlock />}
+              </ControlButton>
+              <ControlButton
                 onClick={handleToggleSnapToGrid}
                 aria-label={snapToGrid ? 'Disable snap to grid' : 'Enable snap to grid'}
                 aria-pressed={snapToGrid}
-                style={snapToGrid ? { color: 'var(--primary)' } : undefined}
+                disabled={canvasLocked}
+                style={snapToGrid && !canvasLocked ? { color: 'var(--primary)' } : undefined}
               >
                 <Magnet />
               </ControlButton>
               <ControlButton
                 onClick={handleResetLayout}
                 aria-label="Reset layout"
+                disabled={canvasLocked}
               >
                 <LayoutGrid />
               </ControlButton>
