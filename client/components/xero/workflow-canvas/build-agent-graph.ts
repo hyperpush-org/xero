@@ -435,6 +435,11 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       type: 'tool-group-frame',
       position: { x: 0, y: 0 },
       data: { label: bucket.label, count: bucket.tools.length },
+      dragHandle: '.agent-tool-group-frame__drag-handle',
+      // React Flow makes draggable parent nodes pointer-active across their
+      // full bounds. The frame is visual chrome; only its label should catch
+      // events so tool buttons inside the frame remain clickable.
+      style: { pointerEvents: 'none' },
     })
     edges.push({
       id: `e:header->${frameId}`,
@@ -460,6 +465,10 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
         // Individual tools no longer drag — the user moves a whole category
         // by grabbing the frame, which pulls every tool inside with it.
         draggable: false,
+        // React Flow sets pointer-events: none on non-draggable/non-selectable
+        // nodes. Tools still own interactive expand buttons, so opt them back
+        // into hit testing without re-enabling node dragging.
+        style: { pointerEvents: 'all' },
         data: { tool },
       })
     }
@@ -555,6 +564,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       id: `e:${id}->${HEADER_NODE_ID}`,
       source: id,
       target: HEADER_NODE_ID,
+      targetHandle: HEADER_SOURCE_HANDLE.consumed,
       type: 'smoothstep',
       data: { category: 'consumed' },
       className: 'agent-edge agent-edge-consume',

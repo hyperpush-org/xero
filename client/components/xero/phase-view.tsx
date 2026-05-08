@@ -1,7 +1,8 @@
 'use client'
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Plus, Workflow as WorkflowIcon, X } from 'lucide-react'
+import { Bot, Plus, Workflow as WorkflowIcon, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
 import { AgentVisualization } from '@/components/xero/workflow-canvas/agent-visualization'
@@ -50,6 +51,9 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
 
   const showAgentVisualization =
     agentDetailStatus === 'ready' && agentDetail !== null
+  const selectedAgent = showAgentVisualization ? agentDetail : null
+  const selectedAgentHeader = selectedAgent?.header ?? null
+  const selectedAgentIsSystem = selectedAgent?.ref.kind === 'built_in'
 
   return (
     <div
@@ -59,6 +63,36 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       )}
       role="presentation"
     >
+      {showAgentVisualization ? (
+        <div
+          aria-label="Selected agent"
+          className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_18rem)))] items-center gap-2 rounded-md px-2"
+        >
+          <Bot
+            aria-label="Agent"
+            role="img"
+            className="size-3.5 shrink-0 text-foreground/65"
+          />
+          <span className="min-w-0 truncate text-[12.5px] font-semibold text-foreground/80">
+            {selectedAgentHeader?.displayName}
+          </span>
+          {selectedAgentIsSystem ? (
+            <Badge
+              variant="secondary"
+              className="h-[18px] rounded px-1.5 py-0 text-[10px] font-semibold text-muted-foreground"
+            >
+              system
+            </Badge>
+          ) : null}
+          {selectedAgentHeader?.shortLabel &&
+          selectedAgentHeader.shortLabel !== selectedAgentHeader.displayName ? (
+            <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/70">
+              {selectedAgentHeader.shortLabel}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       {showAgentVisualization ? (
         <AgentVisualization detail={agentDetail!} />
       ) : agentDetailStatus === 'loading' ? (

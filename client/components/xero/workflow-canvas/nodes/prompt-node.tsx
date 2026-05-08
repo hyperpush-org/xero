@@ -40,24 +40,26 @@ export const PromptNode = memo(function PromptNode({ id, data }: NodeProps<Promp
       <Handle type="target" position={Position.Bottom} className="!bg-amber-500 !w-2 !h-2" />
       <div
         className={cn(
-          'agent-card overflow-hidden rounded-md border bg-card text-card-foreground shadow-sm',
-          'border-amber-500/30 dark:border-amber-400/30',
+          'agent-card overflow-hidden text-card-foreground',
           expanded && 'is-card-expanded',
         )}
-        style={{ width: 300 }}
+        style={{
+          width: 300,
+          borderColor: 'color-mix(in oklab, var(--color-amber-500, #f59e0b) 30%, var(--agent-card-border))',
+        }}
       >
         <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
           <div className="agent-card-body">
-            <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-b border-border/60">
-              <div className="flex items-center gap-2 text-[9px] text-muted-foreground uppercase tracking-wide">
+            <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-b border-border/40 bg-muted/10">
+              <div className="flex items-center gap-2 text-[9px] text-muted-foreground/80 uppercase tracking-wider font-medium">
                 <span>{prompt.source}</span>
                 {prompt.policy ? (
-                  <Badge variant="outline" className="text-[9px] px-1 py-0">
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
                     policy: {prompt.policy}
                   </Badge>
                 ) : null}
               </div>
-              <pre className="whitespace-pre-wrap break-words text-[10px] leading-snug max-h-72 overflow-auto bg-muted/40 rounded p-1.5">
+              <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed max-h-72 overflow-auto bg-muted/30 border border-border/40 rounded-md p-2 font-mono text-foreground/90">
                 {prompt.body}
               </pre>
             </div>
@@ -66,22 +68,22 @@ export const PromptNode = memo(function PromptNode({ id, data }: NodeProps<Promp
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40"
+          className="agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
         >
           <span
             aria-hidden="true"
-            className={cn('h-2 w-2 shrink-0 rounded-full', ROLE_DOT[prompt.role])}
+            className={cn('h-2 w-2 shrink-0 rounded-full ring-1 ring-background', ROLE_DOT[prompt.role])}
           />
-          <FileText className="h-3 w-3 shrink-0 text-amber-500" />
-          <span className="text-[11.5px] truncate flex-1 font-medium">{prompt.label}</span>
-          <Badge variant="outline" className="text-[9px] px-1 py-0">
+          <FileText className="h-3 w-3 shrink-0 text-amber-500/80" />
+          <span className="text-[11.5px] truncate flex-1 font-medium text-foreground/95">{prompt.label}</span>
+          <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
             {ROLE_LABEL[prompt.role]}
           </Badge>
-          <span className="text-[9px] text-muted-foreground tabular-nums">~{tokenEstimate}t</span>
+          <span className="text-[9px] text-muted-foreground/80 tabular-nums font-mono">~{tokenEstimate}t</span>
           {expanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            <ChevronDown className="h-3 w-3 text-muted-foreground/70" />
           ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+            <ChevronRight className="h-3 w-3 text-muted-foreground/70" />
           )}
         </button>
       </div>

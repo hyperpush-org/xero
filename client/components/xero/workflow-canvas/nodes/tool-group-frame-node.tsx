@@ -25,7 +25,7 @@ export const ToolGroupFrameNode = memo(function ToolGroupFrameNode({
         position={Position.Left}
         className="!bg-sky-500 !w-2 !h-2"
       />
-      <span className="agent-tool-group-frame__label">
+      <span className="agent-tool-group-frame__drag-handle agent-tool-group-frame__label">
         <span>{data.label}</span>
         {data.count > 0 ? (
           <span className="agent-tool-group-frame__count">{data.count}</span>

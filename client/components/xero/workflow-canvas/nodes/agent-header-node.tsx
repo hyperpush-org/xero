@@ -68,40 +68,50 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
         position={Position.Bottom}
         className="!bg-foreground !w-2 !h-2"
       />
+      <Handle
+        id={AGENT_GRAPH_HEADER_HANDLES.consumed}
+        type="target"
+        position={Position.Left}
+        className="!bg-teal-500 !w-2 !h-2"
+        style={{ top: 105 }}
+      />
       <div
         className={cn(
-          'agent-card overflow-hidden rounded-md border bg-card text-card-foreground shadow-sm',
-          'border-primary/60',
+          'agent-card agent-card-header overflow-hidden text-card-foreground',
           expanded && 'is-card-expanded',
         )}
         style={{ width: 300 }}
       >
-        <div className="px-3 py-2 border-b">
+        <div className="px-3 pt-2.5 pb-2 border-b border-border/40">
           <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-primary shrink-0" />
-            <span className="font-semibold text-sm truncate">{header.displayName}</span>
+            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/15 ring-1 ring-primary/30">
+              <Bot className="h-3.5 w-3.5 text-primary" />
+            </span>
+            <span className="font-semibold text-[13px] tracking-tight truncate">
+              {header.displayName}
+            </span>
             {header.shortLabel && header.shortLabel !== header.displayName ? (
-              <span className="text-muted-foreground text-[10px] truncate">
+              <span className="text-muted-foreground/80 text-[10px] font-mono truncate">
                 {header.shortLabel}
               </span>
             ) : null}
           </div>
-          <p className="mt-1 text-[11px] text-muted-foreground leading-snug line-clamp-2">
+          <p className="mt-1.5 text-[11px] text-muted-foreground leading-relaxed line-clamp-2">
             {header.description}
           </p>
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            <Badge variant="outline" className="text-[9px] px-1 py-0">
+          <div className="mt-2 flex flex-wrap gap-1">
+            <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
               {getAgentDefinitionScopeLabel(header.scope)}
             </Badge>
-            <Badge variant="secondary" className="text-[9px] px-1 py-0">
+            <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-medium">
               {getAgentDefinitionBaseCapabilityLabel(header.baseCapabilityProfile)}
             </Badge>
-            <Badge variant="outline" className="text-[9px] px-1 py-0 capitalize">
+            <Badge variant="outline" className="text-[9px] px-1.5 py-0 capitalize font-medium">
               {header.lifecycleState}
             </Badge>
           </div>
         </div>
-        <div className="px-3 py-1.5 flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-muted-foreground border-b">
+        <div className="px-3 py-1.5 flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-muted-foreground border-b border-border/40 bg-muted/15">
           <SummaryChip icon={FileText} count={summary.prompts} label="prompts" tone="amber" />
           <SummaryChip icon={Wrench} count={summary.tools} label="tools" tone="sky" />
           <SummaryChip icon={Database} count={summary.dbTables} label="tables" tone="emerald" />
@@ -122,7 +132,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
           <button
             type="button"
             onClick={() => setShowPurpose((v) => !v)}
-            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[10px] text-muted-foreground hover:bg-muted/30 border-t"
+            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors border-t border-border/40"
           >
             {expanded ? (
               <ChevronDown className="h-3 w-3" />
@@ -135,7 +145,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
         {hasPurpose ? (
           <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
             <div className="agent-card-body">
-              <div className="px-3 pt-2 pb-2 text-[10.5px] text-muted-foreground leading-snug border-t">
+              <div className="px-3 pt-2 pb-2.5 text-[10.5px] text-muted-foreground leading-relaxed border-t border-border/40 bg-muted/10">
                 {header.taskPurpose}
               </div>
             </div>
@@ -165,8 +175,8 @@ function SummaryChip({ icon: Icon, count, label, tone }: SummaryChipProps) {
   return (
     <span className="inline-flex items-center gap-1 tabular-nums">
       <Icon className={cn('h-3 w-3 shrink-0', SUMMARY_TONE[tone])} />
-      <span className="font-mono text-foreground">{count}</span>
-      <span className="text-muted-foreground/80">{label}</span>
+      <span className="font-mono text-foreground font-medium">{count}</span>
+      <span className="text-muted-foreground/75">{label}</span>
     </span>
   )
 }
@@ -180,14 +190,14 @@ interface GatePillProps {
 
 function GatePill({ on, label, value, subtle }: GatePillProps) {
   const tone = subtle
-    ? 'border-border/60 bg-muted/30 text-muted-foreground'
+    ? 'border-border/50 bg-muted/30 text-muted-foreground'
     : on
-      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-      : 'border-border/60 bg-muted/20 text-muted-foreground/70'
+      ? 'border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300'
+      : 'border-border/50 bg-muted/20 text-muted-foreground/70'
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 leading-none',
+        'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 leading-none',
         tone,
       )}
     >

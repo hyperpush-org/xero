@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useEffect, useState } from 'react'
+import { memo, useLayoutEffect, useState } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { ChevronDown, ChevronRight, Wrench } from 'lucide-react'
 
@@ -45,7 +45,9 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
   const [expanded, setExpanded] = useState(false)
   const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
 
-  useEffect(() => {
+  // Report before paint so React Flow doesn't commit an intermediate measured
+  // height while the tool body is beginning its collapse transition.
+  useLayoutEffect(() => {
     reportExpanded(id, expanded)
     return () => {
       reportExpanded(id, false)
@@ -58,40 +60,72 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
       <Handle type="source" position={Position.Right} className="!bg-sky-500 !w-2 !h-2" />
       <div
         className={cn(
-          'agent-card overflow-hidden rounded-md border bg-card text-card-foreground shadow-sm',
-          'border-sky-500/30 dark:border-sky-400/30',
+          'agent-card overflow-hidden text-card-foreground',
           expanded && 'is-card-expanded',
         )}
-        style={{ width: 240 }}
+        style={{
+          width: 240,
+          borderColor: 'color-mix(in oklab, var(--color-sky-500, #0ea5e9) 28%, var(--agent-card-border))',
+        }}
       >
+        <button
+          type="button"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation()
+            setExpanded((v) => !v)
+          }}
+          className="nodrag nopan agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
+          title={`${tool.name} — ${EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}`}
+          aria-expanded={expanded}
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              'h-2 w-2 shrink-0 rounded-full ring-1 ring-background',
+              EFFECT_DOT[tool.effectClass] ?? 'bg-muted-foreground/50',
+            )}
+          />
+          <Wrench className="h-3 w-3 shrink-0 text-sky-500/80" />
+          <span className="font-mono text-[11.5px] truncate flex-1 text-foreground/95">{tool.name}</span>
+          {expanded ? (
+            <ChevronDown className="h-3 w-3 text-muted-foreground/70" />
+          ) : (
+            <ChevronRight className="h-3 w-3 text-muted-foreground/70" />
+          )}
+        </button>
         <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
           <div className="agent-card-body">
-            <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-b border-border/60">
-              <p className="text-[10.5px] text-muted-foreground leading-snug">
+            <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-t border-border/40 bg-muted/10">
+              <p className="text-[10.5px] text-muted-foreground leading-relaxed">
                 {tool.description}
               </p>
-              <div className="flex flex-wrap items-center gap-1">
-                <span className="text-[9px] uppercase tracking-wide text-muted-foreground/70">
-                  group
-                </span>
-                <span className="text-[10px] font-mono">{tool.group}</span>
-                <span className="text-[9px] uppercase tracking-wide text-muted-foreground/70 ml-1">
-                  effect
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="inline-flex items-center gap-1">
+                  <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
+                    group
+                  </span>
+                  <span className="text-[10px] font-mono text-foreground/80">{tool.group}</span>
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      'h-1.5 w-1.5 rounded-full',
-                      EFFECT_DOT[tool.effectClass] ?? 'bg-muted-foreground/50',
-                    )}
-                  />
-                  <span className="text-[10px] font-mono">
-                    {EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}
+                  <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
+                    effect
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full ring-1 ring-background',
+                        EFFECT_DOT[tool.effectClass] ?? 'bg-muted-foreground/50',
+                      )}
+                    />
+                    <span className="text-[10px] font-mono text-foreground/80">
+                      {EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}
+                    </span>
                   </span>
                 </span>
                 {tool.riskClass ? (
-                  <Badge variant="outline" className="text-[9px] px-1 py-0 ml-1">
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
                     risk: {tool.riskClass}
                   </Badge>
                 ) : null}
@@ -101,7 +135,7 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
                   {tool.tags.slice(0, 6).map((tag: string) => (
                     <span
                       key={tag}
-                      className="text-[9px] uppercase tracking-wide text-muted-foreground bg-muted/40 px-1 py-0.5 rounded"
+                      className="text-[9px] uppercase tracking-wider text-muted-foreground/80 bg-muted/40 border border-border/40 px-1.5 py-0.5 rounded font-medium"
                     >
                       {tag}
                     </span>
@@ -111,24 +145,6 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
             </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40"
-          title={`${tool.name} — ${EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}`}
-        >
-          <span
-            aria-hidden="true"
-            className={cn('h-2 w-2 shrink-0 rounded-full', EFFECT_DOT[tool.effectClass] ?? 'bg-muted-foreground/50')}
-          />
-          <Wrench className="h-3 w-3 shrink-0 text-sky-500" />
-          <span className="font-mono text-[11.5px] truncate flex-1">{tool.name}</span>
-          {expanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground" />
-          )}
-        </button>
       </div>
     </>
   )

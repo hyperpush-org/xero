@@ -2,6 +2,7 @@
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  applyNodeChanges,
   ControlButton,
   Controls,
   ReactFlow,
@@ -12,8 +13,10 @@ import {
   type Edge,
   type Node,
   type NodeChange,
+  type OnNodeDrag,
   type NodeTypes,
   type Viewport,
+  type XYPosition,
 } from '@xyflow/react'
 import { RotateCcw } from 'lucide-react'
 
@@ -88,9 +91,20 @@ const EXPANDED_BODY_EXTRA: Partial<Record<string, number>> = {
 
 const POSITIONS_STORAGE_PREFIX = 'xero.workflows.canvas-positions:'
 const INTERACTION_SETTLE_MS = 110
+const EXPANSION_MEASUREMENT_SETTLE_MS = 280
 const DOT_GRID_GAP = 32
 
 type StoredPositions = Record<string, { x: number; y: number }>
+
+type LaneDragCategory =
+  | 'prompt'
+  | 'tool'
+  | 'db-table'
+  | 'agent-output'
+  | 'output-section'
+  | 'consumed-artifact'
+
+const LANE_NODE_PREFIX = 'lane:'
 
 interface AgentVisualizationProps {
   detail: WorkflowAgentDetailDto
@@ -198,12 +212,124 @@ function normalizeMeasuredSize(size: NodeSize): NodeSize {
   }
 }
 
+export function estimateExpandedCardHeight(
+  cardHeight: number,
+  bodyWrapperHeight: number,
+  bodyScrollHeight: number,
+  expanded: boolean,
+): number {
+  const stableChromeHeight = Math.max(0, cardHeight - bodyWrapperHeight)
+  if (!expanded) return stableChromeHeight
+  return stableChromeHeight + Math.max(0, bodyScrollHeight)
+}
+
 function sameMeasuredSize(left: NodeSize | undefined, right: NodeSize): boolean {
   return Boolean(left && left.width === right.width && left.height === right.height)
 }
 
 function isPersistableNode(node: AgentGraphNode | Node): boolean {
-  return node.type !== 'lane-label'
+  return Boolean(node.type)
+}
+
+function laneCategoryFromNodeId(nodeId: string): LaneDragCategory | null {
+  if (!nodeId.startsWith(LANE_NODE_PREFIX)) return null
+  const category = nodeId.slice(LANE_NODE_PREFIX.length)
+  switch (category) {
+    case 'prompt':
+    case 'tool':
+    case 'db-table':
+    case 'agent-output':
+    case 'output-section':
+    case 'consumed-artifact':
+      return category
+    default:
+      return null
+  }
+}
+
+function isLaneLabelNodeId(nodeId: string): boolean {
+  return laneCategoryFromNodeId(nodeId) !== null
+}
+
+function nodeMovesWithLane(node: Node, category: LaneDragCategory): boolean {
+  switch (category) {
+    case 'prompt':
+      return node.type === 'prompt'
+    case 'tool':
+      // Tool cards are children of their group frames. Moving the frame moves
+      // the cards visually while preserving each card's relative coordinates.
+      return node.type === 'tool-group-frame'
+    case 'db-table':
+      return node.type === 'db-table'
+    case 'agent-output':
+      return node.type === 'agent-output'
+    case 'output-section':
+      return node.type === 'output-section'
+    case 'consumed-artifact':
+      return node.type === 'consumed-artifact'
+  }
+}
+
+export function getLaneDragMemberIds(
+  nodes: readonly Node[],
+  laneNodeId: string,
+): Set<string> {
+  const category = laneCategoryFromNodeId(laneNodeId)
+  if (!category) return new Set()
+
+  const ids = new Set<string>([laneNodeId])
+  for (const node of nodes) {
+    if (nodeMovesWithLane(node, category)) ids.add(node.id)
+  }
+  return ids
+}
+
+function applyPositionDelta(position: XYPosition, dx: number, dy: number): XYPosition {
+  return {
+    x: position.x + dx,
+    y: position.y + dy,
+  }
+}
+
+export function applyLaneDragPositionChanges(
+  current: Node[],
+  changes: readonly NodeChange<Node>[],
+): Node[] {
+  let next = current
+
+  for (const change of changes) {
+    if (
+      change.type !== 'position' ||
+      !change.position ||
+      !isLaneLabelNodeId(change.id)
+    ) {
+      continue
+    }
+
+    const laneNode = next.find((node) => node.id === change.id)
+    if (!laneNode) continue
+
+    const dx = change.position.x - laneNode.position.x
+    const dy = change.position.y - laneNode.position.y
+    const memberIds = getLaneDragMemberIds(next, change.id)
+    if (memberIds.size === 0) continue
+
+    next = next.map((node) => {
+      if (!memberIds.has(node.id)) return node
+
+      const position =
+        node.id === change.id
+          ? change.position!
+          : applyPositionDelta(node.position, dx, dy)
+
+      if (node.id === change.id && change.dragging !== undefined) {
+        return { ...node, position, dragging: change.dragging }
+      }
+      return { ...node, position }
+    })
+  }
+
+  return next
 }
 
 function applyStoredPositions(
@@ -216,6 +342,50 @@ function applyStoredPositions(
     const saved = stored[node.id]
     if (!saved) return node
     return { ...node, position: { x: saved.x, y: saved.y } }
+  })
+}
+
+function findRenderedNodeElement(
+  root: HTMLElement | null,
+  nodeId: string,
+): HTMLElement | null {
+  if (!root) return null
+  for (const node of root.querySelectorAll<HTMLElement>('.react-flow__node[data-id]')) {
+    if (node.getAttribute('data-id') === nodeId) return node
+  }
+  return null
+}
+
+function estimateRenderedNodeSize(
+  root: HTMLElement | null,
+  nodeId: string,
+  expanded: boolean,
+): NodeSize | null {
+  const nodeElement = findRenderedNodeElement(root, nodeId)
+  const card = nodeElement?.querySelector<HTMLElement>('.agent-card')
+  if (!card) return null
+
+  const cardRect = card.getBoundingClientRect()
+  if (cardRect.height <= 0) return null
+
+  const bodyWrapper = card.querySelector<HTMLElement>('.agent-card-body-wrapper')
+  const body = bodyWrapper?.querySelector<HTMLElement>('.agent-card-body')
+  const wrapperHeight = bodyWrapper?.getBoundingClientRect().height ?? 0
+  const bodyScrollHeight = body
+    ? Math.max(body.scrollHeight, body.getBoundingClientRect().height)
+    : 0
+
+  return normalizeMeasuredSize({
+    width: cardRect.width,
+    height:
+      bodyWrapper && body
+        ? estimateExpandedCardHeight(
+            cardRect.height,
+            wrapperHeight,
+            bodyScrollHeight,
+            expanded,
+          )
+        : cardRect.height,
   })
 }
 
@@ -264,7 +434,7 @@ function buildFocusTargets(
     const focusedNodes = new Set<string>()
     const focusedEdges = new Set<string>()
 
-    const visit = (id: string) => {
+    const visit = (id: string, options: { includeChildConnections?: boolean } = {}) => {
       if (focusedNodes.has(id)) return
       focusedNodes.add(id)
       const incident = index.edgeIdsByNodeId.get(id)
@@ -277,13 +447,15 @@ function buildFocusTargets(
           focusedNodes.add(edge.target)
         }
       }
-      const children = index.childIdsByParent.get(id)
+      const children = options.includeChildConnections ? index.childIdsByParent.get(id) : undefined
       if (children) {
-        for (const childId of children) focusedNodes.add(childId)
+        for (const childId of children) {
+          visit(childId)
+        }
       }
     }
 
-    visit(node.id)
+    visit(node.id, { includeChildConnections: node.type === 'tool-group-frame' })
 
     let cursor: string | undefined = index.parentIdByNodeId.get(node.id)
     const seenAncestors = new Set<string>()
@@ -383,6 +555,7 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
   const measuredSizesRef = useRef<ReadonlyMap<string, NodeSize>>(new Map())
   const pendingMeasuredSizesRef = useRef<Map<string, NodeSize>>(new Map())
   const measurementFrameRef = useRef<number | null>(null)
+  const measurementSettleTimersRef = useRef<Map<string, number>>(new Map())
 
   const commitMeasuredSizes = useCallback(
     (
@@ -399,6 +572,58 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
     [],
   )
 
+  const flushPendingMeasuredSizes = useCallback(
+    (allowedIds?: ReadonlySet<string>) => {
+      const pending = pendingMeasuredSizesRef.current
+      if (pending.size === 0) return
+
+      const updates = new Map<string, NodeSize>()
+      const settling = measurementSettleTimersRef.current
+      for (const [id, size] of pending) {
+        if (allowedIds) {
+          if (!allowedIds.has(id)) continue
+        } else if (settling.has(id)) {
+          continue
+        }
+        updates.set(id, size)
+      }
+      if (updates.size === 0) return
+
+      for (const id of updates.keys()) {
+        pending.delete(id)
+      }
+
+      startTransition(() => {
+        commitMeasuredSizes((previous) => {
+          let next: Map<string, NodeSize> | null = null
+          for (const [id, nextSize] of updates) {
+            if (sameMeasuredSize(previous.get(id), nextSize)) continue
+            if (!next) next = new Map(previous)
+            next.set(id, nextSize)
+          }
+          return next ?? previous
+        })
+      })
+    },
+    [commitMeasuredSizes],
+  )
+
+  const markMeasuredSizeSettling = useCallback(
+    (nodeId: string) => {
+      const timers = measurementSettleTimersRef.current
+      const existing = timers.get(nodeId)
+      if (existing !== undefined) {
+        window.clearTimeout(existing)
+      }
+      const timer = window.setTimeout(() => {
+        timers.delete(nodeId)
+        flushPendingMeasuredSizes(new Set([nodeId]))
+      }, EXPANSION_MEASUREMENT_SETTLE_MS)
+      timers.set(nodeId, timer)
+    },
+    [flushPendingMeasuredSizes],
+  )
+
   const invalidateMeasuredSize = useCallback(
     (nodeId: string) => {
       pendingMeasuredSizesRef.current.delete(nodeId)
@@ -412,6 +637,23 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
     [commitMeasuredSizes],
   )
 
+  const commitEstimatedMeasuredSize = useCallback(
+    (nodeId: string, expanded: boolean): boolean => {
+      const estimated = estimateRenderedNodeSize(canvasRef.current, nodeId, expanded)
+      if (!estimated) return false
+
+      pendingMeasuredSizesRef.current.delete(nodeId)
+      commitMeasuredSizes((previous) => {
+        if (sameMeasuredSize(previous.get(nodeId), estimated)) return previous
+        const next = new Map(previous)
+        next.set(nodeId, estimated)
+        return next
+      })
+      return true
+    },
+    [commitMeasuredSizes],
+  )
+
   const scheduleMeasuredSize = useCallback(
     (nodeId: string, size: NodeSize) => {
       const normalized = normalizeMeasuredSize(size)
@@ -420,28 +662,15 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
       if (sameMeasuredSize(existing, normalized)) return
 
       pending.set(nodeId, normalized)
+      if (measurementSettleTimersRef.current.has(nodeId)) return
       if (measurementFrameRef.current !== null) return
 
       measurementFrameRef.current = window.requestAnimationFrame(() => {
         measurementFrameRef.current = null
-        const updates = pendingMeasuredSizesRef.current
-        pendingMeasuredSizesRef.current = new Map()
-        if (updates.size === 0) return
-
-        startTransition(() => {
-          commitMeasuredSizes((previous) => {
-            let next: Map<string, NodeSize> | null = null
-            for (const [id, nextSize] of updates) {
-              if (sameMeasuredSize(previous.get(id), nextSize)) continue
-              if (!next) next = new Map(previous)
-              next.set(id, nextSize)
-            }
-            return next ?? previous
-          })
-        })
+        flushPendingMeasuredSizes()
       })
     },
-    [commitMeasuredSizes],
+    [flushPendingMeasuredSizes],
   )
 
   const setNodeExpanded = useCallback(
@@ -455,10 +684,13 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
       else next.delete(nodeId)
 
       expandedIdsRef.current = next
-      invalidateMeasuredSize(nodeId)
+      markMeasuredSizeSettling(nodeId)
+      if (!commitEstimatedMeasuredSize(nodeId, expanded)) {
+        invalidateMeasuredSize(nodeId)
+      }
       setExpandedIds(next)
     },
-    [invalidateMeasuredSize],
+    [commitEstimatedMeasuredSize, invalidateMeasuredSize, markMeasuredSizeSettling],
   )
 
   const expansionValue = useMemo<AgentCanvasExpansionContextValue>(
@@ -490,7 +722,8 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
   const computedEdges = useMemo(() => baseGraph.edges as Edge[], [baseGraph])
   const canvasInteractingRef = useRef(false)
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>(computedNodes)
+  const [nodes, setNodes] = useNodesState<Node>(computedNodes)
+  const nodesRef = useRef<Node[]>(computedNodes)
   const focusTargets = useMemo(
     () => buildFocusTargets(computedNodes, computedEdges),
     [computedNodes, computedEdges],
@@ -507,6 +740,10 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
 
   // Keep React Flow state in sync with computed layout. Position-only updates
   // benefit from CSS transition on .react-flow__node so neighbours animate.
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
+
   useEffect(() => {
     setNodes((current) => {
       // Preserve user drag positions where present, otherwise adopt the new
@@ -537,7 +774,9 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
         changed = true
         return { ...prev, ...next, position: next.position }
       })
-      return changed ? nextNodes : current
+      const resolved = changed ? nextNodes : current
+      nodesRef.current = resolved
+      return resolved
     })
   }, [computedNodes, setNodes])
 
@@ -556,24 +795,50 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
   const interactionSettleTimerRef = useRef<number | null>(null)
 
   const resolveNodeIdFromElement = useCallback((element: Element | null): string | null => {
-    const node = element?.closest?.('.react-flow__node')
-    if (!node) return null
-    if (node.classList.contains('react-flow__node-lane-label')) return null
-    if (node.classList.contains('react-flow__node-tool-group-frame')) return null
-    return node.getAttribute('data-id')
+    let cursor: Element | null = element
+    let frameId: string | null = null
+    while (cursor) {
+      if (cursor.classList.contains('react-flow__node')) {
+        if (cursor.classList.contains('react-flow__node-lane-label')) return null
+        const id = cursor.getAttribute('data-id')
+        if (id) {
+          if (!cursor.classList.contains('react-flow__node-tool-group-frame')) {
+            return id
+          }
+          frameId ??= id
+        }
+      }
+      cursor = cursor.parentElement
+    }
+    return frameId
   }, [])
 
   const resolveNodeIdAtPoint = useCallback((x: number, y: number): string | null => {
-    let el: Element | null = document.elementFromPoint(x, y)
-    while (el) {
-      if (el.classList.contains('react-flow__node')) {
-        if (el.classList.contains('react-flow__node-lane-label')) return null
-        if (el.classList.contains('react-flow__node-tool-group-frame')) return null
-        return el.getAttribute('data-id')
+    const pointElements =
+      typeof document.elementsFromPoint === 'function'
+        ? document.elementsFromPoint(x, y)
+        : [document.elementFromPoint(x, y)].filter((el): el is Element => Boolean(el))
+    let frameId: string | null = null
+
+    for (const element of pointElements) {
+      let cursor: Element | null = element
+      while (cursor) {
+        if (cursor.classList.contains('react-flow__node')) {
+          if (cursor.classList.contains('react-flow__node-lane-label')) break
+          const id = cursor.getAttribute('data-id')
+          if (id) {
+            if (!cursor.classList.contains('react-flow__node-tool-group-frame')) {
+              return id
+            }
+            frameId ??= id
+          }
+          break
+        }
+        cursor = cursor.parentElement
       }
-      el = el.parentElement
     }
-    return null
+
+    return frameId
   }, [])
 
   const getFocusElementIndex = useCallback((): FocusElementIndex | null => {
@@ -707,16 +972,38 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
     settleCanvasInteraction()
   }, [settleCanvasInteraction])
 
-  const handleNodeDragStart = useCallback(() => {
+  const handleNodeDragStart = useCallback<OnNodeDrag<Node>>(() => {
     clearFocus()
     markCanvasInteracting()
     canvasRef.current?.classList.add('is-dragging')
   }, [clearFocus, markCanvasInteracting])
 
-  const handleNodeDragStop = useCallback(() => {
-    canvasRef.current?.classList.remove('is-dragging')
-    settleCanvasInteraction()
-  }, [settleCanvasInteraction])
+  const handleNodeDragStop = useCallback<OnNodeDrag<Node>>(
+    (_event, node) => {
+      canvasRef.current?.classList.remove('is-dragging')
+
+      if (isLaneLabelNodeId(node.id)) {
+        const currentNodes = nodesRef.current
+        const memberIds = getLaneDragMemberIds(currentNodes, node.id)
+        if (memberIds.size > 0) {
+          const nextPositions = { ...getStoredPositions() }
+          for (const currentNode of currentNodes) {
+            if (!memberIds.has(currentNode.id) || !isPersistableNode(currentNode)) {
+              continue
+            }
+            nextPositions[currentNode.id] = {
+              x: roundCanvasCoord(currentNode.position.x),
+              y: roundCanvasCoord(currentNode.position.y),
+            }
+          }
+          commitStoredPositions(nextPositions)
+        }
+      }
+
+      settleCanvasInteraction()
+    },
+    [commitStoredPositions, getStoredPositions, settleCanvasInteraction],
+  )
 
   const handleWheelCapture = useCallback(() => {
     markCanvasInteracting()
@@ -774,6 +1061,10 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
         window.cancelAnimationFrame(measurementFrameRef.current)
         measurementFrameRef.current = null
       }
+      for (const timer of measurementSettleTimersRef.current.values()) {
+        window.clearTimeout(timer)
+      }
+      measurementSettleTimersRef.current.clear()
       if (interactionSettleTimerRef.current !== null) {
         window.clearTimeout(interactionSettleTimerRef.current)
         interactionSettleTimerRef.current = null
@@ -795,14 +1086,32 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
   // worst-case estimates.
   const handleNodesChange = useCallback(
     (changes: NodeChange<Node>[]) => {
-      const flowChanges = changes.filter((change) => change.type !== 'dimensions')
-      if (flowChanges.length > 0) {
-        onNodesChange(flowChanges)
+      const flowChanges = changes.filter(
+        (change) =>
+          change.type !== 'dimensions' &&
+          !(change.type === 'position' && isLaneLabelNodeId(change.id)),
+      )
+      const laneDragChanges = changes.filter(
+        (change) => change.type === 'position' && isLaneLabelNodeId(change.id),
+      )
+
+      if (flowChanges.length > 0 || laneDragChanges.length > 0) {
+        setNodes((current) => {
+          const withFlowChanges =
+            flowChanges.length > 0 ? applyNodeChanges(flowChanges, current) : current
+          const next =
+            laneDragChanges.length > 0
+              ? applyLaneDragPositionChanges(withFlowChanges, laneDragChanges)
+              : withFlowChanges
+          nodesRef.current = next
+          return next
+        })
       }
 
       // ResizeObserver can emit several dimension changes during one expand
-      // animation. Coalesce those into one layout update per frame and round to
-      // whole pixels so tiny font-rasterization deltas do not jitter neighbours.
+      // animation. Nodes currently opening/closing hold their measurements
+      // until the body transition settles, otherwise every intermediate height
+      // restarts neighbouring transform transitions and stretches the motion.
       for (const change of changes) {
         if (change.type !== 'dimensions' || !change.dimensions) continue
         scheduleMeasuredSize(change.id, change.dimensions)
@@ -819,6 +1128,7 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
           change.type !== 'position' ||
           change.dragging !== false ||
           !change.position ||
+          isLaneLabelNodeId(change.id) ||
           !persistableNodeIds.has(change.id)
         ) {
           continue
@@ -834,9 +1144,9 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
     [
       commitStoredPositions,
       getStoredPositions,
-      onNodesChange,
       persistableNodeIds,
       scheduleMeasuredSize,
+      setNodes,
     ],
   )
 
@@ -852,6 +1162,10 @@ function AgentVisualizationInner({ detail }: AgentVisualizationProps) {
         window.cancelAnimationFrame(measurementFrameRef.current)
         measurementFrameRef.current = null
       }
+      for (const timer of measurementSettleTimersRef.current.values()) {
+        window.clearTimeout(timer)
+      }
+      measurementSettleTimersRef.current.clear()
       expandedIdsRef.current = emptyExpanded
       measuredSizesRef.current = emptySizes
       pendingMeasuredSizesRef.current = new Map()

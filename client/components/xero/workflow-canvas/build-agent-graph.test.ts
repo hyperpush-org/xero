@@ -10,6 +10,7 @@ import {
   AGENT_GRAPH_OUTPUT_NODE_ID,
   buildAgentGraph,
 } from './build-agent-graph'
+import { layoutAgentGraphByCategory } from './layout'
 
 function dbDetail(
   table: string,
@@ -201,11 +202,54 @@ describe('buildAgentGraph', () => {
       expect(parentId, `${tool.id} should declare a parent tool-group-frame`).toBeTruthy()
       const parent = nodes.find((n) => n.id === parentId)
       expect(parent?.type).toBe('tool-group-frame')
+      expect(parent?.dragHandle).toBe('.agent-tool-group-frame__drag-handle')
+      expect(parent?.style?.pointerEvents).toBe('none')
+      expect(tool.style?.pointerEvents).toBe('all')
       const headerToFrame = edges.some(
         (edge) => edge.source === AGENT_GRAPH_HEADER_NODE_ID && edge.target === parentId,
       )
       expect(headerToFrame, `${parentId} should be connected to the header`).toBe(true)
     }
+  })
+
+  it('marks lane labels as draggable section handles', () => {
+    const detail = fixtureDetail()
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(nodes, new Map())
+    const toolLane = placed.find((node) => node.id === 'lane:tool')
+
+    expect(toolLane?.type).toBe('lane-label')
+    expect(toolLane?.selectable).toBe(false)
+    expect(toolLane?.draggable).toBe(true)
+    expect(toolLane?.dragHandle).toBe('.agent-graph-lane-label')
+  })
+
+  it('keeps an expanded tool row top-anchored inside its category frame', () => {
+    const detail = fixtureDetail()
+    const baseTool = detail.tools[0]!
+    detail.tools = ['alpha', 'middle', 'omega'].map((name) => ({
+      ...baseTool,
+      name,
+      group: 'core',
+    }))
+
+    const { nodes } = buildAgentGraph(detail)
+    const collapsed = layoutAgentGraphByCategory(nodes, new Map())
+    const expanded = layoutAgentGraphByCategory(
+      nodes,
+      new Map([['tool:middle', { width: 240, height: 156 }]]),
+    )
+
+    const collapsedFrame = collapsed.find((node) => node.id === 'tool-group-frame:core')
+    const expandedFrame = expanded.find((node) => node.id === 'tool-group-frame:core')
+    const collapsedMiddle = collapsed.find((node) => node.id === 'tool:middle')
+    const expandedMiddle = expanded.find((node) => node.id === 'tool:middle')
+    const collapsedOmega = collapsed.find((node) => node.id === 'tool:omega')
+    const expandedOmega = expanded.find((node) => node.id === 'tool:omega')
+
+    expect(expandedFrame?.position.y).toBe(collapsedFrame?.position.y)
+    expect(expandedMiddle?.position.y).toBe(collapsedMiddle?.position.y)
+    expect(expandedOmega?.position.y).toBe((collapsedOmega?.position.y ?? 0) + 120)
   })
 
   it('parents output-section nodes under the output node', () => {
@@ -220,6 +264,27 @@ describe('buildAgentGraph', () => {
     }
   })
 
+  it('stacks output sections using each section row height', () => {
+    const detail = fixtureDetail()
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(
+      nodes,
+      new Map([
+        ['output-section:files_changed', { width: 200, height: 32 }],
+        ['output-section:verification', { width: 200, height: 140 }],
+        ['output-section:handoff_context', { width: 200, height: 32 }],
+      ]),
+    )
+
+    const first = placed.find((node) => node.id === 'output-section:files_changed')
+    const second = placed.find((node) => node.id === 'output-section:verification')
+    const third = placed.find((node) => node.id === 'output-section:handoff_context')
+
+    expect(first?.position.y).toBeDefined()
+    expect(second?.position.y).toBe((first?.position.y ?? 0) + 32 + 12)
+    expect(third?.position.y).toBe((second?.position.y ?? 0) + 140 + 12)
+  })
+
   it('emits consumed-artifact edges that flow into the header', () => {
     const detail = fixtureDetail()
     const { edges } = buildAgentGraph(detail)
@@ -227,6 +292,7 @@ describe('buildAgentGraph', () => {
     expect(consumedEdges).toHaveLength(detail.consumes.length)
     for (const edge of consumedEdges) {
       expect(edge.target).toBe(AGENT_GRAPH_HEADER_NODE_ID)
+      expect(edge.targetHandle).toBe('consumed')
     }
   })
 

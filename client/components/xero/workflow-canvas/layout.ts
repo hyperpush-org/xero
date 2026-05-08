@@ -57,7 +57,7 @@ const DEFAULTS: Required<LayoutOptions> = {
  * artifacts mirror prompts on the left, flowing into the header.
  *
  * Synthetic `lane-label` nodes are emitted per non-empty category for
- * scannability — they are non-draggable / non-selectable.
+ * scannability. They are draggable section handles, but remain non-selectable.
  */
 export function layoutAgentGraphByCategory(
   nodes: AgentGraphNode[],
@@ -194,7 +194,8 @@ export function layoutAgentGraphByCategory(
         y: promptsTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
       } as XYPosition,
       selectable: false,
-      draggable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS.prompt, count: prompts.length },
       width: totalWidth,
     } as AgentGraphNode)
@@ -220,6 +221,7 @@ export function layoutAgentGraphByCategory(
     const FRAME_PAD_BOTTOM = 12
     const GROUP_GAP = 28
     const FRAME_ROW_GAP = 32
+    const TOOL_ROW_STABLE_HEIGHT = 36
     // Width budget for the tools block. Tuned so the Engineer agent (~14
     // categories) lays out as ~3 rows rather than a single 4000+px ribbon.
     const TOOLS_AREA_WIDTH_BUDGET = 1500
@@ -236,6 +238,7 @@ export function layoutAgentGraphByCategory(
       frameTools: AgentGraphNode[]
       frameWidth: number
       frameHeight: number
+      stableFrameHeight: number
       groupColCount: number
       rowsPerCol: number
       colWidth: number
@@ -264,6 +267,7 @@ export function layoutAgentGraphByCategory(
         groupColCount * colWidth + Math.max(0, groupColCount - 1) * COLUMN_GAP
 
       let tallestColHeight = 0
+      let stableTallestColHeight = 0
       const colHeights: number[] = []
       for (let c = 0; c < groupColCount; c++) {
         const subStart = c * rowsPerCol
@@ -277,6 +281,11 @@ export function layoutAgentGraphByCategory(
         subHeight += Math.max(0, colTools.length - 1) * ROW_GAP
         colHeights.push(subHeight)
         tallestColHeight = Math.max(tallestColHeight, subHeight)
+
+        const stableSubHeight =
+          colTools.length * TOOL_ROW_STABLE_HEIGHT +
+          Math.max(0, colTools.length - 1) * ROW_GAP
+        stableTallestColHeight = Math.max(stableTallestColHeight, stableSubHeight)
       }
 
       frameInfos.push({
@@ -284,6 +293,8 @@ export function layoutAgentGraphByCategory(
         frameTools,
         frameWidth: groupWidth + FRAME_PAD_X * 2,
         frameHeight: tallestColHeight + FRAME_PAD_TOP + FRAME_PAD_BOTTOM,
+        stableFrameHeight:
+          stableTallestColHeight + FRAME_PAD_TOP + FRAME_PAD_BOTTOM,
         groupColCount,
         rowsPerCol,
         colWidth,
@@ -313,14 +324,22 @@ export function layoutAgentGraphByCategory(
         info.frameWidth + (row.length > 1 ? GROUP_GAP : 0)
     }
 
-    // Pass 3: place rows from bottom up so the lowest row sits at the same
-    // baseline (colBottomY) the single-row layout used to occupy.
+    // Pass 3: place the stable collapsed block at the old bottom baseline, but
+    // let expanded frames grow downward. This keeps the clicked tool row
+    // anchored during collapse instead of making the frame move one way while
+    // the card body moves the other.
     const colBottomY = headerCenterY - HEADER_BAND_GAP
-    let blockTopY = Number.POSITIVE_INFINITY
+    const stableRowHeights = packedRows.map((row) =>
+      row.reduce((acc, info) => Math.max(acc, info.stableFrameHeight), 0),
+    )
+    const stableBlockHeight =
+      stableRowHeights.reduce((sum, rowHeight) => sum + rowHeight, 0) +
+      Math.max(0, stableRowHeights.length - 1) * FRAME_ROW_GAP
+    const blockTopY = colBottomY - stableBlockHeight
     let blockRightX = rightStartX
-    let rowBottomY = colBottomY
+    let rowTopY = blockTopY
 
-    for (let r = packedRows.length - 1; r >= 0; r--) {
+    for (let r = 0; r < packedRows.length; r++) {
       const row = packedRows[r]
       if (row.length === 0) continue
       const rowHeight = row.reduce(
@@ -330,10 +349,8 @@ export function layoutAgentGraphByCategory(
       let xCursor = rightStartX
 
       for (const info of row) {
-        // Bottom-align each frame within the row so columns of different
-        // heights end on a shared baseline.
         const frameX = xCursor
-        const frameY = rowBottomY - info.frameHeight
+        const frameY = rowTopY
 
         placedById.set(info.frame.id, {
           ...info.frame,
@@ -342,9 +359,9 @@ export function layoutAgentGraphByCategory(
           height: info.frameHeight,
         } as AgentGraphNode)
 
-        // Place tools relative to the frame. Bottom-aligned within the frame
-        // so shorter columns hug the baseline rather than floating up.
-        const interiorBottomYRel = info.frameHeight - FRAME_PAD_BOTTOM
+        // Top-align tools inside the frame. The tool button renders first in
+        // the card, so the row the user clicked stays visually stationary and
+        // only the tools below it glide to their new positions.
         for (let c = 0; c < info.groupColCount; c++) {
           const subStart = c * info.rowsPerCol
           const subEnd = Math.min(
@@ -352,8 +369,7 @@ export function layoutAgentGraphByCategory(
             info.frameTools.length,
           )
           const colTools = info.frameTools.slice(subStart, subEnd)
-          const subHeight = info.colHeights[c]
-          let yRel = interiorBottomYRel - subHeight
+          let yRel = FRAME_PAD_TOP
           const xRel = FRAME_PAD_X + c * (info.colWidth + COLUMN_GAP)
 
           for (const t of colTools) {
@@ -366,13 +382,12 @@ export function layoutAgentGraphByCategory(
           }
         }
 
-        blockTopY = Math.min(blockTopY, frameY)
         blockRightX = Math.max(blockRightX, frameX + info.frameWidth)
 
         xCursor += info.frameWidth + GROUP_GAP
       }
 
-      rowBottomY -= rowHeight + FRAME_ROW_GAP
+      rowTopY += rowHeight + FRAME_ROW_GAP
     }
 
     laneLabelNodes.push({
@@ -383,7 +398,8 @@ export function layoutAgentGraphByCategory(
         y: blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
       } as XYPosition,
       selectable: false,
-      draggable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS.tool, count: tools.length },
       width: blockRightX - rightStartX,
     } as AgentGraphNode)
@@ -433,7 +449,8 @@ export function layoutAgentGraphByCategory(
         y: blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
       } as XYPosition,
       selectable: false,
-      draggable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS['db-table'], count: dbs.length },
       width: blockRightX - rightStartX,
     } as AgentGraphNode)
@@ -473,7 +490,8 @@ export function layoutAgentGraphByCategory(
         y: outputY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
       } as XYPosition,
       selectable: false,
-      draggable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS['agent-output'], count: outputs.length },
       width: totalWidth,
     } as AgentGraphNode)
@@ -487,11 +505,11 @@ export function layoutAgentGraphByCategory(
   const sections = grouped['output-section']
   if (sections.length > 0) {
     let cellWidth = 0
-    let cellHeight = 0
+    const sectionSizes = new Map<string, NodeSize>()
     for (const s of sections) {
       const sz = sizes.get(s.id) ?? { width: 200, height: 64 }
+      sectionSizes.set(s.id, sz)
       cellWidth = Math.max(cellWidth, sz.width)
-      cellHeight = Math.max(cellHeight, sz.height)
     }
     const SECTION_RIGHT_SLACK = 40
     const dbColumnLeftEdge =
@@ -512,12 +530,26 @@ export function layoutAgentGraphByCategory(
     const gridStartX = headerCenterX - gridWidth / 2
     const gridStartY = outputBottomY + VERT_GAP
 
+    const rowHeights: number[] = []
     sections.forEach((sectionNode, idx) => {
-      const sz = sizes.get(sectionNode.id) ?? { width: cellWidth, height: cellHeight }
+      const row = Math.floor(idx / cols)
+      const sz = sectionSizes.get(sectionNode.id) ?? { width: cellWidth, height: 64 }
+      rowHeights[row] = Math.max(rowHeights[row] ?? 0, sz.height)
+    })
+
+    const rowYOffsets: number[] = []
+    let rowY = 0
+    for (const rowHeight of rowHeights) {
+      rowYOffsets.push(rowY)
+      rowY += rowHeight + SECTION_GRID_GAP
+    }
+
+    sections.forEach((sectionNode, idx) => {
+      const sz = sectionSizes.get(sectionNode.id) ?? { width: cellWidth, height: 64 }
       const col = idx % cols
       const row = Math.floor(idx / cols)
       const x = gridStartX + col * (cellWidth + SECTION_GRID_GAP)
-      const y = gridStartY + row * (cellHeight + SECTION_GRID_GAP)
+      const y = gridStartY + (rowYOffsets[row] ?? 0)
       placedById.set(sectionNode.id, {
         ...sectionNode,
         position: {
@@ -535,7 +567,8 @@ export function layoutAgentGraphByCategory(
         y: gridStartY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
       } as XYPosition,
       selectable: false,
-      draggable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS['output-section'], count: sections.length },
       width: gridWidth,
     } as AgentGraphNode)
@@ -579,7 +612,8 @@ export function layoutAgentGraphByCategory(
         y: blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
       } as XYPosition,
       selectable: false,
-      draggable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS['consumed-artifact'], count: consumed.length },
       width: colWidth,
     } as AgentGraphNode)
