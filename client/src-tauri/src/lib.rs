@@ -208,6 +208,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::agent_definition::list_agent_definitions,
             commands::agent_definition::archive_agent_definition,
             commands::agent_definition::get_agent_definition_version,
+            commands::workflow_agents::list_workflow_agents,
+            commands::workflow_agents::get_workflow_agent_detail,
             commands::agent_session::create_agent_session,
             commands::agent_session::list_agent_sessions,
             commands::agent_session::get_agent_session,

@@ -40,6 +40,7 @@ import {
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { mapAgentSession, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
 import type { AgentDefinitionSummaryDto } from '@/src/lib/xero-model/agent-definition'
+import { useWorkflowAgentInspector } from '@/src/features/xero/use-workflow-agent-inspector'
 import type {
   SessionTranscriptSearchResultSnippetDto,
 } from '@/src/lib/xero-model/session-context'
@@ -931,6 +932,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [solanaOpen, setSolanaOpen] = useState(false)
   const [vcsOpen, setVcsOpen] = useState(false)
   const [workflowsOpen, setWorkflowsOpen] = useState(false)
+  const workflowAgentInspector = useWorkflowAgentInspector({
+    adapter: resolvedAdapter,
+    projectId: activeProjectId,
+  })
   const [usageOpen, setUsageOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
   const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
@@ -2098,6 +2103,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 workflowsOpen={workflowsOpen}
                 onCreateWorkflow={handleCreateWorkflow}
                 onCreateAgent={handleCreateAgentSession}
+                agentDetail={workflowAgentInspector.detail}
+                agentDetailStatus={workflowAgentInspector.detailStatus}
+                agentDetailError={workflowAgentInspector.detailError}
+                onClearAgentSelection={() => workflowAgentInspector.selectAgent(null)}
+                onReloadAgentDetail={workflowAgentInspector.reloadDetail}
               />
             </LazyActivityPane>
           ) : null}
@@ -2451,7 +2461,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 />
               }
             >
-              <LazyWorkflowsSidebar open={workflowsOpen} />
+              <LazyWorkflowsSidebar
+                open={workflowsOpen}
+                agents={workflowAgentInspector.agents}
+                agentsLoading={workflowAgentInspector.agentsStatus === 'loading'}
+                agentsError={workflowAgentInspector.agentsError}
+                selectedAgentRef={workflowAgentInspector.selectedRef}
+                onSelectAgent={workflowAgentInspector.selectAgent}
+              />
             </Suspense>
           </LazyPrerenderedSurface>
           <LazyPrerenderedSurface

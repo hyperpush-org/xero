@@ -631,7 +631,7 @@ fn runtime_metadata_fragment(metadata: &RuntimeHostMetadata) -> String {
     )
 }
 
-fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
+pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> String {
     let agent_contract = match runtime_agent_id {
         RuntimeAgentIdDto::Ask => [
             "You are Xero's Ask agent. Answer the user's question in chat using audited observe-only tools only when grounding is needed.",

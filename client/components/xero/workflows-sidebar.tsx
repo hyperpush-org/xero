@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Bot,
+  Compass,
   Copy,
-  FileText,
+  Hammer,
   MoreHorizontal,
   Pencil,
   Play,
@@ -12,12 +13,15 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  TestTube,
   Trash2,
+  Wand2,
   Wrench,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { useDeferredFilterQuery } from "@/lib/input-priority"
+import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +31,18 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import {
+  agentRefKey,
+  agentRefsEqual,
+  type AgentRefDto,
+  type WorkflowAgentSummaryDto,
+} from "@/src/lib/xero-model/workflow-agents"
+import {
+  getAgentDefinitionBaseCapabilityLabel,
+  getAgentDefinitionScopeLabel,
+  type AgentDefinitionBaseCapabilityProfileDto,
+  type AgentDefinitionScopeDto,
+} from "@/src/lib/xero-model/agent-definition"
 
 const MIN_WIDTH = 280
 const MAX_WIDTH = 1200
@@ -49,20 +65,13 @@ interface Workflow {
   runCount: number
 }
 
-type AgentKind = "reviewer" | "writer" | "fixer" | "planner" | "verifier" | "general"
-
-interface Agent {
-  id: string
-  name: string
-  description: string
-  kind: AgentKind
-  isDefault: boolean
-  lastUsedLabel: string | null
-  useCount: number
-}
-
 interface WorkflowsSidebarProps {
   open: boolean
+  agents?: WorkflowAgentSummaryDto[]
+  agentsLoading?: boolean
+  agentsError?: Error | null
+  selectedAgentRef?: AgentRefDto | null
+  onSelectAgent?: (ref: AgentRefDto) => void
 }
 
 const DEFAULT_WORKFLOWS: Workflow[] = [
@@ -118,63 +127,6 @@ const DEFAULT_WORKFLOWS: Workflow[] = [
   },
 ]
 
-const DEFAULT_AGENTS: Agent[] = [
-  {
-    id: "reviewer",
-    name: "Reviewer",
-    description: "Reads diffs and flags bugs, regressions, and code smell.",
-    kind: "reviewer",
-    isDefault: true,
-    lastUsedLabel: "2h ago",
-    useCount: 41,
-  },
-  {
-    id: "test-writer",
-    name: "Test Writer",
-    description: "Generates unit and integration tests for the active diff.",
-    kind: "writer",
-    isDefault: true,
-    lastUsedLabel: "yesterday",
-    useCount: 17,
-  },
-  {
-    id: "refactor",
-    name: "Refactor",
-    description: "Tightens implementation while preserving the public API.",
-    kind: "fixer",
-    isDefault: true,
-    lastUsedLabel: "3d ago",
-    useCount: 9,
-  },
-  {
-    id: "docs",
-    name: "Docs",
-    description: "Documents public surfaces and rewrites stale inline comments.",
-    kind: "writer",
-    isDefault: true,
-    lastUsedLabel: null,
-    useCount: 0,
-  },
-  {
-    id: "security",
-    name: "Security",
-    description: "Threat-models the diff and proposes mitigations.",
-    kind: "verifier",
-    isDefault: true,
-    lastUsedLabel: "12m ago",
-    useCount: 6,
-  },
-  {
-    id: "planner",
-    name: "Planner",
-    description: "Decomposes a goal into ordered agent steps.",
-    kind: "planner",
-    isDefault: true,
-    lastUsedLabel: "1h ago",
-    useCount: 22,
-  },
-]
-
 const STATUS_STYLES: Record<WorkflowStatus, { label: string; className: string; dotClassName: string }> = {
   idle: {
     label: "Idle",
@@ -198,16 +150,30 @@ const STATUS_STYLES: Record<WorkflowStatus, { label: string; className: string; 
   },
 }
 
-const AGENT_KIND_ICON: Record<AgentKind, typeof Bot> = {
-  reviewer: ShieldCheck,
-  writer: FileText,
-  fixer: Wrench,
-  planner: Sparkles,
-  verifier: ShieldCheck,
-  general: Bot,
+const AGENT_PROFILE_ICON: Record<AgentDefinitionBaseCapabilityProfileDto, typeof Bot> = {
+  observe_only: ShieldCheck,
+  planning: Sparkles,
+  repository_recon: Compass,
+  engineering: Hammer,
+  debugging: Wrench,
+  agent_builder: Wand2,
+  harness_test: TestTube,
 }
 
-export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
+const SCOPE_BADGE_VARIANT: Record<AgentDefinitionScopeDto, "default" | "secondary" | "outline"> = {
+  built_in: "secondary",
+  global_custom: "default",
+  project_custom: "outline",
+}
+
+export function WorkflowsSidebar({
+  open,
+  agents: agentsProp,
+  agentsLoading = false,
+  agentsError = null,
+  selectedAgentRef = null,
+  onSelectAgent,
+}: WorkflowsSidebarProps) {
   const [tab, setTabState] = useState<LibraryTab>(() => readPersistedTab() ?? "workflows")
   const [query, setQuery] = useState("")
   const [searchOpen, setSearchOpen] = useState(false)
@@ -220,7 +186,7 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
   const deferredQuery = useDeferredFilterQuery(query)
 
   const workflows = DEFAULT_WORKFLOWS
-  const agents = DEFAULT_AGENTS
+  const agents = useMemo(() => agentsProp ?? [], [agentsProp])
 
   const setTab = useCallback((next: LibraryTab) => {
     setTabState((current) => {
@@ -249,9 +215,10 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
     if (!q) return agents
     return agents.filter(
       (agent) =>
-        agent.name.toLowerCase().includes(q) ||
+        agent.displayName.toLowerCase().includes(q) ||
+        agent.shortLabel.toLowerCase().includes(q) ||
         agent.description.toLowerCase().includes(q) ||
-        agent.kind.toLowerCase().includes(q),
+        agent.baseCapabilityProfile.toLowerCase().includes(q),
     )
   }, [agents, deferredQuery, tab])
 
@@ -372,6 +339,10 @@ export function WorkflowsSidebar({ open }: WorkflowsSidebarProps) {
             activeCount={activeCount}
             totalCount={totalCount}
             hasQuery={hasQuery}
+            agentsLoading={agentsLoading}
+            agentsError={agentsError}
+            selectedAgentRef={selectedAgentRef}
+            onSelectAgent={onSelectAgent}
           />
         </div>
       </div>
@@ -546,14 +517,38 @@ function LibraryList({
   activeCount,
   totalCount,
   hasQuery,
+  agentsLoading,
+  agentsError,
+  selectedAgentRef,
+  onSelectAgent,
 }: {
   tab: LibraryTab
   workflows: Workflow[]
-  agents: Agent[]
+  agents: WorkflowAgentSummaryDto[]
   activeCount: number
   totalCount: number
   hasQuery: boolean
+  agentsLoading: boolean
+  agentsError: Error | null
+  selectedAgentRef: AgentRefDto | null
+  onSelectAgent?: (ref: AgentRefDto) => void
 }) {
+  if (tab === "agents" && agentsError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-1 px-3 py-8 text-center text-[11px] leading-relaxed text-destructive">
+        <span>Failed to load agents.</span>
+        <span className="text-muted-foreground">{agentsError.message}</span>
+      </div>
+    )
+  }
+  if (tab === "agents" && agentsLoading && agents.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center px-3 py-8 text-center text-[11px] leading-relaxed text-muted-foreground/80">
+        Loading agents…
+      </div>
+    )
+  }
+
   if (activeCount === 0) {
     const message = emptyStateMessage(tab, hasQuery, totalCount)
     return (
@@ -572,8 +567,14 @@ function LibraryList({
             </li>
           ))
         : agents.map((agent) => (
-            <li key={agent.id}>
-              <AgentRow agent={agent} />
+            <li key={agentRefKey(agent.ref)}>
+              <AgentRow
+                agent={agent}
+                selected={
+                  selectedAgentRef ? agentRefsEqual(agent.ref, selectedAgentRef) : false
+                }
+                onSelect={onSelectAgent}
+              />
             </li>
           ))}
     </ul>
@@ -640,40 +641,72 @@ function WorkflowRow({ workflow }: { workflow: Workflow }) {
   )
 }
 
-function AgentRow({ agent }: { agent: Agent }) {
-  const Icon = AGENT_KIND_ICON[agent.kind]
-  // Edit only when the agent is a built-in default — same convention as workflows.
-  const showEdit = agent.isDefault
+function AgentRow({
+  agent,
+  selected,
+  onSelect,
+}: {
+  agent: WorkflowAgentSummaryDto
+  selected: boolean
+  onSelect?: (ref: AgentRefDto) => void
+}) {
+  const Icon = AGENT_PROFILE_ICON[agent.baseCapabilityProfile] ?? Bot
+  const isBuiltIn = agent.scope === "built_in"
+  const showEdit = !isBuiltIn
+
+  const handleActivate = () => {
+    onSelect?.(agent.ref)
+  }
 
   return (
-    <div className="group relative flex items-start gap-3 px-3 py-3 transition-colors hover:bg-secondary/30">
+    <div
+      className={cn(
+        "group relative flex items-start gap-3 px-3 py-3 transition-colors",
+        selected ? "bg-primary/10" : "hover:bg-secondary/30",
+      )}
+    >
+      <button
+        type="button"
+        onClick={handleActivate}
+        className="absolute inset-0 cursor-pointer"
+        aria-label={`Inspect ${agent.displayName}`}
+        aria-pressed={selected}
+      />
       <Icon
         aria-hidden="true"
-        className="mt-[3px] h-3.5 w-3.5 shrink-0 text-muted-foreground/70"
+        className={cn(
+          "mt-[3px] h-3.5 w-3.5 shrink-0",
+          selected ? "text-primary" : "text-muted-foreground/70",
+        )}
       />
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 relative pointer-events-none">
         <div className="flex items-center gap-1.5">
-          <span className="truncate text-[13px] font-medium leading-tight text-foreground">
-            {agent.name}
+          <span
+            className={cn(
+              "truncate text-[13px] font-medium leading-tight",
+              selected ? "text-foreground" : "text-foreground",
+            )}
+          >
+            {agent.displayName}
           </span>
-          {agent.isDefault ? (
-            <Sparkles
-              aria-hidden="true"
-              className="h-2.5 w-2.5 shrink-0 text-muted-foreground/45"
-            />
-          ) : null}
+          <Badge
+            variant={SCOPE_BADGE_VARIANT[agent.scope]}
+            className="text-[9px] px-1 py-0 leading-tight"
+          >
+            {getAgentDefinitionScopeLabel(agent.scope)}
+          </Badge>
         </div>
         <p className="mt-0.5 line-clamp-1 text-[11.5px] leading-snug text-muted-foreground">
-          {agent.description}
+          {agent.description || getAgentDefinitionBaseCapabilityLabel(agent.baseCapabilityProfile)}
         </p>
       </div>
 
-      <div className="flex shrink-0 items-center gap-0.5 self-center">
+      <div className="relative flex shrink-0 items-center gap-0.5 self-center">
         <RowMenu
-          name={agent.name}
+          name={agent.displayName}
           showEdit={showEdit}
-          deleteDisabled={agent.isDefault}
+          deleteDisabled={isBuiltIn}
         />
       </div>
     </div>

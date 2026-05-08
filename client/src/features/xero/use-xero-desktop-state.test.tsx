@@ -1000,6 +1000,10 @@ function createMockAdapter(options?: {
     throw new Error('archiveAgentDefinition not stubbed in test adapter')
   })
   const getAgentDefinitionVersion = vi.fn(async () => null)
+  const listWorkflowAgents = vi.fn(async () => ({ agents: [] }))
+  const getWorkflowAgentDetail = vi.fn(async () => {
+    throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
+  })
   const updateAgentSession = vi.fn(async (request: {
     projectId: string
     agentSessionId: string
@@ -2054,6 +2058,8 @@ function createMockAdapter(options?: {
     listAgentDefinitions,
     archiveAgentDefinition,
     getAgentDefinitionVersion,
+    listWorkflowAgents,
+    getWorkflowAgentDetail,
     listAgentSessions,
     getAgentSession,
     updateAgentSession,

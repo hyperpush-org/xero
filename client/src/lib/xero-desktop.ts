@@ -32,6 +32,16 @@ import {
   type ListAgentDefinitionsResponseDto,
 } from '@/src/lib/xero-model/agent-definition'
 import {
+  getWorkflowAgentDetailRequestSchema,
+  listWorkflowAgentsRequestSchema,
+  listWorkflowAgentsResponseSchema,
+  workflowAgentDetailSchema,
+  type GetWorkflowAgentDetailRequestDto,
+  type ListWorkflowAgentsRequestDto,
+  type ListWorkflowAgentsResponseDto,
+  type WorkflowAgentDetailDto,
+} from '@/src/lib/xero-model/workflow-agents'
+import {
   agentRunEventSchema,
   agentRunSchema,
   agentTraceExportSchema,
@@ -434,6 +444,8 @@ const COMMANDS = {
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
   getAgentDefinitionVersion: 'get_agent_definition_version',
+  listWorkflowAgents: 'list_workflow_agents',
+  getWorkflowAgentDetail: 'get_workflow_agent_detail',
   listAgentSessions: 'list_agent_sessions',
   getAgentSession: 'get_agent_session',
   updateAgentSession: 'update_agent_session',
@@ -767,6 +779,12 @@ export interface XeroDesktopAdapter {
   getAgentDefinitionVersion(
     request: GetAgentDefinitionVersionRequestDto,
   ): Promise<AgentDefinitionVersionSummaryDto | null>
+  listWorkflowAgents(
+    request: ListWorkflowAgentsRequestDto,
+  ): Promise<ListWorkflowAgentsResponseDto>
+  getWorkflowAgentDetail(
+    request: GetWorkflowAgentDetailRequestDto,
+  ): Promise<WorkflowAgentDetailDto>
   listAgentSessions(request: ListAgentSessionsRequestDto): Promise<ListAgentSessionsResponseDto>
   getAgentSession(request: GetAgentSessionRequestDto): Promise<AgentSessionDto | null>
   updateAgentSession(request: UpdateAgentSessionRequestDto): Promise<AgentSessionDto>
@@ -1787,6 +1805,23 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
       agentDefinitionVersionSummarySchema.nullable(),
       { request: parsed },
     )
+  },
+
+  listWorkflowAgents(request) {
+    const parsed = listWorkflowAgentsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.listWorkflowAgents, listWorkflowAgentsResponseSchema, {
+      request: {
+        projectId: parsed.projectId,
+        includeArchived: parsed.includeArchived,
+      },
+    })
+  },
+
+  getWorkflowAgentDetail(request) {
+    const parsed = getWorkflowAgentDetailRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.getWorkflowAgentDetail, workflowAgentDetailSchema, {
+      request: parsed,
+    })
   },
 
   listAgentSessions(request) {

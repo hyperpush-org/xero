@@ -1,0 +1,370 @@
+/* Reskin ReactFlow chrome to match the app's theme.
+   The default styles ship a white background and white minimap which look
+   detached from our dark-by-default design. */
+
+.agent-visualization {
+  /* Background dot tint. Toned down from the foreground-mix default so the
+     grid reads as ambient texture rather than the brightest thing on screen. */
+  --xy-background-color: transparent;
+  --xy-background-pattern-dots-color: color-mix(in oklab, var(--foreground) 8%, transparent);
+
+  /* ReactFlow uses these to colour the default node container. We override to
+     transparent so any padding outside our card-styled children does not bleed
+     a white rectangle into the dark canvas. */
+  --xy-node-background-color: transparent;
+  --xy-node-background-color-default: transparent;
+  --xy-node-color: var(--card-foreground);
+  --xy-node-color-default: var(--card-foreground);
+  --xy-node-border: transparent;
+  --xy-node-border-default: transparent;
+
+  /* Edge / connection line colour — opaque mix with the canvas background so
+     overlapping segments do not compound into brighter spots. */
+  --xy-edge-stroke: color-mix(in oklab, var(--foreground) 38%, var(--background));
+  --xy-edge-stroke-default: color-mix(in oklab, var(--foreground) 38%, var(--background));
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--primary);
+
+  --xy-handle-background-color: var(--primary);
+  --xy-handle-border-color: var(--background);
+}
+
+.agent-visualization .react-flow {
+  background: transparent;
+}
+
+.agent-visualization .react-flow__viewport {
+  transform-origin: 0 0;
+}
+
+.agent-visualization.is-interacting .react-flow__viewport {
+  will-change: transform;
+}
+
+.agent-visualization .react-flow__background {
+  background: transparent;
+  pointer-events: none;
+}
+
+.agent-visualization .agent-visualization__dots {
+  --agent-dot-color: color-mix(in oklab, var(--foreground) 8%, transparent);
+  --agent-dot-scale: 1;
+  --agent-dot-x: 0px;
+  --agent-dot-y: 0px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: calc(100% + 64px);
+  height: calc(100% + 64px);
+  z-index: -1;
+  pointer-events: none;
+  contain: layout style paint;
+  backface-visibility: hidden;
+  background-image: radial-gradient(
+    circle,
+    var(--agent-dot-color) 0 1px,
+    transparent 1.1px
+  );
+  background-size: 32px 32px;
+  transform: translate3d(var(--agent-dot-x), var(--agent-dot-y), 0)
+    scale(var(--agent-dot-scale));
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.agent-visualization .react-flow__edges {
+  z-index: 0;
+}
+
+.agent-visualization .react-flow__edges,
+.agent-visualization .react-flow__edges * {
+  pointer-events: none !important;
+}
+
+.agent-visualization .react-flow__nodes {
+  z-index: 1;
+}
+
+/* Strip default node container styling so only our card children paint a surface.
+   The transform transition lets neighbouring nodes glide into their new positions
+   when one card expands and the layout reflows around it. */
+.agent-visualization .react-flow__node {
+  background: transparent;
+  border: none;
+  padding: 0;
+  width: auto;
+  text-align: left;
+  contain: layout style;
+  transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Drag operations should feel snappy — disable the transition while the user
+   is actively moving a node so it tracks the cursor 1:1. */
+.agent-visualization .react-flow__node.dragging,
+.agent-visualization .react-flow__node.selected:active,
+.agent-visualization.is-dragging .react-flow__node {
+  transition: none;
+}
+
+.agent-visualization .react-flow__panel {
+  /* Default Panels include a white background. Make them transparent so our card-styled
+     children control their own surface. */
+  background: transparent;
+  border: none;
+}
+
+.agent-visualization .react-flow__controls {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.agent-visualization .react-flow__controls-button {
+  background: transparent;
+  color: var(--muted-foreground);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  width: 28px;
+  height: 28px;
+}
+
+.agent-visualization .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.agent-visualization .react-flow__controls-button:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.agent-visualization .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.agent-visualization .react-flow__edge-path {
+  /* Opaque stroke (no transparent endpoint) so overlapping lines do not
+     compound into brighter sections at intersections. */
+  stroke: color-mix(in oklab, var(--foreground) 38%, var(--background));
+  stroke-width: 1.5;
+  shape-rendering: geometricPrecision;
+  vector-effect: non-scaling-stroke;
+}
+
+.agent-visualization.is-interacting .react-flow__edge-path {
+  transition: none;
+}
+
+/* Per-category edge colour. Each category uses a desaturated, opaque tint so
+   the four edge bundles read as distinct families without appearing bright.
+   Ownership edges (header → child) sit at lower opacity than functional
+   cross-edges so the latter read as the primary flow signal. */
+.agent-visualization .react-flow__edge.agent-edge-prompt .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 40%, var(--background));
+  opacity: 0.7;
+}
+.agent-visualization .react-flow__edge.agent-edge-tool .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 40%, var(--background));
+  opacity: 0.7;
+}
+.agent-visualization .react-flow__edge.agent-edge-db .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-emerald-500, #10b981) 40%, var(--background));
+  opacity: 0.7;
+}
+.agent-visualization .react-flow__edge.agent-edge-output .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--foreground) 40%, var(--background));
+  opacity: 0.7;
+}
+
+/* Functional cross-edges. These describe causation (tool → db, section → db,
+   tool → section). Default opacity is moderate so they communicate flow
+   without dominating; on hover-focus the related ones gain prominence. */
+.agent-visualization .react-flow__edge.agent-edge-trigger .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 65%, var(--foreground));
+  stroke-width: 1.25;
+  opacity: 0.65;
+}
+
+/* Consumed-artifact edges (upstream agent → header) — dashed teal so the
+   inbound handoff visually contrasts with intra-agent ownership. */
+.agent-visualization .react-flow__edge.agent-edge-consume .react-flow__edge-path {
+  stroke: color-mix(in oklab, #14b8a6 70%, var(--foreground));
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+
+/* Focus mode — when the user hovers a node we light up its directly-related
+   trigger edges and drop everything unrelated. The node itself also dims, so
+   the related cluster pops out of the canvas at a glance.
+
+   React Flow's edge renderer stays under the node layer at all times, including
+   focus mode. The active edge still gets brighter, but it never rises above
+   any card. */
+.agent-visualization.is-focusing .react-flow__edges,
+.agent-visualization.is-focusing .react-flow__edges * {
+  pointer-events: none !important;
+}
+.agent-visualization.is-focusing .react-flow__edge:not(.is-active) .react-flow__edge-path {
+  opacity: 0.22;
+}
+.agent-visualization .react-flow__edge.agent-edge-trigger.is-active .react-flow__edge-path {
+  opacity: 1;
+  stroke-width: 2;
+}
+.agent-visualization .react-flow__edge.is-active:not(.agent-edge-trigger) .react-flow__edge-path {
+  opacity: 1;
+  stroke-width: 2;
+}
+.agent-visualization.is-focusing
+  .react-flow__node:not(.is-focused):not(.react-flow__node-lane-label):not(.react-flow__node-tool-group-frame) {
+  opacity: 0.35;
+  transition: opacity 160ms ease;
+}
+.agent-visualization .react-flow__node.is-focused {
+  opacity: 1;
+  transition: opacity 160ms ease;
+}
+
+/* Output → output-section parent links: subtle but legible. The spatial
+   grouping under the output node already conveys the relationship, so these
+   stay quieter than functional cross-edges, but visible against the canvas. */
+.agent-visualization .react-flow__edge.agent-edge-output-section .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--foreground) 55%, var(--background));
+  stroke-width: 1.25;
+}
+
+.agent-visualization .react-flow__edge.selected .react-flow__edge-path,
+.agent-visualization .react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--primary);
+}
+
+.agent-visualization .react-flow__handle {
+  border: 1px solid var(--background);
+  pointer-events: none;
+}
+
+.agent-visualization .agent-card {
+  contain: layout style;
+}
+
+/* Soft category labels used by the layout-by-category renderer.
+   Uses a hairline rule below the text (set on the node itself) so each lane
+   reads as a banded section rather than a floating word. */
+.agent-visualization .agent-graph-lane-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Tool category frames: dashed sky-tinted box drawn behind each group of
+   tools. Lives at z-index 0 so the actual tool cards render on top.
+   Pointer events stay enabled so the frame's padding zone catches drags —
+   the user can grab a category frame to move all of its tools at once. The
+   tool cards themselves render in the default node z-index (above 0), so
+   clicks on tools still hit the tool, not the frame. */
+.agent-visualization .react-flow__node.react-flow__node-tool-group-frame {
+  z-index: 0 !important;
+  cursor: grab;
+}
+
+.agent-visualization .react-flow__node.react-flow__node-tool-group-frame.dragging {
+  cursor: grabbing;
+}
+
+.agent-visualization .agent-tool-group-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed
+    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 45%, var(--background));
+  border-radius: 8px;
+  background: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 6%,
+    transparent
+  );
+  box-sizing: border-box;
+}
+
+/* When the frame is hovered (excluding when hovering inner tools), brighten
+   the dashed border so it's clear the entire group is grabbable. */
+.agent-visualization .react-flow__node-tool-group-frame:hover .agent-tool-group-frame {
+  border-color: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 70%,
+    var(--background)
+  );
+  background: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 9%,
+    transparent
+  );
+}
+
+.agent-visualization .agent-tool-group-frame__label {
+  position: absolute;
+  top: 6px;
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--background);
+  color: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 70%, var(--foreground));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.agent-visualization .agent-tool-group-frame__count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted-foreground);
+  background: color-mix(in oklab, var(--foreground) 10%, transparent);
+  padding: 1px 5px;
+  border-radius: 999px;
+  line-height: 1;
+}
+
+/* Expandable card body: animated open/close via the grid-template-rows trick.
+   The wrapper transitions between 0fr (collapsed, body has 0 height) and 1fr
+   (expanded, body uses its natural content height). The canvas reflows the
+   layout in parallel using an enlarged size for the expanded node, so the
+   expanding card visibly displaces its neighbours rather than overlapping
+   them. The two transitions share duration + easing so they stay in sync. */
+.agent-visualization .agent-card-body-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.agent-visualization .agent-card-body-wrapper.is-open {
+  grid-template-rows: 1fr;
+}
+
+.agent-visualization .agent-card-body-wrapper > .agent-card-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Lift the expanded card visually so the new content reads as the focused
+   element. Layered above the z-index ladder ReactFlow assigns by render order. */
+.agent-visualization .react-flow__node:has(.is-card-expanded) {
+  z-index: 1000 !important;
+}
+
+.agent-visualization .is-card-expanded {
+  box-shadow:
+    0 16px 32px -12px rgba(0, 0, 0, 0.55),
+    0 6px 12px -4px rgba(0, 0, 0, 0.35);
+}

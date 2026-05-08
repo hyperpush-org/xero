@@ -1803,6 +1803,10 @@ function createAdapter(options?: {
       throw new Error('archiveAgentDefinition not stubbed in test adapter')
     },
     getAgentDefinitionVersion: async () => null,
+    listWorkflowAgents: async () => ({ agents: [] }),
+    getWorkflowAgentDetail: async () => {
+      throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
+    },
     createAgentSession: async (request) => {
       const now = '2026-04-23T12:00:00Z'
       const selected = request.selected ?? true
