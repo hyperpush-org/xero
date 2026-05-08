@@ -10,6 +10,7 @@ import {
   FileText,
   GitMerge,
   Layers,
+  Lock,
   Wrench,
 } from 'lucide-react'
 
@@ -19,6 +20,7 @@ import {
   getAgentDefinitionBaseCapabilityLabel,
   getAgentDefinitionScopeLabel,
 } from '@/src/lib/xero-model/agent-definition'
+import { getRuntimeRunApprovalModeLabel } from '@/src/lib/xero-model/runtime'
 
 import { AGENT_GRAPH_HEADER_HANDLES, type AgentHeaderFlowNode } from '../build-agent-graph'
 import { useAgentCanvasExpansion } from '../expansion-context'
@@ -50,17 +52,12 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
         type="source"
         position={Position.Right}
         className="!bg-sky-500 !w-2 !h-2"
-        // Pixel offsets — keep the right-side handles glued to the always-visible
-        // title/settings section so tool & db edges do not re-route when the
-        // task-purpose body opens and grows the card downward.
-        style={{ top: 100 }}
       />
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.db}
         type="source"
         position={Position.Right}
         className="!bg-emerald-500 !w-2 !h-2"
-        style={{ top: 138 }}
       />
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.output}
@@ -73,7 +70,6 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
         type="target"
         position={Position.Left}
         className="!bg-teal-500 !w-2 !h-2"
-        style={{ top: 105 }}
       />
       <div
         className={cn(
@@ -95,11 +91,19 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
                 {header.shortLabel}
               </span>
             ) : null}
+            {header.scope === 'built_in' ? (
+              <span
+                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-primary"
+              >
+                <Lock aria-hidden="true" className="h-2.5 w-2.5" />
+                <span>system</span>
+              </span>
+            ) : null}
           </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground leading-relaxed line-clamp-2">
+          <p className="agent-node-detail mt-1.5 text-[11px] text-muted-foreground leading-relaxed line-clamp-2">
             {header.description}
           </p>
-          <div className="mt-2 flex flex-wrap gap-1">
+          <div className="agent-node-chip-row mt-2 flex flex-wrap gap-1">
             <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
               {getAgentDefinitionScopeLabel(header.scope)}
             </Badge>
@@ -111,17 +115,21 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
             </Badge>
           </div>
         </div>
-        <div className="px-3 py-1.5 flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-muted-foreground border-b border-border/40 bg-muted/15">
+        <div className="agent-node-chip-row px-3 py-1.5 flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-muted-foreground border-b border-border/40 bg-muted/15">
           <SummaryChip icon={FileText} count={summary.prompts} label="prompts" tone="amber" />
           <SummaryChip icon={Wrench} count={summary.tools} label="tools" tone="sky" />
-          <SummaryChip icon={Database} count={summary.dbTables} label="tables" tone="emerald" />
+          <SummaryChip icon={Database} count={summary.dbTables} label="touchpoints" tone="emerald" />
           <SummaryChip icon={Layers} count={summary.outputSections} label="sections" tone="foreground" />
           {summary.consumes > 0 ? (
             <SummaryChip icon={GitMerge} count={summary.consumes} label="consumes" tone="teal" />
           ) : null}
         </div>
-        <div className="px-3 py-1.5 flex items-center gap-1.5 flex-wrap text-[10px]">
-          <GatePill on={true} label="Approval" value={header.defaultApprovalMode} />
+        <div className="agent-node-chip-row px-3 py-1.5 flex items-center gap-1.5 flex-wrap text-[10px]">
+          <GatePill
+            on={true}
+            label="Approval"
+            value={getRuntimeRunApprovalModeLabel(header.defaultApprovalMode)}
+          />
           <GatePill on={header.allowPlanGate} label="Plan" />
           <GatePill on={header.allowVerificationGate} label="Verify" />
           {header.allowAutoCompact ? (
@@ -135,9 +143,9 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
             className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors border-t border-border/40"
           >
             {expanded ? (
-              <ChevronDown className="h-3 w-3" />
+              <ChevronDown className="agent-node-chevron h-3 w-3" />
             ) : (
-              <ChevronRight className="h-3 w-3" />
+              <ChevronRight className="agent-node-chevron h-3 w-3" />
             )}
             {expanded ? 'Hide task purpose' : 'Task purpose'}
           </button>

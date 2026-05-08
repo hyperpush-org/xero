@@ -51,7 +51,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Code2, Database, Globe, Heart, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Code2, Database, Globe, Heart, Keyboard, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -74,6 +74,7 @@ export type SettingsSection =
   | "browser"
   | "workspaceIndex"
   | "themes"
+  | "shortcuts"
   | "development"
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
@@ -90,6 +91,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "browser",
   "workspaceIndex",
   "themes",
+  "shortcuts",
   "development",
 ]
 
@@ -133,6 +135,10 @@ const loadPluginsSection = () =>
   import("@/components/xero/settings-dialog/plugins-section").then((module) => ({
     default: module.PluginsSection,
   }))
+const loadShortcutsSection = () =>
+  import("@/components/xero/settings-dialog/shortcuts-section").then((module) => ({
+    default: module.ShortcutsSection,
+  }))
 const loadSkillsSection = () =>
   import("@/components/xero/settings-dialog/skills-section").then((module) => ({
     default: module.SkillsSection,
@@ -160,6 +166,7 @@ const LazyMcpSection = lazy(loadMcpSection)
 const LazyNotificationsSection = lazy(loadNotificationsSection)
 const LazyProvidersSection = lazy(loadProvidersSection)
 const LazyPluginsSection = lazy(loadPluginsSection)
+const LazyShortcutsSection = lazy(loadShortcutsSection)
 const LazySkillsSection = lazy(loadSkillsSection)
 const LazySoulSection = lazy(loadSoulSection)
 const LazyThemesSection = lazy(loadThemesSection)
@@ -179,6 +186,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   browser: loadBrowserSection,
   workspaceIndex: loadWorkspaceIndexSection,
   themes: loadThemesSection,
+  shortcuts: loadShortcutsSection,
   development: loadDevelopmentSection,
 }
 
@@ -239,7 +247,10 @@ const WORKSPACE_GROUP: NavGroup = {
 const APPEARANCE_GROUP: NavGroup = {
   id: "appearance",
   label: "Appearance",
-  items: [{ id: "themes", label: "Themes", icon: Palette }],
+  items: [
+    { id: "themes", label: "Themes", icon: Palette },
+    { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
+  ],
 }
 
 const DEVELOPER_GROUP: NavGroup = {
@@ -417,9 +428,9 @@ export function SettingsDialog({
   onGetAgentDefinitionVersion,
   onAgentRegistryChanged,
 }: SettingsDialogProps) {
-  const [section, setSection] = useState<SettingsSection>("providers")
+  const [section, setSection] = useState<SettingsSection>(initialSection)
   const [mountedSections, setMountedSections] = useState<ReadonlySet<SettingsSection>>(
-    () => new Set(["providers"]),
+    () => new Set([initialSection]),
   )
   const refreshOnOpenCallbacksRef = useRef({
     providerCredentials: onRefreshProviderCredentials,
@@ -678,6 +689,10 @@ export function SettingsDialog({
 
     if (renderedSection === "themes") {
       return <LazyThemesSection />
+    }
+
+    if (renderedSection === "shortcuts") {
+      return <LazyShortcutsSection />
     }
 
     if (renderedSection === "development") {

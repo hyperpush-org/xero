@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 import type { PromptFlowNode } from '../build-agent-graph'
+import { humanizeIdentifier } from '../build-agent-graph'
 import { useAgentCanvasExpansion } from '../expansion-context'
 
 const ROLE_LABEL: Record<'system' | 'developer' | 'task', string> = {
@@ -52,10 +53,13 @@ export const PromptNode = memo(function PromptNode({ id, data }: NodeProps<Promp
           <div className="agent-card-body">
             <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-b border-border/40 bg-muted/10">
               <div className="flex items-center gap-2 text-[9px] text-muted-foreground/80 uppercase tracking-wider font-medium">
-                <span>{prompt.source}</span>
+                <span>{humanizeIdentifier(prompt.source)}</span>
                 {prompt.policy ? (
-                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
-                    policy: {prompt.policy}
+                  <Badge
+                    variant="outline"
+                    className="text-[9px] px-1.5 py-0 font-medium"
+                  >
+                    policy: {humanizeIdentifier(prompt.policy)}
                   </Badge>
                 ) : null}
               </div>
@@ -79,11 +83,11 @@ export const PromptNode = memo(function PromptNode({ id, data }: NodeProps<Promp
           <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
             {ROLE_LABEL[prompt.role]}
           </Badge>
-          <span className="text-[9px] text-muted-foreground/80 tabular-nums font-mono">~{tokenEstimate}t</span>
+          <span className="agent-node-secondary text-[9px] text-muted-foreground/80 tabular-nums font-mono">~{tokenEstimate}t</span>
           {expanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground/70" />
+            <ChevronDown className="agent-node-chevron h-3 w-3 text-muted-foreground/70" />
           ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground/70" />
+            <ChevronRight className="agent-node-chevron h-3 w-3 text-muted-foreground/70" />
           )}
         </button>
       </div>

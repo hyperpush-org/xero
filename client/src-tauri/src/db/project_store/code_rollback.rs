@@ -2615,6 +2615,10 @@ fn restore_exact_state(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "undo history persistence spans snapshots and commit context"
+)]
 fn persist_code_undo_history(
     repo_root: &Path,
     project_id: &str,
@@ -2753,6 +2757,10 @@ fn persist_code_undo_history(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "session rollback history persistence spans snapshots and plan context"
+)]
 fn persist_code_session_rollback_history(
     repo_root: &Path,
     project_id: &str,
@@ -3153,6 +3161,10 @@ fn conflicted_code_session_rollback_result(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "conflict DTO construction mirrors the response contract"
+)]
 fn conflicted_code_file_undo_result(
     request: &ApplyCodeFileUndoRequest,
     operation_id: &str,
@@ -3184,6 +3196,10 @@ fn conflicted_code_file_undo_result(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "conflict DTO construction mirrors the response contract"
+)]
 fn conflicted_code_change_group_undo_result(
     request: &ApplyCodeChangeGroupUndoRequest,
     operation_id: &str,
@@ -4387,7 +4403,7 @@ fn patch_merge_policy_and_hunks(
 }
 
 fn entry_side_is_absent_or_file(entry: Option<&CodeSnapshotFileEntry>) -> bool {
-    entry.map_or(true, |entry| entry.kind == CodeSnapshotFileKind::File)
+    entry.is_none_or(|entry| entry.kind == CodeSnapshotFileKind::File)
 }
 
 fn text_for_patch_entry(
@@ -4656,6 +4672,10 @@ fn completed_file_from_entries(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "file-version rows are inserted from a full before/after diff tuple"
+)]
 fn insert_file_version(
     tx: &Transaction<'_>,
     project_id: &str,
@@ -5932,6 +5952,10 @@ fn invalidate_code_history_file_reservations(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mailbox notices combine coordination row data with operation context"
+)]
 fn publish_code_history_mailbox_notices(
     connection: &Connection,
     repo_root: &Path,
@@ -7619,6 +7643,10 @@ fn capture_manifest_entry(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "snapshot capture needs path, budget, prior manifest, and blob policy"
+)]
 fn capture_manifest_entry_with_budget(
     repo_root: &Path,
     connection: &Connection,
@@ -7626,7 +7654,7 @@ fn capture_manifest_entry_with_budget(
     relative_path: &str,
     previous_entries: Option<&BTreeMap<String, CodeSnapshotFileEntry>>,
     store_blobs: bool,
-    mut scan_progress: Option<&mut CodeSnapshotScanProgress>,
+    scan_progress: Option<&mut CodeSnapshotScanProgress>,
     scan_budget: CodeSnapshotScanBudget,
     force_capture: bool,
 ) -> CommandResult<Option<CodeSnapshotFileEntry>> {
@@ -7718,7 +7746,7 @@ fn capture_manifest_entry_with_budget(
     }
 
     if !force_capture {
-        if let Some(progress) = scan_progress.as_deref_mut() {
+        if let Some(progress) = scan_progress {
             if !progress.try_reserve_new_blob_bytes(scan_budget, size) {
                 return Ok(previous_entries
                     .and_then(|entries| entries.get(&path_key))
@@ -9290,9 +9318,7 @@ fn should_include_walk_entry(entry: &DirEntry) -> bool {
     let Some(name) = entry.path().file_name().and_then(|name| name.to_str()) else {
         return true;
     };
-    !DEFAULT_SKIPPED_DIRS
-        .iter()
-        .any(|candidate| *candidate == name)
+    !DEFAULT_SKIPPED_DIRS.contains(&name)
 }
 
 fn normalize_targets(
@@ -9536,11 +9562,8 @@ fn path_to_forward_slash(path: &Path) -> String {
 }
 
 fn is_generated_or_ignored_path(path: &str) -> bool {
-    path.split('/').any(|segment| {
-        DEFAULT_SKIPPED_DIRS
-            .iter()
-            .any(|candidate| *candidate == segment)
-    })
+    path.split('/')
+        .any(|segment| DEFAULT_SKIPPED_DIRS.contains(&segment))
 }
 
 #[cfg(test)]
@@ -11179,7 +11202,7 @@ mod tests {
         assert_eq!(reservation_inbox.len(), 1);
         assert_eq!(
             reservation_inbox[0].item.item_type,
-            db::project_store::AgentMailboxItemType::HistoryRewriteNotice
+            db::project_store::AgentMailboxItemType::ReservationInvalidated
         );
         assert_eq!(
             reservation_inbox[0].item.priority,

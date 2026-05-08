@@ -12,9 +12,9 @@ use crate::{
         CommandError, CommandResult, GetWorkflowAgentDetailRequestDto,
         ListWorkflowAgentsRequestDto, ListWorkflowAgentsResponseDto,
         RuntimeAgentBaseCapabilityProfileDto, RuntimeAgentDescriptorDto, RuntimeAgentIdDto,
-        RuntimeAgentLifecycleStateDto, RuntimeAgentOutputContractDto,
-        RuntimeAgentPromptPolicyDto, RuntimeAgentScopeDto, RuntimeRunApprovalModeDto,
-        WorkflowAgentDetailDto, WorkflowAgentSummaryDto,
+        RuntimeAgentLifecycleStateDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
+        RuntimeAgentScopeDto, RuntimeRunApprovalModeDto, WorkflowAgentDetailDto,
+        WorkflowAgentSummaryDto,
     },
     db::project_store,
     runtime::{
@@ -48,7 +48,8 @@ pub fn list_workflow_agents<R: Runtime>(
         .map(builtin_summary)
         .collect();
 
-    let custom_records = project_store::list_agent_definitions(&repo_root, request.include_archived)?;
+    let custom_records =
+        project_store::list_agent_definitions(&repo_root, request.include_archived)?;
     for record in custom_records {
         if record.scope == "built_in" {
             // Built-ins are sourced from runtime descriptors above; skip any DB shadows
@@ -135,12 +136,12 @@ fn custom_summary(record: project_store::AgentDefinitionRecord) -> WorkflowAgent
     }
 }
 
-fn builtin_detail(
-    runtime_agent_id: RuntimeAgentIdDto,
-    version: u32,
-) -> WorkflowAgentDetailDto {
+fn builtin_detail(runtime_agent_id: RuntimeAgentIdDto, version: u32) -> WorkflowAgentDetailDto {
     let descriptor = runtime_agent_descriptor(runtime_agent_id);
-    let prompts = vec![system_prompt_for_runtime_agent(runtime_agent_id, descriptor.prompt_policy)];
+    let prompts = vec![system_prompt_for_runtime_agent(
+        runtime_agent_id,
+        descriptor.prompt_policy,
+    )];
     let tools = builtin_tools_for_runtime_agent(runtime_agent_id);
     let touchpoints = db_touchpoints_dto(runtime_agent_id);
     let output = output_contract_dto(descriptor.output_contract);
@@ -181,8 +182,9 @@ fn custom_detail(
     record: project_store::AgentDefinitionRecord,
     version: project_store::AgentDefinitionVersionRecord,
 ) -> WorkflowAgentDetailDto {
-    let runtime_agent_id =
-        project_store::runtime_agent_id_for_base_capability_profile(&record.base_capability_profile);
+    let runtime_agent_id = project_store::runtime_agent_id_for_base_capability_profile(
+        &record.base_capability_profile,
+    );
     let runtime_descriptor = runtime_agent_descriptor(runtime_agent_id);
     let snapshot = &version.snapshot;
 
@@ -271,7 +273,10 @@ fn custom_prompts_from_snapshot(
         runtime_descriptor.prompt_policy,
     )];
 
-    if let Some(fragments) = snapshot.get("promptFragments").and_then(JsonValue::as_array) {
+    if let Some(fragments) = snapshot
+        .get("promptFragments")
+        .and_then(JsonValue::as_array)
+    {
         for (index, fragment) in fragments.iter().enumerate() {
             let id = fragment
                 .get("id")
@@ -419,13 +424,15 @@ fn output_section_entry_to_dto(entry: &OutputSectionEntry) -> AgentOutputSection
         label: entry.label.to_string(),
         description: entry.description.to_string(),
         emphasis: entry.emphasis,
-        produced_by_tools: entry.produced_by_tools.iter().map(|s| s.to_string()).collect(),
+        produced_by_tools: entry
+            .produced_by_tools
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
     }
 }
 
-fn consumed_artifacts_dto(
-    runtime_agent_id: RuntimeAgentIdDto,
-) -> Vec<AgentConsumedArtifactDto> {
+fn consumed_artifacts_dto(runtime_agent_id: RuntimeAgentIdDto) -> Vec<AgentConsumedArtifactDto> {
     consumed_artifacts_for(runtime_agent_id)
         .iter()
         .map(consumed_artifact_entry_to_dto)
@@ -543,4 +550,3 @@ fn effect_class_from_runtime(class: AutonomousToolEffectClass) -> AgentToolEffec
         AutonomousToolEffectClass::Unknown => AgentToolEffectClassDto::Unknown,
     }
 }
-

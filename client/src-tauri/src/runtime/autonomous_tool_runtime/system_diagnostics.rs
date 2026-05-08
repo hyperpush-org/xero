@@ -3399,6 +3399,17 @@ fn read_text_file_prefix(path: &Path, max_bytes: usize) -> CommandResult<(String
 }
 
 fn write_text_artifact(path: &Path, text: &str) -> CommandResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            CommandError::system_fault(
+                "system_diagnostics_artifact_failed",
+                format!(
+                    "Xero could not create diagnostics artifact directory {}: {error}",
+                    parent.display()
+                ),
+            )
+        })?;
+    }
     fs::write(path, text.as_bytes()).map_err(|error| {
         CommandError::system_fault(
             "system_diagnostics_artifact_failed",
@@ -4110,6 +4121,8 @@ mod tests {
         runtime::{
             AutonomousSystemDiagnosticsFdKind, AutonomousToolAccessAction,
             AutonomousToolAccessRequest, AutonomousToolRequest,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+            AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
         },
     };
 
@@ -4274,7 +4287,7 @@ mod tests {
         assert!(search_output
             .matches
             .iter()
-            .any(|tool_match| tool_match.tool_name == AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS));
+            .any(|tool_match| tool_match.tool_name == AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE));
 
         let access = runtime
             .tool_access(AutonomousToolAccessRequest {
@@ -4289,7 +4302,10 @@ mod tests {
         };
         assert_eq!(
             access_output.granted_tools,
-            vec![AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS.to_string()]
+            vec![
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE.to_string(),
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED.to_string()
+            ]
         );
         assert!(access_output.denied_tools.is_empty());
     }

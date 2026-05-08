@@ -1,7 +1,7 @@
 import { ImageResponse } from 'next/og'
+import { siteConfig, siteDomain } from '@/lib/site'
 
-export const runtime = 'edge'
-export const alt = 'Xero — The agentic coding studio for your desktop'
+export const alt = siteConfig.title
 export const size = { width: 1200, height: 630 }
 export const contentType = 'image/png'
 
@@ -105,7 +105,7 @@ export default async function OGImage() {
               boxShadow: `0 0 16px ${GOLD}`,
             }}
           />
-          xero.app
+          {siteDomain}
         </div>
 
         {/* Top-right pill */}
@@ -167,7 +167,7 @@ export default async function OGImage() {
             color: FG,
           }}
         >
-          The agentic coding studio for your desktop
+          Agentic coding studio for desktop developers
         </div>
 
         {/* Subtitle */}
@@ -182,7 +182,7 @@ export default async function OGImage() {
             color: MUTED,
           }}
         >
-          Custom agents and visual workflows that ship whole projects.
+          Custom agents and visual workflows that ship production software.
         </div>
       </div>
     ),

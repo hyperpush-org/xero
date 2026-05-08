@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 import type { OutputFlowNode } from '../build-agent-graph'
+import { humanizeIdentifier } from '../build-agent-graph'
 
 export const OutputNode = memo(function OutputNode({ data }: NodeProps<OutputFlowNode>) {
   const { output } = data
@@ -25,11 +26,14 @@ export const OutputNode = memo(function OutputNode({ data }: NodeProps<OutputFlo
         <div className="flex items-center gap-2 px-2.5 py-2 border-b">
           <Target className="h-3.5 w-3.5 shrink-0" />
           <span className="text-[12px] font-medium truncate flex-1">{output.label}</span>
-          <Badge variant="outline" className="text-[9px] font-mono px-1 py-0">
-            {output.contract}
+          <Badge
+            variant="outline"
+            className="agent-node-secondary text-[9px] px-1 py-0"
+          >
+            {humanizeIdentifier(output.contract)}
           </Badge>
         </div>
-        <p className="px-2.5 py-1.5 text-[10.5px] text-muted-foreground leading-snug">
+        <p className="agent-node-detail px-2.5 py-1.5 text-[10.5px] text-muted-foreground leading-snug">
           {output.description}
         </p>
       </div>

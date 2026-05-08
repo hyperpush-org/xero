@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 import type { ToolFlowNode } from '../build-agent-graph'
+import { humanizeIdentifier, toolCategoryPresentationForGroup } from '../build-agent-graph'
 import { useAgentCanvasExpansion } from '../expansion-context'
 
 const EFFECT_LABEL: Record<string, string> = {
@@ -41,9 +42,11 @@ const EFFECT_DOT: Record<string, string> = {
 }
 
 export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowNode>) {
-  const { tool } = data
+  const { tool, directConnectionHandles } = data
   const [expanded, setExpanded] = useState(false)
   const { setExpanded: reportExpanded } = useAgentCanvasExpansion()
+  const displayName = humanizeIdentifier(tool.name)
+  const displayCategory = toolCategoryPresentationForGroup(tool.group).label
 
   // Report before paint so React Flow doesn't commit an intermediate measured
   // height while the tool body is beginning its collapse transition.
@@ -56,8 +59,12 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
 
   return (
     <>
-      <Handle type="target" position={Position.Left} className="!bg-sky-500 !w-2 !h-2" />
-      <Handle type="source" position={Position.Right} className="!bg-sky-500 !w-2 !h-2" />
+      {directConnectionHandles.target ? (
+        <Handle type="target" position={Position.Left} className="!bg-sky-500 !w-2 !h-2" />
+      ) : null}
+      {directConnectionHandles.source ? (
+        <Handle type="source" position={Position.Right} className="!bg-sky-500 !w-2 !h-2" />
+      ) : null}
       <div
         className={cn(
           'agent-card overflow-hidden text-card-foreground',
@@ -76,7 +83,6 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
             setExpanded((v) => !v)
           }}
           className="nodrag nopan agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
-          title={`${tool.name} — ${EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}`}
           aria-expanded={expanded}
         >
           <span
@@ -87,25 +93,25 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
             )}
           />
           <Wrench className="h-3 w-3 shrink-0 text-sky-500/80" />
-          <span className="font-mono text-[11.5px] truncate flex-1 text-foreground/95">{tool.name}</span>
+          <span className="text-[11.5px] truncate flex-1 text-foreground/95">{displayName}</span>
           {expanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground/70" />
+            <ChevronDown className="agent-node-chevron h-3 w-3 text-muted-foreground/70" />
           ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground/70" />
+            <ChevronRight className="agent-node-chevron h-3 w-3 text-muted-foreground/70" />
           )}
         </button>
         <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
           <div className="agent-card-body">
             <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-t border-border/40 bg-muted/10">
-              <p className="text-[10.5px] text-muted-foreground leading-relaxed">
+              <p className="agent-node-detail text-[10.5px] text-muted-foreground leading-relaxed">
                 {tool.description}
               </p>
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <div className="agent-node-chip-row flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="inline-flex items-center gap-1">
                   <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
-                    group
+                    category
                   </span>
-                  <span className="text-[10px] font-mono text-foreground/80">{tool.group}</span>
+                  <span className="text-[10px] text-foreground/80">{displayCategory}</span>
                 </span>
                 <span className="inline-flex items-center gap-1">
                   <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
@@ -131,7 +137,7 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
                 ) : null}
               </div>
               {tool.tags.length ? (
-                <div className="flex flex-wrap gap-1">
+                <div className="agent-node-chip-row flex flex-wrap gap-1">
                   {tool.tags.slice(0, 6).map((tag: string) => (
                     <span
                       key={tag}

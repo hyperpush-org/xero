@@ -1,4 +1,4 @@
-import type { Edge, Node } from '@xyflow/react'
+import { MarkerType, type Edge, type Node } from '@xyflow/react'
 
 import type {
   AgentConsumedArtifactDto,
@@ -9,6 +9,7 @@ import type {
   AgentOutputSectionDto,
   AgentPromptDto,
   AgentToolSummaryDto,
+  AgentTriggerLifecycleEventDto,
   AgentTriggerRefDto,
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
@@ -41,6 +42,10 @@ export interface PromptNodeData extends Record<string, unknown> {
 
 export interface ToolNodeData extends Record<string, unknown> {
   tool: AgentToolSummaryDto
+  directConnectionHandles: {
+    source: boolean
+    target: boolean
+  }
 }
 
 export type DbTableTouchpointKind = AgentDbTouchpointKindDto
@@ -73,6 +78,8 @@ export interface LaneLabelNodeData extends Record<string, unknown> {
 export interface ToolGroupFrameNodeData extends Record<string, unknown> {
   label: string
   count: number
+  order: number
+  sourceGroups: string[]
 }
 
 export type AgentHeaderFlowNode = Node<AgentHeaderNodeData, 'agent-header'>
@@ -126,56 +133,216 @@ export function toolGroupFrameNodeId(groupKey: string): string {
   return `tool-group-frame:${groupKey}`
 }
 
-const TOOL_GROUP_LABEL_OVERRIDES: Record<string, string> = {
+// Identifiers that don't title-case cleanly (acronyms, brand names) get a
+// hand-written display label. Looked up before the generic split-and-capitalize
+// path so e.g. `mcp_invoke` doesn't render as "Mcp Invoke".
+const HUMANIZE_OVERRIDES: Record<string, string> = {
+  // tool groups / risk classes
+  macos: 'macOS',
+  macos_automation: 'macOS Automation',
+  mcp: 'MCP',
   mcp_invoke: 'MCP',
   external_chain_observe: 'Chain Observe',
   external_chain_simulation: 'Chain Simulation',
   external_chain_control: 'Chain Control',
   external_capability_observe: 'External Capability',
+  system_diagnostics: 'System Diagnostics',
   system_diagnostics_observe: 'System Diagnostics',
-  project_context_write: 'Project Context',
+  project_context_write: 'Context',
   agent_definition_state: 'Agent Definition',
   coordination_state: 'Coordination',
   process_manager: 'Process Manager',
   registry_control: 'Registry',
+  // output contracts (defined in workflow-agents.ts)
+  plan_pack: 'Plan Pack',
+  crawl_report: 'Crawl Report',
+  engineering_summary: 'Engineering Summary',
+  debug_summary: 'Debug Summary',
+  agent_definition_draft: 'Agent Definition Draft',
+  harness_test_report: 'Harness Test Report',
+}
+
+const HUMANIZE_WORD_OVERRIDES: Record<string, string> = {
+  ai: 'AI',
+  alt: 'ALT',
+  api: 'API',
+  cli: 'CLI',
+  cpu: 'CPU',
+  db: 'DB',
+  http: 'HTTP',
+  https: 'HTTPS',
+  idl: 'IDL',
+  ios: 'iOS',
+  json: 'JSON',
+  lsp: 'LSP',
+  macos: 'macOS',
+  mcp: 'MCP',
+  os: 'OS',
+  pda: 'PDA',
+  rpc: 'RPC',
+  sdk: 'SDK',
+  sha: 'SHA',
+  tx: 'TX',
+  ui: 'UI',
+  url: 'URL',
+  vcs: 'VCS',
+}
+
+/**
+ * Convert a snake_case / kebab-case / camelCase identifier into a Title Case
+ * display string. Used wherever a raw identifier (table name, contract id,
+ * tool name, section id, source agent id, etc.) would otherwise reach the
+ * user. Raw identifiers stay in the DTOs for traceability without rendering
+ * browser-native hover tooltips on the canvas.
+ */
+export function humanizeIdentifier(value: string): string {
+  if (!value) return ''
+  const override = HUMANIZE_OVERRIDES[value]
+  if (override) return override
+  return value
+    .split(/[._\-\s]+|(?=[A-Z])/)
+    .filter(Boolean)
+    .map((word) => {
+      const lower = word.toLowerCase()
+      return HUMANIZE_WORD_OVERRIDES[lower] ?? word.charAt(0).toUpperCase() + lower.slice(1)
+    })
+    .join(' ')
 }
 
 export function humanizeToolGroupKey(key: string): string {
-  if (TOOL_GROUP_LABEL_OVERRIDES[key]) return TOOL_GROUP_LABEL_OVERRIDES[key]
   if (!key) return 'Other'
-  return key
-    .split(/[._-]+|(?=[A-Z])/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ')
+  return humanizeIdentifier(key)
+}
+
+export interface ToolCategoryPresentation {
+  key: string
+  label: string
+  order: number
+}
+
+const DEFAULT_TOOL_CATEGORY_ORDER = 10_000
+
+const TOOL_CATEGORY_OVERRIDES: Record<string, ToolCategoryPresentation> = {
+  core: { key: 'core', label: 'Core', order: 10 },
+  project_context_write: {
+    key: 'project_context',
+    label: 'Project Context',
+    order: 20,
+  },
+  intelligence: {
+    key: 'code_intelligence',
+    label: 'Code Intelligence',
+    order: 30,
+  },
+  mutation: { key: 'file_changes', label: 'File Changes', order: 40 },
+  command_readonly: { key: 'commands', label: 'Commands', order: 50 },
+  command_mutating: { key: 'commands', label: 'Commands', order: 50 },
+  command_session: { key: 'commands', label: 'Commands', order: 50 },
+  command: { key: 'commands', label: 'Commands', order: 50 },
+  process_manager: { key: 'processes', label: 'Processes', order: 60 },
+  system_diagnostics: {
+    key: 'system_diagnostics',
+    label: 'System Diagnostics',
+    order: 70,
+  },
+  system_diagnostics_observe: {
+    key: 'system_diagnostics',
+    label: 'System Diagnostics',
+    order: 70,
+  },
+  system_diagnostics_privileged: {
+    key: 'system_diagnostics',
+    label: 'System Diagnostics',
+    order: 70,
+  },
+  macos: { key: 'os_automation', label: 'OS Automation', order: 80 },
+  web_search_only: { key: 'web', label: 'Web', order: 90 },
+  web_fetch: { key: 'web', label: 'Web', order: 90 },
+  web: { key: 'web', label: 'Web', order: 90 },
+  browser_observe: { key: 'browser', label: 'Browser', order: 100 },
+  browser_control: { key: 'browser', label: 'Browser', order: 100 },
+  browser: { key: 'browser', label: 'Browser', order: 100 },
+  mcp_list: { key: 'mcp', label: 'MCP', order: 110 },
+  mcp_invoke: { key: 'mcp', label: 'MCP', order: 110 },
+  mcp: { key: 'mcp', label: 'MCP', order: 110 },
+  skills: { key: 'skills', label: 'Skills', order: 120 },
+  agent_ops: { key: 'agent_ops', label: 'Agent Operations', order: 130 },
+  agent_builder: { key: 'agent_builder', label: 'Agent Builder', order: 140 },
+  notebook: { key: 'notebooks', label: 'Notebooks', order: 150 },
+  powershell: { key: 'powershell', label: 'PowerShell', order: 160 },
+  environment: { key: 'environment', label: 'Environment', order: 170 },
+  emulator: { key: 'emulator', label: 'Emulator', order: 180 },
+  harness_runner: { key: 'test_harness', label: 'Test Harness', order: 190 },
+  solana: { key: 'solana', label: 'Solana', order: 200 },
+}
+
+export function toolCategoryPresentationForGroup(group: string): ToolCategoryPresentation {
+  const trimmed = group.trim()
+  if (!trimmed) {
+    return { key: 'other', label: 'Other', order: DEFAULT_TOOL_CATEGORY_ORDER }
+  }
+  const override = TOOL_CATEGORY_OVERRIDES[trimmed]
+  if (override) return override
+  return {
+    key: trimmed,
+    label: humanizeToolGroupKey(trimmed),
+    order: DEFAULT_TOOL_CATEGORY_ORDER,
+  }
 }
 
 interface ToolGroupBucket {
   key: string
   label: string
+  order: number
+  sourceGroups: string[]
   tools: AgentToolSummaryDto[]
 }
 
 /**
  * Partition tool DTOs by their `group` field. Within each bucket, tools keep
- * the input order (already barycenter-sorted upstream); buckets themselves
- * are sorted by humanised label so on-screen ordering is predictable.
+ * the input order (already barycenter-sorted upstream). Buckets use a visual
+ * taxonomy rather than raw runtime access groups, so split capabilities like
+ * `mcp_list` + `mcp_invoke` render as one user-facing category.
  */
 function partitionToolDtosByGroup(tools: AgentToolSummaryDto[]): ToolGroupBucket[] {
-  const buckets = new Map<string, AgentToolSummaryDto[]>()
+  const buckets = new Map<
+    string,
+    {
+      label: string
+      order: number
+      sourceGroups: Set<string>
+      tools: AgentToolSummaryDto[]
+    }
+  >()
   for (const tool of tools) {
-    const key = tool.group?.trim() || 'other'
-    const arr = buckets.get(key) ?? []
-    arr.push(tool)
-    buckets.set(key, arr)
+    const rawGroup = tool.group?.trim() || 'other'
+    const presentation = toolCategoryPresentationForGroup(rawGroup)
+    const bucket = buckets.get(presentation.key) ?? {
+      label: presentation.label,
+      order: presentation.order,
+      sourceGroups: new Set<string>(),
+      tools: [],
+    }
+    bucket.sourceGroups.add(rawGroup)
+    bucket.tools.push(tool)
+    buckets.set(presentation.key, bucket)
   }
   return Array.from(buckets.entries())
-    .map(([key, items]) => ({
+    .map(([key, bucket]) => ({
       key,
-      label: humanizeToolGroupKey(key),
-      tools: items,
+      label: bucket.label,
+      order: bucket.order,
+      sourceGroups: Array.from(bucket.sourceGroups).sort((a, b) =>
+        humanizeToolGroupKey(a).localeCompare(humanizeToolGroupKey(b)) ||
+        a.localeCompare(b),
+      ),
+      tools: bucket.tools,
     }))
-    .sort((a, b) => a.label.localeCompare(b.label))
+    .sort((a, b) => {
+      const orderDelta = a.order - b.order
+      if (orderDelta !== 0) return orderDelta
+      return a.label.localeCompare(b.label)
+    })
 }
 
 function dbNodeId(table: string, kind: DbTableTouchpointKind): string {
@@ -190,15 +357,60 @@ function consumedArtifactNodeId(id: string): string {
   return `consumed:${id}`
 }
 
+const LIFECYCLE_EVENT_LABELS: Record<AgentTriggerLifecycleEventDto, string> = {
+  state_transition: 'state transition',
+  plan_update: 'plan update',
+  message_persisted: 'message persisted',
+  tool_call: 'tool call',
+  file_edit: 'file edit',
+  run_start: 'run start',
+  run_complete: 'run complete',
+  approval_decision: 'approval decision',
+  verification_gate: 'verification gate',
+  definition_persisted: 'definition persisted',
+}
+
+export function lifecycleEventLabel(event: AgentTriggerLifecycleEventDto): string {
+  return LIFECYCLE_EVENT_LABELS[event] ?? event
+}
+
+const TOUCHPOINT_KIND_LABEL: Record<DbTableTouchpointKind, string> = {
+  read: 'reads',
+  write: 'writes',
+  encouraged: 'encouraged',
+}
+
+const ARROW_MARKER = {
+  type: MarkerType.ArrowClosed,
+  width: 14,
+  height: 14,
+} as const
+
+const TRIGGER_ARROW_MARKER = {
+  type: MarkerType.Arrow,
+  width: 16,
+  height: 16,
+} as const
+
+const CONSUME_ARROW_MARKER = {
+  type: MarkerType.Arrow,
+  width: 16,
+  height: 16,
+} as const
+
 interface OrderedTouchpoint {
   detail: AgentDbTouchpointDetailDto
   kind: DbTableTouchpointKind
 }
 
 /**
- * Bucket touchpoints by priority (writes → reads → encouraged) and de-duplicate
- * by table name across kinds, so a table that the agent both reads and writes
- * is rendered as a single write node — the higher-impact relationship wins.
+ * Bucket touchpoints by priority (writes → reads → encouraged) without
+ * de-duplicating by table name. A table the agent both reads and writes
+ * renders as two distinct cards — one per (table, kind) pair — so the
+ * canvas reports every relationship the DTO declares instead of silently
+ * dropping the read when a write is also present. Within each kind, dupes
+ * by table are still collapsed (the DTO shouldn't list the same table
+ * twice in `reads` for example, but be defensive).
  */
 function dbTouchpointsByPriority(
   reads: AgentDbTouchpointDetailDto[],
@@ -206,11 +418,13 @@ function dbTouchpointsByPriority(
   encouraged: AgentDbTouchpointDetailDto[],
 ): OrderedTouchpoint[] {
   const ordered: OrderedTouchpoint[] = []
-  const seenTables = new Set<string>()
+  const seenPerKind = new Map<DbTableTouchpointKind, Set<string>>()
 
   const push = (detail: AgentDbTouchpointDetailDto, kind: DbTableTouchpointKind) => {
-    if (seenTables.has(detail.table)) return
-    seenTables.add(detail.table)
+    const seen = seenPerKind.get(kind) ?? new Set<string>()
+    if (seen.has(detail.table)) return
+    seen.add(detail.table)
+    seenPerKind.set(kind, seen)
     ordered.push({ detail, kind })
   }
 
@@ -288,12 +502,13 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
   const nodes: AgentGraphNode[] = []
   const edges: AgentGraphEdge[] = []
 
-  // 1. Header
-  const dbTableCount = new Set<string>([
-    ...detail.dbTouchpoints.reads.map((d) => d.table),
-    ...detail.dbTouchpoints.writes.map((d) => d.table),
-    ...detail.dbTouchpoints.encouraged.map((d) => d.table),
-  ]).size
+  // 1. Header. Summary counts mirror the on-canvas card counts so the chip
+  // numbers always match what the user can see — including the case where a
+  // table is both read and written and renders as two distinct DB cards.
+  const dbTouchpointCount =
+    detail.dbTouchpoints.reads.length +
+    detail.dbTouchpoints.writes.length +
+    detail.dbTouchpoints.encouraged.length
   nodes.push({
     id: HEADER_NODE_ID,
     type: 'agent-header',
@@ -303,7 +518,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       summary: {
         prompts: detail.prompts.length,
         tools: detail.tools.length,
-        dbTables: dbTableCount,
+        dbTables: dbTouchpointCount,
         outputSections: detail.output.sections.length,
         consumes: detail.consumes.length,
       },
@@ -327,6 +542,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       type: 'smoothstep',
       data: { category: 'prompt' },
       className: 'agent-edge agent-edge-prompt',
+      markerEnd: ARROW_MARKER,
     })
   })
 
@@ -419,7 +635,8 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
   dbEntries = sortDbsByBarycenter(dbBucketEntries, triggerSourceY)
 
   // Now emit nodes and edges in the final order.
-  // Tools are partitioned into category frames (one frame per tool.group).
+  // Tools are partitioned into visual category frames. Raw runtime groups can
+  // merge here when they are capability splits of the same user-facing family.
   // Each frame is a draggable parent node; its tools render as children with
   // positions relative to the frame, so dragging a frame moves the whole
   // category. The agent header connects to each frame (instead of to every
@@ -434,7 +651,12 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       id: frameId,
       type: 'tool-group-frame',
       position: { x: 0, y: 0 },
-      data: { label: bucket.label, count: bucket.tools.length },
+      data: {
+        label: bucket.label,
+        count: bucket.tools.length,
+        order: bucket.order,
+        sourceGroups: bucket.sourceGroups,
+      },
       dragHandle: '.agent-tool-group-frame__drag-handle',
       // React Flow makes draggable parent nodes pointer-active across their
       // full bounds. The frame is visual chrome; only its label should catch
@@ -449,6 +671,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       type: 'smoothstep',
       data: { category: 'tool' },
       className: 'agent-edge agent-edge-tool',
+      markerEnd: ARROW_MARKER,
     })
     for (const tool of bucket.tools) {
       const id = toolNodeId(tool)
@@ -469,15 +692,19 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
         // nodes. Tools still own interactive expand buttons, so opt them back
         // into hit testing without re-enabling node dragging.
         style: { pointerEvents: 'all' },
-        data: { tool },
+        data: { tool, directConnectionHandles: { source: false, target: false } },
       })
     }
   }
 
-  const dbNodeIdByTable = new Map<string, string>()
+  // dbEntryById lets the trigger-edge loop find each entry by its node id
+  // without re-deriving from (table, kind). Multiple entries per table are
+  // expected — a table that's both read and written produces two entries —
+  // so we key by id rather than table name.
+  const dbEntryById = new Map<string, OrderedTouchpoint>()
   for (const entry of dbEntries) {
     const id = dbNodeId(entry.detail.table, entry.kind)
-    dbNodeIdByTable.set(entry.detail.table, id)
+    dbEntryById.set(id, entry)
     nodes.push({
       id,
       type: 'db-table',
@@ -498,6 +725,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       type: 'smoothstep',
       data: { category: 'db-table' },
       className: 'agent-edge agent-edge-db',
+      markerEnd: ARROW_MARKER,
     })
   }
 
@@ -516,6 +744,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
     type: 'smoothstep',
     data: { category: 'agent-output' },
     className: 'agent-edge agent-edge-output',
+    markerEnd: ARROW_MARKER,
   })
 
   const sectionIdToNode = new Map<string, string>()
@@ -535,8 +764,11 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       type: 'smoothstep',
       data: { category: 'output-section' },
       className: 'agent-edge agent-edge-output-section',
+      markerEnd: ARROW_MARKER,
     })
-    // Functional cross-edge: tool → output-section, when authored.
+    // Functional cross-edge: tool → output-section, when authored. The label
+    // makes the relationship readable at the edge itself rather than forcing
+    // the user to expand the section card to see the "produced by" chip.
     for (const toolName of section.producedByTools) {
       const toolId = toolIdsByName.get(toolName)
       if (!toolId) continue
@@ -544,9 +776,12 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
         id: `e:trigger:${toolId}->${id}`,
         source: toolId,
         target: id,
-        type: 'default',
-        data: { category: 'trigger' },
+        // Custom edge type — renders the label via EdgeLabelRenderer portal
+        // so it sits above every node card the edge happens to cross.
+        type: 'trigger',
+        data: { category: 'trigger', triggerLabel: 'produces' },
         className: 'agent-edge agent-edge-trigger',
+        markerEnd: TRIGGER_ARROW_MARKER,
       })
     }
   }
@@ -568,24 +803,46 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       type: 'smoothstep',
       data: { category: 'consumed' },
       className: 'agent-edge agent-edge-consume',
+      markerEnd: CONSUME_ARROW_MARKER,
     })
   }
 
   // 7. Cross-edges driven by db touchpoint triggers. Tool triggers connect
   // their tool node to the db node; output-section triggers connect their
-  // section node to the db node. Lifecycle triggers stay as chips on the card.
-  for (const entry of dbEntries) {
-    const dbId = dbNodeIdByTable.get(entry.detail.table)
-    if (!dbId) continue
+  // section node to the db node; upstream-artifact triggers connect the
+  // existing consumed-artifact node to the db node. Lifecycle triggers do
+  // *not* emit edges — a single lifecycle event typically fires many DB
+  // writes, so a synthetic source node would have to fan many long curves
+  // across the canvas and obscure the rest of the graph. Lifecycle events
+  // are surfaced on the DB card body itself instead, where the user reads
+  // them in place without chasing edges.
+  const consumedArtifactExists = new Set<string>(
+    detail.consumes.map((artifact) => consumedArtifactNodeId(artifact.id)),
+  )
+
+  for (const [dbId, entry] of dbEntryById) {
     const seenEdge = new Set<string>()
+    const touchpointLabel = TOUCHPOINT_KIND_LABEL[entry.kind]
+
     for (const trigger of entry.detail.triggers) {
       let sourceId: string | undefined
+      let label: string = touchpointLabel
+
       if (trigger.kind === 'tool') {
         sourceId = toolIdsByName.get(trigger.name)
       } else if (trigger.kind === 'output_section') {
         sourceId = sectionIdToNode.get(trigger.id)
+      } else if (trigger.kind === 'upstream_artifact') {
+        const artifactId = consumedArtifactNodeId(trigger.id)
+        if (consumedArtifactExists.has(artifactId)) {
+          sourceId = artifactId
+        }
+        label = touchpointLabel
       }
+      // Lifecycle triggers intentionally fall through: rendered as in-card
+      // chips by db-table-node.tsx, no edge emitted here.
       if (!sourceId) continue
+
       const edgeId = `e:trigger:${sourceId}->${dbId}`
       if (seenEdge.has(edgeId)) continue
       seenEdge.add(edgeId)
@@ -593,10 +850,46 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
         id: edgeId,
         source: sourceId,
         target: dbId,
-        type: 'default',
-        data: { category: 'trigger' },
+        // Custom edge type — see TriggerEdge for label-portal handling.
+        type: 'trigger',
+        data: { category: 'trigger', triggerLabel: label, touchpoint: entry.kind },
         className: 'agent-edge agent-edge-trigger',
+        markerEnd: TRIGGER_ARROW_MARKER,
       })
+    }
+  }
+
+  const toolNodeIds = new Set(toolIdsByName.values())
+  const directConnectionHandlesByToolId = new Map<
+    string,
+    ToolNodeData['directConnectionHandles']
+  >()
+  const noteToolConnectionHandle = (
+    toolId: string,
+    side: keyof ToolNodeData['directConnectionHandles'],
+  ) => {
+    const handles =
+      directConnectionHandlesByToolId.get(toolId) ?? { source: false, target: false }
+    handles[side] = true
+    directConnectionHandlesByToolId.set(toolId, handles)
+  }
+
+  for (const edge of edges) {
+    if ((edge.data as { category?: string } | undefined)?.category !== 'trigger') continue
+    if (toolNodeIds.has(edge.source)) {
+      noteToolConnectionHandle(edge.source, 'source')
+    }
+    if (toolNodeIds.has(edge.target)) {
+      noteToolConnectionHandle(edge.target, 'target')
+    }
+  }
+
+  for (const node of nodes) {
+    if (node.type !== 'tool') continue
+    node.data = {
+      ...node.data,
+      directConnectionHandles:
+        directConnectionHandlesByToolId.get(node.id) ?? { source: false, target: false },
     }
   }
 

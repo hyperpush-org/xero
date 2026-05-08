@@ -5,17 +5,34 @@ import type { NodeProps } from '@xyflow/react'
 
 import type { LaneLabelFlowNode } from '../build-agent-graph'
 
-export const LaneLabelNode = memo(function LaneLabelNode({ data, width }: NodeProps<LaneLabelFlowNode>) {
+// Lane label tone keys map to lane ids emitted by `layoutAgentGraphByCategory`.
+// The colour bar prefix matches the edge family for that lane so the user can
+// link the lane to its edges at a glance.
+const LANE_TONE_BY_ID: Record<string, string> = {
+  'lane:prompt': 'agent-graph-lane-label--prompt',
+  'lane:tool': 'agent-graph-lane-label--tool',
+  'lane:db-table': 'agent-graph-lane-label--db',
+  'lane:agent-output': 'agent-graph-lane-label--output',
+  'lane:output-section': 'agent-graph-lane-label--output',
+  'lane:consumed-artifact': 'agent-graph-lane-label--consume',
+}
+
+export const LaneLabelNode = memo(function LaneLabelNode({
+  id,
+  data,
+  width,
+}: NodeProps<LaneLabelFlowNode>) {
+  const toneClass = LANE_TONE_BY_ID[id] ?? ''
+
   return (
     <div
-      className="agent-graph-lane-label flex items-center gap-1.5 select-none border-b border-border/40 pb-1"
+      className={`agent-graph-lane-label ${toneClass}`}
       style={typeof width === 'number' ? { width } : undefined}
     >
-      <span>{data.label}</span>
+      <span aria-hidden="true" className="agent-graph-lane-label__bar" />
+      <span className="agent-graph-lane-label__text">{data.label}</span>
       {data.count > 0 ? (
-        <span className="rounded-full bg-muted/70 px-1.5 py-[1px] font-mono text-[9px] leading-none tabular-nums text-muted-foreground">
-          {data.count}
-        </span>
+        <span className="agent-graph-lane-label__count">{data.count}</span>
       ) : null}
     </div>
   )

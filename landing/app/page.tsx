@@ -8,10 +8,12 @@ import { Workflow } from "@/components/landing/workflow"
 import { Pricing } from "@/components/landing/pricing"
 import { CTA } from "@/components/landing/cta"
 import { SiteFooter } from "@/components/landing/site-footer"
+import { LandingStructuredData } from "@/components/landing/structured-data"
 
 export default function Page() {
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <LandingStructuredData />
       <SiteHeader />
       <main>
         <Hero />

@@ -3076,14 +3076,14 @@ fn default_headless_state_dir() -> Result<PathBuf, CliError> {
 
     #[cfg(target_os = "macos")]
     {
-        return home_dir()
+        home_dir()
             .map(|home| {
                 home.join("Library")
                     .join("Application Support")
                     .join(APP_DATA_DIRECTORY_NAME)
                     .join(HEADLESS_DIRECTORY_NAME)
             })
-            .ok_or_else(home_dir_error);
+            .ok_or_else(home_dir_error)
     }
 
     #[cfg(target_os = "windows")]
@@ -3821,16 +3821,16 @@ fn cli_provider_preflight_for_selection(
 
     let snapshot = if provider_id == FAKE_PROVIDER_ID {
         let credential_proof = provider_credential_proof_for_entry(entry, profile);
-        cli_provider_preflight_snapshot(
-            &profile_id,
-            &provider_id,
+        cli_provider_preflight_snapshot(CliProviderPreflightSnapshotInput {
+            profile_id: &profile_id,
+            provider_id: &provider_id,
             model_id,
             entry,
-            ProviderPreflightSource::LiveProbe,
+            source: ProviderPreflightSource::LiveProbe,
             credential_proof,
-            true,
-            ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
-        )
+            credential_ready: true,
+            required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        })
     } else {
         let profile = profile.ok_or_else(|| {
             CliError::user_fixable(
@@ -3871,14 +3871,16 @@ fn cli_provider_preflight_for_execution(
     })?;
     match &provider.execution {
         HeadlessProviderExecutionConfig::Fake => Ok(cli_provider_preflight_snapshot(
-            &provider.profile_id,
-            &provider.provider_id,
-            &provider.model_id,
-            entry,
-            ProviderPreflightSource::LiveProbe,
-            provider.credential_proof.clone(),
-            cli_provider_execution_credentials_available(&provider.execution),
-            required_features,
+            CliProviderPreflightSnapshotInput {
+                profile_id: &provider.profile_id,
+                provider_id: &provider.provider_id,
+                model_id: &provider.model_id,
+                entry,
+                source: ProviderPreflightSource::LiveProbe,
+                credential_proof: provider.credential_proof.clone(),
+                credential_ready: cli_provider_execution_credentials_available(&provider.execution),
+                required_features,
+            },
         )),
         HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
             Ok(run_openai_compatible_provider_preflight_probe(
@@ -3904,16 +3906,30 @@ fn cli_provider_preflight_for_execution(
     }
 }
 
-fn cli_provider_preflight_snapshot(
-    profile_id: &str,
-    provider_id: &str,
-    model_id: &str,
+struct CliProviderPreflightSnapshotInput<'a> {
+    profile_id: &'a str,
+    provider_id: &'a str,
+    model_id: &'a str,
     entry: ProviderCatalogEntry,
     source: ProviderPreflightSource,
     credential_proof: Option<String>,
     credential_ready: bool,
     required_features: ProviderPreflightRequiredFeatures,
+}
+
+fn cli_provider_preflight_snapshot(
+    input: CliProviderPreflightSnapshotInput<'_>,
 ) -> ProviderPreflightSnapshot {
+    let CliProviderPreflightSnapshotInput {
+        profile_id,
+        provider_id,
+        model_id,
+        entry,
+        source,
+        credential_proof,
+        credential_ready,
+        required_features,
+    } = input;
     let catalog_source = match source {
         ProviderPreflightSource::LiveProbe | ProviderPreflightSource::LiveCatalog => "live",
         ProviderPreflightSource::CachedProbe => "cache",
@@ -8765,7 +8781,7 @@ mod tests {
             ci: false,
             state_dir,
         };
-        let messages = vec![
+        let messages = [
             json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -8884,7 +8900,7 @@ mod tests {
             ci: false,
             state_dir: state_dir.clone(),
         };
-        let messages = vec![
+        let messages = [
             json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -8969,7 +8985,7 @@ mod tests {
             ci: false,
             state_dir: state_dir.clone(),
         };
-        let messages = vec![
+        let messages = [
             json!({
                 "jsonrpc": "2.0",
                 "id": 1,

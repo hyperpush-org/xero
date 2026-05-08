@@ -1182,30 +1182,9 @@
     backface-visibility: hidden;
   }
 
-  .workflow-canvas {
-    contain: strict;
-    isolation: isolate;
-    transform: translateZ(0);
-    backface-visibility: hidden;
-  }
-
   .workflow-view-pane {
     contain: layout paint style;
     isolation: isolate;
-  }
-
-  .workflow-canvas-grid {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background-image: radial-gradient(
-      circle,
-      color-mix(in oklab, var(--foreground) 14%, transparent) var(--workflow-dot-size),
-      transparent calc(var(--workflow-dot-size) + 0.5px)
-    );
-    background-position: var(--workflow-grid-x) var(--workflow-grid-y);
-    background-size: var(--workflow-grid-size) var(--workflow-grid-size);
-    transform: translateZ(0);
   }
 
   .workflow-empty-state {

@@ -157,6 +157,10 @@ fn subscribe_owned_runtime_stream(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream replay needs the subscription cursor and channel context together"
+)]
 fn replay_owned_agent_events(
     repo_root: &Path,
     project_id: &str,

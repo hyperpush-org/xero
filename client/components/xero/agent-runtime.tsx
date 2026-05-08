@@ -2137,7 +2137,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                   ) : (
                     <Plus className="h-3.5 w-3.5" />
                   )}
-                  <span>New Session</span>
+                  <span>{inSidebar ? 'New' : 'New Session'}</span>
                 </button>
               ) : null}
               {onSpawnPane ? (
@@ -2285,6 +2285,7 @@ export const AgentRuntime = memo(function AgentRuntime({
 
         <ComposerDock
           density={density}
+          inSidebar={inSidebar}
           composerRuntimeAgentId={controller.composerRuntimeAgentId}
           composerRuntimeAgentLabel={getRuntimeAgentLabel(controller.composerRuntimeAgentId)}
           availableRuntimeAgentIds={availableRuntimeAgentIds}

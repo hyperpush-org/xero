@@ -259,13 +259,22 @@ fn get_workflow_agent_detail_for_engineer_returns_prompts_tools_and_tables() {
     .expect("engineer detail");
 
     assert_eq!(detail.header.display_name, "Engineer");
-    assert!(!detail.prompts.is_empty(), "engineer should expose system prompt");
+    assert!(
+        !detail.prompts.is_empty(),
+        "engineer should expose system prompt"
+    );
     assert!(detail.prompts[0].body.to_lowercase().contains("engineer"));
 
     assert!(!detail.tools.is_empty(), "engineer should expose tools");
     let tool_names: Vec<&str> = detail.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(tool_names.contains(&"read"), "engineer must include read tool");
-    assert!(tool_names.contains(&"write"), "engineer must include write tool");
+    assert!(
+        tool_names.contains(&"read"),
+        "engineer must include read tool"
+    );
+    assert!(
+        tool_names.contains(&"write"),
+        "engineer must include write tool"
+    );
     assert!(detail.tools.iter().any(|t| matches!(
         t.effect_class,
         AgentToolEffectClassDto::Write | AgentToolEffectClassDto::DestructiveWrite
@@ -352,8 +361,14 @@ fn get_workflow_agent_detail_for_custom_definition_pulls_prompt_fragments() {
     );
 
     assert!(detail.prompts.iter().any(|p| p.id == "security.coverage"));
-    assert!(detail.prompts.iter().any(|p| p.id == "agent_definition.workflowContract"));
-    assert!(detail.prompts.iter().any(|p| p.id == "agent_definition.finalResponseContract"));
+    assert!(detail
+        .prompts
+        .iter()
+        .any(|p| p.id == "agent_definition.workflowContract"));
+    assert!(detail
+        .prompts
+        .iter()
+        .any(|p| p.id == "agent_definition.finalResponseContract"));
 
     // Custom security reviewer maps to engineering profile, so it should still see code-history tables.
     assert!(detail
@@ -417,14 +432,20 @@ fn get_workflow_agent_detail_for_engineer_consumes_plan_pack() {
     )
     .expect("engineer detail");
 
-    assert!(!detail.consumes.is_empty(), "engineer must consume upstream artifacts");
+    assert!(
+        !detail.consumes.is_empty(),
+        "engineer must consume upstream artifacts"
+    );
     let plan_pack = detail
         .consumes
         .iter()
         .find(|entry| entry.contract == RuntimeAgentOutputContractDto::PlanPack)
         .expect("engineer must consume the plan pack");
     assert_eq!(plan_pack.source_agent, RuntimeAgentIdDto::Plan);
-    assert!(plan_pack.required, "plan pack consumption is required for engineer");
+    assert!(
+        plan_pack.required,
+        "plan pack consumption is required for engineer"
+    );
     assert!(plan_pack.sections.iter().any(|s| s == "slices"));
 }
 
@@ -484,5 +505,8 @@ fn get_workflow_agent_detail_for_ask_consumes_nothing() {
     )
     .expect("ask detail");
 
-    assert!(detail.consumes.is_empty(), "ask should not consume upstream artifacts");
+    assert!(
+        detail.consumes.is_empty(),
+        "ask should not consume upstream artifacts"
+    );
 }

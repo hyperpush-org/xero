@@ -39,7 +39,6 @@ export function WorkflowCanvasEmptyState({
       <div
         className="workflow-empty-state pointer-events-auto relative flex w-full max-w-xl flex-col items-center px-8 py-12 text-center"
         onPointerDown={(event) => event.stopPropagation()}
-        onWheel={(event) => event.stopPropagation()}
       >
         <BrandGlyph />
 

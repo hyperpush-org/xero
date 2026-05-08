@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { ShortcutsProvider } from './features/shortcuts/shortcuts-provider'
 import { ThemeProvider } from './features/theme/theme-provider'
 import '../styles/globals.css'
 
@@ -13,7 +14,9 @@ if (!container) {
 createRoot(container).render(
   <StrictMode>
     <ThemeProvider>
-      <App />
+      <ShortcutsProvider>
+        <App />
+      </ShortcutsProvider>
     </ThemeProvider>
   </StrictMode>,
 )

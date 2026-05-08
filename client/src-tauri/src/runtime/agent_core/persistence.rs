@@ -1970,6 +1970,10 @@ fn cached_repo_fingerprint(repo_root: &Path, build: impl FnOnce() -> JsonValue) 
     value
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "file-change events carry tool, run, output, and optional history context"
+)]
 pub(crate) fn record_file_change_event(
     repo_root: &Path,
     project_id: &str,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type {
   AgentDbTouchpointDetailDto,
+  AgentToolSummaryDto,
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
 
@@ -9,6 +10,8 @@ import {
   AGENT_GRAPH_HEADER_NODE_ID,
   AGENT_GRAPH_OUTPUT_NODE_ID,
   buildAgentGraph,
+  humanizeIdentifier,
+  toolCategoryPresentationForGroup,
 } from './build-agent-graph'
 import { layoutAgentGraphByCategory } from './layout'
 
@@ -23,6 +26,19 @@ function dbDetail(
     purpose,
     triggers,
     columns: [],
+  }
+}
+
+function toolSummary(name: string, group: string): AgentToolSummaryDto {
+  return {
+    name,
+    group,
+    description: `${name} description.`,
+    effectClass: 'observe',
+    riskClass: 'observe',
+    tags: [],
+    schemaFields: [],
+    examples: [],
   }
 }
 
@@ -166,14 +182,18 @@ describe('buildAgentGraph', () => {
     expect(dbNodes.some((n) => (n.data as { touchpoint: string }).touchpoint === 'encouraged')).toBe(true)
   })
 
-  it('classifies tables that appear in writes as write-only nodes (write wins over read)', () => {
+  it('renders a table that is both read and written as two distinct cards', () => {
     const detail = fixtureDetail()
     const { nodes } = buildAgentGraph(detail)
     const agentRunsNodes = nodes.filter(
       (n) => n.type === 'db-table' && (n.data as { table: string }).table === 'agent_runs',
     )
-    expect(agentRunsNodes).toHaveLength(1)
-    expect((agentRunsNodes[0]!.data as { touchpoint: string }).touchpoint).toBe('write')
+    expect(agentRunsNodes).toHaveLength(2)
+    const touchpoints = agentRunsNodes.map(
+      (node) => (node.data as { touchpoint: string }).touchpoint,
+    )
+    expect(touchpoints).toContain('read')
+    expect(touchpoints).toContain('write')
   })
 
   it('connects every non-header, non-section, non-consumed node back to the header', () => {
@@ -212,6 +232,104 @@ describe('buildAgentGraph', () => {
     }
   })
 
+  it('marks tool handles only when direct trigger edges touch the tool', () => {
+    const detail = fixtureDetail()
+    const { nodes } = buildAgentGraph(detail)
+    const readTool = nodes.find((node) => node.id === 'tool:Read')
+    const editTool = nodes.find((node) => node.id === 'tool:Edit')
+
+    expect(readTool?.data.directConnectionHandles).toEqual({
+      source: false,
+      target: false,
+    })
+    expect(editTool?.data.directConnectionHandles).toEqual({
+      source: true,
+      target: false,
+    })
+  })
+
+  it('groups split runtime access families into one visual tool category', () => {
+    const detail = fixtureDetail()
+    detail.tools = [
+      toolSummary('Mcp List', 'mcp_list'),
+      toolSummary('Mcp Call Tool', 'mcp_invoke'),
+      toolSummary('Mcp Read Resource', 'mcp_invoke'),
+      toolSummary('System Diagnostics', 'system_diagnostics_observe'),
+      toolSummary('System Diagnostics Privileged', 'system_diagnostics_privileged'),
+      toolSummary('Browser Observe', 'browser_observe'),
+      toolSummary('Browser Control', 'browser_control'),
+    ]
+
+    const { nodes, edges } = buildAgentGraph(detail)
+    const frameIds = nodes
+      .filter((node) => node.type === 'tool-group-frame')
+      .map((node) => node.id)
+
+    expect(frameIds).toEqual([
+      'tool-group-frame:system_diagnostics',
+      'tool-group-frame:browser',
+      'tool-group-frame:mcp',
+    ])
+    expect(frameIds).not.toContain('tool-group-frame:mcp_list')
+    expect(frameIds).not.toContain('tool-group-frame:mcp_invoke')
+    expect(frameIds).not.toContain('tool-group-frame:system_diagnostics_observe')
+    expect(frameIds).not.toContain('tool-group-frame:system_diagnostics_privileged')
+
+    const mcpFrame = nodes.find((node) => node.id === 'tool-group-frame:mcp')
+    const diagnosticsFrame = nodes.find(
+      (node) => node.id === 'tool-group-frame:system_diagnostics',
+    )
+    const browserFrame = nodes.find((node) => node.id === 'tool-group-frame:browser')
+
+    expect(mcpFrame?.data).toMatchObject({
+      label: 'MCP',
+      count: 3,
+      sourceGroups: ['mcp_invoke', 'mcp_list'],
+    })
+    expect(diagnosticsFrame?.data).toMatchObject({
+      label: 'System Diagnostics',
+      count: 2,
+      sourceGroups: [
+        'system_diagnostics_observe',
+        'system_diagnostics_privileged',
+      ],
+    })
+    expect(browserFrame?.data).toMatchObject({
+      label: 'Browser',
+      count: 2,
+      sourceGroups: ['browser_control', 'browser_observe'],
+    })
+
+    for (const toolName of ['Mcp List', 'Mcp Call Tool', 'Mcp Read Resource']) {
+      expect((nodes.find((node) => node.id === `tool:${toolName}`) as { parentId?: string })
+        ?.parentId).toBe('tool-group-frame:mcp')
+    }
+    expect(
+      edges.some(
+        (edge) =>
+          edge.source === AGENT_GRAPH_HEADER_NODE_ID &&
+          edge.target === 'tool-group-frame:mcp',
+      ),
+    ).toBe(true)
+  })
+
+  it('uses user-facing tool category labels for raw runtime groups', () => {
+    expect(toolCategoryPresentationForGroup('mutation')).toMatchObject({
+      key: 'file_changes',
+      label: 'File Changes',
+    })
+    expect(toolCategoryPresentationForGroup('command_session')).toMatchObject({
+      key: 'commands',
+      label: 'Commands',
+    })
+    expect(toolCategoryPresentationForGroup('macos')).toMatchObject({
+      key: 'os_automation',
+      label: 'OS Automation',
+    })
+    expect(humanizeIdentifier('mcp_list')).toBe('MCP List')
+    expect(humanizeIdentifier('solana_idl')).toBe('Solana IDL')
+  })
+
   it('marks lane labels as draggable section handles', () => {
     const detail = fixtureDetail()
     const { nodes } = buildAgentGraph(detail)
@@ -242,11 +360,14 @@ describe('buildAgentGraph', () => {
 
     const collapsedFrame = collapsed.find((node) => node.id === 'tool-group-frame:core')
     const expandedFrame = expanded.find((node) => node.id === 'tool-group-frame:core')
+    const collapsedAlpha = collapsed.find((node) => node.id === 'tool:alpha')
     const collapsedMiddle = collapsed.find((node) => node.id === 'tool:middle')
     const expandedMiddle = expanded.find((node) => node.id === 'tool:middle')
     const collapsedOmega = collapsed.find((node) => node.id === 'tool:omega')
     const expandedOmega = expanded.find((node) => node.id === 'tool:omega')
 
+    expect(collapsedMiddle?.position.y).toBe((collapsedAlpha?.position.y ?? 0) + 36 + 16)
+    expect(collapsedOmega?.position.y).toBe((collapsedMiddle?.position.y ?? 0) + 36 + 16)
     expect(expandedFrame?.position.y).toBe(collapsedFrame?.position.y)
     expect(expandedMiddle?.position.y).toBe(collapsedMiddle?.position.y)
     expect(expandedOmega?.position.y).toBe((collapsedOmega?.position.y ?? 0) + 120)
@@ -281,8 +402,48 @@ describe('buildAgentGraph', () => {
     const third = placed.find((node) => node.id === 'output-section:handoff_context')
 
     expect(first?.position.y).toBeDefined()
-    expect(second?.position.y).toBe((first?.position.y ?? 0) + 32 + 12)
-    expect(third?.position.y).toBe((second?.position.y ?? 0) + 140 + 12)
+    expect(second?.position.y).toBe((first?.position.y ?? 0) + 32 + 16)
+    expect(third?.position.y).toBe((second?.position.y ?? 0) + 140 + 16)
+  })
+
+  it('keeps database column gaps consistent for variable card heights', () => {
+    const detail = fixtureDetail()
+    detail.dbTouchpoints = {
+      reads: [],
+      writes: [
+        dbDetail('short_table'),
+        dbDetail('medium_table'),
+        dbDetail('tall_table'),
+      ],
+      encouraged: [],
+    }
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(
+      nodes,
+      new Map([
+        ['db:write:short_table', { width: 260, height: 117 }],
+        ['db:write:medium_table', { width: 260, height: 153 }],
+        ['db:write:tall_table', { width: 260, height: 189 }],
+      ]),
+    )
+
+    const heights = new Map([
+      ['db:write:short_table', 117],
+      ['db:write:medium_table', 153],
+      ['db:write:tall_table', 189],
+    ])
+    const dbNodes = [...heights.keys()]
+      .map((id) => placed.find((node) => node.id === id))
+      .filter((node): node is NonNullable<typeof node> => Boolean(node))
+      .sort((a, b) => a.position.y - b.position.y)
+
+    expect(dbNodes).toHaveLength(3)
+    expect(dbNodes[1]!.position.y).toBe(
+      dbNodes[0]!.position.y + heights.get(dbNodes[0]!.id)! + 16,
+    )
+    expect(dbNodes[2]!.position.y).toBe(
+      dbNodes[1]!.position.y + heights.get(dbNodes[1]!.id)! + 16,
+    )
   })
 
   it('emits consumed-artifact edges that flow into the header', () => {
@@ -352,5 +513,101 @@ describe('buildAgentGraph', () => {
       (e) => e.source === 'tool:NotAToolTheAgentHas',
     )
     expect(orphan).toBeUndefined()
+  })
+
+  it('does not emit a node or edge for lifecycle triggers — they live as in-card chips', () => {
+    const detail = fixtureDetail()
+    const { nodes, edges } = buildAgentGraph(detail)
+    expect(nodes.some((n) => n.id.startsWith('lifecycle:'))).toBe(false)
+    const codeHistoryEdges = edges.filter(
+      (e) => e.target === 'db:write:code_history_operations',
+    )
+    // Ownership edge from header + tool trigger from Edit, but no lifecycle edge.
+    for (const edge of codeHistoryEdges) {
+      expect(edge.source.startsWith('lifecycle:')).toBe(false)
+    }
+    // The DB node still carries the lifecycle trigger in its data so the card
+    // can render it as a chip in place.
+    const codeHistoryNode = nodes.find(
+      (n) => n.id === 'db:write:code_history_operations',
+    )
+    const triggers =
+      (codeHistoryNode?.data as { triggers?: { kind: string }[] } | undefined)
+        ?.triggers ?? []
+    expect(triggers.some((t) => t.kind === 'lifecycle')).toBe(true)
+  })
+
+  it('emits an upstream-artifact trigger edge when a touchpoint references a consumed artifact', () => {
+    const detail = fixtureDetail()
+    detail.dbTouchpoints.writes = [
+      ...detail.dbTouchpoints.writes,
+      {
+        table: 'agent_handoffs',
+        kind: 'write',
+        purpose: 'mirrors upstream handoff',
+        triggers: [{ kind: 'upstream_artifact', id: 'plan_pack' }],
+        columns: [],
+      },
+    ]
+    const { edges } = buildAgentGraph(detail)
+    const upstreamEdge = edges.find(
+      (e) => e.source === 'consumed:plan_pack' && e.target === 'db:write:agent_handoffs',
+    )
+    expect(upstreamEdge, 'expected consumed-artifact → db trigger edge').toBeDefined()
+    expect(upstreamEdge?.className).toBe('agent-edge agent-edge-trigger')
+  })
+
+  it('labels tool→DB trigger edges with the touchpoint kind', () => {
+    const detail = fixtureDetail()
+    const { edges } = buildAgentGraph(detail)
+    const editToCodeHistory = edges.find(
+      (e) => e.source === 'tool:Edit' && e.target === 'db:write:code_history_operations',
+    )
+    expect(editToCodeHistory?.type).toBe('trigger')
+    expect((editToCodeHistory?.data as { triggerLabel?: string } | undefined)?.triggerLabel).toBe(
+      'writes',
+    )
+  })
+
+  it('labels tool→output-section trigger edges with "produces"', () => {
+    const detail = fixtureDetail()
+    const { edges } = buildAgentGraph(detail)
+    const editToFilesChanged = edges.find(
+      (e) => e.source === 'tool:Edit' && e.target === 'output-section:files_changed',
+    )
+    expect(editToFilesChanged?.type).toBe('trigger')
+    expect((editToFilesChanged?.data as { triggerLabel?: string } | undefined)?.triggerLabel).toBe(
+      'produces',
+    )
+  })
+
+  it('exposes a header summary count that matches the number of DB touchpoint cards', () => {
+    const detail = fixtureDetail()
+    const { nodes } = buildAgentGraph(detail)
+    const headerNode = nodes.find((n) => n.id === AGENT_GRAPH_HEADER_NODE_ID)
+    const dbNodes = nodes.filter((n) => n.type === 'db-table')
+    const summary = (headerNode?.data as { summary?: { dbTables?: number } } | undefined)
+      ?.summary
+    expect(summary?.dbTables).toBe(dbNodes.length)
+  })
+
+  it('attaches a directional marker to every ownership edge', () => {
+    const detail = fixtureDetail()
+    const { edges } = buildAgentGraph(detail)
+    const ownershipFamilies = [
+      'agent-edge agent-edge-prompt',
+      'agent-edge agent-edge-tool',
+      'agent-edge agent-edge-db',
+      'agent-edge agent-edge-output',
+      'agent-edge agent-edge-output-section',
+      'agent-edge agent-edge-consume',
+    ]
+    const familyEdges = edges.filter((e) =>
+      ownershipFamilies.includes(e.className ?? ''),
+    )
+    expect(familyEdges.length).toBeGreaterThan(0)
+    for (const edge of familyEdges) {
+      expect(edge.markerEnd, `${edge.id} should have a markerEnd`).toBeDefined()
+    }
   })
 })

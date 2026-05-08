@@ -3651,6 +3651,18 @@ mod tests {
                     trace_id TEXT NOT NULL
                 );
 
+                CREATE TABLE agent_file_reservations (
+                    project_id TEXT NOT NULL
+                );
+
+                CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL
+                );
+
+                INSERT INTO projects (id, name)
+                VALUES ('project-legacy', 'Legacy project');
+
                 INSERT INTO agent_runs (
                     runtime_agent_id,
                     agent_definition_id,

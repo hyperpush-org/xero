@@ -488,18 +488,13 @@ pub struct PayloadBudgetDiagnosticDto {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ProjectOriginDto {
     Brownfield,
     Greenfield,
+    #[default]
     Unknown,
-}
-
-impl Default for ProjectOriginDto {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -2,11 +2,15 @@ import type { Metadata } from "next"
 import Link from "next/link"
 import { SiteHeader } from "@/components/landing/site-header"
 import { SiteFooter } from "@/components/landing/site-footer"
+import { mailto } from "@/lib/site"
 
 export const metadata: Metadata = {
-  title: "Privacy — Xero",
+  title: "Privacy",
   description:
     "How Xero handles your data. The desktop app is local-first: keys live in the OS keychain, model traffic goes provider-direct, and we don't host your sessions.",
+  alternates: {
+    canonical: "/privacy",
+  },
 }
 
 const lastUpdated = "April 2026"
@@ -71,7 +75,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
         </p>
         <p>
           When you email{" "}
-          <Link href="mailto:team@xeroshell.com" className="underline underline-offset-2 hover:text-foreground">
+          <Link href={mailto()} className="underline underline-offset-2 hover:text-foreground">
             team@xeroshell.com
           </Link>{" "}
           we hold the contents of your email to reply. That&apos;s it.
@@ -119,7 +123,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
           it. For anything we hold server-side — emails to support, the analytics record of your
           page views — you can request access or deletion at{" "}
           <Link
-            href="mailto:team@xeroshell.com"
+            href={mailto()}
             className="underline underline-offset-2 hover:text-foreground"
           >
             team@xeroshell.com
@@ -137,7 +141,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
         <p>
           Questions about this policy? Email{" "}
           <Link
-            href="mailto:team@xeroshell.com"
+            href={mailto()}
             className="underline underline-offset-2 hover:text-foreground"
           >
             team@xeroshell.com

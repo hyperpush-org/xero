@@ -299,7 +299,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     } else {
         "Owned agent runtime accepted the run."
     };
-    let snapshot = persist_owned_runtime_run(
+    let mut snapshot = persist_owned_runtime_run(
         &repo_root,
         project_id,
         agent_session_id,
@@ -316,23 +316,42 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
     emit_runtime_run_updated(app, Some(&runtime_run))?;
 
-    if let Some(prompt) = prompt {
-        spawn_owned_runtime_prompt_start(
-            app.clone(),
-            state.clone(),
-            OwnedRuntimePromptStart {
-                repo_root: repo_root.clone(),
-                project_id: project_id.into(),
-                agent_session_id: agent_session_id.into(),
-                run_id: run_id.clone(),
-                provider_profile_id: active_profile.profile_id,
-                provider_id: active_profile.provider_id.clone(),
-                run_controls: run_controls.clone(),
-                accepted_snapshot: snapshot.clone(),
-                prompt,
-                attachments: initial_attachments,
-            },
-        );
+    match prompt {
+        Some(prompt) => {
+            spawn_owned_runtime_prompt_start(
+                app.clone(),
+                state.clone(),
+                OwnedRuntimePromptStart {
+                    repo_root: repo_root.clone(),
+                    project_id: project_id.into(),
+                    agent_session_id: agent_session_id.into(),
+                    run_id: run_id.clone(),
+                    provider_profile_id: active_profile.profile_id,
+                    provider_id: active_profile.provider_id.clone(),
+                    run_controls: run_controls.clone(),
+                    accepted_snapshot: snapshot.clone(),
+                    prompt,
+                    attachments: initial_attachments,
+                },
+            );
+        }
+        None => {
+            snapshot = persist_owned_runtime_run(
+                &repo_root,
+                project_id,
+                agent_session_id,
+                &run_id,
+                &active_profile.provider_id,
+                &run_controls,
+                RuntimeRunStatus::Running,
+                None,
+                "Owned agent runtime is waiting for input.",
+                snapshot.last_checkpoint_sequence.saturating_add(1),
+                Some(&snapshot),
+            )?;
+            let runtime_run = runtime_run_dto_from_snapshot(&snapshot);
+            emit_runtime_run_updated(app, Some(&runtime_run))?;
+        }
     }
 
     eprintln!(

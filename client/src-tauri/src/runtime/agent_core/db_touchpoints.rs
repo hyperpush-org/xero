@@ -1,6 +1,4 @@
-use crate::commands::{
-    AgentDbTouchpointKindDto, AgentTriggerLifecycleEventDto, RuntimeAgentIdDto,
-};
+use crate::commands::{AgentDbTouchpointKindDto, AgentTriggerLifecycleEventDto, RuntimeAgentIdDto};
 
 /// A typed reference describing what causes the agent to touch a table.
 /// Mirrors the wire-side `AgentTriggerRefDto` so the descriptor authors keep
@@ -571,7 +569,11 @@ mod tests {
             RuntimeAgentIdDto::Test,
         ] {
             let touchpoints = db_touchpoints_for_runtime_agent(id);
-            assert!(has_table(touchpoints, AgentDbTouchpointKindDto::Write, "agent_runs"));
+            assert!(has_table(
+                touchpoints,
+                AgentDbTouchpointKindDto::Write,
+                "agent_runs"
+            ));
             assert!(has_table(
                 touchpoints,
                 AgentDbTouchpointKindDto::Write,

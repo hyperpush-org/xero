@@ -38,6 +38,13 @@ const DEFAULTS: Required<LayoutOptions> = {
   defaultSize: { width: 280, height: 120 },
 }
 
+// Default canvas snap step in CSS pixels. Mirrors SNAP_GRID_SIZE in
+// agent-visualization.tsx — half of the 32px visual dot-grid spacing. Layout
+// stack gaps are based on this value so default reset spacing reads as one
+// grid beat instead of drifting unevenly against the dot field.
+const LAYOUT_DOT_GRID_GAP = 32
+const LAYOUT_SNAP_GRID_SIZE = LAYOUT_DOT_GRID_GAP / 2
+
 /**
  * Compass-style category layout.
  *
@@ -64,13 +71,13 @@ export function layoutAgentGraphByCategory(
   sizes: Map<string, NodeSize>,
   options: CategoryLayoutOptions = {},
 ): AgentGraphNode[] {
-  const VERT_GAP = 90
-  const HORIZ_GAP = 110
-  const COLUMN_GAP = 48
-  const ROW_GAP = 12
+  const VERT_GAP = 100
+  const HORIZ_GAP = 140
+  const COLUMN_GAP = 56
+  const ROW_GAP = LAYOUT_SNAP_GRID_SIZE
   const LANE_LABEL_HEIGHT = 26
-  const LANE_LABEL_GAP = 14
-  const HEADER_BAND_GAP = 80
+  const LANE_LABEL_GAP = 16
+  const HEADER_BAND_GAP = 96
   const MAX_TOOLS_PER_COLUMN = 6
   const MAX_DBS_PER_COLUMN = 8
   // Output sections render as a single vertical column under the output node so
@@ -78,7 +85,7 @@ export function layoutAgentGraphByCategory(
   // fanning across a multi-column grid (which produced visibly tangled edges
   // when section count was high).
   const SECTION_GRID_COLS = 1
-  const SECTION_GRID_GAP = 12
+  const SECTION_GRID_GAP = LAYOUT_SNAP_GRID_SIZE
 
   type CategoryKey =
     | 'prompt'
@@ -226,10 +233,16 @@ export function layoutAgentGraphByCategory(
     // categories) lays out as ~3 rows rather than a single 4000+px ribbon.
     const TOOLS_AREA_WIDTH_BUDGET = 1500
 
-    // Order frames by their human label so layout is stable across renders.
+    // Order frames by the visual taxonomy emitted by build-agent-graph, with
+    // label fallback for unknown future categories.
     const orderedFrames = [...toolFrames].sort((a, b) => {
-      const la = ((a.data ?? {}) as { label?: string }).label ?? ''
-      const lb = ((b.data ?? {}) as { label?: string }).label ?? ''
+      const aData = (a.data ?? {}) as { label?: string; order?: number }
+      const bData = (b.data ?? {}) as { label?: string; order?: number }
+      const orderDelta = (aData.order ?? Number.MAX_SAFE_INTEGER) -
+        (bData.order ?? Number.MAX_SAFE_INTEGER)
+      if (orderDelta !== 0) return orderDelta
+      const la = aData.label ?? ''
+      const lb = bData.label ?? ''
       return la.localeCompare(lb)
     })
 
@@ -619,9 +632,16 @@ export function layoutAgentGraphByCategory(
     } as AgentGraphNode)
   }
 
-  // Re-emit nodes in the original order so React keys stay stable, then append lanes.
+  // Re-emit nodes in the original order so React keys stay stable, then append
+  // lanes. Do not snap every stacked node independently here: when card heights
+  // are not exact grid multiples, independent snapping turns a constant gap into
+  // an alternating small/large visual rhythm against the dot grid.
   const ordered = nodes.map((node) => placedById.get(node.id) ?? node)
   return [...ordered, ...laneLabelNodes]
+}
+
+function snapToGridStep(value: number, step: number = LAYOUT_SNAP_GRID_SIZE): number {
+  return Math.round(value / step) * step
 }
 
 export function layoutAgentGraph<TNode extends Node, TEdge extends Edge>(
@@ -659,8 +679,8 @@ export function layoutAgentGraph<TNode extends Node, TEdge extends Edge>(
     if (!placed) return node
     const size = sizes.get(node.id) ?? merged.defaultSize
     const position: XYPosition = {
-      x: placed.x - size.width / 2,
-      y: placed.y - size.height / 2,
+      x: snapToGridStep(placed.x - size.width / 2),
+      y: snapToGridStep(placed.y - size.height / 2),
     }
     return { ...node, position } as TNode
   })

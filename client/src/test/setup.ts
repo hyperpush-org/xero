@@ -48,6 +48,24 @@ Object.defineProperty(window.HTMLElement.prototype, 'scrollIntoView', {
   value: vi.fn(),
 })
 
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+Object.defineProperty(globalThis, 'ResizeObserver', {
+  configurable: true,
+  writable: true,
+  value: ResizeObserverStub,
+})
+
+Object.defineProperty(window, 'ResizeObserver', {
+  configurable: true,
+  writable: true,
+  value: ResizeObserverStub,
+})
+
 Object.defineProperty(window, 'matchMedia', {
   configurable: true,
   writable: true,

@@ -1457,6 +1457,10 @@ fn plan_session_lineage_current_workspace_overlay(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "overlay planning mutates several independent accumulators"
+)]
 fn plan_session_lineage_text_inverse_overlay(
     repo_root: &Path,
     group: &CodeSessionLineageUndoPlanChangeGroup,

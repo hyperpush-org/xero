@@ -341,7 +341,7 @@ fn prompt_snapshot_for_agent(
     let compilation = PromptCompiler::new(
         repo_root,
         Some("contract-project"),
-        Some("contract-session"),
+        None,
         runtime_agent_id,
         BrowserControlPreferenceDto::Default,
         registry.descriptors(),
@@ -629,6 +629,14 @@ mod tests {
                 "8a8e35cfc7d356499da44f64d5126cef3df670ec81b5a803f7c5ad4163d8188b",
             ),
             (
+                "plan:base".to_string(),
+                "e87397c3ce1c80659ed5dbc918c7d6b695b3a2a9048eeac5b1fb4179a89108c4",
+            ),
+            (
+                "plan:custom_policy_skill_process_coordination".to_string(),
+                "5968a2a649767ebac9be24d0cdb2b9a90ca2cc8ca4ec57deecee2f2f09e9601e",
+            ),
+            (
                 "engineer:base".to_string(),
                 "ec520e3aa481dd7b1e269c2176ce7dd7e6003e292829dfe53cb371f941670378",
             ),
@@ -696,39 +704,43 @@ mod tests {
         let expected = vec![
             (
                 "ask:builtin_full".to_string(),
-                "b656398224cc28950a3e8062a45480267041fc8c6f9346a3ac7446139b9d5302",
+                "5ce447d07f340a65d1592ae2956fb5142f7fa7a7b9428be7d67587e3d4a02307",
+            ),
+            (
+                "plan:builtin_full".to_string(),
+                "1331c329322467dfbd7817b6f96e8c7b1c619d53f5c6aa9daac210dcfa674a9c",
             ),
             (
                 "engineer:builtin_full".to_string(),
-                "42a4703628eab572689c4c206fced66b5404ca86c5c8aeb7bfc6778c89ed6e97",
+                "d521f7e16aea576a8d5b84ed5d741276824537449389757509fc3485d50ff1e2",
             ),
             (
                 "debug:builtin_full".to_string(),
-                "42a4703628eab572689c4c206fced66b5404ca86c5c8aeb7bfc6778c89ed6e97",
+                "d521f7e16aea576a8d5b84ed5d741276824537449389757509fc3485d50ff1e2",
             ),
             (
                 "crawl:builtin_full".to_string(),
-                "e89a3792ecd4b13ed9c74e584676c2fbe8a88efaf17881d6f41e84558df41d1c",
+                "4a710628110b4d7839314ff370e08aea721853682600618c3a53ebf3e39b4f4a",
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "66d6f25f3176f8a013e19835db5b7507ea1319596d30fc03ef74d6cd1fe4d122",
+                "9c8f1a45101d54a82b64b85ce7ca71a866ebb212c5e8fc656d3a1afba0b1887e",
             ),
             (
                 "test:builtin_full".to_string(),
-                "12467b98072d19f41ce091770861b41c591265a649320c473bdf30070c9a2e8a",
+                "fb19d2dac8b32f6e42472844aedb8f2e8cdf7a6b0f200ff18d2d3d3c92ba4987",
             ),
             (
                 "engineer:custom_observe_only".to_string(),
-                "32a11873cf5254294cdc094b3abab08ae1dd9fb0289c37b357679c0cb0e549a8",
+                "78399c2380096247abafdf450c8815c2e6fd1d3067497856ba5ec8170658660b",
             ),
             (
                 "engineer:custom_engineering".to_string(),
-                "6149a0df3575bb66c52778f18d4a73f2e1327a8cb8979a1e7453ebb3bbe769f5",
+                "dd8526e38c71857cde1d5557998eff9ebe25afdad3d219222ce72db4a04a3d37",
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "66d6f25f3176f8a013e19835db5b7507ea1319596d30fc03ef74d6cd1fe4d122",
+                "9c8f1a45101d54a82b64b85ce7ca71a866ebb212c5e8fc656d3a1afba0b1887e",
             ),
         ];
 

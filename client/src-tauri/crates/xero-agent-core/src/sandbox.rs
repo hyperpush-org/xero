@@ -296,7 +296,7 @@ impl Default for SandboxExecutionContext {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SandboxExecutionDenied {
     pub error: ToolExecutionError,
-    pub metadata: SandboxExecutionMetadata,
+    pub metadata: Box<SandboxExecutionMetadata>,
 }
 
 pub type ToolSandboxResult = Result<SandboxExecutionMetadata, SandboxExecutionDenied>;
@@ -411,7 +411,7 @@ pub struct SandboxedProcessError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
-    pub metadata: SandboxExecutionMetadata,
+    pub metadata: Box<SandboxExecutionMetadata>,
 }
 
 impl SandboxedProcessError {
@@ -432,14 +432,14 @@ impl SandboxedProcessError {
                 code: code.into(),
                 message,
                 retryable,
-                metadata,
+                metadata: Box::new(metadata),
             };
         }
         Self {
             code: code.into(),
             message: message.into(),
             retryable,
-            metadata,
+            metadata: Box::new(metadata),
         }
     }
 }
@@ -1538,7 +1538,7 @@ fn deny(
     let reason = reason.into();
     Err(SandboxExecutionDenied {
         error: ToolExecutionError::sandbox_denied(code, reason.clone()),
-        metadata: metadata.denied(reason),
+        metadata: Box::new(metadata.denied(reason)),
     })
 }
 

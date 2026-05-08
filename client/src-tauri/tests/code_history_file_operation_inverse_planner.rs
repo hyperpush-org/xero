@@ -389,5 +389,5 @@ fn symlink_state(target: &str, mode: Option<u32>) -> CodeExactFileState {
 }
 
 fn hash(ch: char) -> String {
-    std::iter::repeat(ch).take(64).collect()
+    std::iter::repeat_n(ch, 64).collect()
 }

@@ -2377,7 +2377,7 @@ fn context_manifest_prompt_fragment_ids(manifest: &JsonValue, max_items: usize) 
         .and_then(|fragments| {
             fragments
                 .get("items")
-                .or_else(|| Some(fragments))
+                .or(Some(fragments))
                 .and_then(JsonValue::as_array)
         })
         .into_iter()

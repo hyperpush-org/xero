@@ -1,21 +1,10 @@
 import {
   Bot,
-  Code2,
-  GitBranch,
-  Globe,
   Layers,
   Rocket,
   Wrench,
-  Cpu,
-  Sparkles,
-  Terminal,
   ChevronRight,
-  CircleDot,
 } from "lucide-react"
-import {
-  DiscordIcon,
-  TelegramIcon,
-} from "@/components/landing/brand-icons"
 
 type Stage = {
   n: string
@@ -33,7 +22,7 @@ const stages: Stage[] = [
     title: "Design the agent",
     caption: "Pick tools, memory, approval rules.",
     icon: <Wrench className="h-3.5 w-3.5" />,
-    visual: <BuildVisual />,
+    visual: <AssemblyVisual />,
   },
   {
     n: "02",
@@ -41,7 +30,7 @@ const stages: Stage[] = [
     title: "Compose the workflow",
     caption: "Steps, branches, loops, gates.",
     icon: <Layers className="h-3.5 w-3.5" />,
-    visual: <ChainVisual />,
+    visual: <LinkedRingsVisual />,
   },
   {
     n: "03",
@@ -49,7 +38,7 @@ const stages: Stage[] = [
     title: "Decide from your phone",
     caption: "Discord or Telegram on real calls.",
     icon: <Bot className="h-3.5 w-3.5" />,
-    visual: <ApproveVisual />,
+    visual: <GateBeamVisual />,
   },
   {
     n: "04",
@@ -57,7 +46,7 @@ const stages: Stage[] = [
     title: "Project lands done",
     caption: "Branch, merge, deploy, repeat.",
     icon: <Rocket className="h-3.5 w-3.5" />,
-    visual: <ShipVisual />,
+    visual: <TrajectoryVisual />,
   },
 ]
 
@@ -78,7 +67,6 @@ export function Workflow() {
           {stages.map((s, i) => (
             <li key={s.n} className="relative flex">
               <article className="relative flex w-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card">
-                {/* Card header: stage label */}
                 <header className="flex items-center justify-between border-b border-border/60 bg-secondary/20 px-4 py-2.5">
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-primary/15 text-primary">
@@ -93,12 +81,10 @@ export function Workflow() {
                   </span>
                 </header>
 
-                {/* Visual area */}
                 <div className="flex h-48 items-center justify-center bg-gradient-to-b from-transparent to-secondary/[0.08] p-4">
                   {s.visual}
                 </div>
 
-                {/* Footer: title + caption */}
                 <footer className="border-t border-border/60 px-4 py-4">
                   <h3 className="text-base font-medium tracking-tight">
                     {s.title}
@@ -109,7 +95,6 @@ export function Workflow() {
                 </footer>
               </article>
 
-              {/* Connector — desktop: between cards; mobile/tablet: hidden */}
               {i < stages.length - 1 && (
                 <span
                   aria-hidden
@@ -126,214 +111,285 @@ export function Workflow() {
   )
 }
 
-/* -------- Stage visuals -------- */
+/* ---------- Stage visuals ---------- */
 
-function BuildVisual() {
-  const chips: { text: string; icon: React.ReactNode; on: boolean }[] = [
-    { text: "repo", icon: <Code2 className="h-2.5 w-2.5" />, on: true },
-    { text: "shell", icon: <Terminal className="h-2.5 w-2.5" />, on: true },
-    { text: "git", icon: <GitBranch className="h-2.5 w-2.5" />, on: true },
-    { text: "browser", icon: <Globe className="h-2.5 w-2.5" />, on: false },
-    { text: "memory", icon: <Sparkles className="h-2.5 w-2.5" />, on: true },
-    { text: "ask · push", icon: <CircleDot className="h-2.5 w-2.5" />, on: true },
-  ]
+/* 01 · Build — exploded modules converging into a center core */
+function AssemblyVisual() {
   return (
-    <div className="flex w-full max-w-[220px] flex-col items-center gap-3">
-      <div className="relative flex items-center gap-2 rounded-md border border-primary/40 bg-primary/[0.08] px-3 py-1.5 shadow-[0_0_0_4px_color-mix(in_oklab,var(--primary)_8%,transparent)]">
-        <span className="relative inline-flex h-5 w-5 items-center justify-center rounded bg-primary/20 text-primary">
-          <Bot className="h-3 w-3" />
-          <span
-            aria-hidden
-            className="absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full border-[1.5px] border-card bg-primary"
-          />
-        </span>
-        <span className="font-mono text-[11px] text-foreground">solana-ops</span>
-      </div>
-      <div className="grid w-full grid-cols-3 gap-1.5">
-        {chips.map((c, i) => (
-          <span
-            key={i}
-            className={`flex items-center justify-center gap-1 truncate rounded border px-1.5 py-1 font-mono text-[9px] ${
-              c.on
-                ? "border-primary/30 bg-primary/[0.08] text-primary"
-                : "border-dashed border-border/60 bg-transparent text-muted-foreground/60"
-            }`}
-          >
-            {c.icon}
-            {c.text}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
+    <svg viewBox="0 0 220 160" className="h-full w-full max-w-[220px]" aria-hidden>
+      <defs>
+        <radialGradient id="as-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.45" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
 
-function ChainVisual() {
-  return (
-    <div className="flex w-full flex-col items-center justify-center gap-2">
-      <svg
-        viewBox="0 0 240 130"
-        className="h-[130px] w-full"
-        aria-hidden
-      >
-        <defs>
-          <linearGradient id="wf-edge" x1="0" x2="1">
-            <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.25" />
-            <stop offset="100%" stopColor="var(--primary)" stopOpacity="0.85" />
-          </linearGradient>
-          <radialGradient id="wf-gate-glow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
-          </radialGradient>
-        </defs>
+      {/* glow */}
+      <circle cx="110" cy="80" r="50" fill="url(#as-glow)" />
 
-        {/* gate glow */}
-        <circle cx="130" cy="65" r="32" fill="url(#wf-gate-glow)" />
-
-        {/* edges */}
-        <path d="M 38 35 C 88 35, 96 65, 116 65" stroke="url(#wf-edge)" strokeWidth="1.4" fill="none" />
-        <path d="M 38 95 C 88 95, 96 65, 116 65" stroke="url(#wf-edge)" strokeWidth="1.4" fill="none" />
-        <path d="M 144 65 C 168 65, 178 35, 202 35" stroke="url(#wf-edge)" strokeWidth="1.4" fill="none" />
-        <path d="M 144 65 C 168 65, 178 95, 202 95" stroke="url(#wf-edge)" strokeWidth="1.4" fill="none" />
-
-        {/* nodes — A */}
-        <g>
-          <circle cx="22" cy="35" r="13" fill="var(--card)" stroke="var(--border)" />
-          <circle cx="22" cy="35" r="3" fill="color-mix(in oklab, var(--primary) 80%, transparent)" />
-          <text x="40" y="20" fontSize="8" fill="var(--muted-foreground)" fontFamily="var(--font-mono)">ask</text>
-        </g>
-        {/* node B */}
-        <g>
-          <circle cx="22" cy="95" r="13" fill="var(--card)" stroke="var(--border)" />
-          <circle cx="22" cy="95" r="3" fill="color-mix(in oklab, var(--primary) 80%, transparent)" />
-          <text x="40" y="113" fontSize="8" fill="var(--muted-foreground)" fontFamily="var(--font-mono)">eng</text>
-        </g>
-        {/* gate */}
-        <g>
-          <rect x="113" y="51" width="34" height="28" rx="7" fill="color-mix(in oklab, var(--primary) 14%, var(--card))" stroke="color-mix(in oklab, var(--primary) 55%, transparent)" />
-          <text x="130" y="69" textAnchor="middle" fontSize="10" fill="var(--primary)" fontFamily="var(--font-mono)" fontWeight="600">if</text>
-        </g>
-        {/* node C */}
-        <g>
-          <circle cx="216" cy="35" r="13" fill="var(--card)" stroke="var(--border)" />
-          <circle cx="216" cy="35" r="3" fill="color-mix(in oklab, var(--primary) 80%, transparent)" />
-          <text x="200" y="20" textAnchor="end" fontSize="8" fill="var(--muted-foreground)" fontFamily="var(--font-mono)">ship</text>
-        </g>
-        {/* node D */}
-        <g>
-          <circle cx="216" cy="95" r="13" fill="var(--card)" stroke="var(--border)" />
-          <circle cx="216" cy="95" r="3" fill="color-mix(in oklab, var(--primary) 80%, transparent)" />
-          <text x="200" y="113" textAnchor="end" fontSize="8" fill="var(--muted-foreground)" fontFamily="var(--font-mono)">retry</text>
-        </g>
-
-      </svg>
-      <div className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
-        <Sparkles className="h-2.5 w-2.5 text-primary/70" />
-        steps · branches · gates
-      </div>
-    </div>
-  )
-}
-
-function ApproveVisual() {
-  return (
-    <div className="flex w-full max-w-[210px] flex-col items-center gap-2.5">
-      {/* phone-like card */}
-      <div className="relative w-full rounded-2xl border border-border/70 bg-background/60 p-1.5 shadow-[0_20px_40px_-20px_rgba(0,0,0,0.7)]">
-        <span
-          aria-hidden
-          className="absolute left-1/2 top-1.5 z-10 h-1 w-10 -translate-x-1/2 rounded-full bg-secondary/80"
+      {/* Convergence dashed paths */}
+      {[
+        { x: 22, y: 26 },
+        { x: 198, y: 26 },
+        { x: 22, y: 134 },
+        { x: 198, y: 134 },
+      ].map((m, i) => (
+        <path
+          key={i}
+          d={`M ${m.x} ${m.y} L 110 80`}
+          stroke="color-mix(in oklab, var(--primary) 55%, transparent)"
+          strokeWidth="0.9"
+          strokeDasharray="3 4"
+          fill="none"
         />
-        <div className="overflow-hidden rounded-xl border border-border/40 bg-card pt-2.5">
-          <div className="flex items-center gap-1.5 border-b border-border/60 bg-secondary/40 px-2.5 py-1.5">
-            <span
-              className="inline-flex h-4 w-4 items-center justify-center rounded text-white"
-              style={{ backgroundColor: "#5865F2" }}
-            >
-              <DiscordIcon className="h-2.5 w-2.5 text-white" />
-            </span>
-            <span className="font-mono text-[10px] text-foreground/80">
-              #xero-approvals
-            </span>
-            <span className="ml-auto inline-flex items-center gap-1 font-mono text-[9px] text-muted-foreground/70">
-              <span className="h-1 w-1 rounded-full bg-primary" />
-              now
-            </span>
-          </div>
-          <div className="px-2.5 py-2">
-            <p className="font-mono text-[11px] leading-snug text-foreground/90">
-              push{" "}
-              <code className="rounded bg-primary/15 px-1 py-0.5 text-[10px] text-primary">
-                try-pg
-              </code>{" "}
-              → origin?
-            </p>
-            <div className="mt-2 flex gap-1.5">
-              <span className="rounded bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground shadow-[0_4px_10px_-4px_color-mix(in_oklab,var(--primary)_60%,transparent)]">
-                Approve
-              </span>
-              <span className="rounded border border-border/70 bg-secondary/40 px-2 py-0.5 text-[10px]">
-                Skip
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-wider text-muted-foreground/70">
-        <span
-          className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-white"
-          style={{ backgroundColor: "#5865F2" }}
-        >
-          <DiscordIcon className="h-2 w-2 text-white" />
-        </span>
-        <span>or</span>
-        <span
-          className="inline-flex h-3.5 w-3.5 items-center justify-center rounded text-white"
-          style={{ backgroundColor: "#26A5E4" }}
-        >
-          <TelegramIcon className="h-2 w-2 text-white" />
-        </span>
-      </div>
-    </div>
+      ))}
+
+      {/* outer modules (geometric primitives) */}
+      {/* tools — square */}
+      <g>
+        <rect x="10" y="14" width="24" height="24" rx="3" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 65%, transparent)" />
+        <line x1="15" y1="22" x2="29" y2="22" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" strokeWidth="1.2" />
+        <line x1="15" y1="26" x2="29" y2="26" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" strokeWidth="1.2" />
+        <line x1="15" y1="30" x2="24" y2="30" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" strokeWidth="1.2" />
+      </g>
+      {/* memory — triangle */}
+      <g>
+        <polygon points="198,14 218,38 178,38" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 65%, transparent)" />
+        <circle cx="198" cy="32" r="2.5" fill="var(--primary)" />
+      </g>
+      {/* approvals — diamond */}
+      <g>
+        <polygon points="22,134 34,122 46,134 34,146" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 65%, transparent)" />
+        <path d="M 28 134 L 32 138 L 40 130" fill="none" stroke="var(--primary)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </g>
+      {/* scope — hex */}
+      <g>
+        <polygon points="186,134 198,122 210,134 210,146 198,158 186,146" transform="translate(0 -12)" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 65%, transparent)" />
+      </g>
+
+      {/* core */}
+      <g>
+        <circle cx="110" cy="80" r="20" fill="color-mix(in oklab, var(--primary) 18%, var(--card))" stroke="var(--primary)" strokeWidth="1.2" />
+        <circle cx="110" cy="80" r="11" fill="color-mix(in oklab, var(--primary) 35%, var(--card))" />
+        <circle cx="110" cy="80" r="5" fill="var(--primary)" />
+      </g>
+
+      {/* caption */}
+      <text x="110" y="152" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        assemble · agent
+      </text>
+    </svg>
   )
 }
 
-function ShipVisual() {
+/* 02 · Chain — interlocking rings (chain links) along a horizontal axis */
+function LinkedRingsVisual() {
   return (
-    <div className="flex w-full max-w-[220px] flex-col gap-1.5">
-      <div className="flex items-center gap-2 rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-primary/15 text-primary">
-          <GitBranch className="h-3 w-3" />
-        </span>
-        <span className="flex-1 truncate font-mono text-[10px]">try-pg</span>
-        <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/15 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-primary">
-          merged
-        </span>
-      </div>
-      <div className="relative overflow-hidden rounded-md border border-border/60 bg-background/60 px-2.5 py-2">
-        <div className="flex items-center gap-2">
-          <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-primary/15 text-primary">
-            <Cpu className="h-3 w-3" />
-          </span>
-          <span className="flex-1 truncate font-mono text-[10px]">deploy · prod</span>
-          <span className="font-mono text-[9px] tabular-nums text-primary">72%</span>
-        </div>
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-secondary/60">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-primary/60 to-primary"
-            style={{ width: "72%" }}
-          />
-        </div>
-      </div>
-      <div className="flex items-center gap-2 rounded-md border border-dashed border-border/60 bg-transparent px-2.5 py-2">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-secondary/40 text-muted-foreground/70">
-          <Sparkles className="h-3 w-3" />
-        </span>
-        <span className="flex-1 truncate font-mono text-[10px] text-muted-foreground">
-          next brief
-        </span>
-        <ChevronRight className="h-3 w-3 text-muted-foreground/60" />
-      </div>
-    </div>
+    <svg viewBox="0 0 220 160" className="h-full w-full max-w-[220px]" aria-hidden>
+      <defs>
+        <linearGradient id="lr-edge" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 25%, transparent)" />
+          <stop offset="100%" stopColor="var(--primary)" />
+        </linearGradient>
+        <radialGradient id="lr-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.32" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {/* glow band */}
+      <ellipse cx="110" cy="80" rx="100" ry="32" fill="url(#lr-glow)" />
+
+      {/* Chain of 4 rings (rotated ovals interlocking) */}
+      {[40, 80, 120, 160].map((cx, i) => {
+        const isHighlight = i === 2
+        return (
+          <g key={i}>
+            <ellipse
+              cx={cx}
+              cy="80"
+              rx="22"
+              ry="14"
+              fill="none"
+              stroke={isHighlight ? "var(--primary)" : "url(#lr-edge)"}
+              strokeWidth={isHighlight ? 2 : 1.6}
+              transform={`rotate(${i % 2 === 0 ? -16 : 16} ${cx} 80)`}
+              opacity={isHighlight ? 1 : 0.85}
+            />
+            {isHighlight && (
+              <ellipse
+                cx={cx}
+                cy="80"
+                rx="28"
+                ry="20"
+                fill="none"
+                stroke="var(--primary)"
+                strokeWidth="0.8"
+                opacity="0.4"
+                transform={`rotate(16 ${cx} 80)`}
+              />
+            )}
+          </g>
+        )
+      })}
+
+      {/* Branch indicator off the chain */}
+      <path
+        d="M 120 80 C 140 80, 150 116, 180 122"
+        fill="none"
+        stroke="color-mix(in oklab, var(--primary) 60%, transparent)"
+        strokeWidth="1.1"
+        strokeDasharray="2 4"
+      />
+      <circle cx="180" cy="122" r="4" fill="var(--card)" stroke="var(--primary)" strokeWidth="1.2" />
+
+      {/* Step number markers */}
+      <g fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" letterSpacing="1.5" opacity="0.7">
+        {[40, 80, 120, 160].map((cx, i) => (
+          <text key={i} x={cx} y="42" textAnchor="middle">{`s${i + 1}`}</text>
+        ))}
+      </g>
+
+      <text x="110" y="152" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        chain · branch · loop
+      </text>
+    </svg>
+  )
+}
+
+/* 03 · Approve — checkmark beam crossing a gate */
+function GateBeamVisual() {
+  return (
+    <svg viewBox="0 0 220 160" className="h-full w-full max-w-[220px]" aria-hidden>
+      <defs>
+        <radialGradient id="gb-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.5" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+        <linearGradient id="gb-beam" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 5%, transparent)" />
+          <stop offset="50%" stopColor="var(--primary)" />
+          <stop offset="100%" stopColor="color-mix(in oklab, var(--primary) 5%, transparent)" />
+        </linearGradient>
+      </defs>
+
+      {/* Halo */}
+      <circle cx="110" cy="80" r="58" fill="url(#gb-glow)" />
+
+      {/* Beam */}
+      <line x1="14" y1="80" x2="206" y2="80" stroke="url(#gb-beam)" strokeWidth="2.4" strokeLinecap="round" />
+      {/* secondary thin beam */}
+      <line x1="14" y1="80" x2="206" y2="80" stroke="color-mix(in oklab, var(--primary) 50%, transparent)" strokeWidth="0.6" strokeDasharray="2 4" />
+
+      {/* Gate frame (two posts) */}
+      <g stroke="color-mix(in oklab, var(--primary) 70%, transparent)" strokeWidth="1.2" fill="none">
+        <line x1="80" y1="36" x2="80" y2="124" />
+        <line x1="140" y1="36" x2="140" y2="124" />
+        <line x1="74" y1="36" x2="146" y2="36" />
+        <line x1="74" y1="124" x2="146" y2="124" />
+      </g>
+
+      {/* Check glyph at gate center */}
+      <g>
+        <circle cx="110" cy="80" r="20" fill="color-mix(in oklab, var(--primary) 18%, var(--card))" stroke="var(--primary)" strokeWidth="1.4" />
+        <path
+          d="M 100 80 L 108 88 L 122 72"
+          fill="none"
+          stroke="var(--primary)"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </g>
+
+      {/* Source / target end caps */}
+      <circle cx="14" cy="80" r="4" fill="color-mix(in oklab, var(--primary) 60%, transparent)" />
+      <polygon points="196,76 206,80 196,84" fill="var(--primary)" />
+
+      {/* Annotation labels */}
+      <g fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" letterSpacing="1.5" opacity="0.75">
+        <text x="14" y="68">request</text>
+        <text x="206" y="68" textAnchor="end">resume</text>
+      </g>
+
+      <text x="110" y="152" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        you · in the loop
+      </text>
+    </svg>
+  )
+}
+
+/* 04 · Ship — trajectory curve with a moving comet, landing in a target */
+function TrajectoryVisual() {
+  return (
+    <svg viewBox="0 0 220 160" className="h-full w-full max-w-[220px]" aria-hidden>
+      <defs>
+        <linearGradient id="tj-trail" x1="0" x2="1">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 5%, transparent)" />
+          <stop offset="100%" stopColor="var(--primary)" />
+        </linearGradient>
+        <radialGradient id="tj-glow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.5" />
+          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {/* Stippled "stars" */}
+      <g fill="color-mix(in oklab, var(--muted-foreground) 35%, transparent)">
+        <circle cx="40" cy="32" r="1" />
+        <circle cx="68" cy="20" r="0.6" />
+        <circle cx="160" cy="24" r="1.2" />
+        <circle cx="190" cy="48" r="0.8" />
+        <circle cx="22" cy="100" r="0.6" />
+        <circle cx="56" cy="118" r="1" />
+        <circle cx="200" cy="100" r="0.7" />
+      </g>
+
+      {/* Trajectory curve */}
+      <path
+        d="M 16 130 Q 90 130, 130 80 T 200 32"
+        fill="none"
+        stroke="url(#tj-trail)"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      {/* Animated dash overlay */}
+      <path
+        d="M 16 130 Q 90 130, 130 80 T 200 32"
+        fill="none"
+        stroke="color-mix(in oklab, var(--primary) 80%, transparent)"
+        strokeWidth="1.4"
+        strokeDasharray="3 8"
+        className="animate-flow-dash"
+      />
+
+      {/* Origin (branch dot) */}
+      <g transform="translate(16 130)">
+        <circle r="6" fill="var(--card)" stroke="color-mix(in oklab, var(--primary) 70%, transparent)" />
+        <circle r="2.4" fill="color-mix(in oklab, var(--primary) 70%, transparent)" />
+      </g>
+
+      {/* Target (concentric rings) */}
+      <g transform="translate(200 32)">
+        <circle r="22" fill="url(#tj-glow)" />
+        <circle r="14" fill="none" stroke="var(--primary)" strokeWidth="0.8" strokeDasharray="2 3" />
+        <circle r="9" fill="none" stroke="var(--primary)" strokeWidth="1" />
+        <circle r="4" fill="var(--primary)" />
+      </g>
+
+      {/* Comet head along the curve */}
+      <circle cx="130" cy="80" r="5" fill="var(--primary)" />
+      <circle cx="130" cy="80" r="11" fill="none" stroke="var(--primary)" strokeWidth="0.8" opacity="0.5" />
+
+      {/* Labels */}
+      <g fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" letterSpacing="1.5" opacity="0.75">
+        <text x="16" y="148">branch</text>
+        <text x="200" y="22" textAnchor="end" fill="var(--primary)" fontWeight="600">prod</text>
+      </g>
+
+      <text x="110" y="152" textAnchor="middle" fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" opacity="0.7" letterSpacing="2">
+        merge · deploy · repeat
+      </text>
+    </svg>
   )
 }

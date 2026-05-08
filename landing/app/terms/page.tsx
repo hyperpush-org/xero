@@ -2,11 +2,15 @@ import type { Metadata } from "next"
 import Link from "next/link"
 import { SiteHeader } from "@/components/landing/site-header"
 import { SiteFooter } from "@/components/landing/site-footer"
+import { mailto, siteDomain } from "@/lib/site"
 
 export const metadata: Metadata = {
-  title: "Terms — Xero",
+  title: "Terms",
   description:
     "Terms of use for the Xero desktop app and website. Plain language, no surprises.",
+  alternates: {
+    canonical: "/terms",
+  },
 }
 
 const lastUpdated = "April 2026"
@@ -18,7 +22,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     body: (
       <p>
         These terms cover your use of the Xero desktop app and the website at{" "}
-        <span className="font-mono text-xs text-foreground">xeroshell.com</span>. By installing the app or
+        <span className="font-mono text-xs text-foreground">{siteDomain}</span>. By installing the app or
         using the site you agree to them. If you don&apos;t agree, don&apos;t use them — that&apos;s
         the whole enforcement mechanism.
       </p>
@@ -142,7 +146,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <p>
         Anything to flag — including a takedown, a security report, or just a question? Email{" "}
         <Link
-          href="mailto:team@xeroshell.com"
+          href={mailto()}
           className="underline underline-offset-2 hover:text-foreground"
         >
           team@xeroshell.com

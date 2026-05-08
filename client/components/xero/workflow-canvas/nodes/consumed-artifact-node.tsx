@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 import type { ConsumedArtifactFlowNode } from '../build-agent-graph'
+import { humanizeIdentifier } from '../build-agent-graph'
 import { useAgentCanvasExpansion } from '../expansion-context'
 
 export const ConsumedArtifactNode = memo(function ConsumedArtifactNode({ id, data }: NodeProps<ConsumedArtifactFlowNode>) {
@@ -53,30 +54,36 @@ export const ConsumedArtifactNode = memo(function ConsumedArtifactNode({ id, dat
             </Badge>
           )}
           {expanded ? (
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            <ChevronDown className="agent-node-chevron h-3 w-3 text-muted-foreground" />
           ) : (
-            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+            <ChevronRight className="agent-node-chevron h-3 w-3 text-muted-foreground" />
           )}
         </button>
-        <div className="px-2.5 pb-1.5 flex items-center gap-1.5 border-t border-border/50 pt-1.5">
+        <div className="agent-node-chip-row px-2.5 pb-1.5 flex items-center gap-1.5 border-t border-border/50 pt-1.5">
           <span className="text-[9px] uppercase tracking-wide text-muted-foreground/70">
             from
           </span>
-          <Badge variant="outline" className="text-[9px] font-mono px-1 py-0">
-            {artifact.sourceAgent}
+          <Badge
+            variant="outline"
+            className="text-[9px] px-1 py-0"
+          >
+            {humanizeIdentifier(artifact.sourceAgent)}
           </Badge>
           <span className="text-[9px] uppercase tracking-wide text-muted-foreground/70">
             via
           </span>
-          <Badge variant="outline" className="text-[9px] font-mono px-1 py-0">
-            {artifact.contract}
+          <Badge
+            variant="outline"
+            className="text-[9px] px-1 py-0"
+          >
+            {humanizeIdentifier(artifact.contract)}
           </Badge>
         </div>
         <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
           <div className="agent-card-body">
             <div className="px-2.5 py-2 space-y-1.5 border-t border-border/50">
               {artifact.description ? (
-                <p className="text-[10.5px] text-muted-foreground leading-snug">
+                <p className="agent-node-detail text-[10.5px] text-muted-foreground leading-snug">
                   {artifact.description}
                 </p>
               ) : null}
@@ -85,13 +92,13 @@ export const ConsumedArtifactNode = memo(function ConsumedArtifactNode({ id, dat
                   <p className="text-[9px] uppercase tracking-wide text-muted-foreground/70">
                     sections used
                   </p>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="agent-node-chip-row flex flex-wrap gap-1">
                     {artifact.sections.map((section) => (
                       <span
                         key={section}
-                        className="text-[9px] px-1 py-0.5 rounded border border-foreground/30 bg-foreground/10 text-foreground/80 font-mono"
+                        className="text-[9px] px-1 py-0.5 rounded border border-foreground/30 bg-foreground/10 text-foreground/80"
                       >
-                        {section}
+                        {humanizeIdentifier(section)}
                       </span>
                     ))}
                   </div>

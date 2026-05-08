@@ -82,6 +82,10 @@ fn seed_run(
     .expect("seed agent run")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper mirrors code-change capture inputs"
+)]
 fn capture_text_modify(
     repo_root: &std::path::Path,
     project_id: &str,

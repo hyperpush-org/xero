@@ -450,7 +450,7 @@ fn assemble_prompt_candidates(
     mut candidates: Vec<PromptFragmentCandidate>,
     prompt_budget_tokens: Option<u64>,
 ) -> CommandResult<PromptCompilation> {
-    candidates.sort_by(|left, right| prompt_candidate_sort_order(left, right));
+    candidates.sort_by(prompt_candidate_sort_order);
     let mut fragments = Vec::new();
     let mut excluded_fragments = Vec::new();
     let mut estimated_prompt_tokens = estimate_tokens(SYSTEM_PROMPT_VERSION);

@@ -331,5 +331,5 @@ fn canonical_repository(root_path: &Path, project_id: &str) -> CanonicalReposito
 }
 
 fn blob_id(fill: char) -> String {
-    std::iter::repeat(fill).take(64).collect()
+    std::iter::repeat_n(fill, 64).collect()
 }

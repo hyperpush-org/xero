@@ -2,6 +2,7 @@
 
 import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { GripVertical } from 'lucide-react'
 
 import type { ToolGroupFrameFlowNode } from '../build-agent-graph'
 
@@ -25,8 +26,14 @@ export const ToolGroupFrameNode = memo(function ToolGroupFrameNode({
         position={Position.Left}
         className="!bg-sky-500 !w-2 !h-2"
       />
-      <span className="agent-tool-group-frame__drag-handle agent-tool-group-frame__label">
-        <span>{data.label}</span>
+      <span
+        className="agent-tool-group-frame__drag-handle agent-tool-group-frame__label"
+      >
+        <GripVertical
+          aria-hidden="true"
+          className="agent-tool-group-frame__grip"
+        />
+        <span className="agent-tool-group-frame__label-text">{data.label}</span>
         {data.count > 0 ? (
           <span className="agent-tool-group-frame__count">{data.count}</span>
         ) : null}

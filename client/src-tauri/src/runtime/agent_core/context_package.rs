@@ -1014,14 +1014,13 @@ fn prompt_diff_since_previous_manifest(
     let previous =
         project_store::list_agent_context_manifests_for_run(repo_root, project_id, run_id)?
             .into_iter()
-            .filter(|record| {
+            .rfind(|record| {
                 record
                     .manifest
                     .get("turnIndex")
                     .and_then(JsonValue::as_u64)
                     .is_some_and(|previous_turn| previous_turn < turn_index as u64)
-            })
-            .last();
+            });
     let Some(previous) = previous else {
         return Ok(json!({
             "kind": "prompt_fragment_diff",

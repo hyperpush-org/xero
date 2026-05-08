@@ -16,12 +16,12 @@ pub fn preflight_provider_profile<R: Runtime>(
     request: PreflightProviderProfileRequestDto,
 ) -> CommandResult<ProviderPreflightSnapshotDto> {
     validate_non_empty(&request.profile_id, "profileId")?;
-    Ok(run_selected_provider_preflight(
+    run_selected_provider_preflight(
         &app,
         state.inner(),
         &request.profile_id,
         request.model_id.as_deref(),
         request.force_refresh,
         request.required_features,
-    )?)
+    )
 }

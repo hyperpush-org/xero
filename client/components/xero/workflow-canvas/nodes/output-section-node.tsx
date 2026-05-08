@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight, Layers } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 import type { OutputSectionFlowNode } from '../build-agent-graph'
+import { humanizeIdentifier } from '../build-agent-graph'
 import { useAgentCanvasExpansion } from '../expansion-context'
 
 const EMPHASIS_DOT: Record<string, string> = {
@@ -53,7 +54,6 @@ export const OutputSectionNode = memo(function OutputSectionNode({ id, data }: N
           expanded && 'is-card-expanded',
         )}
         style={{ width: 200 }}
-        title={section.label}
       >
         <button
           type="button"
@@ -75,14 +75,14 @@ export const OutputSectionNode = memo(function OutputSectionNode({ id, data }: N
           <span className="text-[11px] font-medium truncate flex-1">
             {section.label}
           </span>
-          <span className="text-[8.5px] uppercase tracking-wide text-muted-foreground/70">
+          <span className="agent-node-secondary text-[8.5px] uppercase tracking-wide text-muted-foreground/70">
             {EMPHASIS_LABEL[section.emphasis] ?? section.emphasis}
           </span>
           {hasDetail ? (
             expanded ? (
-              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              <ChevronDown className="agent-node-chevron h-3 w-3 text-muted-foreground" />
             ) : (
-              <ChevronRight className="h-3 w-3 text-muted-foreground" />
+              <ChevronRight className="agent-node-chevron h-3 w-3 text-muted-foreground" />
             )
           ) : null}
         </button>
@@ -90,21 +90,21 @@ export const OutputSectionNode = memo(function OutputSectionNode({ id, data }: N
           <div className="agent-card-body">
             <div className="px-2 pb-2 pt-1 space-y-1.5 border-t border-border/50">
               {section.description ? (
-                <p className="text-[10px] text-muted-foreground leading-snug">
+                <p className="agent-node-detail text-[10px] text-muted-foreground leading-snug">
                   {section.description}
                 </p>
               ) : null}
               {section.producedByTools.length > 0 ? (
-                <div className="flex flex-wrap gap-1">
+                <div className="agent-node-chip-row flex flex-wrap gap-1">
                   <span className="text-[9px] uppercase tracking-wide text-muted-foreground/70">
                     from
                   </span>
                   {section.producedByTools.map((tool) => (
                     <span
                       key={tool}
-                      className="text-[9px] px-1 py-0.5 rounded border border-sky-500/30 bg-sky-500/15 text-sky-700 dark:text-sky-300 font-mono"
+                      className="text-[9px] px-1 py-0.5 rounded border border-sky-500/30 bg-sky-500/15 text-sky-700 dark:text-sky-300"
                     >
-                      {tool}
+                      {humanizeIdentifier(tool)}
                     </span>
                   ))}
                 </div>

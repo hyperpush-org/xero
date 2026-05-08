@@ -6,6 +6,7 @@ primary_region = "ord"
 
 [env]
   HOSTNAME = "0.0.0.0"
+  NEXT_PUBLIC_SITE_URL = "https://xeroshell.com"
   NEXT_TELEMETRY_DISABLED = "1"
   NODE_ENV = "production"
   PORT = "3000"
