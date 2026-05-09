@@ -163,8 +163,8 @@ describe('VcsSidebar', () => {
 
     await waitFor(() => expect(screen.getByText('removed line')).toBeInTheDocument())
 
-    expect(screen.getByText('removed line').closest('div')).toHaveClass('bg-destructive/70')
-    expect(screen.getByText('added line').closest('div')).toHaveClass('bg-success/70')
+    expect(screen.getByText('removed line').closest('div')).toHaveClass('bg-destructive/15')
+    expect(screen.getByText('added line').closest('div')).toHaveClass('bg-success/15')
   })
 
   it('does not render the diff pane when there are no changes to display', () => {

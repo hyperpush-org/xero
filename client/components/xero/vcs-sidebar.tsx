@@ -1491,15 +1491,15 @@ function DiffLineRow({ line, tokens }: { line: DiffLine; tokens: TokenizedLine |
   const lineNo = line.kind === "remove" ? line.oldNo : line.newNo
   const rowTone =
     line.kind === "add"
-      ? "bg-success/70"
+      ? "bg-success/15"
       : line.kind === "remove"
-        ? "bg-destructive/70"
+        ? "bg-destructive/15"
         : ""
   const gutterTone =
     line.kind === "add"
-      ? "border-r border-success/70 text-success"
+      ? "border-r border-success/40 text-success/80 bg-success/10"
       : line.kind === "remove"
-        ? "border-r border-destructive/70 text-destructive"
+        ? "border-r border-destructive/40 text-destructive/80 bg-destructive/10"
         : "text-muted-foreground/40 border-r border-border/40"
   const prefixClass =
     line.kind === "add"

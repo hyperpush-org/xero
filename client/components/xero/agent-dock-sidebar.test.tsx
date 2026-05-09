@@ -13,6 +13,8 @@ interface CapturedRuntimeProps {
   onSelectSidebarSession?: (id: string) => void
   onCreateSession?: () => void
   isCreatingSession?: boolean
+  agentCreateCanvasIncluded?: boolean
+  onStartWorkflowAgentCreate?: () => void
 }
 
 vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
@@ -24,12 +26,20 @@ vi.mock('@/components/xero/agent-runtime/live-agent-runtime', () => ({
     onSelectSidebarSession,
     onCreateSession,
     isCreatingSession,
+    agentCreateCanvasIncluded,
+    onStartWorkflowAgentCreate,
   }: CapturedRuntimeProps & { agent: unknown }) => {
     if (!agent) return null
     return (
       <div data-testid="live-agent-runtime">
         <div data-testid="live-agent-runtime-in-sidebar">{inSidebar ? 'true' : 'false'}</div>
         <div data-testid="live-agent-runtime-session-count">{sidebarSessions?.length ?? 0}</div>
+        <div data-testid="live-agent-runtime-canvas-included">
+          {agentCreateCanvasIncluded ? 'true' : 'false'}
+        </div>
+        <button type="button" onClick={() => onStartWorkflowAgentCreate?.()}>
+          mock-start-workflow-agent-create
+        </button>
         <button type="button" onClick={() => onCloseSidebar?.()}>
           mock-close
         </button>
@@ -147,6 +157,21 @@ describe('AgentDockSidebar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mock-create-session' }))
 
     expect(onCreateSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards the Agent Create canvas context into the agent runtime', () => {
+    renderDock({ agentCreateCanvasIncluded: true })
+
+    expect(screen.getByTestId('live-agent-runtime-canvas-included')).toHaveTextContent('true')
+  })
+
+  it('forwards the workflow canvas Agent Create action into the agent runtime', () => {
+    const onStartWorkflowAgentCreate = vi.fn()
+    renderDock({ onStartWorkflowAgentCreate })
+
+    fireEvent.click(screen.getByRole('button', { name: 'mock-start-workflow-agent-create' }))
+
+    expect(onStartWorkflowAgentCreate).toHaveBeenCalledTimes(1)
   })
 
   it('forwards onSelectSession into the agent runtime header', () => {

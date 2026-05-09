@@ -1,0 +1,10 @@
+- Use ShadCN for all UI where possible
+- NEVER add temporary debug or test UI during development. Use unit/e2e test only. The only UI you should ever add is user facing only.
+- When executing python commands, ALWAYS use python3
+- You CANNOT open this app in a browers, this is a Tauri app
+- Only run one Cargo caommand at a time to avoid the lock
+- `.xero/` is legacy repo-local state. New project state belongs under the OS app-data directory.
+- This is a new application, backwards compatability is prohibited unless asked for
+- Build prerequisite: `protoc` must be on PATH (the LanceDB-backed agent memory store pulls lance-* crates whose build scripts compile vendored .proto files). On macOS: `brew install protobuf`.
+- Run scooped tests and format instead of repo wide when working with rust to save time and storage
+- Dont create branches or stash unless user asks, there may be multiple agents working at the same time and doing this will break things

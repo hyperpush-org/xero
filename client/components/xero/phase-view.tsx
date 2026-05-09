@@ -1,20 +1,30 @@
 'use client'
 
-import { memo, type ReactNode } from 'react'
-import { Bot, Plus, Workflow as WorkflowIcon, X } from 'lucide-react'
+import { memo, useCallback, useState, type ReactNode } from 'react'
+import { AlertCircle, Bot, Loader2, Save, Workflow as WorkflowIcon, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { WorkflowCanvasEmptyState } from '@/components/xero/workflow-canvas-empty-state'
-import { AgentVisualization } from '@/components/xero/workflow-canvas/agent-visualization'
+import {
+  AgentVisualization,
+  type AgentVisualizationEditingStatus,
+} from '@/components/xero/workflow-canvas/agent-visualization'
+import type { CanvasMode } from '@/components/xero/workflow-canvas/canvas-mode-context'
 import { cn } from '@/lib/utils'
 import type { WorkflowPaneView } from '@/src/features/xero/use-xero-desktop-state'
 import type {
   AgentDetailStatus,
   AgentListStatus,
 } from '@/src/features/xero/use-workflow-agent-inspector'
-import type { WorkflowAgentDetailDto } from '@/src/lib/xero-model/workflow-agents'
+import type { AgentDefinitionWriteResponseDto } from '@/src/lib/xero-model/agent-definition'
+import type {
+  AgentAuthoringCatalogDto,
+  WorkflowAgentDetailDto,
+} from '@/src/lib/xero-model/workflow-agents'
 
 interface PhaseViewProps {
+  active?: boolean
   workflow?: WorkflowPaneView
   onStartRun?: () => Promise<unknown>
   onOpenSettings?: () => void
@@ -29,11 +39,37 @@ interface PhaseViewProps {
   agentDetailError?: Error | null
   onClearAgentSelection?: () => void
   onReloadAgentDetail?: () => Promise<void>
+  authoringSession?: {
+    mode: CanvasMode
+    initialDetail: WorkflowAgentDetailDto | null
+  } | null
+  authoringCatalog?: AgentAuthoringCatalogDto | null
+  onAuthoringSubmit?: (params: {
+    snapshot: Record<string, unknown>
+    mode: CanvasMode
+    definitionId?: string
+  }) => Promise<AgentDefinitionWriteResponseDto>
+  onAuthoringSaved?: (response: AgentDefinitionWriteResponseDto) => void
+  onAuthoringCancel?: () => void
+  onSelectedNodeChange?: (hasSelection: boolean) => void
+}
+
+const AUTHORING_TITLE_BY_MODE: Record<CanvasMode, string> = {
+  create: 'New agent',
+  edit: 'Editing agent',
+  duplicate: 'Duplicating agent',
+}
+
+const AUTHORING_SAVE_LABEL_BY_MODE: Record<CanvasMode, string> = {
+  create: 'Save agent',
+  edit: 'Save changes',
+  duplicate: 'Save copy',
 }
 
 export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
   const {
     onToggleWorkflows,
+    active = true,
     workflowsOpen = false,
     onCreateWorkflow,
     onCreateAgent,
@@ -42,13 +78,39 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     agentDetailError = null,
     onClearAgentSelection,
     onReloadAgentDetail,
+    authoringSession = null,
+    authoringCatalog = null,
+    onAuthoringSubmit,
+    onAuthoringSaved,
+    onAuthoringCancel,
+    onSelectedNodeChange,
   } = props
 
+  const isAuthoring = Boolean(authoringSession && onAuthoringSubmit && onAuthoringSaved && onAuthoringCancel)
+  const [editingStatus, setEditingStatus] =
+    useState<AgentVisualizationEditingStatus | null>(null)
+  const handleEditingStatusChange = useCallback(
+    (status: AgentVisualizationEditingStatus | null) => {
+      setEditingStatus(status)
+    },
+    [],
+  )
   const showAgentVisualization =
-    agentDetailStatus === 'ready' && agentDetail !== null
+    !isAuthoring && agentDetailStatus === 'ready' && agentDetail !== null
   const selectedAgent = showAgentVisualization ? agentDetail : null
   const selectedAgentHeader = selectedAgent?.header ?? null
   const selectedAgentIsSystem = selectedAgent?.ref.kind === 'built_in'
+  const authoringMode = authoringSession?.mode ?? null
+  const authoringInitialHeader = authoringSession?.initialDetail?.header ?? null
+  const authoringDisplayName =
+    authoringMode === 'create' || !authoringInitialHeader
+      ? AUTHORING_TITLE_BY_MODE[authoringMode ?? 'create']
+      : authoringInitialHeader.displayName
+  const authoringShortLabel =
+    authoringMode && authoringMode !== 'create' && authoringInitialHeader
+      ? authoringInitialHeader.shortLabel
+      : null
+  const showTopLeftHeader = isAuthoring || showAgentVisualization
   const emptyCanvasState = (
     <WorkflowCanvasEmptyState
       onCreateWorkflow={onCreateWorkflow}
@@ -75,7 +137,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       )}
       role="presentation"
     >
-      {showAgentVisualization ? (
+      {showTopLeftHeader ? (
         <div
           aria-label="Selected agent"
           className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_18rem)))] items-center gap-2 rounded-md px-2"
@@ -86,9 +148,9 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
             className="size-3.5 shrink-0 text-foreground/65"
           />
           <span className="min-w-0 truncate text-[12.5px] font-semibold text-foreground/80">
-            {selectedAgentHeader?.displayName}
+            {isAuthoring ? authoringDisplayName : selectedAgentHeader?.displayName}
           </span>
-          {selectedAgentIsSystem ? (
+          {!isAuthoring && selectedAgentIsSystem ? (
             <Badge
               variant="secondary"
               className="h-[18px] rounded px-1.5 py-0 text-[10px] font-semibold text-muted-foreground"
@@ -96,67 +158,138 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
               system
             </Badge>
           ) : null}
-          {selectedAgentHeader?.shortLabel &&
+          {isAuthoring && authoringMode ? (
+            <Badge
+              variant="outline"
+              className="h-[18px] rounded px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+            >
+              {authoringMode === 'edit' ? 'editing' : authoringMode === 'duplicate' ? 'duplicating' : 'new'}
+            </Badge>
+          ) : null}
+          {!isAuthoring &&
+          selectedAgentHeader?.shortLabel &&
           selectedAgentHeader.shortLabel !== selectedAgentHeader.displayName ? (
             <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/70">
               {selectedAgentHeader.shortLabel}
             </span>
           ) : null}
+          {isAuthoring && authoringShortLabel ? (
+            <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/70">
+              {authoringShortLabel}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
-      <AgentVisualization
-        detail={selectedAgent}
-        emptyState={agentErrorState ?? emptyCanvasState}
-        emptyStateVisible={!showAgentVisualization && agentDetailStatus !== 'loading'}
-      />
+      {isAuthoring && authoringSession && onAuthoringSubmit && onAuthoringSaved && onAuthoringCancel ? (
+        <AgentVisualization
+          active={active}
+          editing
+          mode={authoringSession.mode}
+          initialDetail={authoringSession.initialDetail}
+          authoringCatalog={authoringCatalog}
+          onSubmit={onAuthoringSubmit}
+          onSaved={onAuthoringSaved}
+          onCancel={onAuthoringCancel}
+          onEditingStatusChange={handleEditingStatusChange}
+          onSelectedNodeChange={onSelectedNodeChange}
+        />
+      ) : (
+        <AgentVisualization
+          active={active}
+          detail={selectedAgent}
+          emptyState={agentErrorState ?? emptyCanvasState}
+          emptyStateVisible={!showAgentVisualization && agentDetailStatus !== 'loading'}
+          onSelectedNodeChange={onSelectedNodeChange}
+        />
+      )}
 
-      {onToggleWorkflows || onCreateWorkflow || showAgentVisualization ? (
+      {showAgentVisualization || isAuthoring ? (
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-0 z-[5] h-20 bg-gradient-to-b from-background to-transparent"
         />
       ) : null}
 
-      {onToggleWorkflows || onCreateWorkflow || showAgentVisualization ? (
+      {/* Centered authoring diagnostics indicator. Sits inside the same chrome
+          strip as the title and the right-aligned buttons so the error UI
+          travels with the canvas header instead of taking up canvas real
+          estate. Hidden when there's nothing to show. Clicking expands a
+          tight popover listing every issue for the user to address. */}
+      {isAuthoring && editingStatus &&
+      (editingStatus.diagnosticCount > 0 || editingStatus.errorMessage) ? (
+        <div
+          className="pointer-events-auto absolute left-1/2 top-2.5 z-10 -translate-x-1/2"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <AuthoringDiagnosticsBadge
+            diagnosticCount={editingStatus.diagnosticCount}
+            errorMessage={editingStatus.errorMessage}
+            diagnostics={editingStatus.diagnostics}
+          />
+        </div>
+      ) : null}
+
+      {showAgentVisualization || isAuthoring ? (
         <div
           className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"
           onPointerDown={(event) => event.stopPropagation()}
         >
-          {showAgentVisualization && onClearAgentSelection ? (
+          {isAuthoring && onAuthoringCancel ? (
             <Button
               type="button"
-              aria-label="Close agent inspector"
-              onClick={onClearAgentSelection}
-              size="sm"
+              aria-label="Cancel authoring"
+              onClick={onAuthoringCancel}
+              size="icon-sm"
               variant="ghost"
+              disabled={editingStatus?.saving}
+              title="Cancel"
               className={cn(
-                'h-[30px] cursor-pointer gap-1 rounded-md bg-transparent px-2 text-[12.5px] font-semibold has-[>svg]:px-2',
+                'size-[30px] cursor-pointer rounded-md bg-transparent',
                 'text-foreground/70 hover:bg-transparent hover:text-foreground',
               )}
             >
               <X className="size-3.5" />
-              <span>Close</span>
             </Button>
           ) : null}
-          {onCreateWorkflow ? (
+          {isAuthoring && editingStatus ? (
             <Button
               type="button"
-              aria-label="Create workflow"
-              onClick={onCreateWorkflow}
-              size="sm"
+              size="icon-sm"
               variant="ghost"
+              onClick={editingStatus.save}
+              disabled={editingStatus.saveDisabled}
+              title={AUTHORING_SAVE_LABEL_BY_MODE[authoringMode ?? 'create']}
+              aria-label={AUTHORING_SAVE_LABEL_BY_MODE[authoringMode ?? 'create']}
               className={cn(
-                'h-[30px] cursor-pointer gap-1 rounded-md bg-transparent px-2 text-[12.5px] font-semibold has-[>svg]:px-2',
+                'size-[30px] cursor-pointer rounded-md bg-transparent',
+                editingStatus.saveDisabled
+                  ? 'text-foreground/35 hover:bg-transparent hover:text-foreground/35'
+                  : 'text-foreground/70 hover:bg-transparent hover:text-primary',
+              )}
+            >
+              {editingStatus.saving ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Save className="size-3.5" />
+              )}
+            </Button>
+          ) : null}
+          {!isAuthoring && showAgentVisualization && onClearAgentSelection ? (
+            <Button
+              type="button"
+              aria-label="Close agent inspector"
+              onClick={onClearAgentSelection}
+              size="icon-sm"
+              variant="ghost"
+              title="Close"
+              className={cn(
+                'size-[30px] cursor-pointer rounded-md bg-transparent',
                 'text-foreground/70 hover:bg-transparent hover:text-foreground',
               )}
             >
-              <Plus className="size-3.5" />
-              <span>Create</span>
+              <X className="size-3.5" />
             </Button>
-          ) : null}
-          {onCreateWorkflow && onToggleWorkflows ? (
-            <span aria-hidden="true" className="h-3.5 w-px bg-foreground/30" />
           ) : null}
           {onToggleWorkflows ? (
             <Button
@@ -182,6 +315,70 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     </div>
   )
 })
+
+function AuthoringDiagnosticsBadge({
+  diagnosticCount,
+  errorMessage,
+  diagnostics,
+}: {
+  diagnosticCount: number
+  errorMessage: string | null
+  diagnostics: AgentVisualizationEditingStatus['diagnostics']
+}) {
+  const tone = errorMessage
+    ? 'border-destructive/30 bg-destructive/10 text-destructive'
+    : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+  const label = errorMessage
+    ? 'Save failed'
+    : `${diagnosticCount} ${diagnosticCount === 1 ? 'issue' : 'issues'}`
+  const showPopover = errorMessage !== null || diagnostics.length > 0
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild disabled={!showPopover}>
+        <button
+          type="button"
+          className={cn(
+            'inline-flex h-[24px] items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors',
+            tone,
+            showPopover ? 'cursor-pointer hover:bg-opacity-20' : 'cursor-default',
+          )}
+        >
+          <AlertCircle className="size-3" />
+          {label}
+        </button>
+      </PopoverTrigger>
+      {showPopover ? (
+        <PopoverContent
+          align="center"
+          sideOffset={6}
+          className="w-[360px] max-h-[340px] overflow-y-auto p-2"
+        >
+          {errorMessage ? (
+            <p className="px-1 pb-2 text-[12px] font-medium text-destructive">
+              {errorMessage}
+            </p>
+          ) : null}
+          {diagnostics.length > 0 ? (
+            <ul className="flex flex-col gap-1 text-[11.5px] text-foreground/80">
+              {diagnostics.map((diagnostic, index) => (
+                <li
+                  key={`${diagnostic.code}-${index}`}
+                  className="flex flex-col rounded px-1 py-0.5 hover:bg-muted/40"
+                >
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {diagnostic.path}
+                  </span>
+                  <span>{diagnostic.message}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </PopoverContent>
+      ) : null}
+    </Popover>
+  )
+}
 
 function PhaseCanvasFallback({ children }: { children: ReactNode }) {
   return (

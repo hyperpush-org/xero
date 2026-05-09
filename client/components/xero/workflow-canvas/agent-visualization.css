@@ -6,7 +6,7 @@
   /* Background dot tint. Toned down from the foreground-mix default so the
      grid reads as ambient texture rather than the brightest thing on screen. */
   --xy-background-color: transparent;
-  --xy-background-pattern-dots-color: color-mix(in oklab, var(--foreground) 18%, transparent);
+  --xy-background-pattern-dots-color: color-mix(in oklab, var(--foreground) 12%, transparent);
 
   /* ReactFlow uses these to colour the default node container. We override to
      transparent so any padding outside our card-styled children does not bleed
@@ -22,7 +22,7 @@
      overlapping segments do not compound into brighter spots. */
   --xy-edge-stroke: color-mix(in oklab, var(--foreground) 42%, var(--background));
   --xy-edge-stroke-default: color-mix(in oklab, var(--foreground) 42%, var(--background));
-  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-width: 1.25;
   --xy-edge-stroke-selected: var(--primary);
 
   --xy-handle-background-color: var(--primary);
@@ -34,6 +34,13 @@
   --agent-card-radius: 8px;
   --agent-card-border: color-mix(in oklab, var(--foreground) 14%, transparent);
   --agent-card-bg: color-mix(in oklab, var(--card) 96%, var(--foreground) 4%);
+  /* Agent header sits noticeably darker than satellite cards so the
+     centerpiece reads first without needing a saturated tint or halo.
+     Satellites lean toward foreground (lighter); the header leans toward
+     background (darker) so the contrast holds on both light and dark
+     themes — the diff is "deeper than card" vs "lighter than card". */
+  --agent-card-bg-header: color-mix(in oklab, var(--card) 55%, var(--background) 45%);
+  --agent-card-border-header: color-mix(in oklab, var(--foreground) 28%, transparent);
   --agent-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
   --agent-card-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.22);
   --agent-card-shadow-expanded: 0 4px 10px rgba(0, 0, 0, 0.3);
@@ -58,7 +65,7 @@
 }
 
 .agent-visualization .agent-visualization__dots {
-  --agent-dot-color: color-mix(in oklab, var(--foreground) 18%, transparent);
+  --agent-dot-color: color-mix(in oklab, var(--foreground) 12%, transparent);
   position: absolute;
   left: 0;
   top: 0;
@@ -137,6 +144,14 @@
   transition-timing-function: var(--agent-mode-ease);
 }
 
+.agent-visualization.is-initial-fit-pending .react-flow__nodes,
+.agent-visualization.is-initial-fit-pending .react-flow__edges,
+.agent-visualization.is-initial-fit-pending .react-flow__edge-labels,
+.agent-visualization.is-initial-fit-pending .react-flow__controls {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .agent-visualization.is-agent-exiting .react-flow__nodes,
 .agent-visualization.is-agent-exiting .react-flow__edges,
 .agent-visualization.is-agent-exiting .react-flow__edge-labels {
@@ -201,8 +216,8 @@
   color: var(--muted-foreground);
   border: none;
   border-bottom: 1px solid color-mix(in oklab, var(--foreground) 8%, transparent);
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   transition: background-color 140ms ease, color 140ms ease;
 }
 
@@ -225,7 +240,12 @@
 }
 
 .agent-visualization .react-flow__controls-button svg {
-  fill: currentColor;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .agent-visualization.is-locked .react-flow__pane {
@@ -244,7 +264,7 @@
   /* Opaque stroke (no transparent endpoint) so overlapping lines do not
      compound into brighter sections at intersections. */
   stroke: color-mix(in oklab, var(--foreground) 42%, var(--background));
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   shape-rendering: geometricPrecision;
   vector-effect: non-scaling-stroke;
   stroke-linecap: round;
@@ -262,19 +282,35 @@
    cross-edges so the latter read as the primary flow signal. */
 .agent-visualization .react-flow__edge.agent-edge-prompt .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
-  opacity: 0.72;
+  opacity: 0.62;
 }
 .agent-visualization .react-flow__edge.agent-edge-tool .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 50%, var(--background));
-  opacity: 0.72;
+  opacity: 0.62;
 }
 .agent-visualization .react-flow__edge.agent-edge-db .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--color-emerald-500, #10b981) 50%, var(--background));
-  opacity: 0.72;
+  opacity: 0.62;
 }
 .agent-visualization .react-flow__edge.agent-edge-output .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--foreground) 45%, var(--background));
-  opacity: 0.72;
+  opacity: 0.62;
+}
+
+/* Edit mode: edges that connect node kinds the schema doesn't support are
+   rendered red so the user can see at a glance that a connection won't
+   serialize correctly. The save toolbar also blocks while any invalid edge
+   exists. */
+.agent-visualization .react-flow__edge.agent-edge-invalid .react-flow__edge-path {
+  stroke: var(--destructive);
+  stroke-width: 2;
+  opacity: 0.9;
+}
+.agent-visualization .react-flow__edge.agent-edge-invalid .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-invalid .react-flow__arrowhead polygon {
+  stroke: var(--destructive);
+  fill: var(--destructive);
+  opacity: 0.9;
 }
 
 /* Functional cross-edges. These describe causation (tool → db, section → db,
@@ -307,13 +343,13 @@
   pointer-events: none;
   user-select: none;
   white-space: nowrap;
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   line-height: 1;
   padding: 3px 6px;
   border-radius: 4px;
-  background: color-mix(in oklab, var(--background) 92%, var(--card));
+  background: color-mix(in oklab, var(--background) 96%, var(--card));
   border: 1px solid color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 32%, var(--background));
   color: color-mix(in oklab, var(--color-fuchsia-500, #d946ef) 85%, var(--foreground));
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
@@ -365,9 +401,9 @@
    inbound handoff visually contrasts with intra-agent ownership. */
 .agent-visualization .react-flow__edge.agent-edge-consume .react-flow__edge-path {
   stroke: color-mix(in oklab, #14b8a6 75%, var(--foreground));
-  stroke-width: 1.5;
-  stroke-dasharray: 5 4;
-  opacity: 0.85;
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+  opacity: 0.78;
 }
 
 /* Focus mode — when the user hovers a node we light up its directly-related
@@ -446,8 +482,8 @@
    stay quieter than functional cross-edges, but visible against the canvas. */
 .agent-visualization .react-flow__edge.agent-edge-output-section .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--foreground) 55%, var(--background));
-  stroke-width: 1.25;
-  opacity: 0.6;
+  stroke-width: 1;
+  opacity: 0.5;
 }
 
 .agent-visualization .react-flow__edge.selected .react-flow__edge-path,
@@ -465,6 +501,45 @@
 
 .agent-visualization .react-flow__node.is-focused .react-flow__handle {
   opacity: 1;
+}
+
+/* Editing mode: handles must accept pointer events so the user can drag a
+   connection from one node to another. The colored dot itself is larger here,
+   not just the invisible hit target, so grab points are obvious before hover. */
+.agent-visualization.is-editing .react-flow__handle {
+  pointer-events: auto;
+  width: 12px !important;
+  height: 12px !important;
+  opacity: 1;
+  cursor: crosshair;
+  box-sizing: border-box;
+  transform-origin: center center;
+  scale: 1;
+  /* Thin background-colored hairline so the dot reads as a solid colored
+     pill instead of a small splat inside a thick black ring. */
+  border-width: 1.5px;
+  box-shadow: none;
+  transition:
+    scale 120ms ease,
+    box-shadow 120ms ease,
+    border-color 120ms ease;
+}
+
+.agent-visualization.is-editing .react-flow__handle:hover,
+.agent-visualization.is-editing .react-flow__handle.connecting,
+.agent-visualization.is-editing .react-flow__handle.connectingfrom,
+.agent-visualization.is-editing .react-flow__handle.connectingto {
+  /* Use independent scale so React Flow's translate(...) anchor stays intact. */
+  scale: 1.12;
+  box-shadow: 0 0 0 5px color-mix(in oklab, var(--primary) 28%, transparent);
+  border-color: var(--primary);
+}
+
+/* Lock mode disables handle interactions even while editing — the rest of the
+   editing chrome already shows the lock icon, but the cursor should mirror. */
+.agent-visualization.is-editing.is-locked .react-flow__handle {
+  pointer-events: none;
+  cursor: default;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -488,9 +563,9 @@
   align-items: center;
   gap: 8px;
   padding: 4px 6px 6px 4px;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: color-mix(in oklab, var(--muted-foreground) 80%, var(--foreground));
   cursor: grab;
@@ -508,26 +583,29 @@
 
 .agent-visualization .agent-graph-lane-label__bar {
   display: inline-block;
-  width: 14px;
+  width: 18px;
   height: 3px;
   border-radius: 2px;
   background: color-mix(in oklab, var(--foreground) 30%, transparent);
 }
 
+.agent-visualization .agent-graph-lane-label--agent .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--primary) 80%, var(--background));
+}
 .agent-visualization .agent-graph-lane-label--prompt .agent-graph-lane-label__bar {
-  background: color-mix(in oklab, var(--color-amber-500, #f59e0b) 60%, var(--background));
+  background: color-mix(in oklab, var(--color-amber-500, #f59e0b) 72%, var(--background));
 }
 .agent-visualization .agent-graph-lane-label--tool .agent-graph-lane-label__bar {
-  background: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 60%, var(--background));
+  background: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 72%, var(--background));
 }
 .agent-visualization .agent-graph-lane-label--db .agent-graph-lane-label__bar {
-  background: color-mix(in oklab, var(--color-emerald-500, #10b981) 60%, var(--background));
+  background: color-mix(in oklab, var(--color-emerald-500, #10b981) 72%, var(--background));
 }
 .agent-visualization .agent-graph-lane-label--output .agent-graph-lane-label__bar {
-  background: color-mix(in oklab, var(--foreground) 55%, var(--background));
+  background: color-mix(in oklab, var(--foreground) 60%, var(--background));
 }
 .agent-visualization .agent-graph-lane-label--consume .agent-graph-lane-label__bar {
-  background: color-mix(in oklab, #14b8a6 70%, var(--foreground));
+  background: color-mix(in oklab, #14b8a6 78%, var(--foreground));
 }
 
 .agent-visualization .agent-graph-lane-label__text {
@@ -537,7 +615,7 @@
 
 .agent-visualization .agent-graph-lane-label__count {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0;
   color: var(--muted-foreground);
@@ -575,11 +653,11 @@
   width: 100%;
   height: 100%;
   border: 1px dashed
-    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 40%, var(--background));
+    color-mix(in oklab, var(--color-sky-500, #0ea5e9) 32%, var(--background));
   border-radius: 10px;
   background: color-mix(
     in oklab,
-    var(--color-sky-500, #0ea5e9) 5%,
+    var(--color-sky-500, #0ea5e9) 3%,
     transparent
   );
   box-sizing: border-box;
@@ -636,7 +714,7 @@
   color: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 80%, var(--foreground));
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
   user-select: none;
@@ -658,20 +736,31 @@
 }
 
 .agent-visualization .agent-tool-group-frame__label-text {
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   white-space: nowrap;
 }
 
 .agent-visualization .agent-tool-group-frame__count {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0;
+  text-transform: none;
   color: var(--muted-foreground);
   background: color-mix(in oklab, var(--foreground) 12%, transparent);
   padding: 1px 6px;
   border-radius: 999px;
   line-height: 1.1;
+}
+
+.agent-visualization .agent-tool-group-frame__remove {
+  pointer-events: auto;
+  flex-shrink: 0;
+}
+
+.agent-visualization .agent-tool-group-frame__remove svg {
+  width: 11px;
+  height: 11px;
 }
 
 /* Expandable card body: animated open/close via the grid-template-rows trick.
@@ -706,11 +795,27 @@
   border-color: color-mix(in oklab, var(--foreground) 22%, transparent);
 }
 
-/* Agent header — the canvas centerpiece. Slightly primary-tinted border
-   separates it from the satellite cards without a halo. Border weight
-   stays at 1px to match the rest of the canvas. */
+/* Agent header — the canvas centerpiece. A noticeably darker surface, a
+   slightly firmer border, and a stronger resting shadow set it apart from
+   the satellite cards without a tint, halo, or glow. */
 .agent-visualization .agent-card-header {
-  border-color: color-mix(in oklab, var(--primary) 35%, var(--agent-card-border));
+  background: var(--agent-card-bg-header);
+  border-color: var(--agent-card-border-header);
+  box-shadow: var(--agent-card-shadow-hover);
+}
+
+/* "AGENT" lane-style label that sits above the header card. Absolutely
+   positioned so React Flow's node bounds (and therefore handle anchor
+   positions) stay at the card itself, not the label. The label inherits
+   the lane-label visual but uses the primary tone bar to match the
+   centerpiece. cursor:default — this is a label, not a drag handle. */
+.agent-visualization .agent-card-header__label {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  cursor: default;
+  pointer-events: none;
+  border-bottom: none;
 }
 
 /* Subtle gradient header strip used by cards that have a category-tinted
@@ -771,4 +876,24 @@
     color-mix(in oklab, var(--foreground) 60%, transparent),
     color-mix(in oklab, var(--foreground) 25%, transparent)
   );
+}
+
+/* Selection focus: when a node is selected in editing mode the rest of the
+   graph dims so the selected node reads as the active subject of the
+   properties panel. Edges fade more gently so the topology stays legible. */
+.agent-visualization .react-flow__node,
+.agent-visualization .react-flow__edge {
+  transition: opacity 200ms ease;
+}
+.agent-visualization.is-node-focused .react-flow__node:not(.selected) {
+  opacity: 0.32;
+}
+.agent-visualization.is-node-focused .react-flow__edge {
+  opacity: 0.5;
+}
+.agent-visualization.is-node-focused .react-flow__node.selected .agent-card,
+.agent-visualization.is-node-focused .react-flow__node.selected > div:first-child {
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--primary) 65%, transparent),
+    0 6px 16px rgba(0, 0, 0, 0.35);
 }

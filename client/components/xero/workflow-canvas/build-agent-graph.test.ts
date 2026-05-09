@@ -9,6 +9,7 @@ import type {
 import {
   AGENT_GRAPH_HEADER_NODE_ID,
   AGENT_GRAPH_OUTPUT_NODE_ID,
+  AGENT_GRAPH_TRIGGER_HANDLES,
   buildAgentGraph,
   humanizeIdentifier,
   toolCategoryPresentationForGroup,
@@ -342,6 +343,21 @@ describe('buildAgentGraph', () => {
     expect(toolLane?.dragHandle).toBe('.agent-graph-lane-label')
   })
 
+  it('matches the default prompt/header gap to the header/output gap', () => {
+    const detail = fixtureDetail()
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(nodes, new Map())
+    const header = placed.find((node) => node.id === AGENT_GRAPH_HEADER_NODE_ID)
+    const prompt = placed.find((node) => node.type === 'prompt')
+    const output = placed.find((node) => node.id === AGENT_GRAPH_OUTPUT_NODE_ID)
+
+    const promptGap = (header?.position.y ?? 0) - ((prompt?.position.y ?? 0) + 48)
+    const outputGap = (output?.position.y ?? 0) - ((header?.position.y ?? 0) + 210)
+
+    expect(promptGap).toBe(100)
+    expect(outputGap).toBe(promptGap)
+  })
+
   it('keeps an expanded tool row top-anchored inside its category frame', () => {
     const detail = fixtureDetail()
     const baseTool = detail.tools[0]!
@@ -465,6 +481,8 @@ describe('buildAgentGraph', () => {
       (e) => e.source === 'tool:Edit' && e.target === 'db:write:code_history_operations',
     )
     expect(editToCodeHistory, 'expected Edit → code_history_operations edge').toBeDefined()
+    expect(editToCodeHistory?.sourceHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.source)
+    expect(editToCodeHistory?.targetHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.target)
   })
 
   it('draws a tool→output-section trigger edge when producedByTools lists a tool', () => {
@@ -475,6 +493,8 @@ describe('buildAgentGraph', () => {
     )
     expect(editToFilesChanged, 'expected Edit → files_changed edge').toBeDefined()
     expect(editToFilesChanged?.className).toBe('agent-edge agent-edge-trigger')
+    expect(editToFilesChanged?.sourceHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.source)
+    expect(editToFilesChanged?.targetHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.target)
   })
 
   it('draws a section→db trigger edge when a touchpoint lists an output_section trigger', () => {
@@ -487,6 +507,8 @@ describe('buildAgentGraph', () => {
     )
     expect(sectionToDb, 'expected handoff_context → project_context_records edge').toBeDefined()
     expect(sectionToDb?.className).toBe('agent-edge agent-edge-trigger')
+    expect(sectionToDb?.sourceHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.source)
+    expect(sectionToDb?.targetHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.target)
   })
 
   it('handles agents with no encouraged tables and no consumed artifacts', () => {
@@ -555,6 +577,8 @@ describe('buildAgentGraph', () => {
     )
     expect(upstreamEdge, 'expected consumed-artifact → db trigger edge').toBeDefined()
     expect(upstreamEdge?.className).toBe('agent-edge agent-edge-trigger')
+    expect(upstreamEdge?.sourceHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.source)
+    expect(upstreamEdge?.targetHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.target)
   })
 
   it('labels tool→DB trigger edges with the touchpoint kind', () => {

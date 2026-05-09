@@ -20,22 +20,32 @@ import {
 import {
   agentDefinitionSummarySchema,
   agentDefinitionVersionSummarySchema,
+  agentDefinitionWriteResponseSchema,
   archiveAgentDefinitionRequestSchema,
   getAgentDefinitionVersionRequestSchema,
   listAgentDefinitionsRequestSchema,
   listAgentDefinitionsResponseSchema,
+  saveAgentDefinitionRequestSchema,
+  updateAgentDefinitionRequestSchema,
   type AgentDefinitionSummaryDto,
   type AgentDefinitionVersionSummaryDto,
+  type AgentDefinitionWriteResponseDto,
   type ArchiveAgentDefinitionRequestDto,
   type GetAgentDefinitionVersionRequestDto,
   type ListAgentDefinitionsRequestDto,
   type ListAgentDefinitionsResponseDto,
+  type SaveAgentDefinitionRequestDto,
+  type UpdateAgentDefinitionRequestDto,
 } from '@/src/lib/xero-model/agent-definition'
 import {
+  agentAuthoringCatalogSchema,
+  getAgentAuthoringCatalogRequestSchema,
   getWorkflowAgentDetailRequestSchema,
   listWorkflowAgentsRequestSchema,
   listWorkflowAgentsResponseSchema,
   workflowAgentDetailSchema,
+  type AgentAuthoringCatalogDto,
+  type GetAgentAuthoringCatalogRequestDto,
   type GetWorkflowAgentDetailRequestDto,
   type ListWorkflowAgentsRequestDto,
   type ListWorkflowAgentsResponseDto,
@@ -444,8 +454,11 @@ const COMMANDS = {
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
   getAgentDefinitionVersion: 'get_agent_definition_version',
+  saveAgentDefinition: 'save_agent_definition',
+  updateAgentDefinition: 'update_agent_definition',
   listWorkflowAgents: 'list_workflow_agents',
   getWorkflowAgentDetail: 'get_workflow_agent_detail',
+  getAgentAuthoringCatalog: 'get_agent_authoring_catalog',
   listAgentSessions: 'list_agent_sessions',
   getAgentSession: 'get_agent_session',
   updateAgentSession: 'update_agent_session',
@@ -779,12 +792,21 @@ export interface XeroDesktopAdapter {
   getAgentDefinitionVersion(
     request: GetAgentDefinitionVersionRequestDto,
   ): Promise<AgentDefinitionVersionSummaryDto | null>
+  saveAgentDefinition(
+    request: SaveAgentDefinitionRequestDto,
+  ): Promise<AgentDefinitionWriteResponseDto>
+  updateAgentDefinition(
+    request: UpdateAgentDefinitionRequestDto,
+  ): Promise<AgentDefinitionWriteResponseDto>
   listWorkflowAgents(
     request: ListWorkflowAgentsRequestDto,
   ): Promise<ListWorkflowAgentsResponseDto>
   getWorkflowAgentDetail(
     request: GetWorkflowAgentDetailRequestDto,
   ): Promise<WorkflowAgentDetailDto>
+  getAgentAuthoringCatalog(
+    request: GetAgentAuthoringCatalogRequestDto,
+  ): Promise<AgentAuthoringCatalogDto>
   listAgentSessions(request: ListAgentSessionsRequestDto): Promise<ListAgentSessionsResponseDto>
   getAgentSession(request: GetAgentSessionRequestDto): Promise<AgentSessionDto | null>
   updateAgentSession(request: UpdateAgentSessionRequestDto): Promise<AgentSessionDto>
@@ -1807,6 +1829,28 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     )
   },
 
+  saveAgentDefinition(request) {
+    const parsed = saveAgentDefinitionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.saveAgentDefinition, agentDefinitionWriteResponseSchema, {
+      request: {
+        projectId: parsed.projectId,
+        definition: parsed.definition,
+        definitionId: parsed.definitionId ?? null,
+      },
+    })
+  },
+
+  updateAgentDefinition(request) {
+    const parsed = updateAgentDefinitionRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.updateAgentDefinition, agentDefinitionWriteResponseSchema, {
+      request: {
+        projectId: parsed.projectId,
+        definitionId: parsed.definitionId,
+        definition: parsed.definition,
+      },
+    })
+  },
+
   listWorkflowAgents(request) {
     const parsed = listWorkflowAgentsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.listWorkflowAgents, listWorkflowAgentsResponseSchema, {
@@ -1820,6 +1864,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   getWorkflowAgentDetail(request) {
     const parsed = getWorkflowAgentDetailRequestSchema.parse(request)
     return invokeTyped(COMMANDS.getWorkflowAgentDetail, workflowAgentDetailSchema, {
+      request: parsed,
+    })
+  },
+
+  getAgentAuthoringCatalog(request) {
+    const parsed = getAgentAuthoringCatalogRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.getAgentAuthoringCatalog, agentAuthoringCatalogSchema, {
       request: parsed,
     })
   },

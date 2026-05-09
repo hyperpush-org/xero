@@ -2369,6 +2369,76 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('combobox', { name: 'Approval mode selector' })).not.toBeInTheDocument()
   })
 
+  it('applies pendingInitialRuntimeAgentId on mount and reports it consumed', () => {
+    const onConsumed = vi.fn()
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'ask',
+          selectedRuntimeAgentLabel: 'Ask',
+          selectedApprovalMode: 'suggest',
+        })}
+        pendingInitialRuntimeAgentId="agent_create"
+        onPendingInitialRuntimeAgentIdConsumed={onConsumed}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
+    expect(onConsumed).toHaveBeenCalled()
+  })
+
+  it('uses the agent_create build placeholder and standalone empty state when active', () => {
+    const onStartWorkflowAgentCreate = vi.fn()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'agent_create',
+          selectedRuntimeAgentLabel: 'Agent Create',
+          selectedApprovalMode: 'suggest',
+        })}
+        onStartWorkflowAgentCreate={onStartWorkflowAgentCreate}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(
+      screen.getByPlaceholderText('Describe the agent you want to build...'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Shape this new agent' })).toBeVisible()
+    expect(screen.getByText(/Start from a description\./)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /Start on workflow canvas/i }))
+    expect(onStartWorkflowAgentCreate).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Create a coding helper' })).toBeVisible()
+    expect(screen.queryByText(/The canvas is already included\./)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Draft from this canvas' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Explore the codebase' })).not.toBeInTheDocument()
+  })
+
+  it('shows canvas-included copy for Agent Create only when the caller provides workflow context', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'agent_create',
+          selectedRuntimeAgentLabel: 'Agent Create',
+          selectedApprovalMode: 'suggest',
+        })}
+        agentCreateCanvasIncluded
+        onStartWorkflowAgentCreate={vi.fn()}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(screen.getByText(/The canvas is already included\./)).toBeVisible()
+    expect(screen.queryByText(/Start from a description\./)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Start on workflow canvas/i })).not.toBeInTheDocument()
+  })
+
   it('renders Test in the enabled built-in composer selector', async () => {
     render(
       <AgentRuntime

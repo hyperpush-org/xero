@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { Activity } from 'react'
 
-import { act, fireEvent, render, within } from '@testing-library/react'
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import type { Node } from '@xyflow/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -10,6 +11,8 @@ import { WorkflowCanvasEmptyState } from '../workflow-canvas-empty-state'
 
 const updateNodeInternalsSpy = vi.hoisted(() => vi.fn())
 const fitViewSpy = vi.hoisted(() => vi.fn())
+const zoomInSpy = vi.hoisted(() => vi.fn())
+const zoomOutSpy = vi.hoisted(() => vi.fn())
 const setViewportSpy = vi.hoisted(() => vi.fn())
 const getViewportSpy = vi.hoisted(() => vi.fn(() => ({ x: 0, y: 0, zoom: 1 })))
 
@@ -19,6 +22,8 @@ vi.mock('@xyflow/react', async (importOriginal) => {
     ...actual,
     useReactFlow: () => ({
       fitView: fitViewSpy,
+      zoomIn: zoomInSpy,
+      zoomOut: zoomOutSpy,
       setViewport: setViewportSpy,
       getViewport: getViewportSpy,
     }),
@@ -34,6 +39,12 @@ import {
   estimateExpandedCardHeight,
   getLaneDragMemberIds,
 } from './agent-visualization'
+import {
+  AGENT_GRAPH_HEADER_HANDLES,
+  AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
+  AGENT_GRAPH_TRIGGER_HANDLES,
+  buildAgentGraph,
+} from './build-agent-graph'
 
 const originalElementFromPoint = document.elementFromPoint
 const AGENT_VISUALIZATION_CSS = readFileSync(
@@ -45,14 +56,75 @@ const REACT_FLOW_CSS = readFileSync(
   'utf8',
 )
 
-function installResizeObserverStub() {
-  if ((globalThis as { ResizeObserver?: unknown }).ResizeObserver) return
-  class ResizeObserverStub {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
+const resizeObserverInstances: ResizeObserverStub[] = []
+
+class ResizeObserverStub {
+  private target: Element | null = null
+
+  constructor(
+    private readonly callback: ResizeObserverCallback,
+  ) {
+    resizeObserverInstances.push(this)
   }
+
+  observe(target: Element) {
+    this.target = target
+  }
+
+  unobserve() {
+    this.target = null
+  }
+
+  disconnect() {
+    this.target = null
+  }
+
+  trigger(width: number, height: number) {
+    if (!this.target) return
+    this.callback(
+      [
+        {
+          target: this.target,
+          contentRect: {
+            width,
+            height,
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: width,
+            bottom: height,
+            toJSON: () => ({}),
+          },
+        } as ResizeObserverEntry,
+      ],
+      this as unknown as ResizeObserver,
+    )
+  }
+}
+
+function installResizeObserverStub() {
   ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = ResizeObserverStub
+}
+
+function triggerResizeObserver(width: number, height: number) {
+  for (const observer of resizeObserverInstances) {
+    observer.trigger(width, height)
+  }
+}
+
+function mockElementBounds(width: number, height: number) {
+  return vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    width,
+    height,
+    x: 0,
+    y: 0,
+    top: 0,
+    left: 0,
+    right: width,
+    bottom: height,
+    toJSON: () => ({}),
+  })
 }
 
 function zIndexForSelector(css: string, selector: string): number {
@@ -67,8 +139,11 @@ afterEach(() => {
   vi.restoreAllMocks()
   updateNodeInternalsSpy.mockClear()
   fitViewSpy.mockClear()
+  zoomInSpy.mockClear()
+  zoomOutSpy.mockClear()
   setViewportSpy.mockClear()
   getViewportSpy.mockClear()
+  resizeObserverInstances.length = 0
   if (originalElementFromPoint) {
     Object.defineProperty(document, 'elementFromPoint', {
       configurable: true,
@@ -230,6 +305,164 @@ describe('AgentVisualization', () => {
     expect(expandedWithColumnsHeight).toBeGreaterThan(collapsedWithColumnsHeight)
   })
 
+  it('keeps edit handles large while hover growth preserves React Flow placement', () => {
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*width:\s*12px !important;[^}]*height:\s*12px !important;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*transform-origin:\s*center center;[^}]*scale:\s*1;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /transition:\s*scale 120ms ease,/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle:hover,[^{]*\{[^}]*scale:\s*1\.12;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).not.toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle:hover,[^{]*\{[^}]*transform:/m,
+    )
+  })
+
+  it('does not put important Tailwind sizing classes on React Flow handles', () => {
+    installResizeObserverStub()
+
+    const { container } = render(<AgentVisualization detail={null} editing mode="create" />)
+    const handles = Array.from(container.querySelectorAll<HTMLElement>('.react-flow__handle'))
+
+    expect(handles.length).toBeGreaterThan(0)
+    for (const handle of handles) {
+      expect(handle.classList.contains('!w-2')).toBe(false)
+      expect(handle.classList.contains('!h-2')).toBe(false)
+    }
+  })
+
+  it('uses trigger-purple handles for individual tool connections in view mode', () => {
+    installResizeObserverStub()
+
+    const { container } = render(<AgentVisualization detail={detailWithTriggerLabels()} />)
+    const handles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.react-flow__node[data-id="tool:Read"] .react-flow__handle',
+      ),
+    )
+
+    expect(handles).toHaveLength(1)
+    for (const handle of handles) {
+      expect(handle.classList.contains('!bg-fuchsia-500')).toBe(true)
+      expect(handle.classList.contains('!bg-sky-500')).toBe(false)
+    }
+  })
+
+  it('uses trigger-purple handles for individual tool connections in edit mode', () => {
+    installResizeObserverStub()
+
+    const { container } = render(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={detail()}
+      />,
+    )
+    const handles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.react-flow__node[data-id="tool:Read"] .react-flow__handle',
+      ),
+    )
+
+    expect(handles).toHaveLength(2)
+    for (const handle of handles) {
+      expect(handle.classList.contains('!bg-fuchsia-500')).toBe(true)
+      expect(handle.classList.contains('!bg-sky-500')).toBe(false)
+    }
+  })
+
+  it('uses trigger-purple handles where trigger edges meet output sections and databases in view mode', () => {
+    installResizeObserverStub()
+
+    const { container } = render(<AgentVisualization detail={detailWithTriggerLabels()} />)
+    const outputSectionHandles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.react-flow__node[data-id="output-section:files_changed"] .react-flow__handle',
+      ),
+    )
+    const dbHandles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.react-flow__node[data-id="db:encouraged:project_context_records"] .react-flow__handle',
+      ),
+    )
+
+    expect(
+      outputSectionHandles.filter((handle) =>
+        handle.classList.contains('!bg-fuchsia-500'),
+      ),
+    ).toHaveLength(2)
+    expect(
+      outputSectionHandles.filter((handle) =>
+        handle.classList.contains('!bg-foreground'),
+      ),
+    ).toHaveLength(1)
+    expect(
+      dbHandles.filter((handle) => handle.classList.contains('!bg-fuchsia-500')),
+    ).toHaveLength(1)
+    expect(
+      dbHandles.filter((handle) => handle.classList.contains('!bg-emerald-500')),
+    ).toHaveLength(1)
+  })
+
+  it('uses trigger-purple handles where trigger edges meet output sections and databases in edit mode', () => {
+    installResizeObserverStub()
+
+    const { container } = render(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={detail()}
+      />,
+    )
+    const outputSectionHandles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.react-flow__node[data-id="output-section:files_changed"] .react-flow__handle',
+      ),
+    )
+    const dbHandles = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '.react-flow__node[data-id="db:read:agent_runs"] .react-flow__handle',
+      ),
+    )
+
+    expect(
+      outputSectionHandles.filter((handle) =>
+        handle.classList.contains('!bg-fuchsia-500'),
+      ),
+    ).toHaveLength(2)
+    expect(
+      outputSectionHandles.filter((handle) =>
+        handle.classList.contains('!bg-foreground'),
+      ),
+    ).toHaveLength(1)
+    expect(
+      dbHandles.filter((handle) => handle.classList.contains('!bg-fuchsia-500')),
+    ).toHaveLength(1)
+    expect(
+      dbHandles.filter((handle) => handle.classList.contains('!bg-emerald-500')),
+    ).toHaveLength(2)
+  })
+
+  it('routes every trigger edge through trigger-purple handles', () => {
+    const { edges } = buildAgentGraph(detailWithTriggerLabels())
+    const triggerEdges = edges.filter(
+      (edge) => edge.className === 'agent-edge agent-edge-trigger',
+    )
+
+    expect(triggerEdges.length).toBeGreaterThan(0)
+    for (const edge of triggerEdges) {
+      expect(edge.sourceHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.source)
+      expect(edge.targetHandle).toBe(AGENT_GRAPH_TRIGGER_HANDLES.target)
+    }
+  })
+
   it('moves a tool lane label and its tool frames by the same drag delta', () => {
     const graphNodes = [
       {
@@ -292,8 +525,37 @@ describe('AgentVisualization', () => {
   })
 
   it('seeds card geometry without pinning the wrapper away from the real card size', () => {
+    const agentDetail = detail()
     const nodes = applyKnownNodeDimensions(
       [
+        {
+          id: 'agent-header',
+          type: 'agent-header',
+          position: { x: 0, y: 0 },
+          data: {
+            header: agentDetail.header,
+            summary: {
+              prompts: 1,
+              tools: 1,
+              dbTables: 1,
+              outputSections: 1,
+              consumes: 0,
+            },
+            advanced: {
+              workflowContract: '',
+              finalResponseContract: '',
+              examplePrompts: [],
+              refusalEscalationCases: [],
+              allowedToolGroups: [],
+              externalServiceAllowed: false,
+              browserControlAllowed: false,
+              skillRuntimeAllowed: false,
+              subagentAllowed: false,
+              commandAllowed: false,
+              destructiveWriteAllowed: false,
+            },
+          },
+        },
         {
           id: 'db:write:agent_runs',
           type: 'db-table',
@@ -314,14 +576,28 @@ describe('AgentVisualization', () => {
         },
       ],
       new Map([
+        ['agent-header', { width: 300, height: 210 }],
         ['db:write:agent_runs', { width: 260, height: 140 }],
         ['tool-group-frame:core', { width: 280, height: 96 }],
       ]),
     ) as Node[]
 
+    const headerNode = nodes.find((node) => node.id === 'agent-header')
     const dbNode = nodes.find((node) => node.id === 'db:write:agent_runs')
     const frameNode = nodes.find((node) => node.id === 'tool-group-frame:core')
+    const toolHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.tool,
+    )
+    const dbHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.db,
+    )
 
+    expect((toolHandle?.y ?? 0) + (toolHandle?.height ?? 0) / 2).toBeCloseTo(
+      210 * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
+    )
+    expect((dbHandle?.y ?? 0) + (dbHandle?.height ?? 0) / 2).toBeCloseTo(
+      210 * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db,
+    )
     expect(dbNode?.width).toBeUndefined()
     expect(dbNode?.height).toBeUndefined()
     expect(dbNode?.initialWidth).toBe(260)
@@ -333,6 +609,55 @@ describe('AgentVisualization', () => {
     })
     expect(frameNode?.width).toBe(280)
     expect(frameNode?.height).toBe(96)
+  })
+
+  it('lets editing DB nodes keep DOM-measured handles after drags', () => {
+    const nodes = applyKnownNodeDimensions(
+      [
+        {
+          id: 'db:write:agent_runs',
+          type: 'db-table',
+          position: { x: 0, y: 0 },
+          data: {
+            table: 'agent_runs',
+            touchpoint: 'write',
+            purpose: 'records run state',
+            triggers: [],
+            columns: ['id', 'status'],
+          },
+        },
+        {
+          id: 'prompt:0:sys',
+          type: 'prompt',
+          position: { x: 0, y: 0 },
+          data: {
+            prompt: {
+              id: 'sys',
+              label: 'System',
+              role: 'system',
+              source: 'custom',
+              body: 'Act carefully.',
+            },
+          },
+        },
+      ],
+      new Map([
+        ['db:write:agent_runs', { width: 260, height: 140 }],
+        ['prompt:0:sys', { width: 300, height: 96 }],
+      ]),
+      { domMeasuredHandleNodeTypes: new Set(['db-table']) },
+    ) as Node[]
+
+    const dbNode = nodes.find((node) => node.id === 'db:write:agent_runs')
+    const promptNode = nodes.find((node) => node.id === 'prompt:0:sys')
+
+    expect(dbNode?.initialWidth).toBe(260)
+    expect(dbNode?.initialHeight).toBe(140)
+    expect(dbNode?.handles).toBeUndefined()
+    expect(promptNode?.handles?.[0]).toMatchObject({
+      type: 'target',
+      position: 'bottom',
+    })
   })
 
   it('mounts inside a ReactFlow provider without throwing', () => {
@@ -440,17 +765,291 @@ describe('AgentVisualization', () => {
     expect(container.querySelector('.react-flow__node[data-id="agent-header"]')).toBeNull()
   })
 
-  it('resets layout without changing the viewport', () => {
+  it('omits layout mutation controls in read mode', () => {
     installResizeObserverStub()
 
-    const { getByLabelText } = render(<AgentVisualization detail={detail()} />)
+    const { queryByLabelText } = render(<AgentVisualization detail={detail()} />)
+
+    expect(queryByLabelText('Lock canvas')).toBeNull()
+    expect(queryByLabelText(/snap to grid/i)).toBeNull()
+    expect(queryByLabelText('Reset layout')).toBeNull()
+  })
+
+  it('renders read-mode viewport controls with Lucide icons from one icon set', () => {
+    installResizeObserverStub()
+
+    const { container, getByLabelText, queryByLabelText } = render(
+      <AgentVisualization detail={detail()} />,
+    )
+    const controlButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.react-flow__controls-button'),
+    )
+
+    expect(controlButtons).toHaveLength(3)
+    expect(controlButtons.every((button) => button.querySelector('svg.lucide'))).toBe(true)
+    expect(container.querySelector('.react-flow__controls-zoomin svg.lucide-zoom-in')).not.toBeNull()
+    expect(container.querySelector('.react-flow__controls-zoomout svg.lucide-zoom-out')).not.toBeNull()
+    expect(container.querySelector('.react-flow__controls-fitview svg.lucide-maximize')).not.toBeNull()
+    expect(queryByLabelText('Lock canvas')).toBeNull()
+    expect(queryByLabelText(/snap to grid/i)).toBeNull()
+    expect(queryByLabelText('Reset layout')).toBeNull()
+    expect(container.querySelector('.react-flow__node.draggable')).toBeNull()
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization \.react-flow__controls-button svg\s*{[^}]*fill:\s*none;/m,
+    )
+
+    fireEvent.click(getByLabelText('Zoom in'))
+    fireEvent.click(getByLabelText('Zoom out'))
+    fireEvent.click(getByLabelText('Fit view'))
+
+    expect(zoomInSpy).toHaveBeenCalledWith({ duration: 180 })
+    expect(zoomOutSpy).toHaveBeenCalledWith({ duration: 180 })
+    expect(fitViewSpy).toHaveBeenCalledWith({
+      padding: 0.16,
+      includeHiddenNodes: false,
+      duration: 420,
+    })
+  })
+
+  it('keeps layout controls available while authoring', () => {
+    installResizeObserverStub()
+
+    const { container, getByLabelText } = render(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={detail()}
+      />,
+    )
+    const controlButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.react-flow__controls-button'),
+    )
+
+    expect(controlButtons).toHaveLength(6)
+    expect(getByLabelText('Lock canvas').querySelector('svg.lucide-lock-open')).not.toBeNull()
+    expect(getByLabelText(/snap to grid/i).querySelector('svg.lucide-magnet')).not.toBeNull()
+    expect(getByLabelText('Reset layout').querySelector('svg.lucide-rotate-ccw')).not.toBeNull()
+  })
+
+  it('refits the view canvas when the available width changes', async () => {
+    installResizeObserverStub()
+    mockElementBounds(1100, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    render(<AgentVisualization detail={detail()} />)
+
+    await waitFor(() => expect(fitViewSpy).toHaveBeenCalledTimes(1))
+    setViewportSpy.mockClear()
     fitViewSpy.mockClear()
 
-    const resetButton = getByLabelText('Reset layout')
-    fireEvent.click(resetButton)
+    await act(async () => {
+      triggerResizeObserver(720, 760)
+    })
 
+    await waitFor(() => expect(fitViewSpy).toHaveBeenCalledTimes(1))
+    expect(fitViewSpy).toHaveBeenCalledWith({
+      padding: 0.16,
+      includeHiddenNodes: false,
+      duration: 420,
+    })
+    expect(setViewportSpy).not.toHaveBeenCalled()
+  })
+
+  it('continues refitting the view canvas after repeated sidebar width changes', async () => {
+    installResizeObserverStub()
+    mockElementBounds(1100, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    render(<AgentVisualization detail={detail()} />)
+
+    await waitFor(() => expect(fitViewSpy).toHaveBeenCalledTimes(1))
+    fitViewSpy.mockClear()
+
+    for (const width of [980, 860, 1240, 1100]) {
+      await act(async () => {
+        triggerResizeObserver(width, 760)
+      })
+      await waitFor(() =>
+        expect(fitViewSpy, `width ${width}`).toHaveBeenCalledTimes(1),
+      )
+      expect(fitViewSpy).toHaveBeenCalledWith({
+        padding: 0.16,
+        includeHiddenNodes: false,
+        duration: 420,
+      })
+      fitViewSpy.mockClear()
+    }
+  })
+
+  it('fits the viewport once while editing a new graph', async () => {
+    installResizeObserverStub()
+    mockElementBounds(900, 700)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    const { rerender } = render(
+      <AgentVisualization detail={null} editing mode="create" />,
+    )
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
     expect(fitViewSpy).not.toHaveBeenCalled()
-    expect(resetButton.getAttribute('title')).toBeNull()
+    const [initialViewport, initialOptions] = setViewportSpy.mock.calls[0]
+    expect(initialOptions).toEqual({ duration: 0 })
+    expect(initialViewport.zoom).toBeGreaterThan(0)
+    expect(initialViewport.zoom).toBeLessThanOrEqual(1)
+    expect(initialViewport.x).toBeGreaterThan(0)
+    expect(initialViewport.y).toBeGreaterThan(0)
+    fitViewSpy.mockClear()
+    setViewportSpy.mockClear()
+
+    rerender(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={detail()}
+      />,
+    )
+
+    expect(setViewportSpy).not.toHaveBeenCalled()
+    expect(fitViewSpy).not.toHaveBeenCalled()
+  })
+
+  it('refits the new-agent canvas when the available width changes', async () => {
+    installResizeObserverStub()
+    mockElementBounds(1100, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    render(<AgentVisualization detail={null} editing mode="create" />)
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
+    const initialViewport = setViewportSpy.mock.calls[0]![0]
+    setViewportSpy.mockClear()
+
+    await act(async () => {
+      triggerResizeObserver(720, 760)
+    })
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
+    const [resizedViewport, resizedOptions] = setViewportSpy.mock.calls[0]
+    expect(resizedOptions).toEqual({ duration: 180 })
+    expect(resizedViewport.zoom).toBeGreaterThan(0)
+    expect(resizedViewport.zoom).toBeLessThanOrEqual(1)
+    expect(resizedViewport.x).toBeGreaterThan(0)
+    expect(resizedViewport.y).toBeGreaterThan(0)
+    expect(resizedViewport.x).not.toBe(initialViewport.x)
+  })
+
+  it('continues refitting the new-agent canvas after repeated sidebar width changes', async () => {
+    installResizeObserverStub()
+    mockElementBounds(1100, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    render(<AgentVisualization detail={null} editing mode="create" />)
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
+    setViewportSpy.mockClear()
+
+    for (const width of [1000, 900, 800, 1300]) {
+      await act(async () => {
+        triggerResizeObserver(width, 760)
+      })
+      await waitFor(() =>
+        expect(setViewportSpy, `width ${width}`).toHaveBeenCalledTimes(1),
+      )
+      const [viewport, options] = setViewportSpy.mock.calls[0]
+      expect(options).toEqual({ duration: 180 })
+      expect(viewport.zoom).toBeGreaterThan(0)
+      expect(viewport.zoom).toBeLessThanOrEqual(1)
+      expect(viewport.x).toBeGreaterThan(0)
+      expect(viewport.y).toBeGreaterThan(0)
+      setViewportSpy.mockClear()
+    }
+  })
+
+  it('refits the new-agent canvas when a hidden workflow pane becomes active', async () => {
+    installResizeObserverStub()
+    mockElementBounds(720, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    const { rerender } = render(
+      <AgentVisualization active={false} detail={null} editing mode="create" />,
+    )
+
+    expect(setViewportSpy).not.toHaveBeenCalled()
+    expect(fitViewSpy).not.toHaveBeenCalled()
+
+    rerender(<AgentVisualization active detail={null} editing mode="create" />)
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
+    expect(fitViewSpy).not.toHaveBeenCalled()
+    const [activeViewport, activeOptions] = setViewportSpy.mock.calls[0]
+    expect(activeOptions).toEqual({ duration: 0 })
+    expect(activeViewport.zoom).toBeGreaterThan(0)
+    expect(activeViewport.zoom).toBeLessThanOrEqual(1)
+    expect(activeViewport.x).toBeGreaterThan(0)
+    expect(activeViewport.y).toBeGreaterThan(0)
+  })
+
+  it('refits the new-agent canvas after React Activity hides and shows the workflow pane', async () => {
+    installResizeObserverStub()
+    mockElementBounds(720, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    function ActivityWrappedCanvas({ active }: { active: boolean }) {
+      return (
+        <Activity mode={active ? 'visible' : 'hidden'} name="workflow-pane">
+          <AgentVisualization active={active} detail={null} editing mode="create" />
+        </Activity>
+      )
+    }
+
+    const { rerender } = render(<ActivityWrappedCanvas active />)
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
+    setViewportSpy.mockClear()
+
+    rerender(<ActivityWrappedCanvas active={false} />)
+    expect(setViewportSpy).not.toHaveBeenCalled()
+
+    rerender(<ActivityWrappedCanvas active />)
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalledTimes(1))
+    expect(fitViewSpy).not.toHaveBeenCalled()
+    const [visibleAgainViewport, visibleAgainOptions] = setViewportSpy.mock.calls[0]
+    expect(visibleAgainOptions).toEqual({ duration: 0 })
+    expect(visibleAgainViewport.zoom).toBeGreaterThan(0)
+    expect(visibleAgainViewport.zoom).toBeLessThanOrEqual(1)
+    expect(visibleAgainViewport.x).toBeGreaterThan(0)
+    expect(visibleAgainViewport.y).toBeGreaterThan(0)
   })
 
   it('refreshes node internals after mount so seeded handles cannot persist', () => {
@@ -758,10 +1357,76 @@ describe('AgentVisualization', () => {
     }
   })
 
-  it('locks card interactions while leaving viewport controls available', () => {
+  it('removes a whole tool category from the authoring frame button', async () => {
     installResizeObserverStub()
 
-    const { container, getByLabelText } = render(<AgentVisualization detail={detail()} />)
+    const multiToolDetail = detail()
+    multiToolDetail.tools = [
+      ...multiToolDetail.tools,
+      {
+        name: 'Grep',
+        group: 'core',
+        description: 'Search files.',
+        effectClass: 'observe',
+        riskClass: 'observe',
+        tags: [],
+        schemaFields: [],
+        examples: [],
+      },
+    ]
+    multiToolDetail.output.sections = [
+      {
+        id: 'files_changed',
+        label: 'Files Changed',
+        description: 'Per-file summary.',
+        emphasis: 'core',
+        producedByTools: ['Read', 'Grep'],
+      },
+    ]
+    multiToolDetail.dbTouchpoints.reads = [
+      {
+        table: 'agent_runs',
+        kind: 'read',
+        purpose: 'reads run state',
+        triggers: [{ kind: 'tool', name: 'Read' }],
+        columns: [],
+      },
+    ]
+
+    const { container, getByLabelText } = render(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={multiToolDetail}
+      />,
+    )
+
+    const removeCategory = getByLabelText('Remove Core tool category')
+    fireEvent.pointerDown(removeCategory)
+    fireEvent.click(removeCategory)
+
+    await waitFor(() => {
+      expect(container.querySelector('.react-flow__node[data-id="tool:Read"]')).toBeNull()
+      expect(container.querySelector('.react-flow__node[data-id="tool:Grep"]')).toBeNull()
+      expect(
+        container.querySelector('.react-flow__node[data-id="tool-group-frame:core"]'),
+      ).toBeNull()
+    })
+    expect(container.textContent).toContain('0tools')
+  })
+
+  it('locks authoring card interactions while leaving viewport controls available', () => {
+    installResizeObserverStub()
+
+    const { container, getByLabelText } = render(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={detail()}
+      />,
+    )
     const canvas = container.querySelector<HTMLElement>('.agent-visualization')
     const lockButton = getByLabelText('Lock canvas') as HTMLButtonElement
     const snapButton = getByLabelText(/snap to grid/i) as HTMLButtonElement

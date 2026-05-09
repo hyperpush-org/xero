@@ -10,6 +10,7 @@ pub mod complete_oauth_callback;
 pub mod create_repository;
 pub mod development_storage;
 pub mod dictation;
+pub mod dock_icon;
 pub mod doctor_report;
 pub mod emulator;
 pub mod environment_discovery;
@@ -72,6 +73,7 @@ pub(crate) mod runtime_support;
 
 pub use agent_definition::{
     archive_agent_definition, get_agent_definition_version, list_agent_definitions,
+    save_agent_definition, update_agent_definition,
 };
 pub use agent_session::{
     archive_agent_session, create_agent_session, delete_agent_session, get_agent_session,
@@ -105,6 +107,7 @@ pub use dictation::{
     speech_dictation_status, speech_dictation_stop, speech_dictation_update_settings,
     DictationState,
 };
+pub use dock_icon::set_theme_dock_icon;
 pub use doctor_report::run_doctor_report;
 pub use emulator::{
     emulator_android_provision, emulator_android_provision_status, emulator_input,
@@ -206,7 +209,9 @@ pub use update_runtime_run_controls::update_runtime_run_controls;
 pub use upsert_mcp_server::upsert_mcp_server;
 pub use upsert_notification_route::upsert_notification_route;
 pub use upsert_notification_route_credentials::upsert_notification_route_credentials;
-pub use workflow_agents::{get_workflow_agent_detail, list_workflow_agents};
+pub use workflow_agents::{
+    get_agent_authoring_catalog, get_workflow_agent_detail, list_workflow_agents,
+};
 pub use workspace_index::{
     workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,
 };

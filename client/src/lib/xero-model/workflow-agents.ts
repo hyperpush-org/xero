@@ -276,6 +276,57 @@ export const getWorkflowAgentDetailRequestSchema = z
   .strict()
 export type GetWorkflowAgentDetailRequestDto = z.infer<typeof getWorkflowAgentDetailRequestSchema>
 
+export const agentAuthoringDbTableSchema = z
+  .object({
+    table: z.string().trim().min(1),
+    purpose: z.string(),
+    columns: z.array(z.string()),
+  })
+  .strict()
+export type AgentAuthoringDbTableDto = z.infer<typeof agentAuthoringDbTableSchema>
+
+export const agentAuthoringUpstreamArtifactSchema = z
+  .object({
+    sourceAgent: runtimeAgentIdSchema,
+    sourceAgentLabel: z.string(),
+    contract: runtimeAgentOutputContractSchema,
+    contractLabel: z.string(),
+    label: z.string(),
+    description: z.string(),
+    sections: z.array(agentOutputSectionSchema),
+  })
+  .strict()
+export type AgentAuthoringUpstreamArtifactDto = z.infer<typeof agentAuthoringUpstreamArtifactSchema>
+
+export const agentAuthoringToolCategorySchema = z
+  .object({
+    id: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    description: z.string(),
+    tools: z.array(agentToolSummarySchema),
+  })
+  .strict()
+export type AgentAuthoringToolCategoryDto = z.infer<typeof agentAuthoringToolCategorySchema>
+
+export const agentAuthoringCatalogSchema = z
+  .object({
+    tools: z.array(agentToolSummarySchema),
+    toolCategories: z.array(agentAuthoringToolCategorySchema),
+    dbTables: z.array(agentAuthoringDbTableSchema),
+    upstreamArtifacts: z.array(agentAuthoringUpstreamArtifactSchema),
+  })
+  .strict()
+export type AgentAuthoringCatalogDto = z.infer<typeof agentAuthoringCatalogSchema>
+
+export const getAgentAuthoringCatalogRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+  })
+  .strict()
+export type GetAgentAuthoringCatalogRequestDto = z.infer<
+  typeof getAgentAuthoringCatalogRequestSchema
+>
+
 export function agentRefKey(ref: AgentRefDto): string {
   return ref.kind === 'built_in'
     ? `built_in:${ref.runtimeAgentId}@${ref.version}`

@@ -38,8 +38,13 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
-import { mapAgentSession, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
+import { mapAgentSession, type RuntimeAgentIdDto, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
 import type { AgentDefinitionSummaryDto } from '@/src/lib/xero-model/agent-definition'
+import type {
+  AgentAuthoringCatalogDto,
+  AgentRefDto,
+  WorkflowAgentDetailDto,
+} from '@/src/lib/xero-model/workflow-agents'
 import { useWorkflowAgentInspector } from '@/src/features/xero/use-workflow-agent-inspector'
 import type {
   SessionTranscriptSearchResultSnippetDto,
@@ -83,6 +88,7 @@ const loadAgentDockSidebar = () => import('@/components/xero/agent-dock-sidebar'
 const warmedSurfaceChunks = new Set<SurfacePreloadTarget>()
 
 const IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
+  'agent-dock',
   'solana',
   'workflows',
   'vcs',
@@ -96,8 +102,13 @@ const SOLANA_WORKBENCH_WIDTH_STORAGE_KEY = 'xero.solana.workbench.width'
 const SOLANA_WORKBENCH_MIN_WIDTH = 360
 const SOLANA_WORKBENCH_DEFAULT_WIDTH = 440
 const SOLANA_WORKBENCH_MAX_WIDTH = 900
+const AGENT_DOCK_WIDTH_STORAGE_KEY = 'xero.agentDock.width'
+const AGENT_DOCK_MIN_WIDTH = 320
+const AGENT_DOCK_DEFAULT_WIDTH = 560
+const AGENT_DOCK_MAX_WIDTH = 720
 const STARTUP_SURFACE_PREWARM_SETTLE_MS = 320
 const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
+  'agent-dock',
   'browser',
   'ios',
   'solana',
@@ -127,6 +138,26 @@ function readPersistedSolanaWorkbenchWidth(): number {
     )
   } catch {
     return SOLANA_WORKBENCH_DEFAULT_WIDTH
+  }
+}
+
+function readPersistedAgentDockWidth(): number {
+  if (typeof window === 'undefined') {
+    return AGENT_DOCK_DEFAULT_WIDTH
+  }
+
+  try {
+    const raw = window.localStorage?.getItem?.(AGENT_DOCK_WIDTH_STORAGE_KEY)
+    if (!raw) {
+      return AGENT_DOCK_DEFAULT_WIDTH
+    }
+    const parsed = Number.parseInt(raw, 10)
+    if (!Number.isFinite(parsed)) {
+      return AGENT_DOCK_DEFAULT_WIDTH
+    }
+    return Math.max(AGENT_DOCK_MIN_WIDTH, Math.min(AGENT_DOCK_MAX_WIDTH, parsed))
+  } catch {
+    return AGENT_DOCK_DEFAULT_WIDTH
   }
 }
 
@@ -168,6 +199,10 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   }
   if (target === 'workflows') {
     void loadWorkflowsSidebar()
+    return
+  }
+  if (target === 'agent-dock') {
+    void loadAgentDockSidebar()
   }
 }
 
@@ -262,6 +297,7 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
     loadUsageStatsSidebar(),
     loadVcsSidebar(),
     loadWorkflowsSidebar(),
+    loadAgentDockSidebar(),
   ])
   STARTUP_SURFACE_PRELOAD_TARGETS.forEach((target) => warmedSurfaceChunks.add(target))
 }
@@ -945,6 +981,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
   })
   const [usageOpen, setUsageOpen] = useState(false)
   const [agentDockOpen, setAgentDockOpen] = useState(false)
+  const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =
+    useState<{ agentSessionId: string; runtimeAgentId: RuntimeAgentIdDto } | null>(null)
+  const [agentAuthoringSession, setAgentAuthoringSession] = useState<{
+    mode: 'create' | 'edit' | 'duplicate'
+    initialDetail: WorkflowAgentDetailDto | null
+  } | null>(null)
+  const [agentAuthoringLoading, setAgentAuthoringLoading] = useState(false)
+  const [agentAuthoringCatalog, setAgentAuthoringCatalog] =
+    useState<AgentAuthoringCatalogDto | null>(null)
   const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
     useState<EnvironmentDiscoveryStatusDto | null>(null)
   const [environmentProfileSummary, setEnvironmentProfileSummary] =
@@ -1171,6 +1216,94 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setAgentDockOpen(false)
     }
   }, [activeView, agentDockOpen])
+
+  // ── Properties-panel ↔ sidebar coordination ──────────────────────────────
+  // The inline node properties / details panel sits over the canvas on the
+  // left. When it appears we collapse whichever right-side sidebar happens to
+  // be open (sidebars are mutually exclusive, so at most one) so the panel
+  // has a clean stage. We remember the collapsed one and reopen it when the
+  // panel goes away — unless the user has since opened a different sidebar
+  // themselves, in which case we leave their choice alone.
+  const [phaseNodePanelOpen, setPhaseNodePanelOpen] = useState(false)
+  const handlePhaseSelectedNodeChange = useCallback((hasSelection: boolean) => {
+    setPhaseNodePanelOpen(hasSelection)
+  }, [])
+  const phaseSidebarRestoreKeyRef = useRef<
+    'browser' | 'ios' | 'solana' | 'vcs' | 'workflows' | 'usage' | 'agentDock' | null
+  >(null)
+  const phaseSidebarStateRef = useRef({
+    browserOpen,
+    iosOpen,
+    solanaOpen,
+    vcsOpen,
+    workflowsOpen,
+    usageOpen,
+    agentDockOpen,
+  })
+  useEffect(() => {
+    phaseSidebarStateRef.current = {
+      browserOpen,
+      iosOpen,
+      solanaOpen,
+      vcsOpen,
+      workflowsOpen,
+      usageOpen,
+      agentDockOpen,
+    }
+  }, [browserOpen, iosOpen, solanaOpen, vcsOpen, workflowsOpen, usageOpen, agentDockOpen])
+  useEffect(() => {
+    if (phaseNodePanelOpen) {
+      // Don't double-collapse if we already stashed a sidebar for this open.
+      if (phaseSidebarRestoreKeyRef.current !== null) return
+      const snapshot = phaseSidebarStateRef.current
+      if (snapshot.browserOpen) {
+        phaseSidebarRestoreKeyRef.current = 'browser'
+        setBrowserOpen(false)
+      } else if (snapshot.iosOpen) {
+        phaseSidebarRestoreKeyRef.current = 'ios'
+        setIosOpen(false)
+      } else if (snapshot.solanaOpen) {
+        phaseSidebarRestoreKeyRef.current = 'solana'
+        setSolanaOpen(false)
+      } else if (snapshot.vcsOpen) {
+        phaseSidebarRestoreKeyRef.current = 'vcs'
+        setVcsOpen(false)
+      } else if (snapshot.workflowsOpen) {
+        phaseSidebarRestoreKeyRef.current = 'workflows'
+        setWorkflowsOpen(false)
+      } else if (snapshot.usageOpen) {
+        phaseSidebarRestoreKeyRef.current = 'usage'
+        setUsageOpen(false)
+      } else if (snapshot.agentDockOpen) {
+        phaseSidebarRestoreKeyRef.current = 'agentDock'
+        setAgentDockOpen(false)
+      }
+      return
+    }
+    const key = phaseSidebarRestoreKeyRef.current
+    phaseSidebarRestoreKeyRef.current = null
+    if (!key) return
+    const snapshot = phaseSidebarStateRef.current
+    const anySidebarOpen =
+      snapshot.browserOpen ||
+      snapshot.iosOpen ||
+      snapshot.solanaOpen ||
+      snapshot.vcsOpen ||
+      snapshot.workflowsOpen ||
+      snapshot.usageOpen ||
+      snapshot.agentDockOpen
+    // If the user has opened a different sidebar in the meantime, respect
+    // that and don't reintroduce the auto-collapsed one (would break the
+    // single-open invariant the toggle handlers maintain).
+    if (anySidebarOpen) return
+    if (key === 'browser') setBrowserOpen(true)
+    else if (key === 'ios') setIosOpen(true)
+    else if (key === 'solana') setSolanaOpen(true)
+    else if (key === 'vcs') setVcsOpen(true)
+    else if (key === 'workflows') setWorkflowsOpen(true)
+    else if (key === 'usage') setUsageOpen(true)
+    else if (key === 'agentDock') setAgentDockOpen(true)
+  }, [phaseNodePanelOpen])
   const [explorerMode, setExplorerMode] = useState<'pinned' | 'collapsed'>(() => {
     if (typeof window === 'undefined') return 'pinned'
     try {
@@ -1297,6 +1430,15 @@ export function XeroApp({ adapter }: XeroAppProps) {
     () => getVcsCommitMessageModel(agentView, agentComposerControls),
     [agentComposerControls, agentView],
   )
+  const workflowAgentCreateActive =
+    activeView === 'phases' && agentAuthoringSession?.mode === 'create'
+  const pendingAgentDockRuntimeAgentId: RuntimeAgentIdDto | null =
+    workflowAgentCreateActive && isCreatingAgentSession
+      ? 'agent_create'
+      : pendingInitialRuntimeAgent &&
+          pendingInitialRuntimeAgent.agentSessionId === activeProject?.selectedAgentSessionId
+        ? pendingInitialRuntimeAgent.runtimeAgentId
+        : null
 
   useEffect(() => {
     if (!onboardingDismissed && !isLoading && projects.length === 0) {
@@ -1591,6 +1733,173 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setIsCreatingAgentSession(false)
     })
   }, [activeProjectId, createAgentSession])
+
+  const handleCreateAgent = useCallback(
+    () => {
+      if (!activeProjectId) return
+      preloadSurfaceChunk('agent-dock')
+      setWorkflowsOpen(false)
+      setBrowserOpen(false)
+      setIosOpen(false)
+      setSolanaOpen(false)
+      setVcsOpen(false)
+      setUsageOpen(false)
+      setActiveView('phases')
+      setAgentAuthoringSession({ mode: 'create', initialDetail: null })
+      setAgentDockOpen(true)
+      setIsCreatingAgentSession(true)
+      void createAgentSession()
+        .then((updatedProject) => {
+          const newSessionId = updatedProject?.selectedAgentSessionId
+          if (newSessionId) {
+            setPendingInitialRuntimeAgent({
+              agentSessionId: newSessionId,
+              runtimeAgentId: 'agent_create',
+            })
+          }
+        })
+        .finally(() => {
+          setIsCreatingAgentSession(false)
+        })
+    },
+    [activeProjectId, createAgentSession],
+  )
+
+  const handleClearPendingInitialRuntimeAgent = useCallback(
+    (agentSessionId: string) => {
+      setPendingInitialRuntimeAgent((current) =>
+        current?.agentSessionId === agentSessionId ? null : current,
+      )
+    },
+    [],
+  )
+
+  // Lazy-load the authoring catalog once a session opens. The catalog is
+  // project-rooted but its content is static (built-in tools / tables /
+  // upstream agents), so we cache after first fetch and reuse it for the rest
+  // of the project session.
+  useEffect(() => {
+    if (!agentAuthoringSession) return
+    if (!activeProjectId) return
+    if (agentAuthoringCatalog) return
+    let cancelled = false
+    void resolvedAdapter
+      .getAgentAuthoringCatalog({ projectId: activeProjectId })
+      .then((catalog) => {
+        if (cancelled) return
+        setAgentAuthoringCatalog(catalog)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        console.error('Failed to load agent authoring catalog', error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [agentAuthoringSession, activeProjectId, agentAuthoringCatalog, resolvedAdapter])
+
+  const handleStartAgentAuthoringCreate = useCallback(() => {
+    setWorkflowsOpen(false)
+    setAgentDockOpen(false)
+    setActiveView('phases')
+    setAgentAuthoringSession({ mode: 'create', initialDetail: null })
+  }, [])
+
+  const handleStartWorkflowAgentCreate = useCallback(() => {
+    if (!activeProjectId) return
+    setWorkflowsOpen(false)
+    setBrowserOpen(false)
+    setIosOpen(false)
+    setSolanaOpen(false)
+    setVcsOpen(false)
+    setUsageOpen(false)
+    setActiveView('phases')
+    setAgentAuthoringSession({ mode: 'create', initialDetail: null })
+    setAgentDockOpen(true)
+    if (activeProject?.selectedAgentSessionId) {
+      setPendingInitialRuntimeAgent({
+        agentSessionId: activeProject.selectedAgentSessionId,
+        runtimeAgentId: 'agent_create',
+      })
+    }
+  }, [activeProject?.selectedAgentSessionId, activeProjectId, setActiveView])
+
+  const handleStartAgentAuthoringFromRef = useCallback(
+    async (mode: 'edit' | 'duplicate', ref: AgentRefDto) => {
+      if (!activeProjectId) return
+      setAgentAuthoringLoading(true)
+      try {
+        const detail = await resolvedAdapter.getWorkflowAgentDetail({
+          projectId: activeProjectId,
+          ref,
+        })
+        setWorkflowsOpen(false)
+        setAgentDockOpen(false)
+        setActiveView('phases')
+        setAgentAuthoringSession({ mode, initialDetail: detail })
+      } catch (error) {
+        console.error('Failed to load agent definition for authoring', error)
+      } finally {
+        setAgentAuthoringLoading(false)
+      }
+    },
+    [activeProjectId, resolvedAdapter],
+  )
+
+  const handleCloseAgentAuthoring = useCallback(() => {
+    setAgentAuthoringSession(null)
+  }, [])
+
+  const handleAgentAuthoringSubmit = useCallback(
+    async ({
+      snapshot,
+      mode,
+      definitionId,
+    }: {
+      snapshot: Record<string, unknown>
+      mode: 'create' | 'edit' | 'duplicate'
+      definitionId?: string
+    }) => {
+      if (!activeProjectId) {
+        throw new Error('Select a project before saving an agent definition.')
+      }
+      if (mode === 'edit' && definitionId) {
+        return resolvedAdapter.updateAgentDefinition({
+          projectId: activeProjectId,
+          definitionId,
+          definition: snapshot,
+        })
+      }
+      return resolvedAdapter.saveAgentDefinition({
+        projectId: activeProjectId,
+        definition: snapshot,
+      })
+    },
+    [activeProjectId, resolvedAdapter],
+  )
+
+  const handleAgentAuthoringSaved = useCallback(() => {
+    refreshCustomAgentDefinitions()
+    void workflowAgentInspector.refreshAgents()
+  }, [refreshCustomAgentDefinitions, workflowAgentInspector])
+
+  const handleArchiveAgentDefinition = useCallback(
+    async (ref: AgentRefDto) => {
+      if (!activeProjectId) return
+      if (ref.kind !== 'custom') return
+      try {
+        await resolvedAdapter.archiveAgentDefinition({
+          projectId: activeProjectId,
+          definitionId: ref.definitionId,
+        })
+        refreshCustomAgentDefinitions()
+        await workflowAgentInspector.refreshAgents()
+      } catch (error) {
+        console.error('Failed to archive agent definition', error)
+      }
+    },
+    [activeProjectId, refreshCustomAgentDefinitions, resolvedAdapter, workflowAgentInspector],
+  )
 
   const handleArchiveAgentSession = useCallback((agentSessionId: string) => {
     setPendingAgentSessionId(agentSessionId)
@@ -1969,6 +2278,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
               prewarm={startupSurfacePrewarm.shouldMount}
             >
               <PhaseView
+                active={activeView === 'phases'}
                 workflow={workflowView}
                 canStartRun={Boolean(
                   agentView?.runtimeRunActionStatus !== undefined &&
@@ -1981,12 +2291,21 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onToggleWorkflows={toggleWorkflows}
                 workflowsOpen={workflowsOpen}
                 onCreateWorkflow={handleCreateWorkflow}
-                onCreateAgent={handleCreateAgentSession}
+                onCreateAgent={handleCreateAgent}
                 agentDetail={workflowAgentInspector.detail}
                 agentDetailStatus={workflowAgentInspector.detailStatus}
                 agentDetailError={workflowAgentInspector.detailError}
                 onClearAgentSelection={() => workflowAgentInspector.selectAgent(null)}
                 onReloadAgentDetail={workflowAgentInspector.reloadDetail}
+                authoringSession={agentAuthoringSession}
+                authoringCatalog={agentAuthoringCatalog}
+                onAuthoringSubmit={handleAgentAuthoringSubmit}
+                onAuthoringSaved={(response) => {
+                  handleAgentAuthoringSaved()
+                  if (response.applied) handleCloseAgentAuthoring()
+                }}
+                onAuthoringCancel={handleCloseAgentAuthoring}
+                onSelectedNodeChange={handlePhaseSelectedNodeChange}
               />
             </LazyActivityPane>
           ) : null}
@@ -2010,7 +2329,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountLogin={githubSession?.user.login ?? null}
                 customAgentDefinitions={customAgentDefinitions}
                 onOpenAgentManagement={handleOpenAgentManagement}
+                onCreateAgentByHand={handleStartAgentAuthoringCreate}
+                onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
                 onCreateSession={handleCreateAgentSession}
+                pendingInitialRuntimeAgent={pendingInitialRuntimeAgent}
+                onClearPendingInitialRuntimeAgent={handleClearPendingInitialRuntimeAgent}
                 isCreatingSession={isCreatingAgentSession}
                 onSpawnPane={handleSpawnPane}
                 onClosePane={handleClosePane}
@@ -2326,6 +2649,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agentsError={workflowAgentInspector.agentsError}
                 selectedAgentRef={workflowAgentInspector.selectedRef}
                 onSelectAgent={workflowAgentInspector.selectAgent}
+                onCreateAgent={handleCreateAgent}
+                onCreateAgentByHand={handleStartAgentAuthoringCreate}
+                onEditAgent={(ref) => handleStartAgentAuthoringFromRef('edit', ref)}
+                onDuplicateAgent={(ref) => handleStartAgentAuthoringFromRef('duplicate', ref)}
+                onDeleteAgent={handleArchiveAgentDefinition}
               />
             </Suspense>
           </LazyPrerenderedSurface>
@@ -2368,7 +2696,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
           >
             <Suspense
               fallback={
-                <InlineSidebarLoadingShell label="Agent" open={agentDockOpen} width={460} />
+                <InlineSidebarLoadingShell
+                  label="Agent"
+                  open={agentDockOpen}
+                  width={readPersistedAgentDockWidth()}
+                />
               }
             >
               <LazyAgentDockSidebar
@@ -2386,6 +2718,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 accountLogin={githubSession?.user.login ?? null}
                 customAgentDefinitions={customAgentDefinitions}
                 onOpenAgentManagement={handleOpenAgentManagement}
+                onCreateAgentByHand={handleStartAgentAuthoringCreate}
+                onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
                 onOpenSettings={handleOpenAgentProviderSettings}
                 onOpenDiagnostics={handleOpenAgentDiagnostics}
                 onStartLogin={(options) => startOpenAiLogin(options)}
@@ -2419,6 +2753,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onUpsertNotificationRoute={(request) => upsertNotificationRoute(request)}
                 onCodeUndoApplied={handleAgentCodeUndoApplied}
                 onRetryStream={retry}
+                agentCreateCanvasIncluded={workflowAgentCreateActive}
+                pendingInitialRuntimeAgentId={pendingAgentDockRuntimeAgentId}
+                onPendingInitialRuntimeAgentIdConsumed={() => {
+                  if (activeProject?.selectedAgentSessionId) {
+                    handleClearPendingInitialRuntimeAgent(activeProject.selectedAgentSessionId)
+                  }
+                }}
               />
             </Suspense>
           </LazyPrerenderedSurface>

@@ -72,6 +72,12 @@ interface WorkflowsSidebarProps {
   agentsError?: Error | null
   selectedAgentRef?: AgentRefDto | null
   onSelectAgent?: (ref: AgentRefDto) => void
+  onCreateAgent?: () => void
+  onCreateAgentByHand?: () => void
+  onCreateWorkflow?: () => void
+  onEditAgent?: (ref: AgentRefDto) => void
+  onDuplicateAgent?: (ref: AgentRefDto) => void
+  onDeleteAgent?: (ref: AgentRefDto) => void
 }
 
 const DEFAULT_WORKFLOWS: Workflow[] = [
@@ -173,6 +179,12 @@ export function WorkflowsSidebar({
   agentsError = null,
   selectedAgentRef = null,
   onSelectAgent,
+  onCreateAgent,
+  onCreateAgentByHand,
+  onCreateWorkflow,
+  onEditAgent,
+  onDuplicateAgent,
+  onDeleteAgent,
 }: WorkflowsSidebarProps) {
   const [tab, setTabState] = useState<LibraryTab>(() => readPersistedTab() ?? "workflows")
   const [query, setQuery] = useState("")
@@ -320,6 +332,9 @@ export function WorkflowsSidebar({
                 return next
               })
             }}
+            onCreateAgent={onCreateAgent}
+            onCreateAgentByHand={onCreateAgentByHand}
+            onCreateWorkflow={onCreateWorkflow}
           />
           {searchOpen ? (
             <Toolbar
@@ -343,6 +358,9 @@ export function WorkflowsSidebar({
             agentsError={agentsError}
             selectedAgentRef={selectedAgentRef}
             onSelectAgent={onSelectAgent}
+            onEditAgent={onEditAgent}
+            onDuplicateAgent={onDuplicateAgent}
+            onDeleteAgent={onDeleteAgent}
           />
         </div>
       </div>
@@ -361,6 +379,9 @@ function Header({
   onTabChange,
   searchOpen,
   onToggleSearch,
+  onCreateAgent,
+  onCreateAgentByHand,
+  onCreateWorkflow,
 }: {
   tab: LibraryTab
   workflowsCount: number
@@ -368,6 +389,9 @@ function Header({
   onTabChange: (next: LibraryTab) => void
   searchOpen: boolean
   onToggleSearch: () => void
+  onCreateAgent?: () => void
+  onCreateAgentByHand?: () => void
+  onCreateWorkflow?: () => void
 }) {
   const newLabel = tab === "workflows" ? "New workflow" : "New agent"
   const searchLabel = searchOpen
@@ -375,6 +399,11 @@ function Header({
     : tab === "workflows"
       ? "Search workflows"
       : "Search agents"
+  const directCreate =
+    tab === "agents"
+      ? onCreateAgent ?? onCreateAgentByHand
+      : onCreateWorkflow
+  const createDisabled = !directCreate
 
   return (
     <div
@@ -400,12 +429,15 @@ function Header({
         <button
           aria-label={newLabel}
           className={cn(
-            "flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors",
-            "hover:bg-primary/10 hover:text-primary",
+            "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+            createDisabled
+              ? "text-muted-foreground/40"
+              : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
           )}
+          disabled={createDisabled}
+          onClick={directCreate}
           title={newLabel}
           type="button"
-          // mock — wire up create flow later
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
@@ -521,6 +553,9 @@ function LibraryList({
   agentsError,
   selectedAgentRef,
   onSelectAgent,
+  onEditAgent,
+  onDuplicateAgent,
+  onDeleteAgent,
 }: {
   tab: LibraryTab
   workflows: Workflow[]
@@ -532,6 +567,9 @@ function LibraryList({
   agentsError: Error | null
   selectedAgentRef: AgentRefDto | null
   onSelectAgent?: (ref: AgentRefDto) => void
+  onEditAgent?: (ref: AgentRefDto) => void
+  onDuplicateAgent?: (ref: AgentRefDto) => void
+  onDeleteAgent?: (ref: AgentRefDto) => void
 }) {
   if (tab === "agents" && agentsError) {
     return (
@@ -574,6 +612,9 @@ function LibraryList({
                   selectedAgentRef ? agentRefsEqual(agent.ref, selectedAgentRef) : false
                 }
                 onSelect={onSelectAgent}
+                onEdit={onEditAgent}
+                onDuplicate={onDuplicateAgent}
+                onDelete={onDeleteAgent}
               />
             </li>
           ))}
@@ -645,10 +686,16 @@ function AgentRow({
   agent,
   selected,
   onSelect,
+  onEdit,
+  onDuplicate,
+  onDelete,
 }: {
   agent: WorkflowAgentSummaryDto
   selected: boolean
   onSelect?: (ref: AgentRefDto) => void
+  onEdit?: (ref: AgentRefDto) => void
+  onDuplicate?: (ref: AgentRefDto) => void
+  onDelete?: (ref: AgentRefDto) => void
 }) {
   const Icon = AGENT_PROFILE_ICON[agent.baseCapabilityProfile] ?? Bot
   const isBuiltIn = agent.scope === "built_in"
@@ -707,6 +754,9 @@ function AgentRow({
           name={agent.displayName}
           showEdit={showEdit}
           deleteDisabled={isBuiltIn}
+          onEdit={onEdit ? () => onEdit(agent.ref) : undefined}
+          onDuplicate={onDuplicate ? () => onDuplicate(agent.ref) : undefined}
+          onDelete={onDelete ? () => onDelete(agent.ref) : undefined}
         />
       </div>
     </div>
@@ -717,11 +767,20 @@ function RowMenu({
   name,
   showEdit,
   deleteDisabled,
+  onEdit,
+  onDuplicate,
+  onDelete,
 }: {
   name: string
   showEdit: boolean
   deleteDisabled: boolean
+  onEdit?: () => void
+  onDuplicate?: () => void
+  onDelete?: () => void
 }) {
+  const editEnabled = showEdit && Boolean(onEdit)
+  const duplicateEnabled = Boolean(onDuplicate)
+  const deleteEnabled = !deleteDisabled && Boolean(onDelete)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -736,19 +795,28 @@ function RowMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4}>
         {showEdit ? (
-          <DropdownMenuItem className="cursor-pointer text-[12px]">
+          <DropdownMenuItem
+            className="cursor-pointer text-[12px]"
+            disabled={!editEnabled}
+            onSelect={editEnabled ? onEdit : undefined}
+          >
             <Pencil className="mr-2 h-3.5 w-3.5" />
             Edit
           </DropdownMenuItem>
         ) : null}
-        <DropdownMenuItem className="cursor-pointer text-[12px]">
+        <DropdownMenuItem
+          className="cursor-pointer text-[12px]"
+          disabled={!duplicateEnabled}
+          onSelect={duplicateEnabled ? onDuplicate : undefined}
+        >
           <Copy className="mr-2 h-3.5 w-3.5" />
           Duplicate
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
           className="cursor-pointer text-[12px] text-destructive focus:text-destructive"
-          disabled={deleteDisabled}
+          disabled={!deleteEnabled}
+          onSelect={deleteEnabled ? onDelete : undefined}
         >
           <Trash2 className="mr-2 h-3.5 w-3.5" />
           Delete

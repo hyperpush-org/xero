@@ -8,7 +8,12 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 import type { ToolFlowNode } from '../build-agent-graph'
-import { humanizeIdentifier, toolCategoryPresentationForGroup } from '../build-agent-graph'
+import {
+  AGENT_GRAPH_TRIGGER_HANDLES,
+  humanizeIdentifier,
+  toolCategoryPresentationForGroup,
+} from '../build-agent-graph'
+import { useCanvasMode } from '../canvas-mode-context'
 import { useAgentCanvasExpansion } from '../expansion-context'
 
 const EFFECT_LABEL: Record<string, string> = {
@@ -26,27 +31,40 @@ const EFFECT_LABEL: Record<string, string> = {
   unknown: 'unknown',
 }
 
+// Consolidated palette: emerald (read-only), sky (default action),
+// amber (system action), rose (destructive). Keeps the dot informative at
+// small sizes without turning the canvas into a rainbow.
 const EFFECT_DOT: Record<string, string> = {
-  observe: 'bg-emerald-500/70',
-  runtime_state: 'bg-amber-500/70',
-  write: 'bg-rose-500/70',
-  destructive_write: 'bg-rose-600',
-  command: 'bg-fuchsia-500/70',
-  process_control: 'bg-orange-500/70',
-  browser_control: 'bg-indigo-500/70',
-  device_control: 'bg-indigo-500/70',
-  external_service: 'bg-cyan-500/70',
-  skill_runtime: 'bg-violet-500/70',
-  agent_delegation: 'bg-primary/80',
+  observe: 'bg-emerald-500/80',
+  runtime_state: 'bg-sky-500/80',
+  write: 'bg-sky-500/80',
+  external_service: 'bg-sky-500/80',
+  skill_runtime: 'bg-sky-500/80',
+  agent_delegation: 'bg-sky-500/80',
+  command: 'bg-amber-500/80',
+  process_control: 'bg-amber-500/80',
+  browser_control: 'bg-amber-500/80',
+  device_control: 'bg-amber-500/80',
+  destructive_write: 'bg-rose-500',
   unknown: 'bg-muted-foreground/50',
 }
 
+const TOOL_TRIGGER_HANDLE_CLASS = '!bg-fuchsia-500'
+
 export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowNode>) {
   const { tool, directConnectionHandles } = data
+  const { editing } = useCanvasMode()
   const [expanded, setExpanded] = useState(false)
   const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
-  const displayName = humanizeIdentifier(tool.name)
-  const displayCategory = toolCategoryPresentationForGroup(tool.group).label
+  // Real tools (e.g. `tool_access`, `tool_search`) can start with `tool_`;
+  // only the strict `tool_<digits>` pattern is a placeholder.
+  const isPlaceholder = !tool.name || /^tool_\d+$/.test(tool.name)
+  const displayName = tool.name && !isPlaceholder
+    ? humanizeIdentifier(tool.name)
+    : editing
+      ? 'Choose a tool'
+      : 'Untitled tool'
+  const displayCategory = toolCategoryPresentationForGroup(tool.group || 'core').label
 
   // Report before paint so React Flow doesn't commit an intermediate measured
   // height while the tool body is beginning its collapse transition.
@@ -57,34 +75,45 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
     }
   }, [id, expanded, reportExpanded])
 
+  // In edit mode the user always gets both handles so they can wire the tool
+  // freely; validation flags any unsupported pairings.
+  const showTargetHandle = editing || directConnectionHandles.target
+  const showSourceHandle = editing || directConnectionHandles.source
+
   return (
     <>
-      {directConnectionHandles.target ? (
-        <Handle type="target" position={Position.Left} className="!bg-sky-500 !w-2 !h-2" />
+      {showTargetHandle ? (
+        <Handle
+          id={AGENT_GRAPH_TRIGGER_HANDLES.target}
+          type="target"
+          position={Position.Left}
+          className={TOOL_TRIGGER_HANDLE_CLASS}
+        />
       ) : null}
-      {directConnectionHandles.source ? (
-        <Handle type="source" position={Position.Right} className="!bg-sky-500 !w-2 !h-2" />
+      {showSourceHandle ? (
+        <Handle
+          id={AGENT_GRAPH_TRIGGER_HANDLES.source}
+          type="source"
+          position={Position.Right}
+          className={TOOL_TRIGGER_HANDLE_CLASS}
+        />
       ) : null}
       <div
         className={cn(
           'agent-card overflow-hidden text-card-foreground',
           expanded && 'is-card-expanded',
         )}
-        style={{
-          width: 240,
-          borderColor: 'color-mix(in oklab, var(--color-sky-500, #0ea5e9) 28%, var(--agent-card-border))',
-        }}
+        style={{ width: 240 }}
       >
+        <div className="agent-card-tone-strip" data-tone="sky" />
         <button
           type="button"
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation()
+          onClick={() => {
             if (locked) return
             setExpanded((v) => !v)
           }}
           disabled={locked}
-          className="nodrag nopan agent-card-base flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-muted/40 transition-colors"
+          className="nodrag nopan agent-card-base flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/40 transition-colors"
           aria-expanded={expanded}
         >
           <span
@@ -95,7 +124,7 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
             )}
           />
           <Wrench className="h-3 w-3 shrink-0 text-sky-500/80" />
-          <span className="text-[11.5px] truncate flex-1 text-foreground/95">{displayName}</span>
+          <span className="text-[12px] truncate flex-1 text-foreground/95">{displayName}</span>
           {expanded ? (
             <ChevronDown className="agent-node-chevron h-3 w-3 text-muted-foreground/70" />
           ) : (
@@ -104,36 +133,27 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
         </button>
         <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
           <div className="agent-card-body">
-            <div className="px-2.5 pt-2 pb-2 space-y-1.5 border-t border-border/40 bg-muted/10">
-              <p className="agent-node-detail text-[10.5px] text-muted-foreground leading-relaxed">
+            <div className="px-3 pt-2 pb-2 space-y-1.5 border-t border-border/40 bg-muted/10">
+              <p className="agent-node-detail text-[11px] text-muted-foreground leading-relaxed">
                 {tool.description}
               </p>
               <div className="agent-node-chip-row flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="inline-flex items-center gap-1">
-                  <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">
                     category
                   </span>
                   <span className="text-[10px] text-foreground/80">{displayCategory}</span>
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 font-medium">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-medium">
                     effect
                   </span>
-                  <span className="inline-flex items-center gap-1">
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        'h-1.5 w-1.5 rounded-full ring-1 ring-background',
-                        EFFECT_DOT[tool.effectClass] ?? 'bg-muted-foreground/50',
-                      )}
-                    />
-                    <span className="text-[10px] font-mono text-foreground/80">
-                      {EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}
-                    </span>
+                  <span className="text-[10px] text-foreground/80">
+                    {EFFECT_LABEL[tool.effectClass] ?? tool.effectClass}
                   </span>
                 </span>
                 {tool.riskClass ? (
-                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-medium">
                     risk: {tool.riskClass}
                   </Badge>
                 ) : null}
@@ -143,7 +163,7 @@ export const ToolNode = memo(function ToolNode({ id, data }: NodeProps<ToolFlowN
                   {tool.tags.slice(0, 6).map((tag: string) => (
                     <span
                       key={tag}
-                      className="text-[9px] uppercase tracking-wider text-muted-foreground/80 bg-muted/40 border border-border/40 px-1.5 py-0.5 rounded font-medium"
+                      className="text-[10px] uppercase tracking-wider text-muted-foreground/80 bg-muted/40 border border-border/40 px-1.5 py-0.5 rounded font-medium"
                     >
                       {tag}
                     </span>

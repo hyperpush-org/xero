@@ -1803,10 +1803,22 @@ function createAdapter(options?: {
       throw new Error('archiveAgentDefinition not stubbed in test adapter')
     },
     getAgentDefinitionVersion: async () => null,
+    saveAgentDefinition: async () => {
+      throw new Error('saveAgentDefinition not stubbed in test adapter')
+    },
+    updateAgentDefinition: async () => {
+      throw new Error('updateAgentDefinition not stubbed in test adapter')
+    },
     listWorkflowAgents: async () => ({ agents: [] }),
     getWorkflowAgentDetail: async () => {
       throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
     },
+    getAgentAuthoringCatalog: async () => ({
+      tools: [],
+      toolCategories: [],
+      dbTables: [],
+      upstreamArtifacts: [],
+    }),
     createAgentSession: async (request) => {
       const now = '2026-04-23T12:00:00Z'
       const selected = request.selected ?? true
@@ -2788,6 +2800,22 @@ describe('XeroApp current UI', () => {
 
     expect(screen.queryByText('No milestone assigned')).not.toBeInTheDocument()
     expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()
+  })
+
+  it('starts hand authoring and opens Agent Create from the workflow empty state', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
+
+    expect(await screen.findByLabelText('Agent authoring canvas')).toBeVisible()
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
   })
 
   it('lazy-activates the agent pane only after the Agent view is opened', async () => {

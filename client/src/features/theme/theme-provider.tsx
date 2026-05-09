@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useState,
@@ -17,6 +18,7 @@ import {
   themeColorsToCSSVars,
   type ThemeDefinition,
 } from './theme-definitions'
+import { syncThemeDockIcon } from './dock-icon'
 
 interface ThemeContextValue {
   themes: ThemeDefinition[]
@@ -138,6 +140,10 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
       // theme still applies for the session, we just can't persist it.
     }
   }, [theme, allThemes])
+
+  useEffect(() => {
+    void syncThemeDockIcon(theme)
+  }, [theme])
 
   const persistCustomThemes = useCallback((next: ThemeDefinition[]) => {
     try {

@@ -103,8 +103,8 @@ xero-agent-core = { path = "crates/xero-agent-core" }
 core-graphics = { version = "0.23", features = ["elcapitan"] }
 core-foundation = "0.9"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace", "libc"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "libc"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSRunningApplication", "NSWorkspace", "libc"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSString", "NSURL", "libc"] }
 
 [dev-dependencies]
 tempfile = "3"

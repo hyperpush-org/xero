@@ -63,6 +63,8 @@ export interface AgentDockSidebarProps {
   accountLogin?: string | null
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   onOpenAgentManagement?: () => void
+  onCreateAgentByHand?: AgentRuntimeProps["onCreateAgentByHand"]
+  onStartWorkflowAgentCreate?: AgentRuntimeProps["onStartWorkflowAgentCreate"]
   onOpenSettings?: () => void
   onOpenDiagnostics?: () => void
   onStartLogin?: AgentRuntimeProps["onStartLogin"]
@@ -82,6 +84,9 @@ export interface AgentDockSidebarProps {
   onUpsertNotificationRoute?: AgentRuntimeProps["onUpsertNotificationRoute"]
   onRetryStream?: AgentRuntimeProps["onRetryStream"]
   onCodeUndoApplied?: AgentRuntimeProps["onCodeUndoApplied"]
+  agentCreateCanvasIncluded?: AgentRuntimeProps["agentCreateCanvasIncluded"]
+  pendingInitialRuntimeAgentId?: AgentRuntimeProps["pendingInitialRuntimeAgentId"]
+  onPendingInitialRuntimeAgentIdConsumed?: AgentRuntimeProps["onPendingInitialRuntimeAgentIdConsumed"]
 }
 
 export function AgentDockSidebar({

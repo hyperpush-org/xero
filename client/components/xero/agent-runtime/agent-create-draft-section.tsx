@@ -1,4 +1,4 @@
-import { ArrowRight, FileWarning, Settings, Sparkles } from "lucide-react"
+import { ArrowRight, FileWarning, Hammer, Settings, Sparkles } from "lucide-react"
 
 import type {
   RuntimeStreamToolItemView,
@@ -15,6 +15,7 @@ interface AgentCreateDraftSectionProps {
   runtimeStreamItems: readonly RuntimeStreamViewItem[]
   pendingApprovalCount: number
   onOpenAgentManagement?: () => void
+  onCreateAgentByHand?: () => void
 }
 
 function isAgentDefinitionToolItem(item: RuntimeStreamViewItem): item is RuntimeStreamToolItemView {
@@ -25,6 +26,7 @@ export function AgentCreateDraftSection({
   runtimeStreamItems,
   pendingApprovalCount,
   onOpenAgentManagement,
+  onCreateAgentByHand,
 }: AgentCreateDraftSectionProps) {
   const recentDraftItems = runtimeStreamItems
     .filter(isAgentDefinitionToolItem)
@@ -40,24 +42,39 @@ export function AgentCreateDraftSection({
             Agent Create
           </CardTitle>
           <CardDescription className="text-[12px]">
-            Describe the agent you want and Agent Create will draft a definition. Saving requires
-            explicit approval through the action panel below.
+            Describe the agent you want to build. Agent Create will draft a definition; saving
+            requires explicit approval through the action panel below.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex items-center justify-between text-[12px] text-muted-foreground">
+        <CardContent className="flex flex-col gap-2 text-[12px] text-muted-foreground">
           <span>Activated drafts appear in the agent selector and can be archived from settings.</span>
-          {onOpenAgentManagement ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 gap-1.5 text-[11.5px]"
-              onClick={onOpenAgentManagement}
-            >
-              <Settings className="h-3 w-3" />
-              Manage agents
-              <ArrowRight className="h-3 w-3" />
-            </Button>
-          ) : null}
+          <div className="flex items-center justify-between gap-2">
+            {onCreateAgentByHand ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 text-[11.5px]"
+                onClick={onCreateAgentByHand}
+              >
+                <Hammer className="h-3 w-3" />
+                ...or build by hand
+              </Button>
+            ) : (
+              <span />
+            )}
+            {onOpenAgentManagement ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 text-[11.5px]"
+                onClick={onOpenAgentManagement}
+              >
+                <Settings className="h-3 w-3" />
+                Manage agents
+                <ArrowRight className="h-3 w-3" />
+              </Button>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
     )

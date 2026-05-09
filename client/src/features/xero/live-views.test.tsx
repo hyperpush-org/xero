@@ -513,7 +513,7 @@ describe('live views', () => {
     expect(within(selectedAgent).getByText('system')).toBeVisible()
     expect(within(selectedAgent).getByText('Planning')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Close agent inspector' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Create workflow' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Create workflow' })).not.toBeInTheDocument()
   })
 
   it('does not render the mock pipeline controls on the workflow tab', () => {

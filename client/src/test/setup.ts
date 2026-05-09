@@ -80,3 +80,36 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: vi.fn(),
   })),
 })
+
+if (typeof window.DOMMatrixReadOnly === 'undefined') {
+  class DOMMatrixReadOnlyStub {
+    m22 = 1
+
+    constructor(transform?: string) {
+      if (typeof transform !== 'string') return
+      const matrix = transform.match(/^matrix\(([^)]+)\)$/)
+      if (matrix) {
+        const values = matrix[1].split(',').map((value) => Number.parseFloat(value.trim()))
+        if (Number.isFinite(values[3])) this.m22 = values[3]
+        return
+      }
+
+      const matrix3d = transform.match(/^matrix3d\(([^)]+)\)$/)
+      if (matrix3d) {
+        const values = matrix3d[1].split(',').map((value) => Number.parseFloat(value.trim()))
+        if (Number.isFinite(values[5])) this.m22 = values[5]
+      }
+    }
+  }
+
+  Object.defineProperty(window, 'DOMMatrixReadOnly', {
+    configurable: true,
+    writable: true,
+    value: DOMMatrixReadOnlyStub,
+  })
+  Object.defineProperty(globalThis, 'DOMMatrixReadOnly', {
+    configurable: true,
+    writable: true,
+    value: DOMMatrixReadOnlyStub,
+  })
+}

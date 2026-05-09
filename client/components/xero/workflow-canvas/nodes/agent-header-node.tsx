@@ -1,11 +1,9 @@
 'use client'
 
-import { memo, useEffect, useState } from 'react'
+import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import {
   Bot,
-  ChevronDown,
-  ChevronRight,
   Database,
   FileText,
   GitMerge,
@@ -14,7 +12,6 @@ import {
   Wrench,
 } from 'lucide-react'
 
-import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import {
   getAgentDefinitionBaseCapabilityLabel,
@@ -22,22 +19,14 @@ import {
 } from '@/src/lib/xero-model/agent-definition'
 import { getRuntimeRunApprovalModeLabel } from '@/src/lib/xero-model/runtime'
 
-import { AGENT_GRAPH_HEADER_HANDLES, type AgentHeaderFlowNode } from '../build-agent-graph'
-import { useAgentCanvasExpansion } from '../expansion-context'
+import {
+  AGENT_GRAPH_HEADER_HANDLES,
+  AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
+  type AgentHeaderFlowNode,
+} from '../build-agent-graph'
 
-export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeProps<AgentHeaderFlowNode>) {
+export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps<AgentHeaderFlowNode>) {
   const { header, summary } = data
-  const [showPurpose, setShowPurpose] = useState(false)
-  const hasPurpose = Boolean(header.taskPurpose)
-  const expanded = hasPurpose && showPurpose
-  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
-
-  useEffect(() => {
-    reportExpanded(id, expanded)
-    return () => {
-      reportExpanded(id, false)
-    }
-  }, [id, expanded, reportExpanded])
 
   return (
     <>
@@ -45,124 +34,103 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ id, data }: NodeP
         id={AGENT_GRAPH_HEADER_HANDLES.prompt}
         type="source"
         position={Position.Top}
-        className="!bg-amber-500 !w-2 !h-2"
+        className="!bg-amber-500"
       />
+      {/* Two source handles share the right edge (tool, db). React Flow
+          centers them at 50% by default, so they overlap visually; stagger
+          them vertically so both stay grabbable in editing mode. */}
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.tool}
         type="source"
         position={Position.Right}
-        className="!bg-sky-500 !w-2 !h-2"
+        style={{ top: `${AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool * 100}%` }}
+        className="!bg-sky-500"
       />
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.db}
         type="source"
         position={Position.Right}
-        className="!bg-emerald-500 !w-2 !h-2"
+        style={{ top: `${AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db * 100}%` }}
+        className="!bg-emerald-500"
       />
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.output}
         type="source"
         position={Position.Bottom}
-        className="!bg-foreground !w-2 !h-2"
+        className="!bg-foreground"
       />
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.consumed}
         type="target"
         position={Position.Left}
-        className="!bg-teal-500 !w-2 !h-2"
+        className="!bg-teal-500"
       />
       <div
-        className={cn(
-          'agent-card agent-card-header overflow-hidden text-card-foreground',
-          expanded && 'is-card-expanded',
-        )}
-        style={{ width: 300 }}
+        className="agent-graph-lane-label agent-graph-lane-label--agent agent-card-header__label"
+        style={{ width: 320 }}
+        aria-hidden="true"
       >
-        <div className="px-3 pt-2.5 pb-2 border-b border-border/40">
-          <div className="flex items-center gap-2">
-            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/15 ring-1 ring-primary/30">
+        <span className="agent-graph-lane-label__bar" />
+        <span className="agent-graph-lane-label__text">Agent</span>
+      </div>
+      <div
+        className="agent-card agent-card-header overflow-hidden text-card-foreground"
+        style={{ width: 320 }}
+      >
+        <div className="px-3.5 pt-3 pb-3 border-b border-border/60">
+          <div className="flex items-start gap-2.5">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/15 ring-1 ring-primary/30 mt-px">
               <Bot className="h-3.5 w-3.5 text-primary" />
             </span>
-            <span className="font-semibold text-[13px] tracking-tight truncate">
-              {header.displayName}
-            </span>
-            {header.shortLabel && header.shortLabel !== header.displayName ? (
-              <span className="text-muted-foreground/80 text-[10px] font-mono truncate">
-                {header.shortLabel}
-              </span>
-            ) : null}
-            {header.scope === 'built_in' ? (
-              <span
-                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-primary"
-              >
-                <Lock aria-hidden="true" className="h-2.5 w-2.5" />
-                <span>system</span>
-              </span>
-            ) : null}
-          </div>
-          <p className="agent-node-detail mt-1.5 text-[11px] text-muted-foreground leading-relaxed line-clamp-2">
-            {header.description}
-          </p>
-          <div className="agent-node-chip-row mt-2 flex flex-wrap gap-1">
-            <Badge variant="outline" className="text-[9px] px-1.5 py-0 font-medium">
-              {getAgentDefinitionScopeLabel(header.scope)}
-            </Badge>
-            <Badge variant="secondary" className="text-[9px] px-1.5 py-0 font-medium">
-              {getAgentDefinitionBaseCapabilityLabel(header.baseCapabilityProfile)}
-            </Badge>
-            <Badge variant="outline" className="text-[9px] px-1.5 py-0 capitalize font-medium">
-              {header.lifecycleState}
-            </Badge>
-          </div>
-        </div>
-        <div className="agent-node-chip-row px-3 py-1.5 flex items-center gap-x-3 gap-y-1 flex-wrap text-[10px] text-muted-foreground border-b border-border/40 bg-muted/15">
-          <SummaryChip icon={FileText} count={summary.prompts} label="prompts" tone="amber" />
-          <SummaryChip icon={Wrench} count={summary.tools} label="tools" tone="sky" />
-          <SummaryChip icon={Database} count={summary.dbTables} label="touchpoints" tone="emerald" />
-          <SummaryChip icon={Layers} count={summary.outputSections} label="sections" tone="foreground" />
-          {summary.consumes > 0 ? (
-            <SummaryChip icon={GitMerge} count={summary.consumes} label="consumes" tone="teal" />
-          ) : null}
-        </div>
-        <div className="agent-node-chip-row px-3 py-1.5 flex items-center gap-1.5 flex-wrap text-[10px]">
-          <GatePill
-            on={true}
-            label="Approval"
-            value={getRuntimeRunApprovalModeLabel(header.defaultApprovalMode)}
-          />
-          <GatePill on={header.allowPlanGate} label="Plan" />
-          <GatePill on={header.allowVerificationGate} label="Verify" />
-          {header.allowAutoCompact ? (
-            <GatePill on={true} label="Auto-compact" subtle />
-          ) : null}
-        </div>
-        {hasPurpose ? (
-          <button
-            type="button"
-            onClick={() => {
-              if (locked) return
-              setShowPurpose((v) => !v)
-            }}
-            disabled={locked}
-            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-[10px] font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground transition-colors border-t border-border/40"
-          >
-            {expanded ? (
-              <ChevronDown className="agent-node-chevron h-3 w-3" />
-            ) : (
-              <ChevronRight className="agent-node-chevron h-3 w-3" />
-            )}
-            {expanded ? 'Hide task purpose' : 'Task purpose'}
-          </button>
-        ) : null}
-        {hasPurpose ? (
-          <div className={cn('agent-card-body-wrapper', expanded && 'is-open')}>
-            <div className="agent-card-body">
-              <div className="px-3 pt-2 pb-2.5 text-[10.5px] text-muted-foreground leading-relaxed border-t border-border/40 bg-muted/10">
-                {header.taskPurpose}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="font-semibold text-[14px] tracking-tight truncate text-foreground">
+                  {header.displayName}
+                </span>
+                {header.scope === 'built_in' ? (
+                  <Lock
+                    aria-label="System agent"
+                    className="h-3 w-3 shrink-0 text-primary/70"
+                  />
+                ) : null}
+                {header.shortLabel && header.shortLabel !== header.displayName ? (
+                  <span className="ml-auto text-muted-foreground/70 text-[10px] font-mono truncate">
+                    {header.shortLabel}
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground/85">
+                <span>{getAgentDefinitionScopeLabel(header.scope)}</span>
+                <MetaSep />
+                <span>{getAgentDefinitionBaseCapabilityLabel(header.baseCapabilityProfile)}</span>
+                <MetaSep />
+                <span className="capitalize">{header.lifecycleState}</span>
               </div>
             </div>
           </div>
-        ) : null}
+          <p className="agent-node-detail mt-2.5 text-[11px] text-muted-foreground/90 leading-relaxed">
+            {header.description}
+          </p>
+        </div>
+        <div className="agent-node-chip-row px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground border-b border-border/60 bg-foreground/[0.04]">
+          <SummaryChip icon={FileText} count={summary.prompts} label="prompts" />
+          <SummaryChip icon={Wrench} count={summary.tools} label="tools" />
+          <SummaryChip icon={Database} count={summary.dbTables} label="touchpoints" />
+          <SummaryChip icon={Layers} count={summary.outputSections} label="sections" />
+          {summary.consumes > 0 ? (
+            <SummaryChip icon={GitMerge} count={summary.consumes} label="consumes" />
+          ) : null}
+        </div>
+        <div className="agent-node-chip-row px-3.5 py-2.5 flex items-center flex-wrap gap-x-4 gap-y-1.5 text-[10px]">
+          <GateMarker
+            on
+            label="Approval"
+            value={getRuntimeRunApprovalModeLabel(header.defaultApprovalMode)}
+          />
+          <GateMarker on={header.allowPlanGate} label="Plan" />
+          <GateMarker on={header.allowVerificationGate} label="Verify" />
+          {header.allowAutoCompact ? <GateMarker on label="Auto-compact" /> : null}
+        </div>
       </div>
     </>
   )
@@ -172,60 +140,52 @@ interface SummaryChipProps {
   icon: typeof FileText
   count: number
   label: string
-  tone: 'amber' | 'sky' | 'emerald' | 'foreground' | 'teal'
 }
 
-const SUMMARY_TONE: Record<SummaryChipProps['tone'], string> = {
-  amber: 'text-amber-500',
-  sky: 'text-sky-500',
-  emerald: 'text-emerald-500',
-  foreground: 'text-foreground/70',
-  teal: 'text-teal-500',
-}
-
-function SummaryChip({ icon: Icon, count, label, tone }: SummaryChipProps) {
+function SummaryChip({ icon: Icon, count, label }: SummaryChipProps) {
   return (
     <span className="inline-flex items-center gap-1 tabular-nums">
-      <Icon className={cn('h-3 w-3 shrink-0', SUMMARY_TONE[tone])} />
-      <span className="font-mono text-foreground font-medium">{count}</span>
+      <Icon className="h-3 w-3 shrink-0 text-muted-foreground" />
+      <span className="text-foreground font-medium">{count}</span>
       <span className="text-muted-foreground/75">{label}</span>
     </span>
   )
 }
 
-interface GatePillProps {
+function MetaSep() {
+  return (
+    <span aria-hidden="true" className="text-muted-foreground/40">
+      ·
+    </span>
+  )
+}
+
+interface GateMarkerProps {
   on: boolean
   label: string
   value?: string
-  subtle?: boolean
 }
 
-function GatePill({ on, label, value, subtle }: GatePillProps) {
-  const tone = subtle
-    ? 'border-border/50 bg-muted/30 text-muted-foreground'
-    : on
-      ? 'border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300'
-      : 'border-border/50 bg-muted/20 text-muted-foreground/70'
+// Flat dot+label gate display. Active gates use foreground text + emerald
+// dot; inactive ones fade to muted text + grey dot. No filled pill — the
+// header surface already separates this row from the canvas background, so
+// a colored capsule per gate is redundant noise.
+function GateMarker({ on, label, value }: GateMarkerProps) {
   return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 leading-none',
-        tone,
-      )}
-    >
+    <span className="inline-flex items-center gap-1 leading-none">
       <span
         aria-hidden="true"
         className={cn(
           'h-1.5 w-1.5 rounded-full',
-          subtle
-            ? 'bg-muted-foreground/50'
-            : on
-              ? 'bg-emerald-500'
-              : 'bg-muted-foreground/40',
+          on ? 'bg-emerald-500' : 'bg-muted-foreground/30',
         )}
       />
-      <span className="font-medium">{label}</span>
-      {value ? <span className="font-mono opacity-80">{value}</span> : null}
+      <span className={cn('font-medium', on ? 'text-foreground/90' : 'text-muted-foreground/60')}>
+        {label}
+      </span>
+      {value ? (
+        <span className="text-muted-foreground/80">: {value}</span>
+      ) : null}
     </span>
   )
 }

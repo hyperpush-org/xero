@@ -31,9 +31,30 @@ export interface AgentHeaderSummaryCounts {
   consumes: number
 }
 
+// Advanced authoring fields exposed on the header node's expanded body. These
+// are required by the agent-definition validator but don't have natural homes
+// elsewhere on the canvas, so we surface them on the header.
+export interface AgentHeaderAdvancedFields {
+  workflowContract: string
+  finalResponseContract: string
+  examplePrompts: string[]
+  refusalEscalationCases: string[]
+  // Object-form toolPolicy. The runtime accepts either a string preset OR a
+  // structured object — we always emit an object so downstream picked-tool
+  // edits flow through cleanly.
+  allowedToolGroups: string[]
+  externalServiceAllowed: boolean
+  browserControlAllowed: boolean
+  skillRuntimeAllowed: boolean
+  subagentAllowed: boolean
+  commandAllowed: boolean
+  destructiveWriteAllowed: boolean
+}
+
 export interface AgentHeaderNodeData extends Record<string, unknown> {
   header: AgentHeaderDto
   summary: AgentHeaderSummaryCounts
+  advanced: AgentHeaderAdvancedFields
 }
 
 export interface PromptNodeData extends Record<string, unknown> {
@@ -92,6 +113,18 @@ export type ConsumedArtifactFlowNode = Node<ConsumedArtifactNodeData, 'consumed-
 export type LaneLabelFlowNode = Node<LaneLabelNodeData, 'lane-label'>
 export type ToolGroupFrameFlowNode = Node<ToolGroupFrameNodeData, 'tool-group-frame'>
 
+// Union of node data shapes that authoring may mutate. Layout chrome
+// (lane-label, tool-group-frame) is intentionally excluded — those nodes are
+// computed from the user-facing nodes by the layout pass.
+export type AgentGraphNodeData =
+  | AgentHeaderNodeData
+  | PromptNodeData
+  | ToolNodeData
+  | DbTableNodeData
+  | OutputNodeData
+  | OutputSectionNodeData
+  | ConsumedArtifactNodeData
+
 export type AgentGraphNode =
   | AgentHeaderFlowNode
   | PromptFlowNode
@@ -121,11 +154,21 @@ const HEADER_SOURCE_HANDLE = {
   consumed: 'consumed',
 } as const
 
-function promptNodeId(prompt: AgentPromptDto, index: number): string {
+export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
+  tool: 0.32,
+  db: 0.68,
+} as const
+
+export const AGENT_GRAPH_TRIGGER_HANDLES = {
+  source: 'trigger-source',
+  target: 'trigger-target',
+} as const
+
+export function promptNodeId(prompt: AgentPromptDto, index: number): string {
   return `prompt:${index}:${prompt.id}`
 }
 
-function toolNodeId(tool: AgentToolSummaryDto): string {
+export function toolNodeId(tool: AgentToolSummaryDto): string {
   return `tool:${tool.name}`
 }
 
@@ -522,6 +565,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
         outputSections: detail.output.sections.length,
         consumes: detail.consumes.length,
       },
+      advanced: deriveAdvancedFromDetail(detail),
     },
   })
 
@@ -775,7 +819,9 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       edges.push({
         id: `e:trigger:${toolId}->${id}`,
         source: toolId,
+        sourceHandle: AGENT_GRAPH_TRIGGER_HANDLES.source,
         target: id,
+        targetHandle: AGENT_GRAPH_TRIGGER_HANDLES.target,
         // Custom edge type — renders the label via EdgeLabelRenderer portal
         // so it sits above every node card the edge happens to cross.
         type: 'trigger',
@@ -849,7 +895,9 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
       edges.push({
         id: edgeId,
         source: sourceId,
+        sourceHandle: AGENT_GRAPH_TRIGGER_HANDLES.source,
         target: dbId,
+        targetHandle: AGENT_GRAPH_TRIGGER_HANDLES.target,
         // Custom edge type — see TriggerEdge for label-portal handling.
         type: 'trigger',
         data: { category: 'trigger', triggerLabel: label, touchpoint: entry.kind },
@@ -896,7 +944,314 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
   return { nodes, edges }
 }
 
+// Default advanced fields for a fresh detail. Mirrors the validator's minimum
+// requirements: workflowContract / finalResponseContract non-empty, ≥3
+// example prompts, ≥3 refusal escalation cases, allowedApprovalModes includes
+// 'suggest'. Effect-class flags default to "off"; the user opts in.
+function defaultAdvancedFor(detail: WorkflowAgentDetailDto): AgentHeaderAdvancedFields {
+  const subject = detail.header.displayName.trim() || 'this agent'
+  return {
+    workflowContract: detail.header.taskPurpose,
+    finalResponseContract: detail.output.description,
+    examplePrompts: [
+      `Walk me through how ${subject} would tackle a typical assignment.`,
+      `Give me a concrete example of an interaction ${subject} should handle well.`,
+      `Outline a scenario where ${subject} stays in scope and produces a useful result.`,
+    ],
+    refusalEscalationCases: [
+      `${subject} is asked to perform an action outside of its capability profile.`,
+      `${subject} is asked to handle sensitive credentials or secret values.`,
+      `${subject} is asked to bypass user approvals or operate without explicit consent.`,
+    ],
+    allowedToolGroups: [],
+    externalServiceAllowed: false,
+    browserControlAllowed: false,
+    skillRuntimeAllowed: false,
+    subagentAllowed: false,
+    commandAllowed: false,
+    destructiveWriteAllowed: false,
+  }
+}
+
+// Read advanced fields off a detail's existing toolPolicy / contracts so
+// editing an existing agent preserves whatever it was already configured with.
+export function deriveAdvancedFromDetail(
+  detail: WorkflowAgentDetailDto,
+): AgentHeaderAdvancedFields {
+  const base = defaultAdvancedFor(detail)
+  const policy = detail.toolPolicy
+  // detail.toolPolicy is RuntimeAgentToolPolicyDto (string preset). The
+  // detail shape doesn't carry the granular flags — those live in the saved
+  // snapshot, which buildAgentGraph doesn't see. So advanced flags start
+  // at defaults; the user reviews and opts in. workflowContract/final fall
+  // back to the same pieces the snapshot builder uses today.
+  if (policy) {
+    base.allowedToolGroups = []
+  }
+  return base
+}
+
+export type AgentInferredCapabilityFlags = {
+  externalServiceAllowed: boolean
+  browserControlAllowed: boolean
+  skillRuntimeAllowed: boolean
+  subagentAllowed: boolean
+  commandAllowed: boolean
+  destructiveWriteAllowed: boolean
+}
+
+export interface AgentInferredAdvanced {
+  toolGroups: string[]
+  flags: AgentInferredCapabilityFlags
+  // Map raw inferred items back to the connected tool name(s) that produced
+  // them, so the UI can explain why an item is auto-checked.
+  toolGroupReasons: Record<string, string[]>
+  flagReasons: Record<keyof AgentInferredCapabilityFlags, string[]>
+}
+
+const EMPTY_INFERRED_FLAGS: AgentInferredCapabilityFlags = {
+  externalServiceAllowed: false,
+  browserControlAllowed: false,
+  skillRuntimeAllowed: false,
+  subagentAllowed: false,
+  commandAllowed: false,
+  destructiveWriteAllowed: false,
+}
+
+/**
+ * Derive the tool groups and capability flags implied by the canvas's current
+ * connections. The properties panel uses this to auto-check (and lock)
+ * settings the user has already committed to by adding tools / DB writes,
+ * so the rule "what you've connected on the canvas matches what you're
+ * allowed to use" stays an invariant rather than a hand-maintained list.
+ *
+ * Each tool's `group` becomes an allowed tool group entry, and each tool's
+ * `effectClass` maps to one of the granular capability flags. Cross-cutting
+ * effects (a `command` tool also implies the runtime can run shell commands;
+ * an `agent_delegation` tool implies subagent dispatch) are expressed here
+ * once instead of being re-derived at every read site.
+ */
+export function inferAdvancedFromConnections(
+  detail: WorkflowAgentDetailDto,
+): AgentInferredAdvanced {
+  const groupReasons: Record<string, string[]> = {}
+  const flagReasons: Record<keyof AgentInferredCapabilityFlags, string[]> = {
+    externalServiceAllowed: [],
+    browserControlAllowed: [],
+    skillRuntimeAllowed: [],
+    subagentAllowed: [],
+    commandAllowed: [],
+    destructiveWriteAllowed: [],
+  }
+  const flags: AgentInferredCapabilityFlags = { ...EMPTY_INFERRED_FLAGS }
+  const noteFlag = (key: keyof AgentInferredCapabilityFlags, source: string) => {
+    flags[key] = true
+    if (!flagReasons[key].includes(source)) flagReasons[key].push(source)
+  }
+  for (const tool of detail.tools) {
+    const group = tool.group?.trim()
+    const display = tool.name
+    if (group) {
+      const list = groupReasons[group] ?? (groupReasons[group] = [])
+      if (!list.includes(display)) list.push(display)
+    }
+    switch (tool.effectClass) {
+      case 'external_service':
+        noteFlag('externalServiceAllowed', display)
+        break
+      case 'browser_control':
+        noteFlag('browserControlAllowed', display)
+        break
+      case 'skill_runtime':
+        noteFlag('skillRuntimeAllowed', display)
+        break
+      case 'agent_delegation':
+        noteFlag('subagentAllowed', display)
+        break
+      case 'command':
+      case 'process_control':
+        noteFlag('commandAllowed', display)
+        break
+      case 'destructive_write':
+        noteFlag('destructiveWriteAllowed', display)
+        break
+      default:
+        break
+    }
+  }
+  // DB writes are always destructive at the table level — even if no tool's
+  // effectClass is destructive_write, the agent declares it will mutate
+  // tables, so the destructive-writes flag must be on for the runtime
+  // permission gate to allow the write path.
+  for (const entry of detail.dbTouchpoints.writes) {
+    noteFlag('destructiveWriteAllowed', `db:${entry.table}`)
+  }
+  return {
+    toolGroups: Object.keys(groupReasons).sort((a, b) => a.localeCompare(b)),
+    flags,
+    toolGroupReasons: groupReasons,
+    flagReasons,
+  }
+}
+
+export function emptyInferredAdvanced(): AgentInferredAdvanced {
+  return {
+    toolGroups: [],
+    flags: { ...EMPTY_INFERRED_FLAGS },
+    toolGroupReasons: {},
+    flagReasons: {
+      externalServiceAllowed: [],
+      browserControlAllowed: [],
+      skillRuntimeAllowed: [],
+      subagentAllowed: [],
+      commandAllowed: [],
+      destructiveWriteAllowed: [],
+    },
+  }
+}
+
 export const AGENT_GRAPH_HEADER_NODE_ID = HEADER_NODE_ID
 export const AGENT_GRAPH_OUTPUT_NODE_ID = OUTPUT_NODE_ID
 export const AGENT_GRAPH_HEADER_HANDLES = HEADER_SOURCE_HANDLE
 export { outputSectionNodeId, consumedArtifactNodeId, dbNodeId }
+
+// Decode helpers — given a structural node id, return the part of the
+// detail it refers to. Used by editing-mode mutators to translate
+// updateNodeData / removeNode calls back to detail mutations.
+export function decodeAgentGraphNodeId(
+  id: string,
+):
+  | { kind: 'header' }
+  | { kind: 'output' }
+  | { kind: 'prompt'; index: number; promptId: string }
+  | { kind: 'tool'; toolName: string }
+  | { kind: 'db'; touchpoint: 'read' | 'write' | 'encouraged'; table: string }
+  | { kind: 'output-section'; sectionId: string }
+  | { kind: 'consumed-artifact'; artifactId: string }
+  | { kind: 'tool-group-frame'; groupKey: string }
+  | { kind: 'lane-label' }
+  | { kind: 'unknown' } {
+  if (id === HEADER_NODE_ID) return { kind: 'header' }
+  if (id === OUTPUT_NODE_ID) return { kind: 'output' }
+  if (id.startsWith('prompt:')) {
+    const [, indexRaw, ...rest] = id.split(':')
+    return {
+      kind: 'prompt',
+      index: Number.parseInt(indexRaw, 10),
+      promptId: rest.join(':'),
+    }
+  }
+  if (id.startsWith('tool:')) {
+    return { kind: 'tool', toolName: id.slice('tool:'.length) }
+  }
+  if (id.startsWith('db:')) {
+    const [, touchpoint, ...tableParts] = id.split(':')
+    return {
+      kind: 'db',
+      touchpoint: touchpoint as 'read' | 'write' | 'encouraged',
+      table: tableParts.join(':'),
+    }
+  }
+  if (id.startsWith('output-section:')) {
+    return { kind: 'output-section', sectionId: id.slice('output-section:'.length) }
+  }
+  if (id.startsWith('consumed:')) {
+    return { kind: 'consumed-artifact', artifactId: id.slice('consumed:'.length) }
+  }
+  if (id.startsWith('tool-group-frame:')) {
+    return { kind: 'tool-group-frame', groupKey: id.slice('tool-group-frame:'.length) }
+  }
+  if (id.startsWith('lane:')) {
+    return { kind: 'lane-label' }
+  }
+  return { kind: 'unknown' }
+}
+
+export type EditingMode = 'create' | 'edit' | 'duplicate'
+
+// Default seed prompt body. Non-empty so a freshly-created agent passes the
+// "prompt body required" structural check immediately. The text reads as a
+// placeholder so users know they're meant to replace it with the real system
+// prompt.
+const DEFAULT_PROMPT_BODY =
+  'You are a helpful agent. Replace this with the system prompt that describes how the agent should behave, what it must do, and what it must avoid.'
+
+function blankDetail(): WorkflowAgentDetailDto {
+  return {
+    ref: { kind: 'custom', definitionId: 'untitled-agent', version: 1 },
+    header: {
+      displayName: 'Untitled agent',
+      shortLabel: 'Untitled',
+      description: 'Custom agent built on the canvas.',
+      taskPurpose:
+        "Describe the agent's primary task, the steps it should take, and the boundaries it must respect.",
+      scope: 'project_custom',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'observe_only',
+      defaultApprovalMode: 'suggest',
+      allowedApprovalModes: ['suggest'],
+      allowPlanGate: true,
+      allowVerificationGate: true,
+      allowAutoCompact: true,
+    },
+    promptPolicy: null,
+    toolPolicy: null,
+    // Seed a single system prompt with non-empty body so the structural
+    // validator doesn't fire the "no prompts" / "empty body" diagnostics on
+    // first paint. The user is expected to replace the body — the placeholder
+    // text reads like a TODO so it's obvious.
+    prompts: [
+      {
+        id: 'system_prompt',
+        label: 'System prompt',
+        role: 'system',
+        source: 'custom',
+        policy: null,
+        body: DEFAULT_PROMPT_BODY,
+      },
+    ],
+    tools: [],
+    dbTouchpoints: { reads: [], writes: [], encouraged: [] },
+    output: {
+      contract: 'answer',
+      label: 'Final response',
+      description:
+        'Replace this with what a successful final response from the agent must include.',
+      sections: [],
+    },
+    consumes: [],
+  }
+}
+
+/**
+ * Build the initial graph for editing/authoring. For 'create' mode this
+ * returns a minimal graph with just header + output. For 'edit' / 'duplicate'
+ * this defers to {@link buildAgentGraph} so the editing canvas inherits the
+ * exact same node structure used during viewing.
+ *
+ * The duplicate case adjusts the header DTO so the user sees a "(copy)"
+ * label and a derived definition id is generated on save.
+ */
+export function buildAgentGraphForEditing(
+  mode: EditingMode,
+  detail: WorkflowAgentDetailDto | null,
+): { graph: AgentGraph; detail: WorkflowAgentDetailDto } {
+  if (mode === 'create' || !detail) {
+    const blank = blankDetail()
+    return { graph: buildAgentGraph(blank), detail: blank }
+  }
+  if (mode === 'duplicate') {
+    const next: WorkflowAgentDetailDto = {
+      ...detail,
+      header: {
+        ...detail.header,
+        displayName: `${detail.header.displayName} (copy)`.slice(0, 80),
+        shortLabel: `${detail.header.shortLabel} copy`.slice(0, 24),
+        scope:
+          detail.header.scope === 'global_custom' ? 'global_custom' : 'project_custom',
+      },
+    }
+    return { graph: buildAgentGraph(next), detail: next }
+  }
+  return { graph: buildAgentGraph(detail), detail }
+}

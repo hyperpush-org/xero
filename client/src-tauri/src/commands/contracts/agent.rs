@@ -658,6 +658,63 @@ pub struct ArchiveAgentDefinitionRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveAgentDefinitionRequestDto {
+    pub project_id: String,
+    pub definition: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateAgentDefinitionRequestDto {
+    pub project_id: String,
+    pub definition_id: String,
+    pub definition: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDefinitionValidationStatusDto {
+    Valid,
+    Invalid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDefinitionValidationDiagnosticDto {
+    pub code: String,
+    pub message: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_effect_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_capability_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDefinitionValidationReportDto {
+    pub status: AgentDefinitionValidationStatusDto,
+    pub diagnostics: Vec<AgentDefinitionValidationDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentDefinitionWriteResponseDto {
+    pub applied: bool,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<AgentDefinitionSummaryDto>,
+    pub validation: AgentDefinitionValidationReportDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetAgentDefinitionVersionRequestDto {
     pub project_id: String,
     pub definition_id: String,

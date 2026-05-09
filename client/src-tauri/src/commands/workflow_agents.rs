@@ -4,17 +4,18 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     commands::{
         available_builtin_runtime_agent_descriptors, runtime_agent_descriptor, validate_non_empty,
-        AgentConsumedArtifactDto, AgentDbTouchpointDetailDto, AgentDbTouchpointKindDto,
-        AgentDbTouchpointsDto, AgentDefinitionBaseCapabilityProfileDto,
+        AgentAuthoringCatalogDto, AgentAuthoringDbTableDto, AgentAuthoringToolCategoryDto,
+        AgentAuthoringUpstreamArtifactDto, AgentConsumedArtifactDto, AgentDbTouchpointDetailDto,
+        AgentDbTouchpointKindDto, AgentDbTouchpointsDto, AgentDefinitionBaseCapabilityProfileDto,
         AgentDefinitionLifecycleStateDto, AgentDefinitionScopeDto, AgentHeaderDto,
         AgentOutputContractDto, AgentOutputSectionDto, AgentPromptDto, AgentPromptRoleDto,
         AgentRefDto, AgentToolEffectClassDto, AgentToolSummaryDto, AgentTriggerRefDto,
-        CommandError, CommandResult, GetWorkflowAgentDetailRequestDto,
-        ListWorkflowAgentsRequestDto, ListWorkflowAgentsResponseDto,
-        RuntimeAgentBaseCapabilityProfileDto, RuntimeAgentDescriptorDto, RuntimeAgentIdDto,
-        RuntimeAgentLifecycleStateDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
-        RuntimeAgentScopeDto, RuntimeRunApprovalModeDto, WorkflowAgentDetailDto,
-        WorkflowAgentSummaryDto,
+        CommandError, CommandResult, GetAgentAuthoringCatalogRequestDto,
+        GetWorkflowAgentDetailRequestDto, ListWorkflowAgentsRequestDto,
+        ListWorkflowAgentsResponseDto, RuntimeAgentBaseCapabilityProfileDto,
+        RuntimeAgentDescriptorDto, RuntimeAgentIdDto, RuntimeAgentLifecycleStateDto,
+        RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto, RuntimeAgentScopeDto,
+        RuntimeRunApprovalModeDto, WorkflowAgentDetailDto, WorkflowAgentSummaryDto,
     },
     db::project_store,
     runtime::{
@@ -24,8 +25,8 @@ use crate::{
             TriggerRef,
         },
         autonomous_tool_runtime::{
-            deferred_tool_catalog, tool_allowed_for_runtime_agent, tool_effect_class,
-            AutonomousToolEffectClass,
+            deferred_tool_catalog, tool_access_group_descriptors, tool_allowed_for_runtime_agent,
+            tool_effect_class, AutonomousToolEffectClass,
         },
     },
     state::DesktopState,
@@ -100,6 +101,138 @@ pub fn get_workflow_agent_detail<R: Runtime>(
             Ok(custom_detail(definition, version_record))
         }
     }
+}
+
+#[tauri::command]
+pub fn get_agent_authoring_catalog<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: GetAgentAuthoringCatalogRequestDto,
+) -> CommandResult<AgentAuthoringCatalogDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let _repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+
+    // Tools: full deferred catalog, exposed unfiltered. The picker will note
+    // each tool's effect class so the canvas can warn when a chosen tool
+    // exceeds the agent's base capability profile.
+    let tools: Vec<AgentToolSummaryDto> = deferred_tool_catalog(true)
+        .into_iter()
+        .map(|entry| AgentToolSummaryDto {
+            name: entry.tool_name.to_string(),
+            group: entry.group.to_string(),
+            description: entry.description.to_string(),
+            effect_class: effect_class_from_runtime(tool_effect_class(entry.tool_name)),
+            risk_class: entry.risk_class.to_string(),
+            tags: entry.tags.iter().map(|s| s.to_string()).collect(),
+            schema_fields: entry.schema_fields.iter().map(|s| s.to_string()).collect(),
+            examples: entry.examples.iter().map(|s| s.to_string()).collect(),
+        })
+        .collect();
+
+    // Tool categories: each access-group becomes a chunk the user can drag in
+    // wholesale. We resolve each tool name in the group to the full summary
+    // (with effect class, risk, etc.) so the canvas doesn't have to rejoin.
+    let tools_by_name: std::collections::HashMap<String, &AgentToolSummaryDto> =
+        tools.iter().map(|tool| (tool.name.clone(), tool)).collect();
+    let tool_categories: Vec<AgentAuthoringToolCategoryDto> = tool_access_group_descriptors()
+        .into_iter()
+        .map(|group| {
+            let category_tools: Vec<AgentToolSummaryDto> = group
+                .tools
+                .iter()
+                .filter_map(|name| tools_by_name.get(name).map(|tool| (*tool).clone()))
+                .collect();
+            AgentAuthoringToolCategoryDto {
+                id: group.name.clone(),
+                label: humanize_tool_group(&group.name),
+                description: group.description.clone(),
+                tools: category_tools,
+            }
+        })
+        // Skip categories where no tools resolved (e.g. internal-only groups).
+        .filter(|category| !category.tools.is_empty())
+        .collect();
+
+    // DB tables: union of every built-in agent's static touchpoints. The same
+    // table can appear under multiple agents (one as read, another as write);
+    // we collapse those here on `table` and keep the longest purpose so the
+    // picker shows useful descriptive text.
+    let mut db_table_map: std::collections::BTreeMap<String, AgentAuthoringDbTableDto> =
+        std::collections::BTreeMap::new();
+    for descriptor in available_builtin_runtime_agent_descriptors() {
+        let touchpoints = db_touchpoints_for_runtime_agent(descriptor.id);
+        for entry in touchpoints.entries {
+            let table = entry.table.to_string();
+            let existing =
+                db_table_map
+                    .entry(table.clone())
+                    .or_insert_with(|| AgentAuthoringDbTableDto {
+                        table: table.clone(),
+                        purpose: entry.purpose.to_string(),
+                        columns: entry.columns.iter().map(|s| s.to_string()).collect(),
+                    });
+            if entry.purpose.len() > existing.purpose.len() {
+                existing.purpose = entry.purpose.to_string();
+            }
+            // Merge column lists, dedup, preserve discovery order.
+            for column in entry.columns.iter() {
+                let column = column.to_string();
+                if !existing.columns.iter().any(|c| c == &column) {
+                    existing.columns.push(column);
+                }
+            }
+        }
+    }
+    let db_tables: Vec<AgentAuthoringDbTableDto> = db_table_map.into_values().collect();
+
+    // Upstream artifacts: each available built-in agent publishes one output
+    // contract; downstream agents consume it. We surface (sourceAgent, contract,
+    // sections) so the picker can offer "from <agent>" selections and pre-fill
+    // the chosen contract's sections.
+    let upstream_artifacts: Vec<AgentAuthoringUpstreamArtifactDto> =
+        available_builtin_runtime_agent_descriptors()
+            .into_iter()
+            .map(|descriptor| {
+                let contract = descriptor.output_contract;
+                let sections: Vec<AgentOutputSectionDto> = output_sections_for(contract)
+                    .iter()
+                    .map(output_section_entry_to_dto)
+                    .collect();
+                AgentAuthoringUpstreamArtifactDto {
+                    source_agent: descriptor.id,
+                    source_agent_label: descriptor.label.clone(),
+                    contract,
+                    contract_label: output_contract_label(contract).to_string(),
+                    label: format!("{} output", descriptor.label),
+                    description: output_contract_description(contract).to_string(),
+                    sections,
+                }
+            })
+            .collect();
+
+    Ok(AgentAuthoringCatalogDto {
+        tools,
+        tool_categories,
+        db_tables,
+        upstream_artifacts,
+    })
+}
+
+fn humanize_tool_group(group: &str) -> String {
+    // "harness_runner" → "Harness Runner". Falls back to the raw value when
+    // there's nothing to title-case.
+    group
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn builtin_summary(descriptor: RuntimeAgentDescriptorDto) -> WorkflowAgentSummaryDto {

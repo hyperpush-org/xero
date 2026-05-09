@@ -110,4 +110,24 @@ describe('WorkflowsSidebar', () => {
     expect(screen.getByText('Failed to load agents.')).toBeInTheDocument()
     expect(screen.getByText('boom')).toBeInTheDocument()
   })
+
+  it('creates an agent directly from the agents header without opening a mode menu', () => {
+    const onCreateAgent = vi.fn()
+    const onCreateAgentByHand = vi.fn()
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        onCreateAgent={onCreateAgent}
+        onCreateAgentByHand={onCreateAgentByHand}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New agent' }))
+
+    expect(onCreateAgent).toHaveBeenCalledTimes(1)
+    expect(onCreateAgentByHand).not.toHaveBeenCalled()
+    expect(screen.queryByText('Build with AI')).not.toBeInTheDocument()
+    expect(screen.queryByText('Build by hand')).not.toBeInTheDocument()
+  })
 })

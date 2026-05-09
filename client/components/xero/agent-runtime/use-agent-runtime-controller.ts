@@ -62,6 +62,15 @@ interface UseAgentRuntimeControllerOptions {
   dictationEnabled?: boolean
   dictationScopeKey: string
   reportComposerControls?: boolean
+  /**
+   * One-shot runtime agent to apply to the composer when the controller mounts
+   * (or when this value changes to a new non-null id). Used to open a session
+   * with a specific agent pre-selected, e.g. "Create agent" entry points
+   * landing the user on `agent_create`.
+   */
+  pendingInitialRuntimeAgentId?: RuntimeAgentIdDto | null
+  /** Called once the pending initial runtime agent has been applied. */
+  onPendingInitialRuntimeAgentIdConsumed?: () => void
   onStartRuntimeRun?: (options?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
@@ -161,6 +170,8 @@ export function useAgentRuntimeController({
   dictationEnabled = true,
   dictationScopeKey,
   reportComposerControls = true,
+  pendingInitialRuntimeAgentId = null,
+  onPendingInitialRuntimeAgentIdConsumed,
   onStartRuntimeRun,
   onStartRuntimeSession,
   onUpdateRuntimeRunControls,
@@ -327,6 +338,24 @@ export function useAgentRuntimeController({
     selectedModelSelectionKey,
     selectedRuntimeAgentId,
     selectedThinkingEffort,
+  ])
+
+  useEffect(() => {
+    if (!pendingInitialRuntimeAgentId) return
+    if (activeRuntimeRun) return
+    if (runtimeMutationInFlight) return
+
+    setDraftRuntimeAgentId(pendingInitialRuntimeAgentId)
+    setDraftAgentDefinitionId(null)
+    setDraftApprovalMode((current) =>
+      resolveRuntimeAgentApprovalMode(pendingInitialRuntimeAgentId, current),
+    )
+    onPendingInitialRuntimeAgentIdConsumed?.()
+  }, [
+    activeRuntimeRun,
+    onPendingInitialRuntimeAgentIdConsumed,
+    pendingInitialRuntimeAgentId,
+    runtimeMutationInFlight,
   ])
 
   useEffect(() => {

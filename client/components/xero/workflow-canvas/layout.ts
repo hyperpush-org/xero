@@ -150,7 +150,7 @@ export function layoutAgentGraphByCategory(
   }
 
   const headerSize =
-    sizes.get(AGENT_GRAPH_HEADER_NODE_ID) ?? { width: 300, height: 210 }
+    sizes.get(AGENT_GRAPH_HEADER_NODE_ID) ?? { width: 320, height: 210 }
   // Side lanes anchor to this height so toggling the header body doesn't drag
   // the DATABASE / TOOLS / CONSUMES lane labels around. Output (which sits
   // directly below the header) still uses headerSize.height so it cleanly
@@ -174,7 +174,7 @@ export function layoutAgentGraphByCategory(
     let maxPromptHeight = 0
     let totalWidth = 0
     for (const p of prompts) {
-      const s = sizes.get(p.id) ?? { width: 300, height: 96 }
+      const s = sizes.get(p.id) ?? { width: 300, height: 48 }
       maxPromptHeight = Math.max(maxPromptHeight, s.height)
       totalWidth += s.width
     }
@@ -185,7 +185,7 @@ export function layoutAgentGraphByCategory(
 
     let cursorX = promptsStartX
     for (const p of prompts) {
-      const s = sizes.get(p.id) ?? { width: 300, height: 96 }
+      const s = sizes.get(p.id) ?? { width: 300, height: 48 }
       placedById.set(p.id, {
         ...p,
         position: { x: cursorX, y: promptsTopY } as XYPosition,

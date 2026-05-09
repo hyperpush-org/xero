@@ -97,6 +97,70 @@ export type GetAgentDefinitionVersionRequestDto = z.infer<
   typeof getAgentDefinitionVersionRequestSchema
 >
 
+export const saveAgentDefinitionRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    definition: z.unknown(),
+    definitionId: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict()
+export type SaveAgentDefinitionRequestDto = z.infer<
+  typeof saveAgentDefinitionRequestSchema
+>
+
+export const updateAgentDefinitionRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    definitionId: z.string().trim().min(1),
+    definition: z.unknown(),
+  })
+  .strict()
+export type UpdateAgentDefinitionRequestDto = z.infer<
+  typeof updateAgentDefinitionRequestSchema
+>
+
+export const agentDefinitionValidationStatusSchema = z.enum(['valid', 'invalid'])
+export type AgentDefinitionValidationStatusDto = z.infer<
+  typeof agentDefinitionValidationStatusSchema
+>
+
+export const agentDefinitionValidationDiagnosticSchema = z
+  .object({
+    code: z.string(),
+    message: z.string(),
+    path: z.string(),
+    deniedTool: z.string().nullable().optional(),
+    deniedEffectClass: z.string().nullable().optional(),
+    baseCapabilityProfile: z.string().nullable().optional(),
+    reason: z.string().nullable().optional(),
+  })
+  .strict()
+export type AgentDefinitionValidationDiagnosticDto = z.infer<
+  typeof agentDefinitionValidationDiagnosticSchema
+>
+
+export const agentDefinitionValidationReportSchema = z
+  .object({
+    status: agentDefinitionValidationStatusSchema,
+    diagnostics: z.array(agentDefinitionValidationDiagnosticSchema),
+  })
+  .strict()
+export type AgentDefinitionValidationReportDto = z.infer<
+  typeof agentDefinitionValidationReportSchema
+>
+
+export const agentDefinitionWriteResponseSchema = z
+  .object({
+    applied: z.boolean(),
+    message: z.string(),
+    summary: agentDefinitionSummarySchema.nullable().optional(),
+    validation: agentDefinitionValidationReportSchema,
+  })
+  .strict()
+export type AgentDefinitionWriteResponseDto = z.infer<
+  typeof agentDefinitionWriteResponseSchema
+>
+
 export function getAgentDefinitionScopeLabel(scope: AgentDefinitionScopeDto): string {
   switch (scope) {
     case 'built_in':

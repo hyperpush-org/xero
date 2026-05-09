@@ -31,6 +31,7 @@ import type {
   AgentDefinitionSummaryDto,
   AgentSessionView,
   CodeHistoryOperationDto,
+  RuntimeAgentIdDto,
   RuntimeRunView,
   RuntimeAgentProjectOrigin,
   RuntimeAutoCompactPreferenceDto,
@@ -159,6 +160,12 @@ export interface AgentRuntimeProps {
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   /** Open the Settings → Agents tab so the user can manage custom agents. */
   onOpenAgentManagement?: () => void
+  /** Open the by-hand agent builder form. */
+  onCreateAgentByHand?: () => void
+  /** Move to Workflow and begin a new canvas-backed Agent Create session. */
+  onStartWorkflowAgentCreate?: () => void
+  /** True when Agent Create is paired with the visible workflow authoring canvas. */
+  agentCreateCanvasIncluded?: boolean
   /** Visual density. Compact attaches the composer flush to bottom and moves secondary controls into a gear popover. */
   density?: 'comfortable' | 'compact'
   /** Pane id for multi-pane workspaces. */
@@ -202,6 +209,14 @@ export interface AgentRuntimeProps {
    * be excluded by the caller.
    */
   historicalConversationTurns?: readonly ConversationTurn[]
+  /**
+   * One-shot runtime agent to apply to the composer when this pane mounts or
+   * when the value changes to a new non-null id. Used by "Create agent" entry
+   * points that open a fresh session pre-selected on a specific agent.
+   */
+  pendingInitialRuntimeAgentId?: RuntimeAgentIdDto | null
+  /** Called once the pending initial runtime agent has been applied. */
+  onPendingInitialRuntimeAgentIdConsumed?: () => void
 }
 
 const EMPTY_RUNTIME_STREAM_ITEMS: RuntimeStreamViewItem[] = []
@@ -1211,6 +1226,9 @@ export const AgentRuntime = memo(function AgentRuntime({
   isCreatingSession = false,
   customAgentDefinitions = [],
   onOpenAgentManagement,
+  onCreateAgentByHand,
+  onStartWorkflowAgentCreate,
+  agentCreateCanvasIncluded = false,
   density = 'comfortable',
   paneNumber = null,
   paneCount = 1,
@@ -1225,6 +1243,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   onSelectSidebarSession,
   onCloseSidebar,
   historicalConversationTurns,
+  pendingInitialRuntimeAgentId = null,
+  onPendingInitialRuntimeAgentIdConsumed,
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -1536,6 +1556,8 @@ export const AgentRuntime = memo(function AgentRuntime({
     dictationEnabled: foregroundWorkReady && isFocusedPane,
     dictationScopeKey: `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`,
     reportComposerControls: foregroundWorkReady && isFocusedPane,
+    pendingInitialRuntimeAgentId,
+    onPendingInitialRuntimeAgentIdConsumed,
     onStartRuntimeRun,
     onStartRuntimeSession,
     onUpdateRuntimeRunControls: canMutateRuntimeRun ? onUpdateRuntimeRunControls : undefined,
@@ -1650,7 +1672,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           !agentRuntimeBlocked &&
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
-        ? 'Describe the agent you want to create...'
+        ? 'Describe the agent you want to build...'
       : controller.composerRuntimeAgentId === 'crawl' &&
           !agentRuntimeBlocked &&
           runtimeSession?.isAuthenticated &&
@@ -2239,6 +2261,11 @@ export const AgentRuntime = memo(function AgentRuntime({
               <SetupEmptyState onOpenSettings={onOpenSettings} />
             ) : showEmptySessionState ? (
               <EmptySessionState
+                context={
+                  controller.composerRuntimeAgentId === 'agent_create' ? 'agent-create' : 'default'
+                }
+                agentCreateCanvasIncluded={agentCreateCanvasIncluded}
+                onStartWorkflowAgentCreate={onStartWorkflowAgentCreate}
                 projectLabel={projectLabel}
                 variant={isDense ? 'dense' : 'default'}
                 onSelectSuggestion={(prompt) => {
@@ -2279,6 +2306,7 @@ export const AgentRuntime = memo(function AgentRuntime({
                     runtimeStreamItems={runtimeStreamItems}
                     pendingApprovalCount={agent.pendingApprovalCount ?? 0}
                     onOpenAgentManagement={onOpenAgentManagement}
+                    onCreateAgentByHand={onCreateAgentByHand}
                   />
                 ) : null}
                 <div ref={bottomSentinelRef} aria-hidden="true" className="h-1 shrink-0 scroll-mb-8" />

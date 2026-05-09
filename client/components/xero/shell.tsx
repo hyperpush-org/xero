@@ -29,6 +29,7 @@ import { StatusFooter, type StatusFooterProps } from "./status-footer"
 export type PlatformVariant = "macos" | "windows" | "linux"
 
 export type SurfacePreloadTarget =
+  | "agent-dock"
   | "browser"
   | "ios"
   | "settings"
@@ -523,6 +524,8 @@ export function XeroShell({
       )}
       disabled={agentDockDisabled}
       onClick={onToggleAgentDock}
+      onFocus={() => queueSurfacePreload("agent-dock")}
+      onPointerEnter={() => queueSurfacePreload("agent-dock")}
       title={agentDockDisabled ? "Already in Agent view" : "Agent"}
       type="button"
     >

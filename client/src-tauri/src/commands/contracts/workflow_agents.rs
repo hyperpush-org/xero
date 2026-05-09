@@ -244,6 +244,57 @@ pub struct GetWorkflowAgentDetailRequestDto {
     pub r#ref: AgentRefDto,
 }
 
+// Catalog entries the canvas authoring UI uses to populate pickers. The shapes
+// mirror the in-detail summaries (AgentToolSummaryDto / AgentDbTouchpointDetailDto
+// / AgentConsumedArtifactDto) but are surfaced unfiltered so the user sees every
+// allowable choice, not the per-agent filtered subset.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringDbTableDto {
+    pub table: String,
+    pub purpose: String,
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringUpstreamArtifactDto {
+    pub source_agent: RuntimeAgentIdDto,
+    pub source_agent_label: String,
+    pub contract: RuntimeAgentOutputContractDto,
+    pub contract_label: String,
+    pub label: String,
+    pub description: String,
+    pub sections: Vec<AgentOutputSectionDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringToolCategoryDto {
+    // Stable group identifier (matches AgentToolSummaryDto.group). The drag
+    // picker shows label; the snapshot stores tools by name.
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    // Tools in this category, in catalog order.
+    pub tools: Vec<AgentToolSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringCatalogDto {
+    pub tools: Vec<AgentToolSummaryDto>,
+    pub tool_categories: Vec<AgentAuthoringToolCategoryDto>,
+    pub db_tables: Vec<AgentAuthoringDbTableDto>,
+    pub upstream_artifacts: Vec<AgentAuthoringUpstreamArtifactDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetAgentAuthoringCatalogRequestDto {
+    pub project_id: String,
+}
+
 pub fn output_contract_label(contract: RuntimeAgentOutputContractDto) -> &'static str {
     match contract {
         RuntimeAgentOutputContractDto::Answer => "Answer",
