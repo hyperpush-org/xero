@@ -89,6 +89,39 @@ export const projectFileNodeSchema: z.ZodType<ProjectFileNodeDto> = z.lazy(() =>
     .strict(),
 )
 
+export const projectFileTreeNodeSchema = z
+  .object({
+    id: projectTreePathSchema,
+    name: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    type: projectEntryKindSchema,
+    childrenLoaded: z.boolean(),
+    truncated: z.boolean(),
+    omittedEntryCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const projectFileTreeStatsSchema = z
+  .object({
+    byteSize: z.number().int().nonnegative(),
+    childListCount: z.number().int().nonnegative(),
+    nodeCount: z.number().int().nonnegative(),
+    unloadedFolderCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const projectFileTreeViewSchema = z
+  .object({
+    rootPath: projectTreePathSchema,
+    nodesByPath: z.record(projectTreePathSchema, projectFileTreeNodeSchema),
+    childPathsByPath: z.record(projectTreePathSchema, z.array(projectTreePathSchema)),
+    loadedPaths: z.array(projectTreePathSchema),
+    stats: projectFileTreeStatsSchema,
+    truncated: z.boolean(),
+    omittedEntryCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
 export const listProjectFilesRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -196,6 +229,36 @@ export const repositoryDiffResponseSchema = z.object({
   repository: repositorySummarySchema,
   scope: repositoryDiffScopeSchema,
   patch: z.string(),
+  files: z.array(
+    z.object({
+      oldPath: nullableTextSchema,
+      newPath: nullableTextSchema,
+      displayPath: z.string().min(1),
+      status: changeKindSchema,
+      hunks: z.array(
+        z.object({
+          header: z.string(),
+          oldStart: z.number().int().nonnegative(),
+          oldLines: z.number().int().nonnegative(),
+          newStart: z.number().int().nonnegative(),
+          newLines: z.number().int().nonnegative(),
+          rows: z.array(
+            z.object({
+              kind: z.enum(['context', 'add', 'remove', 'no_newline']),
+              prefix: z.string(),
+              text: z.string(),
+              oldLineNumber: z.number().int().nonnegative().nullable().optional(),
+              newLineNumber: z.number().int().nonnegative().nullable().optional(),
+            }),
+          ),
+          truncated: z.boolean().optional(),
+        }),
+      ),
+      patch: z.string(),
+      truncated: z.boolean(),
+      cacheKey: z.string().min(1),
+    }),
+  ),
   truncated: z.boolean(),
   baseRevision: nullableTextSchema,
   payloadBudget: payloadBudgetDiagnosticSchema.nullable().optional(),
@@ -281,6 +344,7 @@ export const listProjectFilesResponseSchema = z
     projectId: z.string().trim().min(1),
     path: projectTreePathSchema,
     root: projectFileNodeSchema,
+    view: projectFileTreeViewSchema,
     truncated: z.boolean().optional(),
     omittedEntryCount: z.number().int().nonnegative().optional(),
     payloadBudget: payloadBudgetDiagnosticSchema.nullable().optional(),
@@ -297,6 +361,38 @@ const projectFileContentBaseSchema = z
   })
   .strict()
 
+export const projectFileCsvPreviewSchema = z
+  .object({
+    kind: z.literal('csv'),
+    headers: z.array(z.string()),
+    rows: z.array(z.array(z.string())),
+    totalRows: z.number().int().nonnegative(),
+    totalColumns: z.number().int().nonnegative(),
+    truncatedRows: z.boolean(),
+    truncatedColumns: z.boolean(),
+  })
+  .strict()
+
+export const projectMarkdownAssetRefSchema = z
+  .object({
+    source: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    previewUrl: z.string().trim().min(1).nullable().optional(),
+  })
+  .strict()
+
+export const projectFileMarkdownPreviewSchema = z
+  .object({
+    kind: z.literal('markdown'),
+    assetRefs: z.array(projectMarkdownAssetRefSchema),
+  })
+  .strict()
+
+export const projectFilePreviewSchema = z.discriminatedUnion('kind', [
+  projectFileCsvPreviewSchema,
+  projectFileMarkdownPreviewSchema,
+])
+
 export const readProjectFileResponseSchema = z.discriminatedUnion('kind', [
   projectFileContentBaseSchema
     .extend({
@@ -304,6 +400,7 @@ export const readProjectFileResponseSchema = z.discriminatedUnion('kind', [
       mimeType: z.string().trim().min(1),
       rendererKind: projectTextRendererKindSchema,
       text: z.string(),
+      preview: projectFilePreviewSchema.nullable().optional(),
     })
     .strict(),
   projectFileContentBaseSchema
@@ -560,12 +657,18 @@ export type ProjectRenderableRendererKindDto = z.infer<typeof projectRenderableR
 export type ProjectFileRendererKindDto = z.infer<typeof projectFileRendererKindSchema>
 export type ListProjectFilesRequestDto = z.infer<typeof listProjectFilesRequestSchema>
 export type ProjectFileRequestDto = z.infer<typeof projectFileRequestSchema>
+export type ProjectFileTreeNodeDto = z.infer<typeof projectFileTreeNodeSchema>
+export type ProjectFileTreeStatsDto = z.infer<typeof projectFileTreeStatsSchema>
+export type ProjectFileTreeViewDto = z.infer<typeof projectFileTreeViewSchema>
 export type RevokeProjectAssetTokensRequestDto = z.infer<typeof revokeProjectAssetTokensRequestSchema>
 export type WriteProjectFileRequestDto = z.infer<typeof writeProjectFileRequestSchema>
 export type CreateProjectEntryRequestDto = z.infer<typeof createProjectEntryRequestSchema>
 export type RenameProjectEntryRequestDto = z.infer<typeof renameProjectEntryRequestSchema>
 export type MoveProjectEntryRequestDto = z.infer<typeof moveProjectEntryRequestSchema>
 export type ListProjectFilesResponseDto = z.infer<typeof listProjectFilesResponseSchema>
+export type ProjectFileCsvPreviewDto = z.infer<typeof projectFileCsvPreviewSchema>
+export type ProjectFileMarkdownPreviewDto = z.infer<typeof projectFileMarkdownPreviewSchema>
+export type ProjectFilePreviewDto = z.infer<typeof projectFilePreviewSchema>
 export type ReadProjectFileResponseDto = z.infer<typeof readProjectFileResponseSchema>
 export type WriteProjectFileResponseDto = z.infer<typeof writeProjectFileResponseSchema>
 export type CreateProjectEntryResponseDto = z.infer<typeof createProjectEntryResponseSchema>
@@ -675,6 +778,7 @@ export interface RepositoryDiffView {
   repositoryId: string
   scope: RepositoryDiffScope
   patch: string
+  files: RepositoryDiffResponseDto['files']
   isEmpty: boolean
   truncated: boolean
   baseRevisionLabel: string
@@ -802,6 +906,7 @@ export function mapRepositoryDiff(diff: RepositoryDiffResponseDto): RepositoryDi
     repositoryId: diff.repository.id,
     scope: diff.scope,
     patch,
+    files: diff.files,
     isEmpty: patch.length === 0,
     truncated: diff.truncated,
     baseRevisionLabel,

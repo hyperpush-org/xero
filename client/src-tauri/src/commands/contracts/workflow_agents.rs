@@ -424,7 +424,17 @@ pub struct AgentAuthoringConstraintExplanationDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringCatalogDiagnosticDto {
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentAuthoringCatalogDto {
+    pub contract_version: u32,
     pub tools: Vec<AgentToolSummaryDto>,
     pub tool_categories: Vec<AgentAuthoringToolCategoryDto>,
     pub db_tables: Vec<AgentAuthoringDbTableDto>,
@@ -434,6 +444,7 @@ pub struct AgentAuthoringCatalogDto {
     pub creation_flows: Vec<AgentAuthoringCreationFlowDto>,
     pub profile_availability: Vec<AgentAuthoringProfileAvailabilityDto>,
     pub constraint_explanations: Vec<AgentAuthoringConstraintExplanationDto>,
+    pub diagnostics: Vec<AgentAuthoringCatalogDiagnosticDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

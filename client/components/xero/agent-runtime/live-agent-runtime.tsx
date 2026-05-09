@@ -100,7 +100,11 @@ export function useHistoricalConversationTurns(
   const agentSessionId = agent?.project.selectedAgentSessionId ?? null
   const activeRunId = agent?.runtimeRun?.runId ?? null
   const getSessionTranscript = desktopAdapter?.getSessionTranscript
-  const [turnsByKey, setTurnsByKey] = useState<{ key: string; turns: ConversationTurn[] } | null>(null)
+  const [turnsByKey, setTurnsByKey] = useState<{
+    sessionKey: string
+    fetchKey: string
+    turns: ConversationTurn[]
+  } | null>(null)
   const streamStatus = agent?.runtimeStreamStatus ?? 'idle'
   const shouldDeferTranscriptFetch = Boolean(
     agent?.runtimeRunActionStatus === 'running' ||
@@ -113,12 +117,15 @@ export function useHistoricalConversationTurns(
   // Keying on (project, session, run) covers the same-type handoff case: when
   // the runtime run snapshot is rebound from source -> target run, the runId
   // changes and we refetch so the source run's items show up as history.
-  const fetchKey = projectId && agentSessionId
-    ? `${projectId}::${agentSessionId}::${activeRunId ?? ''}`
+  const sessionKey = projectId && agentSessionId
+    ? `${projectId}::${agentSessionId}`
+    : null
+  const fetchKey = sessionKey
+    ? `${sessionKey}::${activeRunId ?? ''}`
     : null
 
   useEffect(() => {
-    if (!fetchKey || !projectId || !agentSessionId || !getSessionTranscript || shouldDeferTranscriptFetch) {
+    if (!sessionKey || !fetchKey || !projectId || !agentSessionId || !getSessionTranscript || shouldDeferTranscriptFetch) {
       return
     }
 
@@ -131,13 +138,13 @@ export function useHistoricalConversationTurns(
       .then((transcript) => {
         if (cancelled) return
         const turns = buildHistoricalConversationTurns(transcript, { activeRunId })
-        setTurnsByKey({ key: fetchKey, turns })
+        setTurnsByKey({ sessionKey, fetchKey, turns })
       })
       .catch(() => {
         if (cancelled) return
         // On failure, fall back silently to the live stream alone. The pane
         // is still functional; only the historical context is missing.
-        setTurnsByKey({ key: fetchKey, turns: [] })
+        setTurnsByKey({ sessionKey, fetchKey, turns: [] })
       })
 
     return () => {
@@ -149,12 +156,15 @@ export function useHistoricalConversationTurns(
     fetchKey,
     getSessionTranscript,
     projectId,
+    sessionKey,
     shouldDeferTranscriptFetch,
   ])
 
-  // While stale-keyed (e.g. user just switched panes), suppress the previous
-  // pane's history rather than briefly flashing it under the new pane.
-  if (!turnsByKey || turnsByKey.key !== fetchKey) {
+  // While stale-session keyed (e.g. user just switched panes), suppress the
+  // previous pane's history. Within the same session, keep the last settled
+  // transcript projection visible while a prompt is queued or the stream is
+  // attaching so the conversation surface does not disappear mid-send.
+  if (!sessionKey || !turnsByKey || turnsByKey.sessionKey !== sessionKey) {
     return null
   }
   return turnsByKey.turns

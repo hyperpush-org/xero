@@ -304,6 +304,59 @@ function cloneNode(node: ProjectNode): ProjectNode {
     : { ...node }
 }
 
+function projectTreeView(root: ProjectNode): ListProjectFilesResponseDto['view'] {
+  const nodesByPath: ListProjectFilesResponseDto['view']['nodesByPath'] = {}
+  const childPathsByPath: ListProjectFilesResponseDto['view']['childPathsByPath'] = {}
+
+  const ingest = (node: ProjectNode) => {
+    nodesByPath[node.path] = {
+      id: node.path,
+      name: node.name,
+      path: node.path,
+      type: node.type,
+      childrenLoaded: node.type === 'file' ? true : node.childrenLoaded ?? Boolean(node.children),
+      truncated: node.truncated ?? false,
+      omittedEntryCount: node.omittedEntryCount ?? 0,
+    }
+    if (node.type === 'folder') {
+      childPathsByPath[node.path] = node.children?.map((child) => child.path) ?? []
+      node.children?.forEach(ingest)
+    }
+  }
+  ingest(root)
+
+  return {
+    rootPath: root.path,
+    nodesByPath,
+    childPathsByPath,
+    loadedPaths: Object.values(nodesByPath)
+      .filter((node) => node.type === 'folder' && node.childrenLoaded)
+      .map((node) => node.path),
+    stats: {
+      byteSize: 1,
+      childListCount: Object.keys(childPathsByPath).length,
+      nodeCount: Object.keys(nodesByPath).length,
+      unloadedFolderCount: Object.values(nodesByPath).filter(
+        (node) => node.type === 'folder' && !node.childrenLoaded,
+      ).length,
+    },
+    truncated: root.truncated ?? false,
+    omittedEntryCount: root.omittedEntryCount ?? 0,
+  }
+}
+
+function projectFileListing(projectId: string, path: string, root: ProjectNode): ListProjectFilesResponseDto {
+  const clonedRoot = cloneNode(root)
+  return {
+    projectId,
+    path,
+    root: clonedRoot,
+    view: projectTreeView(clonedRoot),
+    truncated: clonedRoot.truncated ?? false,
+    omittedEntryCount: clonedRoot.omittedEntryCount ?? 0,
+  }
+}
+
 function joinPath(parentPath: string, name: string): string {
   return parentPath === '/' ? `/${name}` : `${parentPath}/${name}`
 }
@@ -495,11 +548,9 @@ function createWorkspaceHarness(options?: {
     ...(options?.fileContents ?? {}),
   }
 
-  const listProjectFiles = vi.fn(async (projectId: string, path = '/') => ({
-    projectId,
-    path,
-    root: cloneNode(currentRoot),
-  }))
+  const listProjectFiles = vi.fn(async (projectId: string, path = '/') =>
+    projectFileListing(projectId, path, currentRoot),
+  )
   const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
     ...textFileResponse(projectId, path, currentFileContents[path] ?? ''),
   }))
@@ -864,14 +915,15 @@ describe('ExecutionView', () => {
 
   it('ignores stale file reads after the selected project changes', async () => {
     const slowRead = createDeferred<ReadProjectFileResponseDto>()
-    const listProjectFiles = vi.fn(async (projectId: string, path = '/') => ({
-      projectId,
-      path,
-      root:
+    const listProjectFiles = vi.fn(async (projectId: string, path = '/') =>
+      projectFileListing(
+        projectId,
+        path,
         projectId === 'project-1'
           ? folder('root', '/', [file('README.md', '/README.md')])
           : folder('root', '/', [file('app.py', '/app.py')]),
-    }))
+      ),
+    )
     const readProjectFile = vi.fn((projectId: string, path: string) => {
       if (projectId === 'project-1') {
         return slowRead.promise
@@ -1058,11 +1110,9 @@ describe('ExecutionView file editor host', () => {
       '/archive.bin': () => unsupportedFileResponse('project-1', '/archive.bin'),
     }
 
-    const listProjectFiles = vi.fn(async (projectId: string, path = '/') => ({
-      projectId,
-      path,
-      root: cloneNode(currentRoot),
-    }))
+    const listProjectFiles = vi.fn(async (projectId: string, path = '/') =>
+      projectFileListing(projectId, path, currentRoot),
+    )
     const readProjectFile = vi.fn(async (_projectId: string, path: string) => {
       const builder = responses[path]
       if (!builder) {

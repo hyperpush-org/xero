@@ -2200,6 +2200,7 @@ fn transcript_kind_from_event(kind: &AgentRunEventKind) -> SessionTranscriptItem
         | AgentRunEventKind::ToolPermissionGrant
         | AgentRunEventKind::ProviderModelChanged
         | AgentRunEventKind::RuntimeSettingsChanged
+        | AgentRunEventKind::SubagentLifecycle
         | AgentRunEventKind::VerificationGate => SessionTranscriptItemKindDto::Activity,
     }
 }
@@ -2258,6 +2259,7 @@ fn transcript_parts_from_event(
         AgentRunEventKind::RunPaused => Some("Run paused".into()),
         AgentRunEventKind::RunCompleted => Some("Run completed".into()),
         AgentRunEventKind::RunFailed => Some("Run failed".into()),
+        AgentRunEventKind::SubagentLifecycle => Some("Subagent".into()),
     };
     let raw_text = payload_string(payload, "text")
         .or_else(|| payload_string(payload, "summary"))
@@ -2374,6 +2376,7 @@ fn transcript_kind_from_runtime_stream(
         RuntimeStreamItemKind::Plan => SessionTranscriptItemKindDto::Activity,
         RuntimeStreamItemKind::Complete => SessionTranscriptItemKindDto::Complete,
         RuntimeStreamItemKind::Failure => SessionTranscriptItemKindDto::Failure,
+        RuntimeStreamItemKind::SubagentLifecycle => SessionTranscriptItemKindDto::Activity,
     }
 }
 

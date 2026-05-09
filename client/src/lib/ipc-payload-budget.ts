@@ -265,7 +265,28 @@ function estimatePayloadBytesForBudget(payload: unknown, budgetKey: IpcPayloadBu
     return estimateRuntimeStreamItemPayloadBytes(payload)
   }
 
+  const observedBytes = observedPayloadBudgetBytes(payload)
+  if (observedBytes !== null) {
+    return observedBytes
+  }
+
   return estimateIpcPayloadBytes(payload)
+}
+
+function observedPayloadBudgetBytes(payload: unknown): number | null {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  const payloadBudget = (payload as { payloadBudget?: unknown }).payloadBudget
+  if (!payloadBudget || typeof payloadBudget !== 'object') {
+    return null
+  }
+
+  const observedBytes = (payloadBudget as { observedBytes?: unknown }).observedBytes
+  return typeof observedBytes === 'number' && Number.isFinite(observedBytes) && observedBytes >= 0
+    ? observedBytes
+    : null
 }
 
 export function recordIpcPayloadSample(sample: IpcPayloadSample): RecordedIpcPayloadSample | null {

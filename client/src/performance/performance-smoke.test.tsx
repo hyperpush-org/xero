@@ -69,6 +69,7 @@ import {
   type GitFetchResponseDto,
   type GitPullResponseDto,
   type GitPushResponseDto,
+  type ListProjectFilesResponseDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusView,
 } from '@/src/lib/xero-model/project'
@@ -256,6 +257,7 @@ function makeDiff(patch: string): RepositoryDiffResponseDto {
     repository,
     scope: 'unstaged',
     patch,
+    files: [],
     truncated: false,
     baseRevision: null,
   }
@@ -286,6 +288,47 @@ function makeLargeFileTree(fileCount: number): FileSystemNode {
         type: 'file',
       }
     }),
+  }
+}
+
+function makeProjectTreeView(root: FileSystemNode): ListProjectFilesResponseDto['view'] {
+  const nodesByPath: ListProjectFilesResponseDto['view']['nodesByPath'] = {}
+  const childPathsByPath: ListProjectFilesResponseDto['view']['childPathsByPath'] = {}
+
+  const ingest = (node: FileSystemNode) => {
+    nodesByPath[node.path] = {
+      id: node.path,
+      name: node.name,
+      path: node.path,
+      type: node.type,
+      childrenLoaded: node.type === 'file' ? true : node.childrenLoaded ?? Boolean(node.children),
+      truncated: node.truncated ?? false,
+      omittedEntryCount: node.omittedEntryCount ?? 0,
+    }
+    if (node.type === 'folder') {
+      childPathsByPath[node.path] = node.children?.map((child) => child.path) ?? []
+      node.children?.forEach(ingest)
+    }
+  }
+  ingest(root)
+
+  return {
+    rootPath: root.path,
+    nodesByPath,
+    childPathsByPath,
+    loadedPaths: Object.values(nodesByPath)
+      .filter((node) => node.type === 'folder' && node.childrenLoaded)
+      .map((node) => node.path),
+    stats: {
+      byteSize: 1,
+      childListCount: Object.keys(childPathsByPath).length,
+      nodeCount: Object.keys(nodesByPath).length,
+      unloadedFolderCount: Object.values(nodesByPath).filter(
+        (node) => node.type === 'folder' && !node.childrenLoaded,
+      ).length,
+    },
+    truncated: root.truncated ?? false,
+    omittedEntryCount: root.omittedEntryCount ?? 0,
   }
 }
 
@@ -789,23 +832,27 @@ describe('UI latency performance smoke replays', () => {
       const diffPatchCache = createDiffPatchCache()
       setCachedDiffPatch(diffPatchCache, 'project-1\u0000rev\u0000unstaged\u0000file.txt', patch)
 
+      const projectTreeRoot: FileSystemNode = {
+        name: 'root',
+        path: '/',
+        type: 'folder',
+        id: '/',
+        childrenLoaded: true,
+        children: Array.from({ length: 400 }, (_, index) => ({
+          id: `/src/file-${index}.ts`,
+          name: `file-${index}.ts`,
+          path: `/src/file-${index}.ts`,
+          type: 'file' as const,
+          childrenLoaded: true,
+        })),
+      }
       const projectTreeStore = applyProjectFileListing(
         createEmptyProjectFileTreeStore(),
         {
           projectId: 'project-1',
           path: '/',
-          root: {
-            name: 'root',
-            path: '/',
-            type: 'folder',
-            childrenLoaded: true,
-            children: Array.from({ length: 400 }, (_, index) => ({
-              name: `file-${index}.ts`,
-              path: `/src/file-${index}.ts`,
-              type: 'file' as const,
-              childrenLoaded: true,
-            })),
-          },
+          root: projectTreeRoot,
+          view: makeProjectTreeView(projectTreeRoot),
           truncated: false,
           omittedEntryCount: 0,
         },
@@ -885,7 +932,14 @@ describe('UI latency performance smoke replays', () => {
       recordIpcPayloadSample({
         boundary: 'command',
         name: 'list_project_files',
-        payload: { projectId: 'project-1', path: '/', root: projectTree, truncated: false, omittedEntryCount: 0 },
+        payload: {
+          projectId: 'project-1',
+          path: '/',
+          root: projectTree,
+          view: makeProjectTreeView(projectTree),
+          truncated: false,
+          omittedEntryCount: 0,
+        },
       })
       recordIpcPayloadSample({
         boundary: 'command',

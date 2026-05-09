@@ -128,6 +128,7 @@ export function FileEditorHost(props: FileEditorHostProps) {
             rendererKind={resource.rendererKind}
             mimeType={resource.mimeType}
             text={props.textValue}
+            preview={props.textValue === props.textSavedValue ? resource.preview : null}
             onResolveAssetPreviewUrl={props.onResolveAssetPreviewUrl}
           />
         )}
@@ -179,12 +180,14 @@ function TextBackedPreview({
   rendererKind,
   mimeType,
   text,
+  preview,
   onResolveAssetPreviewUrl,
 }: {
   filePath: string
   rendererKind: TextRendererKind
   mimeType: string
   text: string
+  preview?: Extract<ProjectFileResource, { kind: 'text' }>['preview']
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
 }) {
   if (rendererKind === 'svg') {
@@ -196,13 +199,21 @@ function TextBackedPreview({
       <MarkdownPreview
         filePath={filePath}
         text={text}
+        preview={preview?.kind === 'markdown' ? preview : null}
         onResolveAssetPreviewUrl={onResolveAssetPreviewUrl}
       />
     )
   }
 
   if (rendererKind === 'csv') {
-    return <CsvPreview filePath={filePath} text={text} mimeType={mimeType} />
+    return (
+      <CsvPreview
+        filePath={filePath}
+        text={text}
+        mimeType={mimeType}
+        preview={preview?.kind === 'csv' ? preview : null}
+      />
+    )
   }
 
   return <PreviewUnavailablePanel rendererKind={rendererKind} filePath={filePath} />

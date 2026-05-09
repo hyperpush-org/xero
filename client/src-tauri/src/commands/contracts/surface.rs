@@ -479,6 +479,39 @@ pub struct ProjectFileNodeDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectFileTreeNodeDto {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub r#type: ProjectEntryKindDto,
+    pub children_loaded: bool,
+    pub truncated: bool,
+    pub omitted_entry_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectFileTreeStatsDto {
+    pub byte_size: u32,
+    pub child_list_count: u32,
+    pub node_count: u32,
+    pub unloaded_folder_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectFileTreeViewDto {
+    pub root_path: String,
+    pub nodes_by_path: std::collections::BTreeMap<String, ProjectFileTreeNodeDto>,
+    pub child_paths_by_path: std::collections::BTreeMap<String, Vec<String>>,
+    pub loaded_paths: Vec<String>,
+    pub stats: ProjectFileTreeStatsDto,
+    pub truncated: bool,
+    pub omitted_entry_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PayloadBudgetDiagnosticDto {
     pub key: String,
     pub budget_bytes: u32,
@@ -607,12 +640,60 @@ pub struct RepositoryStatusResponseDto {
     pub payload_budget: Option<PayloadBudgetDiagnosticDto>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryDiffRowKindDto {
+    Context,
+    Add,
+    Remove,
+    NoNewline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositoryDiffRowDto {
+    pub kind: RepositoryDiffRowKindDto,
+    pub prefix: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_line_number: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_line_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositoryDiffHunkDto {
+    pub header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub rows: Vec<RepositoryDiffRowDto>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositoryDiffFileDto {
+    pub old_path: Option<String>,
+    pub new_path: Option<String>,
+    pub display_path: String,
+    pub status: ChangeKind,
+    pub hunks: Vec<RepositoryDiffHunkDto>,
+    pub patch: String,
+    pub truncated: bool,
+    pub cache_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepositoryDiffResponseDto {
     pub repository: RepositorySummaryDto,
     pub scope: RepositoryDiffScope,
     pub patch: String,
+    pub files: Vec<RepositoryDiffFileDto>,
     pub truncated: bool,
     pub base_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -718,12 +799,43 @@ pub struct ListProjectFilesResponseDto {
     pub project_id: String,
     pub path: String,
     pub root: ProjectFileNodeDto,
+    pub view: ProjectFileTreeViewDto,
     #[serde(default)]
     pub truncated: bool,
     #[serde(default)]
     pub omitted_entry_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_budget: Option<PayloadBudgetDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProjectFilePreviewDto {
+    Csv {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+        total_rows: u32,
+        total_columns: u32,
+        truncated_rows: bool,
+        truncated_columns: bool,
+    },
+    Markdown {
+        asset_refs: Vec<ProjectMarkdownAssetRefDto>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectMarkdownAssetRefDto {
+    pub source: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -743,6 +855,8 @@ pub enum ReadProjectFileResponseDto {
         mime_type: String,
         renderer_kind: ProjectFileRendererKindDto,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<ProjectFilePreviewDto>,
     },
     Renderable {
         project_id: String,

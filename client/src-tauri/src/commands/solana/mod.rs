@@ -2233,6 +2233,8 @@ fn default_recent_last_n() -> u32 {
     25
 }
 
+const LOGS_VIEW_WINDOW_LIMIT: usize = 1024;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsRecentResponse {
@@ -2291,6 +2293,153 @@ pub fn solana_logs_recent(
         fetched: entries.len() as u32,
         entries,
     })
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LogsViewFilter {
+    All,
+    Errors,
+    Events,
+}
+
+fn default_logs_view_filter() -> LogsViewFilter {
+    LogsViewFilter::All
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LogsViewOrder {
+    NewestFirst,
+    Chronological,
+}
+
+fn default_logs_view_order() -> LogsViewOrder {
+    LogsViewOrder::NewestFirst
+}
+
+fn default_logs_view_limit() -> u32 {
+    100
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogsViewRequest {
+    pub cluster: ClusterKind,
+    #[serde(default)]
+    pub program_ids: Vec<String>,
+    #[serde(default = "default_logs_view_filter")]
+    pub filter: LogsViewFilter,
+    #[serde(default = "default_logs_view_order")]
+    pub order: LogsViewOrder,
+    #[serde(default = "default_logs_view_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LogsViewCounts {
+    pub all: u32,
+    pub errors: u32,
+    pub events: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogsViewResponse {
+    pub cluster: ClusterKind,
+    pub program_ids: Vec<String>,
+    pub filter: LogsViewFilter,
+    pub order: LogsViewOrder,
+    pub limit: u32,
+    pub total_available: u32,
+    pub decoded_event_count: u32,
+    pub counts: LogsViewCounts,
+    pub entries: Vec<LogEntry>,
+}
+
+#[tauri::command]
+pub fn solana_logs_view(
+    state: State<'_, SolanaState>,
+    request: LogsViewRequest,
+) -> CommandResult<LogsViewResponse> {
+    if !(1..=LOGS_VIEW_WINDOW_LIMIT as u32).contains(&request.limit) {
+        return Err(logs::invalid_last_n(request.limit as u64));
+    }
+
+    let filter = LogFilter {
+        cluster: request.cluster,
+        program_ids: request.program_ids.clone(),
+        include_decoded: true,
+    };
+    let entries = state.log_bus().recent(&filter, LOGS_VIEW_WINDOW_LIMIT);
+    Ok(build_logs_view_response(request, entries))
+}
+
+fn build_logs_view_response(
+    request: LogsViewRequest,
+    base_entries: Vec<LogEntry>,
+) -> LogsViewResponse {
+    let counts = LogsViewCounts {
+        all: base_entries.len().min(u32::MAX as usize) as u32,
+        errors: base_entries
+            .iter()
+            .filter(|entry| log_entry_is_error(entry))
+            .count()
+            .min(u32::MAX as usize) as u32,
+        events: base_entries
+            .iter()
+            .filter(|entry| !entry.anchor_events.is_empty())
+            .count()
+            .min(u32::MAX as usize) as u32,
+    };
+    let decoded_event_count = base_entries
+        .iter()
+        .map(|entry| entry.anchor_events.len())
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    let mut entries = base_entries
+        .into_iter()
+        .filter(|entry| log_entry_matches_view_filter(entry, request.filter))
+        .collect::<Vec<_>>();
+
+    entries.sort_by(|left, right| {
+        let received_order = left.received_ms.cmp(&right.received_ms);
+        let slot_order = left.slot.cmp(&right.slot);
+        let signature_order = left.signature.cmp(&right.signature);
+        match request.order {
+            LogsViewOrder::Chronological => received_order.then(slot_order).then(signature_order),
+            LogsViewOrder::NewestFirst => received_order
+                .reverse()
+                .then(slot_order.reverse())
+                .then(signature_order.reverse()),
+        }
+    });
+    entries.truncate(request.limit as usize);
+
+    LogsViewResponse {
+        cluster: request.cluster,
+        program_ids: request.program_ids,
+        filter: request.filter,
+        order: request.order,
+        limit: request.limit,
+        total_available: counts.all,
+        decoded_event_count,
+        counts,
+        entries,
+    }
+}
+
+fn log_entry_matches_view_filter(entry: &LogEntry, filter: LogsViewFilter) -> bool {
+    match filter {
+        LogsViewFilter::All => true,
+        LogsViewFilter::Errors => log_entry_is_error(entry),
+        LogsViewFilter::Events => !entry.anchor_events.is_empty(),
+    }
+}
+
+fn log_entry_is_error(entry: &LogEntry) -> bool {
+    entry.err.is_some() || !entry.explanation.ok
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2561,6 +2710,7 @@ pub fn solana_subscribe_ready<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn default_state_has_every_cluster_in_router() {
@@ -2587,5 +2737,110 @@ mod tests {
         assert_eq!(state.personas.root(), root.join("personas"));
         assert_eq!(state.metaplex_worker_root(), root.join("metaplex-worker"));
         assert_eq!(state.program_archive_root(), root.join("program-archive"));
+    }
+
+    #[test]
+    fn logs_view_filters_orders_and_counts_entries_in_rust() {
+        let entries = vec![
+            test_log_entry("sig-ok", 100, true, 0),
+            test_log_entry("sig-event", 200, true, 1),
+            test_log_entry("sig-error", 300, false, 0),
+        ];
+        let response = build_logs_view_response(
+            LogsViewRequest {
+                cluster: ClusterKind::Localnet,
+                program_ids: vec!["Prog111".into()],
+                filter: LogsViewFilter::Errors,
+                order: LogsViewOrder::NewestFirst,
+                limit: 10,
+            },
+            entries,
+        );
+
+        assert_eq!(response.counts.all, 3);
+        assert_eq!(response.counts.errors, 1);
+        assert_eq!(response.counts.events, 1);
+        assert_eq!(response.decoded_event_count, 1);
+        assert_eq!(
+            response
+                .entries
+                .iter()
+                .map(|entry| entry.signature.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sig-error"]
+        );
+    }
+
+    #[test]
+    fn logs_view_returns_a_bounded_newest_first_page() {
+        let entries = vec![
+            test_log_entry("sig-old", 100, true, 0),
+            test_log_entry("sig-mid", 200, true, 0),
+            test_log_entry("sig-new", 300, true, 0),
+        ];
+        let response = build_logs_view_response(
+            LogsViewRequest {
+                cluster: ClusterKind::Localnet,
+                program_ids: Vec::new(),
+                filter: LogsViewFilter::All,
+                order: LogsViewOrder::NewestFirst,
+                limit: 2,
+            },
+            entries,
+        );
+
+        assert_eq!(
+            response
+                .entries
+                .iter()
+                .map(|entry| entry.signature.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sig-new", "sig-mid"]
+        );
+    }
+
+    fn test_log_entry(
+        signature: &str,
+        received_ms: u64,
+        ok: bool,
+        anchor_event_count: usize,
+    ) -> LogEntry {
+        let err = if ok {
+            None
+        } else {
+            Some(json!({ "InstructionError": [0, { "Custom": 6000 }] }))
+        };
+        let raw_logs = if ok {
+            vec![
+                "Program Prog111 invoke [1]".into(),
+                "Program Prog111 success".into(),
+            ]
+        } else {
+            vec![
+                "Program Prog111 invoke [1]".into(),
+                "Program Prog111 failed: custom program error: 0x1770".into(),
+            ]
+        };
+        let explanation = tx::decoder::explain_simulation(&raw_logs, err.as_ref(), None);
+        LogEntry {
+            cluster: ClusterKind::Localnet,
+            signature: signature.into(),
+            slot: Some(received_ms),
+            block_time_s: None,
+            raw_logs,
+            programs_invoked: vec!["Prog111".into()],
+            explanation,
+            anchor_events: (0..anchor_event_count)
+                .map(|index| AnchorEvent {
+                    program_id: "Prog111".into(),
+                    event_name: Some(format!("Event{index}")),
+                    discriminator_hex: format!("{index:016x}"),
+                    payload_base64: String::new(),
+                    payload_bytes_len: 0,
+                })
+                .collect(),
+            err,
+            received_ms,
+        }
     }
 }

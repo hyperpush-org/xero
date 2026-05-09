@@ -71,6 +71,7 @@ function makeDiff(patch: string): RepositoryDiffResponseDto {
     repository,
     scope: 'unstaged',
     patch,
+    files: [],
     truncated: false,
     baseRevision: null,
   }
@@ -351,6 +352,49 @@ describe('VcsSidebar', () => {
 
     await waitFor(() => expect(screen.getByText('second cached file')).toBeInTheDocument())
     expect(onLoadDiff).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders selected file diffs from structured Rust rows without parsing the raw patch', async () => {
+    resetDiffPerformanceStatsForTests()
+    const onLoadDiff = vi.fn(async (): Promise<RepositoryDiffResponseDto> => ({
+      ...makeDiff('diff --git a/file.txt b/file.txt\n+fallback raw patch'),
+      files: [
+        {
+          oldPath: 'file.txt',
+          newPath: 'file.txt',
+          displayPath: 'file.txt',
+          status: 'modified',
+          cacheKey: 'modified:file.txt',
+          patch: '',
+          truncated: false,
+          hunks: [
+            {
+              header: '@@ -1 +1 @@',
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              truncated: false,
+              rows: [
+                {
+                  kind: 'add',
+                  prefix: '+',
+                  text: 'structured rust row',
+                  oldLineNumber: null,
+                  newLineNumber: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }))
+
+    renderVcsSidebar('', { onLoadDiff })
+
+    await waitFor(() => expect(screen.getByText('structured rust row')).toBeInTheDocument())
+    expect(screen.queryByText('fallback raw patch')).not.toBeInTheDocument()
+    expect(getDiffParsingStats().parses).toBe(0)
   })
 
   it('windows large source-control file groups', async () => {

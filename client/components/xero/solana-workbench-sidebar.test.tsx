@@ -157,6 +157,17 @@ function registerDefaultSolanaResponses() {
   ])
   registerInvoke("solana_replay_list", () => [])
   registerInvoke("solana_logs_active", () => [])
+  registerInvoke("solana_logs_view", () => ({
+    cluster: "localnet",
+    programIds: [],
+    filter: "all",
+    order: "newestFirst",
+    limit: 100,
+    totalAvailable: 0,
+    decodedEventCount: 0,
+    counts: { all: 0, errors: 0, events: 0 },
+    entries: [],
+  }))
   registerInvoke("solana_token_extension_matrix", () => ({
     manifestVersion: "1",
     generatedAt: "2026-04-24",

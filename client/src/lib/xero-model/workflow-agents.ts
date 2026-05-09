@@ -1229,8 +1229,21 @@ export type GetAgentToolPackCatalogRequestDto = z.infer<
   typeof getAgentToolPackCatalogRequestSchema
 >
 
+export const agentAuthoringCatalogDiagnosticSchema = z
+  .object({
+    severity: z.enum(['warning', 'error']),
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    path: z.array(z.string().trim().min(1)),
+  })
+  .strict()
+export type AgentAuthoringCatalogDiagnosticDto = z.infer<
+  typeof agentAuthoringCatalogDiagnosticSchema
+>
+
 export const agentAuthoringCatalogSchema = z
   .object({
+    contractVersion: z.literal(1),
     tools: z.array(agentToolSummarySchema),
     toolCategories: z.array(agentAuthoringToolCategorySchema),
     dbTables: z.array(agentAuthoringDbTableSchema),
@@ -1242,6 +1255,7 @@ export const agentAuthoringCatalogSchema = z
     constraintExplanations: z
       .array(agentAuthoringConstraintExplanationSchema)
       .default([]),
+    diagnostics: z.array(agentAuthoringCatalogDiagnosticSchema),
   })
   .strict()
   .superRefine((catalog, ctx) => {

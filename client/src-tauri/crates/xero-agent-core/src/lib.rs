@@ -287,6 +287,7 @@ pub enum RuntimeEventKind {
     RunPaused,
     RunCompleted,
     RunFailed,
+    SubagentLifecycle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -8,7 +8,6 @@ import {
   Hammer,
   MoreHorizontal,
   Pencil,
-  Play,
   Plus,
   Search,
   ShieldCheck,
@@ -16,6 +15,7 @@ import {
   TestTube,
   Trash2,
   Wand2,
+  Workflow as WorkflowIcon,
   Wrench,
 } from "lucide-react"
 
@@ -52,19 +52,6 @@ const TAB_STORAGE_KEY = "xero.library.tab"
 
 type LibraryTab = "workflows" | "agents"
 
-type WorkflowStatus = "idle" | "running" | "succeeded" | "failed"
-
-interface Workflow {
-  id: string
-  name: string
-  description: string
-  agents: string[]
-  isDefault: boolean
-  status: WorkflowStatus
-  lastRunLabel: string | null
-  runCount: number
-}
-
 interface WorkflowsSidebarProps {
   open: boolean
   agents?: WorkflowAgentSummaryDto[]
@@ -74,86 +61,9 @@ interface WorkflowsSidebarProps {
   onSelectAgent?: (ref: AgentRefDto) => void
   onCreateAgent?: () => void
   onCreateAgentByHand?: () => void
-  onCreateWorkflow?: () => void
   onEditAgent?: (ref: AgentRefDto) => void
   onDuplicateAgent?: (ref: AgentRefDto) => void
   onDeleteAgent?: (ref: AgentRefDto) => void
-}
-
-const DEFAULT_WORKFLOWS: Workflow[] = [
-  {
-    id: "code-review",
-    name: "Code Review",
-    description: "Audit changed files for bugs, security, and style.",
-    agents: ["Reviewer", "Security", "Style"],
-    isDefault: true,
-    status: "idle",
-    lastRunLabel: "2h ago",
-    runCount: 14,
-  },
-  {
-    id: "generate-tests",
-    name: "Generate Tests",
-    description: "Plan UAT cases and write unit + integration tests.",
-    agents: ["Planner", "Test Writer"],
-    isDefault: true,
-    status: "idle",
-    lastRunLabel: "yesterday",
-    runCount: 6,
-  },
-  {
-    id: "refactor-document",
-    name: "Refactor & Document",
-    description: "Tighten implementation, then document the public surface.",
-    agents: ["Refactor", "Docs"],
-    isDefault: true,
-    status: "idle",
-    lastRunLabel: null,
-    runCount: 0,
-  },
-  {
-    id: "bug-triage",
-    name: "Bug Triage",
-    description: "Reproduce, classify, and propose fixes for open issues.",
-    agents: ["Reproducer", "Classifier", "Fixer"],
-    isDefault: true,
-    status: "succeeded",
-    lastRunLabel: "12m ago",
-    runCount: 3,
-  },
-  {
-    id: "security-audit",
-    name: "Security Audit",
-    description: "Threat-model the diff and verify mitigations land in code.",
-    agents: ["Modeler", "Verifier"],
-    isDefault: true,
-    status: "failed",
-    lastRunLabel: "3d ago",
-    runCount: 2,
-  },
-]
-
-const STATUS_STYLES: Record<WorkflowStatus, { label: string; className: string; dotClassName: string }> = {
-  idle: {
-    label: "Idle",
-    className: "text-muted-foreground",
-    dotClassName: "bg-muted-foreground/50",
-  },
-  running: {
-    label: "Running",
-    className: "text-primary",
-    dotClassName: "bg-primary animate-pulse",
-  },
-  succeeded: {
-    label: "Succeeded",
-    className: "text-success",
-    dotClassName: "bg-success",
-  },
-  failed: {
-    label: "Failed",
-    className: "text-destructive",
-    dotClassName: "bg-destructive",
-  },
 }
 
 const AGENT_PROFILE_ICON: Record<AgentDefinitionBaseCapabilityProfileDto, typeof Bot> = {
@@ -181,7 +91,6 @@ export function WorkflowsSidebar({
   onSelectAgent,
   onCreateAgent,
   onCreateAgentByHand,
-  onCreateWorkflow,
   onEditAgent,
   onDuplicateAgent,
   onDeleteAgent,
@@ -197,7 +106,6 @@ export function WorkflowsSidebar({
   widthRef.current = width
   const deferredQuery = useDeferredFilterQuery(query)
 
-  const workflows = DEFAULT_WORKFLOWS
   const agents = useMemo(() => agentsProp ?? [], [agentsProp])
 
   const setTab = useCallback((next: LibraryTab) => {
@@ -208,18 +116,6 @@ export function WorkflowsSidebar({
     })
     setQuery("")
   }, [])
-
-  const filteredWorkflows = useMemo(() => {
-    if (tab !== "workflows") return workflows
-    const q = deferredQuery
-    if (!q) return workflows
-    return workflows.filter(
-      (workflow) =>
-        workflow.name.toLowerCase().includes(q) ||
-        workflow.description.toLowerCase().includes(q) ||
-        workflow.agents.some((agent) => agent.toLowerCase().includes(q)),
-    )
-  }, [deferredQuery, tab, workflows])
 
   const filteredAgents = useMemo(() => {
     if (tab !== "agents") return agents
@@ -283,10 +179,10 @@ export function WorkflowsSidebar({
     })
   }, [])
 
-  const activeCount = tab === "workflows" ? filteredWorkflows.length : filteredAgents.length
-  const totalCount = tab === "workflows" ? workflows.length : agents.length
+  const activeCount = filteredAgents.length
+  const totalCount = agents.length
   const hasQuery = deferredQuery.length > 0
-  const searchPlaceholder = tab === "workflows" ? "Search workflows" : "Search agents"
+  const searchPlaceholder = "Search agents"
 
   return (
     <aside
@@ -321,7 +217,6 @@ export function WorkflowsSidebar({
         <div className="flex min-h-0 flex-1 flex-col">
           <Header
             tab={tab}
-            workflowsCount={workflows.length}
             agentsCount={agents.length}
             onTabChange={setTab}
             searchOpen={searchOpen}
@@ -334,9 +229,8 @@ export function WorkflowsSidebar({
             }}
             onCreateAgent={onCreateAgent}
             onCreateAgentByHand={onCreateAgentByHand}
-            onCreateWorkflow={onCreateWorkflow}
           />
-          {searchOpen ? (
+          {searchOpen && tab === "agents" ? (
             <Toolbar
               query={query}
               placeholder={searchPlaceholder}
@@ -349,7 +243,6 @@ export function WorkflowsSidebar({
           ) : null}
           <LibraryList
             tab={tab}
-            workflows={filteredWorkflows}
             agents={filteredAgents}
             activeCount={activeCount}
             totalCount={totalCount}
@@ -374,36 +267,26 @@ export function WorkflowsSidebar({
 
 function Header({
   tab,
-  workflowsCount,
   agentsCount,
   onTabChange,
   searchOpen,
   onToggleSearch,
   onCreateAgent,
   onCreateAgentByHand,
-  onCreateWorkflow,
 }: {
   tab: LibraryTab
-  workflowsCount: number
   agentsCount: number
   onTabChange: (next: LibraryTab) => void
   searchOpen: boolean
   onToggleSearch: () => void
   onCreateAgent?: () => void
   onCreateAgentByHand?: () => void
-  onCreateWorkflow?: () => void
 }) {
-  const newLabel = tab === "workflows" ? "New workflow" : "New agent"
-  const searchLabel = searchOpen
-    ? "Close search"
-    : tab === "workflows"
-      ? "Search workflows"
-      : "Search agents"
-  const directCreate =
-    tab === "agents"
-      ? onCreateAgent ?? onCreateAgentByHand
-      : onCreateWorkflow
-  const createDisabled = !directCreate
+  const isWorkflowsTab = tab === "workflows"
+  const newLabel = isWorkflowsTab ? "New workflow (Coming soon)" : "New agent"
+  const searchLabel = searchOpen ? "Close search" : "Search agents"
+  const directCreate = isWorkflowsTab ? undefined : onCreateAgent ?? onCreateAgentByHand
+  const createDisabled = isWorkflowsTab || !directCreate
 
   return (
     <div
@@ -413,8 +296,7 @@ function Header({
     >
       <div className="flex items-center gap-0.5">
         <TabPill
-          active={tab === "workflows"}
-          count={workflowsCount}
+          active={isWorkflowsTab}
           label="Workflows"
           onSelect={() => onTabChange("workflows")}
         />
@@ -431,7 +313,7 @@ function Header({
           className={cn(
             "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
             createDisabled
-              ? "text-muted-foreground/40"
+              ? "cursor-not-allowed text-muted-foreground/40"
               : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
           )}
           disabled={createDisabled}
@@ -441,21 +323,23 @@ function Header({
         >
           <Plus className="h-3.5 w-3.5" />
         </button>
-        <button
-          aria-label={searchLabel}
-          aria-pressed={searchOpen}
-          className={cn(
-            "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
-            searchOpen
-              ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
-          )}
-          onClick={onToggleSearch}
-          title={searchLabel}
-          type="button"
-        >
-          <Search className="h-3.5 w-3.5" />
-        </button>
+        {isWorkflowsTab ? null : (
+          <button
+            aria-label={searchLabel}
+            aria-pressed={searchOpen}
+            className={cn(
+              "flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+              searchOpen
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
+            )}
+            onClick={onToggleSearch}
+            title={searchLabel}
+            type="button"
+          >
+            <Search className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
     </div>
   )
@@ -468,7 +352,7 @@ function TabPill({
   onSelect,
 }: {
   active: boolean
-  count: number
+  count?: number
   label: string
   onSelect: () => void
 }) {
@@ -487,7 +371,7 @@ function TabPill({
       type="button"
     >
       {label}
-      {active ? (
+      {active && count !== undefined ? (
         <span className="rounded-full bg-muted/80 px-1.5 py-[1px] font-mono text-[10px] leading-none tabular-nums text-muted-foreground">
           {count}
         </span>
@@ -544,7 +428,6 @@ function Toolbar({
 
 function LibraryList({
   tab,
-  workflows,
   agents,
   activeCount,
   totalCount,
@@ -558,7 +441,6 @@ function LibraryList({
   onDeleteAgent,
 }: {
   tab: LibraryTab
-  workflows: Workflow[]
   agents: WorkflowAgentSummaryDto[]
   activeCount: number
   totalCount: number
@@ -571,7 +453,10 @@ function LibraryList({
   onDuplicateAgent?: (ref: AgentRefDto) => void
   onDeleteAgent?: (ref: AgentRefDto) => void
 }) {
-  if (tab === "agents" && agentsError) {
+  if (tab === "workflows") {
+    return <WorkflowsComingSoon />
+  }
+  if (agentsError) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-1 px-3 py-8 text-center text-[11px] leading-relaxed text-destructive">
         <span>Failed to load agents.</span>
@@ -579,7 +464,7 @@ function LibraryList({
       </div>
     )
   }
-  if (tab === "agents" && agentsLoading && agents.length === 0) {
+  if (agentsLoading && agents.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center px-3 py-8 text-center text-[11px] leading-relaxed text-muted-foreground/80">
         Loading agents…
@@ -588,7 +473,7 @@ function LibraryList({
   }
 
   if (activeCount === 0) {
-    const message = emptyStateMessage(tab, hasQuery, totalCount)
+    const message = agentsEmptyStateMessage(hasQuery, totalCount)
     return (
       <div className="flex flex-1 items-center justify-center px-3 py-8 text-center text-[11px] leading-relaxed text-muted-foreground/80">
         {message}
@@ -598,85 +483,47 @@ function LibraryList({
 
   return (
     <ul className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin py-1">
-      {tab === "workflows"
-        ? workflows.map((workflow) => (
-            <li key={workflow.id}>
-              <WorkflowRow workflow={workflow} />
-            </li>
-          ))
-        : agents.map((agent) => (
-            <li key={agentRefKey(agent.ref)}>
-              <AgentRow
-                agent={agent}
-                selected={
-                  selectedAgentRef ? agentRefsEqual(agent.ref, selectedAgentRef) : false
-                }
-                onSelect={onSelectAgent}
-                onEdit={onEditAgent}
-                onDuplicate={onDuplicateAgent}
-                onDelete={onDeleteAgent}
-              />
-            </li>
-          ))}
+      {agents.map((agent) => (
+        <li key={agentRefKey(agent.ref)}>
+          <AgentRow
+            agent={agent}
+            selected={
+              selectedAgentRef ? agentRefsEqual(agent.ref, selectedAgentRef) : false
+            }
+            onSelect={onSelectAgent}
+            onEdit={onEditAgent}
+            onDuplicate={onDuplicateAgent}
+            onDelete={onDeleteAgent}
+          />
+        </li>
+      ))}
     </ul>
   )
 }
 
-function emptyStateMessage(tab: LibraryTab, hasQuery: boolean, totalCount: number): string {
-  if (hasQuery) {
-    return tab === "workflows" ? "No workflows match." : "No agents match."
-  }
-  if (totalCount === 0) {
-    return tab === "workflows" ? "No workflows yet." : "No agents yet."
-  }
-  return tab === "workflows" ? "No workflows match." : "No agents match."
+function agentsEmptyStateMessage(hasQuery: boolean, totalCount: number): string {
+  if (hasQuery) return "No agents match."
+  if (totalCount === 0) return "No agents yet."
+  return "No agents match."
 }
 
-function WorkflowRow({ workflow }: { workflow: Workflow }) {
-  const status = STATUS_STYLES[workflow.status]
-  // Edit only when the workflow is not user-created. Type tracks `isDefault`,
-  // so user-created === !isDefault, and edit visibility is therefore isDefault.
-  const showEdit = workflow.isDefault
-
+function WorkflowsComingSoon() {
   return (
-    <div className="group relative flex items-start gap-3 px-3 py-3 transition-colors hover:bg-secondary/30">
-      <span
-        aria-label={status.label}
-        className={cn("mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full", status.dotClassName)}
-        title={`${status.label}${workflow.lastRunLabel ? ` · last run ${workflow.lastRunLabel}` : ""}`}
-      />
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-[13px] font-medium leading-tight text-foreground">
-            {workflow.name}
-          </span>
-          {workflow.isDefault ? (
-            <Sparkles
-              aria-hidden="true"
-              className="h-2.5 w-2.5 shrink-0 text-muted-foreground/45"
-            />
-          ) : null}
-        </div>
-        <p className="mt-0.5 line-clamp-1 text-[11.5px] leading-snug text-muted-foreground">
-          {workflow.description}
-        </p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-border/70 bg-card/80 shadow-sm">
+        <WorkflowIcon className="h-5 w-5 text-foreground/70" aria-hidden="true" />
       </div>
-
-      <div className="flex shrink-0 items-center gap-0.5 self-center">
-        <RowMenu
-          name={workflow.name}
-          showEdit={showEdit}
-          deleteDisabled={workflow.isDefault}
-        />
-        <button
-          aria-label={`Run ${workflow.name}`}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary"
-          title="Run workflow"
-          type="button"
-        >
-          <Play className="h-3.5 w-3.5 fill-current" />
-        </button>
+      <Badge
+        variant="outline"
+        className="text-[9.5px] uppercase tracking-[0.14em] font-semibold text-muted-foreground"
+      >
+        Coming soon
+      </Badge>
+      <div className="space-y-1.5">
+        <h3 className="text-[13px] font-semibold text-foreground">Workflows</h3>
+        <p className="max-w-[240px] text-[11.5px] leading-relaxed text-muted-foreground/80">
+          Compose agents into multi-step workflows. We&apos;re building this next.
+        </p>
       </div>
     </div>
   )

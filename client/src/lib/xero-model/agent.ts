@@ -33,6 +33,7 @@ export const agentRunEventKindSchema = z.enum([
   'run_paused',
   'run_completed',
   'run_failed',
+  'subagent_lifecycle',
 ])
 export const agentToolCallStateSchema = z.enum(['pending', 'running', 'succeeded', 'failed'])
 export const agentFileChangeOperationSchema = z.enum([

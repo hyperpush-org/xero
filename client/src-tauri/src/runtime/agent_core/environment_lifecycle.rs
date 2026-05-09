@@ -1161,6 +1161,7 @@ fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKin
         AgentRunEventKind::RunPaused => CoreRuntimeEventKind::RunPaused,
         AgentRunEventKind::RunCompleted => CoreRuntimeEventKind::RunCompleted,
         AgentRunEventKind::RunFailed => CoreRuntimeEventKind::RunFailed,
+        AgentRunEventKind::SubagentLifecycle => CoreRuntimeEventKind::SubagentLifecycle,
     }
 }
 
@@ -1196,6 +1197,7 @@ fn desktop_event_kind_from_core(kind: &CoreRuntimeEventKind) -> AgentRunEventKin
         CoreRuntimeEventKind::ToolPermissionGrant => AgentRunEventKind::ToolPermissionGrant,
         CoreRuntimeEventKind::ProviderModelChanged => AgentRunEventKind::ProviderModelChanged,
         CoreRuntimeEventKind::RuntimeSettingsChanged => AgentRunEventKind::RuntimeSettingsChanged,
+        CoreRuntimeEventKind::SubagentLifecycle => AgentRunEventKind::SubagentLifecycle,
     }
 }
 

@@ -32,7 +32,6 @@ interface PhaseViewProps {
   isStartingRun?: boolean
   onToggleWorkflows?: () => void
   workflowsOpen?: boolean
-  onCreateWorkflow?: () => void
   onCreateAgent?: () => void
   agentDetail?: WorkflowAgentDetailDto | null
   agentDetailStatus?: AgentDetailStatus | AgentListStatus
@@ -71,7 +70,6 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     onToggleWorkflows,
     active = true,
     workflowsOpen = false,
-    onCreateWorkflow,
     onCreateAgent,
     agentDetail = null,
     agentDetailStatus = 'idle',
@@ -113,7 +111,6 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
   const showTopLeftHeader = isAuthoring || showAgentVisualization
   const emptyCanvasState = (
     <WorkflowCanvasEmptyState
-      onCreateWorkflow={onCreateWorkflow}
       onCreateAgent={onCreateAgent}
       onBrowseWorkflows={
         onToggleWorkflows && !workflowsOpen ? onToggleWorkflows : undefined

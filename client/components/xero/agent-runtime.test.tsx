@@ -3637,4 +3637,210 @@ describe('AgentRuntime current UI', () => {
       expect(screen.getByLabelText('Thinking level selector')).toBeVisible()
     })
   })
+
+  describe('subagent group rendering', () => {
+    function renderSubagentScenario(
+      items: NonNullable<AgentPaneView['runtimeStreamItems']>,
+      density: 'comfortable' | 'compact' = 'comfortable',
+      paneCount = 1,
+    ) {
+      return render(
+        <AgentRuntime
+          agent={makeAgent({
+            runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+            runtimeRun: makeRuntimeRun(),
+            runtimeStreamStatus: 'live',
+            runtimeStreamStatusLabel: 'Live stream',
+            runtimeStreamItems: items,
+          })}
+          density={density}
+          paneCount={paneCount}
+          paneNumber={1}
+        />,
+      )
+    }
+
+    it('groups forwarded subagent child transcript turns under a SubagentGroupCard', () => {
+      renderSubagentScenario([
+        {
+          id: 'transcript:run-1:1',
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 1,
+          createdAt: '2026-05-09T10:00:00Z',
+          role: 'user',
+          text: 'Delegate the refactor.',
+        },
+        {
+          id: 'subagent_lifecycle:run-1:sub-1:2',
+          kind: 'subagent_lifecycle',
+          runId: 'run-1',
+          sequence: 2,
+          createdAt: '2026-05-09T10:00:01Z',
+          subagentId: 'sub-1',
+          subagentRole: 'engineer',
+          subagentRoleLabel: 'Engineer',
+          subagentRunId: 'run-2',
+          subagentStatus: 'spawned',
+          usedToolCalls: 0,
+          maxToolCalls: 10,
+          usedTokens: 0,
+          maxTokens: 50_000,
+          usedCostMicros: null,
+          maxCostMicros: null,
+          resultSummary: null,
+          prompt: 'Refactor auth module',
+          title: 'Subagent · Engineer',
+          detail: 'Engineer subagent is spawned.',
+        },
+        {
+          id: 'transcript:run-1:3',
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 3,
+          createdAt: '2026-05-09T10:00:05Z',
+          role: 'assistant',
+          text: 'Reading auth module first.',
+          subagentId: 'sub-1',
+          subagentRole: 'engineer',
+          subagentRoleLabel: 'Engineer',
+        },
+        {
+          id: 'subagent_lifecycle:run-1:sub-1:4',
+          kind: 'subagent_lifecycle',
+          runId: 'run-1',
+          sequence: 4,
+          createdAt: '2026-05-09T10:00:30Z',
+          subagentId: 'sub-1',
+          subagentRole: 'engineer',
+          subagentRoleLabel: 'Engineer',
+          subagentRunId: 'run-2',
+          subagentStatus: 'completed',
+          usedToolCalls: 3,
+          maxToolCalls: 10,
+          usedTokens: 4_200,
+          maxTokens: 50_000,
+          usedCostMicros: null,
+          maxCostMicros: null,
+          resultSummary: 'Auth module refactored cleanly.',
+          prompt: null,
+          title: 'Subagent · Engineer',
+          detail: 'Engineer subagent is completed.',
+        },
+      ])
+
+      // Header is rendered with role label
+      const header = screen.getByRole('button', { name: /subagent Engineer transcript/i })
+      expect(header).toBeVisible()
+      // The card collapses on terminal status; expand it to see children.
+      fireEvent.click(header)
+
+      // After expansion we see the prompt and the forwarded child transcript
+      expect(screen.getByText('Refactor auth module')).toBeVisible()
+      expect(screen.getByText('Reading auth module first.')).toBeVisible()
+      expect(screen.getByText('Auth module refactored cleanly.')).toBeVisible()
+      // Budget chip on header reflects terminal usage
+      expect(screen.getByText(/Tools 3\/10/)).toBeVisible()
+    })
+
+    it('keeps the subagent card open while running and renders child turns inline', () => {
+      renderSubagentScenario([
+        {
+          id: 'subagent_lifecycle:run-1:sub-2:1',
+          kind: 'subagent_lifecycle',
+          runId: 'run-1',
+          sequence: 1,
+          createdAt: '2026-05-09T11:00:00Z',
+          subagentId: 'sub-2',
+          subagentRole: 'debugger',
+          subagentRoleLabel: 'Debugger',
+          subagentRunId: 'run-3',
+          subagentStatus: 'running',
+          usedToolCalls: 1,
+          maxToolCalls: 8,
+          usedTokens: 600,
+          maxTokens: 30_000,
+          usedCostMicros: null,
+          maxCostMicros: null,
+          resultSummary: null,
+          prompt: 'Reproduce the crash.',
+          title: 'Subagent · Debugger',
+          detail: 'Debugger subagent is running.',
+        },
+        {
+          id: 'transcript:run-1:2',
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 2,
+          createdAt: '2026-05-09T11:00:05Z',
+          role: 'assistant',
+          text: 'Looking at the stack trace…',
+          subagentId: 'sub-2',
+          subagentRole: 'debugger',
+          subagentRoleLabel: 'Debugger',
+        },
+      ])
+
+      // Header should be present and card should be open by default while running
+      expect(screen.getByRole('button', { name: /subagent Debugger transcript/i })).toBeVisible()
+      // Inline child transcript visible without clicking
+      expect(screen.getByText('Looking at the stack trace…')).toBeVisible()
+      expect(screen.getByText('Reproduce the crash.')).toBeVisible()
+      // Status pill shows Running
+      expect(screen.getByText(/Running/)).toBeVisible()
+    })
+
+    it('updates an existing subagent group when a terminal lifecycle event arrives later', () => {
+      renderSubagentScenario([
+        {
+          id: 'subagent_lifecycle:run-1:sub-4:1',
+          kind: 'subagent_lifecycle',
+          runId: 'run-1',
+          sequence: 1,
+          createdAt: '2026-05-09T12:00:00Z',
+          subagentId: 'sub-4',
+          subagentRole: 'researcher',
+          subagentRoleLabel: 'Researcher',
+          subagentRunId: 'run-5',
+          subagentStatus: 'running',
+          usedToolCalls: 0,
+          maxToolCalls: 4,
+          usedTokens: 0,
+          maxTokens: 5_000,
+          usedCostMicros: null,
+          maxCostMicros: null,
+          resultSummary: null,
+          prompt: null,
+          title: 'Subagent · Researcher',
+          detail: 'Researcher subagent is running.',
+        },
+        {
+          id: 'subagent_lifecycle:run-1:sub-4:2',
+          kind: 'subagent_lifecycle',
+          runId: 'run-1',
+          sequence: 2,
+          createdAt: '2026-05-09T12:01:00Z',
+          subagentId: 'sub-4',
+          subagentRole: 'researcher',
+          subagentRoleLabel: 'Researcher',
+          subagentRunId: 'run-5',
+          subagentStatus: 'failed',
+          usedToolCalls: 1,
+          maxToolCalls: 4,
+          usedTokens: 220,
+          maxTokens: 5_000,
+          usedCostMicros: null,
+          maxCostMicros: null,
+          resultSummary: 'Source unavailable.',
+          prompt: null,
+          title: 'Subagent · Researcher',
+          detail: 'Researcher subagent is failed.',
+        },
+      ])
+
+      // Two lifecycle events for the same subagentId collapse into a single group card.
+      expect(screen.getAllByRole('button', { name: /subagent Researcher transcript/i })).toHaveLength(1)
+      expect(screen.getByText(/Failed/)).toBeVisible()
+    })
+  })
 })

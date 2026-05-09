@@ -476,6 +476,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::solana::solana_logs_subscribe,
             commands::solana::solana_logs_unsubscribe,
             commands::solana::solana_logs_recent,
+            commands::solana::solana_logs_view,
             commands::solana::solana_logs_active,
             commands::solana::solana_indexer_scaffold,
             commands::solana::solana_indexer_run,

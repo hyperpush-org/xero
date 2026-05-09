@@ -2624,6 +2624,13 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             &task_store,
             started_task.clone(),
         )?;
+        emit_subagent_lifecycle(
+            &self.repo_root,
+            &self.project_id,
+            &self.parent_run_id,
+            &started_task,
+            "spawned",
+        );
         let executor = self.clone();
         std::thread::Builder::new()
             .name(format!("xero-subagent-{}", started_task.subagent_id))
@@ -2658,6 +2665,13 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         let mut task = task.clone();
         task.status = "cancelled".into();
         task.cancelled_at = Some(now_timestamp());
+        emit_subagent_lifecycle(
+            &self.repo_root,
+            &self.project_id,
+            &self.parent_run_id,
+            &task,
+            "cancelled",
+        );
         Ok(task)
     }
 
@@ -2775,19 +2789,12 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                         &self.project_id,
                         &mut updated_task,
                     );
-                    let _ = append_event(
+                    emit_subagent_lifecycle(
                         &self.repo_root,
                         &self.project_id,
                         &self.parent_run_id,
-                        AgentRunEventKind::ReasoningSummary,
-                        json!({
-                            "summary": format!("Follow-up for subagent task `{}` failed: {}", task.subagent_id, error.message),
-                            "subagentId": task.subagent_id.clone(),
-                            "childRunId": child_run_id,
-                            "role": task.role.as_str(),
-                            "status": updated_task.status.clone(),
-                            "errorCode": error.code.clone(),
-                        }),
+                        &updated_task,
+                        &updated_task.status.clone(),
                     );
                     return Ok(updated_task);
                 }
@@ -2802,19 +2809,20 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 &mut updated_task,
                 snapshot,
             )?;
+            forward_child_events_to_parent(
+                &self.repo_root,
+                &self.project_id,
+                &self.parent_run_id,
+                &updated_task,
+                snapshot,
+            );
         }
-        let _ = append_event(
+        emit_subagent_lifecycle(
             &self.repo_root,
             &self.project_id,
             &self.parent_run_id,
-            AgentRunEventKind::ReasoningSummary,
-            json!({
-                "summary": format!("Input was sent to and processed by subagent task `{}`.", task.subagent_id),
-                "subagentId": task.subagent_id.clone(),
-                "childRunId": child_run_id,
-                "role": task.role.as_str(),
-                "status": updated_task.status.clone(),
-            }),
+            &updated_task,
+            &updated_task.status.clone(),
         );
         Ok(updated_task)
     }
@@ -2890,29 +2898,17 @@ impl OwnedAgentSubagentExecutor {
                     task.parent_trace_id = snapshot.run.parent_trace_id;
                 });
             }
-            let _ = append_event(
+            emit_subagent_lifecycle(
                 &self.repo_root,
                 &self.project_id,
                 &self.parent_run_id,
-                AgentRunEventKind::ReasoningSummary,
-                json!({
-                    "summary": format!(
-                        "Subagent task `{}` started as {:?} in child run `{}`.",
-                        task.subagent_id, task.role, run_id
-                    ),
-                    "subagentId": task.subagent_id.clone(),
-                    "childRunId": run_id.clone(),
-                    "traceId": task.trace_id.clone(),
-                    "parentRunId": task.parent_run_id.clone(),
-                    "parentTraceId": task.parent_trace_id.clone(),
-                    "role": task.role.as_str(),
-                    "status": "running",
-                }),
+                &task,
+                "running",
             );
             drive_owned_agent_run(request, cancellation)
         });
 
-        let mut child_file_changes = Vec::new();
+        let mut child_snapshot: Option<AgentRunSnapshotRecord> = None;
         match result {
             Ok(snapshot) => {
                 let _ = apply_subagent_snapshot_to_task(
@@ -2921,21 +2917,7 @@ impl OwnedAgentSubagentExecutor {
                     &mut task,
                     &snapshot,
                 );
-                child_file_changes = snapshot
-                    .file_changes
-                    .iter()
-                    .map(|change| {
-                        json!({
-                            "path": change.path.clone(),
-                            "operation": change.operation.clone(),
-                            "traceId": change.trace_id.clone(),
-                            "topLevelRunId": change.top_level_run_id.clone(),
-                            "subagentId": change.subagent_id.clone(),
-                            "subagentRole": change.subagent_role.clone(),
-                            "createdAt": change.created_at.clone(),
-                        })
-                    })
-                    .collect();
+                child_snapshot = Some(snapshot);
             }
             Err(error) => {
                 apply_subagent_error_to_task(&mut task, &error);
@@ -2948,6 +2930,15 @@ impl OwnedAgentSubagentExecutor {
                 task.cancelled_at = task.completed_at.clone();
             }
         }
+        if let Some(snapshot) = child_snapshot.as_ref() {
+            forward_child_events_to_parent(
+                &self.repo_root,
+                &self.project_id,
+                &self.parent_run_id,
+                &task,
+                snapshot,
+            );
+        }
         let _ = update_subagent_task(
             &self.repo_root,
             &self.project_id,
@@ -2958,27 +2949,102 @@ impl OwnedAgentSubagentExecutor {
         if let Ok(mut tokens) = self.subagent_tokens.lock() {
             tokens.remove(&task.subagent_id);
         }
-        let _ = append_event(
+        emit_subagent_lifecycle(
             &self.repo_root,
             &self.project_id,
             &self.parent_run_id,
-            AgentRunEventKind::ReasoningSummary,
-            json!({
-                "summary": format!(
-                    "Subagent task `{}` finished with status {}.",
-                    task.subagent_id, task.status
-                ),
-                "subagentId": task.subagent_id.clone(),
-                "childRunId": task.run_id.clone(),
-                "traceId": task.trace_id.clone(),
-                "parentRunId": task.parent_run_id.clone(),
-                "parentTraceId": task.parent_trace_id.clone(),
-                "role": task.role.as_str(),
-                "status": task.status.clone(),
-                "resultSummary": task.result_summary.clone(),
-                "resultArtifact": task.result_artifact.clone(),
-                "fileChanges": child_file_changes,
-            }),
+            &task,
+            &task.status.clone(),
+        );
+    }
+}
+
+fn emit_subagent_lifecycle(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+    task: &AutonomousSubagentTask,
+    status_override: &str,
+) {
+    let _ = append_event(
+        repo_root,
+        project_id,
+        parent_run_id,
+        AgentRunEventKind::SubagentLifecycle,
+        json!({
+            "subagentId": task.subagent_id.clone(),
+            "subagentRole": task.role.as_str(),
+            "subagentRoleLabel": task.role_label.clone(),
+            "subagentRunId": task.run_id.clone(),
+            "subagentStatus": status_override,
+            "subagentUsedToolCalls": task.used_tool_calls,
+            "subagentMaxToolCalls": task.max_tool_calls,
+            "subagentUsedTokens": task.used_tokens,
+            "subagentMaxTokens": task.max_tokens,
+            "subagentUsedCostMicros": task.used_cost_micros,
+            "subagentMaxCostMicros": task.max_cost_micros,
+            "subagentResultSummary": task.result_summary.clone(),
+            "subagentPrompt": if status_override == "spawned" { Some(task.prompt.clone()) } else { None },
+            "summary": format!(
+                "Subagent `{}` ({}) is now {status_override}.",
+                task.subagent_id,
+                task.role.as_str(),
+            ),
+        }),
+    );
+}
+
+fn forward_child_events_to_parent(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+    task: &AutonomousSubagentTask,
+    snapshot: &AgentRunSnapshotRecord,
+) {
+    for event in &snapshot.events {
+        if matches!(
+            event.event_kind,
+            AgentRunEventKind::RunStarted
+                | AgentRunEventKind::RunPaused
+                | AgentRunEventKind::RunCompleted
+                | AgentRunEventKind::RunFailed
+                | AgentRunEventKind::SubagentLifecycle
+                | AgentRunEventKind::ToolRegistrySnapshot
+                | AgentRunEventKind::PolicyDecision
+                | AgentRunEventKind::StateTransition
+                | AgentRunEventKind::ToolPermissionGrant
+                | AgentRunEventKind::ProviderModelChanged
+                | AgentRunEventKind::RuntimeSettingsChanged
+                | AgentRunEventKind::ContextManifestRecorded
+                | AgentRunEventKind::RetrievalPerformed
+                | AgentRunEventKind::MemoryCandidateCaptured
+                | AgentRunEventKind::SandboxLifecycleUpdate
+                | AgentRunEventKind::EnvironmentLifecycleUpdate
+        ) {
+            continue;
+        }
+        let mut payload =
+            serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null);
+        if let JsonValue::Object(map) = &mut payload {
+            map.insert(
+                "subagentId".into(),
+                JsonValue::String(task.subagent_id.clone()),
+            );
+            map.insert(
+                "subagentRole".into(),
+                JsonValue::String(task.role.as_str().into()),
+            );
+            map.insert(
+                "subagentRoleLabel".into(),
+                JsonValue::String(task.role_label.clone()),
+            );
+        }
+        let _ = append_event(
+            repo_root,
+            project_id,
+            parent_run_id,
+            event.event_kind.clone(),
+            payload,
         );
     }
 }

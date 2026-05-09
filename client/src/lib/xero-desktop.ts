@@ -3,8 +3,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { ZodError, z } from 'zod'
 import {
+  backendRequestKey,
   createBackendRequestCoordinator,
-  stableBackendRequestKey,
 } from '@/src/lib/backend-request-coordinator'
 import { recordIpcPayloadSample } from '@/src/lib/ipc-payload-budget'
 import {
@@ -1124,6 +1124,27 @@ function normalizeError(error: unknown, context: string): XeroDesktopError {
   })
 }
 
+const LARGE_RESPONSE_CONTRACT_COMMANDS = new Set<string>([
+  'get_agent_authoring_catalog',
+  'get_provider_model_catalog',
+  'get_workflow_agent_detail',
+  'list_agent_definitions',
+  'list_skill_registry',
+  'list_workflow_agents',
+  'reload_skill_registry',
+])
+
+export function shouldValidateCommandResponse(
+  command: string,
+  mode: string | undefined = import.meta.env?.MODE,
+): boolean {
+  const normalizedMode = mode ?? 'production'
+  if (normalizedMode === 'development' || normalizedMode === 'test') {
+    return true
+  }
+  return !LARGE_RESPONSE_CONTRACT_COMMANDS.has(command)
+}
+
 async function invokeTyped<TResponse>(
   command: string,
   schema: z.ZodType<TResponse, z.ZodTypeDef, unknown>,
@@ -1134,6 +1155,9 @@ async function invokeTyped<TResponse>(
   try {
     const response = await invoke(command, args)
     recordIpcPayloadSample({ boundary: 'command', name: command, payload: response })
+    if (!shouldValidateCommandResponse(command)) {
+      return response as TResponse
+    }
     return schema.parse(response)
   } catch (error) {
     throw normalizeError(error, `Command ${command}`)
@@ -1145,7 +1169,7 @@ async function invokeTypedDeduped<TResponse>(
   schema: z.ZodType<TResponse, z.ZodTypeDef, unknown>,
   args?: Record<string, unknown>,
 ): Promise<TResponse> {
-  const requestKey = stableBackendRequestKey([command, args ?? null])
+  const requestKey = backendRequestKey(command, args)
   return backendRequestCoordinator.runDeduped(requestKey, () => invokeTyped(command, schema, args))
 }
 

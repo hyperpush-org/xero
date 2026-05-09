@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   StaleBackendRequestError,
+  backendRequestKey,
   createBackendRequestCoordinator,
-  stableBackendRequestKey,
+  searchProjectRequestKey,
 } from './backend-request-coordinator'
 
 describe('backend request coordinator', () => {
@@ -44,17 +45,35 @@ describe('backend request coordinator', () => {
     await expect(first).rejects.toBeInstanceOf(StaleBackendRequestError)
   })
 
-  it('uses stable keys for object arguments independent of property order', () => {
+  it('uses explicit search keys independent of property order', () => {
     expect(
-      stableBackendRequestKey([
-        'search_project',
-        { projectId: 'project-1', query: 'needle', regex: false },
-      ]),
+      searchProjectRequestKey({ projectId: 'project-1', query: 'needle', regex: false }),
     ).toBe(
-      stableBackendRequestKey([
-        'search_project',
-        { regex: false, query: 'needle', projectId: 'project-1' },
-      ]),
+      searchProjectRequestKey({ regex: false, query: 'needle', projectId: 'project-1' }),
+    )
+  })
+
+  it('does not stringify large command arguments to build dedupe keys', () => {
+    const stringify = vi.spyOn(JSON, 'stringify')
+    const key = backendRequestKey('search_project', {
+      request: {
+        projectId: 'project-1',
+        query: 'needle',
+        includeGlobs: Array.from({ length: 500 }, (_, index) => `src/${index}.ts`),
+        excludeGlobs: [],
+        maxFiles: 100,
+      },
+    })
+    const stringifyCalls = stringify.mock.calls.length
+    stringify.mockRestore()
+
+    expect(key).toContain('search_project')
+    expect(stringifyCalls).toBe(0)
+  })
+
+  it('requires an explicit key builder for deduped commands', () => {
+    expect(() => backendRequestKey('unknown_command', { request: { projectId: 'project-1' } })).toThrow(
+      /No explicit backend request key builder/,
     )
   })
 })

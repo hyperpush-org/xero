@@ -64,6 +64,7 @@ pub enum AgentRunEventKind {
     RunPaused,
     RunCompleted,
     RunFailed,
+    SubagentLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3047,6 +3048,7 @@ pub fn agent_event_kind_sql_value(kind: &AgentRunEventKind) -> &'static str {
         AgentRunEventKind::RunPaused => "run_paused",
         AgentRunEventKind::RunCompleted => "run_completed",
         AgentRunEventKind::RunFailed => "run_failed",
+        AgentRunEventKind::SubagentLifecycle => "subagent_lifecycle",
     }
 }
 
@@ -3141,6 +3143,7 @@ fn parse_agent_event_kind(value: &str) -> AgentRunEventKind {
         "run_paused" => AgentRunEventKind::RunPaused,
         "run_completed" => AgentRunEventKind::RunCompleted,
         "run_failed" => AgentRunEventKind::RunFailed,
+        "subagent_lifecycle" => AgentRunEventKind::SubagentLifecycle,
         _ => AgentRunEventKind::RunFailed,
     }
 }

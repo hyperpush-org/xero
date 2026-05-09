@@ -713,94 +713,236 @@ interface PendingPromptTurn {
 
 const conversationProjectionCache = new WeakMap<readonly RuntimeStreamViewItem[], ConversationProjection>()
 
+interface TurnRoutingContext {
+  turns: ConversationTurn[]
+  actionTurnIndexByToolCallId: Map<string, number>
+}
+
+function createTurnRoutingContext(): TurnRoutingContext {
+  return {
+    turns: [],
+    actionTurnIndexByToolCallId: new Map<string, number>(),
+  }
+}
+
+/**
+ * Append the projected turn for a single runtime stream item into `context`,
+ * preserving the assistant-transcript merge and tool-call dedupe behaviour.
+ *
+ * Returns true when the item is a user transcript (so the caller can update
+ * top-level state like `hasUserMessage`).
+ */
+function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingContext): boolean {
+  if (item.kind === 'transcript') {
+    if (item.role !== 'user' && item.role !== 'assistant') {
+      return false
+    }
+
+    const previous = context.turns.at(-1)
+    if (item.role === 'assistant' && previous?.kind === 'message' && previous.role === item.role) {
+      previous.text = appendTranscriptDelta(previous.text, item.text)
+      previous.sequence = item.sequence
+      return false
+    }
+
+    context.turns.push({
+      id: item.id,
+      kind: 'message',
+      role: item.role,
+      sequence: item.sequence,
+      text: item.text,
+    })
+    return item.role === 'user'
+  }
+
+  if (isReasoningActivityItem(item)) {
+    const text = getReasoningActivityText(item)
+    if (text.trim().length === 0) {
+      return false
+    }
+    context.turns.push({
+      id: item.id,
+      kind: 'thinking',
+      sequence: item.sequence,
+      text,
+    })
+    return false
+  }
+
+  if (isFileChangeActivityItem(item)) {
+    context.turns.push(fileChangeTurnFromItem(item))
+    return false
+  }
+
+  if (item.kind === 'action_required') {
+    context.turns.push(actionPromptTurnFromItem(item))
+    return false
+  }
+
+  if (!shouldShowActionItem(item)) {
+    return false
+  }
+
+  if (item.kind === 'failure') {
+    context.turns.push({
+      id: item.id,
+      kind: 'failure',
+      sequence: item.sequence,
+      code: item.code,
+      message: item.message,
+    })
+    return false
+  }
+
+  if (item.kind !== 'tool') {
+    return false
+  }
+
+  const incomingActionTurn = actionTurnFromItem(item)
+  const existingActionTurnIndex = context.actionTurnIndexByToolCallId.get(item.toolCallId)
+  const existingActionTurn =
+    existingActionTurnIndex != null ? context.turns[existingActionTurnIndex] : null
+
+  if (existingActionTurn?.kind === 'action') {
+    mergeActionTurn(existingActionTurn, incomingActionTurn)
+    return false
+  }
+
+  context.actionTurnIndexByToolCallId.set(item.toolCallId, context.turns.length)
+  context.turns.push(incomingActionTurn)
+  return false
+}
+
+interface SubagentGroupState {
+  index: number
+  context: TurnRoutingContext
+}
+
+function subagentLifecycleStatusOrFallback(item: RuntimeStreamViewItem): string {
+  if (item.kind === 'subagent_lifecycle') {
+    return item.subagentStatus
+  }
+  return 'running'
+}
+
+function subagentRoleLabelFor(item: RuntimeStreamViewItem): string {
+  if (item.kind === 'subagent_lifecycle') {
+    return (
+      item.subagentRoleLabel ??
+      item.subagentRole ??
+      item.subagentId ??
+      'Subagent'
+    )
+  }
+  return item.subagentRoleLabel ?? item.subagentRole ?? item.subagentId ?? 'Subagent'
+}
+
+function emptySubagentGroupTurn(
+  item: RuntimeStreamViewItem,
+  subagentId: string,
+): Extract<ConversationTurn, { kind: 'subagent_group' }> {
+  return {
+    id: `subagent_group:${subagentId}`,
+    kind: 'subagent_group',
+    sequence: item.sequence,
+    subagentId,
+    role: item.kind === 'subagent_lifecycle' ? item.subagentRole : item.subagentRole ?? null,
+    roleLabel: subagentRoleLabelFor(item),
+    status: subagentLifecycleStatusOrFallback(item),
+    runId: item.kind === 'subagent_lifecycle' ? item.subagentRunId : null,
+    prompt: item.kind === 'subagent_lifecycle' ? item.prompt : null,
+    usedToolCalls: item.kind === 'subagent_lifecycle' ? item.usedToolCalls : null,
+    maxToolCalls: item.kind === 'subagent_lifecycle' ? item.maxToolCalls : null,
+    usedTokens: item.kind === 'subagent_lifecycle' ? item.usedTokens : null,
+    maxTokens: item.kind === 'subagent_lifecycle' ? item.maxTokens : null,
+    resultSummary: item.kind === 'subagent_lifecycle' ? item.resultSummary : null,
+    startedAt: item.kind === 'subagent_lifecycle' ? item.createdAt : null,
+    completedAt: null,
+    children: [],
+  }
+}
+
 function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamViewItem[]): ConversationProjection {
-  const turns: ConversationTurn[] = []
-  const actionTurnIndexByToolCallId = new Map<string, number>()
+  const topContext = createTurnRoutingContext()
+  const subagentGroups = new Map<string, SubagentGroupState>()
   let hasUserMessage = false
 
+  const ensureSubagentGroup = (
+    item: RuntimeStreamViewItem,
+    subagentId: string,
+  ): SubagentGroupState => {
+    const existing = subagentGroups.get(subagentId)
+    if (existing) {
+      return existing
+    }
+    const turn = emptySubagentGroupTurn(item, subagentId)
+    const index = topContext.turns.length
+    topContext.turns.push(turn)
+    const state: SubagentGroupState = {
+      index,
+      context: createTurnRoutingContext(),
+    }
+    subagentGroups.set(subagentId, state)
+    return state
+  }
+
   for (const item of runtimeStreamItems) {
-    if (item.kind === 'transcript') {
-      if (item.role !== 'user' && item.role !== 'assistant') {
-        continue
+    if (item.kind === 'subagent_lifecycle') {
+      const state = ensureSubagentGroup(item, item.subagentId)
+      const groupTurn = topContext.turns[state.index]
+      if (groupTurn?.kind === 'subagent_group') {
+        groupTurn.status = item.subagentStatus
+        if (item.subagentRole) groupTurn.role = item.subagentRole
+        const roleLabel = subagentRoleLabelFor(item)
+        if (roleLabel) groupTurn.roleLabel = roleLabel
+        if (item.subagentRunId) groupTurn.runId = item.subagentRunId
+        if (item.prompt) groupTurn.prompt = item.prompt
+        if (typeof item.usedToolCalls === 'number') {
+          groupTurn.usedToolCalls = item.usedToolCalls
+        }
+        if (typeof item.maxToolCalls === 'number') {
+          groupTurn.maxToolCalls = item.maxToolCalls
+        }
+        if (typeof item.usedTokens === 'number') {
+          groupTurn.usedTokens = item.usedTokens
+        }
+        if (typeof item.maxTokens === 'number') {
+          groupTurn.maxTokens = item.maxTokens
+        }
+        if (item.resultSummary) groupTurn.resultSummary = item.resultSummary
+        if (
+          item.subagentStatus === 'completed' ||
+          item.subagentStatus === 'failed' ||
+          item.subagentStatus === 'cancelled' ||
+          item.subagentStatus === 'budget_exhausted' ||
+          item.subagentStatus === 'handed_off'
+        ) {
+          groupTurn.completedAt = item.createdAt
+        }
+        groupTurn.sequence = Math.max(groupTurn.sequence, item.sequence)
       }
+      continue
+    }
 
-      if (item.role === 'user') {
-        hasUserMessage = true
+    if (item.subagentId) {
+      const state = ensureSubagentGroup(item, item.subagentId)
+      routeItemIntoTurns(item, state.context)
+      const groupTurn = topContext.turns[state.index]
+      if (groupTurn?.kind === 'subagent_group') {
+        groupTurn.children = limitActionTurns(compactActionBursts(state.context.turns))
+        groupTurn.sequence = Math.max(groupTurn.sequence, item.sequence)
       }
-
-      const previous = turns.at(-1)
-      if (item.role === 'assistant' && previous?.kind === 'message' && previous.role === item.role) {
-        previous.text = appendTranscriptDelta(previous.text, item.text)
-        previous.sequence = item.sequence
-        continue
-      }
-
-      turns.push({
-        id: item.id,
-        kind: 'message',
-        role: item.role,
-        sequence: item.sequence,
-        text: item.text,
-      })
       continue
     }
 
-    if (isReasoningActivityItem(item)) {
-      const text = getReasoningActivityText(item)
-      if (text.trim().length === 0) {
-        continue
-      }
-
-      turns.push({
-        id: item.id,
-        kind: 'thinking',
-        sequence: item.sequence,
-        text,
-      })
-      continue
+    const sawUser = routeItemIntoTurns(item, topContext)
+    if (sawUser) {
+      hasUserMessage = true
     }
-
-    if (isFileChangeActivityItem(item)) {
-      turns.push(fileChangeTurnFromItem(item))
-      continue
-    }
-
-    if (item.kind === 'action_required') {
-      turns.push(actionPromptTurnFromItem(item))
-      continue
-    }
-
-    if (!shouldShowActionItem(item)) {
-      continue
-    }
-
-    if (item.kind === 'failure') {
-      turns.push({
-        id: item.id,
-        kind: 'failure',
-        sequence: item.sequence,
-        code: item.code,
-        message: item.message,
-      })
-      continue
-    }
-
-    const incomingActionTurn = actionTurnFromItem(item)
-    const existingActionTurnIndex = actionTurnIndexByToolCallId.get(item.toolCallId)
-    const existingActionTurn =
-      existingActionTurnIndex != null ? turns[existingActionTurnIndex] : null
-
-    if (existingActionTurn?.kind === 'action') {
-      mergeActionTurn(existingActionTurn, incomingActionTurn)
-      continue
-    }
-
-    actionTurnIndexByToolCallId.set(item.toolCallId, turns.length)
-    turns.push(incomingActionTurn)
   }
 
   return {
-    visibleTurns: limitActionTurns(compactActionBursts(turns)),
+    visibleTurns: limitActionTurns(compactActionBursts(topContext.turns)),
     hasUserMessage,
   }
 }
@@ -838,30 +980,45 @@ function hasTranscriptForPendingPrompt(
   runtimeStreamItems: readonly RuntimeStreamViewItem[],
   pendingPrompt: PendingPromptTurn | null,
 ): boolean {
+  return findTranscriptForPendingPrompt(runtimeStreamItems, pendingPrompt) !== null
+}
+
+function findTranscriptForPendingPrompt(
+  runtimeStreamItems: readonly RuntimeStreamViewItem[],
+  pendingPrompt: PendingPromptTurn | null,
+): Extract<RuntimeStreamViewItem, { kind: 'transcript' }> | null {
   if (!pendingPrompt) {
-    return false
+    return null
   }
 
   const promptText = pendingPrompt.text.trim()
   if (!promptText) {
-    return false
+    return null
   }
 
   const queuedAtMs = Date.parse(pendingPrompt.queuedAt ?? '')
   const hasQueuedTimestamp = Number.isFinite(queuedAtMs)
 
-  return runtimeStreamItems.some((item) => {
+  for (const item of runtimeStreamItems) {
     if (item.kind !== 'transcript' || item.role !== 'user' || item.text.trim() !== promptText) {
-      return false
+      continue
     }
 
     if (!hasQueuedTimestamp) {
-      return true
+      return item
     }
 
     const itemCreatedAtMs = Date.parse(item.createdAt)
-    return Number.isFinite(itemCreatedAtMs) && itemCreatedAtMs >= queuedAtMs - 5_000
-  })
+    if (Number.isFinite(itemCreatedAtMs) && itemCreatedAtMs >= queuedAtMs - 5_000) {
+      return item
+    }
+  }
+
+  return null
+}
+
+function getPendingPromptTurnId(pendingPrompt: PendingPromptTurn): string {
+  return `pending-prompt:${pendingPrompt.id}`
 }
 
 function appendPendingPromptTurn(
@@ -881,13 +1038,82 @@ function appendPendingPromptTurn(
   return [
     ...turns,
     {
-      id: `pending-prompt:${pendingPrompt.id}`,
+      id: getPendingPromptTurnId(pendingPrompt),
       kind: 'message',
       role: 'user',
       sequence: latestSequence + 0.5,
       text,
     },
   ]
+}
+
+interface ConversationContinuitySnapshot {
+  sessionKey: string
+  turns: ConversationTurn[]
+}
+
+function mergeConversationContinuityTurns(
+  previousTurns: readonly ConversationTurn[],
+  currentTurns: readonly ConversationTurn[],
+): ConversationTurn[] {
+  const previousIds = new Set(previousTurns.map((turn) => turn.id))
+  const additions = currentTurns.filter((turn) => !previousIds.has(turn.id))
+  if (additions.length === 0) {
+    return previousTurns as ConversationTurn[]
+  }
+
+  return [...previousTurns, ...additions]
+}
+
+function useContinuousConversationTurns(
+  turns: ConversationTurn[],
+  {
+    sessionKey,
+    preserveDuringTransition,
+  }: {
+    sessionKey: string
+    preserveDuringTransition: boolean
+  },
+): ConversationTurn[] {
+  const continuityRef = useRef<ConversationContinuitySnapshot | null>(null)
+  const visibleTurns = useMemo(() => {
+    const previous = continuityRef.current
+    const currentIds = new Set(turns.map((turn) => turn.id))
+    const previousTurns = previous?.turns ?? []
+    const sharedTurnCount = previousTurns.reduce(
+      (count, turn) => count + (currentIds.has(turn.id) ? 1 : 0),
+      0,
+    )
+    const missingPreviousTurnCount = previousTurns.length - sharedTurnCount
+    const looksLikeRuntimeReset =
+      missingPreviousTurnCount > 0 && (sharedTurnCount === 0 || sharedTurnCount <= 2)
+    if (
+      preserveDuringTransition &&
+      previous?.sessionKey === sessionKey &&
+      previous.turns.length > 0 &&
+      looksLikeRuntimeReset
+    ) {
+      return mergeConversationContinuityTurns(previous.turns, turns)
+    }
+
+    return turns
+  }, [preserveDuringTransition, sessionKey, turns])
+
+  useEffect(() => {
+    if (visibleTurns.length === 0 && !preserveDuringTransition) {
+      continuityRef.current = null
+      return
+    }
+
+    if (visibleTurns.length > 0) {
+      continuityRef.current = {
+        sessionKey,
+        turns: visibleTurns,
+      }
+    }
+  }, [preserveDuringTransition, sessionKey, visibleTurns])
+
+  return visibleTurns
 }
 
 function getContextMeterRequestKey(options: {
@@ -1357,10 +1583,57 @@ export const AgentRuntime = memo(function AgentRuntime({
 
     return null
   }, [optimisticPromptTurn, runtimeStreamItems, selectedQueuedPromptTurn])
-  const visibleTurnsWithPendingPrompt = useMemo(
+  const rawVisibleTurnsWithPendingPrompt = useMemo(
     () => appendPendingPromptTurn(visibleTurnsForDisplay, pendingPromptTurn),
     [pendingPromptTurn, visibleTurnsForDisplay],
   )
+  const submittedPromptTurnIdOverridesRef = useRef<{
+    sessionKey: string
+    byTranscriptId: Map<string, string>
+  } | null>(null)
+  const conversationSessionKey = `${agent.project.id}:${agent.project.selectedAgentSessionId ?? 'none'}`
+  if (submittedPromptTurnIdOverridesRef.current?.sessionKey !== conversationSessionKey) {
+    submittedPromptTurnIdOverridesRef.current = {
+      sessionKey: conversationSessionKey,
+      byTranscriptId: new Map<string, string>(),
+    }
+  }
+  const pendingPromptForStableId = optimisticPromptTurn ?? selectedQueuedPromptTurn
+  const visibleTurnsWithStableSubmittedPromptIds = useMemo(() => {
+    const overrides = submittedPromptTurnIdOverridesRef.current?.byTranscriptId
+    if (!overrides) {
+      return rawVisibleTurnsWithPendingPrompt
+    }
+
+    const matchedTranscript = findTranscriptForPendingPrompt(runtimeStreamItems, pendingPromptForStableId)
+    if (matchedTranscript && pendingPromptForStableId) {
+      overrides.set(matchedTranscript.id, getPendingPromptTurnId(pendingPromptForStableId))
+    }
+
+    if (overrides.size === 0) {
+      return rawVisibleTurnsWithPendingPrompt
+    }
+
+    let changed = false
+    const stableTurns = rawVisibleTurnsWithPendingPrompt.map((turn) => {
+      if (turn.kind !== 'message' || turn.role !== 'user') {
+        return turn
+      }
+
+      const stableId = overrides.get(turn.id)
+      if (!stableId || stableId === turn.id) {
+        return turn
+      }
+
+      changed = true
+      return {
+        ...turn,
+        id: stableId,
+      }
+    })
+
+    return changed ? stableTurns : rawVisibleTurnsWithPendingPrompt
+  }, [pendingPromptForStableId, rawVisibleTurnsWithPendingPrompt, runtimeStreamItems])
   const [promptSubmissionPending, setPromptSubmissionPending] = useState(false)
   const promptSubmissionCancelRef = useRef<(() => void) | null>(null)
   useEffect(() => {
@@ -1398,7 +1671,26 @@ export const AgentRuntime = memo(function AgentRuntime({
         !runtimeStream?.failure
       ),
   )
-  const hasUserMessage = conversationProjection.hasUserMessage || Boolean(pendingPromptTurn)
+  const preserveConversationDuringRuntimeTransition = Boolean(
+    isQueueingRuntimePrompt ||
+      promptSubmissionPending ||
+      agent.selectedPrompt.hasQueuedPrompt ||
+      streamStatus === 'subscribing' ||
+      streamStatus === 'replaying' ||
+      streamStatus === 'live' ||
+      streamStatus === 'complete' ||
+      (renderableRuntimeRun?.isActive && runtimeStreamItems.length === 0),
+  )
+  const visibleTurnsWithPendingPrompt = useContinuousConversationTurns(
+    visibleTurnsWithStableSubmittedPromptIds,
+    {
+      sessionKey: conversationSessionKey,
+      preserveDuringTransition: preserveConversationDuringRuntimeTransition,
+    },
+  )
+  const hasUserMessage =
+    conversationProjection.hasUserMessage ||
+    visibleTurnsWithPendingPrompt.some((turn) => turn.kind === 'message' && turn.role === 'user')
   const selectedAgentSession = (agent.project.selectedAgentSession ?? null) as AgentSessionView | null
   const selectedAgentSessionId =
     selectedAgentSession?.agentSessionId ?? agent.project.selectedAgentSessionId ?? null
@@ -1636,14 +1928,10 @@ export const AgentRuntime = memo(function AgentRuntime({
       return
     }
 
-    const selectedQueuedText = selectedQueuedPromptTurn?.text.trim() ?? null
-    if (
-      hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn) ||
-      selectedQueuedText === optimisticPromptTurn.text.trim()
-    ) {
+    if (hasTranscriptForPendingPrompt(runtimeStreamItems, optimisticPromptTurn)) {
       setOptimisticPromptTurn(null)
     }
-  }, [optimisticPromptTurn, runtimeStreamItems, selectedQueuedPromptTurn])
+  }, [optimisticPromptTurn, runtimeStreamItems])
 
   const selectedComposerModel = useMemo(
     () => getComposerModelOption(availableModels, controller.composerModelId),
@@ -1764,7 +2052,8 @@ export const AgentRuntime = memo(function AgentRuntime({
       skillItems.length > 0 ||
       actionRequiredItems.length > 0 ||
       runtimeStream?.completion ||
-      runtimeStream?.failure,
+      runtimeStream?.failure ||
+      visibleTurnsWithPendingPrompt.length > 0,
   )
   const promptInputLabel = controller.promptInputAvailable ? 'Agent input' : 'Agent input unavailable'
   const sendButtonLabel = controller.promptInputAvailable ? 'Send message' : 'Send message unavailable'

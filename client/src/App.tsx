@@ -2077,11 +2077,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
   const handleAgentCodeUndoApplied = useCallback(() => retry(), [retry])
   const handleStartWorkflowRun = useCallback(() => startRuntimeRun(), [startRuntimeRun])
-  const handleCreateWorkflow = useCallback(() => {
-    if (!workflowsOpen) {
-      toggleWorkflows()
-    }
-  }, [toggleWorkflows, workflowsOpen])
 
   const handleSelectProject = useCallback(
     (projectId: string) => {
@@ -2295,7 +2290,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onStartRun={handleStartWorkflowRun}
                 onToggleWorkflows={toggleWorkflows}
                 workflowsOpen={workflowsOpen}
-                onCreateWorkflow={handleCreateWorkflow}
                 onCreateAgent={handleCreateAgent}
                 agentDetail={workflowAgentInspector.detail}
                 agentDetailStatus={workflowAgentInspector.detailStatus}

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createBackendRequestCoordinator,
   isStaleBackendRequestError,
-  stableBackendRequestKey,
+  listProjectFilesRequestKey,
+  readProjectFileRequestKey,
 } from '@/src/lib/backend-request-coordinator'
 import { getDesktopErrorMessage } from '@/src/lib/xero-desktop'
 import type {
@@ -13,6 +14,7 @@ import type {
   MoveProjectEntryRequestDto,
   MoveProjectEntryResponseDto,
   ProjectFileRendererKindDto,
+  ProjectFilePreviewDto,
   ProjectRenderableRendererKindDto,
   ProjectTextRendererKindDto,
   ReadProjectFileResponseDto,
@@ -23,12 +25,10 @@ import type {
 import {
   applyProjectFileListing,
   createEmptyProjectFileTreeStore,
-  DEFAULT_PROJECT_FILE_TREE_STORE_MAX_BYTES,
   findNode,
   getProjectFileTreeBudgetInfo,
   isFolderLoaded,
   materializeProjectFileTree,
-  trimProjectFileTreeStoreToBudget,
   type ProjectFileTreeBudgetInfo,
   type ProjectFileTreeStore,
   type FileSystemNode,
@@ -139,6 +139,7 @@ export type ProjectFileResource =
       byteLength: number
       modifiedAt: string
       contentHash: string
+      preview?: ProjectFilePreviewDto | null
     }
   | {
       kind: 'renderable'
@@ -168,6 +169,7 @@ function projectFileResourceFromResponse(response: ReadProjectFileResponseDto): 
       byteLength: response.byteLength,
       modifiedAt: response.modifiedAt,
       contentHash: response.contentHash,
+      preview: response.preview ?? null,
     }
   }
 
@@ -265,7 +267,7 @@ export function useExecutionWorkspaceController({
       try {
         const response = await treeRequestCoordinatorRef.current.runLatest(
           `${EXECUTION_TREE_REQUEST_SCOPE}:${normalizedPath}`,
-          stableBackendRequestKey(['list_project_files', { path: normalizedPath, projectId }]),
+          listProjectFilesRequestKey(projectId, normalizedPath),
           () => (isRootLoad ? listProjectFiles(projectId) : listProjectFiles(projectId, normalizedPath)),
         )
         if (requestEpoch !== loadEpochRef.current) {
@@ -273,12 +275,8 @@ export function useExecutionWorkspaceController({
         }
 
         const nextStore = applyProjectFileListing(treeStoreRef.current, response)
-        const budgetedStore = trimProjectFileTreeStoreToBudget(nextStore, {
-          maxBytes: DEFAULT_PROJECT_FILE_TREE_STORE_MAX_BYTES,
-          protectedPaths: [normalizedPath, activePath],
-        }).store
-        const nextTree = materializeProjectFileTree(budgetedStore)
-        commitTreeStore(budgetedStore)
+        const nextTree = materializeProjectFileTree(nextStore)
+        commitTreeStore(nextStore)
         setTreeBudgetInfo(getProjectFileTreeBudgetInfo(response))
         setExpandedFolders((current) => {
           if (isRootLoad && (!options.preserveExpandedFolders || current.size === 0)) {
@@ -441,7 +439,7 @@ export function useExecutionWorkspaceController({
       try {
         const response = await fileReadRequestCoordinatorRef.current.runLatest(
           EXECUTION_FILE_READ_REQUEST_SCOPE,
-          stableBackendRequestKey(['read_project_file', { path, projectId }]),
+          readProjectFileRequestKey(projectId, path),
           () => readProjectFile(projectId, path),
         )
         if (requestEpoch !== loadEpochRef.current) {

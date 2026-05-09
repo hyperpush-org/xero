@@ -46,6 +46,10 @@ import {
   type TokenizedLine,
 } from '@/lib/shiki'
 import { useTheme } from '@/src/features/theme/theme-provider'
+import type {
+  ProjectFileCsvPreviewDto,
+  ProjectFileMarkdownPreviewDto,
+} from '@/src/lib/xero-model/project'
 
 const IMAGE_ZOOM_MIN = 0.25
 const IMAGE_ZOOM_MAX = 4
@@ -281,16 +285,25 @@ export function SvgTextPreview({
 
 export function MarkdownPreview({
   filePath,
+  preview,
   text,
   onResolveAssetPreviewUrl,
 }: {
   filePath: string
+  preview?: ProjectFileMarkdownPreviewDto | null
   text: string
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
 }) {
+  const markdownAssetsBySource = useMemo(
+    () =>
+      preview
+        ? new Map(preview.assetRefs.map((assetRef) => [assetRef.source, assetRef]))
+        : null,
+    [preview],
+  )
   const components = useMemo<Components>(
-    () => createMarkdownComponents(filePath, onResolveAssetPreviewUrl),
-    [filePath, onResolveAssetPreviewUrl],
+    () => createMarkdownComponents(filePath, markdownAssetsBySource, onResolveAssetPreviewUrl),
+    [filePath, markdownAssetsBySource, onResolveAssetPreviewUrl],
   )
 
   if (text.trim().length === 0) {
@@ -328,24 +341,29 @@ export function MarkdownPreview({
 export function CsvPreview({
   filePath,
   mimeType,
+  preview,
   text,
 }: {
   filePath: string
   mimeType: string
+  preview?: ProjectFileCsvPreviewDto | null
   text: string
 }) {
   const delimiter = isTabSeparated(filePath, mimeType) ? '\t' : ','
-  const parsed = useMemo(
+  const parsedFallback = useMemo(
     () =>
-      parseDelimitedText(text, delimiter, {
-        columnLimit: CSV_PREVIEW_COLUMN_LIMIT,
-        rowLimit: CSV_PREVIEW_ROW_LIMIT,
-      }),
-    [delimiter, text],
+      preview
+        ? null
+        : parseDelimitedText(text, delimiter, {
+            columnLimit: CSV_PREVIEW_COLUMN_LIMIT,
+            rowLimit: CSV_PREVIEW_ROW_LIMIT,
+          }),
+    [delimiter, preview, text],
   )
+  const table = preview ? csvPreviewTable(preview) : parsedFallback ?? EMPTY_PARSED_DELIMITED_TEXT
   const fileName = basename(filePath)
 
-  if (parsed.rows.length === 0) {
+  if (table.rows.length === 0) {
     return (
       <PreviewEmptyState
         testId="csv-preview"
@@ -355,9 +373,9 @@ export function CsvPreview({
     )
   }
 
-  const columnCount = Math.max(...parsed.rows.map((row) => row.length), 1)
-  const headerRow = parsed.rows[0] ?? []
-  const bodyRows = parsed.rows.slice(1)
+  const columnCount = Math.max(table.maxColumns, ...table.rows.map((row) => row.length), 1)
+  const headerRow = table.rows[0] ?? []
+  const bodyRows = table.rows.slice(1)
   const headers = Array.from({ length: columnCount }, (_, index) => {
     const header = headerRow[index]?.trim()
     return header && header.length > 0 ? header : `Column ${index + 1}`
@@ -376,16 +394,16 @@ export function CsvPreview({
             ·
           </span>
           <span>
-            {parsed.totalRows.toLocaleString()} row{parsed.totalRows === 1 ? '' : 's'}
+            {table.totalRows.toLocaleString()} row{table.totalRows === 1 ? '' : 's'}
           </span>
           <span className="text-muted-foreground/40" aria-hidden="true">
             ·
           </span>
           <span>
-            {parsed.maxColumns.toLocaleString()} column{parsed.maxColumns === 1 ? '' : 's'}
+            {table.maxColumns.toLocaleString()} column{table.maxColumns === 1 ? '' : 's'}
           </span>
         </div>
-        {parsed.truncatedRows || parsed.truncatedColumns ? (
+        {table.truncatedRows || table.truncatedColumns ? (
           <Badge variant="outline" className="text-[10px]">
             Preview limited to {CSV_PREVIEW_ROW_LIMIT.toLocaleString()} rows and{' '}
             {CSV_PREVIEW_COLUMN_LIMIT.toLocaleString()} columns
@@ -659,6 +677,24 @@ interface ParsedDelimitedText {
   truncatedRows: boolean
 }
 
+const EMPTY_PARSED_DELIMITED_TEXT: ParsedDelimitedText = {
+  maxColumns: 0,
+  rows: [],
+  totalRows: 0,
+  truncatedColumns: false,
+  truncatedRows: false,
+}
+
+function csvPreviewTable(preview: ProjectFileCsvPreviewDto): ParsedDelimitedText {
+  return {
+    maxColumns: preview.totalColumns,
+    rows: preview.totalRows === 0 ? [] : [preview.headers, ...preview.rows],
+    totalRows: preview.totalRows,
+    truncatedColumns: preview.truncatedColumns,
+    truncatedRows: preview.truncatedRows,
+  }
+}
+
 export function parseDelimitedText(
   text: string,
   delimiter: ',' | '\t',
@@ -744,6 +780,7 @@ export function parseDelimitedText(
 
 function createMarkdownComponents(
   filePath: string,
+  markdownAssetsBySource: Map<string, ProjectFileMarkdownPreviewDto['assetRefs'][number]> | null,
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl,
 ): Components {
   return {
@@ -805,6 +842,8 @@ function createMarkdownComponents(
         <MarkdownImage
           alt={alt ?? ''}
           filePath={filePath}
+          rustAssetPreviewUrl={markdownAssetsBySource?.get(src ?? '')?.previewUrl ?? null}
+          useRustAssetRefs={markdownAssetsBySource !== null}
           src={src ?? ''}
           onResolveAssetPreviewUrl={onResolveAssetPreviewUrl}
         />
@@ -853,12 +892,16 @@ function createMarkdownComponents(
 function MarkdownImage({
   alt,
   filePath,
+  rustAssetPreviewUrl,
   src,
+  useRustAssetRefs,
   onResolveAssetPreviewUrl,
 }: {
   alt: string
   filePath: string
+  rustAssetPreviewUrl?: string | null
   src: string
+  useRustAssetRefs?: boolean
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
 }) {
   const [state, setState] = useState<{
@@ -878,6 +921,15 @@ function MarkdownImage({
       return
     }
 
+    if (useRustAssetRefs) {
+      setState(
+        rustAssetPreviewUrl
+          ? { status: 'loaded', url: rustAssetPreviewUrl }
+          : { status: 'error', url: null },
+      )
+      return
+    }
+
     if (!projectPath || !onResolveAssetPreviewUrl) {
       setState({ status: 'error', url: null })
       return
@@ -893,7 +945,7 @@ function MarkdownImage({
     return () => {
       cancelled = true
     }
-  }, [externalUrl, onResolveAssetPreviewUrl, projectPath])
+  }, [externalUrl, onResolveAssetPreviewUrl, projectPath, rustAssetPreviewUrl, useRustAssetRefs])
 
   return (
     <figure className="my-4" data-testid="markdown-image">

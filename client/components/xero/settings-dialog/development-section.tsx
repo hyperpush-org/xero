@@ -515,8 +515,7 @@ function StorageRowsTable({
               rows.rows.map((row, rowIndex) => (
                 <TableRow key={`${rows.offset}-${rowIndex}`}>
                   {rows.columns.map((column) => {
-                    const value = row.values[column.name]
-                    const display = formatStorageValue(value)
+                    const display = row.displayValues[column.name] ?? ""
                     return (
                       <TableCell
                         key={column.name}
@@ -639,19 +638,6 @@ function storageSourceOptions(overview: DeveloperStorageOverviewDto): StorageSou
       exists: true,
     },
   ]
-}
-
-function formatStorageValue(value: unknown): string {
-  if (value === null || value === undefined) return "NULL"
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value)
-  }
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
-  }
 }
 
 function formatCount(value: number): string {

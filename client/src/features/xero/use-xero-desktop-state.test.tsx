@@ -165,6 +165,7 @@ function makeDiff(id: string, scope: 'staged' | 'unstaged' | 'worktree', patch =
     },
     scope,
     patch,
+    files: [],
     truncated: false,
     baseRevision: null,
   }
@@ -1881,6 +1882,34 @@ function createMockAdapter(options?: {
       type: 'folder' as const,
       children: [],
     },
+    view: {
+      rootPath: '/',
+      nodesByPath: {
+        '/': {
+          id: '/',
+          name: 'root',
+          path: '/',
+          type: 'folder' as const,
+          childrenLoaded: true,
+          truncated: false,
+          omittedEntryCount: 0,
+        },
+      },
+      childPathsByPath: {
+        '/': [],
+      },
+      loadedPaths: ['/'],
+      stats: {
+        byteSize: 1,
+        childListCount: 1,
+        nodeCount: 1,
+        unloadedFolderCount: 0,
+      },
+      truncated: false,
+      omittedEntryCount: 0,
+    },
+    truncated: false,
+    omittedEntryCount: 0,
   }))
   const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
     kind: 'text' as const,

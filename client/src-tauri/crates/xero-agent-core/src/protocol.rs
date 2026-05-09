@@ -3214,6 +3214,10 @@ fn runtime_protocol_payload_from_json(
                 .and_then(JsonValue::as_bool)
                 .unwrap_or(false),
         },
+        RuntimeEventKind::SubagentLifecycle => RuntimeProtocolEventPayload::Untyped {
+            event_kind: RuntimeEventKind::SubagentLifecycle,
+            payload: payload.clone(),
+        },
     }
 }
 

@@ -118,7 +118,9 @@ function isUserOrAssistantMessage(item: SessionTranscriptItemDto): boolean {
 
 function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn, { kind: 'message' }> {
   return {
-    id: item.itemId,
+    // Match the live runtime-stream transcript id so a row can move from the
+    // live projection into the historical projection without remounting.
+    id: `transcript:${item.runId}:${item.sequence}`,
     kind: 'message',
     role: item.actor === 'user' ? 'user' : 'assistant',
     sequence: item.sequence,

@@ -2958,6 +2958,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "getopts"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe4fbac503b8d1f88e6676011885f34b7174f46e59956bba534ba83abded4df"
+dependencies = [
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6453,6 +6462,25 @@ name = "protoc-bin-vendored-win32"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags 2.11.0",
+ "getopts",
+ "memchr",
+ "pulldown-cmark-escape",
+ "unicase",
+]
+
+[[package]]
+name = "pulldown-cmark-escape"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
 name = "pxfm"
@@ -10311,6 +10339,7 @@ dependencies = [
  "byteorder",
  "core-foundation 0.9.4",
  "core-graphics 0.23.2",
+ "csv",
  "dirs 5.0.1",
  "ed25519-dalek",
  "flate2",
@@ -10328,6 +10357,7 @@ dependencies = [
  "openh264",
  "prost 0.13.5",
  "protoc-bin-vendored",
+ "pulldown-cmark",
  "quick-xml 0.36.2",
  "rand 0.8.5",
  "regex",

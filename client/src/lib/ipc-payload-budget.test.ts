@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   IPC_PAYLOAD_BUDGETS,
@@ -46,6 +46,32 @@ describe('IPC payload budgets', () => {
       droppedCount: 1,
       overBudgetCount: 1,
     })
+  })
+
+  it('uses Rust-provided payload budget metadata instead of stringifying large command responses', () => {
+    resetIpcPayloadBudgetMetricsForTests()
+    const stringify = vi.spyOn(JSON, 'stringify')
+
+    const sample = recordIpcPayloadSample({
+      boundary: 'command',
+      name: 'get_repository_diff',
+      payload: {
+        patch: '+'.repeat(100_000),
+        payloadBudget: {
+          key: 'repository_diff',
+          budgetBytes: 96 * 1024,
+          observedBytes: 123_456,
+          truncated: true,
+          dropped: false,
+          message: 'truncated',
+        },
+      },
+    })
+    const stringifyCalls = stringify.mock.calls.length
+    stringify.mockRestore()
+
+    expect(sample?.observedBytes).toBe(123_456)
+    expect(stringifyCalls).toBe(0)
   })
 
   it('keeps representative normal command DTOs under their warning budgets', () => {

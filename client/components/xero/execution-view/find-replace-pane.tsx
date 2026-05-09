@@ -32,7 +32,7 @@ import { cn } from '@/lib/utils'
 import {
   createBackendRequestCoordinator,
   isStaleBackendRequestError,
-  stableBackendRequestKey,
+  searchProjectRequestKey,
 } from '@/src/lib/backend-request-coordinator'
 import type {
   ReplaceInProjectRequestDto,
@@ -341,7 +341,7 @@ export function FindReplacePane({
       try {
         const response = await projectSearchCoordinatorRef.current.runLatest(
           FIND_REPLACE_PROJECT_SEARCH_SCOPE,
-          stableBackendRequestKey(['search_project', request]),
+          searchProjectRequestKey(request),
           () => searchProject(request),
         )
         if (epoch !== searchEpoch.current) return

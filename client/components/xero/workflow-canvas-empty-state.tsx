@@ -1,9 +1,9 @@
-import { Bot, Plus, Play, Workflow as WorkflowIcon } from 'lucide-react'
+import { Bot, Play, Plus, Workflow as WorkflowIcon } from 'lucide-react'
 
+import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 interface WorkflowCanvasEmptyStateProps {
-  onCreateWorkflow?: () => void
   onCreateAgent?: () => void
   onBrowseWorkflows?: () => void
   className?: string
@@ -13,16 +13,16 @@ interface Action {
   icon: typeof WorkflowIcon
   label: string
   onSelect?: () => void
+  comingSoon?: boolean
 }
 
 export function WorkflowCanvasEmptyState({
-  onCreateWorkflow,
   onCreateAgent,
   onBrowseWorkflows,
   className,
 }: WorkflowCanvasEmptyStateProps) {
   const actions: Action[] = [
-    { icon: Plus, label: 'Create workflow', onSelect: onCreateWorkflow },
+    { icon: Plus, label: 'Create workflow', comingSoon: true },
     { icon: Bot, label: 'Create agent', onSelect: onCreateAgent },
     ...(onBrowseWorkflows
       ? [{ icon: Play, label: 'Run an existing workflow', onSelect: onBrowseWorkflows }]
@@ -50,23 +50,52 @@ export function WorkflowCanvasEmptyState({
         </p>
 
         <ul className="relative mt-8 flex w-full max-w-md flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/80 shadow-sm">
-          {actions.map((action) => (
-            <li key={action.label}>
-              <button
-                className={cn(
-                  'group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors',
-                  'hover:bg-secondary/40 focus-visible:bg-secondary/40 focus-visible:outline-none',
-                )}
-                onClick={action.onSelect}
-                type="button"
-              >
-                <action.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
-                <span className="flex-1 truncate text-[13px] text-foreground/85 group-hover:text-foreground">
-                  {action.label}
-                </span>
-              </button>
-            </li>
-          ))}
+          {actions.map((action) => {
+            const disabled = action.comingSoon || !action.onSelect
+            return (
+              <li key={action.label}>
+                <button
+                  aria-disabled={disabled || undefined}
+                  className={cn(
+                    'group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors',
+                    disabled
+                      ? 'cursor-not-allowed'
+                      : 'hover:bg-secondary/40 focus-visible:bg-secondary/40 focus-visible:outline-none',
+                  )}
+                  disabled={disabled}
+                  onClick={action.onSelect}
+                  type="button"
+                >
+                  <action.icon
+                    className={cn(
+                      'h-3.5 w-3.5 shrink-0 transition-colors',
+                      disabled
+                        ? 'text-muted-foreground/50'
+                        : 'text-muted-foreground group-hover:text-primary',
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      'flex-1 truncate text-[13px]',
+                      disabled
+                        ? 'text-foreground/45'
+                        : 'text-foreground/85 group-hover:text-foreground',
+                    )}
+                  >
+                    {action.label}
+                  </span>
+                  {action.comingSoon ? (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 text-[9.5px] uppercase tracking-[0.12em] font-semibold text-muted-foreground"
+                    >
+                      Coming soon
+                    </Badge>
+                  ) : null}
+                </button>
+              </li>
+            )
+          })}
         </ul>
       </div>
     </div>

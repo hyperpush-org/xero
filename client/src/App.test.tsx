@@ -246,39 +246,90 @@ function makeDiff(projectId = 'project-1', scope: RepositoryDiffResponseDto['sco
     },
     scope,
     patch: '',
+    files: [],
     truncated: false,
     baseRevision: null,
   }
 }
 
+type ProjectFileNode = ListProjectFilesResponseDto['root']
+
+function makeProjectFileTreeView(root: ProjectFileNode): ListProjectFilesResponseDto['view'] {
+  const nodesByPath: ListProjectFilesResponseDto['view']['nodesByPath'] = {}
+  const childPathsByPath: ListProjectFilesResponseDto['view']['childPathsByPath'] = {}
+
+  const ingest = (node: ProjectFileNode) => {
+    nodesByPath[node.path] = {
+      id: node.path,
+      name: node.name,
+      path: node.path,
+      type: node.type,
+      childrenLoaded: node.type === 'file' ? true : node.childrenLoaded ?? Boolean(node.children),
+      truncated: node.truncated ?? false,
+      omittedEntryCount: node.omittedEntryCount ?? 0,
+    }
+    if (node.type === 'folder') {
+      childPathsByPath[node.path] = node.children?.map((child) => child.path) ?? []
+      node.children?.forEach(ingest)
+    }
+  }
+  ingest(root)
+
+  return {
+    rootPath: root.path,
+    nodesByPath,
+    childPathsByPath,
+    loadedPaths: Object.values(nodesByPath)
+      .filter((node) => node.type === 'folder' && node.childrenLoaded)
+      .map((node) => node.path),
+    stats: {
+      byteSize: 1,
+      childListCount: Object.keys(childPathsByPath).length,
+      nodeCount: Object.keys(nodesByPath).length,
+      unloadedFolderCount: Object.values(nodesByPath).filter(
+        (node) => node.type === 'folder' && !node.childrenLoaded,
+      ).length,
+    },
+    truncated: root.truncated ?? false,
+    omittedEntryCount: root.omittedEntryCount ?? 0,
+  }
+}
+
 function makeProjectFiles(projectId = 'project-1'): ListProjectFilesResponseDto {
+  const root: ProjectFileNode = {
+    name: 'root',
+    path: '/',
+    type: 'folder',
+    childrenLoaded: true,
+    children: [
+      {
+        name: 'README.md',
+        path: '/README.md',
+        type: 'file',
+      },
+      {
+        name: 'src',
+        path: '/src',
+        type: 'folder',
+        childrenLoaded: true,
+        children: [
+          {
+            name: 'App.tsx',
+            path: '/src/App.tsx',
+            type: 'file',
+          },
+        ],
+      },
+    ],
+  }
+
   return {
     projectId,
     path: '/',
-    root: {
-      name: 'root',
-      path: '/',
-      type: 'folder',
-      children: [
-        {
-          name: 'README.md',
-          path: '/README.md',
-          type: 'file',
-        },
-        {
-          name: 'src',
-          path: '/src',
-          type: 'folder',
-          children: [
-            {
-              name: 'App.tsx',
-              path: '/src/App.tsx',
-              type: 'file',
-            },
-          ],
-        },
-      ],
-    },
+    root,
+    view: makeProjectFileTreeView(root),
+    truncated: false,
+    omittedEntryCount: 0,
   }
 }
 

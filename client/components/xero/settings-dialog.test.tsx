@@ -760,6 +760,10 @@ describe('SettingsDialog', () => {
                 provider_id: 'openrouter',
                 api_key: request?.revealSensitive ? 'sk-test' : '[redacted]',
               },
+              displayValues: {
+                provider_id: 'openrouter',
+                api_key: request?.revealSensitive ? 'sk-test' : '[redacted]',
+              },
             },
           ],
           rowCount: 1,

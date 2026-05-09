@@ -60,6 +60,7 @@ arc-swap = "1"
 base64 = "0.22"
 bs58 = "0.5"
 byteorder = "1"
+csv = "1"
 dirs = "5"
 ed25519-dalek = { version = "2", default-features = false, features = ["fast", "std", "rand_core"] }
 flate2 = "1"
@@ -71,6 +72,7 @@ ignore = "0.4"
 libc = "0.2"
 mime_guess = "2"
 openh264 = { version = "0.6", optional = true }
+pulldown-cmark = "0.12"
 prost = { version = "0.13", optional = true }
 quick-xml = "0.36"
 rand = "0.8"

@@ -53,6 +53,20 @@ export const runtimeStreamItemKindSchema = z.enum([
   'plan',
   'complete',
   'failure',
+  'subagent_lifecycle',
+])
+export const runtimeSubagentStatusSchema = z.enum([
+  'spawned',
+  'pending',
+  'starting',
+  'running',
+  'paused',
+  'cancelling',
+  'cancelled',
+  'handed_off',
+  'completed',
+  'failed',
+  'budget_exhausted',
 ])
 export const runtimeActionAnswerShapeSchema = z.enum([
   'plain_text',
@@ -134,6 +148,19 @@ export const runtimeStreamItemSchema = z
     code: nonEmptyOptionalTextSchema,
     message: nonEmptyOptionalTextSchema,
     retryable: z.boolean().nullable().optional(),
+    subagentId: nonEmptyOptionalTextSchema,
+    subagentRole: nonEmptyOptionalTextSchema,
+    subagentRoleLabel: nonEmptyOptionalTextSchema,
+    subagentRunId: nonEmptyOptionalTextSchema,
+    subagentStatus: nonEmptyOptionalTextSchema,
+    subagentUsedToolCalls: z.number().int().nonnegative().nullable().optional(),
+    subagentMaxToolCalls: z.number().int().nonnegative().nullable().optional(),
+    subagentUsedTokens: z.number().int().nonnegative().nullable().optional(),
+    subagentMaxTokens: z.number().int().nonnegative().nullable().optional(),
+    subagentUsedCostMicros: z.number().int().nonnegative().nullable().optional(),
+    subagentMaxCostMicros: z.number().int().nonnegative().nullable().optional(),
+    subagentResultSummary: nonEmptyOptionalTextSchema,
+    subagentPrompt: nonEmptyOptionalTextSchema,
     createdAt: isoTimestampSchema,
   })
   .strict()
@@ -374,6 +401,22 @@ export const runtimeStreamItemSchema = z
           })
         }
         return
+      case 'subagent_lifecycle':
+        if (!item.subagentId) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['subagentId'],
+            message: 'Xero received a subagent lifecycle item without a non-empty subagentId field.',
+          })
+        }
+        if (!item.subagentStatus) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['subagentStatus'],
+            message: 'Xero received a subagent lifecycle item without a subagentStatus value.',
+          })
+        }
+        return
     }
   })
 
@@ -426,6 +469,14 @@ interface RuntimeStreamBaseItemView {
   codeCommitId?: string | null
   codeWorkspaceEpoch?: number | null
   codePatchAvailability?: CodePatchAvailabilityDto | null
+  /**
+   * When set, this item belongs to a subagent run that was forwarded onto the
+   * parent's stream. The conversation projection groups these items under a
+   * `subagent_group` turn keyed by `subagentId`.
+   */
+  subagentId?: string | null
+  subagentRole?: string | null
+  subagentRoleLabel?: string | null
 }
 
 export interface RuntimeStreamTranscriptItemView extends RuntimeStreamBaseItemView {
@@ -499,6 +550,27 @@ export interface RuntimeStreamFailureItemView extends RuntimeStreamBaseItemView 
   retryable: boolean
 }
 
+export type RuntimeSubagentStatusDto = z.infer<typeof runtimeSubagentStatusSchema>
+
+export interface RuntimeStreamSubagentLifecycleItemView extends RuntimeStreamBaseItemView {
+  kind: 'subagent_lifecycle'
+  subagentId: string
+  subagentRole: string | null
+  subagentRoleLabel: string | null
+  subagentRunId: string | null
+  subagentStatus: string
+  usedToolCalls: number | null
+  maxToolCalls: number | null
+  usedTokens: number | null
+  maxTokens: number | null
+  usedCostMicros: number | null
+  maxCostMicros: number | null
+  resultSummary: string | null
+  prompt: string | null
+  title: string | null
+  detail: string | null
+}
+
 export type RuntimeStreamViewItem =
   | RuntimeStreamTranscriptItemView
   | RuntimeStreamToolItemView
@@ -508,6 +580,7 @@ export type RuntimeStreamViewItem =
   | RuntimeStreamPlanItemView
   | RuntimeStreamCompleteItemView
   | RuntimeStreamFailureItemView
+  | RuntimeStreamSubagentLifecycleItemView
 
 export interface RuntimeStreamEventDto {
   projectId: string
@@ -576,7 +649,13 @@ function normalizeRuntimeCodeHistoryMetadata(
   item: RuntimeStreamItemDto,
 ): Pick<
   RuntimeStreamBaseItemView,
-  'codeChangeGroupId' | 'codeCommitId' | 'codeWorkspaceEpoch' | 'codePatchAvailability'
+  | 'codeChangeGroupId'
+  | 'codeCommitId'
+  | 'codeWorkspaceEpoch'
+  | 'codePatchAvailability'
+  | 'subagentId'
+  | 'subagentRole'
+  | 'subagentRoleLabel'
 > {
   return {
     codeChangeGroupId: normalizeOptionalText(item.codeChangeGroupId),
@@ -584,6 +663,9 @@ function normalizeRuntimeCodeHistoryMetadata(
     codeWorkspaceEpoch:
       typeof item.codeWorkspaceEpoch === 'number' ? item.codeWorkspaceEpoch : null,
     codePatchAvailability: item.codePatchAvailability ?? null,
+    subagentId: normalizeOptionalText(item.subagentId),
+    subagentRole: normalizeOptionalText(item.subagentRole),
+    subagentRoleLabel: normalizeOptionalText(item.subagentRoleLabel),
   }
 }
 
@@ -1048,6 +1130,60 @@ function normalizeRuntimeStreamItem(event: RuntimeStreamEventDto): RuntimeStream
         retryable: event.item.retryable,
       }
     }
+    case 'subagent_lifecycle': {
+      const subagentId = ensureRuntimeStreamText(
+        event.item.subagentId,
+        'subagentId',
+        'subagent-lifecycle',
+      )
+      const subagentStatus = ensureRuntimeStreamText(
+        event.item.subagentStatus,
+        'subagentStatus',
+        'subagent-lifecycle',
+      )
+      const codeHistory = normalizeRuntimeCodeHistoryMetadata(event.item)
+      return {
+        id: `subagent_lifecycle:${itemRunId}:${subagentId}:${event.item.sequence}`,
+        kind: 'subagent_lifecycle',
+        runId: itemRunId,
+        sequence: event.item.sequence,
+        createdAt: event.item.createdAt,
+        ...codeHistory,
+        subagentId,
+        subagentRole: normalizeOptionalText(event.item.subagentRole),
+        subagentRoleLabel: normalizeOptionalText(event.item.subagentRoleLabel),
+        subagentRunId: normalizeOptionalText(event.item.subagentRunId),
+        subagentStatus,
+        usedToolCalls:
+          typeof event.item.subagentUsedToolCalls === 'number'
+            ? event.item.subagentUsedToolCalls
+            : null,
+        maxToolCalls:
+          typeof event.item.subagentMaxToolCalls === 'number'
+            ? event.item.subagentMaxToolCalls
+            : null,
+        usedTokens:
+          typeof event.item.subagentUsedTokens === 'number'
+            ? event.item.subagentUsedTokens
+            : null,
+        maxTokens:
+          typeof event.item.subagentMaxTokens === 'number'
+            ? event.item.subagentMaxTokens
+            : null,
+        usedCostMicros:
+          typeof event.item.subagentUsedCostMicros === 'number'
+            ? event.item.subagentUsedCostMicros
+            : null,
+        maxCostMicros:
+          typeof event.item.subagentMaxCostMicros === 'number'
+            ? event.item.subagentMaxCostMicros
+            : null,
+        resultSummary: normalizeOptionalText(event.item.subagentResultSummary),
+        prompt: normalizeOptionalText(event.item.subagentPrompt),
+        title: normalizeOptionalText(event.item.title),
+        detail: normalizeOptionalText(event.item.detail),
+      }
+    }
   }
 }
 
@@ -1424,6 +1560,18 @@ function estimateRuntimeStreamItemBytes(item: RuntimeStreamViewItem): number {
     case 'failure':
       bytes += estimateUtf16Bytes(item.code)
       bytes += estimateUtf16Bytes(item.message)
+      return bytes
+    case 'subagent_lifecycle':
+      bytes += estimateUtf16Bytes(item.subagentId)
+      bytes += estimateOptionalTextBytes(item.subagentRole)
+      bytes += estimateOptionalTextBytes(item.subagentRoleLabel)
+      bytes += estimateOptionalTextBytes(item.subagentRunId)
+      bytes += estimateUtf16Bytes(item.subagentStatus)
+      bytes += estimateOptionalTextBytes(item.resultSummary)
+      bytes += estimateOptionalTextBytes(item.prompt)
+      bytes += estimateOptionalTextBytes(item.title)
+      bytes += estimateOptionalTextBytes(item.detail)
+      bytes += 64
       return bytes
   }
 }

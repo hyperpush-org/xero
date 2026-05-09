@@ -501,7 +501,8 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
   )
 
   const notifications = useMemo(() => {
-    const logErrorCount = countErroredLogs(workbench.logEntries)
+    const logErrorCount =
+      workbench.logFeedView?.counts.errors ?? countErroredLogs(workbench.logEntries)
     const indexerErrorCount = countErroredLogs(
       workbench.lastIndexerRun?.entries ?? [],
     )
@@ -1007,13 +1008,15 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
               <LazySolanaLogFeed
                 cluster={selectedKind}
                 busy={workbench.logBusy}
-                entries={workbench.logEntries}
+                feedView={workbench.logFeedView}
+                feedVersion={workbench.logFeedVersion}
                 decodedEvents={workbench.decodedLogEvents}
                 activeSubscriptions={workbench.activeLogSubscriptions}
                 lastFetch={workbench.lastLogFetch}
                 onSubscribe={handleSubscribeLogs}
                 onUnsubscribe={workbench.unsubscribeLogs}
                 onFetchRecent={handleFetchRecentLogs}
+                onRefreshView={workbench.refreshLogView}
                 onRefreshSubscriptions={workbench.refreshActiveLogSubscriptions}
                 onClear={workbench.clearLogFeed}
               />

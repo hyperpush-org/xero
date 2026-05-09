@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   Activity,
   BadgeCheck,
@@ -16,17 +16,19 @@ import { cn } from "@/lib/utils"
 import { PanelHeader } from "./solana-panel-shell"
 import type {
   ClusterKind,
+  LogFeedFilter,
   LogDecodedEventPayload,
-  LogEntry,
   LogFilter,
   LogsActiveSubscription,
   LogsRecentResponse,
+  LogsViewResponse,
 } from "@/src/features/solana/use-solana-workbench"
 
 interface SolanaLogFeedProps {
   cluster: ClusterKind
   busy: boolean
-  entries: LogEntry[]
+  feedView: LogsViewResponse | null
+  feedVersion: number
   decodedEvents: LogDecodedEventPayload[]
   activeSubscriptions: LogsActiveSubscription[]
   lastFetch: LogsRecentResponse | null
@@ -39,22 +41,29 @@ interface SolanaLogFeedProps {
     rpcUrl?: string | null
     cachedOnly?: boolean
   }) => Promise<LogsRecentResponse | null>
+  onRefreshView: (args: {
+    cluster: ClusterKind
+    programIds?: string[]
+    filter?: LogFeedFilter
+    order?: "newestFirst" | "chronological"
+    limit?: number
+  }) => Promise<LogsViewResponse | null>
   onRefreshSubscriptions: () => Promise<void>
   onClear: () => void
 }
 
-type FeedFilter = "all" | "errors" | "events"
-
 export function SolanaLogFeed({
   cluster,
   busy,
-  entries,
+  feedView,
+  feedVersion,
   decodedEvents,
   activeSubscriptions,
   lastFetch,
   onSubscribe,
   onUnsubscribe,
   onFetchRecent,
+  onRefreshView,
   onRefreshSubscriptions,
   onClear,
 }: SolanaLogFeedProps) {
@@ -62,7 +71,7 @@ export function SolanaLogFeed({
   const [lastNInput, setLastNInput] = useState("25")
   const [includeDecoded, setIncludeDecoded] = useState(true)
   const [selectedToken, setSelectedToken] = useState<string | null>(null)
-  const [feedFilter, setFeedFilter] = useState<FeedFilter>("all")
+  const [feedFilter, setFeedFilter] = useState<LogFeedFilter>("all")
   const [status, setStatus] = useState<string | null>(null)
 
   const programIds = useMemo(
@@ -74,30 +83,21 @@ export function SolanaLogFeed({
     [programIdsInput],
   )
 
-  const orderedEntries = useMemo(
-    () => [...entries].sort((a, b) => (b.receivedMs ?? 0) - (a.receivedMs ?? 0)),
-    [entries],
-  )
+  const parsedLastN = Number.parseInt(lastNInput, 10)
+  const viewLimit = Number.isFinite(parsedLastN) ? Math.max(1, Math.min(parsedLastN, 1024)) : 25
+  const visibleEntries = feedView?.entries ?? []
+  const feedCounts = feedView?.counts ?? { all: 0, errors: 0, events: 0 }
+  const decodedEventCount = feedView?.decodedEventCount ?? decodedEvents.length
 
-  const filteredEntries = useMemo(() => {
-    switch (feedFilter) {
-      case "errors":
-        return orderedEntries.filter((entry) => !entry.explanation.ok)
-      case "events":
-        return orderedEntries.filter((entry) => entry.anchorEvents.length > 0)
-      default:
-        return orderedEntries
-    }
-  }, [feedFilter, orderedEntries])
-
-  const errorCount = useMemo(
-    () => orderedEntries.filter((entry) => !entry.explanation.ok).length,
-    [orderedEntries],
-  )
-  const eventCount = useMemo(
-    () => orderedEntries.filter((entry) => entry.anchorEvents.length > 0).length,
-    [orderedEntries],
-  )
+  useEffect(() => {
+    void onRefreshView({
+      cluster,
+      programIds,
+      filter: feedFilter,
+      order: "newestFirst",
+      limit: viewLimit,
+    })
+  }, [cluster, feedFilter, feedVersion, onRefreshView, programIds, viewLimit])
 
   const handleSubscribe = async () => {
     if (programIds.length === 0) {
@@ -132,15 +132,21 @@ export function SolanaLogFeed({
   }
 
   const handleFetchRecent = async () => {
-    const parsedLastN = Number.parseInt(lastNInput, 10)
     const response = await onFetchRecent({
       cluster,
       programIds,
-      lastN: Number.isFinite(parsedLastN) ? parsedLastN : 25,
+      lastN: viewLimit,
       cachedOnly: false,
     })
     if (response) {
       setStatus(`Fetched ${response.fetched} tx log entries`)
+      void onRefreshView({
+        cluster,
+        programIds,
+        filter: feedFilter,
+        order: "newestFirst",
+        limit: viewLimit,
+      })
     }
   }
 
@@ -288,26 +294,26 @@ export function SolanaLogFeed({
             Feed
           </div>
           <div className="text-[10.5px] text-muted-foreground">
-            decoded events <span className="font-mono tabular-nums text-foreground/70">{decodedEvents.length}</span>
+            decoded events <span className="font-mono tabular-nums text-foreground/70">{decodedEventCount}</span>
           </div>
         </div>
 
         <div className="flex flex-wrap gap-1">
           <FilterChip
             active={feedFilter === "all"}
-            count={orderedEntries.length}
+            count={feedCounts.all}
             label="All"
             onClick={() => setFeedFilter("all")}
           />
           <FilterChip
             active={feedFilter === "errors"}
-            count={errorCount}
+            count={feedCounts.errors}
             label="Errors"
             onClick={() => setFeedFilter("errors")}
           />
           <FilterChip
             active={feedFilter === "events"}
-            count={eventCount}
+            count={feedCounts.events}
             label="Anchor events"
             onClick={() => setFeedFilter("events")}
           />
@@ -319,13 +325,13 @@ export function SolanaLogFeed({
           </p>
         ) : null}
 
-        {filteredEntries.length === 0 ? (
+        {visibleEntries.length === 0 ? (
           <p className="rounded-md border border-dashed border-border/70 bg-background/30 px-3 py-3 text-[11.5px] italic text-muted-foreground">
             No log entries yet. Subscribe or fetch recent logs to populate the feed.
           </p>
         ) : (
           <ul className="space-y-1.5">
-            {filteredEntries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <li
                 key={`${entry.cluster}:${entry.signature}:${entry.slot ?? "na"}`}
                 className="rounded-md border border-border/70 bg-background/40 px-2 py-1.5"

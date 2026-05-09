@@ -15,6 +15,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
+  Bot,
   Brain,
   Check,
   CheckCircle2,
@@ -22,6 +23,7 @@ import {
   Circle,
   Copy,
   FileText,
+  GitBranch,
   History,
   Info,
   Loader2,
@@ -166,6 +168,25 @@ export type ConversationTurn =
       sequence: number
       sourceRunId: string
       targetRunId: string
+    }
+  | {
+      id: string
+      kind: 'subagent_group'
+      sequence: number
+      subagentId: string
+      role: string | null
+      roleLabel: string
+      status: string
+      runId: string | null
+      prompt: string | null
+      usedToolCalls: number | null
+      maxToolCalls: number | null
+      usedTokens: number | null
+      maxTokens: number | null
+      resultSummary: string | null
+      startedAt: string | null
+      completedAt: string | null
+      children: ConversationTurn[]
     }
 
 export type CodeUndoTargetKind = 'change_group' | 'file_change' | 'hunks'
@@ -845,6 +866,21 @@ function ConversationTurnRow({
 
   if (turn.kind === 'handoff_notice') {
     return <HandoffNoticeRow />
+  }
+
+  if (turn.kind === 'subagent_group') {
+    return (
+      <SubagentGroupCard
+        turn={turn}
+        accountAvatarUrl={accountAvatarUrl}
+        accountLogin={accountLogin}
+        isStreaming={isStreaming}
+        codeUndoStates={codeUndoStates}
+        returnSessionToHereStates={returnSessionToHereStates}
+        onUndoChangeGroup={onUndoChangeGroup}
+        onReturnSessionToHere={onReturnSessionToHere}
+      />
+    )
   }
 
   return (
@@ -1649,6 +1685,245 @@ function ToolOutputCopyAffordance({ text, label }: { text: string; label: string
         )}
       />
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Subagent group card — header with role/status/budget + inline child transcript.
+// ---------------------------------------------------------------------------
+
+const SUBAGENT_TERMINAL_STATUSES = new Set([
+  'completed',
+  'failed',
+  'cancelled',
+  'budget_exhausted',
+  'handed_off',
+])
+
+const SUBAGENT_ACTIVE_STATUSES = new Set([
+  'spawned',
+  'pending',
+  'starting',
+  'running',
+  'paused',
+  'cancelling',
+])
+
+function formatSubagentStatusLabel(status: string): string {
+  return status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function formatBudgetUsage(used: number | null, max: number | null): string | null {
+  if (used == null && max == null) return null
+  if (used != null && max != null) return `${used}/${max}`
+  if (used != null) return `${used}`
+  return `0/${max}`
+}
+
+function formatTokenBudgetUsage(used: number | null, max: number | null): string | null {
+  if (used == null && max == null) return null
+  const fmt = (value: number) =>
+    value >= 10_000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, '')}k` : `${value}`
+  if (used != null && max != null) return `${fmt(used)}/${fmt(max)}`
+  if (used != null) return fmt(used)
+  return `0/${fmt(max ?? 0)}`
+}
+
+function subagentStatusToken(
+  status: string,
+): { className: string; Icon: typeof Loader2 | null } {
+  if (status === 'completed' || status === 'handed_off') {
+    return { className: 'text-success', Icon: CheckCircle2 }
+  }
+  if (status === 'failed' || status === 'budget_exhausted') {
+    return { className: 'text-destructive', Icon: AlertCircle }
+  }
+  if (status === 'cancelled') {
+    return { className: 'text-muted-foreground', Icon: XCircle }
+  }
+  if (SUBAGENT_ACTIVE_STATUSES.has(status)) {
+    return { className: 'text-primary', Icon: Loader2 }
+  }
+  return { className: 'text-muted-foreground', Icon: Circle }
+}
+
+interface SubagentGroupCardProps {
+  turn: Extract<ConversationTurn, { kind: 'subagent_group' }>
+  accountAvatarUrl: string | null
+  accountLogin: string | null
+  isStreaming: boolean
+  codeUndoStates: Record<string, CodeUndoUiState>
+  returnSessionToHereStates: Record<string, CodeUndoUiState>
+  onUndoChangeGroup?: (request: CodeUndoRequest) => void
+  onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+}
+
+function SubagentGroupCard({
+  turn,
+  accountAvatarUrl,
+  accountLogin,
+  isStreaming,
+  codeUndoStates,
+  returnSessionToHereStates,
+  onUndoChangeGroup,
+  onReturnSessionToHere,
+}: SubagentGroupCardProps) {
+  const isTerminal = SUBAGENT_TERMINAL_STATUSES.has(turn.status)
+  const isActive = SUBAGENT_ACTIVE_STATUSES.has(turn.status)
+  const [open, setOpen] = useState(!isTerminal)
+  const [autoCollapsed, setAutoCollapsed] = useState(false)
+
+  useEffect(() => {
+    if (isTerminal && !autoCollapsed) {
+      setOpen(false)
+      setAutoCollapsed(true)
+    }
+  }, [isTerminal, autoCollapsed])
+
+  const { className: statusClassName, Icon: StatusIcon } = subagentStatusToken(turn.status)
+  const toolBudget = formatBudgetUsage(turn.usedToolCalls, turn.maxToolCalls)
+  const tokenBudget = formatTokenBudgetUsage(turn.usedTokens, turn.maxTokens)
+  const childCount = turn.children.length
+  const hasChildren = childCount > 0
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="group/subagent relative"
+      data-subagent-id={turn.subagentId}
+      data-subagent-status={turn.status}
+    >
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${open ? 'Hide' : 'Show'} subagent ${turn.roleLabel} transcript`}
+          className={cn(
+            'flex w-full items-center gap-2 rounded-md border border-border/40 bg-muted/20 px-2 py-1.5 text-left transition-colors',
+            'hover:bg-muted/30',
+            isActive && 'border-primary/30 bg-primary/[0.04]',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60',
+          )}
+        >
+          <Bot
+            aria-hidden="true"
+            className={cn('h-3.5 w-3.5 shrink-0', statusClassName)}
+          />
+          <span
+            className="min-w-0 truncate text-[12.5px] font-medium tracking-[-0.005em] text-foreground"
+            title={turn.roleLabel}
+          >
+            {turn.roleLabel}
+          </span>
+          <span
+            className={cn(
+              'inline-flex items-center gap-1 shrink-0 rounded-full px-1.5 py-px text-[10.5px] font-medium uppercase tracking-wide',
+              statusClassName,
+            )}
+          >
+            {StatusIcon ? (
+              <StatusIcon
+                aria-hidden="true"
+                className={cn(
+                  'h-2.5 w-2.5',
+                  isActive && StatusIcon === Loader2 ? 'animate-spin' : '',
+                )}
+              />
+            ) : null}
+            {formatSubagentStatusLabel(turn.status)}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75">
+            {[
+              toolBudget ? `Tools ${toolBudget}` : null,
+              tokenBudget ? `Tokens ${tokenBudget}` : null,
+              hasChildren ? `${childCount} ${childCount === 1 ? 'turn' : 'turns'}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+              'group-hover/subagent:text-muted-foreground/80',
+              open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
+            )}
+          />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        className={cn(
+          'overflow-hidden',
+          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1',
+          'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1',
+          'data-[state=open]:duration-200 data-[state=closed]:duration-150',
+        )}
+      >
+        <div className="ml-[22px] mt-1 flex flex-col gap-2 border-l border-border/25 pl-3">
+          {turn.prompt ? (
+            <div className="rounded-md border border-border/40 bg-muted/15 px-2 py-1.5 text-[12px] text-muted-foreground">
+              <span className="mb-0.5 inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                <GitBranch aria-hidden="true" className="h-2.5 w-2.5" />
+                Subagent prompt
+              </span>
+              <div className="whitespace-pre-wrap break-words">{turn.prompt}</div>
+            </div>
+          ) : null}
+          {hasChildren ? (
+            <ul
+              role="list"
+              aria-label={`${turn.roleLabel} subagent transcript`}
+              className="flex flex-col gap-2"
+            >
+              {turn.children.map((childTurn, index) => (
+                <li
+                  key={childTurn.id}
+                  className="agent-stagger-child"
+                  style={{ ['--stagger-index' as string]: index }}
+                >
+                  <ConversationTurnRow
+                    turn={childTurn}
+                    accountAvatarUrl={accountAvatarUrl}
+                    accountLogin={accountLogin}
+                    isStreaming={isStreaming && !isTerminal}
+                    connectsTop={false}
+                    connectsBottom={false}
+                    codeUndoStates={codeUndoStates}
+                    returnSessionToHereStates={returnSessionToHereStates}
+                    onUndoChangeGroup={onUndoChangeGroup}
+                    onReturnSessionToHere={onReturnSessionToHere}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="text-[11.5px] italic text-muted-foreground/70">
+              {isActive
+                ? 'Subagent is starting up; transcript will appear here.'
+                : 'Subagent produced no transcript items.'}
+            </div>
+          )}
+          {turn.resultSummary ? (
+            <div
+              className={cn(
+                'rounded-md border px-2 py-1.5 text-[12px]',
+                turn.status === 'failed' || turn.status === 'budget_exhausted'
+                  ? 'border-destructive/30 bg-destructive/[0.04] text-destructive'
+                  : 'border-border/40 bg-muted/15 text-muted-foreground',
+              )}
+            >
+              <span className="mb-0.5 inline-flex items-center gap-1 text-[10.5px] font-medium uppercase tracking-wide opacity-80">
+                <Info aria-hidden="true" className="h-2.5 w-2.5" />
+                {turn.status === 'failed' || turn.status === 'budget_exhausted'
+                  ? 'Failure'
+                  : 'Result summary'}
+              </span>
+              <div className="whitespace-pre-wrap break-words">{turn.resultSummary}</div>
+            </div>
+          ) : null}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 

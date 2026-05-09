@@ -64,6 +64,7 @@ pub enum AgentRunEventKindDto {
     RunPaused,
     RunCompleted,
     RunFailed,
+    SubagentLifecycle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

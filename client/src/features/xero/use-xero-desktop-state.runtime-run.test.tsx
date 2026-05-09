@@ -263,6 +263,7 @@ function makeDiff(id: string, scope: 'staged' | 'unstaged' | 'worktree'): Reposi
     },
     scope,
     patch: '',
+    files: [],
     truncated: false,
     baseRevision: null,
   }

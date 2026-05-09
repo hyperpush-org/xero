@@ -5,29 +5,72 @@ import {
   getProjectFileTreeStoreStats,
   isFolderLoaded,
   materializeProjectFileTree,
-  trimProjectFileTreeStoreToBudget,
   type ProjectFileTreeStore,
 } from './file-system-tree'
-import type { ListProjectFilesResponseDto } from './xero-model/project'
+import type { ListProjectFilesResponseDto, ProjectFileTreeViewDto } from './xero-model/project'
 
 function listing(path: string, children: ListProjectFilesResponseDto['root']['children']): ListProjectFilesResponseDto {
+  const root = {
+    name: path === '/' ? 'root' : path.split('/').pop() ?? 'folder',
+    path,
+    type: 'folder' as const,
+    children,
+    childrenLoaded: true,
+  }
   return {
     projectId: 'project-1',
     path,
-    root: {
-      name: path === '/' ? 'root' : path.split('/').pop() ?? 'folder',
-      path,
-      type: 'folder',
-      children,
-      childrenLoaded: true,
-    },
+    root,
+    view: viewFromRoot(root),
     truncated: false,
     omittedEntryCount: 0,
   }
 }
 
+function viewFromRoot(root: ListProjectFilesResponseDto['root']): ProjectFileTreeViewDto {
+  const nodesByPath: ProjectFileTreeViewDto['nodesByPath'] = {}
+  const childPathsByPath: ProjectFileTreeViewDto['childPathsByPath'] = {}
+
+  const ingest = (node: ListProjectFilesResponseDto['root']) => {
+    nodesByPath[node.path] = {
+      id: node.path,
+      name: node.name,
+      path: node.path,
+      type: node.type,
+      childrenLoaded: node.type === 'file' ? true : node.childrenLoaded ?? false,
+      truncated: node.truncated ?? false,
+      omittedEntryCount: node.omittedEntryCount ?? 0,
+    }
+    if (node.type === 'folder') {
+      childPathsByPath[node.path] = node.children?.map((child) => child.path) ?? []
+      node.children?.forEach(ingest)
+    }
+  }
+  ingest(root)
+
+  const childLists = Object.values(childPathsByPath)
+  return {
+    rootPath: root.path,
+    nodesByPath,
+    childPathsByPath,
+    loadedPaths: Object.values(nodesByPath)
+      .filter((node) => node.type === 'folder' && node.childrenLoaded)
+      .map((node) => node.path),
+    stats: {
+      byteSize: 1,
+      childListCount: childLists.length,
+      nodeCount: Object.keys(nodesByPath).length,
+      unloadedFolderCount: Object.values(nodesByPath).filter(
+        (node) => node.type === 'folder' && !node.childrenLoaded,
+      ).length,
+    },
+    truncated: root.truncated ?? false,
+    omittedEntryCount: root.omittedEntryCount ?? 0,
+  }
+}
+
 describe('project file tree store', () => {
-  it('hydrates folder listings incrementally without inventing unloaded descendants', () => {
+  it('hydrates folder listings from Rust flat views without inventing unloaded descendants', () => {
     let store: ProjectFileTreeStore = createEmptyProjectFileTreeStore()
     store = applyProjectFileListing(
       store,
@@ -86,45 +129,19 @@ describe('project file tree store', () => {
     expect(getProjectFileTreeStoreStats(store).byteSize).toBeGreaterThan(0)
   })
 
-  it('prunes unprotected hydrated folders when the project tree exceeds its byte budget', () => {
+  it('applies the Rust flat view instead of the legacy recursive root DTO', () => {
     let store = createEmptyProjectFileTreeStore()
-    store = applyProjectFileListing(
-      store,
-      listing('/', [
-        { name: 'src', path: '/src', type: 'folder', childrenLoaded: false },
-        { name: 'vendor', path: '/vendor', type: 'folder', childrenLoaded: false },
-      ]),
-    )
-    store = applyProjectFileListing(
-      store,
-      listing('/src', [{ name: 'main.ts', path: '/src/main.ts', type: 'file', childrenLoaded: true }]),
-    )
-    store = applyProjectFileListing(
-      store,
-      listing(
-        '/vendor',
-        Array.from({ length: 80 }, (_, index) => ({
-          name: `package-${index}.js`,
-          path: `/vendor/package-${index}.js`,
-          type: 'file' as const,
-          childrenLoaded: true,
-        })),
-      ),
-    )
-
-    const before = getProjectFileTreeStoreStats(store)
-    const trimmed = trimProjectFileTreeStoreToBudget(store, {
-      maxBytes: Math.max(1, before.byteSize - 1_000),
-      protectedPaths: ['/src/main.ts'],
+    const response = listing('/', [])
+    response.view = viewFromRoot({
+      name: 'root',
+      path: '/',
+      type: 'folder',
+      childrenLoaded: true,
+      children: [{ name: 'src', path: '/src', type: 'folder', childrenLoaded: false }],
     })
 
-    expect(trimmed.prunedFolderCount).toBeGreaterThan(0)
-    expect(trimmed.stats.byteSize).toBeLessThan(before.byteSize)
-    expect(isFolderLoaded(trimmed.store, '/src')).toBe(true)
-    expect(isFolderLoaded(trimmed.store, '/vendor')).toBe(false)
-    expect(materializeProjectFileTree(trimmed.store).children?.map((node) => node.path)).toEqual([
-      '/src',
-      '/vendor',
-    ])
+    store = applyProjectFileListing(store, response)
+
+    expect(materializeProjectFileTree(store).children?.map((node) => node.path)).toEqual(['/src'])
   })
 })

@@ -1434,6 +1434,7 @@ pub enum RuntimeStreamItemKind {
     Plan,
     Complete,
     Failure,
+    SubagentLifecycle,
 }
 
 impl RuntimeStreamItemKind {
@@ -1447,6 +1448,7 @@ impl RuntimeStreamItemKind {
             Self::Plan => "plan",
             Self::Complete => "complete",
             Self::Failure => "failure",
+            Self::SubagentLifecycle => "subagent_lifecycle",
         }
     }
 }
@@ -1576,11 +1578,37 @@ pub struct RuntimeStreamItemDto {
     pub code: Option<String>,
     pub message: Option<String>,
     pub retryable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_role_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_used_tool_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_tool_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_used_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_used_cost_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_cost_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_result_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_prompt: Option<String>,
     pub created_at: String,
 }
 
 impl RuntimeStreamItemDto {
-    pub const ALLOWED_KIND_NAMES: [&'static str; 8] = [
+    pub const ALLOWED_KIND_NAMES: [&'static str; 9] = [
         "transcript",
         "tool",
         "skill",
@@ -1589,6 +1617,7 @@ impl RuntimeStreamItemDto {
         "plan",
         "complete",
         "failure",
+        "subagent_lifecycle",
     ];
 
     pub fn allowed_kind_names() -> &'static [&'static str] {

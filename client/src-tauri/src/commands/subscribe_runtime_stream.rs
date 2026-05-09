@@ -103,6 +103,7 @@ fn parse_runtime_stream_item_kind(value: &str) -> CommandResult<RuntimeStreamIte
         "plan" => Ok(RuntimeStreamItemKind::Plan),
         "complete" => Ok(RuntimeStreamItemKind::Complete),
         "failure" => Ok(RuntimeStreamItemKind::Failure),
+        "subagent_lifecycle" => Ok(RuntimeStreamItemKind::SubagentLifecycle),
         other => Err(CommandError::user_fixable(
             "runtime_stream_item_kind_unsupported",
             format!(
@@ -334,6 +335,19 @@ fn owned_agent_event_runtime_item(
         code: None,
         message: None,
         retryable: None,
+        subagent_id: None,
+        subagent_role: None,
+        subagent_role_label: None,
+        subagent_run_id: None,
+        subagent_status: None,
+        subagent_used_tool_calls: None,
+        subagent_max_tool_calls: None,
+        subagent_used_tokens: None,
+        subagent_max_tokens: None,
+        subagent_used_cost_micros: None,
+        subagent_max_cost_micros: None,
+        subagent_result_summary: None,
+        subagent_prompt: None,
         created_at: event.created_at,
     };
     item.code_change_group_id = code_change_group_id_from_payload(&payload);
@@ -344,6 +358,9 @@ fn owned_agent_event_runtime_item(
         &project_id,
         item.code_change_group_id.as_deref(),
     );
+    item.subagent_id = payload_string(&payload, "subagentId");
+    item.subagent_role = payload_string(&payload, "subagentRole");
+    item.subagent_role_label = payload_string(&payload, "subagentRoleLabel");
 
     match event_kind {
         AgentRunEventKind::RunStarted => {
@@ -454,6 +471,34 @@ fn owned_agent_event_runtime_item(
                     Some(actor) => format!("{detail} · {actor}"),
                     None => detail,
                 });
+            item.text = item.detail.clone();
+        }
+        AgentRunEventKind::SubagentLifecycle => {
+            item.kind = RuntimeStreamItemKind::SubagentLifecycle;
+            item.subagent_id = payload_string(&payload, "subagentId");
+            item.subagent_role = payload_string(&payload, "subagentRole");
+            item.subagent_role_label = payload_string(&payload, "subagentRoleLabel");
+            item.subagent_run_id = payload_string(&payload, "subagentRunId");
+            item.subagent_status = payload_string(&payload, "subagentStatus");
+            item.subagent_used_tool_calls = payload_u64(&payload, "subagentUsedToolCalls");
+            item.subagent_max_tool_calls = payload_u64(&payload, "subagentMaxToolCalls");
+            item.subagent_used_tokens = payload_u64(&payload, "subagentUsedTokens");
+            item.subagent_max_tokens = payload_u64(&payload, "subagentMaxTokens");
+            item.subagent_used_cost_micros = payload_u64(&payload, "subagentUsedCostMicros");
+            item.subagent_max_cost_micros = payload_u64(&payload, "subagentMaxCostMicros");
+            item.subagent_result_summary = payload_string(&payload, "subagentResultSummary");
+            item.subagent_prompt = payload_string(&payload, "subagentPrompt");
+            let role_label = item
+                .subagent_role_label
+                .clone()
+                .or_else(|| item.subagent_role.clone())
+                .unwrap_or_else(|| "subagent".into());
+            let status = item
+                .subagent_status
+                .clone()
+                .unwrap_or_else(|| "running".into());
+            item.title = Some(format!("Subagent · {role_label}"));
+            item.detail = Some(format!("{role_label} subagent is {status}."));
             item.text = item.detail.clone();
         }
         AgentRunEventKind::CommandOutput => {
@@ -1621,6 +1666,10 @@ fn payload_verbatim_string(payload: &serde_json::Value, key: &str) -> Option<Str
 
 fn payload_bool(payload: &serde_json::Value, key: &str) -> Option<bool> {
     payload.get(key).and_then(|value| value.as_bool())
+}
+
+fn payload_u64(payload: &serde_json::Value, key: &str) -> Option<u64> {
+    payload.get(key).and_then(|value| value.as_u64())
 }
 
 fn payload_transcript_role(payload: &serde_json::Value) -> Option<RuntimeStreamTranscriptRole> {

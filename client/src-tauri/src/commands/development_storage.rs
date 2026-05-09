@@ -101,6 +101,7 @@ pub struct DeveloperReadStorageTableRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeveloperStorageRowDto {
     pub values: Map<String, Value>,
+    pub display_values: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -318,7 +319,7 @@ fn read_sqlite_table_rows(
             };
             values.insert(column_name.clone(), value);
         }
-        rendered_rows.push(DeveloperStorageRowDto { values });
+        rendered_rows.push(developer_storage_row(values));
     }
 
     Ok(DeveloperStorageTableRowsDto {
@@ -527,10 +528,34 @@ fn lance_batches_to_rows(
                 };
                 values.insert(column.name.clone(), value);
             }
-            rows.push(DeveloperStorageRowDto { values });
+            rows.push(developer_storage_row(values));
         }
     }
     rows
+}
+
+fn developer_storage_row(values: Map<String, Value>) -> DeveloperStorageRowDto {
+    let display_values = values
+        .iter()
+        .map(|(key, value)| (key.clone(), storage_display_value(value)))
+        .collect();
+    DeveloperStorageRowDto {
+        values,
+        display_values,
+    }
+}
+
+fn storage_display_value(value: &Value) -> String {
+    let rendered = match value {
+        Value::Null => "NULL".to_string(),
+        Value::String(value) => value.clone(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+        }
+    };
+    preview_text(&rendered)
 }
 
 fn resolve_project_state_database_path(
@@ -843,5 +868,20 @@ mod tests {
         assert_eq!(normalize_limit(Some(0)), 1);
         assert_eq!(normalize_limit(Some(5)), 5);
         assert_eq!(normalize_limit(Some(MAX_ROW_LIMIT + 1)), MAX_ROW_LIMIT);
+    }
+
+    #[test]
+    fn formats_storage_display_values_without_frontend_json_stringify() {
+        assert_eq!(storage_display_value(&Value::Null), "NULL");
+        assert_eq!(storage_display_value(&json!("plain")), "plain");
+        assert_eq!(storage_display_value(&json!({"ok": true})), "{\"ok\":true}");
+
+        let mut values = Map::new();
+        values.insert("payload".into(), json!({"nested": [1, 2]}));
+        let row = developer_storage_row(values);
+        assert_eq!(
+            row.display_values.get("payload").map(String::as_str),
+            Some("{\"nested\":[1,2]}")
+        );
     }
 }

@@ -113,6 +113,32 @@ describe('file renderers', () => {
     expect(screen.getByText(/Image unavailable:/)).toHaveTextContent('../../secret.png')
   })
 
+  it('renders saved Markdown images from Rust-provided asset refs without resolving in React', async () => {
+    const resolveAssetPreviewUrl = vi.fn(async (path: string) => `project-asset://preview${path}`)
+
+    render(
+      <MarkdownPreview
+        filePath="/docs/guide.md"
+        text="![safe](./logo.png)\n\n![missing](./missing.png)"
+        preview={{
+          kind: 'markdown',
+          assetRefs: [
+            {
+              source: './logo.png',
+              path: '/docs/logo.png',
+              previewUrl: 'project-asset://rust-logo',
+            },
+          ],
+        }}
+        onResolveAssetPreviewUrl={resolveAssetPreviewUrl}
+      />,
+    )
+
+    expect(await screen.findByAltText('safe')).toHaveAttribute('src', 'project-asset://rust-logo')
+    expect(resolveAssetPreviewUrl).not.toHaveBeenCalled()
+    expect(screen.getByText(/Image unavailable:/)).toHaveTextContent('./missing.png')
+  })
+
   it('renders CSV tables and keeps parser limits deterministic for quoted delimited text', () => {
     const parsed = parseDelimitedText('"name","count"\n"Alpha, Inc.",1\n"Beta ""B""",2', ',', {
       rowLimit: 2,
@@ -134,6 +160,28 @@ describe('file renderers', () => {
 
     expect(screen.getByTestId('csv-preview')).toHaveTextContent('2 rows')
     expect(screen.getByRole('table', { name: 'Table preview of /data.tsv' })).toBeVisible()
+  })
+
+  it('renders CSV previews from Rust-provided rows without parsing the text fallback', () => {
+    render(
+      <CsvPreview
+        filePath="/data.csv"
+        mimeType="text/csv; charset=utf-8"
+        text="fallback,should-not-render"
+        preview={{
+          kind: 'csv',
+          headers: ['name', 'count'],
+          rows: [['Rust row', '3']],
+          totalRows: 2,
+          totalColumns: 2,
+          truncatedRows: false,
+          truncatedColumns: false,
+        }}
+      />,
+    )
+
+    expect(screen.getByTestId('csv-preview')).toHaveTextContent('Rust row')
+    expect(screen.queryByText('fallback')).not.toBeInTheDocument()
   })
 
   it('renders PDF, audio, video, HTML placeholder, and unsupported file states with safe actions', () => {

@@ -5,24 +5,25 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     commands::{
         available_builtin_runtime_agent_descriptors, runtime_agent_descriptor, validate_non_empty,
-        AgentAuthoringAvailabilityStatusDto, AgentAuthoringCatalogDto,
-        AgentAuthoringConstraintExplanationDto, AgentAuthoringCreationFlowDto,
-        AgentAuthoringCreationFlowEntryKindDto, AgentAuthoringDbTableDto,
-        AgentAuthoringPolicyControlDto, AgentAuthoringPolicyControlKindDto,
-        AgentAuthoringPolicyControlValueKindDto, AgentAuthoringProfileAvailabilityDto,
-        AgentAuthoringTemplateDto, AgentAuthoringToolCategoryDto,
-        AgentAuthoringUpstreamArtifactDto, AgentConsumedArtifactDto, AgentDbTouchpointDetailDto,
-        AgentDbTouchpointKindDto, AgentDbTouchpointsDto, AgentDefinitionBaseCapabilityProfileDto,
-        AgentDefinitionLifecycleStateDto, AgentDefinitionScopeDto, AgentHeaderDto,
-        AgentOutputContractDto, AgentOutputSectionDto, AgentPromptDto, AgentPromptRoleDto,
-        AgentRefDto, AgentToolEffectClassDto, AgentToolPackCatalogDto, AgentToolPolicyDetailsDto,
-        AgentToolSummaryDto, AgentTriggerRefDto, CommandError, CommandResult,
-        GetAgentAuthoringCatalogRequestDto, GetAgentToolPackCatalogRequestDto,
-        GetWorkflowAgentDetailRequestDto, ListWorkflowAgentsRequestDto,
-        ListWorkflowAgentsResponseDto, RuntimeAgentBaseCapabilityProfileDto,
-        RuntimeAgentDescriptorDto, RuntimeAgentIdDto, RuntimeAgentLifecycleStateDto,
-        RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto, RuntimeAgentScopeDto,
-        RuntimeRunApprovalModeDto, WorkflowAgentDetailDto, WorkflowAgentSummaryDto,
+        AgentAuthoringAvailabilityStatusDto, AgentAuthoringCatalogDiagnosticDto,
+        AgentAuthoringCatalogDto, AgentAuthoringConstraintExplanationDto,
+        AgentAuthoringCreationFlowDto, AgentAuthoringCreationFlowEntryKindDto,
+        AgentAuthoringDbTableDto, AgentAuthoringPolicyControlDto,
+        AgentAuthoringPolicyControlKindDto, AgentAuthoringPolicyControlValueKindDto,
+        AgentAuthoringProfileAvailabilityDto, AgentAuthoringTemplateDto,
+        AgentAuthoringToolCategoryDto, AgentAuthoringUpstreamArtifactDto, AgentConsumedArtifactDto,
+        AgentDbTouchpointDetailDto, AgentDbTouchpointKindDto, AgentDbTouchpointsDto,
+        AgentDefinitionBaseCapabilityProfileDto, AgentDefinitionLifecycleStateDto,
+        AgentDefinitionScopeDto, AgentHeaderDto, AgentOutputContractDto, AgentOutputSectionDto,
+        AgentPromptDto, AgentPromptRoleDto, AgentRefDto, AgentToolEffectClassDto,
+        AgentToolPackCatalogDto, AgentToolPolicyDetailsDto, AgentToolSummaryDto,
+        AgentTriggerRefDto, CommandError, CommandResult, GetAgentAuthoringCatalogRequestDto,
+        GetAgentToolPackCatalogRequestDto, GetWorkflowAgentDetailRequestDto,
+        ListWorkflowAgentsRequestDto, ListWorkflowAgentsResponseDto,
+        RuntimeAgentBaseCapabilityProfileDto, RuntimeAgentDescriptorDto, RuntimeAgentIdDto,
+        RuntimeAgentLifecycleStateDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
+        RuntimeAgentScopeDto, RuntimeRunApprovalModeDto, WorkflowAgentDetailDto,
+        WorkflowAgentSummaryDto,
     },
     db::project_store,
     runtime::{
@@ -42,6 +43,8 @@ use xero_agent_core::domain_tool_pack_manifests;
 
 use super::contracts::workflow_agents::{output_contract_description, output_contract_label};
 use super::runtime_support::resolve_project_root;
+
+const AGENT_AUTHORING_CATALOG_CONTRACT_VERSION: u32 = 1;
 
 #[tauri::command]
 pub fn list_workflow_agents<R: Runtime>(
@@ -120,6 +123,10 @@ pub fn get_agent_authoring_catalog<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     let _repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
 
+    Ok(agent_authoring_catalog())
+}
+
+fn agent_authoring_catalog() -> AgentAuthoringCatalogDto {
     // Tools: full deferred catalog, exposed unfiltered. The picker will note
     // each tool's effect class so the canvas can warn when a chosen tool
     // exceeds the agent's base capability profile.
@@ -226,7 +233,8 @@ pub fn get_agent_authoring_catalog<R: Runtime>(
     let constraint_explanations =
         authoring_constraint_explanations(profile_availability.as_slice());
 
-    Ok(AgentAuthoringCatalogDto {
+    let mut catalog = AgentAuthoringCatalogDto {
+        contract_version: AGENT_AUTHORING_CATALOG_CONTRACT_VERSION,
         tools,
         tool_categories,
         db_tables,
@@ -236,7 +244,353 @@ pub fn get_agent_authoring_catalog<R: Runtime>(
         creation_flows,
         profile_availability,
         constraint_explanations,
-    })
+        diagnostics: Vec::new(),
+    };
+    catalog.diagnostics = validate_agent_authoring_catalog(&catalog);
+    catalog
+}
+
+fn validate_agent_authoring_catalog(
+    catalog: &AgentAuthoringCatalogDto,
+) -> Vec<AgentAuthoringCatalogDiagnosticDto> {
+    let mut diagnostics = Vec::new();
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_tool_name",
+        "Authoring catalog tool names must be unique.",
+        &["tools"],
+        catalog
+            .tools
+            .iter()
+            .enumerate()
+            .map(|(index, tool)| (index, tool.name.clone()))
+            .collect(),
+    );
+    let tools_by_name = catalog
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_tool_category_id",
+        "Authoring catalog tool category ids must be unique.",
+        &["toolCategories"],
+        catalog
+            .tool_categories
+            .iter()
+            .enumerate()
+            .map(|(index, category)| (index, category.id.clone()))
+            .collect(),
+    );
+    for (category_index, category) in catalog.tool_categories.iter().enumerate() {
+        push_duplicate_key_diagnostics(
+            &mut diagnostics,
+            "authoring_catalog_duplicate_category_tool_name",
+            "Authoring catalog category tool names must be unique.",
+            &["toolCategories", &category_index.to_string(), "tools"],
+            category
+                .tools
+                .iter()
+                .enumerate()
+                .map(|(tool_index, tool)| (tool_index, tool.name.clone()))
+                .collect(),
+        );
+        for (tool_index, tool) in category.tools.iter().enumerate() {
+            if !tools_by_name.contains(tool.name.as_str()) {
+                diagnostics.push(authoring_catalog_diagnostic(
+                    "authoring_catalog_unknown_category_tool",
+                    "Authoring catalog category tools must reference catalog tools.",
+                    &[
+                        "toolCategories",
+                        &category_index.to_string(),
+                        "tools",
+                        &tool_index.to_string(),
+                        "name",
+                    ],
+                ));
+            }
+        }
+    }
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_database_table",
+        "Authoring catalog database tables must be unique.",
+        &["dbTables"],
+        catalog
+            .db_tables
+            .iter()
+            .enumerate()
+            .map(|(index, table)| (index, table.table.clone()))
+            .collect(),
+    );
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_upstream_artifact",
+        "Authoring catalog upstream artifacts must be unique per source and contract.",
+        &["upstreamArtifacts"],
+        catalog
+            .upstream_artifacts
+            .iter()
+            .enumerate()
+            .map(|(index, artifact)| {
+                (
+                    index,
+                    format!(
+                        "{}:{}",
+                        artifact.source_agent.as_str(),
+                        output_contract_id(artifact.contract)
+                    ),
+                )
+            })
+            .collect(),
+    );
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_policy_control_id",
+        "Authoring catalog policy control ids must be unique.",
+        &["policyControls"],
+        catalog
+            .policy_controls
+            .iter()
+            .enumerate()
+            .map(|(index, control)| (index, control.id.clone()))
+            .collect(),
+    );
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_policy_control_snapshot_path",
+        "Authoring catalog policy control snapshot paths must be unique.",
+        &["policyControls"],
+        catalog
+            .policy_controls
+            .iter()
+            .enumerate()
+            .map(|(index, control)| (index, control.snapshot_path.clone()))
+            .collect(),
+    );
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_template_id",
+        "Authoring template ids must be unique.",
+        &["templates"],
+        catalog
+            .templates
+            .iter()
+            .enumerate()
+            .map(|(index, template)| (index, template.id.clone()))
+            .collect(),
+    );
+    let templates_by_id = catalog
+        .templates
+        .iter()
+        .map(|template| (template.id.as_str(), template))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_creation_flow_id",
+        "Authoring creation flow ids must be unique.",
+        &["creationFlows"],
+        catalog
+            .creation_flows
+            .iter()
+            .enumerate()
+            .map(|(index, flow)| (index, flow.id.clone()))
+            .collect(),
+    );
+    for (flow_index, flow) in catalog.creation_flows.iter().enumerate() {
+        if flow.template_ids.is_empty() {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_empty_creation_flow_templates",
+                "Authoring creation flows must reference at least one template.",
+                &["creationFlows", &flow_index.to_string(), "templateIds"],
+            ));
+            continue;
+        }
+
+        let mut has_known_template = false;
+        let mut has_compatible_template = false;
+        for (template_index, template_id) in flow.template_ids.iter().enumerate() {
+            let Some(template) = templates_by_id.get(template_id.as_str()) else {
+                diagnostics.push(authoring_catalog_diagnostic(
+                    "authoring_catalog_unknown_creation_flow_template",
+                    "Authoring creation flow references an unknown template id.",
+                    &[
+                        "creationFlows",
+                        &flow_index.to_string(),
+                        "templateIds",
+                        &template_index.to_string(),
+                    ],
+                ));
+                continue;
+            };
+            has_known_template = true;
+            if template.task_kind == flow.task_kind
+                && template.base_capability_profile == flow.base_capability_profile
+                && template_output_contract_id(template)
+                    == Some(output_contract_id(flow.expected_output_contract))
+            {
+                has_compatible_template = true;
+            }
+        }
+        if has_known_template && !has_compatible_template {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_incompatible_creation_flow_template",
+                "Authoring creation flow must reference a template matching its task kind, base capability profile, and expected output contract.",
+                &["creationFlows", &flow_index.to_string(), "templateIds"],
+            ));
+        }
+    }
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_profile_availability",
+        "Authoring profile availability entries must be unique per subject and profile.",
+        &["profileAvailability"],
+        catalog
+            .profile_availability
+            .iter()
+            .enumerate()
+            .map(|(index, availability)| (index, authoring_profile_availability_key(availability)))
+            .collect(),
+    );
+    let availability_by_key = catalog
+        .profile_availability
+        .iter()
+        .map(|availability| {
+            (
+                authoring_profile_availability_key(availability),
+                availability,
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_constraint_explanation_id",
+        "Authoring constraint explanation ids must be unique.",
+        &["constraintExplanations"],
+        catalog
+            .constraint_explanations
+            .iter()
+            .enumerate()
+            .map(|(index, explanation)| (index, explanation.id.clone()))
+            .collect(),
+    );
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_constraint_explanation_subject",
+        "Authoring constraint explanations must be unique per subject and profile.",
+        &["constraintExplanations"],
+        catalog
+            .constraint_explanations
+            .iter()
+            .enumerate()
+            .map(|(index, explanation)| (index, authoring_constraint_explanation_key(explanation)))
+            .collect(),
+    );
+    for (index, explanation) in catalog.constraint_explanations.iter().enumerate() {
+        let key = authoring_constraint_explanation_key(explanation);
+        let Some(availability) = availability_by_key.get(&key) else {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_orphan_constraint_explanation",
+                "Authoring constraint explanation must reference profile availability.",
+                &["constraintExplanations", &index.to_string()],
+            ));
+            continue;
+        };
+        if availability.status != explanation.status {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_constraint_status_mismatch",
+                "Authoring constraint explanation status must match profile availability.",
+                &["constraintExplanations", &index.to_string(), "status"],
+            ));
+        }
+        if availability.required_profile != explanation.required_profile {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_constraint_required_profile_mismatch",
+                "Authoring constraint explanation required profile must match profile availability.",
+                &["constraintExplanations", &index.to_string(), "requiredProfile"],
+            ));
+        }
+    }
+
+    diagnostics
+}
+
+fn push_duplicate_key_diagnostics(
+    diagnostics: &mut Vec<AgentAuthoringCatalogDiagnosticDto>,
+    code: &str,
+    message: &str,
+    path: &[&str],
+    values: Vec<(usize, String)>,
+) {
+    let mut seen = std::collections::HashSet::new();
+    for (index, value) in values {
+        if !seen.insert(value) {
+            let mut duplicate_path = path
+                .iter()
+                .map(|segment| (*segment).to_string())
+                .collect::<Vec<_>>();
+            duplicate_path.push(index.to_string());
+            diagnostics.push(AgentAuthoringCatalogDiagnosticDto {
+                severity: "error".into(),
+                code: code.into(),
+                message: message.into(),
+                path: duplicate_path,
+            });
+        }
+    }
+}
+
+fn authoring_catalog_diagnostic(
+    code: &str,
+    message: &str,
+    path: &[&str],
+) -> AgentAuthoringCatalogDiagnosticDto {
+    AgentAuthoringCatalogDiagnosticDto {
+        severity: "error".into(),
+        code: code.into(),
+        message: message.into(),
+        path: path.iter().map(|segment| (*segment).to_string()).collect(),
+    }
+}
+
+fn template_output_contract_id(template: &AgentAuthoringTemplateDto) -> Option<&str> {
+    template
+        .definition
+        .get("output")
+        .and_then(|output| output.get("contract"))
+        .and_then(JsonValue::as_str)
+}
+
+fn authoring_profile_availability_key(
+    availability: &AgentAuthoringProfileAvailabilityDto,
+) -> String {
+    format!(
+        "{}:{}:{}",
+        availability.subject_kind,
+        availability.subject_id,
+        base_capability_profile_id(&availability.base_capability_profile)
+    )
+}
+
+fn authoring_constraint_explanation_key(
+    explanation: &AgentAuthoringConstraintExplanationDto,
+) -> String {
+    format!(
+        "{}:{}:{}",
+        explanation.subject_kind,
+        explanation.subject_id,
+        base_capability_profile_id(&explanation.base_capability_profile)
+    )
 }
 
 #[tauri::command]
@@ -2434,6 +2788,40 @@ mod tests {
             .available_pack_ids
             .iter()
             .all(|pack_id| manifest_ids.contains(pack_id.as_str())));
+    }
+
+    #[test]
+    fn s62_authoring_catalog_emits_contract_metadata_and_no_builder_diagnostics() {
+        let catalog = agent_authoring_catalog();
+
+        assert_eq!(
+            catalog.contract_version,
+            AGENT_AUTHORING_CATALOG_CONTRACT_VERSION
+        );
+        assert!(catalog.diagnostics.is_empty(), "{:?}", catalog.diagnostics);
+        assert!(!catalog.tools.is_empty());
+        assert!(!catalog.creation_flows.is_empty());
+        assert!(!catalog.profile_availability.is_empty());
+    }
+
+    #[test]
+    fn s62_authoring_catalog_validation_reports_uniqueness_and_reference_drift() {
+        let mut catalog = agent_authoring_catalog();
+        catalog.tools.push(catalog.tools[0].clone());
+        catalog.tool_categories[0].tools[0].name = "missing_tool".into();
+        catalog.creation_flows[0].template_ids = vec!["missing_template".into()];
+        catalog.constraint_explanations[0].subject_id = "missing_subject".into();
+
+        let diagnostics = validate_agent_authoring_catalog(&catalog);
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(codes.contains("authoring_catalog_duplicate_tool_name"));
+        assert!(codes.contains("authoring_catalog_unknown_category_tool"));
+        assert!(codes.contains("authoring_catalog_unknown_creation_flow_template"));
+        assert!(codes.contains("authoring_catalog_orphan_constraint_explanation"));
     }
 
     #[test]

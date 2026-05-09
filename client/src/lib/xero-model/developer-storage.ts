@@ -71,6 +71,7 @@ export type DeveloperReadStorageTableRequestDto = z.infer<typeof developerReadSt
 export const developerStorageRowSchema = z
   .object({
     values: z.record(z.string(), z.unknown()),
+    displayValues: z.record(z.string(), z.string()),
   })
   .strict()
 export type DeveloperStorageRowDto = z.infer<typeof developerStorageRowSchema>

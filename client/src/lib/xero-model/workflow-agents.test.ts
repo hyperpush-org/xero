@@ -105,6 +105,7 @@ const templateDefinition = {
 describe('workflow agent model contracts', () => {
   it('parses profile-aware authoring catalog availability metadata', () => {
     const catalog = agentAuthoringCatalogSchema.parse({
+      contractVersion: 1,
       tools: [
         {
           name: 'project_context_search',
@@ -234,6 +235,7 @@ describe('workflow agent model contracts', () => {
           source: 'profileAvailability',
         },
       ],
+      diagnostics: [],
     })
 
     expect(catalog.profileAvailability).toHaveLength(2)
