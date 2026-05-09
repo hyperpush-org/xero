@@ -130,6 +130,8 @@ fn seed_custom_definition(repo_root: &Path) -> String {
             lifecycle_state: "active".into(),
             base_capability_profile: "engineering".into(),
             snapshot: json!({
+                "schema": "xero.agent_definition.v1",
+                "schemaVersion": 1,
                 "id": definition_id,
                 "version": 1,
                 "displayName": "Security Reviewer",
@@ -141,6 +143,18 @@ fn seed_custom_definition(repo_root: &Path) -> String {
                 "baseCapabilityProfile": "engineering",
                 "defaultApprovalMode": "suggest",
                 "allowedApprovalModes": ["suggest", "auto_edit"],
+                "toolPolicy": {
+                    "allowedEffectClasses": ["observe", "runtime_state", "write", "command"],
+                    "allowedToolGroups": ["core", "mutation", "command_readonly"],
+                    "allowedTools": [],
+                    "deniedTools": [],
+                    "externalServiceAllowed": false,
+                    "browserControlAllowed": false,
+                    "skillRuntimeAllowed": false,
+                    "subagentAllowed": false,
+                    "commandAllowed": true,
+                    "destructiveWriteAllowed": false
+                },
                 "promptFragments": [
                     {
                         "id": "security.coverage",
@@ -150,6 +164,45 @@ fn seed_custom_definition(repo_root: &Path) -> String {
                 ],
                 "workflowContract": "Read diff, map to threats, propose mitigations.",
                 "finalResponseContract": "Return a numbered list of mitigations.",
+                "output": {
+                    "contract": "engineering_summary",
+                    "label": "Mitigations",
+                    "description": "Threat-model mitigations.",
+                    "sections": [
+                        {
+                            "id": "mitigations",
+                            "label": "Mitigations",
+                            "description": "Numbered mitigation list.",
+                            "emphasis": "core",
+                            "producedByTools": []
+                        }
+                    ]
+                },
+                "dbTouchpoints": {
+                    "reads": [],
+                    "writes": [],
+                    "encouraged": []
+                },
+                "consumes": [],
+                "projectDataPolicy": {
+                    "recordKinds": ["artifact", "context_note"],
+                    "structuredSchemas": [],
+                    "unstructuredScopes": ["project"]
+                },
+                "memoryCandidatePolicy": {
+                    "memoryKinds": ["project_fact"],
+                    "reviewRequired": true
+                },
+                "retrievalDefaults": {
+                    "enabled": true,
+                    "limit": 4,
+                    "recordKinds": ["artifact", "context_note"],
+                    "memoryKinds": ["project_fact"]
+                },
+                "handoffPolicy": {
+                    "enabled": true,
+                    "preserveDefinitionVersion": true
+                }
             }),
             validation_report: Some(json!({ "status": "valid" })),
             created_at: "2026-05-07T10:00:00Z".into(),

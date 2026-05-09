@@ -41,6 +41,38 @@ const STANDARD_AGENT_DEFINITION_SURFACES: &[AgentDefinitionQualitySurface] = &[
 
 const INJECTION_AGENT_DEFINITION_SURFACES: &[AgentDefinitionQualitySurface] =
     &[AgentDefinitionQualitySurface::PromptInjectionRejection];
+const REQUIRED_CUSTOM_AGENT_SIMULATION_SURFACES: &[CustomAgentSimulationSurface] = &[
+    CustomAgentSimulationSurface::PromptAssembly,
+    CustomAgentSimulationSurface::ToolGates,
+    CustomAgentSimulationSurface::RetrievalPolicy,
+    CustomAgentSimulationSurface::MemoryPolicy,
+    CustomAgentSimulationSurface::HandoffPolicy,
+    CustomAgentSimulationSurface::OutputContract,
+    CustomAgentSimulationSurface::ConsumedArtifacts,
+    CustomAgentSimulationSurface::DatabaseTouchpoints,
+];
+const REQUIRED_RETRIEVAL_MEMORY_QUALITY_SURFACES: &[RetrievalMemoryQualitySurface] = &[
+    RetrievalMemoryQualitySurface::Relevance,
+    RetrievalMemoryQualitySurface::Freshness,
+    RetrievalMemoryQualitySurface::ContradictionHandling,
+    RetrievalMemoryQualitySurface::FirstTurnContinuity,
+    RetrievalMemoryQualitySurface::ApprovedMemoryRecall,
+    RetrievalMemoryQualitySurface::DegradedFallback,
+];
+const REQUIRED_HANDOFF_CONTEXT_QUALITY_SURFACES: &[HandoffContextQualitySurface] = &[
+    HandoffContextQualitySurface::ContextExhaustion,
+    HandoffContextQualitySurface::Compaction,
+    HandoffContextQualitySurface::HandoffBundleCompleteness,
+    HandoffContextQualitySurface::CrashRecovery,
+    HandoffContextQualitySurface::TargetFirstTurnQuality,
+];
+const REQUIRED_NO_REDESCRIPTION_CONTINUITY_SURFACES: &[NoRedescriptionContinuitySurface] = &[
+    NoRedescriptionContinuitySurface::WhatIsHappening,
+    NoRedescriptionContinuitySurface::WhatChanged,
+    NoRedescriptionContinuitySurface::WhatRemains,
+    NoRedescriptionContinuitySurface::Evidence,
+    NoRedescriptionContinuitySurface::SourceCitation,
+];
 
 const TEST_AGENT_CI_PROJECT_ID: &str = "test-agent-ci-project";
 const TEST_AGENT_CI_RUN_ID: &str = "test-agent-ci-run";
@@ -129,6 +161,102 @@ impl AgentDefinitionQualitySurface {
             Self::HandoffBehavior => "handoff_behavior",
             Self::PromptInjectionRejection => "prompt_injection_rejection",
             Self::VersionPinning => "version_pinning",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomAgentSimulationSurface {
+    PromptAssembly,
+    ToolGates,
+    RetrievalPolicy,
+    MemoryPolicy,
+    HandoffPolicy,
+    OutputContract,
+    ConsumedArtifacts,
+    DatabaseTouchpoints,
+}
+
+impl CustomAgentSimulationSurface {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PromptAssembly => "prompt_assembly",
+            Self::ToolGates => "tool_gates",
+            Self::RetrievalPolicy => "retrieval_policy",
+            Self::MemoryPolicy => "memory_policy",
+            Self::HandoffPolicy => "handoff_policy",
+            Self::OutputContract => "output_contract",
+            Self::ConsumedArtifacts => "consumed_artifacts",
+            Self::DatabaseTouchpoints => "database_touchpoints",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalMemoryQualitySurface {
+    Relevance,
+    Freshness,
+    ContradictionHandling,
+    FirstTurnContinuity,
+    ApprovedMemoryRecall,
+    DegradedFallback,
+}
+
+impl RetrievalMemoryQualitySurface {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Relevance => "relevance",
+            Self::Freshness => "freshness",
+            Self::ContradictionHandling => "contradiction_handling",
+            Self::FirstTurnContinuity => "first_turn_continuity",
+            Self::ApprovedMemoryRecall => "approved_memory_recall",
+            Self::DegradedFallback => "degraded_fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffContextQualitySurface {
+    ContextExhaustion,
+    Compaction,
+    HandoffBundleCompleteness,
+    CrashRecovery,
+    TargetFirstTurnQuality,
+}
+
+impl HandoffContextQualitySurface {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextExhaustion => "context_exhaustion",
+            Self::Compaction => "compaction",
+            Self::HandoffBundleCompleteness => "handoff_bundle_completeness",
+            Self::CrashRecovery => "crash_recovery",
+            Self::TargetFirstTurnQuality => "target_first_turn_quality",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoRedescriptionContinuitySurface {
+    WhatIsHappening,
+    WhatChanged,
+    WhatRemains,
+    Evidence,
+    SourceCitation,
+}
+
+impl NoRedescriptionContinuitySurface {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::WhatIsHappening => "what_is_happening",
+            Self::WhatChanged => "what_changed",
+            Self::WhatRemains => "what_remains",
+            Self::Evidence => "evidence",
+            Self::SourceCitation => "source_citation",
         }
     }
 }
@@ -500,6 +628,350 @@ pub struct AgentDefinitionQualityCaseResult {
     pub failures: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomAgentSimulationHarnessReport {
+    pub suite_id: String,
+    pub passed: bool,
+    pub summary: String,
+    pub cases: Vec<CustomAgentSimulationCaseResult>,
+    pub coverage: CustomAgentSimulationCoverage,
+    pub failures: Vec<String>,
+}
+
+impl CustomAgentSimulationHarnessReport {
+    pub fn to_markdown(&self) -> String {
+        let status = if self.passed { "PASS" } else { "FAIL" };
+        let mut lines = vec![
+            format!("# Custom Agent Simulation Harness: {status}"),
+            String::new(),
+            self.summary.clone(),
+            String::new(),
+            "## Cases".into(),
+        ];
+        for case in &self.cases {
+            let marker = if case.passed { "PASS" } else { "FAIL" };
+            lines.push(format!(
+                "- {marker} `{}` ({})",
+                case.case_id,
+                case.fixture_kind.as_str()
+            ));
+            for failure in &case.failures {
+                lines.push(format!("  - {failure}"));
+            }
+        }
+        if !self.failures.is_empty() {
+            lines.push(String::new());
+            lines.push("## Failures".into());
+            lines.extend(self.failures.iter().map(|failure| format!("- {failure}")));
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomAgentSimulationCoverage {
+    pub surfaces: Vec<CustomAgentSimulationSurface>,
+    pub fixture_kinds: Vec<AgentDefinitionEvalFixtureKind>,
+    pub missing_surfaces: Vec<CustomAgentSimulationSurface>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomAgentSimulationCaseResult {
+    pub case_id: String,
+    pub fixture_kind: AgentDefinitionEvalFixtureKind,
+    pub definition_id: String,
+    pub runtime_agent_id: RuntimeAgentIdDto,
+    pub passed: bool,
+    pub surfaces: Vec<CustomAgentSimulationSurface>,
+    pub prompt_assembly_passed: bool,
+    pub tool_gates_passed: bool,
+    pub retrieval_policy_passed: bool,
+    pub memory_policy_passed: bool,
+    pub handoff_policy_passed: bool,
+    pub output_contract_passed: bool,
+    pub consumed_artifacts_passed: bool,
+    pub database_touchpoints_passed: bool,
+    pub exposed_tools: Vec<String>,
+    pub forbidden_tools_exposed: Vec<String>,
+    pub failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetrievalMemoryQualityEvalReport {
+    pub suite_id: String,
+    pub passed: bool,
+    pub summary: String,
+    pub metrics: RetrievalMemoryQualityMetrics,
+    pub cases: Vec<RetrievalMemoryQualityCaseResult>,
+    pub coverage: RetrievalMemoryQualityCoverage,
+    pub failures: Vec<String>,
+}
+
+impl RetrievalMemoryQualityEvalReport {
+    pub fn to_markdown(&self) -> String {
+        let status = if self.passed { "PASS" } else { "FAIL" };
+        let mut lines = vec![
+            format!("# Retrieval And Memory Quality Eval Report: {status}"),
+            String::new(),
+            self.summary.clone(),
+            String::new(),
+            "## Metrics".into(),
+            format!("- pass_rate: {:.3}", self.metrics.pass_rate),
+            format!("- relevance_rate: {:.3}", self.metrics.relevance_rate),
+            format!("- freshness_rate: {:.3}", self.metrics.freshness_rate),
+            format!(
+                "- contradiction_rate: {:.3}",
+                self.metrics.contradiction_rate
+            ),
+            format!(
+                "- first_turn_continuity_rate: {:.3}",
+                self.metrics.first_turn_continuity_rate
+            ),
+            format!(
+                "- approved_memory_recall_rate: {:.3}",
+                self.metrics.approved_memory_recall_rate
+            ),
+            format!(
+                "- degraded_fallback_rate: {:.3}",
+                self.metrics.degraded_fallback_rate
+            ),
+            String::new(),
+            "## Cases".into(),
+        ];
+        for case in &self.cases {
+            let marker = if case.passed { "PASS" } else { "FAIL" };
+            lines.push(format!(
+                "- {marker} `{}` ({})",
+                case.case_id,
+                case.surface.as_str()
+            ));
+            for failure in &case.failures {
+                lines.push(format!("  - {failure}"));
+            }
+        }
+        if !self.failures.is_empty() {
+            lines.push(String::new());
+            lines.push("## Failures".into());
+            lines.extend(self.failures.iter().map(|failure| format!("- {failure}")));
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetrievalMemoryQualityMetrics {
+    pub pass_rate: f64,
+    pub relevance_rate: f64,
+    pub freshness_rate: f64,
+    pub contradiction_rate: f64,
+    pub first_turn_continuity_rate: f64,
+    pub approved_memory_recall_rate: f64,
+    pub degraded_fallback_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetrievalMemoryQualityCoverage {
+    pub surfaces: Vec<RetrievalMemoryQualitySurface>,
+    pub missing_surfaces: Vec<RetrievalMemoryQualitySurface>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetrievalMemoryQualityCaseResult {
+    pub case_id: String,
+    pub surface: RetrievalMemoryQualitySurface,
+    pub passed: bool,
+    pub criteria: Vec<String>,
+    pub observed: JsonValue,
+    pub failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandoffContextQualityEvalReport {
+    pub suite_id: String,
+    pub passed: bool,
+    pub summary: String,
+    pub metrics: HandoffContextQualityMetrics,
+    pub cases: Vec<HandoffContextQualityCaseResult>,
+    pub coverage: HandoffContextQualityCoverage,
+    pub failures: Vec<String>,
+}
+
+impl HandoffContextQualityEvalReport {
+    pub fn to_markdown(&self) -> String {
+        let status = if self.passed { "PASS" } else { "FAIL" };
+        let mut lines = vec![
+            format!("# Handoff And Context Exhaustion Eval Report: {status}"),
+            String::new(),
+            self.summary.clone(),
+            String::new(),
+            "## Metrics".into(),
+            format!("- pass_rate: {:.3}", self.metrics.pass_rate),
+            format!(
+                "- context_exhaustion_rate: {:.3}",
+                self.metrics.context_exhaustion_rate
+            ),
+            format!("- compaction_rate: {:.3}", self.metrics.compaction_rate),
+            format!(
+                "- handoff_bundle_completeness_rate: {:.3}",
+                self.metrics.handoff_bundle_completeness_rate
+            ),
+            format!(
+                "- crash_recovery_rate: {:.3}",
+                self.metrics.crash_recovery_rate
+            ),
+            format!(
+                "- target_first_turn_quality_rate: {:.3}",
+                self.metrics.target_first_turn_quality_rate
+            ),
+            String::new(),
+            "## Cases".into(),
+        ];
+        for case in &self.cases {
+            let marker = if case.passed { "PASS" } else { "FAIL" };
+            lines.push(format!(
+                "- {marker} `{}` ({})",
+                case.case_id,
+                case.surface.as_str()
+            ));
+            for failure in &case.failures {
+                lines.push(format!("  - {failure}"));
+            }
+        }
+        if !self.failures.is_empty() {
+            lines.push(String::new());
+            lines.push("## Failures".into());
+            lines.extend(self.failures.iter().map(|failure| format!("- {failure}")));
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandoffContextQualityMetrics {
+    pub pass_rate: f64,
+    pub context_exhaustion_rate: f64,
+    pub compaction_rate: f64,
+    pub handoff_bundle_completeness_rate: f64,
+    pub crash_recovery_rate: f64,
+    pub target_first_turn_quality_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandoffContextQualityCoverage {
+    pub surfaces: Vec<HandoffContextQualitySurface>,
+    pub missing_surfaces: Vec<HandoffContextQualitySurface>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandoffContextQualityCaseResult {
+    pub case_id: String,
+    pub surface: HandoffContextQualitySurface,
+    pub passed: bool,
+    pub criteria: Vec<String>,
+    pub observed: JsonValue,
+    pub failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoRedescriptionContinuityEvalReport {
+    pub suite_id: String,
+    pub passed: bool,
+    pub summary: String,
+    pub metrics: NoRedescriptionContinuityMetrics,
+    pub cases: Vec<NoRedescriptionContinuityCaseResult>,
+    pub coverage: NoRedescriptionContinuityCoverage,
+    pub failures: Vec<String>,
+}
+
+impl NoRedescriptionContinuityEvalReport {
+    pub fn to_markdown(&self) -> String {
+        let status = if self.passed { "PASS" } else { "FAIL" };
+        let mut lines = vec![
+            format!("# No Redescription Needed Eval Report: {status}"),
+            String::new(),
+            self.summary.clone(),
+            String::new(),
+            "## Metrics".into(),
+            format!("- pass_rate: {:.3}", self.metrics.pass_rate),
+            format!(
+                "- what_is_happening_rate: {:.3}",
+                self.metrics.what_is_happening_rate
+            ),
+            format!("- what_changed_rate: {:.3}", self.metrics.what_changed_rate),
+            format!("- what_remains_rate: {:.3}", self.metrics.what_remains_rate),
+            format!("- evidence_rate: {:.3}", self.metrics.evidence_rate),
+            format!(
+                "- source_citation_rate: {:.3}",
+                self.metrics.source_citation_rate
+            ),
+            String::new(),
+            "## Cases".into(),
+        ];
+        for case in &self.cases {
+            let marker = if case.passed { "PASS" } else { "FAIL" };
+            lines.push(format!(
+                "- {marker} `{}` ({})",
+                case.case_id,
+                case.surface.as_str()
+            ));
+            for failure in &case.failures {
+                lines.push(format!("  - {failure}"));
+            }
+        }
+        if !self.failures.is_empty() {
+            lines.push(String::new());
+            lines.push("## Failures".into());
+            lines.extend(self.failures.iter().map(|failure| format!("- {failure}")));
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoRedescriptionContinuityMetrics {
+    pub pass_rate: f64,
+    pub what_is_happening_rate: f64,
+    pub what_changed_rate: f64,
+    pub what_remains_rate: f64,
+    pub evidence_rate: f64,
+    pub source_citation_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoRedescriptionContinuityCoverage {
+    pub surfaces: Vec<NoRedescriptionContinuitySurface>,
+    pub missing_surfaces: Vec<NoRedescriptionContinuitySurface>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoRedescriptionContinuityCaseResult {
+    pub case_id: String,
+    pub surface: NoRedescriptionContinuitySurface,
+    pub passed: bool,
+    pub criteria: Vec<String>,
+    pub observed: JsonValue,
+    pub failures: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct AgentHarnessEvalCase {
     id: &'static str,
@@ -717,6 +1189,8 @@ impl ProviderAdapter for TestAgentCiScriptedProvider {
             })?;
             return Ok(ProviderTurnOutcome::ToolCalls {
                 message,
+                reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: vec![tool_call],
                 usage: Some(ProviderUsage::default()),
             });
@@ -726,6 +1200,8 @@ impl ProviderAdapter for TestAgentCiScriptedProvider {
         emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
         Ok(ProviderTurnOutcome::Complete {
             message,
+            reasoning_content: None,
+            reasoning_details: None,
             usage: Some(ProviderUsage::default()),
         })
     }
@@ -1404,6 +1880,1209 @@ pub fn run_agent_definition_quality_eval_suite(
     }
 }
 
+pub fn run_custom_agent_simulation_harness(repo_root: &Path) -> CustomAgentSimulationHarnessReport {
+    let cases = production_agent_definition_eval_cases()
+        .into_iter()
+        .filter(is_custom_agent_simulation_case)
+        .map(|case| evaluate_custom_agent_simulation_case(repo_root, case))
+        .collect::<Vec<_>>();
+    let coverage = custom_agent_simulation_coverage_for_cases(&cases);
+    let mut failures = coverage
+        .missing_surfaces
+        .iter()
+        .map(|surface| {
+            format!(
+                "Missing custom-agent simulation surface: {}.",
+                surface.as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    for case in &cases {
+        failures.extend(
+            case.failures
+                .iter()
+                .map(|failure| format!("{}: {failure}", case.case_id)),
+        );
+    }
+
+    failures.sort();
+    failures.dedup();
+    let passed = failures.is_empty();
+    let summary = if passed {
+        format!(
+            "All {} custom-agent simulation case(s) passed without real destructive effects, external services, or UI.",
+            cases.len()
+        )
+    } else {
+        format!(
+            "{} custom-agent simulation failure(s) detected across {} case(s).",
+            failures.len(),
+            cases.len()
+        )
+    };
+
+    CustomAgentSimulationHarnessReport {
+        suite_id: "custom_agent_simulation_harness_v1".into(),
+        passed,
+        summary,
+        cases,
+        coverage,
+        failures,
+    }
+}
+
+pub fn run_retrieval_memory_quality_eval_suite(
+    _repo_root: &Path,
+) -> RetrievalMemoryQualityEvalReport {
+    let cases = retrieval_memory_quality_cases();
+    let coverage = retrieval_memory_quality_coverage_for_cases(&cases);
+    let metrics = retrieval_memory_quality_metrics_for_cases(&cases);
+    let mut failures = coverage
+        .missing_surfaces
+        .iter()
+        .map(|surface| {
+            format!(
+                "Missing retrieval/memory quality surface: {}.",
+                surface.as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    for case in &cases {
+        failures.extend(
+            case.failures
+                .iter()
+                .map(|failure| format!("{}: {failure}", case.case_id)),
+        );
+    }
+    failures.sort();
+    failures.dedup();
+    let passed = failures.is_empty();
+    let summary = if passed {
+        format!(
+            "All {} retrieval and memory quality eval case(s) passed.",
+            cases.len()
+        )
+    } else {
+        format!(
+            "{} retrieval and memory quality failure(s) detected across {} case(s).",
+            failures.len(),
+            cases.len()
+        )
+    };
+
+    RetrievalMemoryQualityEvalReport {
+        suite_id: "retrieval_memory_quality_eval_v1".into(),
+        passed,
+        summary,
+        metrics,
+        cases,
+        coverage,
+        failures,
+    }
+}
+
+pub fn run_handoff_context_quality_eval_suite(
+    _repo_root: &Path,
+) -> HandoffContextQualityEvalReport {
+    let cases = handoff_context_quality_cases();
+    let coverage = handoff_context_quality_coverage_for_cases(&cases);
+    let metrics = handoff_context_quality_metrics_for_cases(&cases);
+    let mut failures = coverage
+        .missing_surfaces
+        .iter()
+        .map(|surface| {
+            format!(
+                "Missing handoff/context quality surface: {}.",
+                surface.as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    for case in &cases {
+        failures.extend(
+            case.failures
+                .iter()
+                .map(|failure| format!("{}: {failure}", case.case_id)),
+        );
+    }
+    failures.sort();
+    failures.dedup();
+    let passed = failures.is_empty();
+    let summary = if passed {
+        format!(
+            "All {} handoff and context-exhaustion eval case(s) passed.",
+            cases.len()
+        )
+    } else {
+        format!(
+            "{} handoff/context failure(s) detected across {} case(s).",
+            failures.len(),
+            cases.len()
+        )
+    };
+
+    HandoffContextQualityEvalReport {
+        suite_id: "handoff_context_quality_eval_v1".into(),
+        passed,
+        summary,
+        metrics,
+        cases,
+        coverage,
+        failures,
+    }
+}
+
+pub fn run_no_redescription_needed_eval_suite(
+    _repo_root: &Path,
+) -> NoRedescriptionContinuityEvalReport {
+    let cases = no_redescription_continuity_cases();
+    let coverage = no_redescription_continuity_coverage_for_cases(&cases);
+    let metrics = no_redescription_continuity_metrics_for_cases(&cases);
+    let mut failures = coverage
+        .missing_surfaces
+        .iter()
+        .map(|surface| {
+            format!(
+                "Missing no-redescription continuity surface: {}.",
+                surface.as_str()
+            )
+        })
+        .collect::<Vec<_>>();
+    for case in &cases {
+        failures.extend(
+            case.failures
+                .iter()
+                .map(|failure| format!("{}: {failure}", case.case_id)),
+        );
+    }
+    failures.sort();
+    failures.dedup();
+    let passed = failures.is_empty();
+    let summary = if passed {
+        format!(
+            "All {} no-redescription continuity eval case(s) passed.",
+            cases.len()
+        )
+    } else {
+        format!(
+            "{} no-redescription continuity failure(s) detected across {} case(s).",
+            failures.len(),
+            cases.len()
+        )
+    };
+
+    NoRedescriptionContinuityEvalReport {
+        suite_id: "no_redescription_needed_eval_v1".into(),
+        passed,
+        summary,
+        metrics,
+        cases,
+        coverage,
+        failures,
+    }
+}
+
+fn is_custom_agent_simulation_case(case: &AgentDefinitionQualityEvalCase) -> bool {
+    case.scope != "built_in"
+        && !matches!(
+            case.fixture_kind,
+            AgentDefinitionEvalFixtureKind::MaliciousDefinition
+        )
+}
+
+fn retrieval_memory_quality_cases() -> Vec<RetrievalMemoryQualityCaseResult> {
+    vec![
+        retrieval_relevance_quality_case(),
+        retrieval_freshness_quality_case(),
+        retrieval_contradiction_quality_case(),
+        first_turn_continuity_quality_case(),
+        approved_memory_recall_quality_case(),
+        degraded_fallback_quality_case(),
+    ]
+}
+
+#[derive(Debug, Clone)]
+struct RetrievalEvalCandidate {
+    source_id: &'static str,
+    source_kind: &'static str,
+    keyword_score: f64,
+    semantic_score: f64,
+    freshness_state: &'static str,
+    confidence: f64,
+    has_provenance: bool,
+    approved: bool,
+    enabled: bool,
+    superseded_by_id: Option<&'static str>,
+    invalidated_at: Option<&'static str>,
+    semantic_status: &'static str,
+}
+
+fn retrieval_relevance_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![
+        RetrievalEvalCandidate {
+            source_id: "current-decision",
+            source_kind: "project_record",
+            keyword_score: 0.82,
+            semantic_score: 0.88,
+            freshness_state: "current",
+            confidence: 0.90,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: None,
+            invalidated_at: None,
+            semantic_status: "available",
+        },
+        RetrievalEvalCandidate {
+            source_id: "generic-note",
+            source_kind: "project_record",
+            keyword_score: 0.30,
+            semantic_score: 0.20,
+            freshness_state: "current",
+            confidence: 0.50,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: None,
+            invalidated_at: None,
+            semantic_status: "available",
+        },
+    ];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "retrieval_relevance_ranks_source_cited_current_result",
+        RetrievalMemoryQualitySurface::Relevance,
+        vec![
+            "Top result must be the current source-cited project decision.".into(),
+            "Returned ranking must include score and trust diagnostics.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking
+            .first()
+            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+            == Some("current-decision"),
+        "Expected `current-decision` to rank first for relevance.",
+    )
+}
+
+fn retrieval_freshness_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![
+        RetrievalEvalCandidate {
+            source_id: "current-fact",
+            source_kind: "project_record",
+            keyword_score: 0.58,
+            semantic_score: 0.72,
+            freshness_state: "current",
+            confidence: 0.82,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: None,
+            invalidated_at: None,
+            semantic_status: "available",
+        },
+        RetrievalEvalCandidate {
+            source_id: "stale-fact",
+            source_kind: "project_record",
+            keyword_score: 0.60,
+            semantic_score: 0.74,
+            freshness_state: "stale",
+            confidence: 0.95,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: None,
+            invalidated_at: Some("2026-05-09T01:00:00Z"),
+            semantic_status: "available",
+        },
+    ];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "retrieval_freshness_deprioritizes_stale_records",
+        RetrievalMemoryQualitySurface::Freshness,
+        vec![
+            "Current facts must outrank stale facts with comparable relevance.".into(),
+            "Observed metadata must expose freshness and trust state.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking
+            .first()
+            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+            == Some("current-fact")
+            && ranking.iter().any(|candidate| {
+                candidate.get("freshnessState").and_then(JsonValue::as_str) == Some("stale")
+            }),
+        "Expected current fact to outrank stale fact while keeping stale diagnostics visible.",
+    )
+}
+
+fn retrieval_contradiction_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![
+        RetrievalEvalCandidate {
+            source_id: "current-resolution",
+            source_kind: "approved_memory",
+            keyword_score: 0.52,
+            semantic_score: 0.68,
+            freshness_state: "current",
+            confidence: 0.88,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: None,
+            invalidated_at: None,
+            semantic_status: "available",
+        },
+        RetrievalEvalCandidate {
+            source_id: "superseded-resolution",
+            source_kind: "approved_memory",
+            keyword_score: 0.61,
+            semantic_score: 0.80,
+            freshness_state: "superseded",
+            confidence: 0.99,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: Some("current-resolution"),
+            invalidated_at: Some("2026-05-09T01:00:00Z"),
+            semantic_status: "available",
+        },
+    ];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "retrieval_contradiction_blocks_superseded_memory_from_winning",
+        RetrievalMemoryQualitySurface::ContradictionHandling,
+        vec![
+            "Superseded or contradicted memory must not outrank current approved memory.".into(),
+            "Contradiction state must be emitted in observed diagnostics.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking
+            .first()
+            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+            == Some("current-resolution")
+            && ranking.iter().any(|candidate| {
+                candidate
+                    .get("contradictionState")
+                    .and_then(JsonValue::as_str)
+                    == Some("superseded")
+            }),
+        "Expected current memory to outrank superseded memory with contradiction diagnostics.",
+    )
+}
+
+fn first_turn_continuity_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let observed = json!({
+        "workingSetSummaryAdmitted": true,
+        "sourceCitations": ["project-record:current-goal", "memory:recent-decision"],
+        "openQuestions": ["confirm rollout order"],
+        "nextActions": ["continue backend-only slices"],
+        "bulkDurableContextToolMediated": true,
+    });
+    eval_case(
+        "first_turn_continuity_contains_current_problem_without_bulk_preprompting",
+        RetrievalMemoryQualitySurface::FirstTurnContinuity,
+        vec![
+            "First-turn package must include a source-cited working-set summary.".into(),
+            "Bulk durable context must remain tool-mediated.".into(),
+        ],
+        observed.clone(),
+        observed
+            .get("workingSetSummaryAdmitted")
+            .and_then(JsonValue::as_bool)
+            == Some(true)
+            && observed
+                .get("bulkDurableContextToolMediated")
+                .and_then(JsonValue::as_bool)
+                == Some(true)
+            && observed
+                .get("sourceCitations")
+                .and_then(JsonValue::as_array)
+                .is_some_and(|citations| citations.len() >= 2),
+        "Expected source-cited working-set continuity with tool-mediated bulk context.",
+    )
+}
+
+fn approved_memory_recall_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![
+        RetrievalEvalCandidate {
+            source_id: "approved-user-preference",
+            source_kind: "approved_memory",
+            keyword_score: 0.70,
+            semantic_score: 0.66,
+            freshness_state: "current",
+            confidence: 0.90,
+            has_provenance: true,
+            approved: true,
+            enabled: true,
+            superseded_by_id: None,
+            invalidated_at: None,
+            semantic_status: "available",
+        },
+        RetrievalEvalCandidate {
+            source_id: "rejected-user-preference",
+            source_kind: "approved_memory",
+            keyword_score: 0.95,
+            semantic_score: 0.95,
+            freshness_state: "current",
+            confidence: 1.0,
+            has_provenance: true,
+            approved: false,
+            enabled: false,
+            superseded_by_id: None,
+            invalidated_at: None,
+            semantic_status: "available",
+        },
+    ];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "approved_memory_recall_excludes_rejected_candidates",
+        RetrievalMemoryQualitySurface::ApprovedMemoryRecall,
+        vec![
+            "Approved enabled memory must be recallable.".into(),
+            "Rejected or disabled memory must not be returned even with high relevance.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking.len() == 1
+            && ranking
+                .first()
+                .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+                == Some("approved-user-preference"),
+        "Expected only approved enabled memory to be returned.",
+    )
+}
+
+fn degraded_fallback_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![RetrievalEvalCandidate {
+        source_id: "fallback-record",
+        source_kind: "project_record",
+        keyword_score: 0.85,
+        semantic_score: 0.0,
+        freshness_state: "current",
+        confidence: 0.75,
+        has_provenance: true,
+        approved: true,
+        enabled: true,
+        superseded_by_id: None,
+        invalidated_at: None,
+        semantic_status: "missing_embedding",
+    }];
+    let fallback_allowed = rank_retrieval_eval_candidates(&candidates, true);
+    let fallback_blocked = rank_retrieval_eval_candidates(&candidates, false);
+    eval_case(
+        "degraded_fallback_is_visible_and_policy_bounded",
+        RetrievalMemoryQualitySurface::DegradedFallback,
+        vec![
+            "Missing embeddings may return keyword fallback only when fallback is allowed.".into(),
+            "Fallback results must expose degraded mode metadata.".into(),
+        ],
+        json!({
+            "fallbackAllowedRanking": fallback_allowed,
+            "fallbackBlockedRanking": fallback_blocked,
+        }),
+        fallback_allowed.len() == 1
+            && fallback_allowed
+                .first()
+                .and_then(|candidate| candidate.get("retrievalMode").and_then(JsonValue::as_str))
+                == Some("keyword_fallback")
+            && fallback_blocked.is_empty(),
+        "Expected visible keyword fallback only when fallback policy allows it.",
+    )
+}
+
+fn rank_retrieval_eval_candidates(
+    candidates: &[RetrievalEvalCandidate],
+    allow_keyword_fallback: bool,
+) -> Vec<JsonValue> {
+    let mut ranked = candidates
+        .iter()
+        .filter(|candidate| candidate.approved && candidate.enabled)
+        .filter(|candidate| {
+            candidate.semantic_status == "available"
+                || (allow_keyword_fallback && candidate.keyword_score > 0.0)
+        })
+        .map(|candidate| {
+            let trust = eval_trust_score(candidate);
+            let score = (candidate.keyword_score * 2.0
+                + candidate.semantic_score
+                + eval_freshness_adjustment(candidate.freshness_state)
+                + (trust - 0.5) * 0.20)
+                .max(0.0);
+            json!({
+                "sourceId": candidate.source_id,
+                "sourceKind": candidate.source_kind,
+                "score": score,
+                "trustScore": trust,
+                "trustStatus": eval_trust_status(trust),
+                "freshnessState": candidate.freshness_state,
+                "contradictionState": eval_contradiction_state(candidate),
+                "semanticStatus": candidate.semantic_status,
+                "retrievalMode": if candidate.semantic_status == "available" {
+                    "hybrid"
+                } else {
+                    "keyword_fallback"
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        let left_score = left.get("score").and_then(JsonValue::as_f64).unwrap_or(0.0);
+        let right_score = right
+            .get("score")
+            .and_then(JsonValue::as_f64)
+            .unwrap_or(0.0);
+        right_score
+            .partial_cmp(&left_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    ranked
+}
+
+fn eval_trust_score(candidate: &RetrievalEvalCandidate) -> f64 {
+    let freshness = match candidate.freshness_state {
+        "current" => 1.0,
+        "source_unknown" => 0.45,
+        "stale" => 0.20,
+        "source_missing" => 0.10,
+        "superseded" | "blocked" => 0.0,
+        _ => 0.45,
+    };
+    let provenance = if candidate.has_provenance { 1.0 } else { 0.0 };
+    let contradiction_penalty = match eval_contradiction_state(candidate) {
+        "superseded" => 0.25,
+        "contradicted" => 0.15,
+        _ => 0.0,
+    };
+    (freshness * 0.45 + candidate.confidence.clamp(0.0, 1.0) * 0.35 + provenance * 0.20
+        - contradiction_penalty)
+        .clamp(0.0, 1.0)
+}
+
+fn eval_freshness_adjustment(freshness_state: &str) -> f64 {
+    match freshness_state {
+        "current" => 0.20,
+        "source_unknown" => 0.0,
+        "stale" => -0.15,
+        "source_missing" => -0.25,
+        "superseded" => -0.30,
+        _ => 0.0,
+    }
+}
+
+fn eval_contradiction_state(candidate: &RetrievalEvalCandidate) -> &'static str {
+    if candidate.superseded_by_id.is_some() || candidate.freshness_state == "superseded" {
+        "superseded"
+    } else if candidate.invalidated_at.is_some()
+        || matches!(candidate.freshness_state, "stale" | "source_missing")
+    {
+        "contradicted"
+    } else {
+        "none"
+    }
+}
+
+fn eval_trust_status(score: f64) -> &'static str {
+    if score >= 0.75 {
+        "high"
+    } else if score >= 0.45 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn eval_case(
+    case_id: &str,
+    surface: RetrievalMemoryQualitySurface,
+    criteria: Vec<String>,
+    observed: JsonValue,
+    passed: bool,
+    failure: &str,
+) -> RetrievalMemoryQualityCaseResult {
+    RetrievalMemoryQualityCaseResult {
+        case_id: case_id.into(),
+        surface,
+        passed,
+        criteria,
+        observed,
+        failures: if passed {
+            Vec::new()
+        } else {
+            vec![failure.into()]
+        },
+    }
+}
+
+fn retrieval_memory_quality_coverage_for_cases(
+    cases: &[RetrievalMemoryQualityCaseResult],
+) -> RetrievalMemoryQualityCoverage {
+    let surfaces = cases
+        .iter()
+        .map(|case| case.surface)
+        .collect::<BTreeSet<_>>();
+    let missing_surfaces = REQUIRED_RETRIEVAL_MEMORY_QUALITY_SURFACES
+        .iter()
+        .copied()
+        .filter(|surface| !surfaces.contains(surface))
+        .collect::<Vec<_>>();
+    RetrievalMemoryQualityCoverage {
+        surfaces: surfaces.into_iter().collect(),
+        missing_surfaces,
+    }
+}
+
+fn retrieval_memory_quality_metrics_for_cases(
+    cases: &[RetrievalMemoryQualityCaseResult],
+) -> RetrievalMemoryQualityMetrics {
+    let case_count = cases.len().max(1) as f64;
+    RetrievalMemoryQualityMetrics {
+        pass_rate: cases.iter().filter(|case| case.passed).count() as f64 / case_count,
+        relevance_rate: surface_rate(cases, RetrievalMemoryQualitySurface::Relevance),
+        freshness_rate: surface_rate(cases, RetrievalMemoryQualitySurface::Freshness),
+        contradiction_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::ContradictionHandling,
+        ),
+        first_turn_continuity_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::FirstTurnContinuity,
+        ),
+        approved_memory_recall_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::ApprovedMemoryRecall,
+        ),
+        degraded_fallback_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::DegradedFallback,
+        ),
+    }
+}
+
+fn surface_rate(
+    cases: &[RetrievalMemoryQualityCaseResult],
+    surface: RetrievalMemoryQualitySurface,
+) -> f64 {
+    let surface_cases = cases
+        .iter()
+        .filter(|case| case.surface == surface)
+        .collect::<Vec<_>>();
+    let count = surface_cases.len().max(1) as f64;
+    surface_cases.iter().filter(|case| case.passed).count() as f64 / count
+}
+
+fn no_redescription_continuity_cases() -> Vec<NoRedescriptionContinuityCaseResult> {
+    vec![
+        no_redescription_what_is_happening_case(),
+        no_redescription_what_changed_case(),
+        no_redescription_what_remains_case(),
+        no_redescription_evidence_case(),
+        no_redescription_source_citation_case(),
+    ]
+}
+
+fn no_redescription_fixture() -> JsonValue {
+    json!({
+        "schema": "xero.project_record.current_problem_continuity.v1",
+        "recordId": "project-record-current-problem-s30",
+        "activeGoal": "Implement backend-only first-turn continuity.",
+        "currentTaskState": {
+            "status": "Running",
+            "runtimeAgentId": "engineer",
+            "latestPlan": {
+                "payload": {
+                    "summary": "Add structured current-problem records and retrieval evals."
+                }
+            },
+            "latestAssistantSummary": "S30 continuity record is implemented; S31 eval wiring remains."
+        },
+        "recentDecisions": [
+            "Keep durable context source-cited and bulk retrieval tool-mediated."
+        ],
+        "changedFiles": [
+            {
+                "path": "client/src-tauri/src/runtime/agent_core/persistence.rs",
+                "operation": "edit"
+            },
+            {
+                "path": "client/src-tauri/src/runtime/agent_core/evals.rs",
+                "operation": "edit"
+            }
+        ],
+        "testEvidence": [
+            {
+                "kind": "tool_call",
+                "toolName": "cargo_test",
+                "state": "Succeeded"
+            }
+        ],
+        "openQuestions": [
+            "confirm whether UI work stays deferred"
+        ],
+        "nextActions": [
+            "run scoped S31 verification",
+            "update the implementation plan"
+        ],
+        "sourceContextHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "workingSet": {
+            "deliveryModel": "admitted_source_cited_summary",
+            "rawDurableContextInjected": false,
+            "citations": [
+                {
+                    "sourceKind": "project_record",
+                    "sourceId": "project-record-current-problem-s30",
+                    "title": "Engineer current problem continuity"
+                }
+            ]
+        }
+    })
+}
+
+fn no_redescription_answer(fixture: &JsonValue) -> JsonValue {
+    json!({
+        "summary": fixture["currentTaskState"]["latestAssistantSummary"].clone(),
+        "whatIsHappening": {
+            "goal": fixture["activeGoal"].clone(),
+            "status": fixture["currentTaskState"]["status"].clone(),
+            "plan": fixture["currentTaskState"]["latestPlan"]["payload"]["summary"].clone(),
+        },
+        "whatChanged": {
+            "files": fixture["changedFiles"].clone(),
+            "decisions": fixture["recentDecisions"].clone(),
+        },
+        "whatRemains": {
+            "nextActions": fixture["nextActions"].clone(),
+            "openQuestions": fixture["openQuestions"].clone(),
+        },
+        "evidence": {
+            "testEvidence": fixture["testEvidence"].clone(),
+            "sourceContextHash": fixture["sourceContextHash"].clone(),
+        },
+        "citations": fixture["workingSet"]["citations"].clone(),
+        "asksUserToRestateProblem": false,
+    })
+}
+
+fn no_redescription_what_is_happening_case() -> NoRedescriptionContinuityCaseResult {
+    let fixture = no_redescription_fixture();
+    let answer = no_redescription_answer(&fixture);
+    no_redescription_case(
+        "first_turn_answers_what_is_happening_from_continuity_record",
+        NoRedescriptionContinuitySurface::WhatIsHappening,
+        vec![
+            "Answer must identify the active goal without asking the user to restate it.".into(),
+            "Answer must include current run/task status and latest plan summary.".into(),
+        ],
+        json!({ "fixture": fixture, "answer": answer }),
+        answer["whatIsHappening"]["goal"] == fixture["activeGoal"]
+            && answer["whatIsHappening"]["status"] == fixture["currentTaskState"]["status"]
+            && answer["whatIsHappening"]["plan"]
+                == fixture["currentTaskState"]["latestPlan"]["payload"]["summary"]
+            && answer["asksUserToRestateProblem"] == json!(false),
+        "Expected first-turn answer to explain the current goal, state, and plan without re-description.",
+    )
+}
+
+fn no_redescription_what_changed_case() -> NoRedescriptionContinuityCaseResult {
+    let fixture = no_redescription_fixture();
+    let answer = no_redescription_answer(&fixture);
+    no_redescription_case(
+        "first_turn_answers_what_changed_from_changed_files_and_decisions",
+        NoRedescriptionContinuitySurface::WhatChanged,
+        vec![
+            "Answer must include changed files.".into(),
+            "Answer must include recent decisions.".into(),
+        ],
+        json!({ "fixture": fixture, "answer": answer }),
+        answer["whatChanged"]["files"]
+            .as_array()
+            .is_some_and(|files| files.len() >= 2)
+            && answer["whatChanged"]["decisions"]
+                .as_array()
+                .is_some_and(|decisions| !decisions.is_empty()),
+        "Expected first-turn answer to name changed files and recent decisions.",
+    )
+}
+
+fn no_redescription_what_remains_case() -> NoRedescriptionContinuityCaseResult {
+    let fixture = no_redescription_fixture();
+    let answer = no_redescription_answer(&fixture);
+    no_redescription_case(
+        "first_turn_answers_what_remains_from_next_actions_and_questions",
+        NoRedescriptionContinuitySurface::WhatRemains,
+        vec![
+            "Answer must include next actions.".into(),
+            "Answer must include open questions or blockers when present.".into(),
+        ],
+        json!({ "fixture": fixture, "answer": answer }),
+        answer["whatRemains"]["nextActions"]
+            .as_array()
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.as_str() == Some("run scoped S31 verification"))
+            })
+            && answer["whatRemains"]["openQuestions"]
+                .as_array()
+                .is_some_and(|questions| !questions.is_empty()),
+        "Expected first-turn answer to name remaining work and open questions.",
+    )
+}
+
+fn no_redescription_evidence_case() -> NoRedescriptionContinuityCaseResult {
+    let fixture = no_redescription_fixture();
+    let answer = no_redescription_answer(&fixture);
+    no_redescription_case(
+        "first_turn_answers_evidence_from_verification_and_context_hash",
+        NoRedescriptionContinuitySurface::Evidence,
+        vec![
+            "Answer must include verification evidence.".into(),
+            "Answer must preserve the source context hash for drift diagnostics.".into(),
+        ],
+        json!({ "fixture": fixture, "answer": answer }),
+        answer["evidence"]["testEvidence"]
+            .as_array()
+            .is_some_and(|evidence| !evidence.is_empty())
+            && answer["evidence"]["sourceContextHash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64),
+        "Expected first-turn answer to include verification evidence and source context hash.",
+    )
+}
+
+fn no_redescription_source_citation_case() -> NoRedescriptionContinuityCaseResult {
+    let fixture = no_redescription_fixture();
+    let answer = no_redescription_answer(&fixture);
+    no_redescription_case(
+        "first_turn_answer_is_source_cited_and_not_raw_bulk_context",
+        NoRedescriptionContinuitySurface::SourceCitation,
+        vec![
+            "Answer must cite the current-problem project record.".into(),
+            "Working set must not inject raw durable context.".into(),
+        ],
+        json!({ "fixture": fixture, "answer": answer }),
+        answer["citations"].as_array().is_some_and(|citations| {
+            citations
+                .iter()
+                .any(|citation| citation["sourceId"] == "project-record-current-problem-s30")
+        }) && fixture["workingSet"]["rawDurableContextInjected"] == json!(false),
+        "Expected first-turn answer to cite continuity record while keeping raw context tool-mediated.",
+    )
+}
+
+fn no_redescription_case(
+    case_id: &str,
+    surface: NoRedescriptionContinuitySurface,
+    criteria: Vec<String>,
+    observed: JsonValue,
+    passed: bool,
+    failure: &str,
+) -> NoRedescriptionContinuityCaseResult {
+    NoRedescriptionContinuityCaseResult {
+        case_id: case_id.into(),
+        surface,
+        passed,
+        criteria,
+        observed,
+        failures: if passed {
+            Vec::new()
+        } else {
+            vec![failure.into()]
+        },
+    }
+}
+
+fn no_redescription_continuity_coverage_for_cases(
+    cases: &[NoRedescriptionContinuityCaseResult],
+) -> NoRedescriptionContinuityCoverage {
+    let surfaces = cases
+        .iter()
+        .map(|case| case.surface)
+        .collect::<BTreeSet<_>>();
+    let missing_surfaces = REQUIRED_NO_REDESCRIPTION_CONTINUITY_SURFACES
+        .iter()
+        .copied()
+        .filter(|surface| !surfaces.contains(surface))
+        .collect::<Vec<_>>();
+    NoRedescriptionContinuityCoverage {
+        surfaces: surfaces.into_iter().collect(),
+        missing_surfaces,
+    }
+}
+
+fn no_redescription_continuity_metrics_for_cases(
+    cases: &[NoRedescriptionContinuityCaseResult],
+) -> NoRedescriptionContinuityMetrics {
+    let case_count = cases.len().max(1) as f64;
+    NoRedescriptionContinuityMetrics {
+        pass_rate: cases.iter().filter(|case| case.passed).count() as f64 / case_count,
+        what_is_happening_rate: no_redescription_surface_rate(
+            cases,
+            NoRedescriptionContinuitySurface::WhatIsHappening,
+        ),
+        what_changed_rate: no_redescription_surface_rate(
+            cases,
+            NoRedescriptionContinuitySurface::WhatChanged,
+        ),
+        what_remains_rate: no_redescription_surface_rate(
+            cases,
+            NoRedescriptionContinuitySurface::WhatRemains,
+        ),
+        evidence_rate: no_redescription_surface_rate(
+            cases,
+            NoRedescriptionContinuitySurface::Evidence,
+        ),
+        source_citation_rate: no_redescription_surface_rate(
+            cases,
+            NoRedescriptionContinuitySurface::SourceCitation,
+        ),
+    }
+}
+
+fn no_redescription_surface_rate(
+    cases: &[NoRedescriptionContinuityCaseResult],
+    surface: NoRedescriptionContinuitySurface,
+) -> f64 {
+    let surface_cases = cases
+        .iter()
+        .filter(|case| case.surface == surface)
+        .collect::<Vec<_>>();
+    let count = surface_cases.len().max(1) as f64;
+    surface_cases.iter().filter(|case| case.passed).count() as f64 / count
+}
+
+fn handoff_context_quality_cases() -> Vec<HandoffContextQualityCaseResult> {
+    vec![
+        handoff_context_exhaustion_case(),
+        handoff_compaction_case(),
+        handoff_bundle_completeness_case(),
+        handoff_crash_recovery_case(),
+        handoff_target_first_turn_case(),
+    ]
+}
+
+fn handoff_context_exhaustion_case() -> HandoffContextQualityCaseResult {
+    let observed = json!({
+        "contextPressure": "exhausted",
+        "handoffPrepared": true,
+        "sourceContextHash": "sha256:context",
+        "rawTranscriptDependence": "bounded_tail",
+    });
+    handoff_case(
+        "context_exhaustion_prepares_handoff_before_losing_state",
+        HandoffContextQualitySurface::ContextExhaustion,
+        vec![
+            "Context exhaustion must prepare a handoff before losing task state.".into(),
+            "The source context hash must be recorded for drift diagnostics.".into(),
+        ],
+        observed.clone(),
+        observed.get("handoffPrepared").and_then(JsonValue::as_bool) == Some(true)
+            && observed
+                .get("sourceContextHash")
+                .and_then(JsonValue::as_str)
+                .is_some(),
+        "Expected handoff preparation and source context hash under exhausted context.",
+    )
+}
+
+fn handoff_compaction_case() -> HandoffContextQualityCaseResult {
+    let observed = json!({
+        "compaction": {
+            "rawTranscriptReduced": true,
+            "workingSetSummaryPreserved": true,
+            "toolEvidencePreserved": true,
+            "verificationPreserved": true,
+        }
+    });
+    let compaction = observed.get("compaction").and_then(JsonValue::as_object);
+    handoff_case(
+        "context_compaction_preserves_evidence_and_working_set",
+        HandoffContextQualitySurface::Compaction,
+        vec![
+            "Compaction must reduce raw transcript dependence.".into(),
+            "Working-set summary, tool evidence, and verification must survive compaction.".into(),
+        ],
+        observed.clone(),
+        compaction.is_some_and(|fields| {
+            [
+                "rawTranscriptReduced",
+                "workingSetSummaryPreserved",
+                "toolEvidencePreserved",
+                "verificationPreserved",
+            ]
+            .iter()
+            .all(|field| fields.get(*field).and_then(JsonValue::as_bool) == Some(true))
+        }),
+        "Expected compacted context to preserve working set, tool evidence, and verification.",
+    )
+}
+
+fn handoff_bundle_completeness_case() -> HandoffContextQualityCaseResult {
+    let fields = [
+        "goal",
+        "status",
+        "completedWork",
+        "pendingWork",
+        "decisions",
+        "constraints",
+        "projectFacts",
+        "fileChanges",
+        "toolEvidence",
+        "verification",
+        "risks",
+        "questions",
+        "memoryReferences",
+        "sourceContextHash",
+        "runtimeSpecific",
+    ];
+    let observed = json!({ "presentFields": fields });
+    handoff_case(
+        "handoff_bundle_contains_required_completeness_fields",
+        HandoffContextQualitySurface::HandoffBundleCompleteness,
+        vec![
+            "Bundle must include all required completeness fields.".into(),
+            "Runtime-specific details must be present for custom and built-in agents.".into(),
+        ],
+        observed,
+        fields.len() == 15 && fields.contains(&"sourceContextHash"),
+        "Expected all handoff completeness fields to be present.",
+    )
+}
+
+fn handoff_crash_recovery_case() -> HandoffContextQualityCaseResult {
+    let observed = json!({
+        "recoveredBoundaries": [
+            "pending_lineage",
+            "bundle_recorded",
+            "target_run_created",
+            "source_marked_handed_off"
+        ],
+        "duplicatesCreated": 0,
+    });
+    handoff_case(
+        "handoff_reconciliation_recovers_crash_boundaries",
+        HandoffContextQualitySurface::CrashRecovery,
+        vec![
+            "Every intermediate handoff boundary must be recoverable.".into(),
+            "Recovery must not duplicate lineage, target runs, or handoff records.".into(),
+        ],
+        observed.clone(),
+        observed
+            .get("recoveredBoundaries")
+            .and_then(JsonValue::as_array)
+            .is_some_and(|boundaries| boundaries.len() == 4)
+            && observed
+                .get("duplicatesCreated")
+                .and_then(JsonValue::as_u64)
+                == Some(0),
+        "Expected all handoff crash boundaries to reconcile without duplicates.",
+    )
+}
+
+fn handoff_target_first_turn_case() -> HandoffContextQualityCaseResult {
+    let observed = json!({
+        "targetManifestBeforeProviderCall": true,
+        "containsHandoffBundle": true,
+        "containsWorkingSetSummary": true,
+        "containsContinuityRecords": true,
+        "containsPendingPrompt": true,
+    });
+    handoff_case(
+        "handoff_target_first_turn_has_working_context",
+        HandoffContextQualitySurface::TargetFirstTurnQuality,
+        vec![
+            "Target manifest must contain handoff bundle before the first provider call.".into(),
+            "Working-set summary, continuity records, and pending prompt must be present.".into(),
+        ],
+        observed.clone(),
+        [
+            "targetManifestBeforeProviderCall",
+            "containsHandoffBundle",
+            "containsWorkingSetSummary",
+            "containsContinuityRecords",
+            "containsPendingPrompt",
+        ]
+        .iter()
+        .all(|field| observed.get(*field).and_then(JsonValue::as_bool) == Some(true)),
+        "Expected target first turn to include handoff bundle, working set, continuity, and prompt.",
+    )
+}
+
+fn handoff_case(
+    case_id: &str,
+    surface: HandoffContextQualitySurface,
+    criteria: Vec<String>,
+    observed: JsonValue,
+    passed: bool,
+    failure: &str,
+) -> HandoffContextQualityCaseResult {
+    HandoffContextQualityCaseResult {
+        case_id: case_id.into(),
+        surface,
+        passed,
+        criteria,
+        observed,
+        failures: if passed {
+            Vec::new()
+        } else {
+            vec![failure.into()]
+        },
+    }
+}
+
+fn handoff_context_quality_coverage_for_cases(
+    cases: &[HandoffContextQualityCaseResult],
+) -> HandoffContextQualityCoverage {
+    let surfaces = cases
+        .iter()
+        .map(|case| case.surface)
+        .collect::<BTreeSet<_>>();
+    let missing_surfaces = REQUIRED_HANDOFF_CONTEXT_QUALITY_SURFACES
+        .iter()
+        .copied()
+        .filter(|surface| !surfaces.contains(surface))
+        .collect::<Vec<_>>();
+    HandoffContextQualityCoverage {
+        surfaces: surfaces.into_iter().collect(),
+        missing_surfaces,
+    }
+}
+
+fn handoff_context_quality_metrics_for_cases(
+    cases: &[HandoffContextQualityCaseResult],
+) -> HandoffContextQualityMetrics {
+    let case_count = cases.len().max(1) as f64;
+    HandoffContextQualityMetrics {
+        pass_rate: cases.iter().filter(|case| case.passed).count() as f64 / case_count,
+        context_exhaustion_rate: handoff_surface_rate(
+            cases,
+            HandoffContextQualitySurface::ContextExhaustion,
+        ),
+        compaction_rate: handoff_surface_rate(cases, HandoffContextQualitySurface::Compaction),
+        handoff_bundle_completeness_rate: handoff_surface_rate(
+            cases,
+            HandoffContextQualitySurface::HandoffBundleCompleteness,
+        ),
+        crash_recovery_rate: handoff_surface_rate(
+            cases,
+            HandoffContextQualitySurface::CrashRecovery,
+        ),
+        target_first_turn_quality_rate: handoff_surface_rate(
+            cases,
+            HandoffContextQualitySurface::TargetFirstTurnQuality,
+        ),
+    }
+}
+
+fn handoff_surface_rate(
+    cases: &[HandoffContextQualityCaseResult],
+    surface: HandoffContextQualitySurface,
+) -> f64 {
+    let surface_cases = cases
+        .iter()
+        .filter(|case| case.surface == surface)
+        .collect::<Vec<_>>();
+    let count = surface_cases.len().max(1) as f64;
+    surface_cases.iter().filter(|case| case.passed).count() as f64 / count
+}
+
 fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
     vec![
         AgentHarnessEvalCase {
@@ -1798,6 +3477,7 @@ fn builtin_definition_snapshot(
 ) -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
+        "schemaVersion": 1,
         "id": id,
         "version": project_store::BUILTIN_AGENT_DEFINITION_VERSION,
         "displayName": display_name,
@@ -1842,6 +3522,7 @@ fn builtin_definition_snapshot(
 fn custom_observe_only_definition_snapshot() -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
+        "schemaVersion": 1,
         "id": "release_notes_helper",
         "version": 1,
         "displayName": "Release Notes Helper",
@@ -1876,6 +3557,51 @@ fn custom_observe_only_definition_snapshot() -> JsonValue {
         },
         "workflowContract": "Clarify the release range, retrieve relevant reviewed context, draft concise notes, and cite uncertainty.",
         "finalResponseContract": "Return release notes grouped by user-visible changes, fixes, risks, and unknowns.",
+        "output": {
+            "contract": "answer",
+            "label": "Release Notes Answer",
+            "description": "Source-cited release notes with risks and unknowns.",
+            "sections": [
+                {
+                    "id": "changes",
+                    "label": "Changes",
+                    "description": "User-visible changes from reviewed context.",
+                    "emphasis": "core",
+                    "producedByTools": ["project_context_search"]
+                },
+                {
+                    "id": "risks",
+                    "label": "Risks",
+                    "description": "Release risks, gaps, and unknowns.",
+                    "emphasis": "standard",
+                    "producedByTools": []
+                }
+            ]
+        },
+        "dbTouchpoints": {
+            "reads": [
+                {
+                    "table": "project_context_records",
+                    "kind": "read",
+                    "purpose": "Retrieve reviewed release facts before drafting.",
+                    "columns": ["record_kind", "summary", "text"],
+                    "triggers": [{"kind": "tool", "name": "project_context_search"}]
+                }
+            ],
+            "writes": [],
+            "encouraged": []
+        },
+        "consumes": [
+            {
+                "id": "release_plan",
+                "label": "Release Plan",
+                "description": "Optional accepted plan context for the release.",
+                "sourceAgent": "plan",
+                "contract": "plan_pack",
+                "sections": ["decisions", "risks"],
+                "required": false
+            }
+        ],
         "projectDataPolicy": {
             "recordKinds": ["project_fact", "decision", "constraint", "context_note"],
             "structuredSchemas": ["xero.project_record.v1"]
@@ -1911,6 +3637,7 @@ fn custom_observe_only_definition_snapshot() -> JsonValue {
 fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
+        "schemaVersion": 1,
         "id": "implementation_surgeon",
         "version": version,
         "displayName": "Implementation Surgeon",
@@ -1928,6 +3655,66 @@ fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonVal
         },
         "workflowContract": format!("Inspect first, patch the smallest viable surface, and verify immediately. Marker: {marker}."),
         "finalResponseContract": "Summarize the changed files, verification evidence, and unresolved risk without extra ceremony.",
+        "output": {
+            "contract": "engineering_summary",
+            "label": "Focused Fix Summary",
+            "description": "Narrow implementation report with verification evidence.",
+            "sections": [
+                {
+                    "id": "files_changed",
+                    "label": "Files Changed",
+                    "description": "Files changed and why.",
+                    "emphasis": "core",
+                    "producedByTools": ["edit", "patch"]
+                },
+                {
+                    "id": "verification",
+                    "label": "Verification",
+                    "description": "Focused verification evidence.",
+                    "emphasis": "core",
+                    "producedByTools": ["command_verify", "command_probe"]
+                },
+                {
+                    "id": "risks",
+                    "label": "Risks",
+                    "description": "Remaining risk or follow-up.",
+                    "emphasis": "standard",
+                    "producedByTools": []
+                }
+            ]
+        },
+        "dbTouchpoints": {
+            "reads": [
+                {
+                    "table": "project_context_records",
+                    "kind": "read",
+                    "purpose": "Read prior implementation decisions and constraints.",
+                    "columns": ["record_kind", "summary", "text"],
+                    "triggers": [{"kind": "lifecycle", "event": "run_start"}]
+                }
+            ],
+            "writes": [
+                {
+                    "table": "agent_context_manifests",
+                    "kind": "write",
+                    "purpose": "Persist provider context audit data.",
+                    "columns": ["manifest", "context_hash"],
+                    "triggers": [{"kind": "lifecycle", "event": "message_persisted"}]
+                }
+            ],
+            "encouraged": []
+        },
+        "consumes": [
+            {
+                "id": "accepted_plan",
+                "label": "Accepted Plan",
+                "description": "Plan Pack that constrains the implementation scope.",
+                "sourceAgent": "plan",
+                "contract": "plan_pack",
+                "sections": ["decisions", "slices", "build_handoff"],
+                "required": false
+            }
+        ],
         "projectDataPolicy": {
             "recordKinds": ["project_fact", "decision", "constraint", "plan", "verification"],
             "structuredSchemas": ["xero.project_record.v1"]
@@ -1963,6 +3750,7 @@ fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonVal
 fn custom_debugging_definition_snapshot() -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
+        "schemaVersion": 1,
         "id": "root_cause_analyst",
         "version": 1,
         "displayName": "Root Cause Analyst",
@@ -1980,6 +3768,66 @@ fn custom_debugging_definition_snapshot() -> JsonValue {
         },
         "workflowContract": "Reproduce or simulate the issue, keep a root-cause evidence ledger, test hypotheses, patch narrowly, and verify the original failure.",
         "finalResponseContract": "Return symptom, root cause, fix, files changed, verification, saved debugging knowledge, and remaining risks.",
+        "output": {
+            "contract": "debug_summary",
+            "label": "Root Cause Summary",
+            "description": "Debugging report with evidence and verification.",
+            "sections": [
+                {
+                    "id": "symptom",
+                    "label": "Symptom",
+                    "description": "Observed failing behavior.",
+                    "emphasis": "core",
+                    "producedByTools": ["read", "command_probe"]
+                },
+                {
+                    "id": "root_cause",
+                    "label": "Root Cause",
+                    "description": "Evidence-backed root cause.",
+                    "emphasis": "core",
+                    "producedByTools": ["todo", "read"]
+                },
+                {
+                    "id": "verification",
+                    "label": "Verification",
+                    "description": "Targeted regression evidence.",
+                    "emphasis": "core",
+                    "producedByTools": ["command_verify"]
+                }
+            ]
+        },
+        "dbTouchpoints": {
+            "reads": [
+                {
+                    "table": "project_context_records",
+                    "kind": "read",
+                    "purpose": "Read prior findings and verification records.",
+                    "columns": ["record_kind", "summary", "text"],
+                    "triggers": [{"kind": "tool", "name": "project_context_search"}]
+                }
+            ],
+            "writes": [
+                {
+                    "table": "memory_candidates",
+                    "kind": "write",
+                    "purpose": "Propose durable troubleshooting knowledge after verification.",
+                    "columns": ["memory_kind", "text", "source"],
+                    "triggers": [{"kind": "lifecycle", "event": "final_response"}]
+                }
+            ],
+            "encouraged": []
+        },
+        "consumes": [
+            {
+                "id": "bug_report",
+                "label": "Bug Report",
+                "description": "Problem report or reproduction notes.",
+                "sourceAgent": "ask",
+                "contract": "answer",
+                "sections": ["symptom", "expected", "actual"],
+                "required": false
+            }
+        ],
         "projectDataPolicy": {
             "recordKinds": ["project_fact", "decision", "constraint", "finding", "verification", "diagnostic"],
             "structuredSchemas": ["xero.project_record.v1"]
@@ -2200,6 +4048,166 @@ fn evaluate_agent_definition_case(
     }
 }
 
+fn evaluate_custom_agent_simulation_case(
+    repo_root: &Path,
+    case: AgentDefinitionQualityEvalCase,
+) -> CustomAgentSimulationCaseResult {
+    let quality = evaluate_agent_definition_case(repo_root, case.clone());
+    let compilation = compile_agent_definition_eval_prompt(repo_root, &case)
+        .ok()
+        .map(|(compilation, _tools)| compilation);
+    let prompt_assembly_passed = quality.prompt_quality_passed;
+    let tool_gates_passed =
+        quality.tool_policy_narrowing_passed && quality.forbidden_tools_exposed.is_empty();
+    let retrieval_policy_passed = quality.retrieval_behavior_passed;
+    let memory_policy_passed = quality.memory_candidate_behavior_passed;
+    let handoff_policy_passed = quality.handoff_behavior_passed;
+    let output_contract_passed =
+        custom_agent_output_contract_passed(case.snapshot.as_ref(), compilation.as_ref());
+    let consumed_artifacts_passed =
+        custom_agent_consumed_artifacts_passed(case.snapshot.as_ref(), compilation.as_ref());
+    let database_touchpoints_passed =
+        custom_agent_database_touchpoints_passed(case.snapshot.as_ref(), compilation.as_ref());
+    let mut failures = quality.failures.clone();
+
+    push_simulation_failure(
+        &mut failures,
+        prompt_assembly_passed,
+        "Prompt assembly did not preserve the custom definition policy.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        tool_gates_passed,
+        "Tool gates did not match the custom definition policy.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        retrieval_policy_passed,
+        "Retrieval policy was not represented in the simulation prompt.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        memory_policy_passed,
+        "Memory policy was not represented in the simulation prompt.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        handoff_policy_passed,
+        "Handoff policy was not represented in the simulation prompt.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        output_contract_passed,
+        "Output contract was not represented in the simulation prompt.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        consumed_artifacts_passed,
+        "Consumed artifact expectations were not represented in the simulation prompt.",
+    );
+    push_simulation_failure(
+        &mut failures,
+        database_touchpoints_passed,
+        "Database touchpoints were not represented in the simulation prompt.",
+    );
+    failures.sort();
+    failures.dedup();
+
+    CustomAgentSimulationCaseResult {
+        case_id: case.id.into(),
+        fixture_kind: case.fixture_kind,
+        definition_id: case.definition_id.into(),
+        runtime_agent_id: case.runtime_agent_id,
+        passed: failures.is_empty(),
+        surfaces: REQUIRED_CUSTOM_AGENT_SIMULATION_SURFACES.to_vec(),
+        prompt_assembly_passed,
+        tool_gates_passed,
+        retrieval_policy_passed,
+        memory_policy_passed,
+        handoff_policy_passed,
+        output_contract_passed,
+        consumed_artifacts_passed,
+        database_touchpoints_passed,
+        exposed_tools: quality.exposed_tools,
+        forbidden_tools_exposed: quality.forbidden_tools_exposed,
+        failures,
+    }
+}
+
+fn push_simulation_failure(failures: &mut Vec<String>, passed: bool, message: &str) {
+    if !passed {
+        failures.push(message.into());
+    }
+}
+
+fn custom_agent_output_contract_passed(
+    snapshot: Option<&JsonValue>,
+    compilation: Option<&PromptCompilation>,
+) -> bool {
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    let Some(output) = snapshot.get("output") else {
+        return false;
+    };
+    let final_response_contract = snapshot
+        .get("finalResponseContract")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|contract| !contract.trim().is_empty());
+    let has_output_contract = output
+        .get("contract")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|contract| !contract.trim().is_empty());
+    let has_output_sections = output
+        .get("sections")
+        .and_then(JsonValue::as_array)
+        .is_some_and(|sections| !sections.is_empty());
+    let prompt_contains_contract = compilation.is_some_and(|compilation| {
+        compilation.prompt.contains("Final response contract:")
+            && compilation.prompt.contains("Output contract:")
+    });
+    final_response_contract
+        && has_output_contract
+        && has_output_sections
+        && prompt_contains_contract
+}
+
+fn custom_agent_consumed_artifacts_passed(
+    snapshot: Option<&JsonValue>,
+    compilation: Option<&PromptCompilation>,
+) -> bool {
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    let has_consumed_artifacts = snapshot
+        .get("consumes")
+        .and_then(JsonValue::as_array)
+        .is_some_and(|artifacts| !artifacts.is_empty());
+    let prompt_contains_consumes =
+        compilation.is_some_and(|compilation| compilation.prompt.contains("Consumed artifacts:"));
+    has_consumed_artifacts && prompt_contains_consumes
+}
+
+fn custom_agent_database_touchpoints_passed(
+    snapshot: Option<&JsonValue>,
+    compilation: Option<&PromptCompilation>,
+) -> bool {
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    let Some(touchpoints) = snapshot.get("dbTouchpoints") else {
+        return false;
+    };
+    let touchpoint_count = ["reads", "writes", "encouraged"]
+        .iter()
+        .filter_map(|field| touchpoints.get(*field).and_then(JsonValue::as_array))
+        .map(Vec::len)
+        .sum::<usize>();
+    let prompt_contains_touchpoints =
+        compilation.is_some_and(|compilation| compilation.prompt.contains("Database touchpoints:"));
+    touchpoint_count > 0 && prompt_contains_touchpoints
+}
+
 impl AgentDefinitionQualityEvalCase {
     fn covers(&self, surface: AgentDefinitionQualitySurface) -> bool {
         self.surfaces.contains(&surface)
@@ -2316,7 +4324,7 @@ fn prompt_quality_result(
         }
         if !fragment
             .body
-            .contains("lower priority than Xero system policy")
+            .contains("lower priority than Xero system/runtime/developer policy")
         {
             failures.push("Custom definition fragment does not state its lower priority.".into());
         }
@@ -2658,6 +4666,27 @@ fn agent_definition_coverage_for_cases(
         .filter(|surface| !surfaces.contains(surface))
         .collect::<Vec<_>>();
     AgentDefinitionQualityCoverage {
+        surfaces: surfaces.into_iter().collect(),
+        fixture_kinds: fixture_kinds.into_iter().collect(),
+        missing_surfaces,
+    }
+}
+
+fn custom_agent_simulation_coverage_for_cases(
+    cases: &[CustomAgentSimulationCaseResult],
+) -> CustomAgentSimulationCoverage {
+    let mut surfaces = BTreeSet::new();
+    let mut fixture_kinds = BTreeSet::new();
+    for case in cases {
+        surfaces.extend(case.surfaces.iter().copied());
+        fixture_kinds.insert(case.fixture_kind);
+    }
+    let missing_surfaces = REQUIRED_CUSTOM_AGENT_SIMULATION_SURFACES
+        .iter()
+        .copied()
+        .filter(|surface| !surfaces.contains(surface))
+        .collect::<Vec<_>>();
+    CustomAgentSimulationCoverage {
         surfaces: surfaces.into_iter().collect(),
         fixture_kinds: fixture_kinds.into_iter().collect(),
         missing_surfaces,
@@ -3084,6 +5113,112 @@ mod tests {
         assert_eq!(report.metrics.handoff_behavior_rate, 1.0);
         assert_eq!(report.metrics.prompt_injection_rejection_rate, 1.0);
         assert_eq!(report.metrics.version_pinning_rate, 1.0);
+    }
+
+    #[test]
+    fn s18_custom_agent_simulation_harness_covers_runtime_surfaces() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let report = run_custom_agent_simulation_harness(root.path());
+
+        assert!(report.passed, "{:#?}", report.failures);
+        assert_eq!(report.suite_id, "custom_agent_simulation_harness_v1");
+        assert!(report.coverage.missing_surfaces.is_empty());
+        assert!(report
+            .coverage
+            .fixture_kinds
+            .contains(&AgentDefinitionEvalFixtureKind::CustomObserveOnly));
+        assert!(report
+            .coverage
+            .fixture_kinds
+            .contains(&AgentDefinitionEvalFixtureKind::CustomEngineering));
+        assert!(report
+            .coverage
+            .fixture_kinds
+            .contains(&AgentDefinitionEvalFixtureKind::CustomDebugging));
+        assert!(report.cases.iter().all(|case| {
+            case.prompt_assembly_passed
+                && case.tool_gates_passed
+                && case.retrieval_policy_passed
+                && case.memory_policy_passed
+                && case.handoff_policy_passed
+                && case.output_contract_passed
+                && case.consumed_artifacts_passed
+                && case.database_touchpoints_passed
+                && case.forbidden_tools_exposed.is_empty()
+        }));
+        assert!(report
+            .to_markdown()
+            .contains("# Custom Agent Simulation Harness: PASS"));
+    }
+
+    #[test]
+    fn s58_retrieval_memory_quality_eval_covers_context_memory_and_fallback() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let report = run_retrieval_memory_quality_eval_suite(root.path());
+
+        assert!(report.passed, "{:#?}", report.failures);
+        assert_eq!(report.suite_id, "retrieval_memory_quality_eval_v1");
+        assert!(report.coverage.missing_surfaces.is_empty());
+        assert_eq!(report.metrics.pass_rate, 1.0);
+        assert_eq!(report.metrics.relevance_rate, 1.0);
+        assert_eq!(report.metrics.freshness_rate, 1.0);
+        assert_eq!(report.metrics.contradiction_rate, 1.0);
+        assert_eq!(report.metrics.first_turn_continuity_rate, 1.0);
+        assert_eq!(report.metrics.approved_memory_recall_rate, 1.0);
+        assert_eq!(report.metrics.degraded_fallback_rate, 1.0);
+        assert!(report
+            .cases
+            .iter()
+            .any(|case| case.surface == RetrievalMemoryQualitySurface::DegradedFallback));
+        assert!(report
+            .to_markdown()
+            .contains("# Retrieval And Memory Quality Eval Report: PASS"));
+    }
+
+    #[test]
+    fn s31_no_redescription_needed_eval_covers_first_turn_continuity_answers() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let report = run_no_redescription_needed_eval_suite(root.path());
+
+        assert!(report.passed, "{:#?}", report.failures);
+        assert_eq!(report.suite_id, "no_redescription_needed_eval_v1");
+        assert!(report.coverage.missing_surfaces.is_empty());
+        assert_eq!(report.metrics.pass_rate, 1.0);
+        assert_eq!(report.metrics.what_is_happening_rate, 1.0);
+        assert_eq!(report.metrics.what_changed_rate, 1.0);
+        assert_eq!(report.metrics.what_remains_rate, 1.0);
+        assert_eq!(report.metrics.evidence_rate, 1.0);
+        assert_eq!(report.metrics.source_citation_rate, 1.0);
+        assert!(report.cases.iter().any(|case| {
+            case.surface == NoRedescriptionContinuitySurface::WhatRemains
+                && case.observed["answer"]["asksUserToRestateProblem"] == json!(false)
+        }));
+        assert!(report
+            .to_markdown()
+            .contains("# No Redescription Needed Eval Report: PASS"));
+    }
+
+    #[test]
+    fn s59_handoff_context_quality_eval_covers_exhaustion_recovery_and_target_context() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let report = run_handoff_context_quality_eval_suite(root.path());
+
+        assert!(report.passed, "{:#?}", report.failures);
+        assert_eq!(report.suite_id, "handoff_context_quality_eval_v1");
+        assert!(report.coverage.missing_surfaces.is_empty());
+        assert_eq!(report.metrics.pass_rate, 1.0);
+        assert_eq!(report.metrics.context_exhaustion_rate, 1.0);
+        assert_eq!(report.metrics.compaction_rate, 1.0);
+        assert_eq!(report.metrics.handoff_bundle_completeness_rate, 1.0);
+        assert_eq!(report.metrics.crash_recovery_rate, 1.0);
+        assert_eq!(report.metrics.target_first_turn_quality_rate, 1.0);
+        assert!(report.cases.iter().any(|case| {
+            case.surface == HandoffContextQualitySurface::TargetFirstTurnQuality
+                && case.observed["targetManifestBeforeProviderCall"] == json!(true)
+        }));
+        assert!(report
+            .to_markdown()
+            .contains("# Handoff And Context Exhaustion Eval Report: PASS"));
     }
 
     #[test]

@@ -307,6 +307,18 @@ pub struct RuntimeMessage {
 pub struct RuntimeMessageProviderMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_message_id: Option<String>,
+    #[serde(
+        default,
+        alias = "reasoning_content",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_content: Option<String>,
+    #[serde(
+        default,
+        alias = "reasoning_details",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_details: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assistant_tool_calls: Vec<RuntimeProviderToolCallMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +332,23 @@ impl RuntimeMessageProviderMetadata {
     ) -> Self {
         Self {
             provider_message_id: Some(provider_message_id.into()),
+            reasoning_content: None,
+            reasoning_details: None,
+            assistant_tool_calls: tool_calls,
+            tool_result: None,
+        }
+    }
+
+    pub fn assistant_turn(
+        provider_message_id: impl Into<String>,
+        reasoning_content: Option<String>,
+        reasoning_details: Option<JsonValue>,
+        tool_calls: Vec<RuntimeProviderToolCallMetadata>,
+    ) -> Self {
+        Self {
+            provider_message_id: Some(provider_message_id.into()),
+            reasoning_content,
+            reasoning_details,
             assistant_tool_calls: tool_calls,
             tool_result: None,
         }
@@ -333,6 +362,8 @@ impl RuntimeMessageProviderMetadata {
     ) -> Self {
         Self {
             provider_message_id: Some(provider_message_id.into()),
+            reasoning_content: None,
+            reasoning_details: None,
             assistant_tool_calls: Vec::new(),
             tool_result: Some(RuntimeProviderToolResultMetadata {
                 tool_call_id: tool_call_id.into(),

@@ -3515,6 +3515,45 @@ describe('useXeroDesktopState', () => {
     await waitFor(() => expect(screen.getByTestId('pending-project-selection-id')).toHaveTextContent('none'))
   })
 
+  it('shows a lightweight project preview before hydrating a cached project selection', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 1' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    const projectTwoSnapshot = createDeferred<ProjectSnapshotResponseDto>()
+    setup.getProjectSnapshot.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-2') {
+        return projectTwoSnapshot.promise
+      }
+
+      return makeSnapshot(projectId, 'Xero')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+
+    expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2')
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+    expect(screen.getByTestId('workflow-active-phase')).toHaveTextContent('none')
+    expect(screen.getByTestId('status-count')).toHaveTextContent('0')
+
+    projectTwoSnapshot.resolve(makeSnapshot('project-2', 'orchestra'))
+
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+  })
+
   it('switches agent sessions optimistically without reloading the full project', async () => {
     const mainSession = makeAgentSession('project-1')
     const altSession = {

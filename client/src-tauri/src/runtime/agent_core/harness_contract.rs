@@ -622,59 +622,59 @@ mod tests {
         let expected = vec![
             (
                 "ask:base".to_string(),
-                "f69a8487f53ea2184952ea3f86c628c337088a6b784df5810e7d37f028be94f5",
+                "c92cb8fe6ce7393e465e2ef4afb3ee3b732e6fd57bcfffc45ff9c2510317ac99",
             ),
             (
                 "ask:custom_policy_skill_process_coordination".to_string(),
-                "8a8e35cfc7d356499da44f64d5126cef3df670ec81b5a803f7c5ad4163d8188b",
+                "d317c07a9ceabf383ca5fdf39c24824907da367d1eb4e9d143491673bbcae857",
             ),
             (
                 "plan:base".to_string(),
-                "e87397c3ce1c80659ed5dbc918c7d6b695b3a2a9048eeac5b1fb4179a89108c4",
+                "91942dad115b33c0780069fce3f665eba8c69064615134a2c038ba1404ceab09",
             ),
             (
                 "plan:custom_policy_skill_process_coordination".to_string(),
-                "5968a2a649767ebac9be24d0cdb2b9a90ca2cc8ca4ec57deecee2f2f09e9601e",
+                "b3cd66f12594415f79d218acac79b181e632f7ff7d1f30c7dafabdb7f494cc31",
             ),
             (
                 "engineer:base".to_string(),
-                "ec520e3aa481dd7b1e269c2176ce7dd7e6003e292829dfe53cb371f941670378",
+                "cb41210a917fed289f8155bdb15f6a1f6046ab43a3789b75326fee95b64ec499",
             ),
             (
                 "engineer:custom_policy_skill_process_coordination".to_string(),
-                "b23a13892d262116b174a923b0d69f2a196f99d806e6f251084038d39e9504d2",
+                "7de65e1d3bbb585131411827b9aa61b8e43366528f97f22cd88f0cc579146a36",
             ),
             (
                 "debug:base".to_string(),
-                "6bbd965748812d5be70430576785c5305b3759710de127e72c54e8fc74e97ce6",
+                "3d880dfcf93d5809eadcbca9115fc4c92c8f17373f3b8bc7ec5726c11d443e6d",
             ),
             (
                 "debug:custom_policy_skill_process_coordination".to_string(),
-                "05cf5542821e539c7d6117c21f87e1c2551650528b5bcf713d7dd11cf5180eb1",
+                "7e7bc4ff8a247f16ef41293c0be2e9f0c8c120c56adf97129ecb3c28169d9aa6",
             ),
             (
                 "crawl:base".to_string(),
-                "f3162b44dbe8c5276d12c02d148c2fdac4c514545d260e67c307c238c4033bbb",
+                "f94fd60d204db92608e5eb2f67528579d52a7661860c0d8ad4c9fd89b695f482",
             ),
             (
                 "crawl:custom_policy_skill_process_coordination".to_string(),
-                "92a855d65fdef836aafc4635c010a1cb5310040b4700308059601f71a30550fd",
+                "86cda45dbdbaa44fe2e6b70352fb34e6ecaad3387255092311ed8ae149723d57",
             ),
             (
                 "agent_create:base".to_string(),
-                "9ac58d038f40a02f42ce4854df64c67c62c4a503dcef78b63718787dd3fd6d5e",
+                "36d67cd150ce016479b5674f09943b67a881a0cc2e4951c620cd40cd2cfcae1e",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "c2fe07307eab376695f10eeb18677008e00dbcd99bae9882d81ff356d10a9e06",
+                "51eb321caa67e8069808f6b0f3eb2bdb279f93a83c92c90c0af0cb6b4866d078",
             ),
             (
                 "test:base".to_string(),
-                "d776ab1bdf91255473f42227f119a4be11af1f3a963382499544bd90b4142213",
+                "6c700d3c3a8074a6ff4557f1b26f0b744bd1acc0b67c42e3dcb147d3707c5469",
             ),
             (
                 "test:custom_policy_skill_process_coordination".to_string(),
-                "552305fcc26503af7829ef70beb8fecdd597297752333b277b793402e2c9fa0f",
+                "e3fba34b9deff50a54ff1f21e0fc161de1148b5f66d4e2e9fbff71118192157c",
             ),
         ];
 
@@ -724,7 +724,7 @@ mod tests {
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "9c8f1a45101d54a82b64b85ce7ca71a866ebb212c5e8fc656d3a1afba0b1887e",
+                "49895979b513e4f861d1ac5f3913f546188717fa543c330a543e8808dbb5f0b7",
             ),
             (
                 "test:builtin_full".to_string(),
@@ -740,7 +740,7 @@ mod tests {
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "9c8f1a45101d54a82b64b85ce7ca71a866ebb212c5e8fc656d3a1afba0b1887e",
+                "49895979b513e4f861d1ac5f3913f546188717fa543c330a543e8808dbb5f0b7",
             ),
         ];
 

@@ -35,6 +35,52 @@ pub(crate) fn append_message(
             run_id: run_id.into(),
             role,
             content,
+            provider_metadata_json: None,
+            created_at: now_timestamp(),
+            attachments: Vec::new(),
+        },
+    )
+}
+
+pub(crate) fn append_provider_assistant_message(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    content: String,
+    provider_message_id: String,
+    reasoning_content: Option<String>,
+    reasoning_details: Option<JsonValue>,
+    tool_calls: &[AgentToolCall],
+) -> CommandResult<AgentMessageRecord> {
+    let metadata = xero_agent_core::RuntimeMessageProviderMetadata::assistant_turn(
+        provider_message_id,
+        reasoning_content,
+        reasoning_details,
+        tool_calls
+            .iter()
+            .map(
+                |tool_call| xero_agent_core::RuntimeProviderToolCallMetadata {
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    provider_tool_name: tool_call.tool_name.clone(),
+                    arguments: tool_call.input.clone(),
+                },
+            )
+            .collect(),
+    );
+    let provider_metadata_json = serde_json::to_string(&metadata).map_err(|error| {
+        CommandError::system_fault(
+            "agent_provider_metadata_serialize_failed",
+            format!("Xero could not serialize provider assistant metadata: {error}"),
+        )
+    })?;
+    project_store::append_agent_message(
+        repo_root,
+        &NewAgentMessageRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            role: AgentMessageRole::Assistant,
+            content,
+            provider_metadata_json: Some(provider_metadata_json),
             created_at: now_timestamp(),
             attachments: Vec::new(),
         },
@@ -55,6 +101,7 @@ pub(crate) fn append_user_message_with_attachments(
             run_id: run_id.into(),
             role: AgentMessageRole::User,
             content,
+            provider_metadata_json: None,
             created_at: now_timestamp(),
             attachments,
         },
@@ -345,6 +392,7 @@ pub(crate) fn capture_project_record_for_run(
     }
     capture_terminal_summary_record(repo_root, snapshot)?;
     capture_final_answer_record(repo_root, snapshot)?;
+    capture_current_problem_continuity_record(repo_root, snapshot)?;
     capture_latest_plan_record(repo_root, snapshot)?;
     capture_decision_records(repo_root, snapshot)?;
     capture_verification_record(repo_root, snapshot)?;
@@ -907,6 +955,9 @@ fn capture_terminal_summary_record(
         "fileChanges": file_paths,
         "messageId": latest_assistant_message.map(|message| message.id),
     });
+    let handoff_file_changes = content["fileChanges"].clone();
+    content["handoffCompleteness"] =
+        handoff_completeness_contract(snapshot, final_text, &handoff_file_changes);
     if is_debug_run {
         content["debugSession"] = json!({
             "memoryFocus": [
@@ -923,6 +974,7 @@ fn capture_terminal_summary_record(
             "captureContract": "The final assistant handoff is expected to include the symptom, root cause, fix rationale, changed files, verification evidence, and durable troubleshooting facts.",
         });
     }
+    let (content, content_redacted) = redact_runtime_project_record_json(content);
     let tags = if is_debug_run {
         vec![
             snapshot.run.runtime_agent_id.as_str().into(),
@@ -972,7 +1024,7 @@ fn capture_terminal_summary_record(
                 .into_iter()
                 .collect(),
             produced_artifact_refs: Vec::new(),
-            redaction_state: if redaction.redacted {
+            redaction_state: if redaction.redacted || content_redacted {
                 project_store::ProjectRecordRedactionState::Redacted
             } else {
                 project_store::ProjectRecordRedactionState::Clean
@@ -982,6 +1034,253 @@ fn capture_terminal_summary_record(
         },
     )?;
     Ok(())
+}
+
+fn handoff_completeness_contract(
+    snapshot: &AgentRunSnapshotRecord,
+    final_text: Option<&str>,
+    file_changes: &JsonValue,
+) -> JsonValue {
+    let completed_work = final_text
+        .map(trim_project_record_summary)
+        .filter(|summary| !summary.is_empty())
+        .map(|summary| vec![summary])
+        .unwrap_or_default();
+    let pending_work = handoff_lines_matching(
+        final_text,
+        &[
+            "pending",
+            "remaining",
+            "next",
+            "todo",
+            "follow-up",
+            "blocked",
+        ],
+    );
+    let risks = handoff_lines_matching(final_text, &["risk", "caveat", "warning", "blocked"]);
+    let questions = handoff_lines_matching(final_text, &["question", "unclear", "confirm"]);
+    let verification = handoff_verification_evidence(snapshot, final_text);
+    let tool_evidence = snapshot
+        .tool_calls
+        .iter()
+        .map(|tool| {
+            json!({
+                "toolCallId": &tool.tool_call_id,
+                "toolName": &tool.tool_name,
+                "state": format!("{:?}", tool.state),
+                "completedAt": &tool.completed_at,
+                "error": tool.error.as_ref().map(|error| json!({
+                    "code": &error.code,
+                    "message": &error.message,
+                })),
+            })
+        })
+        .collect::<Vec<_>>();
+    let required_fields = [
+        "goal",
+        "status",
+        "completedWork",
+        "pendingWork",
+        "decisions",
+        "constraints",
+        "projectFacts",
+        "fileChanges",
+        "toolEvidence",
+        "verification",
+        "risks",
+        "questions",
+        "memoryReferences",
+        "sourceContextHash",
+        "runtimeSpecificDetails",
+    ];
+    let mut contract = json!({
+        "schema": "xero.handoff_completeness.v1",
+        "requiredFields": required_fields,
+        "fieldCoverage": required_fields
+            .iter()
+            .map(|field| ((*field).to_string(), JsonValue::Bool(true)))
+            .collect::<serde_json::Map<String, JsonValue>>(),
+        "goal": &snapshot.run.prompt,
+        "status": format!("{:?}", snapshot.run.status),
+        "completedWork": completed_work,
+        "pendingWork": pending_work,
+        "decisions": handoff_lines_matching(final_text, &["decided", "decision"]),
+        "constraints": handoff_lines_matching(final_text, &["constraint", "must", "cannot"]),
+        "projectFacts": handoff_lines_matching(final_text, &["fact", "found", "observed"]),
+        "fileChanges": file_changes,
+        "toolEvidence": tool_evidence,
+        "verification": verification,
+        "risks": risks,
+        "questions": questions,
+        "memoryReferences": [],
+        "sourceContextHash": handoff_source_context_hash(snapshot),
+        "runtimeSpecificDetails": {
+            "runtimeAgentId": snapshot.run.runtime_agent_id.as_str(),
+            "agentDefinitionId": &snapshot.run.agent_definition_id,
+            "agentDefinitionVersion": snapshot.run.agent_definition_version,
+            "providerId": &snapshot.run.provider_id,
+            "modelId": &snapshot.run.model_id,
+            "approvalRelevantStatus": format!("{:?}", snapshot.run.status),
+        },
+    });
+    contract["quality"] = handoff_quality_score(&contract);
+    contract
+}
+
+fn handoff_quality_score(contract: &JsonValue) -> JsonValue {
+    let mut score = 1.0_f64;
+    let mut deductions = Vec::new();
+    if contract["verification"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        score -= 0.3;
+        deductions.push(json!({
+            "code": "handoff_missing_verification",
+            "message": "Handoff did not include verification evidence.",
+        }));
+    }
+    if contract["completedWork"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        score -= 0.2;
+        deductions.push(json!({
+            "code": "handoff_missing_completed_work",
+            "message": "Handoff did not summarize completed work.",
+        }));
+    }
+    if contract["pendingWork"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        score -= 0.15;
+        deductions.push(json!({
+            "code": "handoff_missing_next_steps",
+            "message": "Handoff did not name pending or remaining work.",
+        }));
+    }
+    if contract["toolEvidence"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        score -= 0.15;
+        deductions.push(json!({
+            "code": "handoff_missing_tool_evidence",
+            "message": "Handoff did not include tool evidence.",
+        }));
+    }
+    if contract["risks"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        score -= 0.1;
+        deductions.push(json!({
+            "code": "handoff_missing_risks",
+            "message": "Handoff did not explicitly mention risks or caveats.",
+        }));
+    }
+    let score = score.clamp(0.0, 1.0);
+    let status = if score >= 0.85 {
+        "ready"
+    } else if score >= 0.65 {
+        "needs_review"
+    } else {
+        "needs_clarification"
+    };
+    json!({
+        "score": score,
+        "status": status,
+        "deductions": deductions,
+        "blocksAutomaticContinuation": status == "needs_clarification",
+    })
+}
+
+fn handoff_lines_matching(final_text: Option<&str>, markers: &[&str]) -> Vec<String> {
+    final_text
+        .into_iter()
+        .flat_map(|text| text.lines())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            markers.iter().any(|marker| lower.contains(marker))
+        })
+        .map(trim_project_record_summary)
+        .take(8)
+        .collect()
+}
+
+fn handoff_verification_evidence(
+    snapshot: &AgentRunSnapshotRecord,
+    final_text: Option<&str>,
+) -> Vec<JsonValue> {
+    let mut evidence = snapshot
+        .tool_calls
+        .iter()
+        .filter(|tool| {
+            let name = tool.tool_name.to_ascii_lowercase();
+            name.contains("test")
+                || name.contains("verify")
+                || name.contains("check")
+                || name.contains("cargo")
+                || name.contains("pnpm")
+        })
+        .map(|tool| {
+            json!({
+                "kind": "tool_call",
+                "toolCallId": &tool.tool_call_id,
+                "toolName": &tool.tool_name,
+                "state": format!("{:?}", tool.state),
+                "completedAt": &tool.completed_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    evidence.extend(
+        handoff_lines_matching(final_text, &["test", "verified", "verification", "passed"])
+            .into_iter()
+            .map(|line| json!({"kind": "handoff_text", "summary": line})),
+    );
+    evidence
+}
+
+fn handoff_source_context_hash(snapshot: &AgentRunSnapshotRecord) -> String {
+    let source = json!({
+        "runId": &snapshot.run.run_id,
+        "agentSessionId": &snapshot.run.agent_session_id,
+        "messages": snapshot.messages.iter().map(|message| json!({
+            "id": message.id,
+            "role": format!("{:?}", message.role),
+            "content": &message.content,
+            "createdAt": &message.created_at,
+        })).collect::<Vec<_>>(),
+        "toolCalls": snapshot.tool_calls.iter().map(|tool| json!({
+            "toolCallId": &tool.tool_call_id,
+            "toolName": &tool.tool_name,
+            "state": format!("{:?}", tool.state),
+            "completedAt": &tool.completed_at,
+        })).collect::<Vec<_>>(),
+        "fileChanges": snapshot.file_changes.iter().map(|change| json!({
+            "path": &change.path,
+            "operation": &change.operation,
+            "oldHash": &change.old_hash,
+            "newHash": &change.new_hash,
+        })).collect::<Vec<_>>(),
+        "checkpoints": snapshot.checkpoints.iter().map(|checkpoint| json!({
+            "id": checkpoint.id,
+            "kind": &checkpoint.checkpoint_kind,
+            "summary": &checkpoint.summary,
+            "payload": &checkpoint.payload_json,
+            "createdAt": &checkpoint.created_at,
+        })).collect::<Vec<_>>(),
+    });
+    let bytes = serde_json::to_vec(&source).unwrap_or_default();
+    sha256_hex(&bytes)
 }
 
 fn capture_final_answer_record(
@@ -1027,6 +1326,218 @@ fn capture_final_answer_record(
             visibility: project_store::ProjectRecordVisibility::Retrieval,
         },
     )
+}
+
+fn capture_current_problem_continuity_record(
+    repo_root: &Path,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<()> {
+    let final_text = snapshot
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == AgentMessageRole::Assistant)
+        .map(|message| message.content.trim())
+        .filter(|content| !content.is_empty());
+    let payload = current_problem_continuity_payload(snapshot, final_text);
+    let text = serde_json::to_string_pretty(&payload).map_err(|error| {
+        CommandError::system_fault(
+            "current_problem_continuity_serialize_failed",
+            format!("Xero could not serialize current-problem continuity: {error}"),
+        )
+    })?;
+    let source_item_ids = current_problem_source_item_ids(snapshot);
+    let summary = final_text
+        .map(trim_project_record_summary)
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "{} current problem continuity for {:?} run.",
+                snapshot.run.runtime_agent_id.label(),
+                snapshot.run.status
+            )
+        });
+    insert_runtime_project_record(
+        repo_root,
+        snapshot,
+        RuntimeProjectRecordDraft {
+            record_kind: project_store::ProjectRecordKind::ContextNote,
+            title: format!(
+                "{} current problem continuity",
+                snapshot.run.runtime_agent_id.label()
+            ),
+            summary,
+            text,
+            content_json: payload,
+            schema_name: "xero.project_record.current_problem_continuity.v1",
+            importance: project_store::ProjectRecordImportance::High,
+            confidence: Some(0.88),
+            tags: vec![
+                snapshot.run.runtime_agent_id.as_str().into(),
+                "current-problem".into(),
+                "continuity".into(),
+                "s30".into(),
+            ],
+            source_item_ids,
+            related_paths: run_related_paths(snapshot),
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+        },
+    )
+}
+
+fn current_problem_continuity_payload(
+    snapshot: &AgentRunSnapshotRecord,
+    final_text: Option<&str>,
+) -> JsonValue {
+    let latest_plan =
+        latest_event_payload(snapshot, AgentRunEventKind::PlanUpdated).map(|(event, payload)| {
+            json!({
+                "eventId": event.id,
+                "createdAt": event.created_at,
+                "payload": payload,
+            })
+        });
+    let latest_assistant_summary = final_text
+        .map(trim_project_record_summary)
+        .filter(|summary| !summary.is_empty());
+    let blockers = current_problem_lines(
+        snapshot,
+        final_text,
+        &[("Blocked:", 8), ("Blocker:", 8)],
+        &["blocked", "blocker"],
+    );
+    let recent_decisions = current_problem_lines(
+        snapshot,
+        final_text,
+        &[("Decision:", 8)],
+        &["decision", "decided"],
+    );
+    let open_questions = current_problem_lines(
+        snapshot,
+        final_text,
+        &[("Question:", 8)],
+        &["question", "unclear", "confirm"],
+    );
+    let next_actions = current_problem_lines(
+        snapshot,
+        final_text,
+        &[("Next:", 8), ("Todo:", 8)],
+        &["next", "remaining", "todo", "follow-up"],
+    );
+    let changed_files = snapshot
+        .file_changes
+        .iter()
+        .map(|change| {
+            json!({
+                "id": change.id,
+                "path": change.path,
+                "operation": change.operation,
+                "oldHash": change.old_hash,
+                "newHash": change.new_hash,
+                "createdAt": change.created_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let verification = handoff_verification_evidence(snapshot, final_text);
+
+    json!({
+        "schema": "xero.project_record.current_problem_continuity.v1",
+        "activeGoal": snapshot.run.prompt,
+        "currentTaskState": {
+            "runId": snapshot.run.run_id,
+            "agentSessionId": snapshot.run.agent_session_id,
+            "runtimeAgentId": snapshot.run.runtime_agent_id.as_str(),
+            "agentDefinitionId": snapshot.run.agent_definition_id,
+            "agentDefinitionVersion": snapshot.run.agent_definition_version,
+            "status": format!("{:?}", snapshot.run.status),
+            "startedAt": snapshot.run.started_at,
+            "completedAt": snapshot.run.completed_at,
+            "lastError": snapshot.run.last_error.as_ref().map(|error| json!({
+                "code": error.code,
+                "message": error.message,
+            })),
+            "latestPlan": latest_plan,
+            "latestAssistantSummary": latest_assistant_summary,
+        },
+        "blockers": blockers,
+        "recentDecisions": recent_decisions,
+        "changedFiles": changed_files,
+        "testEvidence": verification,
+        "openQuestions": open_questions,
+        "nextActions": next_actions,
+        "sourceContextHash": handoff_source_context_hash(snapshot),
+    })
+}
+
+fn current_problem_lines(
+    snapshot: &AgentRunSnapshotRecord,
+    final_text: Option<&str>,
+    marked: &[(&str, usize)],
+    final_markers: &[&str],
+) -> Vec<String> {
+    let mut values = Vec::new();
+    for (marker, limit) in marked {
+        values.extend(
+            extract_marked_lines(snapshot, marker, *limit)
+                .into_iter()
+                .map(|line| trim_project_record_summary(&line.text)),
+        );
+    }
+    values.extend(handoff_lines_matching(final_text, final_markers));
+    dedup_non_empty_strings(values, 8)
+}
+
+fn dedup_non_empty_strings(values: Vec<String>, limit: usize) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || !seen.insert(value.to_ascii_lowercase()) {
+            continue;
+        }
+        deduped.push(value.to_string());
+        if deduped.len() >= limit {
+            break;
+        }
+    }
+    deduped
+}
+
+fn current_problem_source_item_ids(snapshot: &AgentRunSnapshotRecord) -> Vec<String> {
+    let mut source_item_ids = vec![format!("agent_runs:{}", snapshot.run.run_id)];
+    source_item_ids.extend(
+        snapshot
+            .messages
+            .iter()
+            .rev()
+            .take(8)
+            .map(|message| format!("agent_messages:{}", message.id)),
+    );
+    source_item_ids.extend(
+        snapshot
+            .events
+            .iter()
+            .rev()
+            .take(8)
+            .map(|event| format!("agent_events:{}", event.id)),
+    );
+    source_item_ids.extend(
+        snapshot
+            .tool_calls
+            .iter()
+            .rev()
+            .take(8)
+            .map(|tool| format!("agent_tool_calls:{}", tool.tool_call_id)),
+    );
+    source_item_ids.extend(
+        snapshot
+            .file_changes
+            .iter()
+            .rev()
+            .take(8)
+            .map(|change| format!("agent_file_changes:{}", change.id)),
+    );
+    dedup_non_empty_strings(source_item_ids, 32)
 }
 
 fn capture_latest_plan_record(
@@ -3298,6 +3809,9 @@ pub(crate) fn validate_prompt(prompt: &str) -> CommandResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::project_store::{
+        AgentEventRecord, AgentFileChangeRecord, AgentRunRecord, AgentToolCallRecord,
+    };
     use crate::runtime::{
         AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput, AutonomousLineEnding,
         AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
@@ -3307,6 +3821,396 @@ mod tests {
     use tempfile::tempdir;
 
     static PROJECT_DB_LOCK: Mutex<()> = Mutex::new(());
+
+    fn handoff_contract_snapshot(
+        runtime_agent_id: RuntimeAgentIdDto,
+        agent_definition_id: &str,
+        agent_definition_version: u32,
+        suffix: &str,
+    ) -> AgentRunSnapshotRecord {
+        AgentRunSnapshotRecord {
+            run: AgentRunRecord {
+                runtime_agent_id,
+                agent_definition_id: agent_definition_id.into(),
+                agent_definition_version,
+                project_id: "project-handoff-contract".into(),
+                agent_session_id: format!("agent-session-handoff-contract-{suffix}"),
+                run_id: format!("run-handoff-contract-{suffix}"),
+                trace_id: format!("trace-handoff-contract-{suffix}"),
+                lineage_kind: "top_level".into(),
+                parent_run_id: None,
+                parent_trace_id: None,
+                parent_subagent_id: None,
+                subagent_role: None,
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                status: AgentRunStatus::Completed,
+                prompt: "Finish the storage hardening work.".into(),
+                system_prompt: "system".into(),
+                started_at: "2026-05-09T00:00:00Z".into(),
+                last_heartbeat_at: None,
+                completed_at: Some("2026-05-09T00:01:00Z".into()),
+                cancelled_at: None,
+                last_error: None,
+                updated_at: "2026-05-09T00:01:00Z".into(),
+            },
+            messages: vec![AgentMessageRecord {
+                id: 1,
+                project_id: "project-handoff-contract".into(),
+                run_id: format!("run-handoff-contract-{suffix}"),
+                role: AgentMessageRole::Assistant,
+                content:
+                    "Completed storage hardening. Verification passed. Remaining risk: run final suite."
+                        .into(),
+                provider_metadata_json: None,
+                created_at: "2026-05-09T00:01:00Z".into(),
+                attachments: Vec::new(),
+            }],
+            events: Vec::new(),
+            tool_calls: vec![AgentToolCallRecord {
+                project_id: "project-handoff-contract".into(),
+                run_id: format!("run-handoff-contract-{suffix}"),
+                tool_call_id: format!("tool-{suffix}"),
+                tool_name: "cargo_test".into(),
+                input_json: "{}".into(),
+                state: AgentToolCallState::Succeeded,
+                result_json: Some("{}".into()),
+                error: None,
+                started_at: "2026-05-09T00:00:30Z".into(),
+                completed_at: Some("2026-05-09T00:00:40Z".into()),
+            }],
+            file_changes: vec![AgentFileChangeRecord {
+                id: 1,
+                project_id: "project-handoff-contract".into(),
+                run_id: format!("run-handoff-contract-{suffix}"),
+                trace_id: format!("trace-handoff-contract-{suffix}"),
+                top_level_run_id: format!("run-handoff-contract-{suffix}"),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "client/src-tauri/src/db/project_store/storage_observability.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: Some("a".repeat(64)),
+                created_at: "2026-05-09T00:00:45Z".into(),
+            }],
+            checkpoints: Vec::new(),
+            action_requests: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn s45_handoff_completeness_contract_contains_required_runtime_fields() {
+        let cases = [
+            (RuntimeAgentIdDto::Ask, "ask", 1, "ask"),
+            (RuntimeAgentIdDto::Plan, "plan", 1, "plan"),
+            (RuntimeAgentIdDto::Engineer, "engineer", 1, "engineer"),
+            (RuntimeAgentIdDto::Debug, "debug", 1, "debug"),
+            (RuntimeAgentIdDto::Crawl, "crawl", 1, "crawl"),
+            (
+                RuntimeAgentIdDto::AgentCreate,
+                "agent_create",
+                1,
+                "agent-create",
+            ),
+            (RuntimeAgentIdDto::Test, "test", 1, "test"),
+            (
+                RuntimeAgentIdDto::Engineer,
+                "custom-support-agent",
+                7,
+                "custom-engineer",
+            ),
+        ];
+
+        for (runtime_agent_id, agent_definition_id, agent_definition_version, suffix) in cases {
+            let snapshot = handoff_contract_snapshot(
+                runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
+                suffix,
+            );
+            let contract = handoff_completeness_contract(
+                &snapshot,
+                Some("Completed storage hardening. Verification passed. Remaining risk: run final suite."),
+                &json!(["client/src-tauri/src/db/project_store/storage_observability.rs"]),
+            );
+
+            for field in contract["requiredFields"]
+                .as_array()
+                .expect("required fields")
+            {
+                let field = field.as_str().expect("field name");
+                assert!(
+                    contract.get(field).is_some(),
+                    "missing {field} for {suffix}"
+                );
+                assert_eq!(contract["fieldCoverage"][field].as_bool(), Some(true));
+            }
+            assert_eq!(
+                contract["runtimeSpecificDetails"]["runtimeAgentId"].as_str(),
+                Some(runtime_agent_id.as_str())
+            );
+            assert_eq!(
+                contract["runtimeSpecificDetails"]["agentDefinitionId"].as_str(),
+                Some(agent_definition_id)
+            );
+            assert_eq!(
+                contract["runtimeSpecificDetails"]["agentDefinitionVersion"].as_i64(),
+                Some(i64::from(agent_definition_version))
+            );
+            assert_eq!(
+                contract["sourceContextHash"]
+                    .as_str()
+                    .expect("source context hash")
+                    .len(),
+                64
+            );
+            assert!(
+                !contract["verification"]
+                    .as_array()
+                    .expect("verification evidence")
+                    .is_empty(),
+                "missing verification for {suffix}"
+            );
+            assert_eq!(contract["quality"]["status"].as_str(), Some("ready"));
+            assert_eq!(
+                contract["quality"]["blocksAutomaticContinuation"].as_bool(),
+                Some(false)
+            );
+        }
+    }
+
+    #[test]
+    fn s47_handoff_quality_blocks_low_quality_automatic_continuation() {
+        let mut snapshot =
+            handoff_contract_snapshot(RuntimeAgentIdDto::Debug, "debug", 1, "low-quality-debug");
+        snapshot.tool_calls.clear();
+        snapshot.messages.clear();
+        snapshot.file_changes.clear();
+
+        let contract = handoff_completeness_contract(&snapshot, None, &json!([]));
+        let deduction_codes = contract["quality"]["deductions"]
+            .as_array()
+            .expect("quality deductions")
+            .iter()
+            .filter_map(|deduction| deduction["code"].as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            contract["quality"]["status"].as_str(),
+            Some("needs_clarification")
+        );
+        assert_eq!(
+            contract["quality"]["blocksAutomaticContinuation"].as_bool(),
+            Some(true)
+        );
+        assert!(deduction_codes.contains(&"handoff_missing_verification"));
+        assert!(deduction_codes.contains(&"handoff_missing_completed_work"));
+        assert!(deduction_codes.contains(&"handoff_missing_next_steps"));
+        assert!(deduction_codes.contains(&"handoff_missing_tool_evidence"));
+        assert!(deduction_codes.contains(&"handoff_missing_risks"));
+    }
+
+    #[test]
+    fn s30_current_problem_continuity_record_is_structured_and_retrievable() {
+        let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
+        let tempdir = tempdir().expect("tempdir");
+        let app_data_dir = tempdir.path().join("app-data");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("client/src-tauri/src/runtime"))
+            .expect("repo source dir");
+        let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
+        let project_id = "project-current-problem-continuity";
+        db::configure_project_database_paths(&app_data_dir.join("global.db"));
+        db::import_project(
+            &CanonicalRepository {
+                project_id: project_id.into(),
+                repository_id: "repo-current-problem-continuity".into(),
+                root_path: canonical_root.clone(),
+                root_path_string: canonical_root.to_string_lossy().into_owned(),
+                common_git_dir: canonical_root.join(".git"),
+                display_name: "repo".into(),
+                branch_name: Some("main".into()),
+                head_sha: Some("abc123".into()),
+                branch: None,
+                last_commit: None,
+                status_entries: Vec::new(),
+                has_staged_changes: false,
+                has_unstaged_changes: false,
+                has_untracked_changes: false,
+                additions: 0,
+                deletions: 0,
+            },
+            DesktopState::default().import_failpoints(),
+        )
+        .expect("import project");
+        let run = project_store::insert_agent_run(
+            &canonical_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-current-problem".into(),
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Finish the storage hardening work.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-09T00:00:00Z".into(),
+            },
+        )
+        .expect("insert run")
+        .run;
+        let snapshot = AgentRunSnapshotRecord {
+            run,
+            messages: vec![AgentMessageRecord {
+                id: 1,
+                project_id: project_id.into(),
+                run_id: "run-current-problem".into(),
+                role: AgentMessageRole::Assistant,
+                content: [
+                    "Completed backend continuity capture.",
+                    "Decision: keep current-problem state in app-data project records.",
+                    "Next: run the scoped S30 verification command.",
+                    "Question: confirm whether UI work stays deferred.",
+                    "Verification passed with focused cargo test.",
+                    "Remaining risk: S31 evals still need to consume this record.",
+                ]
+                .join("\n"),
+                provider_metadata_json: None,
+                created_at: "2026-05-09T00:01:00Z".into(),
+                attachments: Vec::new(),
+            }],
+            events: vec![
+                AgentEventRecord {
+                    id: 10,
+                    project_id: project_id.into(),
+                    run_id: "run-current-problem".into(),
+                    event_kind: AgentRunEventKind::PlanUpdated,
+                    payload_json: json!({
+                        "summary": "Implement S30 continuity records.",
+                        "items": [
+                            {"step": "capture structured state", "status": "completed"},
+                            {"step": "run verification", "status": "pending"}
+                        ]
+                    })
+                    .to_string(),
+                    created_at: "2026-05-09T00:00:20Z".into(),
+                },
+                AgentEventRecord {
+                    id: 11,
+                    project_id: project_id.into(),
+                    run_id: "run-current-problem".into(),
+                    event_kind: AgentRunEventKind::VerificationGate,
+                    payload_json: json!({
+                        "command": "cargo test --manifest-path client/src-tauri/Cargo.toml --lib s30",
+                        "status": "passed"
+                    })
+                    .to_string(),
+                    created_at: "2026-05-09T00:00:50Z".into(),
+                },
+            ],
+            tool_calls: vec![AgentToolCallRecord {
+                project_id: project_id.into(),
+                run_id: "run-current-problem".into(),
+                tool_call_id: "tool-s30-cargo-test".into(),
+                tool_name: "cargo_test".into(),
+                input_json: "{}".into(),
+                state: AgentToolCallState::Succeeded,
+                result_json: Some("{}".into()),
+                error: None,
+                started_at: "2026-05-09T00:00:40Z".into(),
+                completed_at: Some("2026-05-09T00:00:50Z".into()),
+            }],
+            file_changes: vec![AgentFileChangeRecord {
+                id: 20,
+                project_id: project_id.into(),
+                run_id: "run-current-problem".into(),
+                trace_id: "trace-current-problem".into(),
+                top_level_run_id: "run-current-problem".into(),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "client/src-tauri/src/runtime/agent_core/persistence.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: Some("b".repeat(64)),
+                created_at: "2026-05-09T00:00:45Z".into(),
+            }],
+            checkpoints: Vec::new(),
+            action_requests: Vec::new(),
+        };
+
+        capture_current_problem_continuity_record(&canonical_root, &snapshot)
+            .expect("capture current-problem continuity");
+
+        let records =
+            project_store::list_project_records(&canonical_root, project_id).expect("list records");
+        let continuity = records
+            .iter()
+            .find(|record| {
+                record.schema_name.as_deref()
+                    == Some("xero.project_record.current_problem_continuity.v1")
+            })
+            .expect("continuity record");
+        let content = continuity.content_json.as_ref().expect("content json");
+        assert_eq!(
+            content["activeGoal"],
+            json!("Finish the storage hardening work.")
+        );
+        assert_eq!(
+            content["currentTaskState"]["latestPlan"]["payload"]["summary"],
+            json!("Implement S30 continuity records.")
+        );
+        assert_eq!(
+            content["recentDecisions"][0],
+            json!("keep current-problem state in app-data project records.")
+        );
+        assert_eq!(
+            content["changedFiles"][0]["path"],
+            json!("client/src-tauri/src/runtime/agent_core/persistence.rs")
+        );
+        assert!(!content["testEvidence"]
+            .as_array()
+            .expect("test evidence")
+            .is_empty());
+        assert_eq!(
+            content["openQuestions"][0],
+            json!("confirm whether UI work stays deferred.")
+        );
+        assert!(content["nextActions"][0]
+            .as_str()
+            .expect("next action")
+            .contains("run the scoped S30 verification command"));
+
+        let retrieval = project_store::search_agent_context(
+            &canonical_root,
+            project_store::AgentContextRetrievalRequest {
+                query_id: "s30-current-problem-query".into(),
+                project_id: project_id.into(),
+                agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                run_id: Some("run-current-problem".into()),
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                query_text: "storage hardening current problem verification next action".into(),
+                search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
+                filters: project_store::AgentContextRetrievalFilters {
+                    record_kinds: vec![project_store::ProjectRecordKind::ContextNote],
+                    ..project_store::AgentContextRetrievalFilters::default()
+                },
+                limit_count: 3,
+                allow_keyword_fallback: true,
+                created_at: "2026-05-09T00:02:00Z".into(),
+            },
+        )
+        .expect("retrieve current problem continuity");
+        assert!(retrieval
+            .results
+            .iter()
+            .any(|result| result.source_id == continuity.record_id));
+    }
 
     #[test]
     fn parses_fenced_crawl_report_payload() {

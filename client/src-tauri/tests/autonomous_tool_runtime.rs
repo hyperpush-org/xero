@@ -1934,6 +1934,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
             path: Some("src".into()),
+            max_depth: None,
         })
         .expect("find repo files");
     assert_eq!(find.tool_name, "find");
@@ -1949,6 +1950,23 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             assert!(!output.truncated);
         }
         other => panic!("unexpected find output: {other:?}"),
+    }
+
+    let bounded_find = runtime
+        .find(AutonomousFindRequest {
+            pattern: "**/*.txt".into(),
+            path: Some("src".into()),
+            max_depth: Some(1),
+        })
+        .expect("depth-bounded find repo files");
+    match bounded_find.output {
+        AutonomousToolOutput::Find(output) => {
+            assert_eq!(output.scope.as_deref(), Some("src"));
+            assert_eq!(output.matches, vec!["src/app.txt", "src/tracked.txt"]);
+            assert_eq!(output.scanned_files, 2);
+            assert!(output.truncated);
+        }
+        other => panic!("unexpected bounded find output: {other:?}"),
     }
 
     let written = runtime
@@ -2447,6 +2465,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
         .find(AutonomousFindRequest {
             pattern: "**/*.md".into(),
             path: Some("src".into()),
+            max_depth: None,
         })
         .expect("zero-match find should still succeed");
     match empty_find.output {
@@ -2458,6 +2477,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
         .find(AutonomousFindRequest {
             pattern: "[*.txt".into(),
             path: None,
+            max_depth: None,
         })
         .expect_err("malformed find patterns should be rejected");
     assert_eq!(
@@ -2469,6 +2489,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
             path: Some("../outside".into()),
+            max_depth: None,
         })
         .expect_err("find path traversal should be denied");
     assert_eq!(invalid_find_scope.code, "autonomous_tool_path_denied");
@@ -2900,6 +2921,7 @@ fn tool_runtime_reports_truncation_for_bounded_search_and_find_results() {
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
             path: Some("fixtures".into()),
+            max_depth: None,
         })
         .expect("bounded find succeeds");
     match find.output {
@@ -2999,6 +3021,7 @@ fn tool_runtime_search_and_find_skip_symlink_escapes() {
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
             path: None,
+            max_depth: None,
         })
         .expect("find should skip symlink escapes");
     match find.output {

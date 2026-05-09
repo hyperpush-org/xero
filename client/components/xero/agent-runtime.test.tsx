@@ -1685,7 +1685,6 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByRole('status', { name: 'Agent is thinking' })).toBeVisible()
-    expect(screen.getByText('Thinking')).toBeVisible()
     expect(screen.queryByText(/What can we build together/i)).not.toBeInTheDocument()
   })
 
@@ -2222,14 +2221,14 @@ describe('AgentRuntime current UI', () => {
         sequence: 2,
         toolCallId: 'call-find',
         toolName: 'find',
-        toolState: 'running',
+        toolState: 'succeeded',
         detail: 'pattern: appendTranscriptDelta, path: client/components/xero',
       }),
       makeToolItem({
         sequence: 3,
         toolCallId: 'call-list',
         toolName: 'list',
-        toolState: 'running',
+        toolState: 'succeeded',
         detail: 'path: client/components/xero, maxDepth: 2',
       }),
     ])
@@ -2238,6 +2237,49 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('find appendTranscriptDelta')).toBeVisible()
     expect(screen.getByText('list client/components/xero')).toBeVisible()
+  })
+
+  it('keeps in-flight tool calls outside completed tool groups', () => {
+    renderRuntimeStreamItems([
+      makeToolItem({
+        sequence: 2,
+        toolCallId: 'call-read-complete',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read package.json.',
+        toolSummary: {
+          kind: 'file',
+          path: 'package.json',
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+      }),
+      makeToolItem({
+        sequence: 3,
+        toolCallId: 'call-find-complete',
+        toolName: 'find',
+        toolState: 'succeeded',
+        detail: 'Found matching files.',
+      }),
+      makeToolItem({
+        sequence: 4,
+        toolCallId: 'call-read-running',
+        toolName: 'read',
+        toolState: 'running',
+        detail: 'path: client/components/xero/agent-runtime.tsx, startLine: 1, lineCount: 80',
+      }),
+    ])
+
+    expect(screen.getByText('2 tool calls')).toBeVisible()
+    expect(screen.queryByText('3 tool calls')).not.toBeInTheDocument()
+    expect(screen.getByText('read agent-runtime.tsx')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: /show grouped tool details for 2 tool calls/i }))
+
+    expect(screen.getByText('read package.json')).toBeVisible()
+    expect(screen.getByText('find')).toBeVisible()
   })
 
   it('renders long tool bursts without evicting the surrounding transcript turns', () => {
@@ -3417,6 +3459,7 @@ describe('AgentRuntime current UI', () => {
 
         expect(getSessionContextSnapshot).toHaveBeenCalledTimes(1)
       } finally {
+        vi.useRealTimers()
         Object.defineProperty(window, 'requestAnimationFrame', {
           configurable: true,
           value: originalRequestAnimationFrame,

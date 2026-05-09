@@ -312,7 +312,6 @@ import {
   type RunDoctorReportRequestDto,
 } from '@/src/lib/xero-model/diagnostics'
 import {
-  runtimeStreamItemKindSchema,
   runtimeStreamItemSchema,
   subscribeRuntimeStreamRequestSchema,
   subscribeRuntimeStreamResponseSchema,
@@ -1203,6 +1202,30 @@ function createSafeUnlisten(unlisten: UnlistenFn): UnlistenFn {
   }
 }
 
+const RUNTIME_STREAM_ITEM_KINDS = new Set<string>([
+  'transcript',
+  'tool',
+  'skill',
+  'activity',
+  'action_required',
+  'plan',
+  'complete',
+  'failure',
+])
+
+const RUNTIME_STREAM_DELIVERY_BATCH_SIZE = 24
+const RUNTIME_STREAM_DELIVERY_TIME_BUDGET_MS = 4
+
+function scheduleRuntimeStreamDelivery(callback: () => void): ReturnType<typeof setTimeout> {
+  return setTimeout(callback, 0)
+}
+
+function nowForDeliveryBudget(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
 function hasCheapRuntimeStreamItemShape(payload: unknown): payload is RuntimeStreamItemDto {
   if (!payload || typeof payload !== 'object') {
     return false
@@ -1210,7 +1233,8 @@ function hasCheapRuntimeStreamItemShape(payload: unknown): payload is RuntimeStr
 
   const item = payload as Record<string, unknown>
   return (
-    runtimeStreamItemKindSchema.safeParse(item.kind).success &&
+    typeof item.kind === 'string' &&
+    RUNTIME_STREAM_ITEM_KINDS.has(item.kind) &&
     typeof item.runId === 'string' &&
     item.runId.trim().length > 0 &&
     typeof item.sequence === 'number' &&
@@ -1269,13 +1293,20 @@ async function createRuntimeStreamSubscription(
   let disposed = false
   let response: SubscribeRuntimeStreamResponseDto | null = null
   let lastDeliveredSequence: number | null = null
-  const pendingPayloads: unknown[] = []
+  const deliveryQueue: unknown[] = []
+  let deliveryQueueCursor = 0
+  let scheduledDelivery: ReturnType<typeof setTimeout> | null = null
   const channel = new Channel<unknown>()
 
   const unsubscribe = () => {
     disposed = true
     lastDeliveredSequence = null
-    pendingPayloads.length = 0
+    deliveryQueue.length = 0
+    deliveryQueueCursor = 0
+    if (scheduledDelivery) {
+      clearTimeout(scheduledDelivery)
+      scheduledDelivery = null
+    }
     channel.onmessage = () => undefined
   }
 
@@ -1321,18 +1352,70 @@ async function createRuntimeStreamSubscription(
     }
   }
 
-  channel.onmessage = (payload) => {
+  const hasQueuedPayloads = () => deliveryQueueCursor < deliveryQueue.length
+
+  const compactDeliveryQueue = () => {
+    if (deliveryQueueCursor === 0) {
+      return
+    }
+
+    if (deliveryQueueCursor >= deliveryQueue.length) {
+      deliveryQueue.length = 0
+      deliveryQueueCursor = 0
+      return
+    }
+
+    if (deliveryQueueCursor >= 256) {
+      deliveryQueue.splice(0, deliveryQueueCursor)
+      deliveryQueueCursor = 0
+    }
+  }
+
+  const scheduleDelivery = () => {
+    if (disposed || !response || scheduledDelivery || !hasQueuedPayloads()) {
+      return
+    }
+
+    scheduledDelivery = scheduleRuntimeStreamDelivery(() => {
+      scheduledDelivery = null
+      const activeResponse = response
+      if (disposed || !activeResponse) {
+        return
+      }
+
+      const startedAt = nowForDeliveryBudget()
+      let deliveredCount = 0
+      while (deliveryQueueCursor < deliveryQueue.length) {
+        const payload = deliveryQueue[deliveryQueueCursor]
+        deliveryQueueCursor += 1
+        deliver(payload, activeResponse)
+        deliveredCount += 1
+
+        if (
+          deliveredCount >= RUNTIME_STREAM_DELIVERY_BATCH_SIZE ||
+          nowForDeliveryBudget() - startedAt >= RUNTIME_STREAM_DELIVERY_TIME_BUDGET_MS
+        ) {
+          break
+        }
+      }
+
+      compactDeliveryQueue()
+      if (hasQueuedPayloads()) {
+        scheduleDelivery()
+      }
+    })
+  }
+
+  const enqueueDelivery = (payload: unknown) => {
     if (disposed) {
       return
     }
 
-    if (!response) {
-      pendingPayloads.push(payload)
-      return
-    }
-
-    deliver(payload, response)
+    deliveryQueue.push(payload)
+    scheduleDelivery()
   }
+
+  channel.onmessage = enqueueDelivery
 
   try {
     const request = subscribeRuntimeStreamRequestSchema.parse({
@@ -1353,9 +1436,7 @@ async function createRuntimeStreamSubscription(
       },
     })
 
-    for (const pendingPayload of pendingPayloads.splice(0, pendingPayloads.length)) {
-      deliver(pendingPayload, response)
-    }
+    scheduleDelivery()
 
     return {
       response,

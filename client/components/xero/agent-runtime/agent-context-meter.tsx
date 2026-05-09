@@ -24,6 +24,8 @@ interface AgentContextMeterProps {
 
 const RING_RADIUS = 8.5
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+const CONTEXT_DEPLETED_COLOR = 'var(--destructive)'
+const CONTEXT_DEPLETION_COLOR_START_PERCENT = 5
 
 function formatTokens(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) {
@@ -69,19 +71,24 @@ function getBudgetLabel(status: AgentContextMeterStatus, budget: SessionContextB
 function getRingTone(budget: SessionContextBudgetDto | null, status: AgentContextMeterStatus): string {
   if (status === 'error') return 'stroke-destructive text-destructive'
   if (!budget?.knownProviderBudget) return 'stroke-muted-foreground/55 text-muted-foreground'
+  if (budget.pressure === 'over') return 'stroke-destructive text-destructive'
 
-  switch (budget.pressure) {
-    case 'low':
-      return 'stroke-primary/65 text-primary'
-    case 'medium':
-      return 'stroke-sky-500 text-sky-600 dark:text-sky-400'
-    case 'high':
-      return 'stroke-amber-500 text-amber-600 dark:text-amber-400'
-    case 'over':
-      return 'stroke-destructive text-destructive'
-    case 'unknown':
-      return 'stroke-muted-foreground/55 text-muted-foreground'
+  return 'stroke-primary/65 text-primary'
+}
+
+function getContextPressureStroke(pressurePercent: number): string {
+  if (pressurePercent <= CONTEXT_DEPLETION_COLOR_START_PERCENT) {
+    return 'var(--primary)'
   }
+
+  const normalizedPressure =
+    ((Math.min(100, Math.max(CONTEXT_DEPLETION_COLOR_START_PERCENT, pressurePercent)) -
+      CONTEXT_DEPLETION_COLOR_START_PERCENT) /
+      (100 - CONTEXT_DEPLETION_COLOR_START_PERCENT)) *
+    100
+  const depletedWeight = Math.max(0, Math.min(100, Math.round(normalizedPressure)))
+  const primaryWeight = 100 - depletedWeight
+  return `color-mix(in oklab, var(--primary) ${primaryWeight}%, ${CONTEXT_DEPLETED_COLOR} ${depletedWeight}%)`
 }
 
 function getErrorMessage(error: AgentContextMeterProps['error']): string | null {
@@ -101,8 +108,13 @@ export function AgentContextMeter({
   const pressure = knownBudget && !hideBaselineUsage ? Math.min(100, budget?.pressurePercent ?? 0) : 0
   const remainingPercent = knownBudget ? Math.max(0, 100 - pressure) : null
   const label = hideBaselineUsage ? 'Full' : getBudgetLabel(status, budget)
-  const ringTone = hideBaselineUsage ? 'stroke-primary/65 text-primary' : getRingTone(budget, status)
+  const ringTone = getRingTone(budget, status)
   const fillOffset = RING_CIRCUMFERENCE * (1 - pressure / 100)
+  const shouldAnimateRefresh = (status === 'loading' || status === 'stale') && !knownBudget
+  const ringStyle =
+    knownBudget && status !== 'error' && budget?.pressure !== 'over'
+      ? { stroke: getContextPressureStroke(pressure) }
+      : undefined
   const errorMessage = status === 'error' && !snapshot ? getErrorMessage(error) : null
   const undoContributorCount =
     snapshot?.contributors?.filter((contributor) =>
@@ -157,9 +169,7 @@ export function AgentContextMeter({
               <circle
                 className={cn(
                   'origin-center -rotate-90 fill-none transition-[stroke-dashoffset,stroke] duration-300',
-                  status === 'loading' || status === 'stale'
-                    ? 'motion-safe:animate-spin'
-                    : null,
+                  shouldAnimateRefresh ? 'motion-safe:animate-spin' : null,
                   ringTone,
                 )}
                 cx="10"
@@ -170,11 +180,12 @@ export function AgentContextMeter({
                 strokeDasharray={
                   knownBudget
                     ? `${RING_CIRCUMFERENCE} ${RING_CIRCUMFERENCE}`
-                    : status === 'loading' || status === 'stale'
+                    : shouldAnimateRefresh
                       ? '13 40'
                       : '2.5 4.5'
                 }
                 strokeDashoffset={knownBudget ? fillOffset : 0}
+                style={ringStyle}
               />
             </svg>
             {status === 'error' && !snapshot ? (

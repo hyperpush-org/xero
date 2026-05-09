@@ -516,6 +516,7 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
         .find(AutonomousFindRequest {
             pattern: "*.txt".into(),
             path: Some("notes".into()),
+            max_depth: None,
         })
         .expect("find imported repo files inside notes");
     match find.output {

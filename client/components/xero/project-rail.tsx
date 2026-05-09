@@ -25,6 +25,7 @@ interface ProjectRailProps {
   pendingProjectSelectionId?: string | null
   errorMessage: string | null
   onSelectProject: (projectId: string) => void
+  onPreloadProject?: (projectId: string) => void
   onImportProject: () => void
   onRemoveProject: (projectId: string) => void
   onOpenSettings?: () => void
@@ -42,6 +43,7 @@ export function ProjectRail({
   pendingProjectSelectionId = null,
   errorMessage,
   onSelectProject,
+  onPreloadProject,
   onImportProject,
   onRemoveProject,
   onOpenSettings,
@@ -77,12 +79,19 @@ export function ProjectRail({
 
   const handlePreviewProject = useCallback(
     (projectId: string) => {
+      onPreloadProject?.(projectId)
       setOptimisticProjectId((current) => {
         const currentDisplayed = current ?? pendingProjectSelectionId ?? activeProjectId
         return currentDisplayed === projectId ? current : projectId
       })
     },
-    [activeProjectId, pendingProjectSelectionId],
+    [activeProjectId, onPreloadProject, pendingProjectSelectionId],
+  )
+  const handlePreloadProject = useCallback(
+    (projectId: string) => {
+      onPreloadProject?.(projectId)
+    },
+    [onPreloadProject],
   )
 
   return (
@@ -111,6 +120,7 @@ export function ProjectRail({
                 isActive={project.id === displayedActiveProjectId}
                 isRemovalPending={project.id === pendingProjectRemovalId}
                 isRemovalLocked={isRemovingProject}
+                onPreloadProject={handlePreloadProject}
                 onPreviewProject={handlePreviewProject}
                 onRemoveProject={onRemoveProject}
                 onSelectProject={handleSelectProject}
@@ -173,6 +183,7 @@ interface ProjectRailItemProps {
   isRemovalPending: boolean
   isRemovalLocked: boolean
   onSelectProject: (projectId: string) => void
+  onPreloadProject: (projectId: string) => void
   onPreviewProject: (projectId: string) => void
   onRemoveProject: (projectId: string) => void
 }
@@ -183,6 +194,7 @@ const ProjectRailItem = memo(function ProjectRailItem({
   isRemovalPending,
   isRemovalLocked,
   onSelectProject,
+  onPreloadProject,
   onPreviewProject,
   onRemoveProject,
 }: ProjectRailItemProps) {
@@ -210,6 +222,8 @@ const ProjectRailItem = memo(function ProjectRailItem({
           onPointerDown={(event) => {
             if (event.button === 0) onPreviewProject(project.id)
           }}
+          onPointerEnter={() => onPreloadProject(project.id)}
+          onFocus={() => onPreloadProject(project.id)}
           title={project.name}
           type="button"
         >

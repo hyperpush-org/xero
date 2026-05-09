@@ -4,9 +4,10 @@ use std::{
 };
 
 use super::{
-    repo_scope::normalize_relative_path, AutonomousBrowserAction, AutonomousCommandPolicyOutcome,
-    AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace, AutonomousCommandRequest,
-    AutonomousMcpAction, AutonomousProcessActionRiskLevel, AutonomousProcessManagerAction,
+    repo_scope::{is_current_directory_path, normalize_relative_path},
+    AutonomousBrowserAction, AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile,
+    AutonomousCommandPolicyTrace, AutonomousCommandRequest, AutonomousMcpAction,
+    AutonomousProcessActionRiskLevel, AutonomousProcessManagerAction,
     AutonomousProcessManagerPolicyTrace, AutonomousProcessOwnershipScope,
     AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
     AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
@@ -642,7 +643,12 @@ fn high_confidence_secret_text(text: &str) -> bool {
 fn repo_path_escape(request: &AutonomousToolRequest) -> Option<String> {
     repo_relative_paths(request)
         .into_iter()
-        .find(|path| normalize_relative_path(path, "path").is_err())
+        .find(|path| {
+            matches!(
+                normalize_relative_path(path, "path"),
+                Err(error) if error.class == CommandErrorClass::PolicyDenied
+            )
+        })
         .map(str::to_owned)
 }
 
@@ -683,7 +689,7 @@ fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
 
 fn optional_repo_relative_path(path: Option<&str>) -> Vec<&str> {
     path.map(str::trim)
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty() && !is_current_directory_path(path))
         .into_iter()
         .collect()
 }
@@ -1641,22 +1647,24 @@ mod tests {
     fn safety_policy_allows_blank_optional_observe_scope_as_repo_root() {
         let tempdir = tempdir().expect("tempdir");
         let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
-        let request = AutonomousToolRequest::List(super::super::AutonomousListRequest {
-            path: Some("".into()),
-            max_depth: Some(2),
-        });
+        for path in ["", "."] {
+            let request = AutonomousToolRequest::List(super::super::AutonomousListRequest {
+                path: Some(path.into()),
+                max_depth: Some(2),
+            });
 
-        let decision = runtime
-            .evaluate_safety_policy(
-                "list",
-                &json!({"path": "", "maxDepth": 2}),
-                &request,
-                false,
-                "input-hash",
-            )
-            .expect("policy");
+            let decision = runtime
+                .evaluate_safety_policy(
+                    "list",
+                    &json!({"path": path, "maxDepth": 2}),
+                    &request,
+                    false,
+                    "input-hash",
+                )
+                .expect("policy");
 
-        assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+            assert_eq!(decision.action, AutonomousSafetyPolicyAction::Allow);
+        }
     }
 
     #[test]

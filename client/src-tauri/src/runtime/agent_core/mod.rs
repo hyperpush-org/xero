@@ -28,13 +28,24 @@ mod tool_dispatch;
 mod types;
 
 pub use evals::{
-    run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite, run_test_agent_ci_eval,
-    run_xero_quality_eval_suites, AgentDefinitionEvalFixtureKind, AgentDefinitionQualityCaseResult,
-    AgentDefinitionQualityCoverage, AgentDefinitionQualityEvalReport,
-    AgentDefinitionQualityMetrics, AgentDefinitionQualitySurface, AgentDefinitionQualityThresholds,
-    AgentHarnessEvalCaseResult, AgentHarnessEvalCoverage, AgentHarnessEvalMetrics,
-    AgentHarnessEvalReport, AgentHarnessEvalThresholds, HarnessEvalFixtureKind,
-    TestAgentCiEvalReport, TestAgentCiManifestOutcome, XeroQualityEvalReport,
+    run_agent_definition_quality_eval_suite, run_agent_harness_eval_suite,
+    run_custom_agent_simulation_harness, run_handoff_context_quality_eval_suite,
+    run_no_redescription_needed_eval_suite, run_retrieval_memory_quality_eval_suite,
+    run_test_agent_ci_eval, run_xero_quality_eval_suites, AgentDefinitionEvalFixtureKind,
+    AgentDefinitionQualityCaseResult, AgentDefinitionQualityCoverage,
+    AgentDefinitionQualityEvalReport, AgentDefinitionQualityMetrics, AgentDefinitionQualitySurface,
+    AgentDefinitionQualityThresholds, AgentHarnessEvalCaseResult, AgentHarnessEvalCoverage,
+    AgentHarnessEvalMetrics, AgentHarnessEvalReport, AgentHarnessEvalThresholds,
+    CustomAgentSimulationCaseResult, CustomAgentSimulationCoverage,
+    CustomAgentSimulationHarnessReport, CustomAgentSimulationSurface,
+    HandoffContextQualityCaseResult, HandoffContextQualityCoverage,
+    HandoffContextQualityEvalReport, HandoffContextQualityMetrics, HandoffContextQualitySurface,
+    HarnessEvalFixtureKind, NoRedescriptionContinuityCaseResult, NoRedescriptionContinuityCoverage,
+    NoRedescriptionContinuityEvalReport, NoRedescriptionContinuityMetrics,
+    NoRedescriptionContinuitySurface, RetrievalMemoryQualityCaseResult,
+    RetrievalMemoryQualityCoverage, RetrievalMemoryQualityEvalReport,
+    RetrievalMemoryQualityMetrics, RetrievalMemoryQualitySurface, TestAgentCiEvalReport,
+    TestAgentCiManifestOutcome, XeroQualityEvalReport,
 };
 pub use events::{publish_agent_event, subscribe_agent_events, AgentEventSubscription};
 pub use facade::{
@@ -51,7 +62,7 @@ pub use harness_contract::{
 };
 pub use provider_adapters::{
     create_provider_adapter, AgentProviderConfig, AnthropicProviderConfig, BedrockProviderConfig,
-    OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
+    DeepSeekProviderConfig, OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
     OpenAiResponsesProviderConfig, VertexProviderConfig,
 };
 pub use run::*;

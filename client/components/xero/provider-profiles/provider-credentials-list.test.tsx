@@ -122,6 +122,7 @@ describe('ProviderCredentialsList', () => {
     expect(within(getProviderCard('OpenAI Codex')).getByRole('button', { name: /sign in/i })).toBeInTheDocument()
     expect(within(getProviderCard('OpenRouter')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Anthropic')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
+    expect(within(getProviderCard('DeepSeek')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Ollama')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
     expect(within(getProviderCard('Amazon Bedrock')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
   })

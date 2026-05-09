@@ -15,8 +15,14 @@ function publicRedaction() {
 
 function makeAgentPane({
   activeRunId,
+  runtimeRunActionStatus = 'idle',
+  runtimeStreamStatus = 'idle',
+  hasQueuedPrompt = false,
 }: {
   activeRunId: string | null
+  runtimeRunActionStatus?: AgentPaneView['runtimeRunActionStatus']
+  runtimeStreamStatus?: AgentPaneView['runtimeStreamStatus']
+  hasQueuedPrompt?: boolean
 }): AgentPaneView {
   return {
     project: {
@@ -26,6 +32,13 @@ function makeAgentPane({
     runtimeRun: activeRunId
       ? ({ runId: activeRunId } as AgentPaneView['runtimeRun'])
       : null,
+    runtimeRunActionStatus,
+    runtimeStreamStatus,
+    selectedPrompt: {
+      hasQueuedPrompt,
+      text: hasQueuedPrompt ? 'queued prompt' : null,
+      queuedAt: hasQueuedPrompt ? '2026-05-08T09:40:00Z' : null,
+    },
   } as AgentPaneView
 }
 
@@ -194,6 +207,33 @@ describe('useHistoricalConversationTurns', () => {
 
     await waitFor(() => {
       expect(getSessionTranscript).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('defers transcript fetches while a prompt or live runtime stream is active', async () => {
+    const transcript = makeTranscriptWithHandoff()
+    const { adapter, getSessionTranscript } = makeAdapter(transcript)
+    const { result, rerender } = renderHook(
+      ({ busy }: { busy: boolean }) =>
+        useHistoricalConversationTurns(
+          makeAgentPane({
+            activeRunId: 'run-B',
+            runtimeRunActionStatus: busy ? 'running' : 'idle',
+            runtimeStreamStatus: busy ? 'live' : 'complete',
+            hasQueuedPrompt: busy,
+          }),
+          adapter,
+        ),
+      { initialProps: { busy: true } },
+    )
+
+    expect(result.current).toBeNull()
+    expect(getSessionTranscript).not.toHaveBeenCalled()
+
+    rerender({ busy: false })
+
+    await waitFor(() => {
+      expect(getSessionTranscript).toHaveBeenCalledTimes(1)
     })
   })
 

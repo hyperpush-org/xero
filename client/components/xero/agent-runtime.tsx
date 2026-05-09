@@ -516,6 +516,40 @@ function scheduleForegroundWork(callback: () => void): () => void {
   }
 }
 
+function scheduleAfterNextPaint(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => {}
+  }
+
+  let cancelled = false
+  let frameId = 0
+  let timeoutId = 0
+  const run = () => {
+    if (!cancelled) {
+      callback()
+    }
+  }
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(run, 0)
+    })
+  } else {
+    timeoutId = window.setTimeout(run, 0)
+  }
+
+  return () => {
+    cancelled = true
+    if (frameId !== 0 && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(frameId)
+    }
+    if (timeoutId !== 0) {
+      window.clearTimeout(timeoutId)
+    }
+  }
+}
+
 function useDeferredForegroundWork(active: boolean): boolean {
   const [ready, setReady] = useState(active)
 
@@ -561,6 +595,12 @@ function actionGroupState(
 
 function isCodeEditAction(turn: Extract<ConversationTurn, { kind: 'action' }>): boolean {
   return isCodeEditToolName(turn.toolName)
+}
+
+function isTerminalActionState(
+  state: RuntimeStreamToolItemView['toolState'] | null | undefined,
+): boolean {
+  return state === 'succeeded' || state === 'failed'
 }
 
 function summarizeActionGroup(
@@ -628,7 +668,7 @@ function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
 
   for (const turn of turns) {
     if (turn.kind === 'action') {
-      if (isCodeEditAction(turn)) {
+      if (isCodeEditAction(turn) || !isTerminalActionState(turn.state)) {
         flushActionBuffer()
         compactedTurns.push(turn)
         continue
@@ -1321,11 +1361,33 @@ export const AgentRuntime = memo(function AgentRuntime({
     () => appendPendingPromptTurn(visibleTurnsForDisplay, pendingPromptTurn),
     [pendingPromptTurn, visibleTurnsForDisplay],
   )
-  const pendingRuntimeRunAction = agent.pendingRuntimeRunAction ?? null
-  const runtimeRunActionStatus = agent.runtimeRunActionStatus
+  const [promptSubmissionPending, setPromptSubmissionPending] = useState(false)
+  const promptSubmissionCancelRef = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    return () => {
+      promptSubmissionCancelRef.current?.()
+      promptSubmissionCancelRef.current = null
+    }
+  }, [])
+  const pendingRuntimeRunAction =
+    promptSubmissionPending
+      ? renderableRuntimeRun && !renderableRuntimeRun.isTerminal
+        ? 'update_controls'
+        : 'start'
+      : agent.pendingRuntimeRunAction ?? null
+  const runtimeRunActionStatus = promptSubmissionPending ? 'running' : agent.runtimeRunActionStatus
   const isQueueingRuntimePrompt =
     runtimeRunActionStatus === 'running' &&
     (pendingRuntimeRunAction === 'start' || pendingRuntimeRunAction === 'update_controls')
+  const hasLiveRuntimeStream =
+    streamStatus === 'subscribing' ||
+    streamStatus === 'replaying' ||
+    streamStatus === 'live'
+  const shouldDeferContextMeterForRuntimeActivity = Boolean(
+    isQueueingRuntimePrompt ||
+      agent.selectedPrompt.hasQueuedPrompt ||
+      (renderableRuntimeRun?.isActive && hasLiveRuntimeStream),
+  )
   const showAgentActivityIndicator = Boolean(
     isQueueingRuntimePrompt ||
       agent.selectedPrompt.hasQueuedPrompt ||
@@ -1621,8 +1683,14 @@ export const AgentRuntime = memo(function AgentRuntime({
     controller.handleComposerRuntimeAgentChange,
   ])
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
+  const shouldRefreshContextMeter = Boolean(
+    foregroundWorkReady &&
+      isFocusedPane &&
+      runtimeRunActionStatus !== 'running' &&
+      !shouldDeferContextMeterForRuntimeActivity,
+  )
   const contextMeterState = useAgentContextMeterSnapshot({
-    enabled: foregroundWorkReady && isFocusedPane && runtimeRunActionStatus !== 'running',
+    enabled: shouldRefreshContextMeter,
     adapter: desktopAdapter,
     projectId: agent.project.id,
     agentSessionId: selectedAgentSessionId,
@@ -1745,6 +1813,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   const sessionLabel = agent.project.selectedAgentSession?.title?.trim() || 'New Chat'
   const scrollViewportRef = useRef<HTMLDivElement | null>(null)
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
+  const scrollToLatestFrameRef = useRef<number | null>(null)
   const shouldAutoFollowRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const latestVisibleTurn = visibleTurnsWithPendingPrompt.at(-1)
@@ -1762,12 +1831,39 @@ export const AgentRuntime = memo(function AgentRuntime({
     runtimeStream?.failure?.id ?? 'no-failure',
     streamIssue?.code ?? 'no-issue',
   ].join(':')
-  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto') => {
-    bottomSentinelRef.current?.scrollIntoView({
-      block: 'end',
-      inline: 'nearest',
-      behavior,
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto', options: { defer?: boolean } = {}) => {
+    const run = () => {
+      bottomSentinelRef.current?.scrollIntoView({
+        block: 'end',
+        inline: 'nearest',
+        behavior,
+      })
+    }
+
+    if (!options.defer || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      run()
+      return
+    }
+
+    if (scrollToLatestFrameRef.current !== null && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(scrollToLatestFrameRef.current)
+    }
+    scrollToLatestFrameRef.current = window.requestAnimationFrame(() => {
+      scrollToLatestFrameRef.current = null
+      run()
     })
+  }, [])
+  useEffect(() => {
+    return () => {
+      if (
+        scrollToLatestFrameRef.current !== null &&
+        typeof window !== 'undefined' &&
+        typeof window.cancelAnimationFrame === 'function'
+      ) {
+        window.cancelAnimationFrame(scrollToLatestFrameRef.current)
+        scrollToLatestFrameRef.current = null
+      }
+    }
   }, [])
   const handleConversationScroll = useCallback(() => {
     const viewport = scrollViewportRef.current
@@ -2005,6 +2101,10 @@ export const AgentRuntime = memo(function AgentRuntime({
     scrollToLatest('smooth')
   }, [scrollToLatest])
   const handleSubmitDraftPrompt = useCallback(() => {
+    if (promptSubmissionPending) {
+      return
+    }
+
     const submittedText = controller.draftPrompt.trim()
     const optimisticPrompt = submittedText.length > 0
       ? {
@@ -2020,17 +2120,23 @@ export const AgentRuntime = memo(function AgentRuntime({
 
     shouldAutoFollowRef.current = true
     setShowJumpToLatest(false)
-    scrollToLatest('auto')
-    void controller.handleSubmitDraftPrompt().then((submitted) => {
-      if (!submitted && optimisticPrompt) {
-        setOptimisticPromptTurn((current) =>
-          current?.id === optimisticPrompt.id ? null : current,
-        )
-      }
-    }).finally(() => {
-      scrollToLatest('auto')
+    scrollToLatest('auto', { defer: true })
+    setPromptSubmissionPending(true)
+    promptSubmissionCancelRef.current?.()
+    promptSubmissionCancelRef.current = scheduleAfterNextPaint(() => {
+      promptSubmissionCancelRef.current = null
+      void controller.handleSubmitDraftPrompt().then((submitted) => {
+        if (!submitted && optimisticPrompt) {
+          setOptimisticPromptTurn((current) =>
+            current?.id === optimisticPrompt.id ? null : current,
+          )
+        }
+      }).finally(() => {
+        setPromptSubmissionPending(false)
+        scrollToLatest('auto', { defer: true })
+      })
     })
-  }, [controller, scrollToLatest])
+  }, [controller, promptSubmissionPending, scrollToLatest])
 
   useEffect(() => {
     if (!foregroundWorkReady) {
@@ -2044,7 +2150,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     }
 
     if (shouldAutoFollowRef.current) {
-      scrollToLatest('auto')
+      scrollToLatest('auto', { defer: true })
       setShowJumpToLatest(false)
       return
     }
@@ -2350,13 +2456,13 @@ export const AgentRuntime = memo(function AgentRuntime({
           composerThinkingLevel={controller.composerThinkingEffort}
           composerThinkingOptions={composerThinkingOptions}
           composerThinkingPlaceholder={composerThinkingPlaceholder}
-          controlsDisabled={controller.areControlsDisabled}
+          controlsDisabled={controller.areControlsDisabled || promptSubmissionPending}
           runtimeAgentSwitchDisabled={controller.isRuntimeAgentSwitchDisabled}
           dictation={controller.dictation}
           contextMeter={contextMeter}
           draftPrompt={controller.draftPrompt}
-          isPromptDisabled={controller.isPromptDisabled}
-          isSendDisabled={!controller.canSubmitPrompt}
+          isPromptDisabled={controller.isPromptDisabled || promptSubmissionPending}
+          isSendDisabled={!controller.canSubmitPrompt || promptSubmissionPending}
           onComposerApprovalModeChange={controller.handleComposerApprovalModeChange}
           onComposerRuntimeAgentChange={controller.handleComposerRuntimeAgentChange}
           onComposerAgentSelectionChange={controller.handleComposerAgentSelectionChange}

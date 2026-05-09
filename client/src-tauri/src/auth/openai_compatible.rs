@@ -10,22 +10,27 @@ use crate::{
     commands::{get_runtime_settings::RuntimeSettingsSnapshot, RuntimeAuthPhase},
     provider_credentials::ProviderCredentialProfile,
     runtime::{
-        ResolvedRuntimeProvider, AZURE_OPENAI_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
+        ResolvedRuntimeProvider, AZURE_OPENAI_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
+        DEEPSEEK_RUNTIME_KIND, GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND,
+        GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
         OPENAI_COMPATIBLE_RUNTIME_KIND,
     },
 };
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 const DEFAULT_GITHUB_MODELS_BASE_URL: &str = "https://models.github.ai/inference";
 const DEFAULT_GITHUB_MODELS_CATALOG_URL: &str = "https://models.github.ai/catalog/models";
 const DEFAULT_GEMINI_AI_STUDIO_BASE_URL: &str =
     "https://generativelanguage.googleapis.com/v1beta/openai";
+const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
+const DEEPSEEK_V4_MAX_OUTPUT_TOKENS: u64 = 384_000;
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleAuthConfig {
     pub openai_base_url: String,
+    pub deepseek_base_url: String,
     pub github_models_base_url: String,
     pub github_models_catalog_url: String,
     pub gemini_ai_studio_base_url: String,
@@ -36,6 +41,7 @@ impl Default for OpenAiCompatibleAuthConfig {
     fn default() -> Self {
         Self {
             openai_base_url: DEFAULT_OPENAI_BASE_URL.into(),
+            deepseek_base_url: DEFAULT_DEEPSEEK_BASE_URL.into(),
             github_models_base_url: DEFAULT_GITHUB_MODELS_BASE_URL.into(),
             github_models_catalog_url: DEFAULT_GITHUB_MODELS_CATALOG_URL.into(),
             gemini_ai_studio_base_url: DEFAULT_GEMINI_AI_STUDIO_BASE_URL.into(),
@@ -418,6 +424,12 @@ fn resolve_openai_compatible_endpoint(
                 OpenAiCompatibleModelListStrategy::Live,
                 None,
             ),
+            DEEPSEEK_PROVIDER_ID => (
+                DEEPSEEK_RUNTIME_KIND,
+                Some(config.deepseek_base_url.as_str()),
+                OpenAiCompatibleModelListStrategy::Live,
+                None,
+            ),
             OLLAMA_PROVIDER_ID => (
                 OPENAI_COMPATIBLE_RUNTIME_KIND,
                 Some(DEFAULT_OLLAMA_BASE_URL),
@@ -468,6 +480,31 @@ fn resolve_openai_compatible_endpoint(
                 )
             })?
             .to_owned(),
+        DEEPSEEK_PROVIDER_ID => {
+            if base_url.is_some() {
+                return Err(AuthFlowError::terminal(
+                    "deepseek_base_url_unsupported",
+                    RuntimeAuthPhase::Failed,
+                    "Xero does not accept custom baseUrl metadata for first-party DeepSeek hosted profiles.",
+                ));
+            }
+            if api_version.is_some() {
+                return Err(AuthFlowError::terminal(
+                    "deepseek_api_version_unsupported",
+                    RuntimeAuthPhase::Failed,
+                    "Xero does not accept apiVersion metadata for first-party DeepSeek hosted profiles.",
+                ));
+            }
+            default_base_url
+                .ok_or_else(|| {
+                    AuthFlowError::terminal(
+                        "deepseek_base_url_missing",
+                        RuntimeAuthPhase::Failed,
+                        "Xero could not resolve the DeepSeek hosted base URL.",
+                    )
+                })?
+                .to_owned()
+        }
         AZURE_OPENAI_PROVIDER_ID => base_url
             .ok_or_else(|| {
                 AuthFlowError::terminal(
@@ -558,17 +595,28 @@ fn normalize_models(
             .filter(|value| !value.is_empty())
             .unwrap_or(id)
             .to_owned();
-        let thinking = normalize_thinking_capability(endpoint, id, &model.capabilities)?;
+        let mut thinking = normalize_thinking_capability(endpoint, id, &model.capabilities)?;
+        let mut context_window_tokens = model
+            .context_window_tokens
+            .or(model.max_input_tokens)
+            .filter(|tokens| *tokens > 0);
+        let mut max_output_tokens = model.max_output_tokens.filter(|tokens| *tokens > 0);
+        let display_name =
+            if endpoint.provider_id == DEEPSEEK_PROVIDER_ID && is_deepseek_v4_model_id(id) {
+                thinking = deepseek_v4_thinking_capability();
+                context_window_tokens = Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
+                max_output_tokens = Some(DEEPSEEK_V4_MAX_OUTPUT_TOKENS);
+                deepseek_v4_display_name(id).unwrap_or(display_name)
+            } else {
+                display_name
+            };
 
         normalized.push(OpenAiCompatibleDiscoveredModel {
             id: id.to_owned(),
             display_name,
             thinking,
-            context_window_tokens: model
-                .context_window_tokens
-                .or(model.max_input_tokens)
-                .filter(|tokens| *tokens > 0),
-            max_output_tokens: model.max_output_tokens.filter(|tokens| *tokens > 0),
+            context_window_tokens,
+            max_output_tokens,
         });
     }
 
@@ -768,6 +816,32 @@ fn default_gemini_thinking_capability(
     }
 }
 
+fn is_deepseek_v4_model_id(model_id: &str) -> bool {
+    matches!(
+        model_id.trim().to_ascii_lowercase().as_str(),
+        "deepseek-v4-pro" | "deepseek-v4-flash"
+    )
+}
+
+fn deepseek_v4_display_name(model_id: &str) -> Option<String> {
+    match model_id.trim().to_ascii_lowercase().as_str() {
+        "deepseek-v4-pro" => Some("DeepSeek V4 Pro".into()),
+        "deepseek-v4-flash" => Some("DeepSeek V4 Flash".into()),
+        _ => None,
+    }
+}
+
+fn deepseek_v4_thinking_capability() -> OpenAiCompatibleDiscoveredThinkingCapability {
+    OpenAiCompatibleDiscoveredThinkingCapability {
+        supported: true,
+        effort_levels: vec![
+            OpenAiCompatibleDiscoveredThinkingEffort::High,
+            OpenAiCompatibleDiscoveredThinkingEffort::XHigh,
+        ],
+        default_effort: Some(OpenAiCompatibleDiscoveredThinkingEffort::High),
+    }
+}
+
 fn unsupported_thinking_capability() -> OpenAiCompatibleDiscoveredThinkingCapability {
     OpenAiCompatibleDiscoveredThinkingCapability {
         supported: false,
@@ -941,6 +1015,7 @@ fn provider_display_label(provider_id: &str) -> &'static str {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => "GitHub Models",
         OPENAI_API_PROVIDER_ID => "OpenAI-compatible",
+        DEEPSEEK_PROVIDER_ID => "DeepSeek",
         OLLAMA_PROVIDER_ID => "Ollama",
         AZURE_OPENAI_PROVIDER_ID => "Azure OpenAI",
         GEMINI_AI_STUDIO_PROVIDER_ID => "Gemini AI Studio",
@@ -952,6 +1027,7 @@ fn missing_api_key_code(provider_id: &str) -> &'static str {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => "github_models_token_missing",
         OPENAI_API_PROVIDER_ID => "openai_api_key_missing",
+        DEEPSEEK_PROVIDER_ID => "deepseek_api_key_missing",
         OLLAMA_PROVIDER_ID => "ollama_api_key_missing",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_api_key_missing",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_api_key_missing",
@@ -964,6 +1040,9 @@ fn missing_api_key_message(provider_id: &str, operation: &str) -> String {
         GITHUB_MODELS_PROVIDER_ID => format!(
             "Xero cannot {operation} the selected GitHub Models runtime because no app-local GitHub token is configured for the active provider profile."
         ),
+        DEEPSEEK_PROVIDER_ID => format!(
+            "Xero cannot {operation} the selected DeepSeek runtime because no app-local API key is configured for the active provider profile."
+        ),
         _ => format!(
             "Xero cannot {operation} the selected {} runtime because no app-local API key is configured for the active provider profile.",
             provider_display_label(provider_id)
@@ -975,6 +1054,7 @@ fn cloud_binding_stale_code(provider_id: &str) -> &'static str {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => "github_models_binding_stale",
         OPENAI_API_PROVIDER_ID => "openai_binding_stale",
+        DEEPSEEK_PROVIDER_ID => "deepseek_binding_stale",
         OLLAMA_PROVIDER_ID => "ollama_binding_stale",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_binding_stale",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_binding_stale",
@@ -986,6 +1066,7 @@ fn provider_unavailable_code(provider_id: &str) -> &'static str {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => "github_models_provider_unavailable",
         OPENAI_API_PROVIDER_ID => "openai_provider_unavailable",
+        DEEPSEEK_PROVIDER_ID => "deepseek_provider_unavailable",
         OLLAMA_PROVIDER_ID => "ollama_provider_unavailable",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_provider_unavailable",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_provider_unavailable",
@@ -997,6 +1078,7 @@ fn models_decode_failed_code(provider_id: &str) -> &'static str {
     match provider_id {
         GITHUB_MODELS_PROVIDER_ID => "github_models_models_decode_failed",
         OPENAI_API_PROVIDER_ID => "openai_models_decode_failed",
+        DEEPSEEK_PROVIDER_ID => "deepseek_models_decode_failed",
         OLLAMA_PROVIDER_ID => "ollama_models_decode_failed",
         AZURE_OPENAI_PROVIDER_ID => "azure_openai_models_decode_failed",
         GEMINI_AI_STUDIO_PROVIDER_ID => "gemini_ai_studio_models_decode_failed",
@@ -1026,4 +1108,98 @@ fn sha256_hex(value: String) -> String {
 
 fn normalized(value: Option<&str>) -> Option<&str> {
     normalize_optional(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider_credentials::ProviderCredentialProfile;
+
+    fn deepseek_profile() -> ProviderCredentialProfile {
+        ProviderCredentialProfile {
+            profile_id: "deepseek-default".into(),
+            provider_id: DEEPSEEK_PROVIDER_ID.into(),
+            runtime_kind: DEEPSEEK_RUNTIME_KIND.into(),
+            label: "DeepSeek".into(),
+            model_id: "deepseek-v4-pro".into(),
+            preset_id: Some(DEEPSEEK_PROVIDER_ID.into()),
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            credential_link: None,
+            updated_at: "2026-05-09T12:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn deepseek_endpoint_uses_hosted_base_url_and_models_route() {
+        let endpoint = resolve_openai_compatible_endpoint_for_profile(
+            &deepseek_profile(),
+            &OpenAiCompatibleAuthConfig::default(),
+        )
+        .expect("resolve DeepSeek endpoint");
+
+        assert_eq!(endpoint.provider_id, DEEPSEEK_PROVIDER_ID);
+        assert_eq!(endpoint.runtime_kind, DEEPSEEK_RUNTIME_KIND);
+        assert_eq!(endpoint.effective_base_url, "https://api.deepseek.com");
+        assert_eq!(
+            endpoint.models_url().expect("models url").as_str(),
+            "https://api.deepseek.com/models"
+        );
+    }
+
+    #[test]
+    fn deepseek_endpoint_rejects_custom_base_url_metadata() {
+        let mut profile = deepseek_profile();
+        profile.base_url = Some("https://api.deepseek.com/v1".into());
+        let error = resolve_openai_compatible_endpoint_for_profile(
+            &profile,
+            &OpenAiCompatibleAuthConfig::default(),
+        )
+        .expect_err("custom DeepSeek base URL should fail");
+
+        assert_eq!(error.code, "deepseek_base_url_unsupported");
+    }
+
+    #[test]
+    fn deepseek_v4_models_get_static_context_and_thinking_overlay() {
+        let endpoint = resolve_openai_compatible_endpoint_for_profile(
+            &deepseek_profile(),
+            &OpenAiCompatibleAuthConfig::default(),
+        )
+        .expect("resolve DeepSeek endpoint");
+        let models = normalize_models(
+            &endpoint,
+            ModelsResponse {
+                data: vec![ModelSummary {
+                    id: "deepseek-v4-pro".into(),
+                    name: None,
+                    display_name: None,
+                    capabilities: OpenAiCompatibleCapabilities::default(),
+                    context_window_tokens: None,
+                    max_input_tokens: None,
+                    max_output_tokens: None,
+                }],
+            },
+        )
+        .expect("normalize models");
+
+        let model = models.first().expect("DeepSeek model");
+        assert_eq!(model.id, "deepseek-v4-pro");
+        assert_eq!(model.display_name, "DeepSeek V4 Pro");
+        assert_eq!(model.context_window_tokens, Some(1_000_000));
+        assert_eq!(model.max_output_tokens, Some(384_000));
+        assert_eq!(
+            model.thinking.effort_levels,
+            vec![
+                OpenAiCompatibleDiscoveredThinkingEffort::High,
+                OpenAiCompatibleDiscoveredThinkingEffort::XHigh,
+            ]
+        );
+        assert_eq!(
+            model.thinking.default_effort,
+            Some(OpenAiCompatibleDiscoveredThinkingEffort::High)
+        );
+    }
 }

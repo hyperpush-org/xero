@@ -24,8 +24,10 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
-use lancedb::query::ExecutableQuery;
-use lancedb::{Connection, Table};
+use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::OptimizeAction;
+use lancedb::{Connection, DistanceType, Table};
+use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
 use crate::commands::CommandError;
@@ -47,6 +49,8 @@ pub const AGENT_MEMORY_EMBEDDING_DIM: i32 = AGENT_RETRIEVAL_EMBEDDING_DIM;
 /// directories named `<table>.lance/`, but the connection API expects the
 /// table name without the `.lance` suffix.
 const AGENT_MEMORIES_TABLE: &str = "agent_memories";
+const AGENT_MEMORY_EMBEDDING_COLUMN: &str = "embedding";
+const AGENT_MEMORY_EMBEDDING_INDEX: &str = "agent_memories_embedding_cosine_idx";
 
 /// Subdirectory under each per-project app-data dir that hosts Lance datasets.
 pub const PROJECT_LANCE_SUBDIR: &str = "lance";
@@ -116,7 +120,7 @@ pub fn schema() -> SchemaRef {
 }
 
 /// Logical row form used by both the live store and the migration importer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentMemoryRow {
     pub memory_id: String,
     pub project_id: String,
@@ -204,6 +208,13 @@ fn connection_cache() -> &'static Mutex<ConnectionCache> {
     &CACHE
 }
 
+pub(crate) fn clear_connection_cache_for_database_path(database_path: &Path) {
+    let dataset_dir = dataset_dir_for_database_path(database_path);
+    if let Ok(mut cache) = connection_cache().lock() {
+        cache.inner.remove(&dataset_dir);
+    }
+}
+
 /// Resets the in-process connection cache. Tests use this when tearing down a
 /// tempdir so that subsequent `connect()` calls hit a fresh disk layout.
 #[cfg(test)]
@@ -263,36 +274,60 @@ async fn ensure_connection(dataset_dir: &Path) -> Result<Connection, CommandErro
     Ok(connection)
 }
 
-async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandError> {
+async fn open_or_create_table(
+    connection: &Connection,
+    dataset_dir: &Path,
+) -> Result<Table, CommandError> {
     match connection.open_table(AGENT_MEMORIES_TABLE).execute().await {
-        Ok(table) => ensure_current_table_schema(connection, table).await,
+        Ok(table) => ensure_current_table_schema(connection, dataset_dir, table).await,
         Err(_) => create_agent_memories_table(connection).await,
     }
 }
 
 async fn ensure_current_table_schema(
     connection: &Connection,
+    dataset_dir: &Path,
     table: Table,
 ) -> Result<Table, CommandError> {
     let table_schema = match table.schema().await {
         Ok(table_schema) => table_schema,
-        Err(_) => return reset_agent_memories_table(connection).await,
+        Err(_) => {
+            drop(table);
+            return quarantine_and_recreate_agent_memories_table(
+                connection,
+                dataset_dir,
+                "agent_memory_lance_schema_read_failed",
+            )
+            .await;
+        }
     };
     if table_schema_supports_current_memories(&table_schema) {
         return Ok(table);
     }
-    reset_agent_memories_table(connection).await
+    drop(table);
+    quarantine_and_recreate_agent_memories_table(
+        connection,
+        dataset_dir,
+        "agent_memory_lance_schema_drift_quarantined",
+    )
+    .await
 }
 
 fn table_schema_supports_current_memories(table_schema: &Schema) -> bool {
     lance_health::table_schema_supports_expected(table_schema, schema().as_ref())
 }
 
-async fn reset_agent_memories_table(connection: &Connection) -> Result<Table, CommandError> {
-    connection
-        .drop_table(AGENT_MEMORIES_TABLE, &[])
-        .await
-        .map_err(|error| map_lance_error("agent_memory_lance_schema_reset_failed", error))?;
+async fn quarantine_and_recreate_agent_memories_table(
+    connection: &Connection,
+    dataset_dir: &Path,
+    reason_code: &'static str,
+) -> Result<Table, CommandError> {
+    let _quarantined = lance_health::quarantine_lance_table_directory(
+        dataset_dir,
+        AGENT_MEMORIES_TABLE,
+        "agent-memory",
+        reason_code,
+    )?;
     create_agent_memories_table(connection).await
 }
 
@@ -816,6 +851,38 @@ pub fn open_for_database_path(database_path: &Path, project_id: &str) -> Project
 
 impl ProjectMemoryStore {
     #[allow(dead_code)]
+    pub(crate) fn health_report(
+        &self,
+    ) -> Result<lance_health::LanceTableHealthReport, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        runtime().block_on(async move { health_report_for_dataset(&dataset).await })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn optimize_for_maintenance(
+        &self,
+    ) -> Result<lance_health::LanceTableOptimizationReport, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        runtime().block_on(async move {
+            let connection = ensure_connection(&dataset).await?;
+            let table = open_or_create_table(&connection, &dataset).await?;
+            let _ = maintain_embedding_index(&table, false).await?;
+            let before = health_report_for_dataset(&dataset).await?;
+            let stats = table
+                .optimize(OptimizeAction::All)
+                .await
+                .map_err(|error| map_lance_error("agent_memory_lance_optimize_failed", error))?;
+            let after = health_report_for_dataset(&dataset).await?;
+            Ok(lance_health::table_optimization_report(
+                AGENT_MEMORIES_TABLE,
+                before,
+                &stats,
+                after,
+            ))
+        })
+    }
+
+    #[allow(dead_code)]
     pub fn dataset_dir(&self) -> &Path {
         &self.dataset_dir
     }
@@ -836,7 +903,7 @@ impl ProjectMemoryStore {
                 return Ok::<AgentMemoryRow, CommandError>(existing.clone());
             }
             let connection = ensure_connection(&dataset).await?;
-            let table = open_or_create_table(&connection).await?;
+            let table = open_or_create_table(&connection, &dataset).await?;
             insert_row(&table, &row).await?;
             Ok::<AgentMemoryRow, CommandError>(row)
         })?;
@@ -873,6 +940,46 @@ impl ProjectMemoryStore {
                 .into_iter()
                 .map(|row| stamp_project(row, &project_id))
                 .collect())
+        })
+    }
+
+    pub(crate) fn vector_search_rows(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        filter_sql: Option<&str>,
+    ) -> Result<Vec<AgentMemoryRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let query_embedding = query_embedding.to_vec();
+        let filter_sql = filter_sql.map(str::to_owned);
+        runtime().block_on(async move {
+            let connection = ensure_connection(&dataset).await?;
+            let table = open_or_create_table(&connection, &dataset).await?;
+            let _ = maintain_embedding_index(&table, false).await?;
+            let mut query = table
+                .query()
+                .nearest_to(query_embedding)
+                .map_err(|error| map_lance_error("agent_memory_lance_vector_query_invalid", error))?
+                .distance_type(DistanceType::Cosine)
+                .limit(limit.max(1));
+            if let Some(filter_sql) = filter_sql.as_deref().filter(|filter| !filter.is_empty()) {
+                query = query.only_if(filter_sql);
+            }
+            let batches = query
+                .execute()
+                .await
+                .map_err(|error| map_lance_error("agent_memory_lance_vector_query_failed", error))?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| {
+                    map_lance_error("agent_memory_lance_vector_collect_failed", error)
+                })?;
+            let mut rows = batches_to_rows(batches)?;
+            for row in &mut rows {
+                row.project_id = project_id.clone();
+            }
+            Ok(rows)
         })
     }
 
@@ -973,9 +1080,10 @@ impl ProjectMemoryStore {
         let dataset = self.dataset_dir.clone();
         let project_id = self.project_id.clone();
         runtime().block_on(async move {
-            let mut row = fetch_row(&dataset, &update.memory_id)
+            let previous = fetch_row(&dataset, &update.memory_id)
                 .await?
                 .ok_or_else(|| missing_memory_error(&project_id, &update.memory_id))?;
+            let mut row = previous.clone();
             if let Some(state) = update.review_state {
                 row.review_state = state;
             }
@@ -989,7 +1097,7 @@ impl ProjectMemoryStore {
                 row.diagnostic = Some(diagnostic);
             }
             row.updated_at = now;
-            replace_row(&dataset, row.clone()).await?;
+            replace_row(&dataset, &previous, row.clone()).await?;
             Ok(stamp_project(row, &project_id).into_record())
         })
     }
@@ -1014,13 +1122,15 @@ impl ProjectMemoryStore {
         runtime().block_on(async move {
             let rows = scan_all(&dataset).await?;
             let mut updated = 0;
-            for mut row in rows {
+            for row in rows {
                 if row
                     .source_run_id
                     .as_deref()
                     .map(|run_id| run_ids.iter().any(|target| target == run_id))
                     .unwrap_or(false)
                 {
+                    let previous = row.clone();
+                    let mut row = row;
                     row.project_id = project_id.clone();
                     row.source_run_id = None;
                     row.source_item_ids = Vec::new();
@@ -1031,7 +1141,7 @@ impl ProjectMemoryStore {
                                 .to_string(),
                     });
                     row.updated_at = now.clone();
-                    replace_row(&dataset, row).await?;
+                    replace_row(&dataset, &previous, row).await?;
                     updated += 1;
                 }
             }
@@ -1053,17 +1163,18 @@ impl ProjectMemoryStore {
         let memory_id = memory_id.to_string();
         runtime().block_on(async move {
             let mut row = fetch_row(&dataset, &memory_id).await?;
-            let Some(mut row) = row.take() else {
+            let Some(previous) = row.take() else {
                 return Ok(None);
             };
-            row.project_id = project_id.clone();
-            row.embedding = Some(embedding);
-            row.embedding_model = Some(embedding_model);
-            row.embedding_dimension = Some(embedding_dimension);
-            row.embedding_version = Some(embedding_version);
-            row.updated_at = updated_at;
-            replace_row(&dataset, row.clone()).await?;
-            Ok(Some(stamp_project(row, &project_id)))
+            let mut updated = previous.clone();
+            updated.project_id = project_id.clone();
+            updated.embedding = Some(embedding);
+            updated.embedding_model = Some(embedding_model);
+            updated.embedding_dimension = Some(embedding_dimension);
+            updated.embedding_version = Some(embedding_version);
+            updated.updated_at = updated_at;
+            replace_row(&dataset, &previous, updated.clone()).await?;
+            Ok(Some(stamp_project(updated, &project_id)))
         })
     }
 
@@ -1077,17 +1188,23 @@ impl ProjectMemoryStore {
         let memory_id = memory_id.to_string();
         runtime().block_on(async move {
             let mut row = fetch_row(&dataset, &memory_id).await?;
-            let Some(mut row) = row.take() else {
+            let Some(previous) = row.take() else {
                 return Ok(None);
             };
-            row.project_id = project_id.clone();
-            row.freshness_state = update.freshness_state.as_str().into();
-            row.freshness_checked_at = update.freshness_checked_at;
-            row.stale_reason = update.stale_reason;
-            row.source_fingerprints_json = update.source_fingerprints_json;
-            row.invalidated_at = update.invalidated_at;
-            replace_row(&dataset, row.clone()).await?;
-            Ok(Some(stamp_project(row, &project_id)))
+            let mut updated = previous.clone();
+            updated.project_id = project_id.clone();
+            updated.updated_at = update
+                .freshness_checked_at
+                .clone()
+                .or_else(|| update.invalidated_at.clone())
+                .unwrap_or_else(|| previous.updated_at.clone());
+            updated.freshness_state = update.freshness_state.as_str().into();
+            updated.freshness_checked_at = update.freshness_checked_at;
+            updated.stale_reason = update.stale_reason;
+            updated.source_fingerprints_json = update.source_fingerprints_json;
+            updated.invalidated_at = update.invalidated_at;
+            replace_row(&dataset, &previous, updated.clone()).await?;
+            Ok(Some(stamp_project(updated, &project_id)))
         })
     }
 
@@ -1101,23 +1218,64 @@ impl ProjectMemoryStore {
         let memory_id = memory_id.to_string();
         runtime().block_on(async move {
             let mut row = fetch_row(&dataset, &memory_id).await?;
-            let Some(mut row) = row.take() else {
+            let Some(previous) = row.take() else {
                 return Ok(None);
             };
-            row.project_id = project_id.clone();
+            let mut updated = previous.clone();
+            updated.project_id = project_id.clone();
             if update.superseded_by_id.is_some() {
-                row.freshness_state = "superseded".into();
+                updated.freshness_state = "superseded".into();
             }
-            row.superseded_by_id = update.superseded_by_id;
-            row.supersedes_id = update.supersedes_id;
-            row.fact_key = update.fact_key;
-            row.invalidated_at = update.invalidated_at;
-            row.stale_reason = update.stale_reason;
-            row.updated_at = update.updated_at;
-            replace_row(&dataset, row.clone()).await?;
-            Ok(Some(stamp_project(row, &project_id)))
+            updated.superseded_by_id = update.superseded_by_id;
+            updated.supersedes_id = update.supersedes_id;
+            updated.fact_key = update.fact_key;
+            updated.invalidated_at = update.invalidated_at;
+            updated.stale_reason = update.stale_reason;
+            updated.updated_at = if update.updated_at == previous.updated_at {
+                format!("{}#supersession", update.updated_at)
+            } else {
+                update.updated_at
+            };
+            replace_row(&dataset, &previous, updated.clone()).await?;
+            Ok(Some(stamp_project(updated, &project_id)))
         })
     }
+}
+
+async fn health_report_for_dataset(
+    dataset: &Path,
+) -> Result<lance_health::LanceTableHealthReport, CommandError> {
+    let connection = ensure_connection(dataset).await?;
+    let table = open_or_create_table(&connection, dataset).await?;
+    let table_schema = table
+        .schema()
+        .await
+        .map_err(|error| map_lance_error("agent_memory_lance_health_schema_failed", error))?;
+    let schema_current = table_schema_supports_current_memories(&table_schema);
+    let mut report =
+        lance_health::table_health_report(&table, dataset, AGENT_MEMORIES_TABLE, schema_current)
+            .await?;
+    if schema_current {
+        let rows = scan_all(dataset).await?;
+        report.freshness_counts = lance_health::freshness_counts_from_states(
+            rows.iter().map(|row| row.freshness_state.as_str()),
+        );
+    }
+    Ok(report)
+}
+
+async fn maintain_embedding_index(
+    table: &Table,
+    optimize: bool,
+) -> Result<lance_health::LanceVectorIndexMaintenanceReport, CommandError> {
+    lance_health::maintain_cosine_vector_index(
+        table,
+        AGENT_MEMORIES_TABLE,
+        AGENT_MEMORY_EMBEDDING_COLUMN,
+        AGENT_MEMORY_EMBEDDING_INDEX,
+        optimize,
+    )
+    .await
 }
 
 fn same_dedup_key(left: &AgentMemoryRow, right: &AgentMemoryRow) -> bool {
@@ -1241,7 +1399,7 @@ fn stamp_project(mut row: AgentMemoryRow, project_id: &str) -> AgentMemoryRow {
 
 async fn scan_all(dataset_dir: &Path) -> Result<Vec<AgentMemoryRow>, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = open_or_create_table(&connection).await?;
+    let table = open_or_create_table(&connection, dataset_dir).await?;
     let stream = table
         .query()
         .execute()
@@ -1251,7 +1409,7 @@ async fn scan_all(dataset_dir: &Path) -> Result<Vec<AgentMemoryRow>, CommandErro
         .try_collect()
         .await
         .map_err(|error| map_lance_error("agent_memory_lance_query_failed", error))?;
-    batches_to_rows(batches)
+    Ok(dedupe_latest_memory_rows(batches_to_rows(batches)?))
 }
 
 async fn fetch_row(
@@ -1273,20 +1431,52 @@ async fn insert_row(table: &Table, row: &AgentMemoryRow) -> Result<(), CommandEr
         .map(|_| ())
 }
 
-async fn replace_row(dataset_dir: &Path, row: AgentMemoryRow) -> Result<(), CommandError> {
+async fn replace_row(
+    dataset_dir: &Path,
+    previous: &AgentMemoryRow,
+    row: AgentMemoryRow,
+) -> Result<(), CommandError> {
+    if previous == &row {
+        return Ok(());
+    }
+    if previous.updated_at == row.updated_at {
+        return Err(CommandError::system_fault(
+            "agent_memory_lance_replace_version_not_advanced",
+            format!(
+                "Xero refused to replace memory `{}` without an updated row version.",
+                row.memory_id
+            ),
+        ));
+    }
     let connection = ensure_connection(dataset_dir).await?;
-    let table = open_or_create_table(&connection).await?;
-    let predicate = format!("memory_id = {}", quote_string_literal(&row.memory_id));
+    let table = open_or_create_table(&connection, dataset_dir).await?;
+    insert_row(&table, &row).await?;
+    let predicate = format!(
+        "memory_id = {} AND updated_at = {}",
+        quote_string_literal(&previous.memory_id),
+        quote_string_literal(&previous.updated_at)
+    );
     table
         .delete(&predicate)
         .await
-        .map_err(|error| map_lance_error("agent_memory_lance_update_failed", error))?;
-    insert_row(&table, &row).await
+        .map_err(|error| map_lance_error("agent_memory_lance_update_cleanup_failed", error))?;
+    Ok(())
+}
+
+fn dedupe_latest_memory_rows(mut rows: Vec<AgentMemoryRow>) -> Vec<AgentMemoryRow> {
+    rows.sort_by(|left, right| {
+        left.memory_id
+            .cmp(&right.memory_id)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+    });
+    rows.dedup_by(|left, right| left.memory_id == right.memory_id);
+    rows
 }
 
 async fn delete_row(dataset_dir: &Path, memory_id: &str) -> Result<bool, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = open_or_create_table(&connection).await?;
+    let table = open_or_create_table(&connection, dataset_dir).await?;
     let predicate = format!("memory_id = {}", quote_string_literal(memory_id));
     table
         .delete(&predicate)
@@ -1451,6 +1641,44 @@ mod tests {
         }
     }
 
+    fn embedded_approved_memory_row(index: usize) -> AgentMemoryRow {
+        let memory_id = format!("s34-memory-{index:03}");
+        let mut row = approved_project_row(&memory_id);
+        row.text = format!("S34 approved memory {index} release blocker context");
+        row.text_hash = format!("{:064x}", index + 1);
+        row.created_at = format!("2026-04-26T00:{:02}:00Z", index % 60);
+        row.updated_at = row.created_at.clone();
+        row.kind = if index % 4 == 0 {
+            AgentMemoryKind::Decision
+        } else {
+            AgentMemoryKind::ProjectFact
+        };
+        let embedding = crate::db::project_store::embedding_with_service(
+            &crate::db::project_store::LocalHashEmbeddingService,
+            &row.text,
+        )
+        .expect("test embedding");
+        row.embedding = Some(embedding.vector);
+        row.embedding_model = Some(embedding.model);
+        row.embedding_dimension = Some(embedding.dimension);
+        row.embedding_version = Some(embedding.version);
+        row
+    }
+
+    fn insert_memory_rows(dataset_dir: &Path, rows: &[AgentMemoryRow]) -> Result<(), CommandError> {
+        runtime().block_on(async {
+            let connection = ensure_connection(dataset_dir).await?;
+            let table = open_or_create_table(&connection, dataset_dir).await?;
+            let batch = build_batch(rows)?;
+            table
+                .add(vec![batch])
+                .execute()
+                .await
+                .map_err(|error| map_lance_error("test_agent_memory_lance_insert_failed", error))
+                .map(|_| ())
+        })
+    }
+
     fn legacy_schema_missing_freshness_state() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new(
             "memory_id",
@@ -1460,7 +1688,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_lance_schema_is_reset_before_listing_and_insert() {
+    fn s36_stale_lance_schema_is_quarantined_before_listing_and_insert() {
         reset_connection_cache_for_tests();
         let tempdir = tempfile::tempdir().expect("temp dir");
         let database_path = tempdir.path().join("state.db");
@@ -1490,19 +1718,120 @@ mod tests {
 
         let rows = store
             .list(None, AgentMemoryListFilterOwned::default())
-            .expect("list resets stale schema");
+            .expect("list quarantines stale schema");
         assert!(rows.is_empty());
+        let quarantine_table = std::fs::read_dir(&dataset_dir)
+            .expect("read lance dataset")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| name.starts_with("agent_memories_quarantine_") && name.ends_with(".lance"))
+            .expect("quarantined agent-memory table");
+        let quarantine_name = quarantine_table.trim_end_matches(".lance");
+        assert!(dataset_dir.join("agent_memories.lance").exists());
+        assert!(dataset_dir
+            .join(format!("{quarantine_name}.schema-drift.json"))
+            .exists());
 
         let inserted = store
-            .insert(approved_project_row("memory-schema-reset"))
-            .expect("insert after schema reset");
-        assert_eq!(inserted.memory_id, "memory-schema-reset");
+            .insert(approved_project_row("memory-schema-quarantine"))
+            .expect("insert after schema quarantine");
+        assert_eq!(inserted.memory_id, "memory-schema-quarantine");
 
         let rows = store
             .list(None, AgentMemoryListFilterOwned::default())
             .expect("list inserted memory");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].freshness_state, "source_unknown");
+
+        let health = store.health_report().expect("agent-memory health report");
+        assert_eq!(health.table_name, AGENT_MEMORIES_TABLE);
+        assert_eq!(health.status, "degraded");
+        assert!(health.schema_current);
+        assert_eq!(health.row_count, 1);
+        assert_eq!(health.quarantine_table_count, 1);
+        assert_eq!(health.diagnostic_marker_count, 1);
+
+        let optimization = store
+            .optimize_for_maintenance()
+            .expect("agent-memory optimize");
+        assert_eq!(optimization.table_name, AGENT_MEMORIES_TABLE);
+        assert!(optimization.after.schema_current);
+    }
+
+    #[test]
+    fn s37_agent_memory_health_reports_freshness_counts_before_and_after_maintenance() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let database_path = tempdir.path().join("state.db");
+        let store = open_for_database_path(&database_path, "project-health-counts");
+        let mut current = approved_project_row("memory-current");
+        current.text_hash = "1".repeat(64);
+        current.freshness_state = "current".into();
+        current.freshness_checked_at = Some("2026-05-05T16:40:32Z".into());
+        store.insert(current).expect("insert current memory");
+        let mut superseded = approved_project_row("memory-superseded");
+        superseded.text_hash = "2".repeat(64);
+        superseded.freshness_state = "superseded".into();
+        superseded.superseded_by_id = Some("memory-current".into());
+        superseded.stale_reason = Some("Superseded by newer durable context.".into());
+        store.insert(superseded).expect("insert superseded memory");
+
+        let health = store.health_report().expect("agent-memory health report");
+        assert_eq!(health.freshness_counts.inspected_row_count, 2);
+        assert_eq!(health.freshness_counts.current_row_count, 1);
+        assert_eq!(health.freshness_counts.superseded_row_count, 1);
+        assert_eq!(health.freshness_counts.retrieval_degraded_row_count(), 1);
+
+        let optimization = store
+            .optimize_for_maintenance()
+            .expect("agent-memory optimize");
+        assert_eq!(optimization.before.freshness_counts.superseded_row_count, 1);
+        assert_eq!(optimization.after.freshness_counts.superseded_row_count, 1);
+    }
+
+    #[test]
+    fn s34_agent_memory_vector_search_creates_index_and_bounds_large_store() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let database_path = tempdir.path().join("state.db");
+        let dataset_dir = dataset_dir_for_database_path(&database_path);
+        let store = open_for_database_path(&database_path, "project-s34-index");
+        let rows = (0..128)
+            .map(embedded_approved_memory_row)
+            .collect::<Vec<_>>();
+        insert_memory_rows(&dataset_dir, &rows).expect("insert s34 memories");
+        let query = crate::db::project_store::embedding_with_service(
+            &crate::db::project_store::LocalHashEmbeddingService,
+            "release blocker context",
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let results = store
+            .vector_search_rows(
+                &query.vector,
+                24,
+                Some(
+                    "review_state = 'approved' AND enabled = true AND scope_kind = 'project' AND memory_kind = 'decision'",
+                ),
+            )
+            .expect("bounded memory vector search");
+
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "memory vector search should stay comfortably bounded for the fixture"
+        );
+        assert!(results.len() <= 24);
+        assert!(results.iter().all(|row| {
+            row.review_state == AgentMemoryReviewState::Approved
+                && row.enabled
+                && row.scope == AgentMemoryScope::Project
+                && row.kind == AgentMemoryKind::Decision
+        }));
+
+        let health = store.health_report().expect("agent-memory health report");
+        assert_eq!(health.row_count, 128);
+        assert!(health.index_count >= 1);
     }
 
     #[test]
@@ -1559,6 +1888,38 @@ mod tests {
             .get_by_memory_id("memory-1")
             .expect("get after delete");
         assert!(after.is_none());
+    }
+
+    #[test]
+    fn s42_unversioned_agent_memory_replace_is_rejected_without_losing_old_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let database_path = dir.path().join("state.db");
+        reset_connection_cache_for_tests();
+        let store = open_for_database_path(&database_path, "project-safe-replace");
+        let inserted = store
+            .insert(approved_project_row("memory-safe-replace"))
+            .expect("insert memory");
+
+        let error = store
+            .update_embedding(
+                &inserted.memory_id,
+                vec![0.25; AGENT_MEMORY_EMBEDDING_DIM as usize],
+                "local_hash".into(),
+                AGENT_MEMORY_EMBEDDING_DIM,
+                "v1".into(),
+                inserted.updated_at.clone(),
+            )
+            .expect_err("unversioned replace rejected");
+        assert_eq!(
+            error.code,
+            "agent_memory_lance_replace_version_not_advanced"
+        );
+
+        let rows = store
+            .list(None, AgentMemoryListFilterOwned::default())
+            .expect("list after rejected replace");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].memory_id, inserted.memory_id);
     }
 
     #[test]

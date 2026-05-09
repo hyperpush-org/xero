@@ -63,6 +63,24 @@ fn seed_agent_run_for_agent(
     run_id: &str,
     runtime_agent_id: RuntimeAgentIdDto,
 ) {
+    seed_agent_run_for_agent_with_provider(
+        repo_root,
+        project_id,
+        run_id,
+        runtime_agent_id,
+        "fake_provider",
+        "fake-model",
+    );
+}
+
+fn seed_agent_run_for_agent_with_provider(
+    repo_root: &std::path::Path,
+    project_id: &str,
+    run_id: &str,
+    runtime_agent_id: RuntimeAgentIdDto,
+    provider_id: &str,
+    model_id: &str,
+) {
     project_store::insert_agent_run(
         repo_root,
         &project_store::NewAgentRunRecord {
@@ -72,14 +90,164 @@ fn seed_agent_run_for_agent(
             project_id: project_id.into(),
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: run_id.into(),
-            provider_id: "fake_provider".into(),
-            model_id: "fake-model".into(),
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
             prompt: "Debug the continuity handoff.".into(),
             system_prompt: "system".into(),
             now: "2026-05-01T12:00:00Z".into(),
         },
     )
     .expect("seed agent run");
+}
+
+fn insert_handoff_comparison_manifest(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    manifest_id: &str,
+    provider_id: &str,
+    model_id: &str,
+    handoff_id: Option<&str>,
+    policy_reason_code: &str,
+    tool_names: &[&str],
+) {
+    project_store::insert_agent_context_manifest(
+        repo_root,
+        &project_store::NewAgentContextManifestRecord {
+            manifest_id: manifest_id.into(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: Some(run_id.into()),
+            runtime_agent_id: RuntimeAgentIdDto::Debug,
+            agent_definition_id: "debug".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            provider_id: Some(provider_id.into()),
+            model_id: Some(model_id.into()),
+            request_kind: project_store::AgentContextManifestRequestKind::ProviderTurn,
+            policy_action: project_store::AgentContextPolicyAction::ContinueNow,
+            policy_reason_code: policy_reason_code.into(),
+            budget_tokens: Some(10_000),
+            estimated_tokens: 200,
+            pressure: project_store::AgentContextBudgetPressure::Low,
+            context_hash: "c".repeat(64),
+            included_contributors: vec![project_store::AgentContextManifestContributorRecord {
+                contributor_id: format!("runtime-policy-{manifest_id}"),
+                kind: "policy".into(),
+                source_id: Some("xero".into()),
+                estimated_tokens: 200,
+                reason: Some(policy_reason_code.into()),
+            }],
+            excluded_contributors: Vec::new(),
+            retrieval_query_ids: Vec::new(),
+            retrieval_result_ids: Vec::new(),
+            compaction_id: None,
+            handoff_id: handoff_id.map(ToOwned::to_owned),
+            redaction_state: project_store::AgentContextRedactionState::Clean,
+            manifest: json!({
+                "policy": {
+                    "reasonCode": policy_reason_code
+                },
+                "toolDescriptors": tool_names
+                    .iter()
+                    .map(|name| json!({"name": name}))
+                    .collect::<Vec<_>>(),
+            }),
+            created_at: format!("2026-05-01T12:05:{:02}Z", tool_names.len()),
+        },
+    )
+    .expect("insert comparison manifest");
+}
+
+fn insert_handoff_reconciliation_bundle_record(
+    repo_root: &Path,
+    project_id: &str,
+    source_run_id: &str,
+    handoff_id: &str,
+    source_context_hash: &str,
+    record_id: &str,
+) {
+    project_store::insert_project_record(
+        repo_root,
+        &project_store::NewProjectRecordRecord {
+            record_id: record_id.into(),
+            project_id: project_id.into(),
+            record_kind: project_store::ProjectRecordKind::AgentHandoff,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            run_id: source_run_id.into(),
+            workflow_run_id: None,
+            workflow_step_id: None,
+            title: format!("Handoff bundle {handoff_id}"),
+            summary: "Recovered handoff bundle for reconciliation tests.".into(),
+            text: format!("Handoff bundle {handoff_id} captured durable context."),
+            content_json: Some(json!({
+                "schema": "xero.agent_handoff.bundle.v1",
+                "handoffId": handoff_id,
+                "sourceContextHash": source_context_hash,
+            })),
+            schema_name: Some("xero.agent_handoff.bundle.v1".into()),
+            schema_version: 1,
+            importance: project_store::ProjectRecordImportance::High,
+            confidence: Some(1.0),
+            tags: vec!["handoff".into(), "reconciliation".into()],
+            source_item_ids: vec![format!("agent_handoff_lineage:{handoff_id}")],
+            related_paths: Vec::new(),
+            produced_artifact_refs: Vec::new(),
+            redaction_state: project_store::ProjectRecordRedactionState::Clean,
+            visibility: project_store::ProjectRecordVisibility::Retrieval,
+            created_at: "2026-05-01T13:30:00Z".into(),
+        },
+    )
+    .expect("insert handoff bundle record");
+}
+
+fn insert_handoff_reconciliation_lineage(
+    repo_root: &Path,
+    project_id: &str,
+    handoff_id: &str,
+    source_run_id: &str,
+    source_context_hash: &str,
+    status: project_store::AgentHandoffLineageStatus,
+    handoff_record_id: Option<&str>,
+    target_run_id: Option<&str>,
+    bundle_target_run_id: Option<&str>,
+    target_agent_session_id: Option<&str>,
+) {
+    project_store::insert_agent_handoff_lineage(
+        repo_root,
+        &project_store::NewAgentHandoffLineageRecord {
+            handoff_id: handoff_id.into(),
+            project_id: project_id.into(),
+            source_agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            source_run_id: source_run_id.into(),
+            source_runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            source_agent_definition_id: "engineer".into(),
+            source_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            target_agent_session_id: target_agent_session_id.map(ToOwned::to_owned),
+            target_run_id: target_run_id.map(ToOwned::to_owned),
+            target_runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            target_agent_definition_id: "engineer".into(),
+            target_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            source_context_hash: source_context_hash.into(),
+            status,
+            idempotency_key: format!("{source_run_id}-{handoff_id}"),
+            handoff_record_id: handoff_record_id.map(ToOwned::to_owned),
+            bundle: json!({
+                "schema": "xero.agent_handoff.bundle.v1",
+                "handoffId": handoff_id,
+                "target": bundle_target_run_id.map(|run_id| json!({"runId": run_id})),
+            }),
+            diagnostic: None,
+            created_at: "2026-05-01T13:30:00Z".into(),
+            updated_at: "2026-05-01T13:30:00Z".into(),
+            completed_at: None,
+        },
+    )
+    .expect("insert reconciliation lineage");
 }
 
 fn controls_for_agent(runtime_agent_id: RuntimeAgentIdDto) -> RuntimeRunControlInputDto {
@@ -185,6 +353,7 @@ fn append_long_context_messages(repo_root: &Path, project_id: &str, run_id: &str
                 content: format!(
                     "Long context chunk {index}: keep same-type handoff source facts available. {long_context}"
                 ),
+                provider_metadata_json: None,
                 attachments: Vec::new(),
                 created_at: format!("2026-05-01T13:0{index}:00Z"),
             },
@@ -421,6 +590,177 @@ fn handoff_lineage_requires_same_type_and_deduplicates_by_idempotency_key() {
 }
 
 #[test]
+fn s50_handoff_comparison_diagnostics_distinguish_clean_and_drifted_targets() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+
+    seed_agent_run_for_agent_with_provider(
+        &repo_root,
+        &project_id,
+        "run-handoff-clean-source",
+        RuntimeAgentIdDto::Debug,
+        "fake_provider",
+        "fake-model",
+    );
+    seed_agent_run_for_agent_with_provider(
+        &repo_root,
+        &project_id,
+        "run-handoff-clean-target",
+        RuntimeAgentIdDto::Debug,
+        "fake_provider",
+        "fake-model",
+    );
+    project_store::insert_agent_handoff_lineage(
+        &repo_root,
+        &project_store::NewAgentHandoffLineageRecord {
+            handoff_id: "handoff-clean-comparison".into(),
+            project_id: project_id.clone(),
+            source_agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            source_run_id: "run-handoff-clean-source".into(),
+            source_runtime_agent_id: RuntimeAgentIdDto::Debug,
+            source_agent_definition_id: "debug".into(),
+            source_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            target_run_id: Some("run-handoff-clean-target".into()),
+            target_runtime_agent_id: RuntimeAgentIdDto::Debug,
+            target_agent_definition_id: "debug".into(),
+            target_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            source_context_hash: "d".repeat(64),
+            status: project_store::AgentHandoffLineageStatus::Completed,
+            idempotency_key: "handoff-clean-comparison-key".into(),
+            handoff_record_id: Some("handoff-clean-record".into()),
+            bundle: json!({"kind": "clean"}),
+            diagnostic: None,
+            created_at: "2026-05-01T12:20:00Z".into(),
+            updated_at: "2026-05-01T12:21:00Z".into(),
+            completed_at: Some("2026-05-01T12:21:00Z".into()),
+        },
+    )
+    .expect("insert clean handoff lineage");
+    insert_handoff_comparison_manifest(
+        &repo_root,
+        &project_id,
+        "run-handoff-clean-source",
+        "manifest-clean-source",
+        "fake_provider",
+        "fake-model",
+        None,
+        "same_policy",
+        &["project_context_read", "shell_run"],
+    );
+    insert_handoff_comparison_manifest(
+        &repo_root,
+        &project_id,
+        "run-handoff-clean-target",
+        "manifest-clean-target",
+        "fake_provider",
+        "fake-model",
+        Some("handoff-clean-comparison"),
+        "same_policy",
+        &["shell_run", "project_context_read"],
+    );
+
+    let clean_report = project_store::compare_agent_handoff_diagnostics(
+        &repo_root,
+        &project_id,
+        "handoff-clean-comparison",
+    )
+    .expect("compare clean handoff");
+    assert!(!clean_report.drift_detected);
+    assert!(clean_report.diagnostics.is_empty());
+
+    seed_agent_run_for_agent_with_provider(
+        &repo_root,
+        &project_id,
+        "run-handoff-drift-source",
+        RuntimeAgentIdDto::Debug,
+        "fake_provider",
+        "fake-model",
+    );
+    seed_agent_run_for_agent_with_provider(
+        &repo_root,
+        &project_id,
+        "run-handoff-drift-target",
+        RuntimeAgentIdDto::Debug,
+        "other_provider",
+        "other-model",
+    );
+    project_store::insert_agent_handoff_lineage(
+        &repo_root,
+        &project_store::NewAgentHandoffLineageRecord {
+            handoff_id: "handoff-drift-comparison".into(),
+            project_id: project_id.clone(),
+            source_agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            source_run_id: "run-handoff-drift-source".into(),
+            source_runtime_agent_id: RuntimeAgentIdDto::Debug,
+            source_agent_definition_id: "debug".into(),
+            source_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            target_agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+            target_run_id: Some("run-handoff-drift-target".into()),
+            target_runtime_agent_id: RuntimeAgentIdDto::Debug,
+            target_agent_definition_id: "debug".into(),
+            target_agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            provider_id: "fake_provider".into(),
+            model_id: "fake-model".into(),
+            source_context_hash: "e".repeat(64),
+            status: project_store::AgentHandoffLineageStatus::Completed,
+            idempotency_key: "handoff-drift-comparison-key".into(),
+            handoff_record_id: Some("handoff-drift-record".into()),
+            bundle: json!({"kind": "drift"}),
+            diagnostic: None,
+            created_at: "2026-05-01T12:22:00Z".into(),
+            updated_at: "2026-05-01T12:23:00Z".into(),
+            completed_at: Some("2026-05-01T12:23:00Z".into()),
+        },
+    )
+    .expect("insert drift handoff lineage");
+    insert_handoff_comparison_manifest(
+        &repo_root,
+        &project_id,
+        "run-handoff-drift-source",
+        "manifest-drift-source",
+        "fake_provider",
+        "fake-model",
+        None,
+        "source_policy",
+        &["project_context_read"],
+    );
+    insert_handoff_comparison_manifest(
+        &repo_root,
+        &project_id,
+        "run-handoff-drift-target",
+        "manifest-drift-target",
+        "other_provider",
+        "other-model",
+        Some("handoff-drift-comparison"),
+        "target_policy",
+        &["shell_run"],
+    );
+
+    let drift_report = project_store::compare_agent_handoff_diagnostics(
+        &repo_root,
+        &project_id,
+        "handoff-drift-comparison",
+    )
+    .expect("compare drifted handoff");
+    let drift_fields = drift_report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.field.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(drift_report.drift_detected);
+    assert!(drift_fields.contains(&"provider_id"));
+    assert!(drift_fields.contains(&"model_id"));
+    assert!(drift_fields.contains(&"target_manifest_provider_id"));
+    assert!(drift_fields.contains(&"target_manifest_model_id"));
+    assert!(drift_fields.contains(&"tool_policy"));
+    assert!(drift_fields.contains(&"context_policy"));
+}
+
+#[test]
 fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
@@ -638,10 +978,26 @@ fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
     )
     .expect("keyword fallback search");
     assert_eq!(fallback.method, "keyword_fallback");
+    let fallback_diagnostic = fallback.diagnostic.as_ref().expect("fallback diagnostic");
+    assert_eq!(fallback_diagnostic["degradedMode"], true);
+    assert_eq!(fallback_diagnostic["embeddingProvider"], "unavailable");
+    assert_eq!(
+        fallback_diagnostic["retrievalSemantics"],
+        "deterministic_lexical_fallback"
+    );
+    assert_eq!(
+        fallback_diagnostic["fallbackDiagnostics"]["method"],
+        "keyword_fallback"
+    );
     assert!(fallback
         .results
         .iter()
         .any(|result| result.source_id == "memory-fallback-approved"));
+    assert!(fallback.results.iter().all(|result| {
+        result.metadata["semanticStatus"] == "query_embedding_unavailable"
+            && result.metadata["retrievalMode"] == "deterministic_lexical_fallback"
+            && result.metadata["degradedModeReason"] == "embedding_service_unavailable"
+    }));
     let redacted = fallback
         .results
         .iter()
@@ -1294,6 +1650,40 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
             Some(target.run.run_id.as_str())
         );
         assert_eq!(lineage[0].bundle["schema"], "xero.agent_handoff.bundle.v1");
+        let target_manifests = project_store::list_agent_context_manifests_for_run(
+            &repo_root,
+            &project_id,
+            &target.run.run_id,
+        )
+        .expect("list handoff target manifests");
+        let handoff_manifest = target_manifests
+            .iter()
+            .find(|manifest| manifest.handoff_id.as_deref() == Some(lineage[0].handoff_id.as_str()))
+            .expect("target provider manifest references handoff lineage");
+        assert_eq!(
+            handoff_manifest.manifest["handoff"]["firstTurnContext"]
+                ["bundleDeliveredInDeveloperMessage"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            handoff_manifest.manifest["handoff"]["firstTurnContext"]
+                ["pendingPromptDeliveredInUserMessage"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            handoff_manifest.manifest["handoff"]["firstTurnContext"]["workingSetSummaryIncluded"]
+                .as_bool(),
+            Some(true)
+        );
+        assert!(
+            handoff_manifest.manifest["handoff"]["firstTurnContext"]
+                ["sourceCitedContinuityRecordCount"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
 
         let records = project_store::list_project_records(&repo_root, &project_id)
             .expect("list project records");
@@ -1534,4 +1924,198 @@ fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
         project_store::AgentRunStatus::HandedOff,
         "source run remains marked HandedOff after recovery"
     );
+}
+
+#[test]
+fn s48_handoff_reconciliation_recovers_bundle_target_and_source_marking_boundaries() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let (project_id, repo_root) = seed_project(&root);
+
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "s48-recorded-source",
+        RuntimeAgentIdDto::Engineer,
+    );
+    project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        "s48-recorded-source",
+        project_store::AgentRunStatus::Completed,
+        None,
+        "2026-05-01T13:31:00Z",
+    )
+    .expect("mark recorded source completed");
+    insert_handoff_reconciliation_bundle_record(
+        &repo_root,
+        &project_id,
+        "s48-recorded-source",
+        "s48-recorded-handoff",
+        &"f".repeat(64),
+        "s48-recorded-bundle-record",
+    );
+    insert_handoff_reconciliation_lineage(
+        &repo_root,
+        &project_id,
+        "s48-recorded-handoff",
+        "s48-recorded-source",
+        &"f".repeat(64),
+        project_store::AgentHandoffLineageStatus::Pending,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "s48-target-source",
+        RuntimeAgentIdDto::Engineer,
+    );
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "s48-target-run",
+        RuntimeAgentIdDto::Engineer,
+    );
+    project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        "s48-target-source",
+        project_store::AgentRunStatus::Completed,
+        None,
+        "2026-05-01T13:32:00Z",
+    )
+    .expect("mark target source completed");
+    insert_handoff_reconciliation_bundle_record(
+        &repo_root,
+        &project_id,
+        "s48-target-source",
+        "s48-target-handoff",
+        &"a".repeat(64),
+        "s48-target-bundle-record",
+    );
+    insert_handoff_reconciliation_lineage(
+        &repo_root,
+        &project_id,
+        "s48-target-handoff",
+        "s48-target-source",
+        &"a".repeat(64),
+        project_store::AgentHandoffLineageStatus::Recorded,
+        Some("s48-target-bundle-record"),
+        None,
+        Some("s48-target-run"),
+        None,
+    );
+
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "s48-completed-source",
+        RuntimeAgentIdDto::Engineer,
+    );
+    seed_agent_run_for_agent(
+        &repo_root,
+        &project_id,
+        "s48-completed-target",
+        RuntimeAgentIdDto::Engineer,
+    );
+    project_store::update_agent_run_status(
+        &repo_root,
+        &project_id,
+        "s48-completed-source",
+        project_store::AgentRunStatus::HandedOff,
+        None,
+        "2026-05-01T13:33:00Z",
+    )
+    .expect("mark completed source handed off");
+    insert_handoff_reconciliation_bundle_record(
+        &repo_root,
+        &project_id,
+        "s48-completed-source",
+        "s48-completed-handoff",
+        &"b".repeat(64),
+        "s48-completed-bundle-record",
+    );
+    insert_handoff_reconciliation_lineage(
+        &repo_root,
+        &project_id,
+        "s48-completed-handoff",
+        "s48-completed-source",
+        &"b".repeat(64),
+        project_store::AgentHandoffLineageStatus::TargetCreated,
+        Some("s48-completed-bundle-record"),
+        Some("s48-completed-target"),
+        Some("s48-completed-target"),
+        Some(project_store::DEFAULT_AGENT_SESSION_ID),
+    );
+
+    let report = project_store::reconcile_agent_handoff_lineage(
+        &repo_root,
+        &project_id,
+        "2026-05-01T13:40:00Z",
+    )
+    .expect("reconcile handoff crash boundaries");
+
+    assert_eq!(report.inspected_count, 3);
+    assert_eq!(report.repaired_count, 3);
+    assert_eq!(report.failed_count, 0);
+    let recorded = project_store::get_agent_handoff_lineage_by_handoff_id(
+        &repo_root,
+        &project_id,
+        "s48-recorded-handoff",
+    )
+    .expect("load recorded handoff")
+    .expect("recorded handoff exists");
+    assert_eq!(
+        recorded.status,
+        project_store::AgentHandoffLineageStatus::Recorded
+    );
+    assert_eq!(
+        recorded.handoff_record_id.as_deref(),
+        Some("s48-recorded-bundle-record")
+    );
+
+    let target_created = project_store::get_agent_handoff_lineage_by_handoff_id(
+        &repo_root,
+        &project_id,
+        "s48-target-handoff",
+    )
+    .expect("load target-created handoff")
+    .expect("target-created handoff exists");
+    assert_eq!(
+        target_created.status,
+        project_store::AgentHandoffLineageStatus::TargetCreated
+    );
+    assert_eq!(
+        target_created.target_run_id.as_deref(),
+        Some("s48-target-run")
+    );
+    assert_eq!(
+        target_created.target_agent_session_id.as_deref(),
+        Some(project_store::DEFAULT_AGENT_SESSION_ID)
+    );
+
+    let completed = project_store::get_agent_handoff_lineage_by_handoff_id(
+        &repo_root,
+        &project_id,
+        "s48-completed-handoff",
+    )
+    .expect("load completed handoff")
+    .expect("completed handoff exists");
+    assert_eq!(
+        completed.status,
+        project_store::AgentHandoffLineageStatus::Completed
+    );
+    assert!(completed.completed_at.is_some());
+
+    let completed_steps = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.handoff_id == "s48-completed-handoff")
+        .expect("completed diagnostic")
+        .repaired_steps
+        .clone();
+    assert_eq!(completed_steps, vec!["status".to_string()]);
 }

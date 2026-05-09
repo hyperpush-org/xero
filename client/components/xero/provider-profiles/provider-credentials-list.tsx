@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener"
 import {
   Activity,
   AlertCircle,
+  BrainCircuit,
   Check,
   ChevronDown,
   Cloud,
@@ -66,6 +67,7 @@ const PROVIDER_ICON_BY_ID: Record<SupportedProviderId, ElementType> = {
   anthropic: AnthropicIcon,
   github_models: GitHubIcon,
   openai_api: OpenAIIcon,
+  deepseek: BrainCircuit,
   ollama: Server,
   azure_openai: OpenAIIcon,
   gemini_ai_studio: GoogleIcon,
@@ -91,6 +93,7 @@ function isSupportedProviderId(value: string | null | undefined): value is Suppo
     value === "anthropic" ||
     value === "github_models" ||
     value === "openai_api" ||
+    value === "deepseek" ||
     value === "ollama" ||
     value === "azure_openai" ||
     value === "gemini_ai_studio" ||

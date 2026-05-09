@@ -9,6 +9,7 @@ import {
   RUNTIME_AGENT_DESCRIPTORS,
   runtimeAgentIsSelectableForProjectOrigin,
   runtimeAgentIdSchema,
+  runtimeProviderIdSchema,
   runtimeRunSchema,
   startRuntimeRunRequestSchema,
   updateRuntimeRunControlsRequestSchema,
@@ -68,6 +69,10 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
 }
 
 describe('runtime run control schemas', () => {
+  it('accepts DeepSeek as a first-party runtime provider id', () => {
+    expect(runtimeProviderIdSchema.parse('deepseek')).toBe('deepseek')
+  })
+
   it('registers built-in runtime agents as descriptor-backed entries', () => {
     expect(runtimeAgentIdSchema.parse('debug')).toBe('debug')
     expect(runtimeAgentIdSchema.parse('plan')).toBe('plan')

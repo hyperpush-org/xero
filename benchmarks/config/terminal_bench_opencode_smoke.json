@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "benchmark": {
+    "name": "terminal-bench",
+    "datasetId": "terminal-bench@2.0",
+    "mode": "fixed-model"
+  },
+  "model": {
+    "provider": "openai_api",
+    "modelId": "gpt-5.4",
+    "temperature": 0,
+    "reasoningEffort": "medium",
+    "maxOutputTokens": 16384,
+    "contextBudget": 128000,
+    "credentialEnv": "OPENAI_API_KEY",
+    "endpointClass": "openai-compatible",
+    "providerAccountClass": "standard"
+  },
+  "limits": {
+    "wallTimeSeconds": 3600,
+    "maxTurns": 32,
+    "maxToolCalls": 256,
+    "maxCommandCalls": 128,
+    "maxCostUsd": 25,
+    "attempts": 1,
+    "concurrency": 1,
+    "approvalMode": "strict",
+    "sandboxPolicy": "harbor_task_sandbox",
+    "networkPolicy": "harbor_controlled"
+  },
+  "taskSets": {
+    "adapter-smoke": {
+      "description": "One or two cheap tasks used only to validate Xero adapter plumbing.",
+      "taskIds": []
+    },
+    "comparison-smoke": {
+      "description": "Predeclared five-to-ten task fixed-model smoke set. Fill with resolved Terminal-Bench 2.0 ids during preflight before any paid comparison run.",
+      "taskIds": []
+    },
+    "full-terminal-bench-2": {
+      "description": "Full Terminal-Bench 2.0 task set resolved by Harbor.",
+      "taskIds": []
+    }
+  },
+  "harnesses": {
+    "xero": {
+      "kind": "harbor-installed-agent",
+      "agentImportPath": "benchmarks.harbor_agents.xero:XeroInstalledAgent",
+      "adapterVersion": "xero-terminal-bench-harbor-adapter.v1",
+      "xeroCliPathEnv": "XERO_CLI_PATH"
+    },
+    "opencode": {
+      "preferredKind": "harbor-built-in",
+      "agentName": "opencode",
+      "fallbackImportPath": "benchmarks.harbor_agents.opencode_fallback:OpenCodeFallbackAgent"
+    }
+  },
+  "reporting": {
+    "confidenceInterval": "wilson",
+    "primaryMetric": "pass@1",
+    "redactArtifactsByDefault": true
+  }
+}

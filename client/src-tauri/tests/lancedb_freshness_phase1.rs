@@ -1348,7 +1348,13 @@ fn lancedb_freshness_phase1_retrieval_results_include_score_trust_citation_and_l
         assert!(result.metadata["keywordScore"].is_number());
         assert!(result.metadata["vectorScore"].is_number());
         assert!(result.metadata["scoreBreakdown"]["freshnessAdjustment"].is_number());
+        assert!(result.metadata["scoreBreakdown"]["trustAdjustment"].is_number());
+        assert!(result.metadata["trustScore"].is_number());
+        assert!(result.metadata["trustStatus"].is_string());
+        assert_eq!(result.metadata["contradictionState"], "none");
         assert!(result.metadata["freshness"]["state"].is_string());
+        assert!(result.metadata["trust"]["trustScore"].is_number());
+        assert!(result.metadata["trust"]["rankingAdjustment"].is_number());
         assert!(result.metadata["trust"]["sourceItemIds"].is_array());
         assert_eq!(result.metadata["citation"]["sourceId"], source_id);
     }

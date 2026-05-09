@@ -987,6 +987,11 @@ impl AutonomousPolicyAdapter {
             tool_name: call.tool_name.clone(),
             input: call.input.clone(),
         };
+        ensure_tool_capabilities_not_revoked(
+            &self.shared.repo_root,
+            &self.shared.project_id,
+            &tool_call.tool_name,
+        )?;
         let request = self.shared.legacy_registry.decode_call(&tool_call)?;
         let input_sha256 = sha256_json(&tool_call.input)?;
         let operator_approved = self
@@ -1051,6 +1056,59 @@ impl ToolPolicy for AutonomousPolicyAdapter {
                 }
             }
         }
+    }
+}
+
+fn ensure_tool_capabilities_not_revoked(
+    repo_root: &Path,
+    project_id: &str,
+    tool_name: &str,
+) -> CommandResult<()> {
+    for (subject_kind, subject_id) in tool_revocation_subjects(tool_name) {
+        project_store::ensure_agent_capability_not_revoked(
+            repo_root,
+            project_id,
+            subject_kind,
+            &subject_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn tool_revocation_subjects(tool_name: &str) -> Vec<(&'static str, String)> {
+    let mut subjects = Vec::new();
+    for pack_id in xero_agent_core::domain_tool_pack_ids_for_tool(tool_name) {
+        push_tool_revocation_subject(&mut subjects, "tool_pack", pack_id);
+    }
+    match tool_effect_class(tool_name) {
+        AutonomousToolEffectClass::BrowserControl => {
+            push_tool_revocation_subject(&mut subjects, "browser_control", "browser_control");
+            push_tool_revocation_subject(&mut subjects, "browser_control", tool_name);
+        }
+        AutonomousToolEffectClass::ExternalService => {
+            push_tool_revocation_subject(&mut subjects, "external_integration", "external_service");
+            push_tool_revocation_subject(&mut subjects, "external_integration", tool_name);
+        }
+        AutonomousToolEffectClass::DestructiveWrite => {
+            push_tool_revocation_subject(&mut subjects, "destructive_write", "destructive_write");
+            push_tool_revocation_subject(&mut subjects, "destructive_write", tool_name);
+        }
+        _ => {}
+    }
+    subjects
+}
+
+fn push_tool_revocation_subject(
+    subjects: &mut Vec<(&'static str, String)>,
+    subject_kind: &'static str,
+    subject_id: impl Into<String>,
+) {
+    let subject_id = subject_id.into();
+    if !subjects
+        .iter()
+        .any(|(kind, id)| *kind == subject_kind && id == &subject_id)
+    {
+        subjects.push((subject_kind, subject_id));
     }
 }
 
@@ -1343,6 +1401,14 @@ fn persist_tool_dispatch_success(
         ok: true,
         summary: success.summary,
         output: success.output,
+        persistence: Some(AgentToolResultPersistenceMetadata {
+            persisted_full: !success.truncation.was_truncated,
+            persisted_artifact: None,
+            registry_truncated: success.truncation.was_truncated,
+            original_bytes: success.truncation.original_bytes,
+            persisted_bytes: success.truncation.returned_bytes,
+            omitted_bytes: success.truncation.omitted_bytes,
+        }),
         parent_assistant_message_id: None,
     })
 }
@@ -1746,4 +1812,149 @@ fn finish_failed_tool_call_with_dispatch(
         payload,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{fs, path::Path};
+
+    use rusqlite::{params, Connection};
+
+    use crate::db::{
+        configure_connection, migrations::migrations, register_project_database_path_for_tests,
+    };
+
+    fn create_project_database(repo_root: &Path, project_id: &str) {
+        let database_path = repo_root
+            .parent()
+            .expect("repo parent")
+            .join("app-data")
+            .join("projects")
+            .join(project_id)
+            .join("state.db");
+        fs::create_dir_all(database_path.parent().expect("database parent"))
+            .expect("create database dir");
+        let mut connection = Connection::open(&database_path).expect("open database");
+        configure_connection(&connection).expect("configure database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+        register_project_database_path_for_tests(repo_root, database_path);
+    }
+
+    #[test]
+    fn s53_runtime_dispatch_revocations_block_non_custom_capability_subjects() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let revoked_subjects = [
+            ("tool_pack", "browser", AUTONOMOUS_TOOL_BROWSER_OBSERVE),
+            (
+                "browser_control",
+                "browser_control",
+                AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            ),
+            (
+                "external_integration",
+                "external_service",
+                AUTONOMOUS_TOOL_WEB_FETCH,
+            ),
+            (
+                "destructive_write",
+                "destructive_write",
+                AUTONOMOUS_TOOL_DELETE,
+            ),
+        ];
+
+        for (index, (subject_kind, subject_id, tool_name)) in revoked_subjects.iter().enumerate() {
+            let repo_root = tempdir.path().join(format!("repo-{index}"));
+            fs::create_dir_all(&repo_root).expect("create repo root");
+            let project_id = format!("project-runtime-capability-revocation-{index}");
+            create_project_database(&repo_root, &project_id);
+            project_store::revoke_agent_capability(
+                &repo_root,
+                &project_store::NewAgentCapabilityRevocationRecord {
+                    revocation_id: project_store::agent_capability_revocation_id(
+                        &project_id,
+                        subject_kind,
+                        subject_id,
+                    ),
+                    project_id: project_id.clone(),
+                    subject_kind: (*subject_kind).into(),
+                    subject_id: (*subject_id).into(),
+                    scope: json!({ "testIndex": index }),
+                    reason: format!("Disable {subject_kind}:{subject_id} during dispatch."),
+                    created_by: "test-user".into(),
+                    created_at: format!("2026-05-09T00:{index:02}:00Z"),
+                },
+            )
+            .expect("revoke capability");
+            let error = ensure_tool_capabilities_not_revoked(&repo_root, &project_id, tool_name)
+                .expect_err("revoked capability blocks dispatch subject");
+            assert_eq!(error.code, "agent_capability_revoked");
+            assert!(error.message.contains(subject_kind));
+            assert!(error.message.contains(subject_id));
+            let audit_events = project_store::list_agent_runtime_audit_events_for_subject(
+                &repo_root,
+                &project_id,
+                subject_kind,
+                subject_id,
+            )
+            .expect("list revocation audit events");
+            assert!(audit_events.iter().any(|event| {
+                event.action_kind == "capability_revoked"
+                    && event.payload["permission"]["schema"]
+                        == json!("xero.capability_permission_explanation.v1")
+            }));
+
+            if *subject_kind == "external_integration" {
+                let external_revocation_id = project_store::agent_capability_revocation_id(
+                    &project_id,
+                    "external_integration",
+                    "external_service",
+                );
+                project_store::clear_agent_capability_revocation(
+                    &repo_root,
+                    &project_id,
+                    &external_revocation_id,
+                    "2026-05-09T00:10:00Z",
+                )
+                .expect("clear external revocation");
+                ensure_tool_capabilities_not_revoked(
+                    &repo_root,
+                    &project_id,
+                    AUTONOMOUS_TOOL_WEB_FETCH,
+                )
+                .expect("cleared revocation allows new external integration calls");
+                let external_audit = project_store::list_agent_runtime_audit_events_for_subject(
+                    &repo_root,
+                    &project_id,
+                    "external_integration",
+                    "external_service",
+                )
+                .expect("list cleared revocation audit events");
+                assert!(external_audit
+                    .iter()
+                    .any(|event| event.action_kind == "capability_revoked"));
+                assert!(external_audit
+                    .iter()
+                    .any(|event| event.action_kind == "capability_revocation_cleared"));
+            }
+        }
+    }
 }

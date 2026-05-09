@@ -33,6 +33,7 @@ export const runtimeProviderIdSchema = z.enum([
   'anthropic',
   'github_models',
   'openai_api',
+  'deepseek',
   'ollama',
   'azure_openai',
   'gemini_ai_studio',
@@ -70,7 +71,7 @@ export interface RuntimeAgentDescriptor {
   description: string
   taskPurpose: string
   scope: 'built_in' | 'global_custom' | 'project_custom'
-  lifecycleState: 'draft' | 'active' | 'archived'
+  lifecycleState: 'draft' | 'valid' | 'active' | 'archived' | 'blocked'
   baseCapabilityProfile:
     | 'observe_only'
     | 'planning'

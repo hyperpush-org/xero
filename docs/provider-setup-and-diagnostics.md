@@ -11,8 +11,9 @@ Use the first-class provider presets when your provider is listed directly in Pr
 | OpenAI Codex | OAuth | Sign in from Providers or runtime bind. Xero stores a redacted app-local session link rather than a checked-in token. |
 | OpenRouter | API key | Add an app-local key, choose a model, then run Check connection for live catalog and reachability diagnostics. |
 | Anthropic | API key | Add an app-local Anthropic key. Manual model entry remains available if catalog discovery is unavailable. |
+| DeepSeek | API key | Add an app-local DeepSeek key. Xero uses the hosted `https://api.deepseek.com` endpoint, live `/models` discovery, and DeepSeek V4 reasoning replay metadata. |
 | GitHub Models | API token | Add a GitHub token in Providers settings. Device-flow onboarding is intentionally out of scope for this phase. |
-| OpenAI-compatible | API key or custom endpoint | Use for OpenAI, LiteLLM, Mistral, hosted compatible gateways, and custom `/v1` routes. |
+| OpenAI-compatible | API key or custom endpoint | Use for OpenAI, LiteLLM, Mistral, hosted compatible gateways, and custom `/v1` routes that do not have a first-class provider preset. |
 | Ollama | Local | Start Ollama and use the default local endpoint or an edited local base URL. No placeholder API key is stored. |
 | Azure OpenAI | API key | Use for deployment URLs that need Azure `api-version` metadata. Model ID should match the deployment name. |
 | Gemini AI Studio | API key | Add an app-local Gemini key and use the built-in Gemini runtime path. |
@@ -32,7 +33,6 @@ The Providers settings surface includes recipe metadata that saves through the e
 | Mistral | `https://api.mistral.ai/v1` | Required | Live or manual |
 | Groq | `https://api.groq.com/openai/v1` | Required | Live or manual |
 | Together AI | `https://api.together.xyz/v1` | Required | Live or manual |
-| DeepSeek | `https://api.deepseek.com/v1` | Required | Live or manual |
 | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | Required | Live or manual |
 | MiniMax | `https://api.minimax.io/v1` | Required | Live or manual |
 | Azure AI Foundry | User supplied | Required | Manual |
@@ -42,6 +42,8 @@ The Providers settings surface includes recipe metadata that saves through the e
 Hosted recipes require an app-local API key unless the recipe explicitly marks the key optional. Local recipes such as LM Studio and Atomic Chat local do not store placeholder keys. If a local server uses a different port, update the base URL before saving the profile.
 
 Azure AI Foundry uses the OpenAI-compatible endpoint route. If the endpoint is an Azure OpenAI deployment URL that requires `api-version` metadata, use the dedicated Azure OpenAI preset instead.
+
+DeepSeek is now a first-class provider, not an OpenAI-compatible recipe. Hosted DeepSeek uses OpenAI-style chat completions and tool calls through `https://api.deepseek.com`; local/self-hosted DeepSeek DSML prompt encoding is a separate protocol path and is not mixed into the hosted adapter.
 
 ## GitHub Models Onboarding
 

@@ -27,7 +27,7 @@ use super::runtime_support::{
 };
 
 #[tauri::command]
-pub fn update_runtime_run_controls<R: Runtime + 'static>(
+pub async fn update_runtime_run_controls<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: UpdateRuntimeRunControlsRequestDto,
@@ -36,7 +36,25 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     validate_non_empty(&request.run_id, "runId")?;
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        update_runtime_run_controls_blocking(app, state, request)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "runtime_run_update_controls_task_failed",
+            format!("Xero could not finish background runtime-run control work: {error}"),
+        )
+    })?
+}
+
+fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    request: UpdateRuntimeRunControlsRequestDto,
+) -> CommandResult<RuntimeRunDto> {
+    let repo_root = resolve_project_root(&app, &state, &request.project_id)?;
     let before =
         load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?;
     let Some(existing) = before.as_ref() else {
@@ -62,7 +80,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
     if existing.run.supervisor_kind != crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
         let outcome = launch_or_reconnect_runtime_run(
             &app,
-            state.inner(),
+            &state,
             &request.project_id,
             &request.agent_session_id,
             request.controls.clone(),
@@ -97,7 +115,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         &Some(after.clone()),
     )?;
     if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
-        let agent_core = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
+        let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
         if agent_core.is_active(&after.run.run_id)? {
             return Err(CommandError::user_fixable(
                 "agent_run_already_active",
@@ -110,7 +128,7 @@ pub fn update_runtime_run_controls<R: Runtime + 'static>(
         mark_existing_agent_run_accepted(&repo_root, &after)?;
         spawn_owned_runtime_prompt_drive(
             app.clone(),
-            state.inner().clone(),
+            state.clone(),
             repo_root.clone(),
             after.clone(),
             prompt,

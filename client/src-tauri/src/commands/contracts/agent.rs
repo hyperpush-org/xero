@@ -591,8 +591,10 @@ pub enum AgentDefinitionScopeDto {
 #[serde(rename_all = "snake_case")]
 pub enum AgentDefinitionLifecycleStateDto {
     Draft,
+    Valid,
     Active,
     Archived,
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -674,6 +676,15 @@ pub struct UpdateAgentDefinitionRequestDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreviewAgentDefinitionRequestDto {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_id: Option<String>,
+    pub definition: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentDefinitionValidationStatusDto {
     Valid,
@@ -719,6 +730,15 @@ pub struct GetAgentDefinitionVersionRequestDto {
     pub project_id: String,
     pub definition_id: String,
     pub version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetAgentDefinitionVersionDiffRequestDto {
+    pub project_id: String,
+    pub definition_id: String,
+    pub from_version: u32,
+    pub to_version: u32,
 }
 
 pub fn agent_definition_summary_dto(record: AgentDefinitionRecord) -> AgentDefinitionSummaryDto {
@@ -781,7 +801,9 @@ fn parse_agent_definition_scope(value: &str) -> AgentDefinitionScopeDto {
 fn parse_agent_definition_lifecycle_state(value: &str) -> AgentDefinitionLifecycleStateDto {
     match value {
         "draft" => AgentDefinitionLifecycleStateDto::Draft,
+        "valid" => AgentDefinitionLifecycleStateDto::Valid,
         "archived" => AgentDefinitionLifecycleStateDto::Archived,
+        "blocked" => AgentDefinitionLifecycleStateDto::Blocked,
         _ => AgentDefinitionLifecycleStateDto::Active,
     }
 }

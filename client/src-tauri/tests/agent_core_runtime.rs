@@ -653,6 +653,7 @@ fn append_auto_compact_fixture_messages(
                     "auto compact fixture message {index}: {}",
                     "x".repeat(chars_per_message)
                 ),
+                provider_metadata_json: None,
                 created_at: format!("{timestamp_minute}:{:02}Z", index + 3),
                 attachments: Vec::new(),
             },
@@ -1343,6 +1344,14 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         read.input_schema["properties"]["startLine"]["type"],
         "integer"
     );
+    let find = registry.descriptor("find").expect("find descriptor");
+    assert_eq!(find.input_schema["type"], "object");
+    assert_eq!(find.input_schema["additionalProperties"], false);
+    assert_eq!(find.input_schema["required"], json!(["pattern"]));
+    assert_eq!(
+        find.input_schema["properties"]["maxDepth"]["type"],
+        "integer"
+    );
 
     let git_diff = registry
         .descriptor("git_diff")
@@ -1452,6 +1461,44 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
             input: json!({ "path": "src/tracked.txt", "startLine": 1, "lineCount": 40 }),
         })
         .expect("valid read call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-find-depth".into(),
+            tool_name: "find".into(),
+            input: json!({ "pattern": "**/*.rs", "path": ".", "maxDepth": 1 }),
+        })
+        .expect("valid depth-bounded find call should decode");
+
+    let mut find_descriptor = registry
+        .descriptors_v2()
+        .into_iter()
+        .find(|descriptor| descriptor.name == "find")
+        .expect("find descriptor v2");
+    find_descriptor.approval_requirement = ToolApprovalRequirement::Never;
+    find_descriptor.sandbox_requirement = ToolSandboxRequirement::None;
+    let mut registry_v2 = ToolRegistryV2::new();
+    registry_v2
+        .register(StaticToolHandler::new(
+            find_descriptor,
+            |_context, _call| Ok(ToolHandlerOutput::new("ok", json!({ "accepted": true }))),
+        ))
+        .expect("register find descriptor");
+    let strict_find = registry_v2.dispatch_call(
+        ToolCallInput {
+            tool_call_id: "strict-find-depth".into(),
+            tool_name: "find".into(),
+            input: json!({ "pattern": "**/*.rs", "path": ".", "maxDepth": 1 }),
+        },
+        &mut xero_agent_core::ToolBudgetTracker::new(ToolBudget::default()),
+        &ToolDispatchConfig::default(),
+    );
+    assert!(
+        matches!(
+            strict_find,
+            xero_agent_core::ToolDispatchOutcome::Succeeded(_)
+        ),
+        "strict v2 registry should accept find maxDepth input: {strict_find:#?}"
+    );
 
     let unknown = registry
         .validate_call(&AgentToolCall {
@@ -3168,6 +3215,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             run_id: run_id.into(),
             role: db::project_store::AgentMessageRole::System,
             content: "You are Xero.".into(),
+            provider_metadata_json: None,
             created_at: "2026-04-26T18:00:01Z".into(),
             attachments: Vec::new(),
         },
@@ -3180,6 +3228,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
             run_id: run_id.into(),
             role: db::project_store::AgentMessageRole::User,
             content: "Prepare an auto-compact failure source.".into(),
+            provider_metadata_json: None,
             created_at: "2026-04-26T18:00:02Z".into(),
             attachments: Vec::new(),
         },
@@ -4558,7 +4607,7 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
     let app = build_mock_app(create_state(&root));
     let (project_id, _repo_root) = seed_project(&root, &app);
 
-    let runtime_run = start_runtime_run(
+    let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
         app.handle().clone(),
         app.state::<DesktopState>(),
         StartRuntimeRunRequestDto {
@@ -4568,7 +4617,7 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
             initial_prompt: None,
             initial_attachments: Vec::new(),
         },
-    )
+    ))
     .expect("start runtime run should create owned agent runtime");
 
     assert_eq!(runtime_run.runtime_kind, "owned_agent");
@@ -4591,7 +4640,7 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
 
-    let runtime_run = start_runtime_run(
+    let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
         app.handle().clone(),
         app.state::<DesktopState>(),
         StartRuntimeRunRequestDto {
@@ -4601,7 +4650,7 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             initial_attachments: Vec::new(),
         },
-    )
+    ))
     .expect("start runtime run should execute owned agent task from initial prompt");
 
     let agent_run = wait_for_agent_run_status(
@@ -4627,7 +4676,7 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
     let (project_id, repo_root) = seed_project(&root, &app);
     let agent_session_id = db::project_store::DEFAULT_AGENT_SESSION_ID.to_string();
 
-    let runtime_run = start_runtime_run(
+    let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
         app.handle().clone(),
         app.state::<DesktopState>(),
         StartRuntimeRunRequestDto {
@@ -4637,7 +4686,7 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
             initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             initial_attachments: Vec::new(),
         },
-    )
+    ))
     .expect("start runtime run should execute owned agent task from initial prompt");
 
     wait_for_agent_run_status(
@@ -4675,7 +4724,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
 
-    let runtime_run = start_runtime_run(
+    let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
         app.handle().clone(),
         app.state::<DesktopState>(),
         StartRuntimeRunRequestDto {
@@ -4685,10 +4734,10 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             initial_prompt: None,
             initial_attachments: Vec::new(),
         },
-    )
+    ))
     .expect("start runtime run should create owned agent runtime");
 
-    let updated = update_runtime_run_controls(
+    let updated = tauri::async_runtime::block_on(update_runtime_run_controls(
         app.handle().clone(),
         app.state::<DesktopState>(),
         UpdateRuntimeRunControlsRequestDto {
@@ -4700,7 +4749,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             attachments: Vec::new(),
             auto_compact: None,
         },
-    )
+    ))
     .expect("runtime prompt should start owned agent run");
     assert_eq!(updated.run_id, runtime_run.run_id);
 
@@ -4716,7 +4765,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
     }));
     wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
 
-    update_runtime_run_controls(
+    tauri::async_runtime::block_on(update_runtime_run_controls(
         app.handle().clone(),
         app.state::<DesktopState>(),
         UpdateRuntimeRunControlsRequestDto {
@@ -4728,7 +4777,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             attachments: Vec::new(),
             auto_compact: None,
         },
-    )
+    ))
     .expect("runtime prompt should continue owned agent run");
 
     let continued = wait_for_agent_run_status(

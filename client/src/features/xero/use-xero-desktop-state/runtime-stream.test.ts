@@ -4,6 +4,7 @@ import {
   ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
   attachRuntimeStreamSubscription,
   createRuntimeStreamEventBuffer,
+  createRuntimeRunUpdateBuffer,
   mergeRuntimeStreamEvents,
   RUNTIME_STREAM_BATCH_WINDOW_MS,
 } from './runtime-stream'
@@ -16,7 +17,7 @@ import {
   type RuntimeStreamToolItemView,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
-import type { RuntimeSessionView } from '@/src/lib/xero-model/runtime'
+import type { RuntimeRunDto, RuntimeRunView, RuntimeSessionView } from '@/src/lib/xero-model/runtime'
 import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 
 function makeRuntimeStreamEvent(
@@ -160,6 +161,143 @@ function makeRuntimeSession(): RuntimeSessionView {
     isFailed: false,
   }
 }
+
+function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {}): RuntimeRunDto {
+  return {
+    projectId,
+    agentSessionId: 'agent-session-main',
+    runId: `run-${projectId}`,
+    runtimeKind: 'openai_codex',
+    providerId: 'openai_codex',
+    supervisorKind: 'owned_agent',
+    status: 'running',
+    transport: {
+      kind: 'internal',
+      endpoint: 'xero://owned-agent',
+      liveness: 'reachable',
+    },
+    controls: {
+      active: {
+        providerProfileId: 'openai_codex-default',
+        runtimeAgentId: 'ask',
+        modelId: 'openai_codex',
+        thinkingEffort: 'medium',
+        approvalMode: 'suggest',
+        planModeRequired: false,
+        revision: 1,
+        appliedAt: '2026-04-15T20:00:00Z',
+      },
+      pending: null,
+    },
+    startedAt: '2026-04-15T20:00:00Z',
+    lastHeartbeatAt: '2026-04-15T20:00:05Z',
+    lastCheckpointSequence: 1,
+    lastCheckpointAt: '2026-04-15T20:00:06Z',
+    stoppedAt: null,
+    lastErrorCode: null,
+    lastError: null,
+    updatedAt: '2026-04-15T20:00:06Z',
+    checkpoints: [
+      {
+        sequence: 1,
+        kind: 'bootstrap',
+        summary: 'Owned agent runtime started.',
+        createdAt: '2026-04-15T20:00:01Z',
+      },
+    ],
+    ...overrides,
+  }
+}
+
+describe('runtime run metadata coalescing', () => {
+  it('applies only the latest runtime-run update in a burst', () => {
+    let scheduledFlush: (() => void) | null = null
+    const cancelScheduledFlush = vi.fn()
+    const applyRuntimeRunUpdate = vi.fn(
+      (_projectId: string, runtimeRun: RuntimeRunView | null) => runtimeRun,
+    )
+    const setRefreshSource = vi.fn()
+    const setErrorMessage = vi.fn()
+    const buffer = createRuntimeRunUpdateBuffer({
+      activeProjectIdRef: { current: 'project-1' },
+      applyRuntimeRunUpdate,
+      setRefreshSource,
+      setErrorMessage,
+      scheduleFlush: (callback) => {
+        scheduledFlush = callback
+        return cancelScheduledFlush
+      },
+    })
+
+    buffer.enqueue({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      run: makeRuntimeRun('project-1', {
+        lastCheckpointSequence: 1,
+        updatedAt: '2026-04-15T20:00:06Z',
+      }),
+    })
+    buffer.enqueue({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      run: makeRuntimeRun('project-1', {
+        lastCheckpointSequence: 2,
+        updatedAt: '2026-04-15T20:00:07Z',
+        checkpoints: [
+          {
+            sequence: 2,
+            kind: 'state',
+            summary: 'Preparing tools and context.',
+            createdAt: '2026-04-15T20:00:07Z',
+          },
+        ],
+      }),
+    })
+
+    expect(applyRuntimeRunUpdate).not.toHaveBeenCalled()
+    const flush = scheduledFlush as (() => void) | null
+    flush?.()
+
+    expect(cancelScheduledFlush).toHaveBeenCalledTimes(1)
+    expect(applyRuntimeRunUpdate).toHaveBeenCalledTimes(1)
+    expect(applyRuntimeRunUpdate.mock.calls[0]?.[0]).toBe('project-1')
+    expect(applyRuntimeRunUpdate.mock.calls[0]?.[1]?.lastCheckpointSequence).toBe(2)
+    expect(setRefreshSource).toHaveBeenCalledWith('runtime_run:updated')
+    expect(setErrorMessage).toHaveBeenCalledWith(null)
+  })
+
+  it('keeps background project runtime-run updates off active refresh state', () => {
+    let scheduledFlush: (() => void) | null = null
+    const applyRuntimeRunUpdate = vi.fn(
+      (_projectId: string, runtimeRun: RuntimeRunView | null) => runtimeRun,
+    )
+    const setRefreshSource = vi.fn()
+    const setErrorMessage = vi.fn()
+    const buffer = createRuntimeRunUpdateBuffer({
+      activeProjectIdRef: { current: 'project-1' },
+      applyRuntimeRunUpdate,
+      setRefreshSource,
+      setErrorMessage,
+      scheduleFlush: (callback) => {
+        scheduledFlush = callback
+        return vi.fn()
+      },
+    })
+
+    buffer.enqueue({
+      projectId: 'project-2',
+      agentSessionId: 'agent-session-main',
+      run: makeRuntimeRun('project-2'),
+    })
+
+    const flush = scheduledFlush as (() => void) | null
+    flush?.()
+
+    expect(applyRuntimeRunUpdate).toHaveBeenCalledTimes(1)
+    expect(setRefreshSource).not.toHaveBeenCalled()
+    expect(setErrorMessage).not.toHaveBeenCalled()
+  })
+})
 
 describe('runtime stream event coalescing', () => {
   it('flushes non-urgent stream items in one buffered update', () => {

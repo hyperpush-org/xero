@@ -798,6 +798,16 @@ pub struct ListSessionMemoriesResponseDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetSessionMemoryReviewQueueRequestDto {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExtractSessionMemoryCandidatesRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
@@ -826,6 +836,24 @@ pub struct UpdateSessionMemoryRequestDto {
     pub review_state: Option<SessionMemoryReviewStateDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorrectSessionMemoryRequestDto {
+    pub project_id: String,
+    pub memory_id: String,
+    pub corrected_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CorrectSessionMemoryResponseDto {
+    pub schema: String,
+    pub project_id: String,
+    pub original_memory: SessionMemoryRecordDto,
+    pub corrected_memory: SessionMemoryRecordDto,
+    pub ui_deferred: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1066,7 +1094,7 @@ pub fn run_transcript_from_agent_snapshot(
                 kind: SessionTranscriptItemKindDto::Message,
                 actor: actor_from_message_role(&message.role),
                 title: Some(format!("{:?} message", message.role)),
-                text: Some(text),
+                text: non_empty_optional_text(text),
                 summary: None,
                 tool_call_id: None,
                 tool_name: None,
@@ -1609,6 +1637,8 @@ pub fn approved_memory_context_contributors(
 const DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS: u64 = 4_096;
 const DEFAULT_CONTEXT_LIMIT_SAFETY_RESERVE_PERCENT: u64 = 15;
 const OPENAI_CODEX_CONTEXT_WINDOW_TOKENS: u64 = 272_000;
+const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u64 = 1_000_000;
+const DEEPSEEK_V4_MAX_OUTPUT_TOKENS: u64 = 384_000;
 
 pub fn context_budget(
     estimated_tokens: u64,
@@ -1677,11 +1707,12 @@ pub fn resolve_context_limit(
         return unknown_context_limit_resolution(provider_id, model_id);
     }
 
-    if let Some(window) = built_in_context_window_tokens(&provider, &model) {
-        return context_limit_resolution(
+    if let Some((window, max_output_tokens)) = built_in_context_limits(&provider, &model) {
+        return context_limit_resolution_with_output(
             provider_id,
             model_id,
             window,
+            max_output_tokens,
             SessionContextLimitSourceDto::BuiltInRegistry,
             SessionContextLimitConfidenceDto::Medium,
             format!(
@@ -1761,7 +1792,27 @@ fn context_limit_resolution(
     confidence: SessionContextLimitConfidenceDto,
     diagnostic: String,
 ) -> SessionContextLimitResolutionDto {
-    let output_reserve_tokens = DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS.min(context_window_tokens);
+    context_limit_resolution_with_output(
+        provider_id,
+        model_id,
+        context_window_tokens,
+        DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS,
+        source,
+        confidence,
+        diagnostic,
+    )
+}
+
+fn context_limit_resolution_with_output(
+    provider_id: &str,
+    model_id: &str,
+    context_window_tokens: u64,
+    max_output_tokens: u64,
+    source: SessionContextLimitSourceDto,
+    confidence: SessionContextLimitConfidenceDto,
+    diagnostic: String,
+) -> SessionContextLimitResolutionDto {
+    let output_reserve_tokens = max_output_tokens.min(context_window_tokens);
     let budget_after_output = context_window_tokens.saturating_sub(output_reserve_tokens);
     let safety_reserve_tokens = budget_after_output
         .saturating_mul(DEFAULT_CONTEXT_LIMIT_SAFETY_RESERVE_PERCENT)
@@ -1774,7 +1825,7 @@ fn context_limit_resolution(
         model_id: model_id.trim().to_string(),
         context_window_tokens: Some(context_window_tokens),
         effective_input_budget_tokens: Some(effective_input_budget_tokens),
-        max_output_tokens: Some(DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS),
+        max_output_tokens: Some(max_output_tokens),
         output_reserve_tokens,
         safety_reserve_tokens,
         source,
@@ -1794,15 +1845,21 @@ fn context_pressure_from_percent(percent: Option<u64>) -> SessionContextBudgetPr
     }
 }
 
-fn built_in_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
+fn built_in_context_limits(provider: &str, model: &str) -> Option<(u64, u64)> {
+    if provider == "deepseek" && model.starts_with("deepseek-v4-") {
+        return Some((
+            DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS,
+            DEEPSEEK_V4_MAX_OUTPUT_TOKENS,
+        ));
+    }
     if model.contains("gemini-1.5-pro")
         || model.contains("gemini-1.5-flash")
         || model.contains("gemini-2.")
     {
-        return Some(1_000_000);
+        return Some((1_000_000, DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS));
     }
     if model.contains("claude") {
-        return Some(200_000);
+        return Some((200_000, DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS));
     }
     if [
         "gpt-5.2",
@@ -1815,7 +1872,10 @@ fn built_in_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
     .iter()
     .any(|model_marker| model.contains(model_marker))
     {
-        return Some(OPENAI_CODEX_CONTEXT_WINDOW_TOKENS);
+        return Some((
+            OPENAI_CODEX_CONTEXT_WINDOW_TOKENS,
+            DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS,
+        ));
     }
     if model.contains("gpt-5")
         || model.contains("gpt-4.1")
@@ -1826,7 +1886,7 @@ fn built_in_context_window_tokens(provider: &str, model: &str) -> Option<u64> {
         || model.contains("mistral-large")
         || model.contains("codestral")
     {
-        return Some(128_000);
+        return Some((128_000, DEFAULT_CONTEXT_LIMIT_MAX_OUTPUT_TOKENS));
     }
 
     None
@@ -1871,6 +1931,7 @@ pub fn validate_run_transcript_contract(transcript: &RunTranscriptDto) -> Result
         if item.sequence <= previous_sequence {
             return Err("transcript item sequences must be strictly increasing".into());
         }
+        validate_transcript_item_optional_text(item)?;
         previous_sequence = item.sequence;
     }
     ensure_secret_free_json(transcript)
@@ -1902,6 +1963,7 @@ pub fn validate_session_transcript_contract(
         if item.sequence <= previous_sequence {
             return Err("transcript item sequences must be strictly increasing".into());
         }
+        validate_transcript_item_optional_text(item)?;
         previous_sequence = item.sequence;
     }
     ensure_secret_free_json(transcript)
@@ -1956,6 +2018,14 @@ pub fn validate_context_snapshot_contract(
         if contributor.sequence <= previous_sequence {
             return Err("context contributor sequences must be strictly increasing".into());
         }
+        if optional_text_is_empty(contributor.summary.as_deref())
+            || optional_text_is_empty(contributor.omitted_reason.as_deref())
+            || optional_text_is_empty(contributor.text.as_deref())
+        {
+            return Err(
+                "context contributor optional text fields must be omitted or non-empty".into(),
+            );
+        }
         previous_sequence = contributor.sequence;
         if contributor.model_visible && !contributor.included {
             return Err("model-visible contributors must also be included".into());
@@ -1976,6 +2046,31 @@ pub fn validate_context_snapshot_contract(
         return Err("context snapshot deferred token estimate must match contributors".into());
     }
     ensure_secret_free_json(snapshot)
+}
+
+fn optional_text_is_empty(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim().is_empty())
+}
+
+fn validate_transcript_item_optional_text(item: &SessionTranscriptItemDto) -> Result<(), String> {
+    let optional_text_fields = [
+        item.title.as_deref(),
+        item.text.as_deref(),
+        item.summary.as_deref(),
+        item.tool_call_id.as_deref(),
+        item.tool_name.as_deref(),
+        item.file_path.as_deref(),
+        item.code_change_group_id.as_deref(),
+        item.code_commit_id.as_deref(),
+        item.checkpoint_kind.as_deref(),
+        item.action_id.as_deref(),
+    ];
+
+    if optional_text_fields.into_iter().any(optional_text_is_empty) {
+        return Err("transcript item optional text fields must be omitted or non-empty".into());
+    }
+
+    Ok(())
 }
 
 pub fn validate_session_compaction_record_contract(
@@ -2226,13 +2321,13 @@ fn runtime_stream_transcript_item(
         .or(item.message.as_deref());
     let (text, text_redaction) = raw_text
         .map(sanitize_context_text)
-        .map(|(text, redaction)| (Some(text), redaction))
+        .map(|(text, redaction)| (non_empty_optional_text(text), redaction))
         .unwrap_or_else(|| (None, SessionContextRedactionDto::public()));
     let title = item
         .title
         .as_deref()
         .map(sanitize_context_text)
-        .map(|(value, _)| value);
+        .and_then(|(value, _)| non_empty_optional_text(value));
     let redaction = text_redaction;
     SessionTranscriptItemDto {
         contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
@@ -2509,6 +2604,14 @@ fn sanitize_context_text(value: &str) -> (String, SessionContextRedactionDto) {
         );
     }
     (value.into(), SessionContextRedactionDto::public())
+}
+
+fn non_empty_optional_text(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn sanitize_path(value: &str) -> (String, SessionContextRedactionDto) {

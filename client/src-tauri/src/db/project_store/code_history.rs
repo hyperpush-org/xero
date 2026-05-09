@@ -5955,6 +5955,7 @@ mod tests {
                 run_id: project.run_id.clone(),
                 role: AgentMessageRole::User,
                 content: "No code has happened yet.".into(),
+                provider_metadata_json: None,
                 created_at: "2026-05-06T12:02:00Z".into(),
                 attachments: Vec::new(),
             },

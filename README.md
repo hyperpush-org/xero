@@ -263,6 +263,7 @@ Xero supports provider profiles for:
 - `openai_codex` (OAuth flow)
 - `openrouter`
 - `anthropic`
+- `deepseek`
 - `github_models`
 - `openai_api` (OpenAI-compatible)
 - `ollama` (local OpenAI-compatible)
@@ -272,17 +273,21 @@ Xero supports provider profiles for:
 - `vertex` (ambient GCP creds)
 
 Credentials/config are managed via app state and provider profile stores (not via checked-in env files).
-OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Together AI, DeepSeek, NVIDIA NIM, MiniMax, Azure AI Foundry, Atomic Chat local, and custom `/v1` gateways. See `docs/provider-setup-and-diagnostics.md` for the setup and diagnostics workflow, including the current GitHub Models token-based onboarding decision.
+OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Together AI, NVIDIA NIM, MiniMax, Azure AI Foundry, Atomic Chat local, and custom `/v1` gateways. See `docs/provider-setup-and-diagnostics.md` for the setup and diagnostics workflow, including the current GitHub Models token-based onboarding decision.
 
 ---
 
 ## Session Memory And Context
 
-Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, reviewed memory, branch, rewind, selective code undo, and session rollback workflows. See `docs/session-memory-and-context.md` for the user workflow, privacy guarantees, and support triage guidance.
+Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, branch, rewind, selective code undo, and session rollback workflows. Reviewed memory has backend/runtime foundations, but the permanent memory-review UI remains a deferred surface. See `docs/session-memory-and-context.md` for shipped behavior, privacy guarantees, and support triage guidance.
 
 ## Agent Harness Benchmarking
 
 Xero's owned-agent harness should be compared with fixed-model, sandboxed benchmark runs rather than informal leaderboard screenshots. See `docs/agent-harness-benchmarking.md` for the research summary, benchmark choices, and implementation plan.
+
+## Agent System Release Gates
+
+Agent-system rollout uses explicit gates for custom-agent fidelity, context, handoff, storage, security, diagnostics, documentation, and deferred UI. See `docs/agent-system-release-checklist.md` for the release checklist and reset/fail-closed policy for unsupported custom-agent definitions.
 
 ## Skills And Plugins
 

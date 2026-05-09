@@ -7,6 +7,7 @@ import type {
 import type { ConversationTurn } from './conversation-section'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
+const MAX_HISTORICAL_CONVERSATION_TURNS = 80
 
 interface BuildHistoricalConversationTurnsOptions {
   /**
@@ -101,7 +102,11 @@ export function buildHistoricalConversationTurns(
     }
   }
 
-  return turns
+  if (turns.length <= MAX_HISTORICAL_CONVERSATION_TURNS) {
+    return turns
+  }
+
+  return turns.slice(-MAX_HISTORICAL_CONVERSATION_TURNS)
 }
 
 function isUserOrAssistantMessage(item: SessionTranscriptItemDto): boolean {

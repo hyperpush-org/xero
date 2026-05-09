@@ -1,5 +1,7 @@
 use tauri::{AppHandle, Runtime, State};
 
+use serde_json::json;
+
 use crate::{
     auth::now_timestamp,
     commands::{
@@ -8,8 +10,9 @@ use crate::{
         AgentDefinitionValidationReportDto, AgentDefinitionValidationStatusDto,
         AgentDefinitionVersionSummaryDto, AgentDefinitionWriteResponseDto,
         ArchiveAgentDefinitionRequestDto, CommandError, CommandResult,
-        GetAgentDefinitionVersionRequestDto, ListAgentDefinitionsRequestDto,
-        ListAgentDefinitionsResponseDto, SaveAgentDefinitionRequestDto,
+        GetAgentDefinitionVersionDiffRequestDto, GetAgentDefinitionVersionRequestDto,
+        ListAgentDefinitionsRequestDto, ListAgentDefinitionsResponseDto,
+        PreviewAgentDefinitionRequestDto, SaveAgentDefinitionRequestDto,
         UpdateAgentDefinitionRequestDto,
     },
     db::project_store,
@@ -74,6 +77,23 @@ pub fn get_agent_definition_version<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn get_agent_definition_version_diff<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: GetAgentDefinitionVersionDiffRequestDto,
+) -> CommandResult<serde_json::Value> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.definition_id, "definitionId")?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    project_store::load_agent_definition_version_diff(
+        &repo_root,
+        &request.definition_id,
+        request.from_version,
+        request.to_version,
+    )
+}
+
+#[tauri::command]
 pub fn save_agent_definition<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
@@ -114,6 +134,44 @@ pub fn update_agent_definition<R: Runtime>(
     let result = runtime.agent_definition_with_operator_approval(runtime_request)?;
     let output = unwrap_agent_definition_output(result.output)?;
     write_response_from_output(&repo_root, output)
+}
+
+#[tauri::command]
+pub fn preview_agent_definition<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: PreviewAgentDefinitionRequestDto,
+) -> CommandResult<serde_json::Value> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    if let Some(definition_id) = request.definition_id.as_deref() {
+        validate_non_empty(definition_id, "definitionId")?;
+    }
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let runtime = AutonomousToolRuntime::new(&repo_root)?;
+    let runtime_request = AutonomousAgentDefinitionRequest {
+        action: AutonomousAgentDefinitionAction::Preview,
+        definition_id: request.definition_id,
+        source_definition_id: None,
+        include_archived: false,
+        definition: Some(request.definition),
+    };
+    let result = runtime.agent_definition_with_operator_approval(runtime_request)?;
+    let output = unwrap_agent_definition_output(result.output)?;
+    let validation = output
+        .validation_report
+        .as_ref()
+        .map(map_validation_report)
+        .unwrap_or_else(default_valid_report);
+    Ok(json!({
+        "schema": "xero.agent_definition_preview_command.v1",
+        "projectId": request.project_id,
+        "applied": output.applied,
+        "message": output.message,
+        "definition": output.definition,
+        "validation": validation,
+        "effectiveRuntimePreview": output.effective_runtime_preview,
+        "uiDeferred": true,
+    }))
 }
 
 fn unwrap_agent_definition_output(

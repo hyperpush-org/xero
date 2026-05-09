@@ -319,7 +319,7 @@ export const ConversationSection = memo(function ConversationSection({
     !showRunFailure && !hasInlineHandoffNotice && isHandoffCompletion(streamCompletion)
   const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
   const showAnyTurn = visibleTurns.length > 0
-  const copyableConversationText = useMemo(
+  const getCopyableConversationText = useCallback(
     () => formatConversationForCopy(visibleTurns),
     [visibleTurns],
   )
@@ -353,12 +353,7 @@ export const ConversationSection = memo(function ConversationSection({
             ))}
           </ol>
         ) : null}
-        {showActivityIndicator ? (
-          <div className="flex items-center gap-1.5 px-1 text-[12px] text-muted-foreground">
-            <Loader2 className="h-2.5 w-2.5 animate-spin text-primary/70" />
-            <span>thinking…</span>
-          </div>
-        ) : null}
+        {showActivityIndicator ? <AgentActivityIndicator /> : null}
         {showAnyNotice ? (
           <ul aria-label="Agent run notices" className="mt-2 flex flex-col gap-2">
             {showHandoffNotice ? (
@@ -383,10 +378,10 @@ export const ConversationSection = memo(function ConversationSection({
             ) : null}
           </ul>
         ) : null}
-        {copyableConversationText.length > 0 ? (
+        {showAnyTurn ? (
           <div className="mt-2 flex justify-end">
             <CopyTextButton
-              text={copyableConversationText}
+              getText={getCopyableConversationText}
               label="Copy visible conversation"
               copiedLabel="Copied visible conversation"
               tooltip="Copy conversation"
@@ -473,10 +468,10 @@ export const ConversationSection = memo(function ConversationSection({
         </ul>
       ) : null}
 
-      {copyableConversationText.length > 0 ? (
+      {showAnyTurn ? (
         <div className="flex justify-end pt-1">
           <CopyTextButton
-            text={copyableConversationText}
+            getText={getCopyableConversationText}
             label="Copy visible conversation"
             copiedLabel="Copied visible conversation"
             tooltip="Copy conversation"
@@ -571,7 +566,8 @@ function formatActionForCopy(
 }
 
 interface CopyTextButtonProps {
-  text: string
+  text?: string
+  getText?: () => string
   label: string
   copiedLabel: string
   tooltip: string
@@ -580,6 +576,7 @@ interface CopyTextButtonProps {
 
 function CopyTextButton({
   text,
+  getText,
   label,
   copiedLabel,
   tooltip,
@@ -596,12 +593,14 @@ function CopyTextButton({
   const handleCopy = useCallback(async () => {
     try {
       if (!navigator.clipboard?.writeText) return
-      await navigator.clipboard.writeText(text)
+      const resolvedText = getText ? getText() : text ?? ''
+      if (resolvedText.length === 0) return
+      await navigator.clipboard.writeText(resolvedText)
       setCopied(true)
     } catch {
       // Clipboard writes can be denied by WebView permissions or test runners.
     }
-  }, [text])
+  }, [getText, text])
 
   const Icon = copied ? Check : Copy
 
@@ -2146,27 +2145,27 @@ function AgentActivityIndicator() {
   return (
     <div
       className={cn(
-        'flex items-start gap-2.5',
+        'flex items-center gap-2',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-safe:ease-out',
       )}
       role="status"
       aria-label="Agent is thinking"
     >
       <AgentAvatar pulse />
-      <div
-        className={cn(
-          'mt-0.5 flex min-w-0 items-center gap-1.5 rounded-full border border-border/40 bg-card/35 px-3 py-1 text-[12.5px] font-medium text-muted-foreground shadow-sm',
-          'agent-activity-indicator',
-        )}
-      >
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary/80" aria-hidden="true" />
-        <span>Thinking</span>
-        <span className="flex items-center gap-0.5" aria-hidden="true">
-          <span className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/70 [animation-delay:0ms]" />
-          <span className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/70 [animation-delay:160ms]" />
-          <span className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/70 [animation-delay:320ms]" />
-        </span>
-      </div>
+      <span className="ml-2 flex items-center gap-1.5" aria-hidden="true">
+        <span
+          className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/80"
+          style={{ animationDelay: '0ms' }}
+        />
+        <span
+          className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/80"
+          style={{ animationDelay: '200ms' }}
+        />
+        <span
+          className="agent-thinking-dot h-1 w-1 rounded-full bg-muted-foreground/80"
+          style={{ animationDelay: '400ms' }}
+        />
+      </span>
     </div>
   )
 }

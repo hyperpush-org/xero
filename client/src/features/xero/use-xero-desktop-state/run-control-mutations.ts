@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { startTransition, useCallback } from 'react'
 
 import { mapAutonomousRunInspection } from '@/src/lib/xero-model/autonomous'
 import {
@@ -21,6 +21,25 @@ import {
 } from './mutation-support'
 
 const DEFAULT_AGENT_SESSION_TITLE = 'New Chat'
+
+function hasPromptPayload(value: string | null | undefined): boolean {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function hasAttachmentPayload(value: StagedAgentAttachmentDto[] | null | undefined): boolean {
+  return Array.isArray(value) && value.length > 0
+}
+
+function scheduleRuntimeRunProjectionUpdate(callback: () => void) {
+  if (typeof window === 'undefined') {
+    startTransition(callback)
+    return
+  }
+
+  window.setTimeout(() => {
+    startTransition(callback)
+  }, 16)
+}
 
 export function useRunControlMutations({
   adapter,
@@ -202,10 +221,13 @@ export function useRunControlMutations({
         selectedSession.lastRunId === null &&
         selectedSession.title.trim().toLowerCase() === DEFAULT_AGENT_SESSION_TITLE.toLowerCase(),
     )
+    const isPromptSubmission = hasPromptPayload(options?.prompt) || hasAttachmentPayload(options?.attachments)
 
-    setRuntimeRunActionStatus('running')
-    setPendingRuntimeRunAction('start')
-    setRuntimeRunActionError(null)
+    if (!isPromptSubmission) {
+      setRuntimeRunActionStatus('running')
+      setPendingRuntimeRunAction('start')
+      setRuntimeRunActionError(null)
+    }
 
     try {
       const response = await adapter.startRuntimeRun(projectId, agentSessionId, {
@@ -213,9 +235,13 @@ export function useRunControlMutations({
         initialPrompt: options?.prompt ?? null,
         initialAttachments: options?.attachments ?? [],
       })
-      const runtimeRun = applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
-        clearGlobalError: false,
-        loadError: null,
+      const runtimeRun = mapRuntimeRun(response)
+      scheduleRuntimeRunProjectionUpdate(() => {
+        setRuntimeRunActionError(null)
+        applyRuntimeRunUpdate(projectId, runtimeRun, {
+          clearGlobalError: false,
+          loadError: null,
+        })
       })
 
       if (shouldAutoNameSession) {
@@ -228,7 +254,9 @@ export function useRunControlMutations({
           })
           .then((session) => {
             if (activeProjectIdRef.current === projectId) {
-              applyAgentSessionSelection(mapAgentSession(session))
+              scheduleRuntimeRunProjectionUpdate(() => {
+                applyAgentSessionSelection(mapAgentSession(session))
+              })
             }
           })
           .catch(() => {
@@ -253,8 +281,10 @@ export function useRunControlMutations({
 
       throw error
     } finally {
-      setRuntimeRunActionStatus('idle')
-      setPendingRuntimeRunAction(null)
+      if (!isPromptSubmission) {
+        setRuntimeRunActionStatus('idle')
+        setPendingRuntimeRunAction(null)
+      }
     }
   }, [
     activeProjectIdRef,
@@ -300,10 +330,13 @@ export function useRunControlMutations({
         throw new Error('Xero cannot queue runtime-run controls until a Xero-owned agent run exists for this project.')
       }
       const resolvedRunId = runId
+      const isPromptSubmission = hasPromptPayload(request.prompt) || hasAttachmentPayload(request.attachments)
 
-      setRuntimeRunActionStatus('running')
-      setPendingRuntimeRunAction('update_controls')
-      setRuntimeRunActionError(null)
+      if (!isPromptSubmission) {
+        setRuntimeRunActionStatus('running')
+        setPendingRuntimeRunAction('update_controls')
+        setRuntimeRunActionError(null)
+      }
 
       try {
         const updateRequest: UpdateRuntimeRunControlsRequestDto = {
@@ -318,10 +351,15 @@ export function useRunControlMutations({
           updateRequest.autoCompact = request.autoCompact
         }
         const response = await adapter.updateRuntimeRunControls(updateRequest)
-        return applyRuntimeRunUpdate(projectId, mapRuntimeRun(response), {
-          clearGlobalError: false,
-          loadError: null,
+        const runtimeRun = mapRuntimeRun(response)
+        scheduleRuntimeRunProjectionUpdate(() => {
+          setRuntimeRunActionError(null)
+          applyRuntimeRunUpdate(projectId, runtimeRun, {
+            clearGlobalError: false,
+            loadError: null,
+          })
         })
+        return runtimeRun
       } catch (error) {
         setRuntimeRunActionError(
           getOperatorActionError(
@@ -338,8 +376,10 @@ export function useRunControlMutations({
 
         throw error
       } finally {
-        setRuntimeRunActionStatus('idle')
-        setPendingRuntimeRunAction(null)
+        if (!isPromptSubmission) {
+          setRuntimeRunActionStatus('idle')
+          setPendingRuntimeRunAction(null)
+        }
       }
     },
     [
@@ -371,10 +411,14 @@ export function useRunControlMutations({
 
       try {
         const response = await adapter.stopRuntimeRun(projectId, agentSessionId, runId)
-        return applyRuntimeRunUpdate(projectId, response ? mapRuntimeRun(response) : null, {
-          clearGlobalError: false,
-          loadError: null,
+        const runtimeRun = response ? mapRuntimeRun(response) : null
+        startTransition(() => {
+          applyRuntimeRunUpdate(projectId, runtimeRun, {
+            clearGlobalError: false,
+            loadError: null,
+          })
         })
+        return runtimeRun
       } catch (error) {
         setRuntimeRunActionError(
           getOperatorActionError(error, 'Xero could not stop the Xero-owned agent run for this project.'),

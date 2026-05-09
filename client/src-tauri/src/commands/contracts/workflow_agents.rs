@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use super::agent::{
     AgentDefinitionBaseCapabilityProfileDto, AgentDefinitionLifecycleStateDto,
@@ -8,6 +9,7 @@ use super::runtime::{
     RuntimeAgentIdDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
     RuntimeAgentToolPolicyDto, RuntimeRunApprovalModeDto,
 };
+use xero_agent_core::{DomainToolPackHealthReport, DomainToolPackManifest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
@@ -105,6 +107,61 @@ pub struct AgentToolSummaryDto {
     pub tags: Vec<String>,
     pub schema_fields: Vec<String>,
     pub examples: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAuthoringAvailabilityStatusDto {
+    Available,
+    RequiresProfileChange,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringProfileAvailabilityDto {
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub base_capability_profile: AgentDefinitionBaseCapabilityProfileDto,
+    pub status: AgentAuthoringAvailabilityStatusDto,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_profile: Option<AgentDefinitionBaseCapabilityProfileDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentToolPolicyDetailsDto {
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub denied_tools: Vec<String>,
+    #[serde(default)]
+    pub allowed_tool_packs: Vec<String>,
+    #[serde(default)]
+    pub denied_tool_packs: Vec<String>,
+    #[serde(default)]
+    pub allowed_tool_groups: Vec<String>,
+    #[serde(default)]
+    pub denied_tool_groups: Vec<String>,
+    #[serde(default)]
+    pub allowed_effect_classes: Vec<AgentToolEffectClassDto>,
+    #[serde(default)]
+    pub external_service_allowed: bool,
+    #[serde(default)]
+    pub browser_control_allowed: bool,
+    #[serde(default)]
+    pub skill_runtime_allowed: bool,
+    #[serde(default)]
+    pub subagent_allowed: bool,
+    #[serde(default)]
+    pub allowed_subagent_roles: Vec<String>,
+    #[serde(default)]
+    pub denied_subagent_roles: Vec<String>,
+    #[serde(default)]
+    pub command_allowed: bool,
+    #[serde(default)]
+    pub destructive_write_allowed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,11 +273,15 @@ pub struct WorkflowAgentDetailDto {
     pub header: AgentHeaderDto,
     pub prompt_policy: Option<RuntimeAgentPromptPolicyDto>,
     pub tool_policy: Option<RuntimeAgentToolPolicyDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy_details: Option<AgentToolPolicyDetailsDto>,
     pub prompts: Vec<AgentPromptDto>,
     pub tools: Vec<AgentToolSummaryDto>,
     pub db_touchpoints: AgentDbTouchpointsDto,
     pub output: AgentOutputContractDto,
     pub consumes: Vec<AgentConsumedArtifactDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_graph: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,6 +341,87 @@ pub struct AgentAuthoringToolCategoryDto {
     pub tools: Vec<AgentToolSummaryDto>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAuthoringPolicyControlKindDto {
+    Context,
+    Memory,
+    Retrieval,
+    Handoff,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAuthoringPolicyControlValueKindDto {
+    Boolean,
+    PositiveInteger,
+    StringArray,
+    Object,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringPolicyControlDto {
+    pub id: String,
+    pub kind: AgentAuthoringPolicyControlKindDto,
+    pub label: String,
+    pub description: String,
+    pub snapshot_path: String,
+    pub value_kind: AgentAuthoringPolicyControlValueKindDto,
+    pub default_value: JsonValue,
+    pub runtime_effect: String,
+    pub review_required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringTemplateDto {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub task_kind: String,
+    pub base_capability_profile: AgentDefinitionBaseCapabilityProfileDto,
+    pub definition: JsonValue,
+    pub examples: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAuthoringCreationFlowEntryKindDto {
+    Template,
+    DescribeIntent,
+    ComposeTemplates,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringCreationFlowDto {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub entry_kind: AgentAuthoringCreationFlowEntryKindDto,
+    pub task_kind: String,
+    pub template_ids: Vec<String>,
+    pub intent_prompt: String,
+    pub expected_output_contract: RuntimeAgentOutputContractDto,
+    pub base_capability_profile: AgentDefinitionBaseCapabilityProfileDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringConstraintExplanationDto {
+    pub id: String,
+    pub subject_kind: String,
+    pub subject_id: String,
+    pub base_capability_profile: AgentDefinitionBaseCapabilityProfileDto,
+    pub status: AgentAuthoringAvailabilityStatusDto,
+    pub message: String,
+    pub resolution: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_profile: Option<AgentDefinitionBaseCapabilityProfileDto>,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentAuthoringCatalogDto {
@@ -287,11 +429,33 @@ pub struct AgentAuthoringCatalogDto {
     pub tool_categories: Vec<AgentAuthoringToolCategoryDto>,
     pub db_tables: Vec<AgentAuthoringDbTableDto>,
     pub upstream_artifacts: Vec<AgentAuthoringUpstreamArtifactDto>,
+    pub policy_controls: Vec<AgentAuthoringPolicyControlDto>,
+    pub templates: Vec<AgentAuthoringTemplateDto>,
+    pub creation_flows: Vec<AgentAuthoringCreationFlowDto>,
+    pub profile_availability: Vec<AgentAuthoringProfileAvailabilityDto>,
+    pub constraint_explanations: Vec<AgentAuthoringConstraintExplanationDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetAgentAuthoringCatalogRequestDto {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentToolPackCatalogDto {
+    pub schema: String,
+    pub project_id: String,
+    pub tool_packs: Vec<DomainToolPackManifest>,
+    pub available_pack_ids: Vec<String>,
+    pub health_reports: Vec<DomainToolPackHealthReport>,
+    pub ui_deferred: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetAgentToolPackCatalogRequestDto {
     pub project_id: String,
 }
 

@@ -1,9 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::blocking::Client;
@@ -31,10 +34,14 @@ use crate::{
 
 const DEFAULT_HEADLESS_PROVIDER_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_HEADLESS_MAX_PROVIDER_TURNS: usize = 8;
+const DEFAULT_HEADLESS_COMMAND_TIMEOUT_MS: u64 = 120_000;
+const MAX_HEADLESS_COMMAND_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const MAX_TOOL_OUTPUT_BYTES: usize = 128 * 1024;
 const HEADLESS_TOOL_READ: &str = "read";
 const HEADLESS_TOOL_LIST: &str = "list";
 const HEADLESS_TOOL_WRITE: &str = "write";
+const HEADLESS_TOOL_PATCH: &str = "patch";
+const HEADLESS_TOOL_COMMAND: &str = "command";
 const LEGACY_HEADLESS_MINI_TOOLS: &[&str] = &["read_file", "write_file", "list_files"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +94,9 @@ pub struct OpenAiCompatibleHeadlessConfig {
 pub struct HeadlessRuntimeOptions {
     pub ci_mode: bool,
     pub max_provider_turns: usize,
+    pub max_wall_time_ms: Option<u64>,
+    pub max_tool_calls: Option<u64>,
+    pub max_command_calls: Option<u64>,
     pub provider_preflight: Option<ProviderPreflightSnapshot>,
 }
 
@@ -95,6 +105,9 @@ impl Default for HeadlessRuntimeOptions {
         Self {
             ci_mode: false,
             max_provider_turns: DEFAULT_HEADLESS_MAX_PROVIDER_TURNS,
+            max_wall_time_ms: None,
+            max_tool_calls: None,
+            max_command_calls: None,
             provider_preflight: None,
         }
     }
@@ -355,7 +368,24 @@ where
             })?;
         let mut chat_messages = chat_messages_from_snapshot(&snapshot);
         let mut current = snapshot;
+        let started_at = Instant::now();
+        let mut tool_call_count = 0_u64;
+        let mut command_call_count = 0_u64;
         for turn_index in 0..self.options.max_provider_turns {
+            if let Some(max_wall_time_ms) = self.options.max_wall_time_ms {
+                if started_at.elapsed().as_millis() as u64 > max_wall_time_ms {
+                    return self.fail_real_provider_run(
+                        &current,
+                        "agent_core_headless_wall_time_exceeded",
+                        "The headless real-provider loop exceeded its configured wall-time limit.",
+                        "wall_time_limit_exceeded",
+                        json!({
+                            "limitMs": max_wall_time_ms,
+                            "elapsedMs": started_at.elapsed().as_millis() as u64,
+                        }),
+                    );
+                }
+            }
             let tool_runtime = HeadlessProductionToolRuntime::new(
                 config,
                 self.app_data_roots_for_project(&current.project_id),
@@ -375,6 +405,44 @@ where
             )?;
             let content = response.content_text();
             let tool_calls = response.tool_calls;
+            let next_tool_call_count = tool_call_count + tool_calls.len() as u64;
+            if self
+                .options
+                .max_tool_calls
+                .is_some_and(|limit| next_tool_call_count > limit)
+            {
+                return self.fail_real_provider_run(
+                    &current,
+                    "agent_core_headless_tool_call_limit_exceeded",
+                    "The headless real-provider loop exceeded its configured tool-call limit.",
+                    "tool_call_limit_exceeded",
+                    json!({
+                        "limit": self.options.max_tool_calls,
+                        "attemptedToolCalls": next_tool_call_count,
+                    }),
+                );
+            }
+            let next_command_call_count = command_call_count
+                + tool_calls
+                    .iter()
+                    .filter(|call| headless_tool_is_command(&call.name))
+                    .count() as u64;
+            if self
+                .options
+                .max_command_calls
+                .is_some_and(|limit| next_command_call_count > limit)
+            {
+                return self.fail_real_provider_run(
+                    &current,
+                    "agent_core_headless_command_call_limit_exceeded",
+                    "The headless real-provider loop exceeded its configured command-call limit.",
+                    "command_call_limit_exceeded",
+                    json!({
+                        "limit": self.options.max_command_calls,
+                        "attemptedCommandCalls": next_command_call_count,
+                    }),
+                );
+            }
 
             if !content.trim().is_empty() {
                 self.store.append_event(NewRuntimeEvent {
@@ -474,6 +542,8 @@ where
                     "content": result_payload,
                 }));
             }
+            tool_call_count = next_tool_call_count;
+            command_call_count = next_command_call_count;
             current = self.store.load_run(&current.project_id, &current.run_id)?;
         }
 
@@ -498,6 +568,35 @@ where
             "agent_core_headless_turn_limit_exceeded",
             "The headless real-provider loop reached its turn limit.",
         ))
+    }
+
+    fn fail_real_provider_run(
+        &self,
+        snapshot: &RunSnapshot,
+        code: &'static str,
+        message: &'static str,
+        trace_label: &'static str,
+        details: JsonValue,
+    ) -> CoreResult<()> {
+        self.store
+            .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Failed)?;
+        self.store.append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::RunFailed,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                trace_label,
+            )),
+            payload: json!({
+                "code": code,
+                "message": message,
+                "retryable": false,
+                "details": details,
+            }),
+        })?;
+        Err(CoreError::invalid_request(code, message))
     }
 
     fn dispatch_headless_tool_batch(
@@ -715,28 +814,24 @@ where
             "providerToolName": tool_name,
         });
         if tool_name == HEADLESS_TOOL_WRITE {
-            self.store.append_event(NewRuntimeEvent {
-                project_id: snapshot.project_id.clone(),
-                run_id: snapshot.run_id.clone(),
-                event_kind: RuntimeEventKind::FileChanged,
-                trace: Some(RuntimeTraceContext::for_storage_write(
-                    &snapshot.trace_id,
-                    &snapshot.run_id,
-                    "workspace_file",
-                    snapshot.context_manifests.len(),
-                )),
-                payload: json!({
-                    "path": provider_payload["output"]["path"].clone(),
-                    "operation": "write",
+            self.record_headless_file_changed(
+                snapshot,
+                provider_payload["output"]["path"].clone(),
+                "write",
+                json!({
                     "bytes": provider_payload["output"]["bytes"].clone(),
-                    "runtime": "production_real_provider",
-                    "dispatch": {
-                        "registryVersion": "tool_registry_v2",
-                        "fileReservation": provider_payload["output"]["fileReservation"].clone(),
-                        "rollback": provider_payload["output"]["rollback"].clone(),
-                    },
+                    "fileReservation": provider_payload["output"]["fileReservation"].clone(),
+                    "rollback": provider_payload["output"]["rollback"].clone(),
                 }),
-            })?;
+            )?;
+        } else if tool_name == HEADLESS_TOOL_PATCH {
+            for path in provider_payload["output"]["changedFiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                self.record_headless_file_changed(snapshot, path.clone(), "patch", json!({}))?;
+            }
         }
         self.store.append_event(NewRuntimeEvent {
             project_id: snapshot.project_id.clone(),
@@ -765,6 +860,36 @@ where
             parent_assistant_message_id: parent_assistant_message_id.to_owned(),
             payload: provider_payload,
         });
+        Ok(())
+    }
+
+    fn record_headless_file_changed(
+        &self,
+        snapshot: &RunSnapshot,
+        path: JsonValue,
+        operation: &'static str,
+        dispatch_extra: JsonValue,
+    ) -> CoreResult<()> {
+        self.store.append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::FileChanged,
+            trace: Some(RuntimeTraceContext::for_storage_write(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "workspace_file",
+                snapshot.context_manifests.len(),
+            )),
+            payload: json!({
+                "path": path,
+                "operation": operation,
+                "runtime": "production_real_provider",
+                "dispatch": {
+                    "registryVersion": "tool_registry_v2",
+                    "details": dispatch_extra,
+                },
+            }),
+        })?;
         Ok(())
     }
 
@@ -1209,6 +1334,27 @@ struct HeadlessToolResultMessage {
 }
 
 #[derive(Debug, Clone)]
+struct HeadlessCommandOutput {
+    argv: Vec<String>,
+    cwd: String,
+    stdout: Option<String>,
+    stderr: Option<String>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    elapsed_ms: u64,
+    context_epoch: String,
+    tool_call_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct LimitedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone)]
 struct OpenAiProviderMessage {
     content: JsonValue,
     tool_calls: Vec<OpenAiToolCall>,
@@ -1279,6 +1425,8 @@ impl HeadlessProductionToolRuntime {
         let mut descriptors = vec![headless_read_descriptor(), headless_list_descriptor()];
         if self.allow_workspace_writes {
             descriptors.push(headless_write_descriptor());
+            descriptors.push(headless_patch_descriptor());
+            descriptors.push(headless_command_descriptor());
         }
         descriptors
     }
@@ -1389,6 +1537,32 @@ impl HeadlessProductionToolRuntime {
                     },
                 ))
                 .map_err(tool_execution_error_to_core_error)?;
+
+            let patch_runtime = self.clone();
+            registry
+                .register(StaticToolHandler::new_cancellable(
+                    headless_patch_descriptor(),
+                    move |context, call, control| {
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        let output = patch_runtime.apply_patch(context, call)?;
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        Ok(output)
+                    },
+                ))
+                .map_err(tool_execution_error_to_core_error)?;
+
+            let command_runtime = self.clone();
+            registry
+                .register(StaticToolHandler::new_cancellable(
+                    headless_command_descriptor(),
+                    move |context, call, control| {
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        let output = command_runtime.command(context, call)?;
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        Ok(output)
+                    },
+                ))
+                .map_err(tool_execution_error_to_core_error)?;
         }
 
         Ok(registry)
@@ -1476,6 +1650,249 @@ impl HeadlessProductionToolRuntime {
                 "fileReservation": file_reservation,
             }),
         ))
+    }
+
+    fn apply_patch(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+    ) -> Result<ToolHandlerOutput, ToolExecutionError> {
+        let patch = required_tool_string(&call.input, "patch")?;
+        if patch.trim().is_empty() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_core_headless_patch_empty",
+                "Patch input cannot be empty.",
+            ));
+        }
+        let changed_files = patch_changed_paths(patch);
+        for path in &changed_files {
+            let _ = resolve_workspace_path_for_root(&self.workspace_root, path, true)
+                .map_err(core_error_to_tool_execution_error)?;
+        }
+
+        let check = self.run_git_apply(context, call, patch, true)?;
+        if check.exit_code != Some(0) {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_core_headless_patch_check_failed",
+                format!(
+                    "Patch did not apply cleanly: {}",
+                    check.stderr.as_deref().unwrap_or_default()
+                ),
+            ));
+        }
+        let applied = self.run_git_apply(context, call, patch, false)?;
+        if applied.exit_code != Some(0) {
+            return Err(ToolExecutionError::retryable(
+                "agent_core_headless_patch_apply_failed",
+                format!(
+                    "Patch application failed: {}",
+                    applied.stderr.as_deref().unwrap_or_default()
+                ),
+            ));
+        }
+
+        Ok(ToolHandlerOutput::new(
+            format!("Applied patch touching {} file(s).", changed_files.len()),
+            json!({
+                "ok": true,
+                "changedFiles": changed_files,
+                "stdout": truncate_text(applied.stdout.as_deref().unwrap_or_default(), MAX_TOOL_OUTPUT_BYTES),
+                "stderr": truncate_text(applied.stderr.as_deref().unwrap_or_default(), MAX_TOOL_OUTPUT_BYTES),
+                "exitCode": applied.exit_code,
+                "patchBytes": patch.len(),
+                "patchRedacted": true,
+            }),
+        ))
+    }
+
+    fn run_git_apply(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+        patch: &str,
+        check_only: bool,
+    ) -> Result<HeadlessCommandOutput, ToolExecutionError> {
+        let mut argv = vec![
+            "git".to_string(),
+            "apply".to_string(),
+            "--whitespace=nowarn".to_string(),
+        ];
+        if check_only {
+            argv.push("--check".into());
+        }
+        argv.push("-".into());
+        self.run_process(
+            context,
+            call,
+            argv,
+            self.workspace_root.clone(),
+            Some(patch.as_bytes()),
+            Some(DEFAULT_HEADLESS_COMMAND_TIMEOUT_MS),
+        )
+    }
+
+    fn command(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+    ) -> Result<ToolHandlerOutput, ToolExecutionError> {
+        let argv = required_tool_string_array(&call.input, "argv")?;
+        let cwd = call
+            .input
+            .get("cwd")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(".");
+        let cwd_path = resolve_workspace_path_for_root(&self.workspace_root, cwd, false)
+            .map_err(core_error_to_tool_execution_error)?;
+        if !cwd_path.is_dir() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_core_headless_command_cwd_invalid",
+                format!("Command cwd `{cwd}` is not a directory."),
+            ));
+        }
+        let timeout_ms = call
+            .input
+            .get("timeoutMs")
+            .and_then(JsonValue::as_u64)
+            .map(|value| value.clamp(1_000, MAX_HEADLESS_COMMAND_TIMEOUT_MS))
+            .or(Some(DEFAULT_HEADLESS_COMMAND_TIMEOUT_MS));
+        let output = self.run_process(context, call, argv, cwd_path, None, timeout_ms)?;
+        let ok = output.exit_code == Some(0) && !output.timed_out;
+        Ok(ToolHandlerOutput::new(
+            if ok {
+                "Command completed successfully through Tool Registry V2."
+            } else {
+                "Command completed with a non-zero status through Tool Registry V2."
+            },
+            json!({
+                "ok": ok,
+                "argv": output.argv,
+                "cwd": output.cwd,
+                "stdout": truncate_text(output.stdout.as_deref().unwrap_or_default(), MAX_TOOL_OUTPUT_BYTES),
+                "stderr": truncate_text(output.stderr.as_deref().unwrap_or_default(), MAX_TOOL_OUTPUT_BYTES),
+                "stdoutTruncated": output.stdout_truncated,
+                "stderrTruncated": output.stderr_truncated,
+                "exitCode": output.exit_code,
+                "timedOut": output.timed_out,
+                "elapsedMs": output.elapsed_ms,
+                "contextEpoch": output.context_epoch,
+                "toolCallId": output.tool_call_id,
+            }),
+        ))
+    }
+
+    fn run_process(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+        argv: Vec<String>,
+        cwd: PathBuf,
+        stdin: Option<&[u8]>,
+        timeout_ms: Option<u64>,
+    ) -> Result<HeadlessCommandOutput, ToolExecutionError> {
+        validate_headless_argv(&argv)?;
+        let mut child = Command::new(&argv[0])
+            .args(argv.iter().skip(1))
+            .current_dir(&cwd)
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                ToolExecutionError::retryable(
+                    "agent_core_headless_command_spawn_failed",
+                    format!("Xero could not launch `{}`: {error}", argv[0]),
+                )
+            })?;
+
+        if let Some(bytes) = stdin {
+            let mut child_stdin = child.stdin.take().ok_or_else(|| {
+                ToolExecutionError::retryable(
+                    "agent_core_headless_command_stdin_missing",
+                    "Xero could not open stdin for the command.",
+                )
+            })?;
+            child_stdin.write_all(bytes).map_err(|error| {
+                ToolExecutionError::retryable(
+                    "agent_core_headless_command_stdin_failed",
+                    format!("Xero could not write command stdin: {error}"),
+                )
+            })?;
+        }
+
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_command_stdout_missing",
+                "Xero could not capture command stdout.",
+            )
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_command_stderr_missing",
+                "Xero could not capture command stderr.",
+            )
+        })?;
+        let stdout_handle =
+            thread::spawn(move || read_limited_output(stdout, MAX_TOOL_OUTPUT_BYTES));
+        let stderr_handle =
+            thread::spawn(move || read_limited_output(stderr, MAX_TOOL_OUTPUT_BYTES));
+        let started_at = Instant::now();
+        let timeout =
+            Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_HEADLESS_COMMAND_TIMEOUT_MS));
+        let mut timed_out = false;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started_at.elapsed() >= timeout => {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break child.wait().map_err(|error| {
+                        ToolExecutionError::retryable(
+                            "agent_core_headless_command_wait_failed",
+                            format!("Xero could not wait for a timed-out command: {error}"),
+                        )
+                    })?;
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(error) => {
+                    let _ = child.kill();
+                    return Err(ToolExecutionError::retryable(
+                        "agent_core_headless_command_wait_failed",
+                        format!("Xero could not observe command execution: {error}"),
+                    ));
+                }
+            }
+        };
+        let stdout = stdout_handle.join().map_err(|_| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_command_stdout_failed",
+                "Xero could not join stdout capture.",
+            )
+        })?;
+        let stderr = stderr_handle.join().map_err(|_| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_command_stderr_failed",
+                "Xero could not join stderr capture.",
+            )
+        })?;
+
+        Ok(HeadlessCommandOutput {
+            argv,
+            cwd: cwd.display().to_string(),
+            stdout: Some(String::from_utf8_lossy(&stdout.bytes).into_owned()),
+            stderr: Some(String::from_utf8_lossy(&stderr.bytes).into_owned()),
+            stdout_truncated: stdout.truncated,
+            stderr_truncated: stderr.truncated,
+            exit_code: status.code(),
+            timed_out,
+            elapsed_ms: started_at.elapsed().as_millis() as u64,
+            context_epoch: context.context_epoch.clone(),
+            tool_call_id: call.tool_call_id.clone(),
+        })
     }
 }
 
@@ -1886,6 +2303,84 @@ fn headless_write_descriptor() -> ToolDescriptorV2 {
     }
 }
 
+fn headless_patch_descriptor() -> ToolDescriptorV2 {
+    ToolDescriptorV2 {
+        name: HEADLESS_TOOL_PATCH.into(),
+        description: "Apply a unified diff patch inside the registered workspace using git apply."
+            .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "patch": { "type": "string" }
+            },
+            "required": ["patch"],
+            "additionalProperties": false
+        }),
+        capability_tags: vec![
+            "workspace".into(),
+            "filesystem".into(),
+            "patch".into(),
+            "mutation".into(),
+        ],
+        effect_class: ToolEffectClass::WorkspaceMutation,
+        mutability: ToolMutability::Mutating,
+        sandbox_requirement: ToolSandboxRequirement::WorkspaceWrite,
+        approval_requirement: ToolApprovalRequirement::Policy,
+        telemetry_attributes: BTreeMap::from([
+            ("xero.tool.kind".into(), "workspace_patch_apply".into()),
+            ("xero.tool.registry".into(), "tool_registry_v2".into()),
+        ]),
+        result_truncation: ToolResultTruncationContract {
+            max_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+            preserve_json_shape: false,
+        },
+    }
+}
+
+fn headless_command_descriptor() -> ToolDescriptorV2 {
+    ToolDescriptorV2 {
+        name: HEADLESS_TOOL_COMMAND.into(),
+        description:
+            "Run a bounded command in the registered workspace under Xero's benchmark policy."
+                .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "minItems": 1
+                },
+                "cwd": { "type": "string" },
+                "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": MAX_HEADLESS_COMMAND_TIMEOUT_MS
+                }
+            },
+            "required": ["argv"],
+            "additionalProperties": false
+        }),
+        capability_tags: vec![
+            "workspace".into(),
+            "command".into(),
+            "terminal_bench".into(),
+        ],
+        effect_class: ToolEffectClass::CommandExecution,
+        mutability: ToolMutability::Mutating,
+        sandbox_requirement: ToolSandboxRequirement::WorkspaceWrite,
+        approval_requirement: ToolApprovalRequirement::Policy,
+        telemetry_attributes: BTreeMap::from([
+            ("xero.tool.kind".into(), "workspace_command".into()),
+            ("xero.tool.registry".into(), "tool_registry_v2".into()),
+        ]),
+        result_truncation: ToolResultTruncationContract {
+            max_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+            preserve_json_shape: false,
+        },
+    }
+}
+
 fn openai_tool_definition_from_descriptor(descriptor: ToolDescriptorV2) -> JsonValue {
     json!({
         "type": "function",
@@ -1898,22 +2393,37 @@ fn openai_tool_definition_from_descriptor(descriptor: ToolDescriptorV2) -> JsonV
 }
 
 fn redacted_headless_tool_input(tool_name: &str, input: &JsonValue) -> (JsonValue, bool) {
-    if tool_name != HEADLESS_TOOL_WRITE {
-        return (input.clone(), false);
-    }
     let Some(object) = input.as_object() else {
         return (input.clone(), false);
     };
     let mut redacted = object.clone();
-    if let Some(content) = object.get("content").and_then(JsonValue::as_str) {
-        redacted.insert(
-            "content".into(),
-            json!({
-                "redacted": true,
-                "bytes": content.len(),
-            }),
-        );
-        return (JsonValue::Object(redacted), true);
+    match tool_name {
+        HEADLESS_TOOL_WRITE => {
+            if let Some(content) = object.get("content").and_then(JsonValue::as_str) {
+                redacted.insert(
+                    "content".into(),
+                    json!({
+                        "redacted": true,
+                        "bytes": content.len(),
+                    }),
+                );
+                return (JsonValue::Object(redacted), true);
+            }
+        }
+        HEADLESS_TOOL_PATCH => {
+            if let Some(patch) = object.get("patch").and_then(JsonValue::as_str) {
+                redacted.insert(
+                    "patch".into(),
+                    json!({
+                        "redacted": true,
+                        "bytes": patch.len(),
+                        "changedFiles": patch_changed_paths(patch),
+                    }),
+                );
+                return (JsonValue::Object(redacted), true);
+            }
+        }
+        _ => {}
     }
     (JsonValue::Object(redacted), false)
 }
@@ -1992,6 +2502,111 @@ fn required_tool_string<'a>(
         })
 }
 
+fn required_tool_string_array(
+    input: &JsonValue,
+    key: &str,
+) -> Result<Vec<String>, ToolExecutionError> {
+    let values = input
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| {
+            ToolExecutionError::invalid_input(
+                "agent_core_headless_tool_argument_missing",
+                format!("Tool argument `{key}` must be a non-empty string array."),
+            )
+        })?;
+    let values = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    ToolExecutionError::invalid_input(
+                        "agent_core_headless_tool_argument_invalid",
+                        format!("Tool argument `{key}` must contain only non-empty strings."),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.is_empty() {
+        return Err(ToolExecutionError::invalid_input(
+            "agent_core_headless_tool_argument_invalid",
+            format!("Tool argument `{key}` must contain at least one value."),
+        ));
+    }
+    Ok(values)
+}
+
+fn validate_headless_argv(argv: &[String]) -> Result<(), ToolExecutionError> {
+    if argv.is_empty() || argv[0].trim().is_empty() {
+        return Err(ToolExecutionError::invalid_input(
+            "agent_core_headless_command_argv_invalid",
+            "Command argv must include a program name.",
+        ));
+    }
+    if argv.iter().any(|part| part.contains('\0')) {
+        return Err(ToolExecutionError::invalid_input(
+            "agent_core_headless_command_argv_invalid",
+            "Command argv cannot contain NUL bytes.",
+        ));
+    }
+    Ok(())
+}
+
+fn read_limited_output<R>(mut reader: R, limit: usize) -> LimitedOutput
+where
+    R: Read,
+{
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let Ok(read) = reader.read(&mut buffer) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(bytes.len());
+        if remaining > 0 {
+            let take = read.min(remaining);
+            bytes.extend_from_slice(&buffer[..take]);
+        }
+        if read > remaining {
+            truncated = true;
+        }
+    }
+    LimitedOutput { bytes, truncated }
+}
+
+fn patch_changed_paths(patch: &str) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for line in patch.lines() {
+        let candidate = line
+            .strip_prefix("+++ b/")
+            .or_else(|| line.strip_prefix("--- a/"))
+            .or_else(|| {
+                line.strip_prefix("diff --git a/").and_then(|rest| {
+                    rest.split_once(" b/")
+                        .map(|(_left, right)| right.split_whitespace().next().unwrap_or(right))
+                })
+            });
+        if let Some(path) = candidate {
+            let path = path.trim();
+            if !path.is_empty() && path != "/dev/null" {
+                paths.insert(path.to_owned());
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn headless_tool_is_command(tool_name: &str) -> bool {
+    tool_name == HEADLESS_TOOL_COMMAND
+}
+
 fn rollback_checkpoint_metadata(path: &str, resolved: &Path) -> JsonValue {
     match fs::read(resolved) {
         Ok(bytes) => json!({
@@ -2052,7 +2667,7 @@ fn headless_system_prompt(workspace_root: Option<&Path>) -> String {
         .map(|root| root.display().to_string())
         .unwrap_or_else(|| "the configured workspace".into());
     format!(
-        "You are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect or edit files in {workspace}: `read`, `list`, and, when available, `write`. Keep writes inside the workspace, never touch .git or .xero, and finish with a concise summary."
+        "You are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, and `command`. Keep writes inside the workspace, never touch .git or .xero, avoid network access unless the benchmark policy explicitly allows it, and finish with a concise summary."
     )
 }
 

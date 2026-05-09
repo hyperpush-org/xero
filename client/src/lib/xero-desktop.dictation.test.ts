@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   channels: [] as Array<{ onmessage?: (message: unknown) => void }>,
 }))
 
+function flushRuntimeStreamDelivery(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 vi.mock('@tauri-apps/api/core', () => ({
   Channel: class {
     onmessage?: (message: unknown) => void
@@ -409,8 +413,10 @@ describe('XeroDesktopAdapter runtime stream', () => {
       handler,
       onError,
     )
+    await flushRuntimeStreamDelivery()
 
     mocks.channels[0].onmessage?.(makeRuntimeStreamItem(2, 'late stale replay item'))
+    await flushRuntimeStreamDelivery()
 
     expect(handler).toHaveBeenCalledTimes(1)
     expect(handler).toHaveBeenCalledWith(

@@ -292,6 +292,7 @@ pub fn start_provider_auth_flow(
             "Xero binds Anthropic runtime sessions from the saved app-local provider-profile API key and does not support a browser login flow for that provider.",
         )),
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::DeepSeek
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
@@ -364,6 +365,7 @@ pub fn complete_provider_auth_flow<R: Runtime>(
             "Xero does not complete an Anthropic browser login flow because Anthropic runtime sessions bind from the saved app-local provider-profile API key instead.",
         )),
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::DeepSeek
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
@@ -402,6 +404,7 @@ pub fn refresh_provider_auth_session<R: Runtime>(
             "Xero does not refresh Anthropic runtime sessions through a browser auth store. Rebind from the saved app-local provider-profile API key instead.",
         )),
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::DeepSeek
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels

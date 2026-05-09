@@ -38,7 +38,7 @@ use super::runtime_support::{load_persisted_runtime_run, resolve_project_root};
 const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT: usize = 200;
 
 #[tauri::command]
-pub fn subscribe_runtime_stream<R: Runtime>(
+pub async fn subscribe_runtime_stream<R: Runtime + 'static>(
     app: AppHandle<R>,
     webview: Webview<R>,
     state: State<'_, DesktopState>,
@@ -49,19 +49,29 @@ pub fn subscribe_runtime_stream<R: Runtime>(
 
     let item_kinds = parse_requested_item_kinds(&request.item_kinds)?;
     let channel = resolve_channel(&webview, request.channel.as_deref())?;
+    let state = state.inner().clone();
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let runtime_run =
-        load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?
-            .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND)
-            .ok_or_else(|| {
-                CommandError::retryable(
-                    "runtime_stream_run_unavailable",
-                    "Xero cannot start a live runtime stream until the selected project has a Xero-owned agent run.",
-                )
-            })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo_root = resolve_project_root(&app, &state, &request.project_id)?;
+        let runtime_run =
+            load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?
+                .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND)
+                .ok_or_else(|| {
+                    CommandError::retryable(
+                        "runtime_stream_run_unavailable",
+                        "Xero cannot start a live runtime stream until the selected project has a Xero-owned agent run.",
+                    )
+                })?;
 
-    subscribe_owned_runtime_stream(&repo_root, &request, runtime_run, item_kinds, channel)
+        subscribe_owned_runtime_stream(&repo_root, &request, runtime_run, item_kinds, channel)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "runtime_stream_subscribe_task_failed",
+            format!("Xero could not finish background runtime-stream subscription work: {error}"),
+        )
+    })?
 }
 
 fn parse_requested_item_kinds(item_kinds: &[String]) -> CommandResult<Vec<RuntimeStreamItemKind>> {
@@ -200,7 +210,12 @@ fn replay_owned_agent_events(
             incremental_replay_limit,
         )?
     } else {
-        project_store::read_all_agent_events(repo_root, project_id, run_id)?
+        project_store::read_latest_agent_events(
+            repo_root,
+            project_id,
+            run_id,
+            incremental_replay_limit,
+        )?
     };
     let mut last_event_id = after_event_id;
     let replayed_count = events.len();
@@ -868,6 +883,7 @@ fn model_visible_tool_result_from_completed_payload(payload: &serde_json::Value)
             .or_else(|| payload_string(payload, "message"))
             .unwrap_or_default(),
         output: payload.get("output")?.clone(),
+        persistence: None,
         parent_assistant_message_id: None,
     };
 

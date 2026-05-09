@@ -25,12 +25,14 @@ pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 pub const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 pub const GITHUB_MODELS_PROVIDER_ID: &str = "github_models";
 pub const OPENAI_API_PROVIDER_ID: &str = "openai_api";
+pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek";
 pub const OLLAMA_PROVIDER_ID: &str = "ollama";
 pub const AZURE_OPENAI_PROVIDER_ID: &str = "azure_openai";
 pub const GEMINI_AI_STUDIO_PROVIDER_ID: &str = "gemini_ai_studio";
 pub const BEDROCK_PROVIDER_ID: &str = "bedrock";
 pub const VERTEX_PROVIDER_ID: &str = "vertex";
 pub const OPENAI_COMPATIBLE_RUNTIME_KIND: &str = "openai_compatible";
+pub const DEEPSEEK_RUNTIME_KIND: &str = DEEPSEEK_PROVIDER_ID;
 pub const GEMINI_RUNTIME_KIND: &str = "gemini";
 pub const ANTHROPIC_RUNTIME_KIND: &str = ANTHROPIC_PROVIDER_ID;
 pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.4";
@@ -57,6 +59,7 @@ pub enum RuntimeProviderFamily {
     OpenRouter,
     Anthropic,
     OpenAiCompatible,
+    DeepSeek,
     Gemini,
 }
 
@@ -67,6 +70,7 @@ pub enum RuntimeProvider {
     Anthropic,
     GitHubModels,
     OpenAiApi,
+    DeepSeek,
     Ollama,
     AzureOpenAi,
     GeminiAiStudio,
@@ -83,6 +87,7 @@ impl RuntimeProvider {
             Self::GitHubModels | Self::OpenAiApi | Self::Ollama | Self::AzureOpenAi => {
                 RuntimeProviderFamily::OpenAiCompatible
             }
+            Self::DeepSeek => RuntimeProviderFamily::DeepSeek,
             Self::GeminiAiStudio => RuntimeProviderFamily::Gemini,
             Self::Bedrock | Self::Vertex => RuntimeProviderFamily::Anthropic,
         }
@@ -119,6 +124,12 @@ impl RuntimeProvider {
                 family: RuntimeProviderFamily::OpenAiCompatible,
                 provider_id: OPENAI_API_PROVIDER_ID,
                 runtime_kind: OPENAI_COMPATIBLE_RUNTIME_KIND,
+            },
+            Self::DeepSeek => ResolvedRuntimeProvider {
+                provider: Self::DeepSeek,
+                family: RuntimeProviderFamily::DeepSeek,
+                provider_id: DEEPSEEK_PROVIDER_ID,
+                runtime_kind: DEEPSEEK_RUNTIME_KIND,
             },
             Self::Ollama => ResolvedRuntimeProvider {
                 provider: Self::Ollama,
@@ -201,6 +212,10 @@ pub const fn github_models_provider() -> ResolvedRuntimeProvider {
 
 pub const fn openai_api_provider() -> ResolvedRuntimeProvider {
     RuntimeProvider::OpenAiApi.resolve()
+}
+
+pub const fn deepseek_provider() -> ResolvedRuntimeProvider {
+    RuntimeProvider::DeepSeek.resolve()
 }
 
 pub const fn ollama_provider() -> ResolvedRuntimeProvider {
@@ -324,6 +339,7 @@ pub(crate) fn bind_provider_runtime_session<R: Runtime>(
             }
         }
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::DeepSeek
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
@@ -413,6 +429,7 @@ pub(crate) fn reconcile_provider_runtime_session<R: Runtime>(
             }
         }
         RuntimeProvider::OpenAiApi
+        | RuntimeProvider::DeepSeek
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GitHubModels
@@ -479,6 +496,7 @@ pub fn logout_provider_runtime_session<R: Runtime>(
         | RuntimeProvider::Anthropic
         | RuntimeProvider::GitHubModels
         | RuntimeProvider::OpenAiApi
+        | RuntimeProvider::DeepSeek
         | RuntimeProvider::Ollama
         | RuntimeProvider::AzureOpenAi
         | RuntimeProvider::GeminiAiStudio
@@ -660,6 +678,7 @@ fn parse_provider_id(value: &str) -> Result<RuntimeProvider, AuthDiagnostic> {
         ANTHROPIC_PROVIDER_ID => Ok(RuntimeProvider::Anthropic),
         GITHUB_MODELS_PROVIDER_ID => Ok(RuntimeProvider::GitHubModels),
         OPENAI_API_PROVIDER_ID => Ok(RuntimeProvider::OpenAiApi),
+        DEEPSEEK_PROVIDER_ID => Ok(RuntimeProvider::DeepSeek),
         OLLAMA_PROVIDER_ID => Ok(RuntimeProvider::Ollama),
         AZURE_OPENAI_PROVIDER_ID => Ok(RuntimeProvider::AzureOpenAi),
         GEMINI_AI_STUDIO_PROVIDER_ID => Ok(RuntimeProvider::GeminiAiStudio),
@@ -675,6 +694,7 @@ fn parse_runtime_reference(value: &str) -> Result<RuntimeReference, AuthDiagnost
         OPENROUTER_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::OpenRouter)),
         ANTHROPIC_PROVIDER_ID => Ok(RuntimeReference::Family(RuntimeProviderFamily::Anthropic)),
         OPENAI_API_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::OpenAiApi)),
+        DEEPSEEK_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::DeepSeek)),
         OLLAMA_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::Ollama)),
         AZURE_OPENAI_PROVIDER_ID => Ok(RuntimeReference::Actual(RuntimeProvider::AzureOpenAi)),
         GEMINI_AI_STUDIO_PROVIDER_ID => {
@@ -694,7 +714,7 @@ fn unknown_runtime_provider_diagnostic(value: &str) -> AuthDiagnostic {
     AuthDiagnostic {
         code: "runtime_provider_unknown".into(),
         message: format!(
-            "Xero does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {OLLAMA_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}, {BEDROCK_PROVIDER_ID}, {VERTEX_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_RUNTIME_KIND}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
+            "Xero does not support runtime provider `{value}`. Allowed providers: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_PROVIDER_ID}, {GITHUB_MODELS_PROVIDER_ID}, {OPENAI_API_PROVIDER_ID}, {DEEPSEEK_PROVIDER_ID}, {OLLAMA_PROVIDER_ID}, {AZURE_OPENAI_PROVIDER_ID}, {GEMINI_AI_STUDIO_PROVIDER_ID}, {BEDROCK_PROVIDER_ID}, {VERTEX_PROVIDER_ID}. Allowed runtime kinds: {OPENAI_CODEX_PROVIDER_ID}, {OPENROUTER_PROVIDER_ID}, {ANTHROPIC_RUNTIME_KIND}, {OPENAI_COMPATIBLE_RUNTIME_KIND}, {DEEPSEEK_RUNTIME_KIND}, {GEMINI_RUNTIME_KIND}."
         ),
         retryable: false,
     }
@@ -757,5 +777,34 @@ impl From<AnthropicRuntimeSessionBinding> for RuntimeProviderSessionBinding {
             account_id: binding.account_id,
             updated_at: binding.updated_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deepseek_provider_identity_resolves_as_first_party_runtime() {
+        let provider = resolve_runtime_provider_identity(
+            Some(DEEPSEEK_PROVIDER_ID),
+            Some(DEEPSEEK_RUNTIME_KIND),
+        )
+        .expect("DeepSeek provider should resolve");
+
+        assert_eq!(provider.provider_id, DEEPSEEK_PROVIDER_ID);
+        assert_eq!(provider.runtime_kind, DEEPSEEK_RUNTIME_KIND);
+        assert_eq!(provider.family, RuntimeProviderFamily::DeepSeek);
+    }
+
+    #[test]
+    fn deepseek_provider_identity_rejects_mismatched_runtime_kind() {
+        let diagnostic = resolve_runtime_provider_identity(
+            Some(DEEPSEEK_PROVIDER_ID),
+            Some(OPENAI_COMPATIBLE_RUNTIME_KIND),
+        )
+        .expect_err("DeepSeek should not resolve through the generic runtime kind");
+
+        assert_eq!(diagnostic.code, "runtime_provider_mismatch");
     }
 }

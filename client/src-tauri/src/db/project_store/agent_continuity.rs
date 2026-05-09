@@ -12,8 +12,10 @@ use crate::{
 };
 
 use super::{
-    agent_core::runtime_agent_id_sql_value, open_runtime_database, read_project_row,
-    validate_non_empty_text,
+    agent_core::{load_agent_run, runtime_agent_id_sql_value, AgentRunStatus},
+    open_runtime_database,
+    project_record::{list_project_records, ProjectRecordKind},
+    read_project_row, validate_non_empty_text,
 };
 
 const DEFAULT_COMPACT_THRESHOLD_PERCENT: u8 = 75;
@@ -277,6 +279,49 @@ pub struct AgentHandoffLineageUpdateRecord {
     pub diagnostic: Option<JsonValue>,
     pub updated_at: String,
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentHandoffReconciliationReport {
+    pub project_id: String,
+    pub checked_at: String,
+    pub inspected_count: usize,
+    pub repaired_count: usize,
+    pub failed_count: usize,
+    pub diagnostics: Vec<AgentHandoffReconciliationDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentHandoffReconciliationDiagnostic {
+    pub handoff_id: String,
+    pub source_run_id: String,
+    pub target_run_id: Option<String>,
+    pub status_before: AgentHandoffLineageStatus,
+    pub status_after: AgentHandoffLineageStatus,
+    pub repaired_steps: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentHandoffComparisonReport {
+    pub handoff_id: String,
+    pub project_id: String,
+    pub source_run_id: String,
+    pub target_run_id: Option<String>,
+    pub source_manifest_id: Option<String>,
+    pub target_manifest_id: Option<String>,
+    pub drift_detected: bool,
+    pub diagnostics: Vec<AgentHandoffComparisonDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentHandoffComparisonDiagnostic {
+    pub code: String,
+    pub severity: String,
+    pub field: String,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -958,6 +1003,36 @@ pub fn get_agent_handoff_lineage_by_handoff_id(
         .transpose()
 }
 
+pub fn get_agent_handoff_lineage_by_target_run(
+    repo_root: &Path,
+    project_id: &str,
+    target_run_id: &str,
+) -> Result<Option<AgentHandoffLineageRecord>, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_handoff_lineage_project_required",
+    )?;
+    validate_non_empty_text(
+        target_run_id,
+        "targetRunId",
+        "agent_handoff_lineage_target_run_required",
+    )?;
+    let connection = open_continuity_database(repo_root)?;
+    connection
+        .query_row(
+            handoff_select_sql(
+                "WHERE project_id = ?1 AND target_run_id = ?2 ORDER BY updated_at DESC, id DESC LIMIT 1",
+            )
+            .as_str(),
+            params![project_id, target_run_id],
+            read_handoff_row,
+        )
+        .optional()
+        .map_err(map_continuity_read_error)?
+        .transpose()
+}
+
 pub fn list_agent_handoff_lineage_for_source(
     repo_root: &Path,
     project_id: &str,
@@ -1095,6 +1170,532 @@ pub fn update_agent_handoff_lineage(
                 "Xero updated handoff lineage but could not load it back.",
             )
         })
+}
+
+pub fn reconcile_agent_handoff_lineage(
+    repo_root: &Path,
+    project_id: &str,
+    checked_at: &str,
+) -> Result<AgentHandoffReconciliationReport, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_handoff_reconciliation_project_required",
+    )?;
+    validate_non_empty_text(
+        checked_at,
+        "checkedAt",
+        "agent_handoff_reconciliation_checked_at_required",
+    )?;
+
+    let mut lineages = list_agent_handoff_lineage_by_status(
+        repo_root,
+        project_id,
+        &[
+            AgentHandoffLineageStatus::Pending,
+            AgentHandoffLineageStatus::Recorded,
+            AgentHandoffLineageStatus::TargetCreated,
+            AgentHandoffLineageStatus::Failed,
+        ],
+    )?;
+    lineages.sort_by(|left, right| {
+        left.updated_at
+            .cmp(&right.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut report = AgentHandoffReconciliationReport {
+        project_id: project_id.to_string(),
+        checked_at: checked_at.to_string(),
+        inspected_count: lineages.len(),
+        repaired_count: 0,
+        failed_count: 0,
+        diagnostics: Vec::new(),
+    };
+
+    for lineage in lineages {
+        match reconcile_agent_handoff_lineage_record(repo_root, &lineage, checked_at) {
+            Ok(repaired) => {
+                let diagnostic =
+                    handoff_reconciliation_diagnostic(repo_root, &lineage, &repaired, checked_at)?;
+                if !diagnostic.repaired_steps.is_empty() {
+                    report.repaired_count += 1;
+                }
+                if repaired.status == AgentHandoffLineageStatus::Failed {
+                    report.failed_count += 1;
+                }
+                report.diagnostics.push(diagnostic);
+            }
+            Err(error) => {
+                report.failed_count += 1;
+                report
+                    .diagnostics
+                    .push(AgentHandoffReconciliationDiagnostic {
+                        handoff_id: lineage.handoff_id.clone(),
+                        source_run_id: lineage.source_run_id.clone(),
+                        target_run_id: lineage.target_run_id.clone(),
+                        status_before: lineage.status.clone(),
+                        status_after: AgentHandoffLineageStatus::Failed,
+                        repaired_steps: Vec::new(),
+                        message: error.message,
+                    });
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+pub fn reconcile_agent_handoff_lineage_record(
+    repo_root: &Path,
+    lineage: &AgentHandoffLineageRecord,
+    checked_at: &str,
+) -> Result<AgentHandoffLineageRecord, CommandError> {
+    validate_non_empty_text(
+        checked_at,
+        "checkedAt",
+        "agent_handoff_reconciliation_checked_at_required",
+    )?;
+
+    let handoff_record_id = find_existing_handoff_record_id(repo_root, lineage)?;
+    let target_snapshot = lineage
+        .target_run_id
+        .as_deref()
+        .or_else(|| {
+            lineage
+                .bundle
+                .get("target")
+                .and_then(|target| target.get("runId").and_then(JsonValue::as_str))
+        })
+        .and_then(|target_run_id| {
+            load_agent_run(repo_root, &lineage.project_id, target_run_id).ok()
+        });
+    let source_snapshot = load_agent_run(repo_root, &lineage.project_id, &lineage.source_run_id)?;
+    let source_marked_handed_off = source_snapshot.run.status == AgentRunStatus::HandedOff;
+    let target_agent_session_id = target_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.run.agent_session_id.clone())
+        .or_else(|| lineage.target_agent_session_id.clone());
+    let target_run_id = target_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.run.run_id.clone())
+        .or_else(|| lineage.target_run_id.clone());
+    let status_after = reconciled_handoff_status(
+        &lineage.status,
+        handoff_record_id.as_deref(),
+        target_snapshot.is_some(),
+        source_marked_handed_off,
+    );
+    let repaired_steps = handoff_reconciliation_steps(
+        lineage,
+        handoff_record_id.as_deref(),
+        target_run_id.as_deref(),
+        target_agent_session_id.as_deref(),
+        &status_after,
+    );
+    if repaired_steps.is_empty() && lineage.diagnostic.is_some() {
+        return Ok(lineage.clone());
+    }
+
+    let diagnostic = serde_json::json!({
+        "schema": "xero.agent_handoff_reconciliation.v1",
+        "checkedAt": checked_at,
+        "handoffRecordFound": handoff_record_id.is_some(),
+        "targetRunFound": target_snapshot.is_some(),
+        "sourceRunStatus": agent_run_status_sql_value_for_reconciliation(&source_snapshot.run.status),
+        "sourceMarkedHandedOff": source_marked_handed_off,
+        "statusBefore": handoff_lineage_status_sql_value(&lineage.status),
+        "statusAfter": handoff_lineage_status_sql_value(&status_after),
+        "repairedSteps": repaired_steps,
+    });
+
+    update_agent_handoff_lineage(
+        repo_root,
+        &AgentHandoffLineageUpdateRecord {
+            project_id: lineage.project_id.clone(),
+            handoff_id: lineage.handoff_id.clone(),
+            target_agent_session_id,
+            target_run_id,
+            status: status_after.clone(),
+            handoff_record_id,
+            bundle: lineage.bundle.clone(),
+            diagnostic: Some(diagnostic),
+            updated_at: checked_at.to_string(),
+            completed_at: if status_after == AgentHandoffLineageStatus::Completed {
+                Some(checked_at.to_string())
+            } else {
+                lineage.completed_at.clone()
+            },
+        },
+    )
+}
+
+pub fn compare_agent_handoff_diagnostics(
+    repo_root: &Path,
+    project_id: &str,
+    handoff_id: &str,
+) -> Result<AgentHandoffComparisonReport, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_handoff_comparison_project_required",
+    )?;
+    validate_non_empty_text(
+        handoff_id,
+        "handoffId",
+        "agent_handoff_comparison_handoff_required",
+    )?;
+    let lineage = get_agent_handoff_lineage_by_handoff_id(repo_root, project_id, handoff_id)?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_handoff_lineage_not_found",
+                format!("Xero could not find handoff lineage `{handoff_id}`."),
+            )
+        })?;
+    let source = load_agent_run(repo_root, project_id, &lineage.source_run_id)?;
+    let target = lineage
+        .target_run_id
+        .as_deref()
+        .map(|target_run_id| load_agent_run(repo_root, project_id, target_run_id))
+        .transpose()?;
+    let source_manifest = latest_context_manifest(repo_root, project_id, &lineage.source_run_id)?;
+    let target_manifest = target
+        .as_ref()
+        .map(|snapshot| latest_context_manifest(repo_root, project_id, &snapshot.run.run_id))
+        .transpose()?
+        .flatten();
+
+    let mut diagnostics = Vec::new();
+    compare_text_field(
+        &mut diagnostics,
+        "runtime_agent_id",
+        lineage.source_runtime_agent_id.as_str(),
+        target
+            .as_ref()
+            .map(|snapshot| snapshot.run.runtime_agent_id.as_str()),
+    );
+    compare_text_field(
+        &mut diagnostics,
+        "provider_id",
+        lineage.provider_id.as_str(),
+        target
+            .as_ref()
+            .map(|snapshot| snapshot.run.provider_id.as_str()),
+    );
+    compare_text_field(
+        &mut diagnostics,
+        "model_id",
+        lineage.model_id.as_str(),
+        target
+            .as_ref()
+            .map(|snapshot| snapshot.run.model_id.as_str()),
+    );
+    compare_text_field(
+        &mut diagnostics,
+        "agent_definition_id",
+        lineage.source_agent_definition_id.as_str(),
+        target
+            .as_ref()
+            .map(|snapshot| snapshot.run.agent_definition_id.as_str()),
+    );
+    let expected_definition_version = lineage.source_agent_definition_version.to_string();
+    let actual_definition_version = target
+        .as_ref()
+        .map(|snapshot| snapshot.run.agent_definition_version.to_string());
+    compare_text_field(
+        &mut diagnostics,
+        "agent_definition_version",
+        &expected_definition_version,
+        actual_definition_version.as_deref(),
+    );
+    compare_text_field(
+        &mut diagnostics,
+        "target_manifest_handoff_id",
+        lineage.handoff_id.as_str(),
+        target_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.handoff_id.as_deref()),
+    );
+    compare_text_field(
+        &mut diagnostics,
+        "target_manifest_provider_id",
+        lineage.provider_id.as_str(),
+        target_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.provider_id.as_deref()),
+    );
+    compare_text_field(
+        &mut diagnostics,
+        "target_manifest_model_id",
+        lineage.model_id.as_str(),
+        target_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.model_id.as_deref()),
+    );
+    compare_manifest_tool_names(
+        &mut diagnostics,
+        source_manifest.as_ref(),
+        target_manifest.as_ref(),
+    );
+    compare_manifest_context_policy(
+        &mut diagnostics,
+        source_manifest.as_ref(),
+        target_manifest.as_ref(),
+    );
+    if target.is_none() {
+        diagnostics.push(AgentHandoffComparisonDiagnostic {
+            code: "agent_handoff_target_missing".into(),
+            severity: "error".into(),
+            field: "target_run_id".into(),
+            expected: lineage.target_run_id.clone(),
+            actual: None,
+            message: "The handoff lineage does not point to a loadable target run.".into(),
+        });
+    }
+
+    Ok(AgentHandoffComparisonReport {
+        handoff_id: lineage.handoff_id,
+        project_id: lineage.project_id,
+        source_run_id: source.run.run_id,
+        target_run_id: target.map(|snapshot| snapshot.run.run_id),
+        source_manifest_id: source_manifest.map(|manifest| manifest.manifest_id),
+        target_manifest_id: target_manifest.map(|manifest| manifest.manifest_id),
+        drift_detected: diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == "warning" || diagnostic.severity == "error"),
+        diagnostics,
+    })
+}
+
+fn find_existing_handoff_record_id(
+    repo_root: &Path,
+    lineage: &AgentHandoffLineageRecord,
+) -> Result<Option<String>, CommandError> {
+    let records = list_project_records(repo_root, &lineage.project_id)?;
+    if let Some(record_id) = lineage.handoff_record_id.as_deref() {
+        if records.iter().any(|record| record.record_id == record_id) {
+            return Ok(Some(record_id.to_string()));
+        }
+    }
+    let source_item_id = format!("agent_handoff_lineage:{}", lineage.handoff_id);
+    Ok(records
+        .iter()
+        .filter(|record| record.record_kind == ProjectRecordKind::AgentHandoff)
+        .find(|record| {
+            record
+                .source_item_ids
+                .iter()
+                .any(|item| item == &source_item_id)
+                || record
+                    .content_json
+                    .as_ref()
+                    .and_then(|content| content.get("sourceContextHash"))
+                    .and_then(JsonValue::as_str)
+                    == Some(lineage.source_context_hash.as_str())
+        })
+        .map(|record| record.record_id.clone()))
+}
+
+fn reconciled_handoff_status(
+    current: &AgentHandoffLineageStatus,
+    handoff_record_id: Option<&str>,
+    target_run_exists: bool,
+    source_marked_handed_off: bool,
+) -> AgentHandoffLineageStatus {
+    if handoff_record_id.is_some() && target_run_exists && source_marked_handed_off {
+        AgentHandoffLineageStatus::Completed
+    } else if handoff_record_id.is_some() && target_run_exists {
+        AgentHandoffLineageStatus::TargetCreated
+    } else if handoff_record_id.is_some() {
+        AgentHandoffLineageStatus::Recorded
+    } else if current == &AgentHandoffLineageStatus::Failed {
+        AgentHandoffLineageStatus::Failed
+    } else {
+        AgentHandoffLineageStatus::Pending
+    }
+}
+
+fn handoff_reconciliation_steps(
+    before: &AgentHandoffLineageRecord,
+    handoff_record_id: Option<&str>,
+    target_run_id: Option<&str>,
+    target_agent_session_id: Option<&str>,
+    status_after: &AgentHandoffLineageStatus,
+) -> Vec<String> {
+    let mut steps = Vec::new();
+    if before.handoff_record_id.as_deref() != handoff_record_id {
+        steps.push("handoff_record_id".into());
+    }
+    if before.target_run_id.as_deref() != target_run_id {
+        steps.push("target_run_id".into());
+    }
+    if before.target_agent_session_id.as_deref() != target_agent_session_id {
+        steps.push("target_agent_session_id".into());
+    }
+    if before.status != *status_after {
+        steps.push("status".into());
+    }
+    steps
+}
+
+fn handoff_reconciliation_diagnostic(
+    repo_root: &Path,
+    before: &AgentHandoffLineageRecord,
+    after: &AgentHandoffLineageRecord,
+    checked_at: &str,
+) -> Result<AgentHandoffReconciliationDiagnostic, CommandError> {
+    let repaired_steps = handoff_reconciliation_steps(
+        before,
+        after.handoff_record_id.as_deref(),
+        after.target_run_id.as_deref(),
+        after.target_agent_session_id.as_deref(),
+        &after.status,
+    );
+    let source_status = load_agent_run(repo_root, &after.project_id, &after.source_run_id)
+        .map(|snapshot| format!("{:?}", snapshot.run.status))
+        .unwrap_or_else(|_| "unknown".into());
+    let message = if repaired_steps.is_empty() {
+        format!(
+            "Handoff `{}` needed no lineage repair at {}. Source run status: {}.",
+            after.handoff_id, checked_at, source_status
+        )
+    } else {
+        format!(
+            "Handoff `{}` repaired {} at {}. Source run status: {}.",
+            after.handoff_id,
+            repaired_steps.join(", "),
+            checked_at,
+            source_status
+        )
+    };
+    Ok(AgentHandoffReconciliationDiagnostic {
+        handoff_id: after.handoff_id.clone(),
+        source_run_id: after.source_run_id.clone(),
+        target_run_id: after.target_run_id.clone(),
+        status_before: before.status.clone(),
+        status_after: after.status.clone(),
+        repaired_steps,
+        message,
+    })
+}
+
+fn latest_context_manifest(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<AgentContextManifestRecord>, CommandError> {
+    let mut manifests = list_agent_context_manifests_for_run(repo_root, project_id, run_id)?;
+    Ok(manifests.pop())
+}
+
+fn compare_text_field(
+    diagnostics: &mut Vec<AgentHandoffComparisonDiagnostic>,
+    field: &str,
+    expected: &str,
+    actual: Option<&str>,
+) {
+    if actual == Some(expected) {
+        return;
+    }
+    diagnostics.push(AgentHandoffComparisonDiagnostic {
+        code: "agent_handoff_runtime_drift".into(),
+        severity: if actual.is_some() { "warning" } else { "error" }.into(),
+        field: field.into(),
+        expected: Some(expected.into()),
+        actual: actual.map(ToOwned::to_owned),
+        message: format!(
+            "Handoff comparison found `{field}` drift: expected `{}` but observed `{}`.",
+            expected,
+            actual.unwrap_or("(missing)")
+        ),
+    });
+}
+
+fn compare_manifest_tool_names(
+    diagnostics: &mut Vec<AgentHandoffComparisonDiagnostic>,
+    source_manifest: Option<&AgentContextManifestRecord>,
+    target_manifest: Option<&AgentContextManifestRecord>,
+) {
+    let source_tools = source_manifest.map(context_manifest_tool_name_list);
+    let target_tools = target_manifest.map(context_manifest_tool_name_list);
+    if source_tools == target_tools {
+        return;
+    }
+    diagnostics.push(AgentHandoffComparisonDiagnostic {
+        code: "agent_handoff_tool_policy_drift".into(),
+        severity: if target_tools.is_some() {
+            "warning"
+        } else {
+            "error"
+        }
+        .into(),
+        field: "tool_policy".into(),
+        expected: source_tools.map(|tools| tools.join(",")),
+        actual: target_tools.map(|tools| tools.join(",")),
+        message:
+            "Handoff comparison found a difference between source and target manifest tool policy."
+                .into(),
+    });
+}
+
+fn compare_manifest_context_policy(
+    diagnostics: &mut Vec<AgentHandoffComparisonDiagnostic>,
+    source_manifest: Option<&AgentContextManifestRecord>,
+    target_manifest: Option<&AgentContextManifestRecord>,
+) {
+    let source_policy = source_manifest.and_then(|manifest| {
+        manifest
+            .manifest
+            .get("policy")
+            .and_then(|policy| policy.get("reasonCode"))
+            .and_then(JsonValue::as_str)
+    });
+    let target_policy = target_manifest.and_then(|manifest| {
+        manifest
+            .manifest
+            .get("policy")
+            .and_then(|policy| policy.get("reasonCode"))
+            .and_then(JsonValue::as_str)
+    });
+    if source_policy == target_policy || target_policy.is_none() {
+        return;
+    }
+    diagnostics.push(AgentHandoffComparisonDiagnostic {
+        code: "agent_handoff_context_policy_drift".into(),
+        severity: "warning".into(),
+        field: "context_policy".into(),
+        expected: source_policy.map(ToOwned::to_owned),
+        actual: target_policy.map(ToOwned::to_owned),
+        message: "Handoff comparison found a source/target context-policy reason mismatch.".into(),
+    });
+}
+
+fn context_manifest_tool_name_list(manifest: &AgentContextManifestRecord) -> Vec<String> {
+    let mut tools = manifest
+        .manifest
+        .get("toolDescriptors")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("name").and_then(JsonValue::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    tools.sort();
+    tools.dedup();
+    tools
+}
+
+fn agent_run_status_sql_value_for_reconciliation(status: &AgentRunStatus) -> &'static str {
+    match status {
+        AgentRunStatus::Starting => "starting",
+        AgentRunStatus::Running => "running",
+        AgentRunStatus::Paused => "paused",
+        AgentRunStatus::Cancelling => "cancelling",
+        AgentRunStatus::Cancelled => "cancelled",
+        AgentRunStatus::HandedOff => "handed_off",
+        AgentRunStatus::Completed => "completed",
+        AgentRunStatus::Failed => "failed",
+    }
 }
 
 pub fn insert_agent_retrieval_query_log(

@@ -74,7 +74,7 @@ pub enum AgentToolCallState {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRunDiagnosticRecord {
     pub code: String,
     pub message: String,
@@ -114,6 +114,7 @@ pub struct AgentMessageRecord {
     pub run_id: String,
     pub role: AgentMessageRole,
     pub content: String,
+    pub provider_metadata_json: Option<String>,
     pub created_at: String,
     pub attachments: Vec<AgentMessageAttachmentRecord>,
 }
@@ -282,6 +283,44 @@ pub struct AgentUsageRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSubagentTaskRecord {
+    pub project_id: String,
+    pub parent_run_id: String,
+    pub subagent_id: String,
+    pub role: String,
+    pub role_label: String,
+    pub prompt_hash: String,
+    pub prompt_preview: String,
+    pub model_id: Option<String>,
+    pub write_set_json: String,
+    pub verification_contract: String,
+    pub depth: u64,
+    pub max_tool_calls: u64,
+    pub max_tokens: u64,
+    pub max_cost_micros: u64,
+    pub used_tool_calls: u64,
+    pub used_tokens: u64,
+    pub used_cost_micros: u64,
+    pub budget_status: String,
+    pub budget_diagnostic_json: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub integrated_at: Option<String>,
+    pub child_run_id: Option<String>,
+    pub child_trace_id: Option<String>,
+    pub parent_trace_id: Option<String>,
+    pub input_log_json: String,
+    pub result_summary: Option<String>,
+    pub result_artifact: Option<String>,
+    pub parent_decision: Option<String>,
+    pub latest_summary: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRunSnapshotRecord {
     pub run: AgentRunRecord,
     pub messages: Vec<AgentMessageRecord>,
@@ -324,6 +363,7 @@ pub struct NewAgentMessageRecord {
     pub run_id: String,
     pub role: AgentMessageRole,
     pub content: String,
+    pub provider_metadata_json: Option<String>,
     pub created_at: String,
     pub attachments: Vec<NewMessageAttachmentInput>,
 }
@@ -485,7 +525,18 @@ pub fn append_agent_message(
 ) -> Result<AgentMessageRecord, CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
-    validate_non_empty_text(&record.content, "content")?;
+    if record.content.trim().is_empty()
+        && !(matches!(record.role, AgentMessageRole::Assistant)
+            && record
+                .provider_metadata_json
+                .as_deref()
+                .is_some_and(|metadata| !metadata.trim().is_empty()))
+    {
+        validate_non_empty_text(&record.content, "content")?;
+    }
+    if let Some(metadata_json) = record.provider_metadata_json.as_deref() {
+        validate_provider_metadata_json(metadata_json)?;
+    }
     let mut connection = open_agent_database(repo_root)?;
     let transaction = connection.transaction().map_err(|error| {
         map_agent_store_write_error(repo_root, "agent_message_transaction_failed", error)
@@ -493,14 +544,22 @@ pub fn append_agent_message(
     transaction
         .execute(
             r#"
-            INSERT INTO agent_messages (project_id, run_id, role, content, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            INSERT INTO agent_messages (
+                project_id,
+                run_id,
+                role,
+                content,
+                provider_metadata_json,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
             "#,
             params![
                 record.project_id,
                 record.run_id,
                 agent_message_role_sql_value(&record.role),
                 record.content,
+                record.provider_metadata_json,
                 record.created_at,
             ],
         )
@@ -583,6 +642,7 @@ pub fn append_agent_message(
         run_id: record.run_id.clone(),
         role: record.role.clone(),
         content: record.content.clone(),
+        provider_metadata_json: record.provider_metadata_json.clone(),
         created_at: record.created_at.clone(),
         attachments: stored_attachments,
     })
@@ -1777,6 +1837,188 @@ pub fn load_agent_usage(
         .map_err(|error| map_agent_store_query_error(repo_root, "agent_usage_read_failed", error))
 }
 
+pub fn upsert_agent_subagent_task(
+    repo_root: &Path,
+    record: &AgentSubagentTaskRecord,
+) -> Result<(), CommandError> {
+    validate_agent_subagent_task(record)?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO agent_subagent_tasks (
+                project_id,
+                parent_run_id,
+                subagent_id,
+                role,
+                role_label,
+                prompt_hash,
+                prompt_preview,
+                model_id,
+                write_set_json,
+                verification_contract,
+                depth,
+                max_tool_calls,
+                max_tokens,
+                max_cost_micros,
+                used_tool_calls,
+                used_tokens,
+                used_cost_micros,
+                budget_status,
+                budget_diagnostic_json,
+                status,
+                created_at,
+                started_at,
+                completed_at,
+                cancelled_at,
+                integrated_at,
+                child_run_id,
+                child_trace_id,
+                parent_trace_id,
+                input_log_json,
+                result_summary,
+                result_artifact,
+                parent_decision,
+                latest_summary,
+                updated_at
+            )
+            VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30,
+                ?31, ?32, ?33, ?34
+            )
+            ON CONFLICT(project_id, parent_run_id, subagent_id) DO UPDATE SET
+                role = excluded.role,
+                role_label = excluded.role_label,
+                prompt_hash = excluded.prompt_hash,
+                prompt_preview = excluded.prompt_preview,
+                model_id = excluded.model_id,
+                write_set_json = excluded.write_set_json,
+                verification_contract = excluded.verification_contract,
+                depth = excluded.depth,
+                max_tool_calls = excluded.max_tool_calls,
+                max_tokens = excluded.max_tokens,
+                max_cost_micros = excluded.max_cost_micros,
+                used_tool_calls = excluded.used_tool_calls,
+                used_tokens = excluded.used_tokens,
+                used_cost_micros = excluded.used_cost_micros,
+                budget_status = excluded.budget_status,
+                budget_diagnostic_json = excluded.budget_diagnostic_json,
+                status = excluded.status,
+                started_at = excluded.started_at,
+                completed_at = excluded.completed_at,
+                cancelled_at = excluded.cancelled_at,
+                integrated_at = excluded.integrated_at,
+                child_run_id = excluded.child_run_id,
+                child_trace_id = excluded.child_trace_id,
+                parent_trace_id = excluded.parent_trace_id,
+                input_log_json = excluded.input_log_json,
+                result_summary = excluded.result_summary,
+                result_artifact = excluded.result_artifact,
+                parent_decision = excluded.parent_decision,
+                latest_summary = excluded.latest_summary,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                record.project_id,
+                record.parent_run_id,
+                record.subagent_id,
+                record.role,
+                record.role_label,
+                record.prompt_hash,
+                record.prompt_preview,
+                record.model_id,
+                record.write_set_json,
+                record.verification_contract,
+                record.depth,
+                record.max_tool_calls,
+                record.max_tokens,
+                record.max_cost_micros,
+                record.used_tool_calls,
+                record.used_tokens,
+                record.used_cost_micros,
+                record.budget_status,
+                record.budget_diagnostic_json,
+                record.status,
+                record.created_at,
+                record.started_at,
+                record.completed_at,
+                record.cancelled_at,
+                record.integrated_at,
+                record.child_run_id,
+                record.child_trace_id,
+                record.parent_trace_id,
+                record.input_log_json,
+                record.result_summary,
+                record.result_artifact,
+                record.parent_decision,
+                record.latest_summary,
+                record.updated_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_subagent_task_upsert_failed", error)
+        })?;
+    Ok(())
+}
+
+pub fn load_agent_subagent_task(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+    subagent_id: &str,
+) -> Result<Option<AgentSubagentTaskRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(parent_run_id, "parentRunId")?;
+    validate_non_empty_text(subagent_id, "subagentId")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .query_row(
+            agent_subagent_task_select_sql(
+                "WHERE project_id = ?1 AND parent_run_id = ?2 AND subagent_id = ?3",
+            )
+            .as_str(),
+            params![project_id, parent_run_id, subagent_id],
+            read_agent_subagent_task_row,
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_subagent_task_read_failed", error)
+        })
+}
+
+pub fn list_agent_subagent_tasks_for_parent(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+) -> Result<Vec<AgentSubagentTaskRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(parent_run_id, "parentRunId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            agent_subagent_task_select_sql(
+                "WHERE project_id = ?1 AND parent_run_id = ?2 ORDER BY created_at ASC, subagent_id ASC",
+            )
+            .as_str(),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_subagent_tasks_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map(
+            params![project_id, parent_run_id],
+            read_agent_subagent_task_row,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_subagent_tasks_query_failed", error)
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_agent_store_query_error(repo_root, "agent_subagent_tasks_decode_failed", error)
+    })
+}
+
 /// Aggregate token + cost totals across every agent run for one project.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProjectUsageTotalsRecord {
@@ -2139,6 +2381,41 @@ fn validate_agent_run(record: &NewAgentRunRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.system_prompt, "systemPrompt")
 }
 
+fn validate_agent_subagent_task(record: &AgentSubagentTaskRecord) -> Result<(), CommandError> {
+    validate_non_empty_text(&record.project_id, "projectId")?;
+    validate_non_empty_text(&record.parent_run_id, "parentRunId")?;
+    validate_non_empty_text(&record.subagent_id, "subagentId")?;
+    validate_non_empty_text(&record.role, "role")?;
+    validate_non_empty_text(&record.role_label, "roleLabel")?;
+    if !is_lowercase_sha256(&record.prompt_hash) {
+        return Err(CommandError::invalid_request("promptHash"));
+    }
+    if let Some(model_id) = record.model_id.as_ref() {
+        validate_non_empty_text(model_id, "modelId")?;
+    }
+    validate_json_payload(&record.write_set_json, "writeSetJson")?;
+    validate_non_empty_text(&record.verification_contract, "verificationContract")?;
+    validate_non_empty_text(&record.budget_status, "budgetStatus")?;
+    if let Some(diagnostic_json) = record.budget_diagnostic_json.as_ref() {
+        validate_json_payload(diagnostic_json, "budgetDiagnosticJson")?;
+    }
+    validate_non_empty_text(&record.status, "status")?;
+    validate_non_empty_text(&record.created_at, "createdAt")?;
+    if let Some(child_run_id) = record.child_run_id.as_ref() {
+        validate_non_empty_text(child_run_id, "childRunId")?;
+    }
+    validate_optional_trace_id(record.child_trace_id.as_deref(), "childTraceId")?;
+    validate_optional_trace_id(record.parent_trace_id.as_deref(), "parentTraceId")?;
+    validate_json_payload(&record.input_log_json, "inputLogJson")?;
+    if let Some(result_artifact) = record.result_artifact.as_ref() {
+        validate_non_empty_text(result_artifact, "resultArtifact")?;
+    }
+    if let Some(parent_decision) = record.parent_decision.as_ref() {
+        validate_non_empty_text(parent_decision, "parentDecision")?;
+    }
+    validate_non_empty_text(&record.updated_at, "updatedAt")
+}
+
 fn open_agent_database(repo_root: &Path) -> Result<rusqlite::Connection, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     open_runtime_database(repo_root, &database_path)
@@ -2158,6 +2435,16 @@ fn validate_json_payload(value: &str, field: &'static str) -> Result<(), Command
         .map_err(|_| CommandError::invalid_request(field))
 }
 
+fn validate_provider_metadata_json(value: &str) -> Result<(), CommandError> {
+    validate_non_empty_text(value, "providerMetadata")?;
+    let parsed = serde_json::from_str::<JsonValue>(value)
+        .map_err(|_| CommandError::invalid_request("providerMetadata"))?;
+    if !parsed.is_object() {
+        return Err(CommandError::invalid_request("providerMetadata"));
+    }
+    Ok(())
+}
+
 fn validate_optional_sha256(value: Option<&str>, field: &'static str) -> Result<(), CommandError> {
     match value {
         Some(value) if is_lowercase_sha256(value) => Ok(()),
@@ -2166,8 +2453,26 @@ fn validate_optional_sha256(value: Option<&str>, field: &'static str) -> Result<
     }
 }
 
+fn validate_optional_trace_id(
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<(), CommandError> {
+    match value {
+        Some(value) if is_lowercase_trace_id(value) => Ok(()),
+        Some(_) => Err(CommandError::invalid_request(field)),
+        None => Ok(()),
+    }
+}
+
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_lowercase_trace_id(value: &str) -> bool {
+    value.len() == 32
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -2182,7 +2487,7 @@ fn read_agent_messages(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, project_id, run_id, role, content, created_at
+            SELECT id, project_id, run_id, role, content, provider_metadata_json, created_at
             FROM agent_messages
             WHERE project_id = ?1
               AND run_id = ?2
@@ -2200,7 +2505,8 @@ fn read_agent_messages(
                 run_id: row.get(2)?,
                 role: parse_agent_message_role(row.get::<_, String>(3)?.as_str()),
                 content: row.get(4)?,
-                created_at: row.get(5)?,
+                provider_metadata_json: row.get(5)?,
+                created_at: row.get(6)?,
                 attachments: Vec::new(),
             })
         })
@@ -2547,6 +2853,89 @@ fn read_agent_action_requests(
         })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
         map_agent_store_query_error(repo_root, "agent_action_requests_decode_failed", error)
+    })
+}
+
+fn agent_subagent_task_select_sql(where_clause: &str) -> String {
+    format!(
+        r#"
+        SELECT
+            project_id,
+            parent_run_id,
+            subagent_id,
+            role,
+            role_label,
+            prompt_hash,
+            prompt_preview,
+            model_id,
+            write_set_json,
+            verification_contract,
+            depth,
+            max_tool_calls,
+            max_tokens,
+            max_cost_micros,
+            used_tool_calls,
+            used_tokens,
+            used_cost_micros,
+            budget_status,
+            budget_diagnostic_json,
+            status,
+            created_at,
+            started_at,
+            completed_at,
+            cancelled_at,
+            integrated_at,
+            child_run_id,
+            child_trace_id,
+            parent_trace_id,
+            input_log_json,
+            result_summary,
+            result_artifact,
+            parent_decision,
+            latest_summary,
+            updated_at
+        FROM agent_subagent_tasks
+        {where_clause}
+        "#
+    )
+}
+
+fn read_agent_subagent_task_row(row: &Row<'_>) -> rusqlite::Result<AgentSubagentTaskRecord> {
+    Ok(AgentSubagentTaskRecord {
+        project_id: row.get(0)?,
+        parent_run_id: row.get(1)?,
+        subagent_id: row.get(2)?,
+        role: row.get(3)?,
+        role_label: row.get(4)?,
+        prompt_hash: row.get(5)?,
+        prompt_preview: row.get(6)?,
+        model_id: row.get(7)?,
+        write_set_json: row.get(8)?,
+        verification_contract: row.get(9)?,
+        depth: read_nonnegative_u64(row, 10)?,
+        max_tool_calls: read_nonnegative_u64(row, 11)?,
+        max_tokens: read_nonnegative_u64(row, 12)?,
+        max_cost_micros: read_nonnegative_u64(row, 13)?,
+        used_tool_calls: read_nonnegative_u64(row, 14)?,
+        used_tokens: read_nonnegative_u64(row, 15)?,
+        used_cost_micros: read_nonnegative_u64(row, 16)?,
+        budget_status: row.get(17)?,
+        budget_diagnostic_json: row.get(18)?,
+        status: row.get(19)?,
+        created_at: row.get(20)?,
+        started_at: row.get(21)?,
+        completed_at: row.get(22)?,
+        cancelled_at: row.get(23)?,
+        integrated_at: row.get(24)?,
+        child_run_id: row.get(25)?,
+        child_trace_id: row.get(26)?,
+        parent_trace_id: row.get(27)?,
+        input_log_json: row.get(28)?,
+        result_summary: row.get(29)?,
+        result_artifact: row.get(30)?,
+        parent_decision: row.get(31)?,
+        latest_summary: row.get(32)?,
+        updated_at: row.get(33)?,
     })
 }
 

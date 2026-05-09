@@ -650,14 +650,22 @@ fn copy_replay_messages(
         transaction
             .execute(
                 r#"
-                INSERT INTO agent_messages (project_id, run_id, role, content, created_at)
-                VALUES (?1, ?2, ?3, ?4, ?5)
+                INSERT INTO agent_messages (
+                    project_id,
+                    run_id,
+                    role,
+                    content,
+                    provider_metadata_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                 "#,
                 params![
                     message.project_id.as_str(),
                     replay_run_id,
                     agent_message_role_sql_value(&message.role),
                     message.content.as_str(),
+                    message.provider_metadata_json.as_deref(),
                     message.created_at.as_str(),
                 ],
             )

@@ -6,6 +6,7 @@ use super::*;
 const CONTEXT_PACKAGE_SCHEMA: &str = "xero.provider_context_package.v1";
 const MAX_RETRIEVAL_QUERY_CHARS: usize = 4_000;
 const DEFAULT_RETRIEVAL_LIMIT: u32 = 6;
+const MAX_FIRST_TURN_RETRIEVAL_LIMIT: u32 = 12;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderContextPackage {
@@ -41,12 +42,25 @@ pub(crate) fn assemble_provider_context_package(
     skill_contexts: Vec<XeroSkillToolContextPayload>,
 ) -> CommandResult<ProviderContextPackage> {
     let created_at = now_timestamp();
-    let retrieved_project_context = retrieve_project_context(&input, &created_at)?;
+    let first_turn_context_policy =
+        FirstTurnContextPolicy::from_agent_definition_snapshot(input.agent_definition_snapshot);
+    let retrieved_project_context =
+        retrieve_project_context(&input, &created_at, &first_turn_context_policy)?;
+    let working_set_context = if first_turn_context_policy.auto_summary_enabled {
+        source_cited_working_set_context(&retrieved_project_context)
+    } else {
+        None
+    };
     let active_coordination_context = project_store::active_agent_coordination_context(
         input.repo_root,
         input.project_id,
         input.run_id,
         &created_at,
+    )?;
+    let handoff_lineage = project_store::get_agent_handoff_lineage_by_target_run(
+        input.repo_root,
+        input.project_id,
+        input.run_id,
     )?;
     let active_coordination_summary =
         active_coordination_prompt_summary(&active_coordination_context);
@@ -66,6 +80,11 @@ pub(crate) fn assemble_provider_context_package(
     .with_agent_definition_snapshot(input.agent_definition_snapshot)
     .with_owned_process_summary(input.owned_process_summary)
     .with_active_coordination_summary(active_coordination_summary.as_deref())
+    .with_working_set_summary(
+        working_set_context
+            .as_ref()
+            .map(|context| context.prompt_summary.as_str()),
+    )
     .with_skill_contexts(skill_contexts)
     .with_relevant_paths(relevant_paths.iter().map(String::as_str))
     .with_prompt_budget_tokens(budget_tokens)
@@ -79,12 +98,44 @@ pub(crate) fn assemble_provider_context_package(
     let (message_contributors, messages_json, messages_redacted) =
         provider_message_manifest_entries(input.messages)?;
     let (tool_contributors, tool_descriptors_json) = tool_descriptor_manifest_entries(input.tools)?;
+    let consumed_artifact_preflight = consumed_artifact_preflight(
+        input.repo_root,
+        input.project_id,
+        input.agent_definition_snapshot,
+    )?;
+    let (agent_definition_contributors, agent_definition_json, agent_definition_redacted) =
+        agent_definition_manifest_entries(
+            input.agent_definition_snapshot,
+            consumed_artifact_preflight,
+        )?;
     let (coordination_contributors, coordination_json) =
         active_coordination_manifest_entries(&active_coordination_context, input.tools);
     let mut included = included_contributors;
     included.extend(message_contributors);
     included.extend(tool_contributors);
+    included.extend(agent_definition_contributors);
     included.extend(coordination_contributors);
+    if let Some(lineage) = handoff_lineage.as_ref() {
+        included.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!("handoff_lineage:{}", lineage.handoff_id),
+            kind: "handoff_lineage".into(),
+            source_id: Some(lineage.handoff_id.clone()),
+            estimated_tokens: estimate_tokens(&lineage.source_context_hash),
+            reason: Some("included_as_first_turn_handoff_context".into()),
+        });
+    }
+    if let Some(context) = working_set_context.as_ref() {
+        included.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: format!(
+                "working_set_summary:{}",
+                retrieved_project_context.query.query_id
+            ),
+            kind: "working_set_summary".into(),
+            source_id: Some(retrieved_project_context.query.query_id.clone()),
+            estimated_tokens: estimate_tokens(&context.prompt_summary),
+            reason: Some("admitted_source_cited_working_set_summary".into()),
+        });
+    }
 
     let mut excluded = excluded_prompt_contributors;
     append_empty_context_exclusions(
@@ -139,6 +190,7 @@ pub(crate) fn assemble_provider_context_package(
         "resultIds": retrieval_result_ids,
         "deliveryModel": "tool_mediated",
         "rawContextInjected": false,
+        "firstTurnPolicy": first_turn_context_policy.manifest_json(),
         "method": retrieved_project_context.method.clone(),
         "diagnostic": retrieved_project_context.diagnostic.clone(),
         "freshnessDiagnostics": freshness_diagnostics,
@@ -154,8 +206,35 @@ pub(crate) fn assemble_provider_context_package(
         "resultCount": retrieved_project_context.results.len(),
         "results": retrieved_project_context.results.iter().map(retrieval_result_manifest_json).collect::<Vec<_>>(),
     });
+    let working_set_json = working_set_context
+        .as_ref()
+        .map(|context| {
+            json!({
+                "schema": "xero.source_cited_working_set.v1",
+                "deliveryModel": "admitted_source_cited_summary",
+                "rawDurableContextInjected": false,
+                "promptFragmentId": "xero.working_set_context",
+                "sourceQueryId": retrieved_project_context.query.query_id.clone(),
+                "policy": first_turn_context_policy.manifest_json(),
+                "citationCount": context.citations.len(),
+                "citations": context.citations,
+            })
+        })
+        .unwrap_or_else(|| {
+            json!({
+                "schema": "xero.source_cited_working_set.v1",
+                "deliveryModel": "none",
+                "rawDurableContextInjected": false,
+                "promptFragmentId": null,
+                "sourceQueryId": retrieved_project_context.query.query_id.clone(),
+                "policy": first_turn_context_policy.manifest_json(),
+                "citationCount": 0,
+                "citations": [],
+            })
+        });
     let redaction_state = if prompt_redacted
         || messages_redacted
+        || agent_definition_redacted
         || retrieved_project_context.results.iter().any(|result| {
             result.redaction_state != project_store::AgentContextRedactionState::Clean
         }) {
@@ -188,65 +267,118 @@ pub(crate) fn assemble_provider_context_package(
             .as_ref()
             .map(|compaction| compaction.compaction_id.as_str()),
     )?;
-    let manifest_json = json!({
-        "kind": "provider_context_package",
-        "schema": CONTEXT_PACKAGE_SCHEMA,
-        "schemaVersion": 1,
-        "promptVersion": SYSTEM_PROMPT_VERSION,
-        "projectId": input.project_id,
-        "agentSessionId": input.agent_session_id,
-        "runId": input.run_id,
-        "runtimeAgentId": input.runtime_agent_id.as_str(),
-        "agentDefinitionId": input.agent_definition_id,
-        "agentDefinitionVersion": input.agent_definition_version,
-        "providerId": input.provider_id,
-        "modelId": input.model_id,
-        "turnIndex": input.turn_index,
-        "contextHash": context_hash.clone(),
-        "budgetTokens": budget_tokens,
-        "contextWindowTokens": context_limit.context_window_tokens,
-        "effectiveInputBudgetTokens": context_limit.effective_input_budget_tokens,
-        "maxOutputTokens": context_limit.max_output_tokens,
-        "outputReserveTokens": context_limit.output_reserve_tokens,
-        "safetyReserveTokens": context_limit.safety_reserve_tokens,
-        "limitSource": context_limit.source,
-        "limitConfidence": context_limit.confidence,
-        "limitDiagnostic": context_limit.diagnostic,
-        "limitFetchedAt": context_limit.fetched_at,
-        "providerPreflight": provider_preflight,
-        "admittedProviderPreflightHash": admitted_provider_preflight_hash,
-        "estimatedTokens": estimated_tokens,
-        "policy": {
-            "action": context_policy_action_label(&policy_decision.action),
-            "reasonCode": policy_decision.reason_code.clone(),
-            "pressure": context_pressure_label(&policy_decision.pressure),
-            "pressurePercent": policy_decision.pressure_percent,
-            "targetRuntimeAgentId": policy_decision.target_runtime_agent_id.map(|id| id.as_str()),
-        },
-        "contributors": {
-            "included": included.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
-            "excluded": excluded.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
-        },
-        "promptFragments": prompt_fragments_json,
-        "promptFragmentExclusions": prompt_fragment_exclusions_json,
-        "promptAssembly": {
-            "strategy": "priority_budget_pipeline_v1",
-            "sort": "priority_desc_id_asc_provenance_asc",
-            "promptBudgetTokens": compilation.prompt_budget_tokens,
-            "estimatedPromptTokens": compilation.estimated_prompt_tokens,
-            "relevantPaths": relevant_paths.iter().collect::<Vec<_>>(),
-            "includedFragmentCount": compilation.fragments.len(),
-            "excludedFragmentCount": compilation.excluded_fragments.len(),
-        },
-        "messages": messages_json,
-        "toolDescriptors": tool_descriptors_json,
-        "toolExposurePlan": input.tool_exposure_plan,
-        "promptDiff": prompt_diff,
-        "retrieval": retrieval_json,
-        "coordination": coordination_json,
-        "compactionId": active_compaction.as_ref().map(|compaction| compaction.compaction_id.as_str()),
-        "redactionState": redaction_state_label(&redaction_state),
+    let policy_json = json!({
+        "action": context_policy_action_label(&policy_decision.action),
+        "reasonCode": policy_decision.reason_code.clone(),
+        "pressure": context_pressure_label(&policy_decision.pressure),
+        "pressurePercent": policy_decision.pressure_percent,
+        "targetRuntimeAgentId": policy_decision.target_runtime_agent_id.map(|id| id.as_str()),
     });
+    let contributors_json = json!({
+        "included": included.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
+        "excluded": excluded.iter().map(manifest_contributor_json).collect::<Vec<_>>(),
+    });
+    let prompt_assembly_json = json!({
+        "strategy": "priority_budget_pipeline_v1",
+        "sort": "priority_desc_id_asc_provenance_asc",
+        "promptBudgetTokens": compilation.prompt_budget_tokens,
+        "estimatedPromptTokens": compilation.estimated_prompt_tokens,
+        "relevantPaths": relevant_paths.iter().collect::<Vec<_>>(),
+        "includedFragmentCount": compilation.fragments.len(),
+        "excludedFragmentCount": compilation.excluded_fragments.len(),
+    });
+    let mut manifest_fields = serde_json::Map::new();
+    manifest_fields.insert("kind".into(), json!("provider_context_package"));
+    manifest_fields.insert("schema".into(), json!(CONTEXT_PACKAGE_SCHEMA));
+    manifest_fields.insert("schemaVersion".into(), json!(1));
+    manifest_fields.insert("promptVersion".into(), json!(SYSTEM_PROMPT_VERSION));
+    manifest_fields.insert("projectId".into(), json!(input.project_id));
+    manifest_fields.insert("agentSessionId".into(), json!(input.agent_session_id));
+    manifest_fields.insert("runId".into(), json!(input.run_id));
+    manifest_fields.insert(
+        "runtimeAgentId".into(),
+        json!(input.runtime_agent_id.as_str()),
+    );
+    manifest_fields.insert("agentDefinitionId".into(), json!(input.agent_definition_id));
+    manifest_fields.insert(
+        "agentDefinitionVersion".into(),
+        json!(input.agent_definition_version),
+    );
+    manifest_fields.insert("providerId".into(), json!(input.provider_id));
+    manifest_fields.insert("modelId".into(), json!(input.model_id));
+    manifest_fields.insert("turnIndex".into(), json!(input.turn_index));
+    manifest_fields.insert("contextHash".into(), json!(context_hash.clone()));
+    manifest_fields.insert("budgetTokens".into(), json!(budget_tokens));
+    manifest_fields.insert(
+        "contextWindowTokens".into(),
+        json!(context_limit.context_window_tokens),
+    );
+    manifest_fields.insert(
+        "effectiveInputBudgetTokens".into(),
+        json!(context_limit.effective_input_budget_tokens),
+    );
+    manifest_fields.insert(
+        "maxOutputTokens".into(),
+        json!(context_limit.max_output_tokens),
+    );
+    manifest_fields.insert(
+        "outputReserveTokens".into(),
+        json!(context_limit.output_reserve_tokens),
+    );
+    manifest_fields.insert(
+        "safetyReserveTokens".into(),
+        json!(context_limit.safety_reserve_tokens),
+    );
+    manifest_fields.insert("limitSource".into(), json!(context_limit.source));
+    manifest_fields.insert("limitConfidence".into(), json!(context_limit.confidence));
+    manifest_fields.insert("limitDiagnostic".into(), json!(context_limit.diagnostic));
+    manifest_fields.insert("limitFetchedAt".into(), json!(context_limit.fetched_at));
+    manifest_fields.insert("providerPreflight".into(), json!(provider_preflight));
+    manifest_fields.insert(
+        "admittedProviderPreflightHash".into(),
+        json!(admitted_provider_preflight_hash),
+    );
+    manifest_fields.insert("estimatedTokens".into(), json!(estimated_tokens));
+    manifest_fields.insert("policy".into(), policy_json);
+    manifest_fields.insert("contributors".into(), contributors_json);
+    manifest_fields.insert(
+        "promptFragments".into(),
+        JsonValue::Array(prompt_fragments_json),
+    );
+    manifest_fields.insert(
+        "promptFragmentExclusions".into(),
+        JsonValue::Array(prompt_fragment_exclusions_json),
+    );
+    manifest_fields.insert("promptAssembly".into(), prompt_assembly_json);
+    manifest_fields.insert("messages".into(), JsonValue::Array(messages_json));
+    manifest_fields.insert(
+        "toolDescriptors".into(),
+        JsonValue::Array(tool_descriptors_json),
+    );
+    manifest_fields.insert("toolExposurePlan".into(), json!(input.tool_exposure_plan));
+    manifest_fields.insert("agentDefinition".into(), agent_definition_json);
+    manifest_fields.insert("promptDiff".into(), prompt_diff);
+    manifest_fields.insert("retrieval".into(), retrieval_json);
+    manifest_fields.insert("workingSet".into(), working_set_json);
+    manifest_fields.insert("coordination".into(), coordination_json);
+    manifest_fields.insert(
+        "handoff".into(),
+        handoff_lineage
+            .as_ref()
+            .map(handoff_lineage_manifest_json)
+            .unwrap_or(JsonValue::Null),
+    );
+    manifest_fields.insert(
+        "compactionId".into(),
+        json!(active_compaction
+            .as_ref()
+            .map(|compaction| compaction.compaction_id.as_str())),
+    );
+    manifest_fields.insert(
+        "redactionState".into(),
+        json!(redaction_state_label(&redaction_state)),
+    );
+    let manifest_json = JsonValue::Object(manifest_fields);
 
     let retrieval_query_ids = vec![retrieved_project_context.query.query_id.clone()];
     let retrieval_result_ids = retrieved_project_context
@@ -278,7 +410,7 @@ pub(crate) fn assemble_provider_context_package(
             retrieval_query_ids,
             retrieval_result_ids,
             compaction_id: active_compaction.map(|compaction| compaction.compaction_id),
-            handoff_id: None,
+            handoff_id: handoff_lineage.map(|lineage| lineage.handoff_id),
             redaction_state,
             manifest: manifest_json,
             created_at,
@@ -295,6 +427,7 @@ pub(crate) fn assemble_provider_context_package(
 fn retrieve_project_context(
     input: &ProviderContextPackageInput<'_>,
     created_at: &str,
+    policy: &FirstTurnContextPolicy,
 ) -> CommandResult<project_store::AgentContextRetrievalResponse> {
     project_store::search_agent_context(
         input.repo_root,
@@ -306,14 +439,250 @@ fn retrieve_project_context(
             runtime_agent_id: input.runtime_agent_id,
             agent_definition_id: input.agent_definition_id.to_string(),
             agent_definition_version: input.agent_definition_version,
-            query_text: context_retrieval_query_text(input.runtime_agent_id, input.messages),
-            search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
-            filters: project_store::AgentContextRetrievalFilters::default(),
-            limit_count: DEFAULT_RETRIEVAL_LIMIT,
+            query_text: context_retrieval_query_text(
+                input.runtime_agent_id,
+                input.messages,
+                input.agent_definition_snapshot,
+            ),
+            search_scope: policy.search_scope.clone(),
+            filters: policy.filters.clone(),
+            limit_count: policy.limit_count,
             allow_keyword_fallback: true,
             created_at: created_at.to_string(),
         },
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FirstTurnContextPolicy {
+    auto_summary_enabled: bool,
+    source: &'static str,
+    search_scope: project_store::AgentRetrievalSearchScope,
+    filters: project_store::AgentContextRetrievalFilters,
+    limit_count: u32,
+    requested_record_kinds: Vec<String>,
+    requested_memory_kinds: Vec<String>,
+    ignored_record_kinds: Vec<String>,
+    ignored_memory_kinds: Vec<String>,
+}
+
+impl FirstTurnContextPolicy {
+    fn from_agent_definition_snapshot(snapshot: Option<&JsonValue>) -> Self {
+        let Some(defaults) = snapshot
+            .and_then(|snapshot| snapshot.get("retrievalDefaults"))
+            .and_then(JsonValue::as_object)
+        else {
+            return Self::default_project_records();
+        };
+
+        let auto_summary_enabled = defaults
+            .get("enabled")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(true);
+        let (record_kinds, requested_record_kinds, ignored_record_kinds) = defaults
+            .get("recordKinds")
+            .map(parse_project_record_kind_policy_array)
+            .unwrap_or_default();
+        let (memory_kinds, requested_memory_kinds, ignored_memory_kinds) = defaults
+            .get("memoryKinds")
+            .map(parse_agent_memory_kind_policy_array)
+            .unwrap_or_default();
+        let limit_count = defaults
+            .get("limit")
+            .and_then(JsonValue::as_u64)
+            .map(|limit| {
+                u32::try_from(limit)
+                    .unwrap_or(MAX_FIRST_TURN_RETRIEVAL_LIMIT)
+                    .max(1)
+                    .min(MAX_FIRST_TURN_RETRIEVAL_LIMIT)
+            })
+            .unwrap_or(DEFAULT_RETRIEVAL_LIMIT);
+        let search_scope =
+            first_turn_search_scope(record_kinds.as_slice(), memory_kinds.as_slice());
+
+        Self {
+            auto_summary_enabled,
+            source: "agent_definition.retrievalDefaults",
+            search_scope,
+            filters: project_store::AgentContextRetrievalFilters {
+                record_kinds,
+                memory_kinds,
+                ..project_store::AgentContextRetrievalFilters::default()
+            },
+            limit_count,
+            requested_record_kinds,
+            requested_memory_kinds,
+            ignored_record_kinds,
+            ignored_memory_kinds,
+        }
+    }
+
+    fn default_project_records() -> Self {
+        Self {
+            auto_summary_enabled: true,
+            source: "runtime_default",
+            search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
+            filters: project_store::AgentContextRetrievalFilters::default(),
+            limit_count: DEFAULT_RETRIEVAL_LIMIT,
+            requested_record_kinds: Vec::new(),
+            requested_memory_kinds: Vec::new(),
+            ignored_record_kinds: Vec::new(),
+            ignored_memory_kinds: Vec::new(),
+        }
+    }
+
+    fn manifest_json(&self) -> JsonValue {
+        json!({
+            "schema": "xero.first_turn_context_policy.v1",
+            "source": self.source,
+            "autoSummaryEnabled": self.auto_summary_enabled,
+            "bulkDurableContextDelivery": "tool_mediated",
+            "searchScope": retrieval_search_scope_label(&self.search_scope),
+            "limitCount": self.limit_count,
+            "recordKinds": self.filters.record_kinds.iter().map(project_record_kind_policy_label).collect::<Vec<_>>(),
+            "memoryKinds": self.filters.memory_kinds.iter().map(agent_memory_kind_policy_label).collect::<Vec<_>>(),
+            "requestedRecordKinds": self.requested_record_kinds,
+            "requestedMemoryKinds": self.requested_memory_kinds,
+            "ignoredRecordKinds": self.ignored_record_kinds,
+            "ignoredMemoryKinds": self.ignored_memory_kinds,
+        })
+    }
+}
+
+fn first_turn_search_scope(
+    record_kinds: &[project_store::ProjectRecordKind],
+    memory_kinds: &[project_store::AgentMemoryKind],
+) -> project_store::AgentRetrievalSearchScope {
+    match (record_kinds.is_empty(), memory_kinds.is_empty()) {
+        (false, false) => project_store::AgentRetrievalSearchScope::HybridContext,
+        (true, false) => project_store::AgentRetrievalSearchScope::ApprovedMemory,
+        _ => project_store::AgentRetrievalSearchScope::ProjectRecords,
+    }
+}
+
+fn parse_project_record_kind_policy_array(
+    value: &JsonValue,
+) -> (
+    Vec<project_store::ProjectRecordKind>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let mut kinds = Vec::new();
+    let mut requested = Vec::new();
+    let mut ignored = Vec::new();
+    let Some(values) = value.as_array() else {
+        return (kinds, requested, ignored);
+    };
+    for item in values {
+        let Some(raw) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        requested.push(raw.to_string());
+        match parse_project_record_kind_policy(raw) {
+            Some(kind) if !kinds.contains(&kind) => kinds.push(kind),
+            Some(_) => {}
+            None => ignored.push(raw.to_string()),
+        }
+    }
+    (kinds, requested, ignored)
+}
+
+fn parse_agent_memory_kind_policy_array(
+    value: &JsonValue,
+) -> (
+    Vec<project_store::AgentMemoryKind>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let mut kinds = Vec::new();
+    let mut requested = Vec::new();
+    let mut ignored = Vec::new();
+    let Some(values) = value.as_array() else {
+        return (kinds, requested, ignored);
+    };
+    for item in values {
+        let Some(raw) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        requested.push(raw.to_string());
+        match parse_agent_memory_kind_policy(raw) {
+            Some(kind) if !kinds.contains(&kind) => kinds.push(kind),
+            Some(_) => {}
+            None => ignored.push(raw.to_string()),
+        }
+    }
+    (kinds, requested, ignored)
+}
+
+fn parse_project_record_kind_policy(value: &str) -> Option<project_store::ProjectRecordKind> {
+    Some(match value {
+        "agent_handoff" => project_store::ProjectRecordKind::AgentHandoff,
+        "project_fact" => project_store::ProjectRecordKind::ProjectFact,
+        "decision" => project_store::ProjectRecordKind::Decision,
+        "constraint" => project_store::ProjectRecordKind::Constraint,
+        "plan" => project_store::ProjectRecordKind::Plan,
+        "finding" => project_store::ProjectRecordKind::Finding,
+        "verification" => project_store::ProjectRecordKind::Verification,
+        "question" => project_store::ProjectRecordKind::Question,
+        "artifact" => project_store::ProjectRecordKind::Artifact,
+        "context_note" => project_store::ProjectRecordKind::ContextNote,
+        "diagnostic" => project_store::ProjectRecordKind::Diagnostic,
+        _ => return None,
+    })
+}
+
+fn parse_agent_memory_kind_policy(value: &str) -> Option<project_store::AgentMemoryKind> {
+    Some(match value {
+        "project_fact" => project_store::AgentMemoryKind::ProjectFact,
+        "user_preference" => project_store::AgentMemoryKind::UserPreference,
+        "decision" => project_store::AgentMemoryKind::Decision,
+        "session_summary" => project_store::AgentMemoryKind::SessionSummary,
+        "troubleshooting" => project_store::AgentMemoryKind::Troubleshooting,
+        _ => return None,
+    })
+}
+
+fn retrieval_search_scope_label(scope: &project_store::AgentRetrievalSearchScope) -> &'static str {
+    match scope {
+        project_store::AgentRetrievalSearchScope::ProjectRecords => "project_records",
+        project_store::AgentRetrievalSearchScope::ApprovedMemory => "approved_memory",
+        project_store::AgentRetrievalSearchScope::HybridContext => "hybrid_context",
+        project_store::AgentRetrievalSearchScope::Handoffs => "handoffs",
+    }
+}
+
+fn project_record_kind_policy_label(kind: &project_store::ProjectRecordKind) -> &'static str {
+    match kind {
+        project_store::ProjectRecordKind::AgentHandoff => "agent_handoff",
+        project_store::ProjectRecordKind::ProjectFact => "project_fact",
+        project_store::ProjectRecordKind::Decision => "decision",
+        project_store::ProjectRecordKind::Constraint => "constraint",
+        project_store::ProjectRecordKind::Plan => "plan",
+        project_store::ProjectRecordKind::Finding => "finding",
+        project_store::ProjectRecordKind::Verification => "verification",
+        project_store::ProjectRecordKind::Question => "question",
+        project_store::ProjectRecordKind::Artifact => "artifact",
+        project_store::ProjectRecordKind::ContextNote => "context_note",
+        project_store::ProjectRecordKind::Diagnostic => "diagnostic",
+    }
+}
+
+fn agent_memory_kind_policy_label(kind: &project_store::AgentMemoryKind) -> &'static str {
+    match kind {
+        project_store::AgentMemoryKind::ProjectFact => "project_fact",
+        project_store::AgentMemoryKind::UserPreference => "user_preference",
+        project_store::AgentMemoryKind::Decision => "decision",
+        project_store::AgentMemoryKind::SessionSummary => "session_summary",
+        project_store::AgentMemoryKind::Troubleshooting => "troubleshooting",
+    }
 }
 
 fn provider_context_runtime_metadata(
@@ -468,6 +837,301 @@ fn tool_descriptor_manifest_entries(
         }));
     }
     Ok((contributors, tools_json))
+}
+
+fn agent_definition_manifest_entries(
+    snapshot: Option<&JsonValue>,
+    consumed_artifact_preflight: JsonValue,
+) -> CommandResult<(
+    Vec<project_store::AgentContextManifestContributorRecord>,
+    JsonValue,
+    bool,
+)> {
+    let Some(snapshot) = snapshot else {
+        return Ok((Vec::new(), JsonValue::Null, false));
+    };
+    let definition_id = snapshot
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("custom_agent");
+    let definition_version = snapshot
+        .get("version")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(1);
+    let scope = snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("custom");
+    let db_touchpoints = compact_agent_definition_db_touchpoints(snapshot.get("dbTouchpoints"));
+    let touchpoint_count = agent_definition_db_touchpoint_count(&db_touchpoints);
+    let consumes = compact_agent_definition_consumed_artifacts(snapshot.get("consumes"));
+    let consumed_artifact_count = consumes.as_array().map(Vec::len).unwrap_or_default();
+    let required_consumed_artifact_count = consumes
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|artifact| {
+            artifact
+                .get("required")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    let manifest = json!({
+        "id": definition_id,
+        "version": definition_version,
+        "schema": snapshot.get("schema").cloned().unwrap_or(JsonValue::Null),
+        "schemaVersion": snapshot.get("schemaVersion").cloned().unwrap_or(JsonValue::Null),
+        "scope": scope,
+        "dbTouchpoints": db_touchpoints,
+        "dbTouchpointCount": touchpoint_count,
+        "consumes": consumes,
+        "consumedArtifactCount": consumed_artifact_count,
+        "requiredConsumedArtifactCount": required_consumed_artifact_count,
+        "consumedArtifactPreflight": consumed_artifact_preflight,
+    });
+    let (manifest, manifest_redacted) =
+        crate::runtime::redaction::redact_json_for_persistence(&manifest);
+    let mut contributors = Vec::new();
+    if scope != "built_in" && touchpoint_count > 0 {
+        let serialized = serde_json::to_string(&manifest).map_err(|error| {
+            CommandError::system_fault(
+                "agent_context_package_definition_manifest_serialize_failed",
+                format!("Xero could not serialize custom definition manifest context: {error}"),
+            )
+        })?;
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: "agent_definition:db_touchpoints".into(),
+            kind: "agent_definition_db_touchpoints".into(),
+            source_id: Some(format!("{definition_id}@{definition_version}")),
+            estimated_tokens: estimate_tokens(&serialized),
+            reason: Some("saved_custom_agent_db_touchpoints_runtime_guidance".into()),
+        });
+    }
+    if scope != "built_in" && consumed_artifact_count > 0 {
+        let serialized = serde_json::to_string(&manifest).map_err(|error| {
+            CommandError::system_fault(
+                "agent_context_package_definition_manifest_serialize_failed",
+                format!("Xero could not serialize custom definition manifest context: {error}"),
+            )
+        })?;
+        contributors.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: "agent_definition:consumed_artifacts".into(),
+            kind: "agent_definition_consumed_artifacts".into(),
+            source_id: Some(format!("{definition_id}@{definition_version}")),
+            estimated_tokens: estimate_tokens(&serialized),
+            reason: Some("saved_custom_agent_consumed_artifacts_runtime_expectation".into()),
+        });
+    }
+    Ok((contributors, manifest, manifest_redacted))
+}
+
+fn compact_agent_definition_db_touchpoints(value: Option<&JsonValue>) -> JsonValue {
+    let mut output = serde_json::Map::new();
+    let object = value.and_then(JsonValue::as_object);
+    for kind in ["reads", "writes", "encouraged"] {
+        let items = object
+            .and_then(|object| object.get(kind))
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(compact_agent_definition_db_touchpoint)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        output.insert(kind.into(), JsonValue::Array(items));
+    }
+    JsonValue::Object(output)
+}
+
+fn compact_agent_definition_db_touchpoint(value: &JsonValue) -> JsonValue {
+    json!({
+        "table": value.get("table").cloned().unwrap_or(JsonValue::Null),
+        "kind": value.get("kind").cloned().unwrap_or(JsonValue::Null),
+        "purpose": value.get("purpose").cloned().unwrap_or(JsonValue::Null),
+        "columns": value.get("columns").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+        "triggers": value.get("triggers").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+    })
+}
+
+fn agent_definition_db_touchpoint_count(value: &JsonValue) -> usize {
+    ["reads", "writes", "encouraged"]
+        .into_iter()
+        .filter_map(|kind| value.get(kind).and_then(JsonValue::as_array))
+        .map(Vec::len)
+        .sum()
+}
+
+fn compact_agent_definition_consumed_artifacts(value: Option<&JsonValue>) -> JsonValue {
+    value
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(compact_agent_definition_consumed_artifact)
+                .collect::<Vec<_>>()
+        })
+        .map(JsonValue::Array)
+        .unwrap_or_else(|| JsonValue::Array(Vec::new()))
+}
+
+fn compact_agent_definition_consumed_artifact(value: &JsonValue) -> JsonValue {
+    json!({
+        "id": value.get("id").cloned().unwrap_or(JsonValue::Null),
+        "label": value.get("label").cloned().unwrap_or(JsonValue::Null),
+        "description": value.get("description").cloned().unwrap_or(JsonValue::Null),
+        "sourceAgent": value.get("sourceAgent").cloned().unwrap_or(JsonValue::Null),
+        "contract": value.get("contract").cloned().unwrap_or(JsonValue::Null),
+        "sections": value.get("sections").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+        "required": value.get("required").cloned().unwrap_or(JsonValue::Bool(false)),
+    })
+}
+
+fn consumed_artifact_preflight(
+    repo_root: &Path,
+    project_id: &str,
+    snapshot: Option<&JsonValue>,
+) -> CommandResult<JsonValue> {
+    let Some(snapshot) = snapshot else {
+        return Ok(json!({
+            "status": "not_applicable",
+            "reason": "no_agent_definition_snapshot",
+        }));
+    };
+    if snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|scope| scope == "built_in")
+    {
+        return Ok(json!({
+            "status": "not_applicable",
+            "reason": "built_in_definition",
+        }));
+    }
+    let consumes = compact_agent_definition_consumed_artifacts(snapshot.get("consumes"));
+    let required = consumes
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|artifact| {
+            artifact
+                .get("required")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if required.is_empty() {
+        return Ok(json!({
+            "status": "no_required_artifacts",
+            "requiredCount": 0,
+            "matched": [],
+            "missingRequired": [],
+        }));
+    }
+
+    let records = project_store::list_project_records(repo_root, project_id)?;
+    let mut matched = Vec::new();
+    let mut missing = Vec::new();
+    for artifact in required {
+        if let Some(record) = records
+            .iter()
+            .find(|record| project_record_satisfies_consumed_artifact(record, &artifact))
+        {
+            matched.push(json!({
+                "id": artifact.get("id").cloned().unwrap_or(JsonValue::Null),
+                "label": artifact.get("label").cloned().unwrap_or(JsonValue::Null),
+                "contract": artifact.get("contract").cloned().unwrap_or(JsonValue::Null),
+                "recordId": record.record_id.clone(),
+                "recordKind": project_store::project_record_kind_sql_value(&record.record_kind),
+                "schemaName": record.schema_name.clone(),
+            }));
+        } else {
+            missing.push(artifact);
+        }
+    }
+
+    Ok(json!({
+        "status": if missing.is_empty() { "ready" } else { "missing_required" },
+        "requiredCount": matched.len() + missing.len(),
+        "matched": matched,
+        "missingRequired": missing,
+    }))
+}
+
+fn project_record_satisfies_consumed_artifact(
+    record: &project_store::ProjectRecordRecord,
+    artifact: &JsonValue,
+) -> bool {
+    if record.redaction_state == project_store::ProjectRecordRedactionState::Blocked {
+        return false;
+    }
+    let id = agent_definition_manifest_string_field(artifact, "id").unwrap_or("");
+    let contract = agent_definition_manifest_string_field(artifact, "contract").unwrap_or("");
+    if !id.is_empty()
+        && record
+            .produced_artifact_refs
+            .iter()
+            .any(|reference| reference == id || reference == &format!("artifact:{id}"))
+    {
+        return true;
+    }
+    if !id.is_empty()
+        && record
+            .tags
+            .iter()
+            .any(|tag| tag == id || tag == &format!("artifact:{id}"))
+    {
+        return true;
+    }
+    if !contract.is_empty()
+        && record
+            .tags
+            .iter()
+            .any(|tag| tag == contract || tag == &format!("contract:{contract}"))
+    {
+        return true;
+    }
+
+    let Some(schema_name) = consumed_artifact_contract_schema_name(contract) else {
+        return false;
+    };
+    if record.schema_name.as_deref() == Some(schema_name) {
+        return true;
+    }
+    if record
+        .content_json
+        .as_ref()
+        .and_then(|content| content.get("schema"))
+        .and_then(JsonValue::as_str)
+        == Some(schema_name)
+    {
+        return true;
+    }
+    contract == "plan_pack" && record.record_kind == project_store::ProjectRecordKind::Plan
+}
+
+fn consumed_artifact_contract_schema_name(contract: &str) -> Option<&'static str> {
+    match contract {
+        "plan_pack" => Some("xero.plan_pack.v1"),
+        "crawl_report" => Some("xero.project_crawl.report.v1"),
+        "harness_test_report" => Some("xero.harness_test_report.v1"),
+        _ => None,
+    }
+}
+
+fn agent_definition_manifest_string_field<'a>(
+    value: &'a JsonValue,
+    field: &str,
+) -> Option<&'a str> {
+    value
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn active_coordination_manifest_entries(
@@ -1180,32 +1844,28 @@ fn stable_provider_preflight_hash(snapshot: &xero_agent_core::ProviderPreflightS
 fn context_retrieval_query_text(
     runtime_agent_id: RuntimeAgentIdDto,
     messages: &[ProviderMessage],
+    agent_definition_snapshot: Option<&JsonValue>,
 ) -> String {
     let mut selected = Vec::new();
     let mut used = 0_usize;
+    if let Some(artifact_query) = consumed_artifact_retrieval_query_text(agent_definition_snapshot)
+    {
+        push_retrieval_query_part(
+            &mut selected,
+            &mut used,
+            "consumed_artifacts",
+            &artifact_query,
+        );
+    }
     for message in messages.iter().rev() {
         let (role, content) = match message {
             ProviderMessage::User { content, .. } => ("user", content.as_str()),
             ProviderMessage::Assistant { content, .. } => ("assistant", content.as_str()),
             ProviderMessage::Tool { .. } => continue,
         };
-        let trimmed = content.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let remaining = MAX_RETRIEVAL_QUERY_CHARS.saturating_sub(used);
-        if remaining == 0 {
+        if !push_retrieval_query_part(&mut selected, &mut used, role, content) {
             break;
         }
-        let query_text =
-            if project_store::find_prohibited_runtime_persistence_content(trimmed).is_some() {
-                "[redacted]"
-            } else {
-                trimmed
-            };
-        let excerpt = truncate_chars(query_text, remaining);
-        used = used.saturating_add(excerpt.chars().count());
-        selected.push(format!("{role}: {excerpt}"));
     }
     selected.reverse();
     let query = selected.join("\n");
@@ -1216,6 +1876,70 @@ fn context_retrieval_query_text(
         )
     } else {
         query
+    }
+}
+
+fn push_retrieval_query_part(
+    selected: &mut Vec<String>,
+    used: &mut usize,
+    role: &str,
+    content: &str,
+) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let remaining = MAX_RETRIEVAL_QUERY_CHARS.saturating_sub(*used);
+    if remaining == 0 {
+        return false;
+    }
+    let query_text =
+        if project_store::find_prohibited_runtime_persistence_content(trimmed).is_some() {
+            "[redacted]"
+        } else {
+            trimmed
+        };
+    let excerpt = truncate_chars(query_text, remaining);
+    *used = (*used).saturating_add(excerpt.chars().count());
+    selected.push(format!("{role}: {excerpt}"));
+    *used < MAX_RETRIEVAL_QUERY_CHARS
+}
+
+fn consumed_artifact_retrieval_query_text(snapshot: Option<&JsonValue>) -> Option<String> {
+    let snapshot = snapshot?;
+    if snapshot
+        .get("scope")
+        .and_then(JsonValue::as_str)
+        .is_some_and(|scope| scope == "built_in")
+    {
+        return None;
+    }
+    let artifacts = snapshot.get("consumes").and_then(JsonValue::as_array)?;
+    let lines = artifacts
+        .iter()
+        .filter_map(|artifact| {
+            let id = agent_definition_manifest_string_field(artifact, "id")?;
+            let label = agent_definition_manifest_string_field(artifact, "label").unwrap_or(id);
+            let contract =
+                agent_definition_manifest_string_field(artifact, "contract").unwrap_or("unknown");
+            let source_agent = agent_definition_manifest_string_field(artifact, "sourceAgent")
+                .unwrap_or("unknown");
+            let required = artifact
+                .get("required")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            Some(format!(
+                "- {label} (`{id}`), contract={contract}, source={source_agent}, required={required}"
+            ))
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Custom agent consumed artifact expectations:\n{}",
+            lines.join("\n")
+        ))
     }
 }
 
@@ -1252,6 +1976,7 @@ fn prompt_fragment_context_kind(fragment: &PromptFragment) -> &'static str {
         "xero.owned_process_state" => "process_state",
         "xero.code_rollback_state" => "code_rollback_state",
         "xero.durable_context_tools" => "durable_context_tool_instruction",
+        "xero.working_set_context" => "working_set_context",
         "xero.active_coordination" => "active_agent_coordination",
         id if id.starts_with("project.instructions.") => "repository_instructions",
         id if id.starts_with("skill.context.") => "skill_context",
@@ -1285,6 +2010,29 @@ fn manifest_contributor_json(
         "sourceId": contributor.source_id,
         "estimatedTokens": contributor.estimated_tokens,
         "reason": contributor.reason,
+    })
+}
+
+fn handoff_lineage_manifest_json(lineage: &project_store::AgentHandoffLineageRecord) -> JsonValue {
+    json!({
+        "schema": "xero.provider_context_handoff_lineage.v1",
+        "handoffId": &lineage.handoff_id,
+        "status": format!("{:?}", lineage.status).to_ascii_lowercase(),
+        "sourceRunId": &lineage.source_run_id,
+        "targetRunId": &lineage.target_run_id,
+        "handoffRecordId": &lineage.handoff_record_id,
+        "sourceContextHash": &lineage.source_context_hash,
+        "firstTurnContext": {
+            "bundleDeliveredInDeveloperMessage": true,
+            "pendingPromptDeliveredInUserMessage": true,
+            "workingSetSummaryIncluded": lineage.bundle.get("workingSetSummary").is_some(),
+            "sourceCitedContinuityRecordCount": lineage
+                .bundle
+                .get("sourceCitedContinuityRecords")
+                .and_then(JsonValue::as_array)
+                .map(|records| records.len())
+                .unwrap_or(0),
+        },
     })
 }
 
@@ -1371,6 +2119,58 @@ fn coordination_mailbox_manifest_json(
         "createdAt": item.created_at,
         "expiresAt": item.expires_at,
         "promotedRecordId": item.promoted_record_id,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SourceCitedWorkingSetContext {
+    prompt_summary: String,
+    citations: Vec<JsonValue>,
+}
+
+fn source_cited_working_set_context(
+    response: &project_store::AgentContextRetrievalResponse,
+) -> Option<SourceCitedWorkingSetContext> {
+    if response.results.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    let mut citations = Vec::new();
+    for result in response.results.iter().take(3) {
+        let citation = result.metadata.get("citation").unwrap_or(&JsonValue::Null);
+        let source_kind = citation
+            .get("sourceKind")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_else(|| retrieval_source_kind_label(&result.source_kind));
+        let source_id = citation
+            .get("sourceId")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(result.source_id.as_str());
+        let title = citation
+            .get("title")
+            .and_then(JsonValue::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Untitled durable context item");
+        let citation_label = format!("{source_kind}:{source_id}");
+        lines.push(format!(
+            "- rank {} `{}`: {}. Retrieve exact content with `project_context_get` before relying on details.",
+            result.rank,
+            citation_label,
+            truncate_chars(title, 120)
+        ));
+        citations.push(json!({
+            "resultId": result.result_id,
+            "rank": result.rank,
+            "sourceKind": source_kind,
+            "sourceId": source_id,
+            "title": title,
+            "score": result.score,
+            "redactionState": redaction_state_label(&result.redaction_state),
+        }));
+    }
+    Some(SourceCitedWorkingSetContext {
+        prompt_summary: lines.join("\n"),
+        citations,
     })
 }
 
@@ -1579,8 +2379,105 @@ mod tests {
         .expect("seed approved memory");
     }
 
+    fn retrieval_policy_snapshot(
+        id: &str,
+        enabled: bool,
+        record_kinds: Vec<&str>,
+        memory_kinds: Vec<&str>,
+        limit: u32,
+    ) -> JsonValue {
+        json!({
+            "schema": "xero.agent_definition.v1",
+            "schemaVersion": 1,
+            "id": id,
+            "version": 1,
+            "scope": "project_custom",
+            "displayName": id,
+            "taskPurpose": "Exercise first-turn context policy.",
+            "retrievalDefaults": {
+                "enabled": enabled,
+                "recordKinds": record_kinds,
+                "memoryKinds": memory_kinds,
+                "limit": limit
+            }
+        })
+    }
+
+    fn assemble_snapshot_context_package(
+        repo_root: &Path,
+        project_id: &str,
+        snapshot: &JsonValue,
+        messages: &[ProviderMessage],
+    ) -> ProviderContextPackage {
+        let definition_id = snapshot
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .expect("snapshot definition id");
+        let definition_version = snapshot
+            .get("version")
+            .and_then(JsonValue::as_u64)
+            .expect("snapshot definition version") as u32;
+        assemble_provider_context_package(
+            ProviderContextPackageInput {
+                repo_root,
+                project_id,
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+                run_id: "run-context-package",
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: definition_id,
+                agent_definition_version: definition_version,
+                agent_definition_snapshot: Some(snapshot),
+                provider_id: OPENAI_CODEX_PROVIDER_ID,
+                model_id: OPENAI_CODEX_PROVIDER_ID,
+                turn_index: 0,
+                browser_control_preference: BrowserControlPreferenceDto::Default,
+                soul_settings: None,
+                tools: &[],
+                tool_exposure_plan: None,
+                messages,
+                owned_process_summary: None,
+                provider_preflight: None,
+            },
+            Vec::new(),
+        )
+        .expect("assemble snapshot context package")
+    }
+
+    fn seed_custom_definition(repo_root: &Path, snapshot: &JsonValue) {
+        let definition_id = snapshot
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .expect("snapshot definition id");
+        let definition_version = snapshot
+            .get("version")
+            .and_then(JsonValue::as_u64)
+            .expect("snapshot definition version") as u32;
+        let display_name = snapshot
+            .get("displayName")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(definition_id);
+        project_store::insert_agent_definition(
+            repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: definition_id.into(),
+                version: definition_version,
+                display_name: display_name.into(),
+                short_label: display_name.chars().take(2).collect(),
+                description: "Exercise first-turn context policy.".into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: "engineering".into(),
+                snapshot: snapshot.clone(),
+                validation_report: Some(json!({ "status": "valid" })),
+                created_at: "2026-05-01T12:00:00Z".into(),
+                updated_at: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed custom definition");
+    }
+
     #[test]
-    fn provider_context_package_hash_is_reproducible_from_same_db_state() {
+    fn s26_provider_context_package_admits_source_cited_working_set_summary() {
         let root = tempfile::tempdir().expect("temp dir");
         let (project_id, repo_root) = seed_project(&root);
         seed_run(&repo_root, &project_id);
@@ -1615,6 +2512,12 @@ mod tests {
 
         assert_eq!(first.manifest.context_hash, second.manifest.context_hash);
         assert!(first.system_prompt.contains("Durable project context is"));
+        assert!(first
+            .system_prompt
+            .contains("Source-cited working set for this turn"));
+        assert!(first
+            .system_prompt
+            .contains("project_record:project-record-phase3"));
         assert!(!first
             .system_prompt
             .contains("Phase 3 approved memory is injected"));
@@ -1624,6 +2527,9 @@ mod tests {
         assert!(first.compilation.fragments.iter().any(|fragment| {
             fragment.id == "xero.durable_context_tools" && fragment.priority == 240
         }));
+        assert!(first.compilation.fragments.iter().any(|fragment| {
+            fragment.id == "xero.working_set_context" && fragment.priority == 245
+        }));
         assert_eq!(
             first.manifest.manifest["retrieval"]["deliveryModel"],
             "tool_mediated"
@@ -1632,7 +2538,465 @@ mod tests {
             first.manifest.manifest["retrieval"]["rawContextInjected"],
             false
         );
+        assert_eq!(
+            first.manifest.manifest["workingSet"]["deliveryModel"],
+            "admitted_source_cited_summary"
+        );
+        assert_eq!(
+            first.manifest.manifest["workingSet"]["rawDurableContextInjected"],
+            false
+        );
+        assert_eq!(
+            first.manifest.manifest["workingSet"]["promptFragmentId"],
+            "xero.working_set_context"
+        );
+        assert!(first.manifest.manifest["workingSet"]["citations"]
+            .as_array()
+            .expect("working set citations")
+            .iter()
+            .any(|citation| citation["sourceId"] == "project-record-phase3"));
         assert!(!first.manifest.retrieval_result_ids.is_empty());
+    }
+
+    #[test]
+    fn s27_provider_context_package_honors_per_agent_first_turn_context_policy() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        seed_retrievable_context(&repo_root, &project_id);
+        let messages = vec![ProviderMessage::User {
+            content: "Use Phase 3 approved memory and context package decision.".into(),
+            attachments: Vec::new(),
+        }];
+        let record_snapshot =
+            retrieval_policy_snapshot("record-first-turn", true, vec!["decision"], Vec::new(), 1);
+        let memory_snapshot = retrieval_policy_snapshot(
+            "memory-first-turn",
+            true,
+            Vec::new(),
+            vec!["project_fact"],
+            1,
+        );
+        let disabled_snapshot = retrieval_policy_snapshot(
+            "tool-mediated-only",
+            false,
+            vec!["decision"],
+            vec!["project_fact"],
+            2,
+        );
+        seed_custom_definition(&repo_root, &record_snapshot);
+        seed_custom_definition(&repo_root, &memory_snapshot);
+        seed_custom_definition(&repo_root, &disabled_snapshot);
+
+        let record_package =
+            assemble_snapshot_context_package(&repo_root, &project_id, &record_snapshot, &messages);
+        let memory_package =
+            assemble_snapshot_context_package(&repo_root, &project_id, &memory_snapshot, &messages);
+        let disabled_package = assemble_snapshot_context_package(
+            &repo_root,
+            &project_id,
+            &disabled_snapshot,
+            &messages,
+        );
+
+        assert_eq!(
+            record_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["searchScope"],
+            json!("project_records")
+        );
+        assert_eq!(
+            record_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["recordKinds"],
+            json!(["decision"])
+        );
+        assert_eq!(
+            record_package.manifest.manifest["workingSet"]["citations"][0]["sourceKind"],
+            json!("project_record")
+        );
+        assert_eq!(
+            record_package.manifest.manifest["workingSet"]["citations"][0]["sourceId"],
+            json!("project-record-phase3")
+        );
+        assert!(!record_package
+            .system_prompt
+            .contains("Phase 3 approved memory is injected"));
+
+        assert_eq!(
+            memory_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["searchScope"],
+            json!("approved_memory")
+        );
+        assert_eq!(
+            memory_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["memoryKinds"],
+            json!(["project_fact"])
+        );
+        assert_eq!(
+            memory_package.manifest.manifest["workingSet"]["citations"][0]["sourceKind"],
+            json!("approved_memory")
+        );
+        assert_eq!(
+            memory_package.manifest.manifest["workingSet"]["citations"][0]["sourceId"],
+            json!("memory-phase3")
+        );
+        assert!(memory_package
+            .system_prompt
+            .contains("approved_memory:memory-phase3"));
+        assert!(!memory_package
+            .system_prompt
+            .contains("Phase 3 approved memory is injected"));
+
+        assert_eq!(
+            disabled_package.manifest.manifest["retrieval"]["firstTurnPolicy"]
+                ["autoSummaryEnabled"],
+            json!(false)
+        );
+        assert_eq!(
+            disabled_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["searchScope"],
+            json!("hybrid_context")
+        );
+        assert_eq!(
+            disabled_package.manifest.manifest["workingSet"]["deliveryModel"],
+            json!("none")
+        );
+        assert_eq!(
+            disabled_package.manifest.manifest["workingSet"]["citationCount"],
+            json!(0)
+        );
+        assert!(!disabled_package
+            .compilation
+            .fragments
+            .iter()
+            .any(|fragment| fragment.id == "xero.working_set_context"));
+        assert!(!disabled_package
+            .system_prompt
+            .contains("Source-cited working set for this turn"));
+    }
+
+    #[test]
+    fn s15_provider_context_manifest_records_custom_database_touchpoints() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        let messages = vec![ProviderMessage::User {
+            content: "Use the saved database touchpoints.".into(),
+            attachments: Vec::new(),
+        }];
+        let snapshot = json!({
+            "schema": "xero.agent_definition.v1",
+            "schemaVersion": 1,
+            "id": "db-scribe",
+            "version": 4,
+            "scope": "project_custom",
+            "displayName": "DB Scribe",
+            "taskPurpose": "Use durable project context tables deliberately.",
+            "dbTouchpoints": {
+                "reads": [
+                    {
+                        "table": "project_context_records",
+                        "kind": "read",
+                        "purpose": "Read reviewed project facts before answering.",
+                        "columns": ["record_kind", "summary", "text"],
+                        "triggers": [{"kind": "lifecycle", "event": "run_start"}]
+                    }
+                ],
+                "writes": [
+                    {
+                        "table": "agent_context_manifests",
+                        "kind": "write",
+                        "purpose": "Persist provider context audit data.",
+                        "columns": ["manifest", "context_hash"],
+                        "triggers": [{"kind": "lifecycle", "event": "message_persisted"}]
+                    }
+                ],
+                "encouraged": []
+            }
+        });
+        project_store::insert_agent_definition(
+            &repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: "db-scribe".into(),
+                version: 4,
+                display_name: "DB Scribe".into(),
+                short_label: "DB".into(),
+                description: "Use durable project context tables deliberately.".into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: "engineering".into(),
+                snapshot: snapshot.clone(),
+                validation_report: None,
+                created_at: "2026-05-01T12:00:00Z".into(),
+                updated_at: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed custom definition");
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "db-scribe",
+            agent_definition_version: 4,
+            agent_definition_snapshot: Some(&snapshot),
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let package =
+            assemble_provider_context_package(input, Vec::new()).expect("assemble context package");
+
+        assert!(package
+            .system_prompt
+            .contains("Database touchpoints:\nreads:"));
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["dbTouchpointCount"],
+            json!(2)
+        );
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["dbTouchpoints"]["reads"][0]["table"],
+            json!("project_context_records")
+        );
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["dbTouchpoints"]["writes"][0]["table"],
+            json!("agent_context_manifests")
+        );
+        assert!(package.manifest.manifest["contributors"]["included"]
+            .as_array()
+            .expect("included contributors")
+            .iter()
+            .any(
+                |contributor| contributor["kind"] == "agent_definition_db_touchpoints"
+                    && contributor["sourceId"] == "db-scribe@4"
+            ));
+    }
+
+    #[test]
+    fn s16_provider_context_manifest_records_consumed_artifact_preflight() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        project_store::insert_project_record(
+            &repo_root,
+            &project_store::NewProjectRecordRecord {
+                record_id: "project-record-plan-pack".into(),
+                project_id: project_id.clone(),
+                record_kind: project_store::ProjectRecordKind::Plan,
+                runtime_agent_id: RuntimeAgentIdDto::Plan,
+                agent_definition_id: "plan".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                run_id: "run-plan-pack".into(),
+                workflow_run_id: None,
+                workflow_step_id: None,
+                title: "Accepted Plan Pack".into(),
+                summary: "Accepted plan with implementation slices.".into(),
+                text: "Accepted xero.plan_pack.v1: build the custom agent runtime slices.".into(),
+                content_json: Some(json!({
+                    "schema": "xero.plan_pack.v1",
+                    "status": "accepted",
+                    "slices": ["S16"],
+                    "build_handoff": "Continue from S16."
+                })),
+                schema_name: Some("xero.plan_pack.v1".into()),
+                schema_version: 1,
+                importance: project_store::ProjectRecordImportance::High,
+                confidence: Some(0.99),
+                tags: vec!["artifact:plan_pack".into(), "contract:plan_pack".into()],
+                source_item_ids: Vec::new(),
+                related_paths: Vec::new(),
+                produced_artifact_refs: vec!["plan_pack".into()],
+                redaction_state: project_store::ProjectRecordRedactionState::Clean,
+                visibility: project_store::ProjectRecordVisibility::Retrieval,
+                created_at: "2026-05-01T12:03:00Z".into(),
+            },
+        )
+        .expect("seed accepted plan pack");
+        let snapshot = json!({
+            "schema": "xero.agent_definition.v1",
+            "schemaVersion": 1,
+            "id": "handoff-engineer",
+            "version": 3,
+            "scope": "project_custom",
+            "displayName": "Handoff Engineer",
+            "taskPurpose": "Continue implementation from accepted plan artifacts.",
+            "consumes": [
+                {
+                    "id": "plan_pack",
+                    "label": "Accepted Plan Pack",
+                    "description": "The accepted xero.plan_pack.v1 with slices and build handoff.",
+                    "sourceAgent": "plan",
+                    "contract": "plan_pack",
+                    "sections": ["decisions", "slices", "build_handoff"],
+                    "required": true
+                }
+            ]
+        });
+        project_store::insert_agent_definition(
+            &repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: "handoff-engineer".into(),
+                version: 3,
+                display_name: "Handoff Engineer".into(),
+                short_label: "HE".into(),
+                description: "Continue from accepted plan artifacts.".into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: "engineering".into(),
+                snapshot: snapshot.clone(),
+                validation_report: None,
+                created_at: "2026-05-01T12:00:00Z".into(),
+                updated_at: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed custom definition");
+        let messages = vec![ProviderMessage::User {
+            content: "Continue from the saved plan.".into(),
+            attachments: Vec::new(),
+        }];
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "handoff-engineer",
+            agent_definition_version: 3,
+            agent_definition_snapshot: Some(&snapshot),
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let package =
+            assemble_provider_context_package(input, Vec::new()).expect("assemble context package");
+
+        assert!(package.system_prompt.contains("Consumed artifacts:"));
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["consumedArtifactCount"],
+            json!(1)
+        );
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["consumes"][0]["id"],
+            json!("plan_pack")
+        );
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["consumedArtifactPreflight"]["status"],
+            json!("ready")
+        );
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["consumedArtifactPreflight"]["matched"][0]
+                ["recordId"],
+            json!("project-record-plan-pack")
+        );
+        assert!(package.manifest.manifest["contributors"]["included"]
+            .as_array()
+            .expect("included contributors")
+            .iter()
+            .any(
+                |contributor| contributor["kind"] == "agent_definition_consumed_artifacts"
+                    && contributor["sourceId"] == "handoff-engineer@3"
+            ));
+    }
+
+    #[test]
+    fn s54_provider_context_manifest_redacts_custom_definition_metadata() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        let snapshot = json!({
+            "schema": "xero.agent_definition.v1",
+            "schemaVersion": 1,
+            "id": "secret-scribe",
+            "version": 1,
+            "scope": "project_custom",
+            "displayName": "Secret Scribe",
+            "taskPurpose": "Verify manifest redaction.",
+            "dbTouchpoints": {
+                "reads": [
+                    {
+                        "table": "project_context_records",
+                        "kind": "read",
+                        "purpose": "Never persist api_key=sk-test-secret-value in manifests.",
+                        "columns": [],
+                        "triggers": []
+                    }
+                ],
+                "writes": [],
+                "encouraged": []
+            },
+            "consumes": []
+        });
+        project_store::insert_agent_definition(
+            &repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: "secret-scribe".into(),
+                version: 1,
+                display_name: "Secret Scribe".into(),
+                short_label: "SS".into(),
+                description: "Verify manifest redaction.".into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: "engineering".into(),
+                snapshot: snapshot.clone(),
+                validation_report: Some(json!({ "status": "valid" })),
+                created_at: "2026-05-01T12:00:00Z".into(),
+                updated_at: "2026-05-01T12:00:00Z".into(),
+            },
+        )
+        .expect("seed custom definition");
+        let messages = vec![ProviderMessage::User {
+            content: "Check redaction coverage.".into(),
+            attachments: Vec::new(),
+        }];
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "secret-scribe",
+            agent_definition_version: 1,
+            agent_definition_snapshot: Some(&snapshot),
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let package =
+            assemble_provider_context_package(input, Vec::new()).expect("assemble context package");
+
+        assert_eq!(
+            package.manifest.manifest["redactionState"],
+            json!("redacted")
+        );
+        assert_eq!(
+            package.manifest.manifest["agentDefinition"]["dbTouchpoints"]["reads"][0]["purpose"],
+            json!("[REDACTED]")
+        );
+        assert!(!package
+            .manifest
+            .manifest
+            .to_string()
+            .contains("sk-test-secret-value"));
     }
 
     #[test]
@@ -1696,6 +3060,8 @@ mod tests {
             },
             ProviderMessage::Assistant {
                 content: String::new(),
+                reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: vec![AgentToolCall {
                     tool_call_id: "read-client-main".into(),
                     tool_name: AUTONOMOUS_TOOL_READ.into(),

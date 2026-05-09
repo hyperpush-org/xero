@@ -33,6 +33,7 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
 pub(super) struct WalkState {
     pub(super) scanned_files: usize,
     pub(super) truncated: bool,
+    pub(super) depth_limited: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -336,9 +337,23 @@ pub(super) fn normalize_optional_relative_path(
 ) -> CommandResult<Option<PathBuf>> {
     value
         .map(str::trim)
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty() && !is_current_directory_path(path))
         .map(|path| normalize_relative_path(path, field))
         .transpose()
+}
+
+pub(super) fn is_current_directory_path(value: &str) -> bool {
+    let mut saw_component = false;
+    for component in Path::new(value).components() {
+        match component {
+            Component::CurDir => {
+                saw_component = true;
+            }
+            _ => return false,
+        }
+    }
+
+    saw_component
 }
 
 pub(super) fn normalize_glob_pattern(value: &str) -> CommandResult<String> {

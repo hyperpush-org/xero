@@ -35,7 +35,7 @@ use crate::{
         ProviderCredentialProfile, ProviderCredentialReadinessStatus, ProviderCredentialsView,
     },
     runtime::{
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
         GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
         OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENAI_CODEX_SUPPORTED_MODEL_IDS,
         OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
@@ -1036,6 +1036,7 @@ fn resolve_provider_model_catalog_refresh_target(
             Ok(ProviderModelCatalogRefreshTarget::AnthropicAmbient)
         }
         OPENAI_API_PROVIDER_ID
+        | DEEPSEEK_PROVIDER_ID
         | OLLAMA_PROVIDER_ID
         | AZURE_OPENAI_PROVIDER_ID
         | GITHUB_MODELS_PROVIDER_ID
@@ -1271,6 +1272,7 @@ fn readiness_diagnostic(
             | BEDROCK_PROVIDER_ID
             | VERTEX_PROVIDER_ID
             | OPENAI_API_PROVIDER_ID
+            | DEEPSEEK_PROVIDER_ID
             | OLLAMA_PROVIDER_ID
             | AZURE_OPENAI_PROVIDER_ID
             | GITHUB_MODELS_PROVIDER_ID
@@ -1288,6 +1290,7 @@ fn readiness_diagnostic(
             BEDROCK_PROVIDER_ID => missing_bedrock_ambient_diagnostic(profile),
             VERTEX_PROVIDER_ID => missing_vertex_ambient_diagnostic(profile),
             OPENAI_API_PROVIDER_ID
+            | DEEPSEEK_PROVIDER_ID
             | OLLAMA_PROVIDER_ID
             | AZURE_OPENAI_PROVIDER_ID
             | GITHUB_MODELS_PROVIDER_ID
@@ -1320,6 +1323,7 @@ fn readiness_diagnostic(
                 retryable: false,
             },
             OPENAI_API_PROVIDER_ID
+            | DEEPSEEK_PROVIDER_ID
             | OLLAMA_PROVIDER_ID
             | AZURE_OPENAI_PROVIDER_ID
             | GITHUB_MODELS_PROVIDER_ID

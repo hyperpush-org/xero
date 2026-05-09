@@ -14,12 +14,14 @@ export type ProviderRuntimeKind =
   | 'openrouter'
   | 'anthropic'
   | 'openai_compatible'
+  | 'deepseek'
   | 'gemini'
 export type ProviderPresetId =
   | 'openrouter'
   | 'anthropic'
   | 'github_models'
   | 'openai_api'
+  | 'deepseek'
   | 'ollama'
   | 'azure_openai'
   | 'gemini_ai_studio'
@@ -99,6 +101,24 @@ const CLOUD_PROVIDER_PRESETS: CloudProviderPreset[] = [
     manualModelAllowed: true,
     supportsCatalogRefresh: true,
     connectionHint: 'Uses the built-in Anthropic endpoint preset.',
+  },
+  {
+    providerId: 'deepseek',
+    runtimeKind: 'deepseek',
+    label: 'DeepSeek',
+    description: 'Use DeepSeek-hosted V4 models with a saved app-local API key and live model discovery.',
+    defaultProfileId: 'deepseek-default',
+    defaultProfileLabel: 'DeepSeek',
+    defaultModelId: 'deepseek-v4-pro',
+    presetId: 'deepseek',
+    authMode: 'api_key',
+    baseUrlMode: 'none',
+    apiVersionMode: 'none',
+    regionMode: 'none',
+    projectIdMode: 'none',
+    manualModelAllowed: true,
+    supportsCatalogRefresh: true,
+    connectionHint: 'Uses the built-in DeepSeek endpoint preset.',
   },
   {
     providerId: 'github_models',

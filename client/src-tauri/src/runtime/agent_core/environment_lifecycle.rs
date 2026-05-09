@@ -468,6 +468,7 @@ fn provider_config_has_credentials(config: &AgentProviderConfig) -> bool {
                 .is_some_and(|key| !key.is_empty())
                 || config.provider_id == crate::runtime::OLLAMA_PROVIDER_ID
         }
+        AgentProviderConfig::DeepSeek(config) => !config.api_key.trim().is_empty(),
         AgentProviderConfig::Anthropic(config) => !config.api_key.trim().is_empty(),
         AgentProviderConfig::Bedrock(config) => {
             !config.region.trim().is_empty() && binary_available("aws")
@@ -1026,7 +1027,10 @@ fn core_message_from_desktop(message: AgentMessageRecord) -> CoreRuntimeMessage 
         run_id: message.run_id,
         role: core_message_role_from_desktop(&message.role),
         content: message.content,
-        provider_metadata: None,
+        provider_metadata: message
+            .provider_metadata_json
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str(metadata).ok()),
         created_at: message.created_at,
     }
 }

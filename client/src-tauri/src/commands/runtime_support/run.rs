@@ -37,9 +37,9 @@ use crate::{
     runtime::{
         create_owned_agent_run, drive_owned_agent_run, normalize_openai_codex_model_id,
         AgentProviderConfig, AnthropicProviderConfig, AutonomousToolRuntime, BedrockProviderConfig,
-        OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
+        DeepSeekProviderConfig, OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
         OpenAiResponsesProviderConfig, OwnedAgentRunRequest, RuntimeProvider, VertexProviderConfig,
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
         GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
         OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
         OWNED_AGENT_RUNTIME_KIND, OWNED_AGENT_SUPERVISOR_KIND, VERTEX_PROVIDER_ID,
@@ -719,6 +719,25 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
                 },
             ))
         }
+        DEEPSEEK_PROVIDER_ID => {
+            let endpoint = resolve_openai_compatible_endpoint_for_profile(
+                active_profile,
+                &state.openai_compatible_auth_config(),
+            )
+            .map_err(command_error_from_auth)?;
+            let api_key = runtime_settings.provider_api_key.clone().ok_or_else(|| {
+                CommandError::user_fixable(
+                    "deepseek_api_key_missing",
+                    "Xero cannot start the owned DeepSeek adapter because no DeepSeek API key is configured.",
+                )
+            })?;
+            Ok(AgentProviderConfig::DeepSeek(DeepSeekProviderConfig {
+                model_id,
+                base_url: endpoint.effective_base_url,
+                api_key,
+                timeout_ms: 0,
+            }))
+        }
         ANTHROPIC_PROVIDER_ID => {
             let api_key = runtime_settings
                 .provider_api_key
@@ -1013,6 +1032,9 @@ pub(crate) fn agent_provider_config_identity(config: &AgentProviderConfig) -> (S
         }
         AgentProviderConfig::OpenAiCompatible(config) => {
             (config.provider_id.clone(), config.model_id.clone())
+        }
+        AgentProviderConfig::DeepSeek(config) => {
+            (DEEPSEEK_PROVIDER_ID.into(), config.model_id.clone())
         }
         AgentProviderConfig::Anthropic(config) => {
             (config.provider_id.clone(), config.model_id.clone())
@@ -1419,6 +1441,7 @@ fn active_profile_selection_from_override(
         AgentProviderConfig::OpenAiResponses(config) => config.provider_id.clone(),
         AgentProviderConfig::OpenAiCodexResponses(config) => config.provider_id.clone(),
         AgentProviderConfig::OpenAiCompatible(config) => config.provider_id.clone(),
+        AgentProviderConfig::DeepSeek(_) => DEEPSEEK_PROVIDER_ID.to_string(),
         AgentProviderConfig::Anthropic(config) => config.provider_id.clone(),
         AgentProviderConfig::Bedrock(_) => BEDROCK_PROVIDER_ID.to_string(),
         AgentProviderConfig::Vertex(_) => VERTEX_PROVIDER_ID.to_string(),
@@ -1431,6 +1454,7 @@ fn active_profile_selection_from_override(
             AgentProviderConfig::OpenAiResponses(config) => Some(config.model_id),
             AgentProviderConfig::OpenAiCodexResponses(config) => Some(config.model_id),
             AgentProviderConfig::OpenAiCompatible(config) => Some(config.model_id),
+            AgentProviderConfig::DeepSeek(config) => Some(config.model_id),
             AgentProviderConfig::Anthropic(config) => Some(config.model_id),
             AgentProviderConfig::Bedrock(config) => Some(config.model_id),
             AgentProviderConfig::Vertex(config) => Some(config.model_id),

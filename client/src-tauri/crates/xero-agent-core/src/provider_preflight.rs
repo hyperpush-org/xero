@@ -13,6 +13,11 @@ pub const PROVIDER_PREFLIGHT_CONTRACT_VERSION: u32 = 1;
 pub const DEFAULT_PROVIDER_PREFLIGHT_TTL_SECONDS: i64 = 6 * 60 * 60;
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS: u64 = 30_000;
 const PREFLIGHT_PROBE_TOOL_NAME: &str = "xero_preflight_noop";
+const AZURE_OPENAI_PROVIDER_ID: &str = "azure_openai";
+const DEEPSEEK_PROVIDER_ID: &str = "deepseek";
+const GITHUB_MODELS_PROVIDER_ID: &str = "github_models";
+const OPENAI_API_PROVIDER_ID: &str = "openai_api";
+const OPENROUTER_PROVIDER_ID: &str = "openrouter";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -941,14 +946,35 @@ fn openai_compatible_preflight_body(
         ]),
     );
     body.insert("stream".into(), json!(request.required_features.streaming));
+    if request.required_features.streaming
+        && openai_compatible_preflight_supports_stream_options(&request.provider_id)
+    {
+        body.insert("stream_options".into(), json!({ "include_usage": true }));
+    }
     if request.required_features.tool_calls {
         body.insert("tools".into(), json!([preflight_tool_schema()]));
         body.insert("tool_choice".into(), json!("none"));
     }
-    if request.required_features.reasoning_controls {
+    if request.provider_id == DEEPSEEK_PROVIDER_ID {
+        body.insert("thinking".into(), json!({ "type": "enabled" }));
+        if request.required_features.reasoning_controls {
+            body.insert("reasoning_effort".into(), json!("high"));
+        }
+    } else if request.required_features.reasoning_controls {
         body.insert("reasoning".into(), json!({ "effort": "low" }));
     }
     JsonValue::Object(body)
+}
+
+fn openai_compatible_preflight_supports_stream_options(provider_id: &str) -> bool {
+    matches!(
+        provider_id,
+        OPENAI_API_PROVIDER_ID
+            | OPENROUTER_PROVIDER_ID
+            | DEEPSEEK_PROVIDER_ID
+            | GITHUB_MODELS_PROVIDER_ID
+            | AZURE_OPENAI_PROVIDER_ID
+    )
 }
 
 fn preflight_tool_schema() -> JsonValue {
@@ -1309,5 +1335,67 @@ mod tests {
             base.required_features_fingerprint,
             different_features.required_features_fingerprint
         );
+    }
+
+    #[test]
+    fn deepseek_preflight_body_uses_thinking_controls_not_openai_reasoning() {
+        let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required.reasoning_controls = true;
+        let body =
+            openai_compatible_preflight_body(&OpenAiCompatibleProviderPreflightProbeRequest {
+                profile_id: "deepseek-default".into(),
+                provider_id: DEEPSEEK_PROVIDER_ID.into(),
+                model_id: "deepseek-v4-pro".into(),
+                base_url: "https://api.deepseek.com".into(),
+                api_key: Some("test-key".into()),
+                timeout_ms: 1_000,
+                required_features: required,
+                credential_proof: Some("test".into()),
+                context_window_tokens: Some(1_000_000),
+                max_output_tokens: Some(384_000),
+                context_limit_source: Some("built_in_registry".into()),
+                context_limit_confidence: Some("medium".into()),
+                thinking_supported: true,
+                thinking_efforts: vec!["high".into(), "x_high".into()],
+                thinking_default_effort: Some("high".into()),
+            });
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert_eq!(
+            body["tools"][0]["function"]["name"],
+            PREFLIGHT_PROBE_TOOL_NAME
+        );
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn openrouter_preflight_body_keeps_openrouter_reasoning_shape() {
+        let mut required = ProviderPreflightRequiredFeatures::owned_agent_text_turn();
+        required.reasoning_controls = true;
+        let body =
+            openai_compatible_preflight_body(&OpenAiCompatibleProviderPreflightProbeRequest {
+                profile_id: "openrouter-default".into(),
+                provider_id: OPENROUTER_PROVIDER_ID.into(),
+                model_id: "deepseek/deepseek-v4-pro".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                api_key: Some("test-key".into()),
+                timeout_ms: 1_000,
+                required_features: required,
+                credential_proof: Some("test".into()),
+                context_window_tokens: Some(1_048_576),
+                max_output_tokens: Some(384_000),
+                context_limit_source: Some("live_catalog".into()),
+                context_limit_confidence: Some("high".into()),
+                thinking_supported: true,
+                thinking_efforts: vec!["high".into(), "x_high".into()],
+                thinking_default_effort: Some("high".into()),
+            });
+
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["stream_options"]["include_usage"], true);
+        assert!(body.get("thinking").is_none());
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

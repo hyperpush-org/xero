@@ -1,4 +1,6 @@
 pub mod agent_definition;
+pub mod agent_extensions;
+pub mod agent_reports;
 pub mod agent_session;
 pub mod agent_session_title;
 pub mod agent_task;
@@ -36,6 +38,8 @@ pub mod payload_budget;
 pub mod platform;
 pub mod project_assets;
 pub mod project_files;
+pub mod project_records;
+pub mod project_state;
 pub mod provider_credentials;
 pub mod provider_diagnostics;
 pub mod provider_model_catalog;
@@ -72,8 +76,22 @@ mod contracts;
 pub(crate) mod runtime_support;
 
 pub use agent_definition::{
-    archive_agent_definition, get_agent_definition_version, list_agent_definitions,
-    save_agent_definition, update_agent_definition,
+    archive_agent_definition, get_agent_definition_version, get_agent_definition_version_diff,
+    list_agent_definitions, preview_agent_definition, save_agent_definition,
+    update_agent_definition,
+};
+pub use agent_extensions::{
+    validate_agent_tool_extension_manifest, AgentToolExtensionManifestValidationDto,
+    AgentToolExtensionPermissionSummaryDto, AgentToolExtensionValidationDiagnosticDto,
+    ValidateAgentToolExtensionManifestRequestDto,
+};
+pub use agent_reports::{
+    get_agent_database_touchpoint_explanation, get_agent_handoff_context_summary,
+    get_agent_knowledge_inspection, get_agent_run_start_explanation,
+    get_agent_support_diagnostics_bundle, get_capability_permission_explanation,
+    GetAgentDatabaseTouchpointExplanationRequestDto, GetAgentHandoffContextSummaryRequestDto,
+    GetAgentKnowledgeInspectionRequestDto, GetAgentRunStartExplanationRequestDto,
+    GetAgentSupportDiagnosticsBundleRequestDto, GetCapabilityPermissionExplanationRequestDto,
 };
 pub use agent_session::{
     archive_agent_session, create_agent_session, delete_agent_session, get_agent_session,
@@ -147,6 +165,17 @@ pub use project_files::{
     create_project_entry, delete_project_entry, list_project_files, move_project_entry,
     open_project_file_external, read_project_file, rename_project_entry, write_project_file,
 };
+pub use project_records::{
+    delete_project_context_record, supersede_project_context_record,
+    DeleteProjectContextRecordRequestDto, DeleteProjectContextRecordResponseDto,
+    SupersedeProjectContextRecordRequestDto, SupersedeProjectContextRecordResponseDto,
+};
+pub use project_state::{
+    create_project_state_backup, repair_project_state, restore_project_state_backup,
+    CreateProjectStateBackupRequestDto, ProjectStateBackupResponseDto,
+    ProjectStateRepairDiagnosticDto, ProjectStateRepairResponseDto, ProjectStateRestoreResponseDto,
+    RepairProjectStateRequestDto, RestoreProjectStateBackupRequestDto,
+};
 pub use provider_credentials::{
     delete_provider_credential, list_provider_credentials, upsert_provider_credential,
 };
@@ -160,10 +189,11 @@ pub use resolve_operator_action::resolve_operator_action;
 pub use resume_operator_run::resume_operator_run;
 pub use search_project::{replace_in_project, search_project};
 pub use session_history::{
-    branch_agent_session, compact_session_history, delete_session_memory,
+    branch_agent_session, compact_session_history, correct_session_memory, delete_session_memory,
     export_session_transcript, extract_session_memory_candidates, get_session_context_snapshot,
-    get_session_transcript, list_session_memories, rewind_agent_session,
-    save_session_transcript_export, search_session_transcripts, update_session_memory,
+    get_session_memory_review_queue, get_session_transcript, list_session_memories,
+    rewind_agent_session, save_session_transcript_export, search_session_transcripts,
+    update_session_memory,
 };
 pub use skills::{
     list_skill_registry, reload_skill_registry, remove_plugin, remove_plugin_root, remove_skill,
@@ -210,7 +240,8 @@ pub use upsert_mcp_server::upsert_mcp_server;
 pub use upsert_notification_route::upsert_notification_route;
 pub use upsert_notification_route_credentials::upsert_notification_route_credentials;
 pub use workflow_agents::{
-    get_agent_authoring_catalog, get_workflow_agent_detail, list_workflow_agents,
+    get_agent_authoring_catalog, get_agent_tool_pack_catalog, get_workflow_agent_detail,
+    list_workflow_agents,
 };
 pub use workspace_index::{
     workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,

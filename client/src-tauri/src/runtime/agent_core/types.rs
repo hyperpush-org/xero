@@ -1103,7 +1103,21 @@ pub struct AgentToolResult {
     pub summary: String,
     pub output: JsonValue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence: Option<AgentToolResultPersistenceMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_assistant_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentToolResultPersistenceMetadata {
+    pub persisted_full: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persisted_artifact: Option<String>,
+    pub registry_truncated: bool,
+    pub original_bytes: usize,
+    pub persisted_bytes: usize,
+    pub omitted_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1166,7 +1180,7 @@ pub trait ProviderAdapter {
         };
 
         match self.stream_turn(&turn, emit)? {
-            ProviderTurnOutcome::Complete { message, usage } => Ok(ProviderCompactionOutcome {
+            ProviderTurnOutcome::Complete { message, usage, .. } => Ok(ProviderCompactionOutcome {
                 summary: message,
                 usage,
             }),
@@ -1222,7 +1236,7 @@ pub trait ProviderAdapter {
         };
 
         match self.stream_turn(&turn, emit)? {
-            ProviderTurnOutcome::Complete { message, usage } => {
+            ProviderTurnOutcome::Complete { message, usage, .. } => {
                 let candidates = parse_provider_memory_candidates(&message)?;
                 Ok(ProviderMemoryExtractionOutcome { candidates, usage })
             }
@@ -1253,6 +1267,11 @@ pub enum ProviderMessage {
     },
     Assistant {
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_details: Option<JsonValue>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<AgentToolCall>,
     },
     Tool {
@@ -1347,10 +1366,14 @@ fn parse_provider_memory_candidates(message: &str) -> CommandResult<Vec<Provider
 pub enum ProviderTurnOutcome {
     Complete {
         message: String,
+        reasoning_content: Option<String>,
+        reasoning_details: Option<JsonValue>,
         usage: Option<ProviderUsage>,
     },
     ToolCalls {
         message: String,
+        reasoning_content: Option<String>,
+        reasoning_details: Option<JsonValue>,
         tool_calls: Vec<AgentToolCall>,
         usage: Option<ProviderUsage>,
     },
@@ -1396,6 +1419,8 @@ impl ProviderAdapter for FakeProviderAdapter {
             emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
             return Ok(ProviderTurnOutcome::ToolCalls {
                 message,
+                reasoning_content: None,
+                reasoning_details: None,
                 tool_calls: vec![AgentToolCall {
                     tool_call_id: format!("fake-tool-call-verify-{}", request.turn_index),
                     tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
@@ -1415,6 +1440,8 @@ impl ProviderAdapter for FakeProviderAdapter {
             emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
             return Ok(ProviderTurnOutcome::Complete {
                 message,
+                reasoning_content: None,
+                reasoning_details: None,
                 usage: Some(ProviderUsage::default()),
             });
         }
@@ -1434,11 +1461,15 @@ impl ProviderAdapter for FakeProviderAdapter {
         if tool_calls.is_empty() {
             Ok(ProviderTurnOutcome::Complete {
                 message,
+                reasoning_content: None,
+                reasoning_details: None,
                 usage: Some(ProviderUsage::default()),
             })
         } else {
             Ok(ProviderTurnOutcome::ToolCalls {
                 message,
+                reasoning_content: None,
+                reasoning_details: None,
                 tool_calls,
                 usage: Some(ProviderUsage::default()),
             })

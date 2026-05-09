@@ -282,6 +282,7 @@ interface ProjectLoadArgs {
   adapter: XeroDesktopAdapter
   projectId: string
   source: ProjectLoadSource
+  applyCachedProject?: boolean
   refs: ProjectLoadRefs
   setters: ProjectLoadSetters
   resetRepositoryDiffs: (status: RepositoryStatusView | null) => void
@@ -336,6 +337,7 @@ export async function loadProjectState({
   adapter,
   projectId,
   source,
+  applyCachedProject = true,
   refs,
   setters,
   resetRepositoryDiffs,
@@ -364,7 +366,7 @@ export async function loadProjectState({
 
   const cachedProject = refs.projectDetailsRef.current[projectId] ?? null
   const cachedRepositoryStatus = cachedProject?.repositoryStatus ?? null
-  if (cachedProject) {
+  if (cachedProject && applyCachedProject) {
     setters.setRepositoryStatus(cachedRepositoryStatus)
     setters.setActiveProjectId(projectId)
     setters.setActiveProject(cachedProject)

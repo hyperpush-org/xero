@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xero.local/schemas/terminal-bench-opencode-benchmark.schema.json",
+  "title": "Xero Terminal-Bench OpenCode Benchmark Config",
+  "type": "object",
+  "required": ["schemaVersion", "benchmark", "model", "taskSets", "harnesses", "limits"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmark": {
+      "type": "object",
+      "required": ["name", "datasetId"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "terminal-bench" },
+        "datasetId": { "type": "string", "minLength": 1 },
+        "datasetDigest": { "type": "string" },
+        "mode": { "enum": ["fixed-model", "product"] }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["provider", "modelId"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "modelId": { "type": "string", "minLength": 1 },
+        "temperature": { "type": "number", "minimum": 0 },
+        "reasoningEffort": { "type": "string" },
+        "maxOutputTokens": { "type": "integer", "minimum": 1 },
+        "contextBudget": { "type": "integer", "minimum": 1 },
+        "credentialEnv": { "type": "string" },
+        "endpointClass": { "type": "string" },
+        "providerAccountClass": { "type": "string" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wallTimeSeconds": { "type": "integer", "minimum": 1 },
+        "maxTurns": { "type": "integer", "minimum": 1 },
+        "maxToolCalls": { "type": "integer", "minimum": 1 },
+        "maxCommandCalls": { "type": "integer", "minimum": 1 },
+        "maxCostUsd": { "type": "number", "minimum": 0 },
+        "attempts": { "type": "integer", "minimum": 1 },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "approvalMode": { "type": "string" },
+        "sandboxPolicy": { "type": "string" },
+        "networkPolicy": { "type": "string" }
+      }
+    },
+    "taskSets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["description", "taskIds"],
+        "additionalProperties": false,
+        "properties": {
+          "description": { "type": "string" },
+          "taskIds": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "harnesses": {
+      "type": "object",
+      "required": ["xero", "opencode"],
+      "additionalProperties": false,
+      "properties": {
+        "xero": {
+          "type": "object",
+          "required": ["kind", "agentImportPath"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "harbor-installed-agent" },
+            "agentImportPath": { "type": "string", "minLength": 1 },
+            "adapterVersion": { "type": "string" },
+            "xeroCliPathEnv": { "type": "string" }
+          }
+        },
+        "opencode": {
+          "type": "object",
+          "required": ["preferredKind"],
+          "additionalProperties": false,
+          "properties": {
+            "preferredKind": { "enum": ["harbor-built-in", "fallback-installed-agent"] },
+            "agentName": { "type": "string" },
+            "fallbackImportPath": { "type": "string" }
+          }
+        }
+      }
+    },
+    "reporting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "confidenceInterval": { "enum": ["wilson"] },
+        "primaryMetric": { "enum": ["pass@1"] },
+        "redactArtifactsByDefault": { "type": "boolean" }
+      }
+    }
+  }
+}

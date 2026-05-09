@@ -111,6 +111,35 @@ describe('runtime protocol schemas', () => {
     expect(parsed.payload.kind).toBe('environment_lifecycle_update')
   })
 
+  it('requires runtime settings change submissions to carry object-shaped settings', () => {
+    const parsed = runtimeSubmissionEnvelopeSchema.parse({
+      ...submissionFixture,
+      submission: {
+        kind: 'runtime_settings_change',
+        payload: {
+          projectId: 'project-1',
+          settings: {
+            providerProfileId: 'openrouter',
+          },
+          reason: 'Switch runtime profile.',
+        },
+      },
+    })
+    expect(parsed.submission.kind).toBe('runtime_settings_change')
+
+    const result = runtimeSubmissionEnvelopeSchema.safeParse({
+      ...submissionFixture,
+      submission: {
+        kind: 'runtime_settings_change',
+        payload: {
+          projectId: 'project-1',
+          settings: 'openrouter',
+        },
+      },
+    })
+    expect(result.success).toBe(false)
+  })
+
   it('rejects protocol version mismatches at the frontend boundary', () => {
     const result = runtimeSubmissionEnvelopeSchema.safeParse({
       ...submissionFixture,
@@ -135,6 +164,24 @@ describe('runtime protocol schemas', () => {
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error.issues[0]?.path).toEqual(['trace', 'runTraceId'])
+    }
+  })
+
+  it('rejects runtime events whose outer and inner kinds drift', () => {
+    const result = runtimeProtocolEventSchema.safeParse({
+      ...eventFixture,
+      payload: {
+        kind: 'run_completed',
+        payload: {
+          summary: 'Done.',
+          state: 'completed',
+        },
+      },
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(['payload', 'kind'])
     }
   })
 })

@@ -12,6 +12,7 @@ import {
   AGENT_GRAPH_TRIGGER_HANDLES,
   buildAgentGraph,
   humanizeIdentifier,
+  type AgentHeaderNodeData,
   toolCategoryPresentationForGroup,
 } from './build-agent-graph'
 import { layoutAgentGraphByCategory } from './layout'
@@ -181,6 +182,39 @@ describe('buildAgentGraph', () => {
     expect(dbNodes.some((n) => (n.data as { touchpoint: string }).touchpoint === 'write')).toBe(true)
     expect(dbNodes.some((n) => (n.data as { touchpoint: string }).touchpoint === 'read')).toBe(true)
     expect(dbNodes.some((n) => (n.data as { touchpoint: string }).touchpoint === 'encouraged')).toBe(true)
+  })
+
+  it('hydrates granular tool policy into the header advanced state', () => {
+    const detail = fixtureDetail()
+    detail.toolPolicyDetails = {
+      allowedTools: ['Read'],
+      deniedTools: ['Delete'],
+      allowedToolPacks: ['repo_intel'],
+      deniedToolPacks: ['external_network'],
+      allowedToolGroups: ['core'],
+      deniedToolGroups: ['browser_control'],
+      allowedEffectClasses: ['observe', 'runtime_state'],
+      externalServiceAllowed: false,
+      browserControlAllowed: false,
+      skillRuntimeAllowed: false,
+      subagentAllowed: false,
+      commandAllowed: true,
+      destructiveWriteAllowed: false,
+    }
+    const { nodes } = buildAgentGraph(detail)
+    const header = nodes.find((node) => node.id === AGENT_GRAPH_HEADER_NODE_ID)
+    const advanced = (header?.data as AgentHeaderNodeData | undefined)?.advanced
+
+    expect(advanced).toMatchObject({
+      allowedEffectClasses: ['observe', 'runtime_state'],
+      deniedTools: ['Delete'],
+      allowedToolPacks: ['repo_intel'],
+      deniedToolPacks: ['external_network'],
+      allowedToolGroups: ['core'],
+      deniedToolGroups: ['browser_control'],
+      commandAllowed: true,
+      browserControlAllowed: false,
+    })
   })
 
   it('renders a table that is both read and written as two distinct cards', () => {

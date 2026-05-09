@@ -28,7 +28,7 @@ use crate::{
             terminate_process_tree,
         },
         redaction::find_prohibited_persistence_content,
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
         GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
         OPENAI_API_PROVIDER_ID, OPENAI_CODEX_DEFAULT_MODEL_ID, OPENAI_CODEX_PROVIDER_ID,
         OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
@@ -54,6 +54,7 @@ pub enum AgentProviderConfig {
     OpenAiResponses(OpenAiResponsesProviderConfig),
     OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig),
     OpenAiCompatible(OpenAiCompatibleProviderConfig),
+    DeepSeek(DeepSeekProviderConfig),
     Anthropic(AnthropicProviderConfig),
     Bedrock(BedrockProviderConfig),
     Vertex(VertexProviderConfig),
@@ -86,6 +87,14 @@ pub struct OpenAiCompatibleProviderConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub api_version: Option<String>,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeepSeekProviderConfig {
+    pub model_id: String,
+    pub base_url: String,
+    pub api_key: String,
     pub timeout_ms: u64,
 }
 
@@ -127,6 +136,17 @@ pub fn create_provider_adapter(
         }
         AgentProviderConfig::OpenAiCompatible(config) => {
             OpenAiCompatibleAdapter::new(config).map(|adapter| Box::new(adapter) as _)
+        }
+        AgentProviderConfig::DeepSeek(config) => {
+            OpenAiCompatibleAdapter::new(OpenAiCompatibleProviderConfig {
+                provider_id: DEEPSEEK_PROVIDER_ID.into(),
+                model_id: config.model_id,
+                base_url: config.base_url,
+                api_key: Some(config.api_key),
+                api_version: None,
+                timeout_ms: config.timeout_ms,
+            })
+            .map(|adapter| Box::new(adapter) as _)
         }
         AgentProviderConfig::Anthropic(config) => {
             AnthropicAdapter::new(config).map(|adapter| Box::new(adapter) as _)
@@ -635,7 +655,7 @@ fn openai_chat_request_body(
     body.insert("model".into(), json!(model_id));
     body.insert(
         "messages".into(),
-        JsonValue::Array(openai_chat_messages(request)?),
+        JsonValue::Array(openai_chat_messages(provider_id, request)?),
     );
     body.insert(
         "tools".into(),
@@ -646,6 +666,22 @@ fn openai_chat_request_body(
     if provider_supports_openai_stream_options(provider_id) {
         body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
+    if provider_id == DEEPSEEK_PROVIDER_ID {
+        body.insert("thinking".into(), json!({ "type": "enabled" }));
+        if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
+            body.insert(
+                "reasoning_effort".into(),
+                json!(deepseek_thinking_effort_value(effort)),
+            );
+        }
+    } else if provider_id == OPENROUTER_PROVIDER_ID {
+        if let Some(effort) = request.controls.active.thinking_effort.as_ref() {
+            body.insert(
+                "reasoning".into(),
+                json!({ "effort": openrouter_reasoning_effort_value(effort) }),
+            );
+        }
+    }
     Ok(JsonValue::Object(body))
 }
 
@@ -655,12 +691,16 @@ fn provider_supports_openai_stream_options(provider_id: &str) -> bool {
         OPENAI_API_PROVIDER_ID
             | OPENAI_CODEX_PROVIDER_ID
             | OPENROUTER_PROVIDER_ID
+            | DEEPSEEK_PROVIDER_ID
             | GITHUB_MODELS_PROVIDER_ID
             | AZURE_OPENAI_PROVIDER_ID
     )
 }
 
-fn openai_chat_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonValue>> {
+fn openai_chat_messages(
+    provider_id: &str,
+    request: &ProviderTurnRequest,
+) -> CommandResult<Vec<JsonValue>> {
     let mut messages = vec![json!({
         "role": "system",
         "content": request.system_prompt,
@@ -673,10 +713,26 @@ fn openai_chat_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<Json
             ProviderMessage::Assistant {
                 content,
                 tool_calls,
+                reasoning_content,
+                reasoning_details,
             } => {
                 let mut object = JsonMap::new();
                 object.insert("role".into(), json!("assistant"));
                 object.insert("content".into(), json!(content));
+                if provider_replays_openai_reasoning_content(provider_id) {
+                    if let Some(reasoning_content) = reasoning_content
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|reasoning| !reasoning.is_empty())
+                    {
+                        object.insert("reasoning_content".into(), json!(reasoning_content));
+                    }
+                }
+                if provider_replays_openai_reasoning_details(provider_id) {
+                    if let Some(reasoning_details) = reasoning_details {
+                        object.insert("reasoning_details".into(), reasoning_details.clone());
+                    }
+                }
                 if !tool_calls.is_empty() {
                     object.insert(
                         "tool_calls".into(),
@@ -699,6 +755,32 @@ fn openai_chat_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<Json
         }
     }
     Ok(messages)
+}
+
+fn provider_replays_openai_reasoning_content(provider_id: &str) -> bool {
+    matches!(provider_id, DEEPSEEK_PROVIDER_ID | OPENROUTER_PROVIDER_ID)
+}
+
+fn provider_replays_openai_reasoning_details(provider_id: &str) -> bool {
+    provider_id == OPENROUTER_PROVIDER_ID
+}
+
+fn collect_reasoning_details(buffer: &mut Vec<JsonValue>, reasoning_details: JsonValue) {
+    match reasoning_details {
+        JsonValue::Array(items) => {
+            buffer.extend(items.into_iter().filter(|item| !item.is_null()));
+        }
+        value if !value.is_null() => buffer.push(value),
+        _ => {}
+    }
+}
+
+fn merged_reasoning_details(buffer: Vec<JsonValue>) -> Option<JsonValue> {
+    if buffer.is_empty() {
+        None
+    } else {
+        Some(JsonValue::Array(buffer))
+    }
 }
 
 fn openai_chat_tool(tool: &AgentToolDescriptor) -> JsonValue {
@@ -837,6 +919,7 @@ fn openai_response_input(request: &ProviderTurnRequest) -> CommandResult<Vec<Jso
             ProviderMessage::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 if !content.trim().is_empty() {
                     input.push(json!({ "role": "assistant", "content": content }));
@@ -879,6 +962,7 @@ fn openai_codex_response_input(request: &ProviderTurnRequest) -> CommandResult<V
             ProviderMessage::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 if !content.trim().is_empty() {
                     input.push(json!({
@@ -1035,6 +1119,26 @@ fn thinking_effort_value(effort: &ProviderModelThinkingEffortDto) -> &'static st
     }
 }
 
+fn deepseek_thinking_effort_value(effort: &ProviderModelThinkingEffortDto) -> &'static str {
+    match effort {
+        ProviderModelThinkingEffortDto::XHigh => "max",
+        ProviderModelThinkingEffortDto::Minimal
+        | ProviderModelThinkingEffortDto::Low
+        | ProviderModelThinkingEffortDto::Medium
+        | ProviderModelThinkingEffortDto::High => "high",
+    }
+}
+
+fn openrouter_reasoning_effort_value(effort: &ProviderModelThinkingEffortDto) -> &'static str {
+    match effort {
+        ProviderModelThinkingEffortDto::XHigh => "xhigh",
+        ProviderModelThinkingEffortDto::Minimal
+        | ProviderModelThinkingEffortDto::Low
+        | ProviderModelThinkingEffortDto::Medium
+        | ProviderModelThinkingEffortDto::High => "high",
+    }
+}
+
 fn openai_responses_thinking_effort_value(
     provider_id: &str,
     model_id: &str,
@@ -1115,6 +1219,7 @@ fn anthropic_messages(request: &ProviderTurnRequest) -> CommandResult<Vec<JsonVa
             ProviderMessage::Assistant {
                 content,
                 tool_calls,
+                ..
             } => {
                 let mut blocks = Vec::new();
                 if !content.trim().is_empty() {
@@ -1264,6 +1369,8 @@ struct OpenAiChatDelta {
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]
+    reasoning_details: Option<JsonValue>,
+    #[serde(default)]
     tool_calls: Vec<OpenAiToolCallDelta>,
 }
 
@@ -1312,6 +1419,8 @@ fn parse_openai_chat_sse(
     emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
 ) -> CommandResult<ProviderTurnOutcome> {
     let mut message = String::new();
+    let mut reasoning_content_buffer = String::new();
+    let mut reasoning_details_buffer = Vec::<JsonValue>::new();
     let mut partial_calls = BTreeMap::<usize, PartialToolCall>::new();
     let mut usage = None;
 
@@ -1355,12 +1464,19 @@ fn parse_openai_chat_sse(
                 content,
                 reasoning,
                 reasoning_content,
+                reasoning_details,
                 tool_calls,
             } = choice.delta;
+            if provider_replays_openai_reasoning_details(provider_id) {
+                if let Some(reasoning_details) = reasoning_details {
+                    collect_reasoning_details(&mut reasoning_details_buffer, reasoning_details);
+                }
+            }
             if let Some(reasoning) = reasoning_content
                 .or(reasoning)
                 .filter(|reasoning| !reasoning.is_empty())
             {
+                reasoning_content_buffer.push_str(&reasoning);
                 emit(ProviderStreamEvent::ReasoningSummary(reasoning))?;
             }
             if let Some(content) = content {
@@ -1389,7 +1505,20 @@ fn parse_openai_chat_sse(
         }
     }
 
-    finish_provider_turn(provider_id, message, partial_calls, usage)
+    let reasoning_content = provider_replays_openai_reasoning_content(provider_id)
+        .then(|| reasoning_content_buffer.trim().to_owned())
+        .filter(|reasoning| !reasoning.is_empty());
+    let reasoning_details = provider_replays_openai_reasoning_details(provider_id)
+        .then(|| merged_reasoning_details(reasoning_details_buffer))
+        .flatten();
+    finish_provider_turn(
+        provider_id,
+        message,
+        reasoning_content,
+        reasoning_details,
+        partial_calls,
+        usage,
+    )
 }
 
 fn parse_openai_responses_sse(
@@ -1491,7 +1620,7 @@ fn parse_openai_responses_sse(
         }
     }
 
-    finish_provider_turn(provider_id, message, partial_calls, usage)
+    finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
 }
 
 fn emit_openai_responses_reasoning_summary_event(
@@ -1853,7 +1982,7 @@ fn parse_anthropic_sse(
     if let Some(usage) = usage.as_ref() {
         emit(ProviderStreamEvent::Usage(usage.clone()))?;
     }
-    finish_provider_turn(provider_id, message, partial_calls, usage)
+    finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
 }
 
 fn parse_anthropic_json_response(
@@ -1946,12 +2075,14 @@ fn parse_anthropic_json_response(
     if let Some(usage) = usage.as_ref() {
         emit(ProviderStreamEvent::Usage(usage.clone()))?;
     }
-    finish_provider_turn(provider_id, message, partial_calls, usage)
+    finish_provider_turn(provider_id, message, None, None, partial_calls, usage)
 }
 
 fn finish_provider_turn(
     provider_id: &str,
     message: String,
+    reasoning_content: Option<String>,
+    reasoning_details: Option<JsonValue>,
     partial_calls: BTreeMap<usize, PartialToolCall>,
     usage: Option<ProviderUsage>,
 ) -> CommandResult<ProviderTurnOutcome> {
@@ -1999,10 +2130,17 @@ fn finish_provider_turn(
     }
 
     if tool_calls.is_empty() {
-        Ok(ProviderTurnOutcome::Complete { message, usage })
+        Ok(ProviderTurnOutcome::Complete {
+            message,
+            reasoning_content,
+            reasoning_details,
+            usage,
+        })
     } else {
         Ok(ProviderTurnOutcome::ToolCalls {
             message,
+            reasoning_content,
+            reasoning_details,
             tool_calls,
             usage,
         })
@@ -2309,11 +2447,12 @@ impl Default for AnthropicProviderConfig {
 }
 
 #[allow(dead_code)]
-fn _known_provider_ids() -> [&'static str; 10] {
+fn _known_provider_ids() -> [&'static str; 11] {
     [
         OPENAI_CODEX_PROVIDER_ID,
         OPENAI_API_PROVIDER_ID,
         OPENROUTER_PROVIDER_ID,
+        DEEPSEEK_PROVIDER_ID,
         ANTHROPIC_PROVIDER_ID,
         GITHUB_MODELS_PROVIDER_ID,
         OLLAMA_PROVIDER_ID,
@@ -2384,6 +2523,12 @@ mod tests {
                 .expect("github body");
         assert_eq!(github["stream_options"]["include_usage"], true);
 
+        let deepseek = openai_chat_request_body(DEEPSEEK_PROVIDER_ID, "deepseek-v4-pro", &request)
+            .expect("deepseek body");
+        assert_eq!(deepseek["stream_options"]["include_usage"], true);
+        assert_eq!(deepseek["thinking"]["type"], "enabled");
+        assert!(deepseek.get("reasoning").is_none());
+
         let ollama = openai_chat_request_body(OLLAMA_PROVIDER_ID, "llama3.1", &request)
             .expect("ollama body");
         assert_eq!(ollama["stream"], true);
@@ -2394,6 +2539,54 @@ mod tests {
                 .expect("gemini body");
         assert_eq!(gemini["stream"], true);
         assert!(gemini.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn deepseek_body_uses_thinking_effort_and_replays_reasoning_content() {
+        let mut request = test_request();
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::XHigh);
+        request.messages.push(ProviderMessage::Assistant {
+            content: "I will read the file.".into(),
+            reasoning_content: Some("tool call rationale".into()),
+            reasoning_details: None,
+            tool_calls: vec![AgentToolCall {
+                tool_call_id: "call-1".into(),
+                tool_name: "read".into(),
+                input: json!({ "path": "src/lib.rs" }),
+            }],
+        });
+
+        let body = openai_chat_request_body(DEEPSEEK_PROVIDER_ID, "deepseek-v4-pro", &request)
+            .expect("deepseek body");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "max");
+        assert!(body.get("reasoning").is_none());
+        assert_eq!(
+            body["messages"][2]["reasoning_content"],
+            "tool call rationale"
+        );
+    }
+
+    #[test]
+    fn openrouter_replays_reasoning_details_without_sending_deepseek_thinking() {
+        let mut request = test_request();
+        request.controls.active.thinking_effort = Some(ProviderModelThinkingEffortDto::Medium);
+        request.messages.push(ProviderMessage::Assistant {
+            content: "I will inspect context.".into(),
+            reasoning_content: Some("brief rationale".into()),
+            reasoning_details: Some(json!([
+                { "type": "reasoning.text", "text": "opaque provider detail" }
+            ])),
+            tool_calls: Vec::new(),
+        });
+
+        let body =
+            openai_chat_request_body(OPENROUTER_PROVIDER_ID, "deepseek/deepseek-v4-pro", &request)
+                .expect("openrouter body");
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["messages"][2]["reasoning_content"], "brief rationale");
+        assert!(body["messages"][2]["reasoning_details"].is_array());
     }
 
     #[test]
@@ -2683,8 +2876,15 @@ mod tests {
             },
         );
 
-        let outcome = finish_provider_turn("test-provider", String::new(), partial_calls, None)
-            .expect("provider turn");
+        let outcome = finish_provider_turn(
+            "test-provider",
+            String::new(),
+            None,
+            None,
+            partial_calls,
+            None,
+        )
+        .expect("provider turn");
         match outcome {
             ProviderTurnOutcome::ToolCalls { tool_calls, .. } => {
                 assert_eq!(tool_calls.len(), 1);
@@ -2704,8 +2904,9 @@ mod tests {
                 arguments: "{".into(),
             },
         );
-        let error = finish_provider_turn("test-provider", String::new(), malformed, None)
-            .expect_err("malformed tool JSON should fail");
+        let error =
+            finish_provider_turn("test-provider", String::new(), None, None, malformed, None)
+                .expect_err("malformed tool JSON should fail");
         assert_eq!(error.code, "agent_provider_tool_arguments_invalid");
     }
 
@@ -2735,9 +2936,15 @@ mod tests {
             &event,
             0,
         ));
-        let outcome =
-            finish_provider_turn(OPENAI_CODEX_PROVIDER_ID, String::new(), partial_calls, None)
-                .expect("provider turn");
+        let outcome = finish_provider_turn(
+            OPENAI_CODEX_PROVIDER_ID,
+            String::new(),
+            None,
+            None,
+            partial_calls,
+            None,
+        )
+        .expect("provider turn");
 
         match outcome {
             ProviderTurnOutcome::ToolCalls { tool_calls, .. } => {
@@ -2797,7 +3004,7 @@ mod tests {
                 arguments: r#"{"path":"src/lib.rs"}"#.into(),
             },
         );
-        let error = finish_provider_turn("test-provider", String::new(), blank, None)
+        let error = finish_provider_turn("test-provider", String::new(), None, None, blank, None)
             .expect_err("blank tool id should fail");
         assert_eq!(error.code, "invalid_request");
 
@@ -2818,8 +3025,9 @@ mod tests {
                 arguments: r#"{"path":"client/src-tauri/src/lib.rs"}"#.into(),
             },
         );
-        let error = finish_provider_turn("test-provider", String::new(), duplicate, None)
-            .expect_err("duplicate tool id should fail");
+        let error =
+            finish_provider_turn("test-provider", String::new(), None, None, duplicate, None)
+                .expect_err("duplicate tool id should fail");
         assert_eq!(error.code, "agent_provider_tool_call_duplicate");
 
         let mut blank_name = BTreeMap::new();
@@ -2831,8 +3039,9 @@ mod tests {
                 arguments: "{}".into(),
             },
         );
-        let error = finish_provider_turn("test-provider", String::new(), blank_name, None)
-            .expect_err("blank tool name should fail");
+        let error =
+            finish_provider_turn("test-provider", String::new(), None, None, blank_name, None)
+                .expect_err("blank tool name should fail");
         assert_eq!(error.code, "invalid_request");
     }
 
@@ -2902,6 +3111,12 @@ mod tests {
                 base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
                 api_key: Some("test-key".into()),
                 api_version: None,
+                timeout_ms: 1_000,
+            }),
+            AgentProviderConfig::DeepSeek(DeepSeekProviderConfig {
+                model_id: "deepseek-v4-pro".into(),
+                base_url: "https://api.deepseek.com".into(),
+                api_key: "test-key".into(),
                 timeout_ms: 1_000,
             }),
             AgentProviderConfig::Anthropic(AnthropicProviderConfig {

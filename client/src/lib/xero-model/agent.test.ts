@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  agentTraceExportSchema,
+  agentRunSummarySchema,
   agentRunSchema,
+  exportAgentTraceRequestSchema,
+  listAgentRunsResponseSchema,
   mapAgentRun,
   resumeAgentRunRequestSchema,
   sendAgentMessageRequestSchema,
@@ -96,6 +100,36 @@ function makeAgentRunDto(overrides: Record<string, unknown> = {}) {
       },
     ],
     actionRequests: [],
+    ...overrides,
+  }
+}
+
+function makeAgentRunSummaryDto(overrides: Record<string, unknown> = {}) {
+  const run = makeAgentRunDto()
+
+  return {
+    runtimeAgentId: run.runtimeAgentId,
+    agentDefinitionId: run.agentDefinitionId,
+    agentDefinitionVersion: run.agentDefinitionVersion,
+    projectId: run.projectId,
+    agentSessionId: run.agentSessionId,
+    runId: run.runId,
+    traceId: run.traceId,
+    lineageKind: run.lineageKind,
+    parentRunId: run.parentRunId,
+    parentTraceId: run.parentTraceId,
+    parentSubagentId: run.parentSubagentId,
+    subagentRole: run.subagentRole,
+    providerId: run.providerId,
+    modelId: run.modelId,
+    status: run.status,
+    prompt: run.prompt,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    cancelledAt: run.cancelledAt,
+    lastErrorCode: run.lastErrorCode,
+    lastError: run.lastError,
+    updatedAt: run.updatedAt,
     ...overrides,
   }
 }
@@ -277,6 +311,49 @@ describe('owned agent run schemas', () => {
     expect(subscription.replayedEventCount).toBe(3)
   })
 
+  it('validates object-shaped trace export contracts', () => {
+    expect(
+      exportAgentTraceRequestSchema.parse({
+        runId: 'run-agent-1',
+        includeSupportBundle: true,
+      }).includeSupportBundle,
+    ).toBe(true)
+
+    const traceExport = agentTraceExportSchema.parse({
+      trace: { traceId: '0123456789abcdef0123456789abcdef' },
+      timeline: { events: [] },
+      diagnostics: { diagnostics: [] },
+      qualityGates: { gates: [] },
+      productionReadiness: {
+        traceId: '0123456789abcdef0123456789abcdef',
+        status: 'ready',
+      },
+      markdownSummary: '# Trace summary',
+      supportBundle: {
+        traceId: '0123456789abcdef0123456789abcdef',
+        run: { runId: 'run-agent-1' },
+      },
+      canonicalTrace: {
+        traceId: '0123456789abcdef0123456789abcdef',
+        generatedFrom: 'owned_agent_trace',
+      },
+    })
+
+    expect(traceExport.qualityGates.gates).toEqual([])
+    expect(() =>
+      agentTraceExportSchema.parse({
+        ...traceExport,
+        qualityGates: 'not a quality-gate object',
+      }),
+    ).toThrow()
+    expect(() =>
+      agentTraceExportSchema.parse({
+        ...traceExport,
+        markdownSummary: ' ',
+      }),
+    ).toThrow()
+  })
+
   it('parses pinned custom agent definition metadata on durable run snapshots', () => {
     const parsed = agentRunSchema.parse(
       makeAgentRunDto({
@@ -289,6 +366,145 @@ describe('owned agent run schemas', () => {
     expect(parsed.runtimeAgentId).toBe('ask')
     expect(parsed.agentDefinitionId).toBe('project_researcher')
     expect(parsed.agentDefinitionVersion).toBe(2)
+  })
+
+  it('rejects contradictory run lineage and nested run identity', () => {
+    expect(() =>
+      agentRunSchema.parse(
+        makeAgentRunDto({
+          parentRunId: 'run-parent',
+        }),
+      ),
+    ).toThrow(/Top-level/)
+    expect(() =>
+      agentRunSchema.parse(
+        makeAgentRunDto({
+          lineageKind: 'subagent_child',
+          parentRunId: 'run-parent',
+          parentTraceId: 'fedcba9876543210fedcba9876543210',
+          parentSubagentId: 'subagent-1',
+          subagentRole: null,
+        }),
+      ),
+    ).toThrow(/Subagent/)
+    expect(() =>
+      agentRunSchema.parse(
+        makeAgentRunDto({
+          messages: [
+            {
+              id: 1,
+              projectId: 'project-1',
+              runId: 'other-run',
+              role: 'user',
+              content: 'Inspect the project.',
+              createdAt: '2026-04-24T12:00:00Z',
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/messages/)
+    expect(() =>
+      agentRunSchema.parse(
+        makeAgentRunDto({
+          messages: [
+            {
+              id: 1,
+              projectId: 'project-1',
+              runId: 'run-agent-1',
+              role: 'user',
+              content: 'Inspect the project.',
+              createdAt: '2026-04-24T12:00:00Z',
+            },
+            {
+              id: 1,
+              projectId: 'project-1',
+              runId: 'run-agent-1',
+              role: 'assistant',
+              content: 'Inspection complete.',
+              createdAt: '2026-04-24T12:00:01Z',
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/message ids/)
+    expect(() =>
+      agentRunSchema.parse(
+        makeAgentRunDto({
+          messages: [
+            {
+              id: 1,
+              projectId: 'project-1',
+              runId: 'run-agent-1',
+              role: 'user',
+              content: 'Inspect the project.',
+              createdAt: '2026-04-24T12:00:00Z',
+              attachments: [
+                {
+                  id: 1,
+                  messageId: 2,
+                  kind: 'document',
+                  absolutePath: '/tmp/context.md',
+                  mediaType: 'text/markdown',
+                  originalName: 'context.md',
+                  sizeBytes: 42,
+                  createdAt: '2026-04-24T12:00:00Z',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/enclosing message id/)
+    expect(() =>
+      agentRunSchema.parse(
+        makeAgentRunDto({
+          toolCalls: [
+            {
+              projectId: 'project-1',
+              runId: 'run-agent-1',
+              toolCallId: 'tool-call-1',
+              toolName: 'read',
+              input: { path: 'src/main.rs' },
+              state: 'succeeded',
+              result: { summary: 'Read file.' },
+              error: null,
+              startedAt: '2026-04-24T12:00:01Z',
+              completedAt: '2026-04-24T12:00:02Z',
+            },
+            {
+              projectId: 'project-1',
+              runId: 'run-agent-1',
+              toolCallId: 'tool-call-1',
+              toolName: 'write',
+              input: { path: 'src/main.rs' },
+              state: 'pending',
+              result: null,
+              error: null,
+              startedAt: '2026-04-24T12:00:02Z',
+              completedAt: null,
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/tool call ids/)
+  })
+
+  it('rejects contradictory run summaries and duplicate list entries', () => {
+    expect(() =>
+      agentRunSummarySchema.parse(
+        makeAgentRunSummaryDto({
+          parentRunId: 'run-parent',
+        }),
+      ),
+    ).toThrow(/Top-level/)
+
+    const summary = agentRunSummarySchema.parse(makeAgentRunSummaryDto())
+
+    expect(() =>
+      listAgentRunsResponseSchema.parse({
+        runs: [summary, { ...summary }],
+      }),
+    ).toThrow(/run ids/)
   })
 
   it('validates auto-compact preferences on owned-agent continuations', () => {

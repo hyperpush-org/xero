@@ -1,4 +1,4 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import { startTransition, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { applyRuntimeRun, applyRuntimeSession, type ProjectDetailView } from '@/src/lib/xero-model'
 import {
@@ -12,6 +12,7 @@ import {
 import {
   mapRuntimeRun,
   mergeRuntimeUpdated,
+  type RuntimeRunUpdatedPayloadDto,
   type RuntimeRunView,
   type RuntimeSessionView,
 } from '@/src/lib/xero-model/runtime'
@@ -41,6 +42,7 @@ import type { RefreshSource } from './types'
 
 export const RUNTIME_STREAM_BATCH_WINDOW_MS = 6
 export const REPOSITORY_STATUS_BATCH_WINDOW_MS = 6
+export const RUNTIME_RUN_UPDATE_BATCH_WINDOW_MS = 24
 const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT = 200
 
 export const ACTIVE_RUNTIME_STREAM_ITEM_KINDS: RuntimeStreamItemKindDto[] = [
@@ -146,6 +148,24 @@ interface RuntimeStreamEventBufferArgs {
   scheduleFlush?: FlushScheduler
 }
 
+interface RuntimeRunUpdateBufferArgs {
+  activeProjectIdRef: MutableRefObject<string | null>
+  applyRuntimeRunUpdate: (
+    projectId: string,
+    runtimeRun: RuntimeRunView | null,
+    options?: { clearGlobalError?: boolean; loadError?: string | null },
+  ) => RuntimeRunView | null
+  setRefreshSource: SetState<RefreshSource>
+  setErrorMessage: SetState<string | null>
+  scheduleFlush?: FlushScheduler
+}
+
+export interface RuntimeRunUpdateBuffer {
+  enqueue: (payload: RuntimeRunUpdatedPayloadDto) => void
+  flush: () => void
+  dispose: () => void
+}
+
 export interface RuntimeStreamEventBuffer {
   enqueue: (payload: RuntimeStreamEventDto) => void
   reportIssue: (issue: { code: string; message: string; retryable: boolean }) => void
@@ -228,6 +248,11 @@ function scheduleRepositoryStatusFlush(callback: () => void): ScheduledFlushCanc
   return scheduleFrameOrTimeout(callback, REPOSITORY_STATUS_BATCH_WINDOW_MS)
 }
 
+function scheduleRuntimeRunUpdateFlush(callback: () => void): ScheduledFlushCancel {
+  const timeoutId = setTimeout(callback, RUNTIME_RUN_UPDATE_BATCH_WINDOW_MS)
+  return () => clearTimeout(timeoutId)
+}
+
 export function isUrgentRuntimeStreamEvent(event: RuntimeStreamEventDto): boolean {
   return (
     event.item.kind === 'action_required' ||
@@ -302,6 +327,83 @@ function scheduleRuntimeActionRefreshes(
       knownKeys.add(refreshKey)
       scheduleRuntimeMetadataRefresh(projectId, 'runtime_stream:action_required')
     }
+  }
+}
+
+export function createRuntimeRunUpdateBuffer({
+  activeProjectIdRef,
+  applyRuntimeRunUpdate,
+  setRefreshSource,
+  setErrorMessage,
+  scheduleFlush = scheduleRuntimeRunUpdateFlush,
+}: RuntimeRunUpdateBufferArgs): RuntimeRunUpdateBuffer {
+  const pendingUpdates = new Map<string, {
+    projectId: string
+    agentSessionId: string
+    runtimeRun: RuntimeRunView | null
+  }>()
+  let cancelScheduledFlush: ScheduledFlushCancel | null = null
+  let disposed = false
+
+  const cancelFlush = () => {
+    if (!cancelScheduledFlush) {
+      return
+    }
+
+    const cancel = cancelScheduledFlush
+    cancelScheduledFlush = null
+    cancel()
+  }
+
+  const flush = () => {
+    if (disposed) {
+      return
+    }
+
+    cancelFlush()
+    if (pendingUpdates.size === 0) {
+      return
+    }
+
+    const updates = Array.from(pendingUpdates.values())
+    pendingUpdates.clear()
+    const activeProjectId = activeProjectIdRef.current
+    const touchesActiveProject = updates.some((update) => update.projectId === activeProjectId)
+
+    startTransition(() => {
+      for (const update of updates) {
+        applyRuntimeRunUpdate(update.projectId, update.runtimeRun)
+      }
+
+      if (touchesActiveProject) {
+        setRefreshSource('runtime_run:updated')
+        setErrorMessage(null)
+      }
+    })
+  }
+
+  return {
+    enqueue(payload) {
+      if (disposed) {
+        return
+      }
+
+      pendingUpdates.set(`${payload.projectId}:${payload.agentSessionId}`, {
+        projectId: payload.projectId,
+        agentSessionId: payload.agentSessionId,
+        runtimeRun: payload.run ? mapRuntimeRun(payload.run) : null,
+      })
+
+      if (!cancelScheduledFlush) {
+        cancelScheduledFlush = scheduleFlush(flush)
+      }
+    },
+    flush,
+    dispose() {
+      disposed = true
+      pendingUpdates.clear()
+      cancelFlush()
+    },
   }
 }
 
@@ -524,6 +626,12 @@ export async function attachDesktopRuntimeListeners({
   const pendingRepositoryStatuses = new Map<string, RepositoryStatusView>()
   const pendingRepositoryStatusKeys = new Map<string, string>()
   let cancelRepositoryStatusFlush: ScheduledFlushCancel | null = null
+  const runtimeRunUpdateBuffer = createRuntimeRunUpdateBuffer({
+    activeProjectIdRef: refs.activeProjectIdRef,
+    applyRuntimeRunUpdate,
+    setRefreshSource: setters.setRefreshSource,
+    setErrorMessage: setters.setErrorMessage,
+  })
   let disposed = false
 
   const applyRepositoryStatusUpdate = (nextStatus: RepositoryStatusView) => {
@@ -707,15 +815,7 @@ export async function attachDesktopRuntimeListeners({
         return
       }
 
-      const nextRuntimeRun = payload.run ? mapRuntimeRun(payload.run) : null
-      applyRuntimeRunUpdate(payload.projectId, nextRuntimeRun)
-
-      if (refs.activeProjectIdRef.current !== payload.projectId) {
-        return
-      }
-
-      setters.setRefreshSource('runtime_run:updated')
-      setters.setErrorMessage(null)
+      runtimeRunUpdateBuffer.enqueue(payload)
     },
     handleAdapterEventError,
   )
@@ -726,6 +826,7 @@ export async function attachDesktopRuntimeListeners({
     pendingRepositoryStatusKeys.clear()
     cancelRepositoryStatusFlush?.()
     cancelRepositoryStatusFlush = null
+    runtimeRunUpdateBuffer.dispose()
     projectUnlisten?.()
     repositoryUnlisten?.()
     runtimeUnlisten?.()

@@ -281,6 +281,18 @@ fn provider_static_capability(provider_id: &str) -> ProviderStaticCapability {
             catalog_kind: "model_provider",
             external_agent_adapter: false,
         },
+        "deepseek" => ProviderStaticCapability {
+            provider_id: "deepseek",
+            provider_label: "DeepSeek",
+            default_model_id: "deepseek-v4-pro",
+            runtime_family: "deepseek",
+            runtime_kind: "deepseek",
+            auth_method: "api_key",
+            transport_mode: "hosted_api",
+            endpoint_shape: "deepseek_chat_completions",
+            catalog_kind: "model_provider",
+            external_agent_adapter: false,
+        },
         "ollama" => ProviderStaticCapability {
             provider_id: "ollama",
             provider_label: "Ollama",
@@ -463,6 +475,16 @@ fn tool_call_capability(provider: ProviderStaticCapability) -> ProviderToolCallC
             parallel_call_behavior: "provider_decides".into(),
             known_incompatibilities: Vec::new(),
         },
+        "deepseek" => ProviderToolCallCapability {
+            status: "supported".into(),
+            source: "static".into(),
+            strictness_behavior: "deepseek_strict_beta_opt_in".into(),
+            schema_dialect: "openai_function_schema".into(),
+            parallel_call_behavior: "provider_decides".into(),
+            known_incompatibilities: vec![
+                "Hosted DeepSeek uses OpenAI-style tool calls; local DSML tool-call encoding is a separate dialect and is not used by this provider path.".into(),
+            ],
+        },
         _ => ProviderToolCallCapability {
             status: "supported".into(),
             source: "static".into(),
@@ -503,12 +525,10 @@ fn reasoning_capability(
             },
             effort_levels: input.thinking_efforts.clone(),
             default_effort: input.thinking_default_effort.clone(),
-            summary_support: if provider.provider_id == "openai_codex"
-                || provider.provider_id == "openai_api"
-            {
-                "auto_summary_supported".into()
-            } else {
-                "provider_default".into()
+            summary_support: match provider.provider_id {
+                "openai_codex" | "openai_api" => "auto_summary_supported".into(),
+                "deepseek" => "reasoning_content_replay_required".into(),
+                _ => "provider_default".into(),
             },
             clamping: "unsupported_effort_dropped_before_request".into(),
             unsupported_model_fallback: "disable_reasoning_control".into(),
@@ -675,6 +695,14 @@ fn provider_known_limitations(
             "External agent adapters are isolated from normal model-provider credentials.".into(),
         );
     }
+    if provider.provider_id == "deepseek" {
+        limitations.push(
+            "Hosted DeepSeek uses OpenAI-style tool calls; DSML is reserved for a future local/self-hosted dialect.".into(),
+        );
+        limitations.push(
+            "DeepSeek thinking-mode tool loops require replaying assistant reasoning_content from provider history.".into(),
+        );
+    }
     limitations
 }
 
@@ -772,5 +800,36 @@ mod tests {
             .headers
             .iter()
             .all(|header| header.contains("[redacted]")));
+    }
+
+    #[test]
+    fn deepseek_capabilities_describe_hosted_dialect_and_reasoning_replay() {
+        let mut input = input("deepseek");
+        input.model_id = "deepseek-v4-pro".into();
+        input.context_window_tokens = Some(1_000_000);
+        input.max_output_tokens = Some(384_000);
+        input.thinking_efforts = vec!["high".into(), "x_high".into()];
+        input.thinking_default_effort = Some("high".into());
+
+        let catalog = provider_capability_catalog(input);
+
+        assert_eq!(catalog.runtime_kind, "deepseek");
+        assert_eq!(catalog.endpoint_shape, "deepseek_chat_completions");
+        assert_eq!(
+            catalog.capabilities.tool_calls.strictness_behavior,
+            "deepseek_strict_beta_opt_in"
+        );
+        assert_eq!(
+            catalog.capabilities.reasoning.summary_support,
+            "reasoning_content_replay_required"
+        );
+        assert_eq!(
+            catalog.capabilities.context_limits.context_window_tokens,
+            Some(1_000_000)
+        );
+        assert!(catalog
+            .known_limitations
+            .iter()
+            .any(|limitation| limitation.contains("DSML")));
     }
 }

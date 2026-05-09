@@ -24,23 +24,24 @@ use crate::{
         AgentSessionBranchResponseDto, AgentSessionLineageBoundaryKindDto,
         BranchAgentSessionRequestDto, BrowserControlPreferenceDto, CommandError, CommandResult,
         CompactSessionHistoryRequestDto, CompactSessionHistoryResponseDto,
+        CorrectSessionMemoryRequestDto, CorrectSessionMemoryResponseDto,
         DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
         ExtractSessionMemoryCandidatesRequestDto, ExtractSessionMemoryCandidatesResponseDto,
-        GetSessionContextSnapshotRequestDto, GetSessionTranscriptRequestDto,
-        ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto,
-        RewindAgentSessionRequestDto, SaveSessionTranscriptExportRequestDto,
-        SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
-        SessionCompactionPolicyInput, SessionContextCodeMapDto, SessionContextCodeSymbolDto,
-        SessionContextContributorDto, SessionContextContributorKindDto,
-        SessionContextDependencyManifestDto, SessionContextDispositionDto,
-        SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDiffDto,
-        SessionContextSnapshotDto, SessionContextTaskPhaseDto, SessionMemoryDiagnosticDto,
-        SessionMemoryRecordDto, SessionMemoryReviewStateDto, SessionTranscriptActorDto,
-        SessionTranscriptDto, SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
-        SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptItemKindDto,
-        SessionTranscriptScopeDto, SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto,
-        SessionUsageTotalsDto, UpdateSessionMemoryRequestDto,
-        XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        GetSessionContextSnapshotRequestDto, GetSessionMemoryReviewQueueRequestDto,
+        GetSessionTranscriptRequestDto, ListSessionMemoriesRequestDto,
+        ListSessionMemoriesResponseDto, RewindAgentSessionRequestDto,
+        SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
+        SearchSessionTranscriptsResponseDto, SessionCompactionPolicyInput,
+        SessionContextCodeMapDto, SessionContextCodeSymbolDto, SessionContextContributorDto,
+        SessionContextContributorKindDto, SessionContextDependencyManifestDto,
+        SessionContextDispositionDto, SessionContextRedactionClassDto, SessionContextRedactionDto,
+        SessionContextSnapshotDiffDto, SessionContextSnapshotDto, SessionContextTaskPhaseDto,
+        SessionMemoryDiagnosticDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
+        SessionTranscriptActorDto, SessionTranscriptDto, SessionTranscriptExportFormatDto,
+        SessionTranscriptExportPayloadDto, SessionTranscriptExportResponseDto,
+        SessionTranscriptItemDto, SessionTranscriptItemKindDto, SessionTranscriptScopeDto,
+        SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
+        UpdateSessionMemoryRequestDto, XERO_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
         self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
@@ -85,9 +86,32 @@ const MAX_CODE_HISTORY_CONTEXT_CHARS: usize = 800;
 const MAX_CODE_HISTORY_CONTEXT_TOKENS: u64 = 220;
 
 #[tauri::command]
-pub fn get_session_transcript<R: Runtime>(
+pub async fn get_session_transcript<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    request: GetSessionTranscriptRequestDto,
+) -> CommandResult<SessionTranscriptDto> {
+    let state = state.inner().clone();
+    let jobs = state.backend_jobs().clone();
+    let job_key = format!(
+        "session-transcript:{}:{}:{}",
+        request.project_id,
+        request.agent_session_id,
+        request.run_id.as_deref().unwrap_or("session")
+    );
+
+    jobs.run_blocking_latest(job_key, "session transcript", move |cancellation| {
+        cancellation.check_cancelled("session transcript")?;
+        let transcript = get_session_transcript_blocking(&app, &state, request)?;
+        cancellation.check_cancelled("session transcript")?;
+        Ok(transcript)
+    })
+    .await
+}
+
+fn get_session_transcript_blocking<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
     request: GetSessionTranscriptRequestDto,
 ) -> CommandResult<SessionTranscriptDto> {
     validate_transcript_request(
@@ -95,7 +119,7 @@ pub fn get_session_transcript<R: Runtime>(
         &request.agent_session_id,
         request.run_id.as_deref(),
     )?;
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let repo_root = resolve_project_root(app, state, &request.project_id)?;
     build_session_transcript(
         &repo_root,
         &request.project_id,
@@ -249,9 +273,30 @@ pub fn search_session_transcripts<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn get_session_context_snapshot<R: Runtime>(
+pub async fn get_session_context_snapshot<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    request: GetSessionContextSnapshotRequestDto,
+) -> CommandResult<SessionContextSnapshotDto> {
+    let state = state.inner().clone();
+    let jobs = state.backend_jobs().clone();
+    let job_key = format!(
+        "session-context:{}:{}",
+        request.project_id, request.agent_session_id
+    );
+
+    jobs.run_blocking_latest(job_key, "session context snapshot", move |cancellation| {
+        cancellation.check_cancelled("session context snapshot")?;
+        let snapshot = get_session_context_snapshot_blocking(&app, &state, request)?;
+        cancellation.check_cancelled("session context snapshot")?;
+        Ok(snapshot)
+    })
+    .await
+}
+
+fn get_session_context_snapshot_blocking<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
     request: GetSessionContextSnapshotRequestDto,
 ) -> CommandResult<SessionContextSnapshotDto> {
     let started = Instant::now();
@@ -267,7 +312,7 @@ pub fn get_session_context_snapshot<R: Runtime>(
         validate_non_empty(model_id, "modelId")?;
     }
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let repo_root = resolve_project_root(app, state, &request.project_id)?;
     let snapshot = build_session_context_snapshot(
         &repo_root,
         &request.project_id,
@@ -429,6 +474,25 @@ pub fn list_session_memories<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn get_session_memory_review_queue<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: GetSessionMemoryReviewQueueRequestDto,
+) -> CommandResult<serde_json::Value> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    if let Some(agent_session_id) = request.agent_session_id.as_deref() {
+        validate_non_empty(agent_session_id, "agentSessionId")?;
+    }
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    project_store::load_agent_memory_review_queue(
+        &repo_root,
+        &request.project_id,
+        request.agent_session_id.as_deref(),
+        request.limit.unwrap_or(50),
+    )
+}
+
+#[tauri::command]
 pub fn extract_session_memory_candidates<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
@@ -501,6 +565,51 @@ pub fn update_session_memory<R: Runtime>(
         )
     })?;
     Ok(dto)
+}
+
+#[tauri::command]
+pub fn correct_session_memory<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: CorrectSessionMemoryRequestDto,
+) -> CommandResult<CorrectSessionMemoryResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.memory_id, "memoryId")?;
+    validate_non_empty(&request.corrected_text, "correctedText")?;
+    let (_text, redaction) = redact_session_context_text(&request.corrected_text);
+    if redaction.redacted {
+        let (code, message) = memory_context_blocked_error(&redaction);
+        return Err(CommandError::user_fixable(code, message));
+    }
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let correction = project_store::correct_agent_memory(
+        &repo_root,
+        &request.project_id,
+        &request.memory_id,
+        &request.corrected_text,
+        &now_timestamp(),
+    )?;
+    let original_memory = session_memory_record_dto(&correction.original);
+    let corrected_memory = session_memory_record_dto(&correction.corrected);
+    validate_session_memory_record_contract(&original_memory).map_err(|details| {
+        CommandError::system_fault(
+            "session_memory_invalid",
+            format!("Xero projected an invalid original memory record: {details}"),
+        )
+    })?;
+    validate_session_memory_record_contract(&corrected_memory).map_err(|details| {
+        CommandError::system_fault(
+            "session_memory_invalid",
+            format!("Xero projected an invalid corrected memory record: {details}"),
+        )
+    })?;
+    Ok(CorrectSessionMemoryResponseDto {
+        schema: "xero.agent_memory_correction_command.v1".into(),
+        project_id: request.project_id,
+        original_memory,
+        corrected_memory,
+        ui_deferred: true,
+    })
 }
 
 #[tauri::command]
@@ -3590,7 +3699,12 @@ fn append_context_contributor(
     let (text, redaction) = parts
         .raw_text
         .map(redact_session_context_text)
-        .map(|(text, redaction)| (Some(preview_context_text(&text)), redaction))
+        .map(|(text, redaction)| {
+            (
+                non_empty_optional_text(preview_context_text(&text)),
+                redaction,
+            )
+        })
         .unwrap_or_else(|| (None, SessionContextRedactionDto::public()));
     let char_text = parts.estimate_text.or(parts.raw_text).unwrap_or_default();
     contributors.push(SessionContextContributorDto {
@@ -3642,6 +3756,14 @@ fn preview_context_text(value: &str) -> String {
         .collect::<String>();
     preview.push_str("...");
     preview
+}
+
+fn non_empty_optional_text(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn random_hex_suffix() -> String {

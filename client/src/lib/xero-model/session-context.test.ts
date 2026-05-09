@@ -5,6 +5,8 @@ import {
   branchAgentSessionRequestSchema,
   compactSessionHistoryRequestSchema,
   compactSessionHistoryResponseSchema,
+  correctSessionMemoryRequestSchema,
+  correctSessionMemoryResponseSchema,
   createContextBudget,
   createPublicSessionContextRedaction,
   createRedactedSessionContextText,
@@ -13,6 +15,8 @@ import {
   extractSessionMemoryCandidatesRequestSchema,
   extractSessionMemoryCandidatesResponseSchema,
   getSessionContextSnapshotRequestSchema,
+  getSessionMemoryReviewQueueRequestSchema,
+  getSessionMemoryReviewQueueResponseSchema,
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
@@ -262,6 +266,45 @@ describe('session context contract', () => {
     ).toThrow(/Model-visible/)
   })
 
+  it('accepts backend session-context policy decisions for handoff, retrieval, and recompact actions', () => {
+    const baseDecision = {
+      contractVersion: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+      decisionId: 'policy:backend-contract',
+      trigger: null,
+      reasonCode: 'policy_contract_round_trip',
+      message: 'Backend policy decision projected into the context meter.',
+      rawTranscriptPreserved: true,
+      modelVisible: false,
+      redaction: createPublicSessionContextRedaction(),
+    }
+
+    expect(
+      sessionContextPolicyDecisionSchema.parse({
+        ...baseDecision,
+        decisionId: 'policy:handoff',
+        kind: 'handoff',
+        action: 'handoff_now',
+      }).action,
+    ).toBe('handoff_now')
+    expect(
+      sessionContextPolicyDecisionSchema.parse({
+        ...baseDecision,
+        decisionId: 'policy:retrieval',
+        kind: 'retrieval',
+        action: 'continue_now',
+      }).kind,
+    ).toBe('retrieval')
+    expect(
+      sessionContextPolicyDecisionSchema.parse({
+        ...baseDecision,
+        decisionId: 'policy:recompact',
+        kind: 'compaction',
+        action: 'recompact_now',
+        trigger: 'auto',
+      }).action,
+    ).toBe('recompact_now')
+  })
+
   it('keeps approved memory schema explicit and redacts secret-bearing text helpers', () => {
     const redacted = createRedactedSessionContextText('Use api_key=sk-context-secret')
     expect(redacted.value).toBe('Xero redacted sensitive session-context text.')
@@ -355,6 +398,156 @@ describe('session context contract', () => {
         memories: [memory, candidate],
       }).memories,
     ).toHaveLength(2)
+    expect(() =>
+      listSessionMemoriesResponseSchema.parse({
+        projectId,
+        agentSessionId,
+        memories: [
+          {
+            ...candidate,
+            agentSessionId: 'different-session',
+          },
+        ],
+      }),
+    ).toThrow(/agent session/)
+    expect(
+      getSessionMemoryReviewQueueRequestSchema.parse({
+        projectId,
+        agentSessionId,
+        limit: 25,
+      }).limit,
+    ).toBe(25)
+    const reviewQueue = getSessionMemoryReviewQueueResponseSchema.parse({
+      schema: 'xero.agent_memory_review_queue.v1',
+      projectId,
+      agentSessionId,
+      limit: 25,
+      counts: {
+        candidate: 1,
+        approved: 1,
+        rejected: 0,
+        disabled: 1,
+        retrievableApproved: 1,
+      },
+      items: [
+        {
+          memoryId: memory.memoryId,
+          scope: memory.scope,
+          kind: memory.kind,
+          reviewState: memory.reviewState,
+          enabled: memory.enabled,
+          confidence: memory.confidence,
+          textPreview: 'Redacted memory preview',
+          textHash: 'memory-text-hash',
+          provenance: {
+            sourceRunId: memory.sourceRunId,
+            sourceItemIds: memory.sourceItemIds,
+            diagnostic: null,
+          },
+          freshness: {
+            state: 'source_unknown',
+            checkedAt: createdAt,
+            staleReason: null,
+            supersedesId: null,
+            supersededById: null,
+            invalidatedAt: null,
+            factKey: null,
+          },
+          retrieval: {
+            eligible: true,
+            reason: 'retrievable',
+          },
+          redaction: {
+            textPreviewRedacted: false,
+            factKeyRedacted: true,
+            rawTextHidden: true,
+          },
+          availableActions: {
+            canApprove: false,
+            canReject: true,
+            canDisable: true,
+            canDelete: true,
+            canEditByCorrection: true,
+          },
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+      actions: {
+        approve: 'Approve memory',
+        reject: 'Reject memory',
+        disable: 'Disable memory',
+        delete: 'Delete memory',
+        edit: 'Create a corrected memory',
+      },
+      uiDeferred: true,
+    })
+    expect(reviewQueue.items[0].redaction.rawTextHidden).toBe(true)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        items: [
+          {
+            ...reviewQueue.items[0],
+            retrieval: {
+              eligible: true,
+              reason: 'stale',
+            },
+          },
+        ],
+      }),
+    ).toThrow(/eligibility/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        items: [
+          {
+            ...reviewQueue.items[0],
+            textPreview: 'leaked preview',
+            redaction: {
+              ...reviewQueue.items[0].redaction,
+              textPreviewRedacted: true,
+            },
+            availableActions: {
+              ...reviewQueue.items[0].availableActions,
+              canApprove: true,
+            },
+          },
+        ],
+      }),
+    ).toThrow(/hidden/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        limit: 1,
+        items: [reviewQueue.items[0], { ...reviewQueue.items[0], memoryId: 'memory-extra' }],
+      }),
+    ).toThrow(/limit/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        counts: {
+          ...reviewQueue.counts,
+          retrievableApproved: 2,
+          approved: 1,
+        },
+      }),
+    ).toThrow(/approved memory count/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        counts: {
+          ...reviewQueue.counts,
+          retrievableApproved: 0,
+        },
+      }),
+    ).toThrow(/retrievable count/)
+    expect(() =>
+      getSessionMemoryReviewQueueResponseSchema.parse({
+        ...reviewQueue,
+        items: [reviewQueue.items[0], { ...reviewQueue.items[0] }],
+      }),
+    ).toThrow(/unique/)
     expect(
       extractSessionMemoryCandidatesRequestSchema.parse({
         projectId,
@@ -373,6 +566,22 @@ describe('session context contract', () => {
         diagnostics: [diagnostic],
       }).skippedDuplicateCount,
     ).toBe(1)
+    expect(() =>
+      extractSessionMemoryCandidatesResponseSchema.parse({
+        projectId,
+        agentSessionId,
+        memories: [
+          {
+            ...candidate,
+            projectId: 'different-project',
+          },
+        ],
+        createdCount: 1,
+        skippedDuplicateCount: 0,
+        rejectedCount: 0,
+        diagnostics: [],
+      }),
+    ).toThrow(/response project/)
     expect(
       updateSessionMemoryRequestSchema.parse({
         projectId,
@@ -387,6 +596,55 @@ describe('session context contract', () => {
         memoryId: memory.memoryId,
       }).memoryId,
     ).toBe(memory.memoryId)
+    const correctionRequest = correctSessionMemoryRequestSchema.parse({
+      projectId,
+      memoryId: memory.memoryId,
+      correctedText: 'The reviewed memory workflow uses approved durable memory only.',
+    })
+    const corrected = sessionMemoryRecordSchema.parse({
+      ...memory,
+      memoryId: 'memory-1-corrected',
+      text: correctionRequest.correctedText,
+      sourceItemIds: [...memory.sourceItemIds, `corrected-memory:${memory.memoryId}`],
+      updatedAt: '2026-04-26T10:01:00Z',
+      diagnostic: {
+        code: 'memory_corrected_by_user',
+        message: 'Corrected memory `memory-1`.',
+        redaction: createPublicSessionContextRedaction(),
+      },
+    })
+    const correction = correctSessionMemoryResponseSchema.parse({
+      schema: 'xero.agent_memory_correction_command.v1',
+      projectId,
+      originalMemory: {
+        ...memory,
+        updatedAt: '2026-04-26T10:01:00Z',
+      },
+      correctedMemory: corrected,
+      uiDeferred: true,
+    })
+    expect(correction.correctedMemory.memoryId).not.toBe(correction.originalMemory.memoryId)
+    expect(correction.correctedMemory.reviewState).toBe('approved')
+    expect(correction.correctedMemory.enabled).toBe(true)
+    expect(() =>
+      correctSessionMemoryResponseSchema.parse({
+        ...correction,
+        correctedMemory: {
+          ...correction.correctedMemory,
+          projectId: 'different-project',
+        },
+      }),
+    ).toThrow(/response project/)
+    expect(() =>
+      correctSessionMemoryResponseSchema.parse({
+        ...correction,
+        correctedMemory: {
+          ...correction.correctedMemory,
+          scope: 'session',
+          agentSessionId,
+        },
+      }),
+    ).toThrow(/scope/)
   })
 
   it('accepts undo history visualization contributors with bounded estimates and redaction', () => {

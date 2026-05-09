@@ -4,10 +4,10 @@ use crate::{
     commands::CommandResult,
     runtime::{
         normalize_openai_codex_model_id, ANTHROPIC_PROVIDER_ID, ANTHROPIC_RUNTIME_KIND,
-        AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, GEMINI_AI_STUDIO_PROVIDER_ID,
-        GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID,
-        OPENAI_CODEX_PROVIDER_ID, OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_PROVIDER_ID,
-        VERTEX_PROVIDER_ID,
+        AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID, DEEPSEEK_RUNTIME_KIND,
+        GEMINI_AI_STUDIO_PROVIDER_ID, GEMINI_RUNTIME_KIND, GITHUB_MODELS_PROVIDER_ID,
+        OLLAMA_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
+        OPENAI_COMPATIBLE_RUNTIME_KIND, OPENROUTER_PROVIDER_ID, VERTEX_PROVIDER_ID,
     },
 };
 
@@ -20,7 +20,9 @@ pub const OPENAI_CODEX_DEFAULT_PROFILE_ID: &str = "openai_codex-default";
 pub const OPENROUTER_DEFAULT_PROFILE_ID: &str = "openrouter-default";
 pub const ANTHROPIC_DEFAULT_PROFILE_ID: &str = "anthropic-default";
 pub const GITHUB_MODELS_DEFAULT_PROFILE_ID: &str = "github_models-default";
+pub const DEEPSEEK_DEFAULT_PROFILE_ID: &str = "deepseek-default";
 pub const OPENROUTER_FALLBACK_MODEL_ID: &str = "openai/gpt-4.1-mini";
+pub const DEEPSEEK_FALLBACK_MODEL_ID: &str = "deepseek-v4-pro";
 
 const OPENAI_CODEX_DEFAULT_PROFILE_LABEL: &str = "OpenAI Codex";
 const OPENROUTER_DEFAULT_PROFILE_LABEL: &str = "OpenRouter";
@@ -273,6 +275,8 @@ fn synthesize_profile_from_credential(
                 normalize_openai_codex_model_id(OPENAI_CODEX_PROVIDER_ID)
             } else if provider_id == OPENROUTER_PROVIDER_ID {
                 OPENROUTER_FALLBACK_MODEL_ID.into()
+            } else if provider_id == DEEPSEEK_PROVIDER_ID {
+                DEEPSEEK_FALLBACK_MODEL_ID.into()
             } else {
                 provider_id.to_owned()
             }
@@ -335,6 +339,12 @@ fn synthesized_profile_metadata(
             "GitHub Models".into(),
             OPENAI_COMPATIBLE_RUNTIME_KIND,
             Some(GITHUB_MODELS_PROVIDER_ID.into()),
+        ),
+        DEEPSEEK_PROVIDER_ID => (
+            DEEPSEEK_DEFAULT_PROFILE_ID.into(),
+            "DeepSeek".into(),
+            DEEPSEEK_RUNTIME_KIND,
+            Some(DEEPSEEK_PROVIDER_ID.into()),
         ),
         OPENAI_API_PROVIDER_ID => (
             format!("{OPENAI_API_PROVIDER_ID}-default"),

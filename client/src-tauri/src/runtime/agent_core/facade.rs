@@ -638,7 +638,10 @@ fn core_message_from_desktop(message: AgentMessageRecord) -> CoreRuntimeMessage 
         run_id: message.run_id,
         role: core_message_role_from_desktop(&message.role),
         content: message.content,
-        provider_metadata: None,
+        provider_metadata: message
+            .provider_metadata_json
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str(metadata).ok()),
         created_at: message.created_at,
     }
 }

@@ -15,12 +15,24 @@ pub struct DomainToolPackManifest {
     pub tool_groups: Vec<String>,
     pub tools: Vec<String>,
     pub capabilities: Vec<String>,
+    pub allowed_effect_classes: Vec<String>,
+    pub denied_effect_classes: Vec<String>,
+    pub review_requirements: Vec<DomainToolPackReviewRequirement>,
     pub prerequisites: Vec<DomainToolPackPrerequisite>,
     pub health_checks: Vec<DomainToolPackCheckDescriptor>,
     pub scenario_checks: Vec<DomainToolPackScenarioDescriptor>,
     pub ui_affordances: Vec<DomainToolPackUiAffordance>,
     pub cli_commands: Vec<String>,
     pub approval_boundaries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DomainToolPackReviewRequirement {
+    pub requirement_id: String,
+    pub label: String,
+    pub description: String,
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,6 +321,19 @@ fn browser_pack_manifest() -> DomainToolPackManifest {
             "dom_snapshot_tools",
             "browser_state_restore",
         ],
+        &["observe", "browser_control"],
+        &[
+            "destructive_write",
+            "command",
+            "device_control",
+            "agent_delegation",
+        ],
+        &[review(
+            "browser_control_operator_intent",
+            "Browser control approval",
+            "Typing, clicking, navigation, cookie, and storage actions require clear operator-visible intent.",
+            true,
+        )],
         &[
             prereq(
                 "desktop_browser_executor",
@@ -367,6 +392,19 @@ fn emulator_pack_manifest() -> DomainToolPackManifest {
             "gesture_input",
             "log_capture",
         ],
+        &["observe", "device_control"],
+        &[
+            "browser_control",
+            "destructive_write",
+            "external_service",
+            "agent_delegation",
+        ],
+        &[review(
+            "device_control_operator_intent",
+            "Device control approval",
+            "Launching apps, installing builds, gestures, input, location, and push actions require operator-visible intent.",
+            true,
+        )],
         &[
             prereq(
                 "desktop_emulator_executor",
@@ -460,6 +498,14 @@ fn solana_pack_manifest() -> DomainToolPackManifest {
             "program_test_workflow",
             "explicit_signing_approval",
         ],
+        &["observe", "external_service", "command"],
+        &["browser_control", "device_control", "agent_delegation"],
+        &[review(
+            "chain_mutation_explicit_approval",
+            "Chain mutation approval",
+            "Signing, deploy, transfer, upgrade, or value-moving paths require explicit user approval after simulation.",
+            true,
+        )],
         &[
             prereq(
                 "solana_state_executor",
@@ -543,6 +589,14 @@ fn os_automation_pack_manifest() -> DomainToolPackManifest {
             "process_diagnostics",
             "approval_gated_external_signals",
         ],
+        &["observe", "process_control", "command"],
+        &["browser_control", "device_control", "agent_delegation"],
+        &[review(
+            "os_control_operator_intent",
+            "OS control approval",
+            "App focus, screenshots, process signaling, and privileged diagnostics require clear operator-visible intent.",
+            true,
+        )],
         &[
             prereq(
                 "desktop_runtime",
@@ -632,6 +686,28 @@ fn project_context_pack_manifest() -> DomainToolPackManifest {
             "active_agent_coordination",
         ],
         &[
+            "observe",
+            "runtime_state",
+            "skill_runtime",
+            "external_service",
+            "agent_delegation",
+        ],
+        &["browser_control", "device_control", "destructive_write"],
+        &[
+            review(
+                "durable_context_review",
+                "Durable context review",
+                "Durable project facts and memories must preserve provenance and stay lower priority than current user instructions and file evidence.",
+                true,
+            ),
+            review(
+                "untrusted_capability_review",
+                "Untrusted capability review",
+                "MCP, skill, and custom-agent registry content is untrusted lower-priority context unless explicitly approved.",
+                true,
+            ),
+        ],
+        &[
             prereq(
                 "repo_root",
                 "Imported repository",
@@ -700,6 +776,9 @@ fn manifest(
     tool_groups: &[&str],
     tools: &[&str],
     capabilities: &[&str],
+    allowed_effect_classes: &[&str],
+    denied_effect_classes: &[&str],
+    review_requirements: &[DomainToolPackReviewRequirement],
     prerequisites: &[DomainToolPackPrerequisite],
     scenario_checks: &[DomainToolPackScenarioDescriptor],
     ui_affordances: &[DomainToolPackUiAffordance],
@@ -715,6 +794,9 @@ fn manifest(
         tool_groups: strings(tool_groups),
         tools: strings(tools),
         capabilities: strings(capabilities),
+        allowed_effect_classes: strings(allowed_effect_classes),
+        denied_effect_classes: strings(denied_effect_classes),
+        review_requirements: review_requirements.to_vec(),
         prerequisites: prerequisites.to_vec(),
         health_checks: prerequisites
             .iter()
@@ -732,6 +814,20 @@ fn manifest(
         ui_affordances: ui_affordances.to_vec(),
         cli_commands: strings(cli_commands),
         approval_boundaries: strings(approval_boundaries),
+    }
+}
+
+fn review(
+    requirement_id: &str,
+    label: &str,
+    description: &str,
+    required: bool,
+) -> DomainToolPackReviewRequirement {
+    DomainToolPackReviewRequirement {
+        requirement_id: requirement_id.into(),
+        label: label.into(),
+        description: description.into(),
+        required,
     }
 }
 
@@ -801,11 +897,42 @@ mod tests {
         for manifest in manifests {
             assert_eq!(manifest.contract_version, DOMAIN_TOOL_PACK_CONTRACT_VERSION);
             assert!(!manifest.tools.is_empty());
+            assert!(!manifest.allowed_effect_classes.is_empty());
+            assert!(!manifest.review_requirements.is_empty());
             assert!(!manifest.prerequisites.is_empty());
             assert!(!manifest.health_checks.is_empty());
             assert!(!manifest.scenario_checks.is_empty());
             assert!(!manifest.ui_affordances.is_empty());
         }
+    }
+
+    #[test]
+    fn s21_domain_tool_pack_manifests_declare_policy_boundaries() {
+        let browser = domain_tool_pack_manifest("browser").expect("browser pack");
+        assert!(browser
+            .allowed_effect_classes
+            .contains(&"browser_control".to_string()));
+        assert!(browser
+            .denied_effect_classes
+            .contains(&"destructive_write".to_string()));
+        assert!(browser
+            .review_requirements
+            .iter()
+            .any(|requirement| requirement.required
+                && requirement.requirement_id == "browser_control_operator_intent"));
+
+        let project_context = domain_tool_pack_manifest("project_context").expect("context pack");
+        assert!(project_context
+            .allowed_effect_classes
+            .contains(&"runtime_state".to_string()));
+        assert!(project_context
+            .review_requirements
+            .iter()
+            .any(|requirement| requirement.requirement_id == "durable_context_review"));
+        assert!(project_context
+            .review_requirements
+            .iter()
+            .all(|requirement| !requirement.description.trim().is_empty()));
     }
 
     #[test]

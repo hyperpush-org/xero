@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use xero_agent_core::domain_tool_pack_ids_for_tool;
 
 use super::{
-    deferred_tool_catalog,
+    deferred_tool_catalog, persist_subagent_task_for_parent,
     process::apply_sanitized_command_environment,
     repo_scope::{normalize_relative_path, path_to_forward_slash, WalkErrorCodes, WalkState},
     tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_catalog_activation_groups,
@@ -290,7 +290,7 @@ impl AutonomousToolRuntime {
             }
             AutonomousSubagentAction::Close => {
                 let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
-                self.close_subagent(&task_id)
+                self.close_subagent(&task_id, request.decision)
             }
             AutonomousSubagentAction::Integrate => {
                 let task_id = required_normalized_id(request.task_id.as_deref(), "taskId")?;
@@ -315,6 +315,7 @@ impl AutonomousToolRuntime {
         let role = request
             .role
             .ok_or_else(|| CommandError::invalid_request("role"))?;
+        self.enforce_declared_subagent_role(role)?;
         let write_set = normalize_subagent_write_set(request.write_set)?;
         if role.requires_write_set() && write_set.is_empty() {
             return Err(CommandError::user_fixable(
@@ -369,6 +370,11 @@ impl AutonomousToolRuntime {
                 max_tool_calls,
                 max_tokens,
                 max_cost_micros,
+                used_tool_calls: 0,
+                used_tokens: 0,
+                used_cost_micros: 0,
+                budget_status: "within_budget".into(),
+                budget_diagnostic: None,
                 status: if self.subagent_executor.is_some() {
                     "running".into()
                 } else {
@@ -401,6 +407,13 @@ impl AutonomousToolRuntime {
             }
             return Err(error);
         }
+        if let Err(error) = self.persist_subagent_task(&task) {
+            let _ = self.release_subagent_write_set_reservations(&task, "subagent_persist_failed");
+            if let Ok(mut tasks) = self.subagent_tasks.lock() {
+                tasks.remove(&task.subagent_id);
+            }
+            return Err(error);
+        }
         let initially_reserved_task = task.clone();
         let task = if let Some(executor) = &self.subagent_executor {
             match executor.execute_subagent(task.clone(), self.subagent_tasks.clone()) {
@@ -427,7 +440,7 @@ impl AutonomousToolRuntime {
         } else if !subagent_status_holds_reservation(&task.status) {
             self.release_subagent_write_set_reservations(&task, "subagent_terminal")?;
         }
-        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        let active_tasks = self.upsert_persist_and_list_subagent_tasks(&task)?;
 
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
@@ -490,7 +503,16 @@ impl AutonomousToolRuntime {
             .ok_or_else(|| CommandError::invalid_request("prompt"))?;
         validate_non_empty(prompt, "prompt")?;
         let mut task = self.subagent_task(task_id)?;
-        if matches!(task.status.as_str(), "cancelled" | "closed" | "interrupted") {
+        if matches!(
+            task.status.as_str(),
+            "cancelled"
+                | "closed"
+                | "interrupted"
+                | "completed"
+                | "failed"
+                | "handed_off"
+                | "budget_exhausted"
+        ) {
             return Err(CommandError::user_fixable(
                 "autonomous_tool_subagent_not_accepting_input",
                 format!(
@@ -507,7 +529,7 @@ impl AutonomousToolRuntime {
             text: prompt.trim().into(),
             created_at: now_timestamp(),
         });
-        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        let active_tasks = self.upsert_persist_and_list_subagent_tasks(&task)?;
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` recorded {kind}.", task.subagent_id),
@@ -528,7 +550,10 @@ impl AutonomousToolRuntime {
         let timeout = Duration::from_millis(timeout_ms.unwrap_or(1_000).min(30_000));
         let deadline = Instant::now() + timeout;
         let mut task = self.subagent_task(task_id)?;
-        while matches!(task.status.as_str(), "registered" | "running") && Instant::now() < deadline
+        while matches!(
+            task.status.as_str(),
+            "registered" | "starting" | "running" | "cancelling"
+        ) && Instant::now() < deadline
         {
             thread::sleep(Duration::from_millis(25));
             task = self.subagent_task(task_id)?;
@@ -550,7 +575,7 @@ impl AutonomousToolRuntime {
         let mut task = self.cancelled_subagent_task(task_id)?;
         task.status = "interrupted".into();
         self.release_subagent_write_set_reservations(&task, "subagent_interrupted")?;
-        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        let active_tasks = self.upsert_persist_and_list_subagent_tasks(&task)?;
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` was interrupted.", task.subagent_id),
@@ -566,7 +591,7 @@ impl AutonomousToolRuntime {
     fn cancel_subagent(&self, task_id: &str) -> CommandResult<AutonomousToolResult> {
         let task = self.cancelled_subagent_task(task_id)?;
         self.release_subagent_write_set_reservations(&task, "subagent_cancelled")?;
-        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        let active_tasks = self.upsert_persist_and_list_subagent_tasks(&task)?;
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` is cancelled.", task.subagent_id),
@@ -579,15 +604,29 @@ impl AutonomousToolRuntime {
         })
     }
 
-    fn close_subagent(&self, task_id: &str) -> CommandResult<AutonomousToolResult> {
+    fn close_subagent(
+        &self,
+        task_id: &str,
+        decision: Option<String>,
+    ) -> CommandResult<AutonomousToolResult> {
+        let decision = normalize_optional_text(decision).ok_or_else(|| {
+            CommandError::user_fixable(
+                "autonomous_tool_subagent_close_decision_required",
+                "Xero requires a parent decision when closing subagent output without integration.",
+            )
+        })?;
         let mut task = self.subagent_task(task_id)?;
-        if matches!(task.status.as_str(), "registered" | "running") {
+        if matches!(
+            task.status.as_str(),
+            "registered" | "starting" | "running" | "paused" | "cancelling"
+        ) {
             task = self.cancelled_subagent_task(task_id)?;
         }
         task.status = "closed".into();
         task.completed_at.get_or_insert_with(now_timestamp);
+        task.parent_decision = Some(decision);
         self.release_subagent_write_set_reservations(&task, "subagent_closed")?;
-        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, &task)?;
+        let active_tasks = self.upsert_persist_and_list_subagent_tasks(&task)?;
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` was closed.", task.subagent_id),
@@ -653,7 +692,13 @@ impl AutonomousToolRuntime {
             })?;
             if !matches!(
                 task.status.as_str(),
-                "completed" | "failed" | "cancelled" | "interrupted" | "closed"
+                "completed"
+                    | "failed"
+                    | "budget_exhausted"
+                    | "handed_off"
+                    | "cancelled"
+                    | "interrupted"
+                    | "closed"
             ) {
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_subagent_not_ready",
@@ -668,15 +713,7 @@ impl AutonomousToolRuntime {
             task.clone()
         };
         self.release_subagent_write_set_reservations(&task, "subagent_integrated")?;
-        let active_tasks = {
-            let tasks = self.subagent_tasks.lock().map_err(|_| {
-                CommandError::system_fault(
-                    "autonomous_tool_subagent_lock_failed",
-                    "Xero could not lock the owned-agent subagent task store.",
-                )
-            })?;
-            tasks.values().cloned().collect::<Vec<_>>()
-        };
+        let active_tasks = self.upsert_persist_and_list_subagent_tasks(&task)?;
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_SUBAGENT.into(),
             summary: format!("Subagent task `{}` was integrated.", task.subagent_id),
@@ -823,7 +860,12 @@ impl AutonomousToolRuntime {
         }
         let running = tasks
             .values()
-            .filter(|task| matches!(task.status.as_str(), "registered" | "running"))
+            .filter(|task| {
+                matches!(
+                    task.status.as_str(),
+                    "registered" | "starting" | "running" | "paused" | "cancelling"
+                )
+            })
             .count();
         if running >= self.subagent_limits.max_concurrent_child_runs {
             return Err(CommandError::user_fixable(
@@ -835,6 +877,19 @@ impl AutonomousToolRuntime {
             ));
         }
         Ok(())
+    }
+
+    fn enforce_declared_subagent_role(&self, role: AutonomousSubagentRole) -> CommandResult<()> {
+        let Some(policy) = self.agent_tool_policy.as_ref() else {
+            return Ok(());
+        };
+        if policy.allows_subagent_role(role) {
+            return Ok(());
+        }
+        Err(CommandError::policy_denied(format!(
+            "Xero refused to spawn a {} subagent because this custom agent policy did not declare that child role in allowedSubagentRoles.",
+            role.label()
+        )))
     }
 
     fn subagent_task(&self, task_id: &str) -> CommandResult<AutonomousSubagentTask> {
@@ -860,6 +915,27 @@ impl AutonomousToolRuntime {
             )
         })?;
         Ok(tasks.values().cloned().collect())
+    }
+
+    fn persist_subagent_task(&self, task: &AutonomousSubagentTask) -> CommandResult<()> {
+        let Some(context) = self.agent_run_context.as_ref() else {
+            return Ok(());
+        };
+        persist_subagent_task_for_parent(
+            &self.repo_root,
+            &context.project_id,
+            &context.run_id,
+            task,
+        )
+    }
+
+    fn upsert_persist_and_list_subagent_tasks(
+        &self,
+        task: &AutonomousSubagentTask,
+    ) -> CommandResult<Vec<AutonomousSubagentTask>> {
+        let active_tasks = upsert_and_list_subagent_tasks(&self.subagent_tasks, task)?;
+        self.persist_subagent_task(task)?;
+        Ok(active_tasks)
     }
 
     fn cancelled_subagent_task(&self, task_id: &str) -> CommandResult<AutonomousSubagentTask> {
@@ -2410,7 +2486,10 @@ fn enforce_disjoint_writer_write_set(
     }
     for task in tasks.values() {
         if !task.role.allows_write_set()
-            || !matches!(task.status.as_str(), "registered" | "running")
+            || !matches!(
+                task.status.as_str(),
+                "registered" | "starting" | "running" | "paused" | "cancelling"
+            )
         {
             continue;
         }
@@ -2436,7 +2515,10 @@ fn enforce_disjoint_writer_write_set(
 }
 
 fn subagent_status_holds_reservation(status: &str) -> bool {
-    matches!(status, "registered" | "running")
+    matches!(
+        status,
+        "registered" | "starting" | "running" | "paused" | "cancelling"
+    )
 }
 
 fn subagent_write_sets_overlap(left: &str, right: &str) -> bool {
@@ -2503,6 +2585,11 @@ fn empty_subagent_status_task() -> AutonomousSubagentTask {
         max_tool_calls: 0,
         max_tokens: 0,
         max_cost_micros: 0,
+        used_tool_calls: 0,
+        used_tokens: 0,
+        used_cost_micros: 0,
+        budget_status: "within_budget".into(),
+        budget_diagnostic: None,
         status: "none".into(),
         created_at: now,
         started_at: None,

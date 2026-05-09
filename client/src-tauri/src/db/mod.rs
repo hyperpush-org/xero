@@ -239,7 +239,9 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
         })?;
 
     connection
-        .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+        .execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA wal_autocheckpoint = 1000;",
+        )
         .map_err(|error| {
             CommandError::system_fault(
                 "state_database_configuration_failed",
@@ -698,6 +700,37 @@ mod tests {
             additions: 0,
             deletions: 0,
         }
+    }
+
+    #[test]
+    fn s39_configure_connection_applies_project_database_pragmas() {
+        let tempdir = tempdir().expect("tempdir");
+        let database_path = tempdir.path().join("state.db");
+        let connection = Connection::open(database_path).expect("open database");
+
+        configure_connection(&connection).expect("configure connection");
+
+        let foreign_keys: i64 = connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("foreign keys pragma");
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode pragma");
+        let synchronous: i64 = connection
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("synchronous pragma");
+        let busy_timeout_ms: i64 = connection
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("busy timeout pragma");
+        let wal_autocheckpoint: i64 = connection
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .expect("wal autocheckpoint pragma");
+
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert_eq!(synchronous, 1);
+        assert_eq!(busy_timeout_ms, 5_000);
+        assert_eq!(wal_autocheckpoint, 1_000);
     }
 
     #[test]

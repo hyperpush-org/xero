@@ -607,6 +607,12 @@ fn context_snapshot_contract_validates_budget_and_contributor_integrity() {
     assert!(validate_context_snapshot_contract(&invalid_visibility)
         .expect_err("model-visible excluded contributor rejected")
         .contains("model-visible"));
+
+    let mut invalid_empty_text = snapshot.clone();
+    invalid_empty_text.contributors[1].text = Some(String::new());
+    assert!(validate_context_snapshot_contract(&invalid_empty_text)
+        .expect_err("empty optional contributor text rejected")
+        .contains("optional text"));
 }
 
 #[test]
@@ -630,6 +636,10 @@ fn provider_context_budget_tokens_cover_known_model_families() {
     assert_eq!(
         provider_context_budget_tokens("github_models", "openai/gpt-4.1"),
         Some(128_000)
+    );
+    assert_eq!(
+        provider_context_budget_tokens("deepseek", "deepseek-v4-pro"),
+        Some(1_000_000)
     );
     assert_eq!(
         provider_context_budget_tokens("google", "gemini-2.5-pro"),
@@ -675,6 +685,7 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
                 run_id: RUN_ID.into(),
                 role: AgentMessageRole::System,
                 content: "System prompt".into(),
+                provider_metadata_json: None,
                 created_at: "2026-04-26T10:00:00Z".into(),
                 attachments: Vec::new(),
             },
@@ -684,6 +695,7 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
                 run_id: RUN_ID.into(),
                 role: AgentMessageRole::User,
                 content: "Please use api_key=sk-live-secret".into(),
+                provider_metadata_json: None,
                 created_at: "2026-04-26T10:00:01Z".into(),
                 attachments: Vec::new(),
             },
@@ -693,6 +705,7 @@ fn sample_snapshot() -> AgentRunSnapshotRecord {
                 run_id: RUN_ID.into(),
                 role: AgentMessageRole::Assistant,
                 content: "I will inspect the project first.".into(),
+                provider_metadata_json: None,
                 created_at: "2026-04-26T10:00:02Z".into(),
                 attachments: Vec::new(),
             },

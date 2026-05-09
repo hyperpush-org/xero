@@ -118,8 +118,10 @@ pub enum RuntimeAgentScopeDto {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentLifecycleStateDto {
     Draft,
+    Valid,
     Active,
     Archived,
+    Blocked,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

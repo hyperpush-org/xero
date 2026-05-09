@@ -42,7 +42,12 @@ export interface AgentHeaderAdvancedFields {
   // Object-form toolPolicy. The runtime accepts either a string preset OR a
   // structured object — we always emit an object so downstream picked-tool
   // edits flow through cleanly.
+  allowedEffectClasses: string[]
+  deniedTools: string[]
+  allowedToolPacks: string[]
+  deniedToolPacks: string[]
   allowedToolGroups: string[]
+  deniedToolGroups: string[]
   externalServiceAllowed: boolean
   browserControlAllowed: boolean
   skillRuntimeAllowed: boolean
@@ -963,7 +968,12 @@ function defaultAdvancedFor(detail: WorkflowAgentDetailDto): AgentHeaderAdvanced
       `${subject} is asked to handle sensitive credentials or secret values.`,
       `${subject} is asked to bypass user approvals or operate without explicit consent.`,
     ],
+    allowedEffectClasses: [],
+    deniedTools: [],
+    allowedToolPacks: [],
+    deniedToolPacks: [],
     allowedToolGroups: [],
+    deniedToolGroups: [],
     externalServiceAllowed: false,
     browserControlAllowed: false,
     skillRuntimeAllowed: false,
@@ -979,14 +989,20 @@ export function deriveAdvancedFromDetail(
   detail: WorkflowAgentDetailDto,
 ): AgentHeaderAdvancedFields {
   const base = defaultAdvancedFor(detail)
-  const policy = detail.toolPolicy
-  // detail.toolPolicy is RuntimeAgentToolPolicyDto (string preset). The
-  // detail shape doesn't carry the granular flags — those live in the saved
-  // snapshot, which buildAgentGraph doesn't see. So advanced flags start
-  // at defaults; the user reviews and opts in. workflowContract/final fall
-  // back to the same pieces the snapshot builder uses today.
+  const policy = detail.toolPolicyDetails
   if (policy) {
-    base.allowedToolGroups = []
+    base.allowedEffectClasses = [...policy.allowedEffectClasses]
+    base.deniedTools = [...policy.deniedTools]
+    base.allowedToolPacks = [...policy.allowedToolPacks]
+    base.deniedToolPacks = [...policy.deniedToolPacks]
+    base.allowedToolGroups = [...policy.allowedToolGroups]
+    base.deniedToolGroups = [...policy.deniedToolGroups]
+    base.externalServiceAllowed = policy.externalServiceAllowed
+    base.browserControlAllowed = policy.browserControlAllowed
+    base.skillRuntimeAllowed = policy.skillRuntimeAllowed
+    base.subagentAllowed = policy.subagentAllowed
+    base.commandAllowed = policy.commandAllowed
+    base.destructiveWriteAllowed = policy.destructiveWriteAllowed
   }
   return base
 }
@@ -1001,6 +1017,7 @@ export type AgentInferredCapabilityFlags = {
 }
 
 export interface AgentInferredAdvanced {
+  effectClasses: string[]
   toolGroups: string[]
   flags: AgentInferredCapabilityFlags
   // Map raw inferred items back to the connected tool name(s) that produced
@@ -1044,6 +1061,7 @@ export function inferAdvancedFromConnections(
     destructiveWriteAllowed: [],
   }
   const flags: AgentInferredCapabilityFlags = { ...EMPTY_INFERRED_FLAGS }
+  const effectClasses = new Set<string>()
   const noteFlag = (key: keyof AgentInferredCapabilityFlags, source: string) => {
     flags[key] = true
     if (!flagReasons[key].includes(source)) flagReasons[key].push(source)
@@ -1051,6 +1069,9 @@ export function inferAdvancedFromConnections(
   for (const tool of detail.tools) {
     const group = tool.group?.trim()
     const display = tool.name
+    if (tool.effectClass) {
+      effectClasses.add(tool.effectClass)
+    }
     if (group) {
       const list = groupReasons[group] ?? (groupReasons[group] = [])
       if (!list.includes(display)) list.push(display)
@@ -1087,6 +1108,7 @@ export function inferAdvancedFromConnections(
     noteFlag('destructiveWriteAllowed', `db:${entry.table}`)
   }
   return {
+    effectClasses: Array.from(effectClasses).sort((a, b) => a.localeCompare(b)),
     toolGroups: Object.keys(groupReasons).sort((a, b) => a.localeCompare(b)),
     flags,
     toolGroupReasons: groupReasons,
@@ -1096,6 +1118,7 @@ export function inferAdvancedFromConnections(
 
 export function emptyInferredAdvanced(): AgentInferredAdvanced {
   return {
+    effectClasses: [],
     toolGroups: [],
     flags: { ...EMPTY_INFERRED_FLAGS },
     toolGroupReasons: {},

@@ -101,6 +101,14 @@ export function useHistoricalConversationTurns(
   const activeRunId = agent?.runtimeRun?.runId ?? null
   const getSessionTranscript = desktopAdapter?.getSessionTranscript
   const [turnsByKey, setTurnsByKey] = useState<{ key: string; turns: ConversationTurn[] } | null>(null)
+  const streamStatus = agent?.runtimeStreamStatus ?? 'idle'
+  const shouldDeferTranscriptFetch = Boolean(
+    agent?.runtimeRunActionStatus === 'running' ||
+      agent?.selectedPrompt?.hasQueuedPrompt ||
+      streamStatus === 'subscribing' ||
+      streamStatus === 'replaying' ||
+      streamStatus === 'live',
+  )
 
   // Keying on (project, session, run) covers the same-type handoff case: when
   // the runtime run snapshot is rebound from source -> target run, the runId
@@ -110,7 +118,7 @@ export function useHistoricalConversationTurns(
     : null
 
   useEffect(() => {
-    if (!fetchKey || !projectId || !agentSessionId || !getSessionTranscript) {
+    if (!fetchKey || !projectId || !agentSessionId || !getSessionTranscript || shouldDeferTranscriptFetch) {
       return
     }
 
@@ -135,7 +143,14 @@ export function useHistoricalConversationTurns(
     return () => {
       cancelled = true
     }
-  }, [activeRunId, agentSessionId, fetchKey, getSessionTranscript, projectId])
+  }, [
+    activeRunId,
+    agentSessionId,
+    fetchKey,
+    getSessionTranscript,
+    projectId,
+    shouldDeferTranscriptFetch,
+  ])
 
   // While stale-keyed (e.g. user just switched panes), suppress the previous
   // pane's history rather than briefly flashing it under the new pane.

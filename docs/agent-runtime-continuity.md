@@ -2,7 +2,7 @@
 
 Xero keeps Ask, Engineer, and Debug runs going past a single context window without losing the user's task, prior decisions, or durable evidence. This guide explains the runtime behavior that makes that possible: how context pressure is evaluated, how same-type handoff works, what is persisted, and how recovery handles partial writes after a crash.
 
-This document is a runtime-behavior reference, not a feature tour. For the user-facing narrative on session history, exports, search, manual compact, memory review, branch, rewind, selective code undo, and session rollback, read `session-memory-and-context.md`. For the source-of-truth implementation plan, see `AGENT_CONTEXT_CONTINUITY_AND_MEMORY_PLAN.md` at the repository root.
+This document is a runtime-behavior reference, not a feature tour. For shipped session history, exports, search, manual compact, branch, rewind, selective code undo, session rollback, and the current memory limitations, read `session-memory-and-context.md`. For the source-of-truth implementation plan and deferred UI audit, see `AGENT_SYSTEM_IMPROVEMENT_PLAN.md` at the repository root.
 
 ## Contracts
 
@@ -60,7 +60,7 @@ Project records and reviewed memory live in LanceDB with embedding model and ver
 
 A read-only project context tool is exposed to all three agents. Ask is observe-only and cannot propose new records. Engineer and Debug can request candidate records, but the runtime owns the final write, and write-like model proposals never become trusted memory without review.
 
-Memory candidates are extracted automatically after run completion, pause, failure, and handoff. Candidates remain disabled until a user approves them through the runtime's memory review surface. Candidates that look like prompt injection or carry secret material are blocked or redacted before they are persisted.
+Memory candidates are extracted automatically after run completion, pause, failure, and handoff. Candidates remain disabled until approval through supported backend/runtime paths; the permanent user-facing memory review surface is not shipped yet. Candidates that look like prompt injection or carry secret material are blocked or redacted before they are persisted.
 
 Memory extraction must account for undo provenance. Facts about code removed by selective undo or session rollback are rejected, scoped as historical, or tied to the undo operation so future context packages do not present reverted implementation details as current truth.
 
@@ -77,11 +77,10 @@ The runtime does not model external side effects as undoable code history. Remot
 Most of the continuity machinery is internal: context manifests, retrieval logs, handoff lineage, redaction decisions, and policy evaluations are diagnostics, not core UX. The user-facing surfaces are intentionally narrow:
 
 - The conversation shows a "Run continued in a fresh session" notice when the runtime stream completes a same-type handoff. The notice explains that the task and prior context carried over so the user can keep replying without re-stating anything.
-- The reviewed memory workflow stays mounted in the agent runtime so candidates can be approved, rejected, disabled, enabled, or deleted from the normal flow.
 - The composer auto-compact toggle remains the user-tunable knob for compaction behavior; auto-handoff defaults to on as a safety net.
 - Session history, search, export, and context visualization can show code undo and session rollback events as chronological additions with affected paths and conflict status.
 
-There is no user-facing context manifest inspector, project record browser, or retrieval diagnostics panel. These are observable via the underlying database commands and Tauri contracts when needed for support or debugging.
+There is no user-facing context manifest inspector, carried-context summary, project record browser, memory review surface, or retrieval diagnostics panel. The existing handoff notice is only a lightweight continuation marker; it does not satisfy the deferred S46 handoff-context visibility work. These deeper details are observable via the underlying database commands and Tauri contracts when needed for support or debugging.
 
 ## Security And Redaction
 

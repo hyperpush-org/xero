@@ -28,7 +28,7 @@ use crate::{
         ProviderModelThinkingEffort,
     },
     runtime::{
-        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID,
+        ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
         GEMINI_AI_STUDIO_PROVIDER_ID, GITHUB_MODELS_PROVIDER_ID, OLLAMA_PROVIDER_ID,
         OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID, OPENROUTER_PROVIDER_ID,
         VERTEX_PROVIDER_ID,
@@ -187,6 +187,7 @@ fn provider_preflight_cache_binding_parts(
     let endpoint_fingerprint = match profile.provider_id.as_str() {
         OPENAI_CODEX_PROVIDER_ID => "https://chatgpt.com/backend-api/codex/responses".into(),
         OPENAI_API_PROVIDER_ID
+        | DEEPSEEK_PROVIDER_ID
         | GITHUB_MODELS_PROVIDER_ID
         | AZURE_OPENAI_PROVIDER_ID
         | GEMINI_AI_STUDIO_PROVIDER_ID
@@ -325,6 +326,7 @@ fn live_openai_compatible_preflight_for_profile(
         runtime_settings_snapshot_for_provider_profile(provider_profiles, profile)?;
     let (base_url, api_key) = match profile.provider_id.as_str() {
         OPENAI_API_PROVIDER_ID
+        | DEEPSEEK_PROVIDER_ID
         | GITHUB_MODELS_PROVIDER_ID
         | AZURE_OPENAI_PROVIDER_ID
         | GEMINI_AI_STUDIO_PROVIDER_ID

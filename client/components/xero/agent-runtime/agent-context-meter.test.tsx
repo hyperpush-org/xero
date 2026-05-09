@@ -115,11 +115,60 @@ describe('AgentContextMeter', () => {
     expect(
       screen.getByRole('button', { name: 'Context meter: 58 percent context remaining for gpt-5.4' }),
     ).toBeVisible()
-    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42')
-    expect(screen.getByRole('progressbar')).toHaveAttribute(
+    const progress = screen.getByRole('progressbar')
+    const progressRing = progress.querySelector('circle:last-child')
+    expect(progress).toHaveAttribute('aria-valuenow', '42')
+    expect(progress).toHaveAttribute(
       'aria-valuetext',
       '58 percent context remaining for gpt-5.4',
     )
+    expect(progressRing?.getAttribute('style')).toContain('var(--primary) 61%')
+    expect(progressRing?.getAttribute('style')).toContain('var(--destructive) 39%')
+  })
+
+  it('uses the theme primary color for tiny context usage', () => {
+    const nearlyFullBudget: SessionContextBudgetDto = {
+      ...baseBudget,
+      remainingTokens: 99_000,
+      pressurePercent: 1,
+      estimatedTokens: 1_000,
+      pressure: 'low',
+    }
+
+    render(
+      <AgentContextMeter
+        status="ready"
+        snapshot={makeSnapshot({ budget: nearlyFullBudget })}
+      />,
+    )
+
+    const progress = screen.getByRole('progressbar')
+    const progressRing = progress.querySelector('circle:last-child')
+
+    expect(
+      screen.getByRole('button', { name: 'Context meter: 99 percent context remaining for gpt-5.4' }),
+    ).toBeVisible()
+    expect(progress).toHaveAttribute('aria-valuenow', '1')
+    expect(progressRing?.getAttribute('style')).toContain('stroke: var(--primary)')
+    expect(progressRing?.getAttribute('style')).not.toContain('var(--destructive)')
+  })
+
+  it('keeps a stale known budget as a static progress ring while refresh is deferred', () => {
+    render(
+      <AgentContextMeter
+        status="stale"
+        snapshot={makeSnapshot()}
+      />,
+    )
+
+    const progress = screen.getByRole('progressbar')
+    const progressRing = progress.querySelector('circle:last-child')
+
+    expect(
+      screen.getByRole('button', { name: 'Context meter: 58 percent context remaining for gpt-5.4' }),
+    ).toBeVisible()
+    expect(progress).toHaveAttribute('aria-valuenow', '42')
+    expect(progressRing).not.toHaveClass('motion-safe:animate-spin')
   })
 
   it('masks known system prompt usage until the first user message is sent', () => {

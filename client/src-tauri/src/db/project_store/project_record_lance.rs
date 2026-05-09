@@ -17,8 +17,10 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use futures::TryStreamExt;
-use lancedb::query::ExecutableQuery;
-use lancedb::{Connection, Table};
+use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::OptimizeAction;
+use lancedb::{Connection, DistanceType, Table};
+use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
 use crate::commands::{CommandError, RuntimeAgentIdDto};
@@ -30,8 +32,10 @@ use super::{
 
 pub const PROJECT_RECORD_EMBEDDING_DIM: i32 = AGENT_RETRIEVAL_EMBEDDING_DIM;
 const PROJECT_RECORDS_TABLE: &str = "project_records";
+const PROJECT_RECORD_EMBEDDING_COLUMN: &str = "embedding";
+const PROJECT_RECORD_EMBEDDING_INDEX: &str = "project_records_embedding_cosine_idx";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectRecordRow {
     pub record_id: String,
     pub project_id: String,
@@ -157,6 +161,13 @@ fn connection_cache() -> &'static Mutex<ConnectionCache> {
     &CACHE
 }
 
+pub(crate) fn clear_connection_cache_for_database_path(database_path: &Path) {
+    let dataset_dir = dataset_dir_for_database_path(database_path);
+    if let Ok(mut cache) = connection_cache().lock() {
+        cache.inner.remove(&dataset_dir);
+    }
+}
+
 #[cfg(test)]
 pub fn reset_connection_cache_for_tests() {
     if let Ok(mut cache) = connection_cache().lock() {
@@ -218,36 +229,60 @@ async fn ensure_connection(dataset_dir: &Path) -> Result<Connection, CommandErro
     Ok(connection)
 }
 
-async fn open_or_create_table(connection: &Connection) -> Result<Table, CommandError> {
+async fn open_or_create_table(
+    connection: &Connection,
+    dataset_dir: &Path,
+) -> Result<Table, CommandError> {
     match connection.open_table(PROJECT_RECORDS_TABLE).execute().await {
-        Ok(table) => ensure_current_table_schema(connection, table).await,
+        Ok(table) => ensure_current_table_schema(connection, dataset_dir, table).await,
         Err(_) => create_project_records_table(connection).await,
     }
 }
 
 async fn ensure_current_table_schema(
     connection: &Connection,
+    dataset_dir: &Path,
     table: Table,
 ) -> Result<Table, CommandError> {
     let table_schema = match table.schema().await {
         Ok(table_schema) => table_schema,
-        Err(_) => return reset_project_records_table(connection).await,
+        Err(_) => {
+            drop(table);
+            return quarantine_and_recreate_project_records_table(
+                connection,
+                dataset_dir,
+                "project_record_lance_schema_read_failed",
+            )
+            .await;
+        }
     };
     if table_schema_supports_current_records(&table_schema) {
         return Ok(table);
     }
-    reset_project_records_table(connection).await
+    drop(table);
+    quarantine_and_recreate_project_records_table(
+        connection,
+        dataset_dir,
+        "project_record_lance_schema_drift_quarantined",
+    )
+    .await
 }
 
 fn table_schema_supports_current_records(table_schema: &Schema) -> bool {
     lance_health::table_schema_supports_expected(table_schema, schema().as_ref())
 }
 
-async fn reset_project_records_table(connection: &Connection) -> Result<Table, CommandError> {
-    connection
-        .drop_table(PROJECT_RECORDS_TABLE, &[])
-        .await
-        .map_err(|error| map_lance_error("project_record_lance_schema_reset_failed", error))?;
+async fn quarantine_and_recreate_project_records_table(
+    connection: &Connection,
+    dataset_dir: &Path,
+    reason_code: &'static str,
+) -> Result<Table, CommandError> {
+    let _quarantined = lance_health::quarantine_lance_table_directory(
+        dataset_dir,
+        PROJECT_RECORDS_TABLE,
+        "project-record",
+        reason_code,
+    )?;
     create_project_records_table(connection).await
 }
 
@@ -306,6 +341,38 @@ pub fn open_for_database_path(database_path: &Path, project_id: &str) -> Project
 }
 
 impl ProjectRecordStore {
+    #[allow(dead_code)]
+    pub(crate) fn health_report(
+        &self,
+    ) -> Result<lance_health::LanceTableHealthReport, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        runtime().block_on(async move { health_report_for_dataset(&dataset).await })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn optimize_for_maintenance(
+        &self,
+    ) -> Result<lance_health::LanceTableOptimizationReport, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        runtime().block_on(async move {
+            let connection = ensure_connection(&dataset).await?;
+            let table = open_or_create_table(&connection, &dataset).await?;
+            let _ = maintain_embedding_index(&table, false).await?;
+            let before = health_report_for_dataset(&dataset).await?;
+            let stats = table
+                .optimize(OptimizeAction::All)
+                .await
+                .map_err(|error| map_lance_error("project_record_lance_optimize_failed", error))?;
+            let after = health_report_for_dataset(&dataset).await?;
+            Ok(lance_health::table_optimization_report(
+                PROJECT_RECORDS_TABLE,
+                before,
+                &stats,
+                after,
+            ))
+        })
+    }
+
     pub fn insert_dedup(
         &self,
         mut row: ProjectRecordRow,
@@ -319,7 +386,7 @@ impl ProjectRecordStore {
                 return Ok(existing.clone());
             }
             let connection = ensure_connection(&dataset).await?;
-            let table = open_or_create_table(&connection).await?;
+            let table = open_or_create_table(&connection, &dataset).await?;
             insert_row(&table, &row).await?;
             rows.push(row.clone());
             Ok(row)
@@ -348,6 +415,56 @@ impl ProjectRecordStore {
         self.list()
     }
 
+    pub fn delete(&self, record_id: &str) -> Result<bool, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let record_id = record_id.to_string();
+        runtime().block_on(async move { delete_row(&dataset, &record_id).await })
+    }
+
+    pub(crate) fn vector_search_rows(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        filter_sql: Option<&str>,
+    ) -> Result<Vec<ProjectRecordRow>, CommandError> {
+        let dataset = self.dataset_dir.clone();
+        let project_id = self.project_id.clone();
+        let query_embedding = query_embedding.to_vec();
+        let filter_sql = filter_sql.map(str::to_owned);
+        runtime().block_on(async move {
+            let connection = ensure_connection(&dataset).await?;
+            let table = open_or_create_table(&connection, &dataset).await?;
+            let _ = maintain_embedding_index(&table, false).await?;
+            let mut query = table
+                .query()
+                .nearest_to(query_embedding)
+                .map_err(|error| {
+                    map_lance_error("project_record_lance_vector_query_invalid", error)
+                })?
+                .distance_type(DistanceType::Cosine)
+                .limit(limit.max(1));
+            if let Some(filter_sql) = filter_sql.as_deref().filter(|filter| !filter.is_empty()) {
+                query = query.only_if(filter_sql);
+            }
+            let batches = query
+                .execute()
+                .await
+                .map_err(|error| {
+                    map_lance_error("project_record_lance_vector_query_failed", error)
+                })?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| {
+                    map_lance_error("project_record_lance_vector_collect_failed", error)
+                })?;
+            let mut rows = batches_to_rows(batches)?;
+            for row in &mut rows {
+                row.project_id = project_id.clone();
+            }
+            Ok(rows)
+        })
+    }
+
     pub(crate) fn update_embedding(
         &self,
         record_id: &str,
@@ -362,17 +479,18 @@ impl ProjectRecordStore {
         let record_id = record_id.to_string();
         runtime().block_on(async move {
             let mut row = fetch_row(&dataset, &record_id).await?;
-            let Some(mut row) = row.take() else {
+            let Some(previous) = row.take() else {
                 return Ok(None);
             };
-            row.project_id = project_id.clone();
-            row.embedding = Some(embedding);
-            row.embedding_model = Some(embedding_model);
-            row.embedding_dimension = Some(embedding_dimension);
-            row.embedding_version = Some(embedding_version);
-            row.updated_at = updated_at;
-            replace_row(&dataset, row.clone()).await?;
-            Ok(Some(row))
+            let mut updated = previous.clone();
+            updated.project_id = project_id.clone();
+            updated.embedding = Some(embedding);
+            updated.embedding_model = Some(embedding_model);
+            updated.embedding_dimension = Some(embedding_dimension);
+            updated.embedding_version = Some(embedding_version);
+            updated.updated_at = updated_at;
+            replace_row(&dataset, &previous, updated.clone()).await?;
+            Ok(Some(updated))
         })
     }
 
@@ -386,17 +504,26 @@ impl ProjectRecordStore {
         let record_id = record_id.to_string();
         runtime().block_on(async move {
             let mut row = fetch_row(&dataset, &record_id).await?;
-            let Some(mut row) = row.take() else {
+            let Some(previous) = row.take() else {
                 return Ok(None);
             };
-            row.project_id = project_id;
-            row.freshness_state = update.freshness_state.as_str().into();
-            row.freshness_checked_at = update.freshness_checked_at;
-            row.stale_reason = update.stale_reason;
-            row.source_fingerprints_json = update.source_fingerprints_json;
-            row.invalidated_at = update.invalidated_at;
-            replace_row(&dataset, row.clone()).await?;
-            Ok(Some(row))
+            let mut updated = previous.clone();
+            updated.project_id = project_id;
+            updated.updated_at = next_row_version_timestamp(
+                &previous.updated_at,
+                update
+                    .freshness_checked_at
+                    .clone()
+                    .or_else(|| update.invalidated_at.clone())
+                    .unwrap_or_else(|| previous.updated_at.clone()),
+            );
+            updated.freshness_state = update.freshness_state.as_str().into();
+            updated.freshness_checked_at = update.freshness_checked_at;
+            updated.stale_reason = update.stale_reason;
+            updated.source_fingerprints_json = update.source_fingerprints_json;
+            updated.invalidated_at = update.invalidated_at;
+            replace_row(&dataset, &previous, updated.clone()).await?;
+            Ok(Some(updated))
         })
     }
 
@@ -410,23 +537,61 @@ impl ProjectRecordStore {
         let record_id = record_id.to_string();
         runtime().block_on(async move {
             let mut row = fetch_row(&dataset, &record_id).await?;
-            let Some(mut row) = row.take() else {
+            let Some(previous) = row.take() else {
                 return Ok(None);
             };
-            row.project_id = project_id;
+            let mut updated = previous.clone();
+            updated.project_id = project_id;
             if update.superseded_by_id.is_some() {
-                row.freshness_state = "superseded".into();
+                updated.freshness_state = "superseded".into();
             }
-            row.superseded_by_id = update.superseded_by_id;
-            row.supersedes_id = update.supersedes_id;
-            row.fact_key = update.fact_key;
-            row.invalidated_at = update.invalidated_at;
-            row.stale_reason = update.stale_reason;
-            row.updated_at = update.updated_at;
-            replace_row(&dataset, row.clone()).await?;
-            Ok(Some(row))
+            updated.superseded_by_id = update.superseded_by_id;
+            updated.supersedes_id = update.supersedes_id;
+            updated.fact_key = update.fact_key;
+            updated.invalidated_at = update.invalidated_at;
+            updated.stale_reason = update.stale_reason;
+            updated.updated_at =
+                next_row_version_timestamp(&previous.updated_at, update.updated_at);
+            replace_row(&dataset, &previous, updated.clone()).await?;
+            Ok(Some(updated))
         })
     }
+}
+
+async fn health_report_for_dataset(
+    dataset: &Path,
+) -> Result<lance_health::LanceTableHealthReport, CommandError> {
+    let connection = ensure_connection(dataset).await?;
+    let table = open_or_create_table(&connection, dataset).await?;
+    let table_schema = table
+        .schema()
+        .await
+        .map_err(|error| map_lance_error("project_record_lance_health_schema_failed", error))?;
+    let schema_current = table_schema_supports_current_records(&table_schema);
+    let mut report =
+        lance_health::table_health_report(&table, dataset, PROJECT_RECORDS_TABLE, schema_current)
+            .await?;
+    if schema_current {
+        let rows = scan_all(dataset).await?;
+        report.freshness_counts = lance_health::freshness_counts_from_states(
+            rows.iter().map(|row| row.freshness_state.as_str()),
+        );
+    }
+    Ok(report)
+}
+
+async fn maintain_embedding_index(
+    table: &Table,
+    optimize: bool,
+) -> Result<lance_health::LanceVectorIndexMaintenanceReport, CommandError> {
+    lance_health::maintain_cosine_vector_index(
+        table,
+        PROJECT_RECORDS_TABLE,
+        PROJECT_RECORD_EMBEDDING_COLUMN,
+        PROJECT_RECORD_EMBEDDING_INDEX,
+        optimize,
+    )
+    .await
 }
 
 fn same_dedup_key(left: &ProjectRecordRow, right: &ProjectRecordRow) -> bool {
@@ -619,7 +784,7 @@ fn append_embedding(
 
 async fn scan_all(dataset_dir: &Path) -> Result<Vec<ProjectRecordRow>, CommandError> {
     let connection = ensure_connection(dataset_dir).await?;
-    let table = open_or_create_table(&connection).await?;
+    let table = open_or_create_table(&connection, dataset_dir).await?;
     let stream = table
         .query()
         .execute()
@@ -629,7 +794,7 @@ async fn scan_all(dataset_dir: &Path) -> Result<Vec<ProjectRecordRow>, CommandEr
         .try_collect()
         .await
         .map_err(|error| map_lance_error("project_record_lance_query_failed", error))?;
-    batches_to_rows(batches)
+    Ok(dedupe_latest_record_rows(batches_to_rows(batches)?))
 }
 
 async fn insert_row(table: &Table, row: &ProjectRecordRow) -> Result<(), CommandError> {
@@ -650,15 +815,97 @@ async fn fetch_row(
     Ok(rows.into_iter().find(|row| row.record_id == record_id))
 }
 
-async fn replace_row(dataset_dir: &Path, row: ProjectRecordRow) -> Result<(), CommandError> {
+async fn replace_row(
+    dataset_dir: &Path,
+    previous: &ProjectRecordRow,
+    row: ProjectRecordRow,
+) -> Result<(), CommandError> {
+    if previous == &row {
+        return Ok(());
+    }
+    if previous.updated_at == row.updated_at {
+        return Err(CommandError::system_fault(
+            "project_record_lance_replace_version_not_advanced",
+            format!(
+                "Xero refused to replace project record `{}` without an updated row version.",
+                row.record_id
+            ),
+        ));
+    }
     let connection = ensure_connection(dataset_dir).await?;
-    let table = open_or_create_table(&connection).await?;
-    let predicate = format!("record_id = {}", quote_string_literal(&row.record_id));
+    let table = open_or_create_table(&connection, dataset_dir).await?;
+    insert_row(&table, &row).await?;
+    let predicate = format!(
+        "record_id = {} AND updated_at = {}",
+        quote_string_literal(&previous.record_id),
+        quote_string_literal(&previous.updated_at)
+    );
     table
         .delete(&predicate)
         .await
-        .map_err(|error| map_lance_error("project_record_lance_update_failed", error))?;
-    insert_row(&table, &row).await
+        .map_err(|error| map_lance_error("project_record_lance_update_cleanup_failed", error))?;
+    Ok(())
+}
+
+fn next_row_version_timestamp(previous_updated_at: &str, candidate_updated_at: String) -> String {
+    if previous_updated_at != candidate_updated_at {
+        return candidate_updated_at;
+    }
+    advance_rfc3339_timestamp_nanos(previous_updated_at)
+}
+
+fn advance_rfc3339_timestamp_nanos(timestamp: &str) -> String {
+    let Some(body) = timestamp.strip_suffix('Z') else {
+        return format!("{timestamp}.000000001Z");
+    };
+    let (base, fraction) = match body.rsplit_once('.') {
+        Some((base, fraction)) if fraction.chars().all(|character| character.is_ascii_digit()) => {
+            (base, fraction)
+        }
+        _ => (body, ""),
+    };
+    let mut normalized = fraction.chars().take(9).collect::<String>();
+    while normalized.len() < 9 {
+        normalized.push('0');
+    }
+    let nanos = normalized.parse::<u32>().unwrap_or(0).saturating_add(1);
+    if nanos <= 999_999_999 {
+        return format!("{base}.{nanos:09}Z");
+    }
+    format!("{body}1Z")
+}
+
+async fn delete_row(dataset_dir: &Path, record_id: &str) -> Result<bool, CommandError> {
+    let connection = ensure_connection(dataset_dir).await?;
+    let table = open_or_create_table(&connection, dataset_dir).await?;
+    let was_present = scan_all(dataset_dir)
+        .await?
+        .into_iter()
+        .any(|row| row.record_id == record_id);
+    if !was_present {
+        return Ok(false);
+    }
+    let predicate = format!("record_id = {}", quote_string_literal(record_id));
+    table
+        .delete(&predicate)
+        .await
+        .map_err(|error| map_lance_error("project_record_lance_delete_failed", error))?;
+    let still_present = scan_all(dataset_dir)
+        .await?
+        .into_iter()
+        .any(|row| row.record_id == record_id);
+    Ok(!still_present)
+}
+
+fn dedupe_latest_record_rows(mut rows: Vec<ProjectRecordRow>) -> Vec<ProjectRecordRow> {
+    rows.sort_by(|left, right| {
+        left.record_id
+            .cmp(&right.record_id)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+    });
+    rows.dedup_by(|left, right| left.record_id == right.record_id);
+    rows
 }
 
 pub(crate) fn quote_string_literal(value: &str) -> String {
@@ -972,6 +1219,52 @@ mod tests {
         }
     }
 
+    fn embedded_project_record_row(index: usize) -> ProjectRecordRow {
+        let record_id = format!("s34-record-{index:03}");
+        let mut row = project_record_row(&record_id);
+        row.title = format!("S34 indexed record {index}");
+        row.summary = format!("S34 summary {index}");
+        row.text = format!("S34 vector retrieval record {index} release blocker context");
+        row.text_hash = format!("{:064x}", index + 1);
+        row.created_at = format!("2026-05-05T16:{:02}:32Z", index % 60);
+        row.updated_at = row.created_at.clone();
+        row.importance = if index % 3 == 0 {
+            "high".into()
+        } else {
+            "normal".into()
+        };
+        if index % 17 == 0 {
+            row.redaction_state = "blocked".into();
+        }
+        let embedding = crate::db::project_store::embedding_with_service(
+            &crate::db::project_store::LocalHashEmbeddingService,
+            &row.text,
+        )
+        .expect("test embedding");
+        row.embedding = Some(embedding.vector);
+        row.embedding_model = Some(embedding.model);
+        row.embedding_dimension = Some(embedding.dimension);
+        row.embedding_version = Some(embedding.version);
+        row
+    }
+
+    fn insert_project_record_rows(
+        dataset_dir: &Path,
+        rows: &[ProjectRecordRow],
+    ) -> Result<(), CommandError> {
+        runtime().block_on(async {
+            let connection = ensure_connection(dataset_dir).await?;
+            let table = open_or_create_table(&connection, dataset_dir).await?;
+            let batch = build_batch(rows)?;
+            table
+                .add(vec![batch])
+                .execute()
+                .await
+                .map_err(|error| map_lance_error("test_project_record_lance_insert_failed", error))
+                .map(|_| ())
+        })
+    }
+
     fn legacy_schema_missing_freshness_state() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new(
             "record_id",
@@ -981,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_lance_schema_is_reset_before_listing_and_insert() {
+    fn s36_stale_lance_schema_is_quarantined_before_listing_and_insert() {
         reset_connection_cache_for_tests();
         let tempdir = tempfile::tempdir().expect("temp dir");
         let dataset_dir = tempdir.path().join(PROJECT_LANCE_SUBDIR);
@@ -1008,19 +1301,150 @@ mod tests {
 
         let store = ProjectRecordStore {
             project_id: "project-1".into(),
-            dataset_dir,
+            dataset_dir: dataset_dir.clone(),
         };
 
-        let rows = store.list().expect("list resets stale schema");
+        let rows = store.list().expect("list quarantines stale schema");
         assert!(rows.is_empty());
+        let quarantine_table = std::fs::read_dir(&dataset_dir)
+            .expect("read lance dataset")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .find(|name| {
+                name.starts_with("project_records_quarantine_") && name.ends_with(".lance")
+            })
+            .expect("quarantined project-record table");
+        let quarantine_name = quarantine_table.trim_end_matches(".lance");
+        assert!(dataset_dir.join("project_records.lance").exists());
+        assert!(dataset_dir
+            .join(format!("{quarantine_name}.schema-drift.json"))
+            .exists());
 
         let inserted = store
-            .insert_dedup(project_record_row("schema-reset-record"))
-            .expect("insert after schema reset");
-        assert_eq!(inserted.record_id, "schema-reset-record");
+            .insert_dedup(project_record_row("schema-quarantine-record"))
+            .expect("insert after schema quarantine");
+        assert_eq!(inserted.record_id, "schema-quarantine-record");
 
         let rows = store.list().expect("list inserted record");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].freshness_state, "current");
+
+        let health = store.health_report().expect("project-record health report");
+        assert_eq!(health.table_name, PROJECT_RECORDS_TABLE);
+        assert_eq!(health.status, "degraded");
+        assert!(health.schema_current);
+        assert_eq!(health.row_count, 1);
+        assert_eq!(health.quarantine_table_count, 1);
+        assert_eq!(health.diagnostic_marker_count, 1);
+
+        let optimization = store
+            .optimize_for_maintenance()
+            .expect("project-record optimize");
+        assert_eq!(optimization.table_name, PROJECT_RECORDS_TABLE);
+        assert!(optimization.after.schema_current);
+    }
+
+    #[test]
+    fn s37_project_record_health_reports_freshness_counts_before_and_after_maintenance() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let dataset_dir = tempdir.path().join(PROJECT_LANCE_SUBDIR);
+        let store = ProjectRecordStore {
+            project_id: "project-1".into(),
+            dataset_dir,
+        };
+        store
+            .insert_dedup(project_record_row("current-record"))
+            .expect("insert current record");
+        let mut stale = project_record_row("stale-record");
+        stale.freshness_state = "stale".into();
+        stale.stale_reason = Some("Source file changed.".into());
+        stale.invalidated_at = Some("2026-05-05T16:45:00Z".into());
+        store.insert_dedup(stale).expect("insert stale record");
+
+        let health = store.health_report().expect("project-record health report");
+        assert_eq!(health.freshness_counts.inspected_row_count, 2);
+        assert_eq!(health.freshness_counts.current_row_count, 1);
+        assert_eq!(health.freshness_counts.stale_row_count, 1);
+        assert_eq!(health.freshness_counts.retrieval_degraded_row_count(), 1);
+
+        let optimization = store
+            .optimize_for_maintenance()
+            .expect("project-record optimize");
+        assert_eq!(optimization.before.freshness_counts.stale_row_count, 1);
+        assert_eq!(optimization.after.freshness_counts.stale_row_count, 1);
+    }
+
+    #[test]
+    fn s34_project_record_vector_search_creates_index_and_bounds_large_store() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let dataset_dir = tempdir.path().join(PROJECT_LANCE_SUBDIR);
+        let store = ProjectRecordStore {
+            project_id: "project-s34-index".into(),
+            dataset_dir: dataset_dir.clone(),
+        };
+        let rows = (0..128)
+            .map(embedded_project_record_row)
+            .collect::<Vec<_>>();
+        insert_project_record_rows(&dataset_dir, &rows).expect("insert s34 records");
+        let query = crate::db::project_store::embedding_with_service(
+            &crate::db::project_store::LocalHashEmbeddingService,
+            "release blocker context",
+        )
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        let results = store
+            .vector_search_rows(
+                &query.vector,
+                24,
+                Some("importance = 'high' AND redaction_state <> 'blocked'"),
+            )
+            .expect("bounded vector search");
+
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "vector search should stay comfortably bounded for the fixture"
+        );
+        assert!(results.len() <= 24);
+        assert!(results
+            .iter()
+            .all(|row| row.importance == "high" && row.redaction_state != "blocked"));
+
+        let health = store.health_report().expect("project-record health report");
+        assert_eq!(health.row_count, 128);
+        assert!(health.index_count >= 1);
+    }
+
+    #[test]
+    fn s42_unversioned_project_record_replace_is_rejected_without_losing_old_row() {
+        reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let database_path = tempdir.path().join("state.db");
+        let store = open_for_database_path(&database_path, "project-safe-replace");
+        let inserted = store
+            .insert_dedup(project_record_row("safe-replace-record"))
+            .expect("insert project record");
+
+        let error = store
+            .update_embedding(
+                &inserted.record_id,
+                vec![0.5; PROJECT_RECORD_EMBEDDING_DIM as usize],
+                "local_hash".into(),
+                PROJECT_RECORD_EMBEDDING_DIM,
+                "v1".into(),
+                inserted.updated_at.clone(),
+            )
+            .expect_err("unversioned replace rejected");
+        assert_eq!(
+            error.code,
+            "project_record_lance_replace_version_not_advanced"
+        );
+
+        let rows = store.list().expect("list after rejected replace");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].record_id, inserted.record_id);
+        assert!(rows[0].embedding.is_none());
     }
 }

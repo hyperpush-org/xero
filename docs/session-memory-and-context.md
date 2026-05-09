@@ -1,10 +1,10 @@
 # Session Memory And Context
 
-Xero keeps session history durable while giving users control over what becomes model-visible context. This guide is for users and support engineers who need to find prior work, export a transcript, compact a long session, review memory, recover a conversation branch, undo selected code changes, or return one agent session to an earlier code boundary without editing raw history.
+Xero keeps session history durable while giving users control over what becomes model-visible context. This guide is for users and support engineers who need to find prior work, export a transcript, compact a long session, recover a conversation branch, undo selected code changes, or return one agent session to an earlier code boundary without editing raw history. Memory-review backend records exist, but the permanent user-facing memory review surface is still deferred.
 
 ## What Xero Preserves
 
-Owned-agent runs keep their raw transcript rows, tool summaries, file-change records, code undo events, session rollback events, checkpoints, action requests, usage records, compaction records, memory records, and branch lineage. User-facing projections are redacted views over that durable history. Compaction, branch, rewind, code undo, session rollback, and memory review do not delete the original transcript.
+Owned-agent runs keep their raw transcript rows, tool summaries, file-change records, code undo events, session rollback events, checkpoints, action requests, usage records, compaction records, memory records, and branch lineage. User-facing projections are redacted views over that durable history. Compaction, branch, rewind, code undo, and session rollback do not delete the original transcript.
 
 ## Search And Export
 
@@ -48,11 +48,11 @@ Auto-compact is opt-in. When enabled, Xero checks context pressure before contin
 
 Auto-compact never runs when disabled, when the provider cannot summarize, when the session is below threshold, or when the provider budget is unknown. If auto-compact fails, Xero preserves the raw transcript and reports a diagnostic rather than silently mutating replay state.
 
-## Memory Review
+## Memory Review Status
 
 Memory candidates are suggestions, not instructions. Xero may propose candidates from completed runs, file changes, user preferences, project decisions, and durable troubleshooting facts. Candidates are not model-visible until a user approves them.
 
-The Memory surface lets users approve, reject, enable, disable, delete, filter, and inspect provenance. Approved and enabled memory is injected deterministically into the owned-agent system prompt. Candidate, rejected, disabled, secret-bearing, or instruction-override-shaped memory is not injected.
+The durable backend tracks candidate, approved, rejected, disabled, secret-bearing, and instruction-override-shaped memory states. The permanent Memory surface for approving, rejecting, editing, enabling, disabling, deleting, filtering, and inspecting provenance is planned but not currently shipped. Until that surface exists, docs and support flows must not describe memory review as a normal visible workflow.
 
 Approved memory is treated as durable context, not higher-priority policy. The system prompt explicitly tells the agent to ignore memory text that tries to change system or tool rules.
 
@@ -105,7 +105,7 @@ For a long-session issue, start with the Context panel. Check whether the sessio
 
 For a missing-history issue, use session search with archived sessions enabled, then export the selected run as JSON if support needs structured evidence.
 
-For memory issues, inspect candidates and approved memory. Confirm that the item is approved, enabled, in scope, and not redacted for privacy or integrity.
+For memory issues, inspect candidates and approved memory through backend/support diagnostics. Confirm that the item is approved, enabled, in scope, and not redacted for privacy or integrity. Do not assume a permanent in-app memory review surface exists until the deferred UI work is implemented.
 
 For conversation recovery issues, inspect lineage on the branched session. Branch and rewind preserve the source transcript; they do not imply file rollback.
 

@@ -18,6 +18,7 @@ const DEFAULT_TOOL_FAILURE_LIMIT: usize = 16;
 const DEFAULT_REPEATED_EQUIVALENT_CALL_LIMIT: usize = 3;
 const DEFAULT_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_GROUP_WALL_CLOCK_MS: u64 = 120_000;
+pub const TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION: u32 = 1;
 
 pub type ToolRegistryResult<T> = Result<T, ToolExecutionError>;
 
@@ -217,6 +218,222 @@ impl ToolDescriptorV2 {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExtensionPermissionManifest {
+    pub permission_id: String,
+    pub label: String,
+    pub effect_class: ToolEffectClass,
+    pub risk_class: String,
+    pub audit_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExtensionTestFixture {
+    pub fixture_id: String,
+    pub input: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_summary_contains: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExtensionFixtureStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExtensionFixtureRun {
+    pub fixture_id: String,
+    pub status: ToolExtensionFixtureStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExtensionFixtureReport {
+    pub extension_id: String,
+    pub tool_name: String,
+    pub passed: bool,
+    pub fixtures: Vec<ToolExtensionFixtureRun>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolExtensionManifest {
+    pub contract_version: u32,
+    pub extension_id: String,
+    pub tool_name: String,
+    pub label: String,
+    pub description: String,
+    pub input_schema: JsonValue,
+    pub permission: ToolExtensionPermissionManifest,
+    pub mutability: ToolMutability,
+    pub sandbox_requirement: ToolSandboxRequirement,
+    pub approval_requirement: ToolApprovalRequirement,
+    #[serde(default)]
+    pub capability_tags: Vec<String>,
+    #[serde(default)]
+    pub test_fixtures: Vec<ToolExtensionTestFixture>,
+}
+
+impl ToolExtensionManifest {
+    pub fn validate(&self) -> ToolRegistryResult<()> {
+        if self.contract_version != TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_extension_contract_unsupported",
+                format!(
+                    "Tool extension `{}` uses contract version {}, but Xero supports {}.",
+                    self.extension_id,
+                    self.contract_version,
+                    TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION
+                ),
+            ));
+        }
+        validate_extension_identifier("extensionId", &self.extension_id)?;
+        validate_extension_identifier("toolName", &self.tool_name)?;
+        validate_extension_text("label", &self.label)?;
+        validate_extension_text("description", &self.description)?;
+        if !self.input_schema.is_object() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_extension_schema_invalid",
+                format!(
+                    "Tool extension `{}` must provide an object-shaped input schema.",
+                    self.extension_id
+                ),
+            ));
+        }
+        self.validate_permission()?;
+        let descriptor = self.descriptor();
+        descriptor.validate()?;
+        self.validate_fixtures()?;
+        Ok(())
+    }
+
+    pub fn descriptor(&self) -> ToolDescriptorV2 {
+        ToolDescriptorV2 {
+            name: self.tool_name.clone(),
+            description: self.description.clone(),
+            input_schema: self.input_schema.clone(),
+            capability_tags: self.capability_tags.clone(),
+            effect_class: self.permission.effect_class.clone(),
+            mutability: self.mutability,
+            sandbox_requirement: self.sandbox_requirement,
+            approval_requirement: self.approval_requirement,
+            telemetry_attributes: BTreeMap::from([
+                ("xero.extension.id".into(), self.extension_id.clone()),
+                (
+                    "xero.extension.permission_id".into(),
+                    self.permission.permission_id.clone(),
+                ),
+                (
+                    "xero.extension.audit_label".into(),
+                    self.permission.audit_label.clone(),
+                ),
+                (
+                    "xero.extension.risk_class".into(),
+                    self.permission.risk_class.clone(),
+                ),
+                (
+                    "xero.extension.contract_version".into(),
+                    self.contract_version.to_string(),
+                ),
+            ]),
+            result_truncation: ToolResultTruncationContract::default(),
+        }
+    }
+
+    fn validate_permission(&self) -> ToolRegistryResult<()> {
+        validate_extension_identifier("permissionId", &self.permission.permission_id)?;
+        validate_extension_text("permission.label", &self.permission.label)?;
+        validate_extension_identifier("permission.riskClass", &self.permission.risk_class)?;
+        validate_extension_text("permission.auditLabel", &self.permission.audit_label)?;
+        Ok(())
+    }
+
+    fn validate_fixtures(&self) -> ToolRegistryResult<()> {
+        if self.test_fixtures.is_empty() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_extension_fixture_missing",
+                format!(
+                    "Tool extension `{}` must declare at least one executable test fixture.",
+                    self.extension_id
+                ),
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for fixture in &self.test_fixtures {
+            validate_extension_identifier("fixtureId", &fixture.fixture_id)?;
+            if !seen.insert(fixture.fixture_id.as_str()) {
+                return Err(ToolExecutionError::invalid_input(
+                    "agent_tool_extension_fixture_duplicate",
+                    format!(
+                        "Tool extension `{}` declares duplicate fixture `{}`.",
+                        self.extension_id, fixture.fixture_id
+                    ),
+                ));
+            }
+            if !fixture.input.is_object() {
+                return Err(ToolExecutionError::invalid_input(
+                    "agent_tool_extension_fixture_invalid",
+                    format!(
+                        "Tool extension `{}` fixture `{}` must provide object-shaped input.",
+                        self.extension_id, fixture.fixture_id
+                    ),
+                ));
+            }
+            if fixture
+                .expected_summary_contains
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                return Err(ToolExecutionError::invalid_input(
+                    "agent_tool_extension_fixture_invalid",
+                    format!(
+                        "Tool extension `{}` fixture `{}` has an empty expected summary fragment.",
+                        self.extension_id, fixture.fixture_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_extension_identifier(field: &str, value: &str) -> ToolRegistryResult<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() != value.len()
+        || !trimmed.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ':' | '/')
+        })
+    {
+        return Err(ToolExecutionError::invalid_input(
+            "agent_tool_extension_identifier_invalid",
+            format!(
+                "Tool extension field `{field}` must be a non-empty stable identifier using ASCII letters, numbers, '.', '-', '_', ':', or '/'."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_extension_text(field: &str, value: &str) -> ToolRegistryResult<()> {
+    if value.trim().is_empty() {
+        return Err(ToolExecutionError::invalid_input(
+            "agent_tool_extension_text_invalid",
+            format!("Tool extension field `{field}` must be non-empty."),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -552,6 +769,88 @@ impl StaticToolHandler {
             descriptor,
             execute: Arc::new(execute),
         }
+    }
+
+    pub fn try_from_extension_manifest<F>(
+        manifest: ToolExtensionManifest,
+        execute: F,
+    ) -> ToolRegistryResult<Self>
+    where
+        F: Fn(&ToolExecutionContext, &ToolCallInput) -> ToolRegistryResult<ToolHandlerOutput>
+            + Send
+            + Sync
+            + 'static,
+    {
+        manifest.validate()?;
+        Ok(Self::new(manifest.descriptor(), execute))
+    }
+
+    pub fn verify_extension_test_fixtures(
+        &self,
+        manifest: &ToolExtensionManifest,
+        context: &ToolExecutionContext,
+    ) -> ToolRegistryResult<ToolExtensionFixtureReport> {
+        manifest.validate()?;
+        if self.descriptor.name != manifest.tool_name {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_extension_handler_mismatch",
+                format!(
+                    "Tool extension `{}` fixtures target `{}`, but the handler is registered as `{}`.",
+                    manifest.extension_id, manifest.tool_name, self.descriptor.name
+                ),
+            ));
+        }
+
+        let fixtures = manifest
+            .test_fixtures
+            .iter()
+            .map(|fixture| {
+                let call = ToolCallInput {
+                    tool_call_id: format!("fixture:{}", fixture.fixture_id),
+                    tool_name: manifest.tool_name.clone(),
+                    input: fixture.input.clone(),
+                };
+                match self.execute_with_control(context, &call, &ToolExecutionControl::default()) {
+                    Ok(output) => {
+                        let summary = output.summary;
+                        if let Some(expected) = fixture.expected_summary_contains.as_deref() {
+                            if !summary.contains(expected) {
+                                return ToolExtensionFixtureRun {
+                                    fixture_id: fixture.fixture_id.clone(),
+                                    status: ToolExtensionFixtureStatus::Failed,
+                                    summary: Some(summary),
+                                    diagnostic: Some(format!(
+                                        "Expected fixture summary to contain `{expected}`."
+                                    )),
+                                };
+                            }
+                        }
+                        ToolExtensionFixtureRun {
+                            fixture_id: fixture.fixture_id.clone(),
+                            status: ToolExtensionFixtureStatus::Passed,
+                            summary: Some(summary),
+                            diagnostic: None,
+                        }
+                    }
+                    Err(error) => ToolExtensionFixtureRun {
+                        fixture_id: fixture.fixture_id.clone(),
+                        status: ToolExtensionFixtureStatus::Failed,
+                        summary: None,
+                        diagnostic: Some(format!("{}: {}", error.code, error.message)),
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        let passed = fixtures
+            .iter()
+            .all(|fixture| fixture.status == ToolExtensionFixtureStatus::Passed);
+
+        Ok(ToolExtensionFixtureReport {
+            extension_id: manifest.extension_id.clone(),
+            tool_name: manifest.tool_name.clone(),
+            passed,
+            fixtures,
+        })
     }
 }
 
@@ -2186,6 +2485,40 @@ mod tests {
         }
     }
 
+    fn extension_manifest() -> ToolExtensionManifest {
+        ToolExtensionManifest {
+            contract_version: TOOL_EXTENSION_MANIFEST_CONTRACT_VERSION,
+            extension_id: "acme.release_notes".into(),
+            tool_name: "acme.release_notes.generate".into(),
+            label: "Release Notes".into(),
+            description: "Generate release-note draft data from approved changelog input.".into(),
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "changeId": { "type": "string", "minLength": 1 }
+                },
+                "required": ["changeId"]
+            }),
+            permission: ToolExtensionPermissionManifest {
+                permission_id: "release_notes_generate".into(),
+                label: "Generate release notes".into(),
+                effect_class: ToolEffectClass::ExternalService,
+                risk_class: "external_review".into(),
+                audit_label: "release_notes_external_generation".into(),
+            },
+            mutability: ToolMutability::ReadOnly,
+            sandbox_requirement: ToolSandboxRequirement::Network,
+            approval_requirement: ToolApprovalRequirement::Policy,
+            capability_tags: vec!["extension".into(), "release_notes".into()],
+            test_fixtures: vec![ToolExtensionTestFixture {
+                fixture_id: "happy_path".into(),
+                input: json!({ "changeId": "change-1" }),
+                expected_summary_contains: Some("generated".into()),
+            }],
+        }
+    }
+
     fn sandbox_config() -> ToolDispatchConfig {
         ToolDispatchConfig {
             sandbox: Arc::new(PermissionProfileSandbox::new(SandboxExecutionContext {
@@ -2235,6 +2568,181 @@ mod tests {
         assert_eq!(payload["effectClass"], json!("command_execution"));
         assert_eq!(payload["sandboxRequirement"], json!("workspace_write"));
         assert_eq!(payload["approvalRequirement"], json!("policy"));
+    }
+
+    #[test]
+    fn s20_extension_manifest_registers_permissioned_non_builtin_tools() {
+        let manifest = extension_manifest();
+        let descriptor = manifest.descriptor();
+        assert_eq!(
+            descriptor.telemetry_attributes["xero.extension.audit_label"],
+            "release_notes_external_generation"
+        );
+        assert_eq!(descriptor.effect_class, ToolEffectClass::ExternalService);
+
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(
+                StaticToolHandler::try_from_extension_manifest(manifest, |_context, call| {
+                    Ok(ToolHandlerOutput::new(
+                        format!(
+                            "generated {}",
+                            call.input["changeId"].as_str().unwrap_or("unknown")
+                        ),
+                        json!({"draftId": "draft-1"}),
+                    ))
+                })
+                .expect("extension handler"),
+            )
+            .expect("register extension tool");
+
+        let report = registry.dispatch_batch(
+            &[ToolCallInput {
+                tool_call_id: "call-extension-1".into(),
+                tool_name: "acme.release_notes.generate".into(),
+                input: json!({ "changeId": "change-1" }),
+            }],
+            &ToolDispatchConfig::default(),
+        );
+
+        let ToolDispatchOutcome::Succeeded(success) = &report.groups[0].outcomes[0] else {
+            panic!("extension tool should succeed");
+        };
+        assert_eq!(success.summary, "generated change-1");
+        assert_eq!(
+            success.pre_hook_payload["effectClass"],
+            json!("external_service")
+        );
+        assert_eq!(
+            success
+                .telemetry_attributes
+                .get("xero.extension.permission_id"),
+            Some(&"release_notes_generate".to_string())
+        );
+    }
+
+    #[test]
+    fn s20_extension_manifest_validation_rejects_unsafe_or_untestable_manifests() {
+        let mut bad = extension_manifest();
+        bad.permission.permission_id = " bad permission ".into();
+        let error = bad.validate().expect_err("permission id should be stable");
+        assert_eq!(error.code, "agent_tool_extension_identifier_invalid");
+
+        let mut untestable = extension_manifest();
+        untestable.test_fixtures.clear();
+        let error = untestable
+            .validate()
+            .expect_err("extension manifests should declare fixtures");
+        assert_eq!(error.code, "agent_tool_extension_fixture_missing");
+
+        let mut duplicate_fixture = extension_manifest();
+        duplicate_fixture
+            .test_fixtures
+            .push(ToolExtensionTestFixture {
+                fixture_id: "happy_path".into(),
+                input: json!({ "changeId": "change-2" }),
+                expected_summary_contains: Some("generated".into()),
+            });
+        let error = duplicate_fixture
+            .validate()
+            .expect_err("duplicate fixtures should fail");
+        assert_eq!(error.code, "agent_tool_extension_fixture_duplicate");
+    }
+
+    #[test]
+    fn s20_extension_fixture_verifier_executes_declared_fixtures() {
+        let manifest = extension_manifest();
+        let handler =
+            StaticToolHandler::try_from_extension_manifest(manifest.clone(), |_context, call| {
+                Ok(ToolHandlerOutput::new(
+                    format!(
+                        "generated {}",
+                        call.input["changeId"].as_str().unwrap_or("unknown")
+                    ),
+                    json!({"draftId": "draft-1"}),
+                ))
+            })
+            .expect("extension handler");
+
+        let report = handler
+            .verify_extension_test_fixtures(&manifest, &ToolExecutionContext::default())
+            .expect("fixture report");
+
+        assert!(report.passed);
+        assert_eq!(report.extension_id, "acme.release_notes");
+        assert_eq!(report.fixtures.len(), 1);
+        assert_eq!(
+            report.fixtures[0].status,
+            ToolExtensionFixtureStatus::Passed
+        );
+        assert_eq!(
+            report.fixtures[0].summary.as_deref(),
+            Some("generated change-1")
+        );
+    }
+
+    #[test]
+    fn s20_extension_fixture_verifier_reports_summary_mismatches() {
+        let manifest = extension_manifest();
+        let handler =
+            StaticToolHandler::try_from_extension_manifest(manifest.clone(), |_context, _call| {
+                Ok(ToolHandlerOutput::new("ignored input", json!({})))
+            })
+            .expect("extension handler");
+
+        let report = handler
+            .verify_extension_test_fixtures(&manifest, &ToolExecutionContext::default())
+            .expect("fixture report");
+
+        assert!(!report.passed);
+        assert_eq!(
+            report.fixtures[0].status,
+            ToolExtensionFixtureStatus::Failed
+        );
+        assert_eq!(report.fixtures[0].summary.as_deref(), Some("ignored input"));
+        assert!(report.fixtures[0]
+            .diagnostic
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.contains("generated")));
+    }
+
+    #[test]
+    fn s20_extension_tool_policy_denials_block_before_execution() {
+        let mut registry = ToolRegistryV2::new();
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_for_handler = Arc::clone(&executed);
+        registry
+            .register(
+                StaticToolHandler::try_from_extension_manifest(
+                    extension_manifest(),
+                    move |_context, _call| {
+                        executed_for_handler.store(true, Ordering::SeqCst);
+                        Ok(ToolHandlerOutput::new("generated", json!({})))
+                    },
+                )
+                .expect("extension handler"),
+            )
+            .expect("register extension tool");
+
+        let config = ToolDispatchConfig {
+            policy: Arc::new(StaticToolPolicy::default().deny_tool(
+                "acme.release_notes.generate",
+                "Extension permission was not granted for this custom agent.",
+            )),
+            ..ToolDispatchConfig::default()
+        };
+        let report = registry.dispatch_batch(
+            &[ToolCallInput {
+                tool_call_id: "call-extension-denied".into(),
+                tool_name: "acme.release_notes.generate".into(),
+                input: json!({ "changeId": "change-1" }),
+            }],
+            &config,
+        );
+
+        let failure = report.groups[0].outcomes[0].failure().expect("denied");
+        assert_eq!(failure.error.category, ToolErrorCategory::PolicyDenied);
+        assert!(!executed.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -39,7 +39,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { XeroDesktopAdapter as DefaultXeroDesktopAdapter, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import { mapAgentSession, type RuntimeAgentIdDto, type RuntimeRunControlInputDto } from '@/src/lib/xero-model/runtime'
-import type { AgentDefinitionSummaryDto } from '@/src/lib/xero-model/agent-definition'
+import {
+  canonicalCustomAgentDefinitionSchema,
+  type AgentDefinitionSummaryDto,
+} from '@/src/lib/xero-model/agent-definition'
 import type {
   AgentAuthoringCatalogDto,
   AgentRefDto,
@@ -886,6 +889,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
     skillRegistryMutationError,
     isDesktopRuntime,
     selectProject,
+    prefetchProject,
     importProject,
     createProject,
     removeProject,
@@ -1863,16 +1867,17 @@ export function XeroApp({ adapter }: XeroAppProps) {
       if (!activeProjectId) {
         throw new Error('Select a project before saving an agent definition.')
       }
+      const definition = canonicalCustomAgentDefinitionSchema.parse(snapshot)
       if (mode === 'edit' && definitionId) {
         return resolvedAdapter.updateAgentDefinition({
           projectId: activeProjectId,
           definitionId,
-          definition: snapshot,
+          definition,
         })
       }
       return resolvedAdapter.saveAgentDefinition({
         projectId: activeProjectId,
-        definition: snapshot,
+        definition,
       })
     },
     [activeProjectId, resolvedAdapter],
@@ -2558,6 +2563,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             isLoading={isLoading || (isProjectLoading && foregroundProjectLoad)}
             onImportProject={() => setProjectAddOpen(true)}
             onOpenSettings={() => openSettings('providers')}
+            onPreloadProject={prefetchProject}
             onRemoveProject={handleRemoveProject}
             onSelectProject={handleSelectProject}
             pendingProjectSelectionId={pendingProjectSelectionId}

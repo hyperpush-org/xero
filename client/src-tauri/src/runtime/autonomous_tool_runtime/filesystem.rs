@@ -14,8 +14,7 @@ use regex::{Regex, RegexBuilder};
 use super::{
     repo_scope::{
         build_glob_matcher, normalize_glob_pattern, normalize_optional_relative_path,
-        normalize_relative_path, path_to_forward_slash, scope_relative_match_path, WalkErrorCodes,
-        WalkState,
+        normalize_relative_path, path_to_forward_slash, scope_relative_match_path, WalkState,
     },
     AutonomousDeleteOutput, AutonomousDeleteRequest, AutonomousEditOutput, AutonomousEditRequest,
     AutonomousFindOutput, AutonomousFindRequest, AutonomousHashOutput, AutonomousHashRequest,
@@ -329,11 +328,14 @@ impl AutonomousToolRuntime {
         } else {
             Some(self.repo_relative_path(&scope_path)?)
         };
+        let max_depth = request.max_depth.map(|depth| depth.min(8));
 
         let mut matches = Vec::new();
         let mut walk = WalkState::default();
         self.find_scope(
             &scope_path,
+            0,
+            max_depth,
             scope_relative.as_deref(),
             scope_is_file,
             &matcher,
@@ -344,6 +346,7 @@ impl AutonomousToolRuntime {
         let scope_string = scope
             .as_ref()
             .map(|path| path_to_forward_slash(path.as_path()));
+        let truncated = walk.truncated || walk.depth_limited;
         let summary = if matches.is_empty() {
             match scope_string.as_deref() {
                 Some(scope) => {
@@ -358,6 +361,11 @@ impl AutonomousToolRuntime {
                 "Found {} path(s) matching `{normalized_pattern}`; results truncated at {} path(s).",
                 matches.len(),
                 self.limits.max_search_results
+            )
+        } else if walk.depth_limited {
+            format!(
+                "Found {} path(s) matching `{normalized_pattern}`; traversal truncated by maxDepth.",
+                matches.len()
             )
         } else {
             format!(
@@ -375,7 +383,7 @@ impl AutonomousToolRuntime {
                 scope: scope_string,
                 matches,
                 scanned_files: walk.scanned_files,
-                truncated: walk.truncated,
+                truncated,
             }),
         })
     }
@@ -912,40 +920,71 @@ impl AutonomousToolRuntime {
     fn find_scope(
         &self,
         scope: &Path,
+        depth: usize,
+        max_depth: Option<usize>,
         scope_relative: Option<&Path>,
         scope_is_file: bool,
         matcher: &GlobMatcher,
         matches: &mut Vec<String>,
         walk: &mut WalkState,
     ) -> CommandResult<()> {
-        self.walk_scope(
-            scope,
-            WalkErrorCodes {
-                metadata_failed: "autonomous_tool_find_metadata_failed",
-                read_dir_failed: "autonomous_tool_find_read_dir_failed",
-            },
-            walk,
-            &mut |path, walk| {
-                let repo_relative = self.repo_relative_path(path)?;
-                let candidate = scope_relative_match_path(
-                    repo_relative.as_path(),
+        if walk.truncated {
+            return Ok(());
+        }
+
+        let metadata = fs::symlink_metadata(scope).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_tool_find_metadata_failed",
+                format!("Xero could not inspect {}: {error}", scope.display()),
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        if metadata.is_dir() {
+            if self.should_skip_directory(scope) {
+                return Ok(());
+            }
+            if max_depth.is_some_and(|limit| depth >= limit) {
+                walk.depth_limited = true;
+                return Ok(());
+            }
+            for entry in
+                self.read_sorted_directory_entries(scope, "autonomous_tool_find_read_dir_failed")?
+            {
+                self.find_scope(
+                    &entry.path(),
+                    depth.saturating_add(1),
+                    max_depth,
                     scope_relative,
                     scope_is_file,
+                    matcher,
+                    matches,
+                    walk,
                 )?;
-                if matcher.is_match(path_to_forward_slash(&candidate))
-                    && !push_bounded(
-                        matches,
-                        path_to_forward_slash(&repo_relative),
-                        self.limits.max_search_results,
-                        &mut walk.truncated,
-                    )
-                {
-                    return Ok(());
+                if walk.truncated {
+                    break;
                 }
+            }
+            return Ok(());
+        }
 
-                Ok(())
-            },
-        )
+        walk.scanned_files = walk.scanned_files.saturating_add(1);
+        let repo_relative = self.repo_relative_path(scope)?;
+        let candidate =
+            scope_relative_match_path(repo_relative.as_path(), scope_relative, scope_is_file)?;
+        if matcher.is_match(path_to_forward_slash(&candidate))
+            && !push_bounded(
+                matches,
+                path_to_forward_slash(&repo_relative),
+                self.limits.max_search_results,
+                &mut walk.truncated,
+            )
+        {
+            return Ok(());
+        }
+
+        Ok(())
     }
 
     fn list_scope(
@@ -2236,16 +2275,29 @@ mod tests {
         fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("source");
 
         let runtime = AutonomousToolRuntime::new(root).expect("runtime");
-        let list_output = list_output(runtime.list(AutonomousListRequest {
+        let blank_list_output = list_output(runtime.list(AutonomousListRequest {
             path: Some("  ".into()),
             max_depth: Some(1),
         }));
-        assert_eq!(list_output.path, ".");
-        assert!(list_output.entries.iter().any(|entry| entry.path == "src"));
+        assert_eq!(blank_list_output.path, ".");
+        assert!(blank_list_output
+            .entries
+            .iter()
+            .any(|entry| entry.path == "src"));
+
+        let dot_list_output = list_output(runtime.list(AutonomousListRequest {
+            path: Some(".".into()),
+            max_depth: Some(1),
+        }));
+        assert_eq!(dot_list_output.path, ".");
+        assert!(dot_list_output
+            .entries
+            .iter()
+            .any(|entry| entry.path == "src"));
 
         let search_output = search_output(runtime.search(AutonomousSearchRequest {
             query: "main".into(),
-            path: Some("".into()),
+            path: Some(".".into()),
             regex: false,
             ignore_case: false,
             include_hidden: false,
@@ -2260,7 +2312,8 @@ mod tests {
 
         let find_output = find_output(runtime.find(AutonomousFindRequest {
             pattern: "**/*.rs".into(),
-            path: Some("".into()),
+            path: Some(".".into()),
+            max_depth: None,
         }));
         assert_eq!(find_output.scope, None);
         assert!(find_output.matches.iter().any(|path| path == "src/main.rs"));

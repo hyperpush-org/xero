@@ -177,6 +177,50 @@ const SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'eng
 
 let agentWorkspacePaneIdSequence = 0
 
+function getRuntimeRunProjectionKey(runtimeRun: RuntimeRunView | null | undefined): string {
+  if (!runtimeRun) {
+    return 'none'
+  }
+
+  const activeControls = runtimeRun.controls.active
+  const pendingControls = runtimeRun.controls.pending
+  const selectedControls = runtimeRun.controls.selected
+  return [
+    runtimeRun.projectId,
+    runtimeRun.agentSessionId,
+    runtimeRun.runId,
+    runtimeRun.status,
+    runtimeRun.updatedAt,
+    runtimeRun.lastCheckpointSequence,
+    runtimeRun.lastCheckpointAt ?? '',
+    runtimeRun.checkpointCount,
+    runtimeRun.latestCheckpoint?.summary ?? '',
+    runtimeRun.lastErrorCode ?? '',
+    activeControls.revision,
+    activeControls.modelId,
+    activeControls.runtimeAgentId,
+    activeControls.thinkingEffort ?? '',
+    activeControls.approvalMode,
+    pendingControls?.revision ?? '',
+    pendingControls?.modelId ?? '',
+    pendingControls?.runtimeAgentId ?? '',
+    pendingControls?.thinkingEffort ?? '',
+    pendingControls?.approvalMode ?? '',
+    pendingControls?.queuedPrompt ?? '',
+    pendingControls?.queuedPromptAt ?? '',
+    selectedControls.revision,
+    selectedControls.queuedPrompt ?? '',
+    selectedControls.queuedPromptAt ?? '',
+  ].join('\u0000')
+}
+
+function areRuntimeRunProjectionsEqual(
+  left: RuntimeRunView | null | undefined,
+  right: RuntimeRunView | null | undefined,
+): boolean {
+  return getRuntimeRunProjectionKey(left) === getRuntimeRunProjectionKey(right)
+}
+
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
   cancelIdleCallback?: (handle: number) => void
@@ -773,6 +817,7 @@ export function useXeroDesktopState(
   const activeProjectRef = useRef<ProjectDetailView | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
   const projectDetailsRef = useRef<Record<string, ProjectDetailView>>({})
+  const projectPreviewShellsRef = useRef<WeakSet<ProjectDetailView>>(new WeakSet())
   const projectSelectionRequestRef = useRef(0)
   const projectPrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
   const repositoryStatusRef = useRef<RepositoryStatusView | null>(null)
@@ -864,6 +909,11 @@ export function useXeroDesktopState(
   useEffect(() => {
     activeProjectRef.current = activeProject
     if (activeProject) {
+      if (projectPreviewShellsRef.current.has(activeProject)) {
+        projectDetailsRef.current[activeProject.id] ??= activeProject
+        return
+      }
+
       projectDetailsRef.current[activeProject.id] = activeProject
     }
   }, [activeProject])
@@ -886,6 +936,10 @@ export function useXeroDesktopState(
 
   useEffect(() => {
     if (!activeProject) {
+      return
+    }
+
+    if (projectPreviewShellsRef.current.has(activeProject)) {
       return
     }
 
@@ -1245,10 +1299,15 @@ export function useXeroDesktopState(
           ? selectAgentSessionId(activeProjectRef.current.agentSessions)
           : null)
       if (agentSessionId) {
-        runtimeRunsBySessionRef.current[
-          createAgentSessionStateKey(projectId, agentSessionId)
-        ] = runtimeRun
-        setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
+        const cacheKey = createAgentSessionStateKey(projectId, agentSessionId)
+        const hasPreviousCachedRun = hasOwnRecord(runtimeRunsBySessionRef.current, cacheKey)
+        const previousCachedRun = hasPreviousCachedRun
+          ? runtimeRunsBySessionRef.current[cacheKey]
+          : undefined
+        if (!hasPreviousCachedRun || !areRuntimeRunProjectionsEqual(previousCachedRun, runtimeRun)) {
+          runtimeRunsBySessionRef.current[cacheKey] = runtimeRun
+          setAgentSessionRuntimeCacheRevision((revision) => revision + 1)
+        }
       }
       const isSelectedSession = Boolean(
         agentSessionId &&
@@ -1259,7 +1318,15 @@ export function useXeroDesktopState(
       if (isSelectedSession) {
         setRuntimeRuns((currentRuntimeRuns) => {
           if (!runtimeRun) {
+            if (!hasOwnRecord(currentRuntimeRuns, projectId)) {
+              return currentRuntimeRuns
+            }
+
             return removeProjectRecord(currentRuntimeRuns, projectId)
+          }
+
+          if (areRuntimeRunProjectionsEqual(currentRuntimeRuns[projectId], runtimeRun)) {
+            return currentRuntimeRuns
           }
 
           return {
@@ -1268,12 +1335,22 @@ export function useXeroDesktopState(
           }
         })
       }
-      setRuntimeRunLoadErrors((currentErrors) => ({
-        ...currentErrors,
-        [projectId]: options.loadError ?? null,
-      }))
+      setRuntimeRunLoadErrors((currentErrors) => {
+        const nextError = options.loadError ?? null
+        if (currentErrors[projectId] === nextError) {
+          return currentErrors
+        }
+
+        return {
+          ...currentErrors,
+          [projectId]: nextError,
+        }
+      })
       setActiveProject((currentProject) =>
-        currentProject && currentProject.id === projectId && isSelectedSession
+        currentProject &&
+          currentProject.id === projectId &&
+          isSelectedSession &&
+          !areRuntimeRunProjectionsEqual(currentProject.runtimeRun ?? null, runtimeRun)
           ? applyRuntimeRun(currentProject, runtimeRun)
           : currentProject,
       )
@@ -2116,11 +2193,16 @@ export function useXeroDesktopState(
   )
 
   const loadProject = useCallback(
-    async (projectId: string, source: ProjectLoadSource) =>
+    async (
+      projectId: string,
+      source: ProjectLoadSource,
+      options: { applyCachedProject?: boolean } = {},
+    ) =>
       loadProjectState({
         adapter,
         projectId,
         source,
+        applyCachedProject: options.applyCachedProject,
         refs: {
           latestLoadRequestRef,
           projectDetailsRef,
@@ -2419,27 +2501,33 @@ export function useXeroDesktopState(
       setPendingProjectSelectionId(projectId)
 
       const cachedProject = projectDetailsRef.current[projectId] ?? null
-      if (cachedProject) {
-        setRepositoryStatus(cachedProject.repositoryStatus)
-        setActiveProjectId(projectId)
-        setActiveProject(cachedProject)
-        resetRepositoryDiffs(cachedProject.repositoryStatus)
-      } else {
-        const projectSummary = projects.find((project) => project.id === projectId)
-        if (projectSummary) {
-          const projectShell = createProjectShell(projectSummary)
-          projectDetailsRef.current[projectId] = projectShell
-          setRepositoryStatus(null)
-          setActiveProjectId(projectId)
-          setActiveProject(projectShell)
-          resetRepositoryDiffs(null)
+      const projectSummary = projects.find((project) => project.id === projectId)
+      const previewSource = projectSummary ?? cachedProject
+      if (!previewSource) {
+        try {
+          await loadProject(projectId, 'selection')
+        } finally {
+          if (projectSelectionRequestRef.current === requestId) {
+            setPendingProjectSelectionId(null)
+          }
         }
+        return
       }
+
+      const previewProject = createProjectShell(previewSource)
+      projectPreviewShellsRef.current.add(previewProject)
+
+      activeProjectIdRef.current = projectId
+      activeProjectRef.current = previewProject
+      setRepositoryStatus(null)
+      setActiveProjectId(projectId)
+      setActiveProject(previewProject)
+      resetRepositoryDiffs(null)
 
       await waitForProjectSelectionPaint()
 
       try {
-        await loadProject(projectId, 'selection')
+        await loadProject(projectId, 'selection', { applyCachedProject: false })
       } finally {
         if (projectSelectionRequestRef.current === requestId) {
           setPendingProjectSelectionId(null)

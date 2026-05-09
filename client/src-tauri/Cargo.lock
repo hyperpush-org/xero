@@ -10296,6 +10296,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "xero-agent-core",
+ "zip",
 ]
 
 [[package]]

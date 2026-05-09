@@ -155,12 +155,12 @@ fn provider_diagnostics_normalize_readiness_profile_repair_and_redaction() {
     assert!(!serialized.contains("sk-another-secret"));
     assert!(serialized.contains("[redacted]"));
 
-    let unsupported = unsupported_provider_diagnostic(Some("deepseek-work"), "deepseek")
+    let unsupported = unsupported_provider_diagnostic(Some("moonshot-work"), "moonshot")
         .expect("unsupported provider diagnostic");
     assert_eq!(unsupported.code, "provider_id_unsupported");
     assert_eq!(
         unsupported.affected_provider_id.as_deref(),
-        Some("deepseek")
+        Some("moonshot")
     );
 
     let stale =
@@ -208,6 +208,29 @@ fn provider_validation_reports_metadata_runtime_and_readiness_contracts() {
         .iter()
         .any(|check| check.code == "provider_metadata_ready"));
     assert!(checks.iter().any(|check| check.code == "provider_ready"));
+
+    let mut deepseek = profile("deepseek-default", "deepseek", "deepseek", None);
+    deepseek.model_id = "deepseek-v4-pro".into();
+    deepseek.credential_link = Some(ProviderCredentialLink::ApiKey {
+        updated_at: "2026-05-09T12:00:00Z".into(),
+    });
+    let deepseek_snapshot = snapshot_for(
+        "deepseek-default",
+        vec![deepseek.clone()],
+        vec![ProviderApiKeyCredentialEntry {
+            profile_id: "deepseek-default".into(),
+            api_key: "sk-ds-test".into(),
+            updated_at: "2026-05-09T12:00:00Z".into(),
+        }],
+    );
+    let deepseek_checks = provider_validation_diagnostics(&deepseek_snapshot, &deepseek)
+        .expect("validate deepseek provider");
+    assert!(deepseek_checks
+        .iter()
+        .all(|check| check.status != XeroDiagnosticStatus::Failed));
+    assert!(deepseek_checks
+        .iter()
+        .any(|check| check.code == "provider_metadata_ready"));
 
     let malformed_metadata = profile(
         "openrouter-bad",

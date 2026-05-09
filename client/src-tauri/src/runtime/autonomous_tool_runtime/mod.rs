@@ -26,6 +26,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime};
 use xero_agent_core::{
     domain_tool_pack_health_report, domain_tool_pack_ids_for_tool, domain_tool_pack_manifests,
@@ -52,6 +53,8 @@ use crate::{
         RepositoryDiffScope, RepositoryStatusEntryDto, RuntimeAgentIdDto,
         RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, SoulSettingsDto,
     },
+    db::project_store,
+    runtime::redaction::find_prohibited_persistence_content,
     runtime::AgentRunCancellationToken,
     state::DesktopState,
 };
@@ -671,6 +674,8 @@ pub struct AutonomousAgentToolPolicy {
     browser_control_allowed: bool,
     skill_runtime_allowed: bool,
     subagent_allowed: bool,
+    allowed_subagent_roles: BTreeSet<String>,
+    denied_subagent_roles: BTreeSet<String>,
     command_allowed: bool,
     destructive_write_allowed: bool,
 }
@@ -749,6 +754,8 @@ impl AutonomousAgentToolPolicy {
             browser_control_allowed: json_bool(object.get("browserControlAllowed")),
             skill_runtime_allowed: json_bool(object.get("skillRuntimeAllowed")),
             subagent_allowed: json_bool(object.get("subagentAllowed")),
+            allowed_subagent_roles: string_set_from_json(object.get("allowedSubagentRoles")),
+            denied_subagent_roles: string_set_from_json(object.get("deniedSubagentRoles")),
             command_allowed: json_bool(object.get("commandAllowed")),
             destructive_write_allowed: json_bool(object.get("destructiveWriteAllowed")),
         })
@@ -776,6 +783,8 @@ impl AutonomousAgentToolPolicy {
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
                 subagent_allowed: false,
+                allowed_subagent_roles: BTreeSet::new(),
+                denied_subagent_roles: BTreeSet::new(),
                 command_allowed: true,
                 destructive_write_allowed: true,
             },
@@ -792,6 +801,8 @@ impl AutonomousAgentToolPolicy {
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
                 subagent_allowed: false,
+                allowed_subagent_roles: BTreeSet::new(),
+                denied_subagent_roles: BTreeSet::new(),
                 command_allowed: false,
                 destructive_write_allowed: false,
             },
@@ -808,6 +819,8 @@ impl AutonomousAgentToolPolicy {
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
                 subagent_allowed: false,
+                allowed_subagent_roles: BTreeSet::new(),
+                denied_subagent_roles: BTreeSet::new(),
                 command_allowed: true,
                 destructive_write_allowed: false,
             },
@@ -824,6 +837,8 @@ impl AutonomousAgentToolPolicy {
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
                 subagent_allowed: false,
+                allowed_subagent_roles: BTreeSet::new(),
+                denied_subagent_roles: BTreeSet::new(),
                 command_allowed: false,
                 destructive_write_allowed: false,
             },
@@ -837,6 +852,8 @@ impl AutonomousAgentToolPolicy {
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
                 subagent_allowed: false,
+                allowed_subagent_roles: BTreeSet::new(),
+                denied_subagent_roles: BTreeSet::new(),
                 command_allowed: false,
                 destructive_write_allowed: false,
             },
@@ -966,6 +983,8 @@ impl AutonomousAgentToolPolicy {
             browser_control_allowed: opt_ins.browser_control_allowed,
             skill_runtime_allowed: opt_ins.skill_runtime_allowed,
             subagent_allowed: opt_ins.subagent_allowed,
+            allowed_subagent_roles: BTreeSet::new(),
+            denied_subagent_roles: BTreeSet::new(),
             command_allowed: opt_ins.command_allowed,
             destructive_write_allowed: opt_ins.destructive_write_allowed,
         }
@@ -982,6 +1001,8 @@ impl AutonomousAgentToolPolicy {
             browser_control_allowed: false,
             skill_runtime_allowed: false,
             subagent_allowed: false,
+            allowed_subagent_roles: BTreeSet::new(),
+            denied_subagent_roles: BTreeSet::new(),
             command_allowed: false,
             destructive_write_allowed: false,
         };
@@ -1036,6 +1057,277 @@ impl AutonomousAgentToolPolicy {
             _ => true,
         }
     }
+
+    pub fn allows_subagent_role(&self, role: AutonomousSubagentRole) -> bool {
+        if !self.allows_tool(AUTONOMOUS_TOOL_SUBAGENT) {
+            return false;
+        }
+        let role_id = role.as_str();
+        if self.denied_subagent_roles.contains(role_id) {
+            return false;
+        }
+        !self.allowed_subagent_roles.is_empty() && self.allowed_subagent_roles.contains(role_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousAgentWorkflowPolicy {
+    start_phase_id: String,
+    phases: Vec<AutonomousAgentWorkflowPhase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutonomousAgentWorkflowPhase {
+    id: String,
+    title: String,
+    allowed_tools: BTreeSet<String>,
+    required_checks: Vec<AutonomousAgentWorkflowCondition>,
+    retry_limit: Option<usize>,
+    branches: Vec<AutonomousAgentWorkflowBranch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutonomousAgentWorkflowBranch {
+    target_phase_id: String,
+    condition: AutonomousAgentWorkflowCondition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AutonomousAgentWorkflowCondition {
+    Always,
+    TodoCompleted { todo_id: String },
+    ToolSucceeded { tool_name: String, min_count: usize },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct AutonomousAgentWorkflowRuntimeState {
+    current_phase_id: String,
+    tool_successes: BTreeMap<String, usize>,
+    phase_failures: BTreeMap<String, usize>,
+}
+
+impl AutonomousAgentWorkflowPolicy {
+    pub fn from_definition_snapshot(snapshot: &JsonValue) -> Option<Self> {
+        let object = snapshot.get("workflowStructure")?.as_object()?;
+        let phases_json = object.get("phases")?.as_array()?;
+        let phases = phases_json
+            .iter()
+            .filter_map(AutonomousAgentWorkflowPhase::from_json)
+            .collect::<Vec<_>>();
+        if phases.is_empty() {
+            return None;
+        }
+        let start_phase_id = object
+            .get("startPhaseId")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| phases[0].id.clone());
+        phases
+            .iter()
+            .any(|phase| phase.id == start_phase_id)
+            .then_some(Self {
+                start_phase_id,
+                phases,
+            })
+    }
+
+    fn initial_state(&self) -> AutonomousAgentWorkflowRuntimeState {
+        AutonomousAgentWorkflowRuntimeState {
+            current_phase_id: self.start_phase_id.clone(),
+            tool_successes: BTreeMap::new(),
+            phase_failures: BTreeMap::new(),
+        }
+    }
+
+    fn phase(&self, phase_id: &str) -> Option<&AutonomousAgentWorkflowPhase> {
+        self.phases.iter().find(|phase| phase.id == phase_id)
+    }
+
+    fn next_sequential_phase(&self, phase_id: &str) -> Option<&AutonomousAgentWorkflowPhase> {
+        let index = self.phases.iter().position(|phase| phase.id == phase_id)?;
+        self.phases.get(index.saturating_add(1))
+    }
+
+    fn advance_state(
+        &self,
+        state: &mut AutonomousAgentWorkflowRuntimeState,
+        todos: &BTreeMap<String, AutonomousTodoItem>,
+    ) {
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(state.current_phase_id.clone()) {
+                break;
+            }
+            let Some(phase) = self.phase(&state.current_phase_id) else {
+                state.current_phase_id = self.start_phase_id.clone();
+                break;
+            };
+            if !phase.required_checks_satisfied(state, todos) {
+                break;
+            }
+            if let Some(branch) = phase
+                .branches
+                .iter()
+                .find(|branch| branch.condition.satisfied(state, todos))
+            {
+                if branch.target_phase_id == phase.id {
+                    break;
+                }
+                state.current_phase_id = branch.target_phase_id.clone();
+                continue;
+            }
+            let Some(next_phase) = self.next_sequential_phase(&phase.id) else {
+                break;
+            };
+            state.current_phase_id = next_phase.id.clone();
+        }
+    }
+}
+
+impl AutonomousAgentWorkflowPhase {
+    fn from_json(value: &JsonValue) -> Option<Self> {
+        let object = value.as_object()?;
+        let id = json_non_empty_string(object.get("id"))?;
+        let title = json_non_empty_string(object.get("title")).unwrap_or_else(|| id.clone());
+        let allowed_tools = object
+            .get("allowedTools")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| json_non_empty_string(Some(item)))
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let required_checks = object
+            .get("requiredChecks")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(AutonomousAgentWorkflowCondition::from_json)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let retry_limit = object
+            .get("retryLimit")
+            .and_then(JsonValue::as_u64)
+            .map(|value| value as usize);
+        let branches = object
+            .get("branches")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(AutonomousAgentWorkflowBranch::from_json)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Some(Self {
+            id,
+            title,
+            allowed_tools,
+            required_checks,
+            retry_limit,
+            branches,
+        })
+    }
+
+    fn required_checks_satisfied(
+        &self,
+        state: &AutonomousAgentWorkflowRuntimeState,
+        todos: &BTreeMap<String, AutonomousTodoItem>,
+    ) -> bool {
+        self.required_checks
+            .iter()
+            .all(|condition| condition.satisfied(state, todos))
+    }
+
+    fn allows_tool(&self, tool_name: &str) -> bool {
+        self.allowed_tools.is_empty()
+            || self.allowed_tools.contains(tool_name)
+            || matches!(
+                tool_name,
+                AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_TOOL_SEARCH | AUTONOMOUS_TOOL_TOOL_ACCESS
+            )
+    }
+}
+
+impl AutonomousAgentWorkflowBranch {
+    fn from_json(value: &JsonValue) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(Self {
+            target_phase_id: json_non_empty_string(object.get("targetPhaseId"))?,
+            condition: AutonomousAgentWorkflowCondition::from_json(object.get("condition")?)?,
+        })
+    }
+}
+
+impl AutonomousAgentWorkflowCondition {
+    fn from_json(value: &JsonValue) -> Option<Self> {
+        let object = value.as_object()?;
+        match object.get("kind")?.as_str()?.trim() {
+            "always" => Some(Self::Always),
+            "todo_completed" => Some(Self::TodoCompleted {
+                todo_id: normalize_workflow_id(object.get("todoId")?)?,
+            }),
+            "tool_succeeded" => Some(Self::ToolSucceeded {
+                tool_name: json_non_empty_string(object.get("toolName"))?,
+                min_count: object
+                    .get("minCount")
+                    .and_then(JsonValue::as_u64)
+                    .filter(|count| *count > 0)
+                    .unwrap_or(1) as usize,
+            }),
+            _ => None,
+        }
+    }
+
+    fn satisfied(
+        &self,
+        state: &AutonomousAgentWorkflowRuntimeState,
+        todos: &BTreeMap<String, AutonomousTodoItem>,
+    ) -> bool {
+        match self {
+            Self::Always => true,
+            Self::TodoCompleted { todo_id } => todos
+                .get(todo_id)
+                .is_some_and(|item| item.status == AutonomousTodoStatus::Completed),
+            Self::ToolSucceeded {
+                tool_name,
+                min_count,
+            } => state.tool_successes.get(tool_name).copied().unwrap_or(0) >= *min_count,
+        }
+    }
+}
+
+fn json_non_empty_string(value: Option<&JsonValue>) -> Option<String> {
+    value
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalize_workflow_id(value: &JsonValue) -> Option<String> {
+    json_non_empty_string(Some(value)).and_then(|value| {
+        let normalized = value
+            .trim()
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.') {
+                    character.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+        (!normalized.is_empty()).then_some(normalized)
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1298,10 +1590,13 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
         catalog_entry(
             AUTONOMOUS_TOOL_FIND,
             "core",
-            "Find glob/pattern matches in repo-scoped files.",
+            "Find glob/pattern matches in repo-scoped files with optional bounded recursion depth.",
             &["file", "glob", "find", "tree"],
-            &["pattern", "path"],
-            &["Find **/*.rs files under src-tauri."],
+            &["pattern", "path", "maxDepth"],
+            &[
+                "Find **/*.rs files under src-tauri.",
+                "Find top-level package manifests with maxDepth 2.",
+            ],
             "observe",
         ),
         catalog_entry(
@@ -2175,6 +2470,8 @@ pub struct AutonomousToolRuntime {
     pub(super) web_runtime: AutonomousWebRuntime,
     pub(super) command_controls: Option<RuntimeRunControlStateDto>,
     pub(super) agent_tool_policy: Option<AutonomousAgentToolPolicy>,
+    pub(super) agent_workflow_policy: Option<AutonomousAgentWorkflowPolicy>,
+    pub(super) agent_workflow_state: Arc<Mutex<AutonomousAgentWorkflowRuntimeState>>,
     pub(super) agent_run_context: Option<AutonomousAgentRunContext>,
     pub(super) browser_control_preference: BrowserControlPreferenceDto,
     pub(super) soul_settings: SoulSettingsDto,
@@ -2192,6 +2489,7 @@ pub struct AutonomousToolRuntime {
     pub(super) subagent_write_scope: Option<AutonomousSubagentWriteScope>,
     pub(super) subagent_limits: AutonomousSubagentLimits,
     pub(super) delegated_tool_call_budget: Option<AutonomousDelegatedToolCallBudget>,
+    pub(super) delegated_usage_budget: Option<AutonomousDelegatedUsageBudget>,
     pub(super) skill_tool: Option<AutonomousSkillToolRuntime>,
     process_sessions: Arc<process::ProcessSessionRegistry>,
     owned_processes: Arc<process_manager::OwnedProcessRegistry>,
@@ -2204,6 +2502,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("limits", &self.limits)
             .field("command_controls", &self.command_controls)
             .field("agent_tool_policy", &self.agent_tool_policy)
+            .field("agent_workflow_policy", &self.agent_workflow_policy)
             .field("agent_run_context", &self.agent_run_context)
             .field(
                 "browser_control_preference",
@@ -2218,6 +2517,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("subagent_execution_depth", &self.subagent_execution_depth)
             .field("subagent_write_scope", &self.subagent_write_scope)
             .field("subagent_limits", &self.subagent_limits)
+            .field("delegated_usage_budget", &self.delegated_usage_budget)
             .field("skill_tool_enabled", &self.skill_tool.is_some())
             .finish_non_exhaustive()
     }
@@ -2263,6 +2563,13 @@ impl Default for AutonomousSubagentLimits {
 pub(super) struct AutonomousDelegatedToolCallBudget {
     owner: String,
     remaining: Arc<Mutex<usize>>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct AutonomousDelegatedUsageBudget {
+    owner: String,
+    max_tokens: u64,
+    max_cost_micros: u64,
 }
 
 pub trait AutonomousSubagentExecutor: Send + Sync {
@@ -2335,6 +2642,10 @@ impl AutonomousToolRuntime {
             web_runtime: AutonomousWebRuntime::new(web_config),
             command_controls: None,
             agent_tool_policy: None,
+            agent_workflow_policy: None,
+            agent_workflow_state: Arc::new(Mutex::new(
+                AutonomousAgentWorkflowRuntimeState::default(),
+            )),
             agent_run_context: None,
             browser_control_preference: BrowserControlPreferenceDto::Default,
             soul_settings: default_soul_settings(),
@@ -2352,6 +2663,7 @@ impl AutonomousToolRuntime {
             subagent_write_scope: None,
             subagent_limits: AutonomousSubagentLimits::default(),
             delegated_tool_call_budget: None,
+            delegated_usage_budget: None,
             skill_tool: None,
             process_sessions: Arc::new(process::ProcessSessionRegistry::default()),
             owned_processes: Arc::new(process_manager::OwnedProcessRegistry::default()),
@@ -2500,6 +2812,19 @@ impl AutonomousToolRuntime {
         self.agent_tool_policy.as_ref()
     }
 
+    pub fn with_agent_workflow_policy(
+        mut self,
+        policy: Option<AutonomousAgentWorkflowPolicy>,
+    ) -> Self {
+        let state = policy
+            .as_ref()
+            .map(AutonomousAgentWorkflowPolicy::initial_state)
+            .unwrap_or_default();
+        self.agent_workflow_policy = policy;
+        self.agent_workflow_state = Arc::new(Mutex::new(state));
+        self
+    }
+
     pub fn with_agent_run_context(
         mut self,
         project_id: impl Into<String>,
@@ -2512,6 +2837,17 @@ impl AutonomousToolRuntime {
             run_id: run_id.into(),
         });
         self
+    }
+
+    pub fn with_durable_subagent_tasks_for_run(
+        mut self,
+        repo_root: &Path,
+        project_id: &str,
+        parent_run_id: &str,
+    ) -> CommandResult<Self> {
+        let tasks = load_subagent_tasks_for_parent(repo_root, project_id, parent_run_id)?;
+        self.subagent_tasks = Arc::new(Mutex::new(tasks));
+        Ok(self)
     }
 
     pub fn agent_run_context(&self) -> Option<&AutonomousAgentRunContext> {
@@ -2590,6 +2926,30 @@ impl AutonomousToolRuntime {
         self
     }
 
+    pub fn with_delegated_provider_usage_budget(
+        mut self,
+        owner: impl Into<String>,
+        max_tokens: u64,
+        max_cost_micros: u64,
+    ) -> Self {
+        self.delegated_usage_budget = Some(AutonomousDelegatedUsageBudget {
+            owner: owner.into(),
+            max_tokens,
+            max_cost_micros,
+        });
+        self
+    }
+
+    pub(crate) fn delegated_provider_usage_budget(&self) -> Option<(&str, u64, u64)> {
+        self.delegated_usage_budget.as_ref().map(|budget| {
+            (
+                budget.owner.as_str(),
+                budget.max_tokens,
+                budget.max_cost_micros,
+            )
+        })
+    }
+
     pub fn with_skill_tool(
         mut self,
         project_id: impl Into<String>,
@@ -2646,6 +3006,83 @@ impl AutonomousToolRuntime {
         self.skill_tool.is_some()
     }
 
+    fn enforce_agent_workflow_before_tool(&self, tool_name: &str) -> CommandResult<()> {
+        let Some(policy) = self.agent_workflow_policy.as_ref() else {
+            return Ok(());
+        };
+        let todos = self.todo_items.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_todo_lock_failed",
+                "Xero could not lock the owned-agent todo store.",
+            )
+        })?;
+        let mut state = self.agent_workflow_state.lock().map_err(|_| {
+            CommandError::system_fault(
+                "agent_workflow_state_lock_failed",
+                "Xero could not lock the custom-agent workflow state.",
+            )
+        })?;
+        policy.advance_state(&mut state, &todos);
+        let Some(phase) = policy.phase(&state.current_phase_id) else {
+            return Err(CommandError::policy_denied(
+                "Xero stopped this custom workflow because its current phase is not declared.",
+            ));
+        };
+        if let Some(retry_limit) = phase.retry_limit {
+            let failures = state
+                .phase_failures
+                .get(&phase.id)
+                .copied()
+                .unwrap_or_default();
+            if failures > retry_limit {
+                return Err(CommandError::policy_denied(format!(
+                    "Xero stopped custom workflow phase `{}` because its retryLimit of {} was exceeded.",
+                    phase.title, retry_limit
+                )));
+            }
+        }
+        if !phase.allows_tool(tool_name) {
+            return Err(CommandError::policy_denied(format!(
+                "Xero refused tool `{tool_name}` because custom workflow phase `{}` has not satisfied its required gates.",
+                phase.title
+            )));
+        }
+        Ok(())
+    }
+
+    fn record_agent_workflow_after_tool(
+        &self,
+        tool_name: &str,
+        succeeded: bool,
+    ) -> CommandResult<()> {
+        let Some(policy) = self.agent_workflow_policy.as_ref() else {
+            return Ok(());
+        };
+        let todos = self.todo_items.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_todo_lock_failed",
+                "Xero could not lock the owned-agent todo store.",
+            )
+        })?;
+        let mut state = self.agent_workflow_state.lock().map_err(|_| {
+            CommandError::system_fault(
+                "agent_workflow_state_lock_failed",
+                "Xero could not lock the custom-agent workflow state.",
+            )
+        })?;
+        if succeeded {
+            *state
+                .tool_successes
+                .entry(tool_name.to_owned())
+                .or_default() += 1;
+        } else {
+            let current_phase_id = state.current_phase_id.clone();
+            *state.phase_failures.entry(current_phase_id).or_default() += 1;
+        }
+        policy.advance_state(&mut state, &todos);
+        Ok(())
+    }
+
     fn check_cancelled(&self) -> CommandResult<()> {
         if self.is_cancelled() {
             if let Some(token) = &self.cancellation_token {
@@ -2679,6 +3116,17 @@ impl AutonomousToolRuntime {
     pub fn execute(&self, request: AutonomousToolRequest) -> CommandResult<AutonomousToolResult> {
         self.check_cancelled()?;
         self.consume_delegated_tool_call_budget()?;
+        let tool_name = request.tool_name();
+        self.enforce_agent_workflow_before_tool(tool_name)?;
+        let result = self.execute_without_workflow(request);
+        self.record_agent_workflow_after_tool(tool_name, result.is_ok())?;
+        result
+    }
+
+    fn execute_without_workflow(
+        &self,
+        request: AutonomousToolRequest,
+    ) -> CommandResult<AutonomousToolResult> {
         match request {
             AutonomousToolRequest::Read(request) => self.read(request),
             AutonomousToolRequest::Search(request) => self.search(request),
@@ -2849,7 +3297,9 @@ impl AutonomousToolRuntime {
         request: AutonomousToolRequest,
     ) -> CommandResult<AutonomousToolResult> {
         self.check_cancelled()?;
-        match request {
+        let tool_name = request.tool_name();
+        self.enforce_agent_workflow_before_tool(tool_name)?;
+        let result = match request {
             AutonomousToolRequest::Read(request) => self.read_with_operator_approval(request),
             AutonomousToolRequest::Command(request) => self.command_with_operator_approval(request),
             AutonomousToolRequest::CommandSessionStart(request) => {
@@ -2870,8 +3320,10 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::AgentDefinition(request) => {
                 self.agent_definition_with_operator_approval(request)
             }
-            request => self.execute(request),
-        }
+            request => self.execute_without_workflow(request),
+        };
+        self.record_agent_workflow_after_tool(tool_name, result.is_ok())?;
+        result
     }
 
     fn solana<F>(&self, tool_name: &'static str, run: F) -> CommandResult<AutonomousToolResult>
@@ -3302,6 +3754,135 @@ pub enum AutonomousToolRequest {
     SolanaDocs(AutonomousSolanaDocsRequest),
 }
 
+impl AutonomousToolRequest {
+    pub fn tool_name(&self) -> &'static str {
+        match self {
+            Self::Read(_) => AUTONOMOUS_TOOL_READ,
+            Self::Search(_) => AUTONOMOUS_TOOL_SEARCH,
+            Self::Find(_) => AUTONOMOUS_TOOL_FIND,
+            Self::GitStatus(_) => AUTONOMOUS_TOOL_GIT_STATUS,
+            Self::GitDiff(_) => AUTONOMOUS_TOOL_GIT_DIFF,
+            Self::ToolAccess(_) => AUTONOMOUS_TOOL_TOOL_ACCESS,
+            Self::HarnessRunner(_) => AUTONOMOUS_TOOL_HARNESS_RUNNER,
+            Self::WebSearch(_) => AUTONOMOUS_TOOL_WEB_SEARCH,
+            Self::WebFetch(_) => AUTONOMOUS_TOOL_WEB_FETCH,
+            Self::Edit(_) => AUTONOMOUS_TOOL_EDIT,
+            Self::Write(_) => AUTONOMOUS_TOOL_WRITE,
+            Self::Patch(_) => AUTONOMOUS_TOOL_PATCH,
+            Self::Delete(_) => AUTONOMOUS_TOOL_DELETE,
+            Self::Rename(_) => AUTONOMOUS_TOOL_RENAME,
+            Self::Mkdir(_) => AUTONOMOUS_TOOL_MKDIR,
+            Self::List(_) => AUTONOMOUS_TOOL_LIST,
+            Self::Hash(_) => AUTONOMOUS_TOOL_HASH,
+            Self::Command(_) => AUTONOMOUS_TOOL_COMMAND,
+            Self::CommandSessionStart(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_START,
+            Self::CommandSessionRead(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_READ,
+            Self::CommandSessionStop(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_STOP,
+            Self::ProcessManager(_) => AUTONOMOUS_TOOL_PROCESS_MANAGER,
+            Self::SystemDiagnostics(_) => AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS,
+            Self::MacosAutomation(_) => AUTONOMOUS_TOOL_MACOS_AUTOMATION,
+            Self::Mcp(_) => AUTONOMOUS_TOOL_MCP,
+            Self::Subagent(_) => AUTONOMOUS_TOOL_SUBAGENT,
+            Self::Todo(_) => AUTONOMOUS_TOOL_TODO,
+            Self::NotebookEdit(_) => AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
+            Self::CodeIntel(_) => AUTONOMOUS_TOOL_CODE_INTEL,
+            Self::Lsp(_) => AUTONOMOUS_TOOL_LSP,
+            Self::PowerShell(_) => AUTONOMOUS_TOOL_POWERSHELL,
+            Self::ToolSearch(_) => AUTONOMOUS_TOOL_TOOL_SEARCH,
+            Self::EnvironmentContext(_) => AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT,
+            Self::ProjectContext(request) => project_context_tool_name(request.action),
+            Self::WorkspaceIndex(_) => AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            Self::AgentCoordination(_) => AUTONOMOUS_TOOL_AGENT_COORDINATION,
+            Self::AgentDefinition(_) => AUTONOMOUS_TOOL_AGENT_DEFINITION,
+            Self::Skill(_) => AUTONOMOUS_TOOL_SKILL,
+            Self::Browser(request) => browser_tool_name(&request.action),
+            Self::Emulator(_) => AUTONOMOUS_TOOL_EMULATOR,
+            Self::SolanaCluster(_) => AUTONOMOUS_TOOL_SOLANA_CLUSTER,
+            Self::SolanaLogs(_) => AUTONOMOUS_TOOL_SOLANA_LOGS,
+            Self::SolanaTx(_) => AUTONOMOUS_TOOL_SOLANA_TX,
+            Self::SolanaSimulate(_) => AUTONOMOUS_TOOL_SOLANA_SIMULATE,
+            Self::SolanaExplain(_) => AUTONOMOUS_TOOL_SOLANA_EXPLAIN,
+            Self::SolanaAlt(_) => AUTONOMOUS_TOOL_SOLANA_ALT,
+            Self::SolanaIdl(_) => AUTONOMOUS_TOOL_SOLANA_IDL,
+            Self::SolanaCodama(_) => AUTONOMOUS_TOOL_SOLANA_CODAMA,
+            Self::SolanaPda(_) => AUTONOMOUS_TOOL_SOLANA_PDA,
+            Self::SolanaProgram(_) => AUTONOMOUS_TOOL_SOLANA_PROGRAM,
+            Self::SolanaDeploy(_) => AUTONOMOUS_TOOL_SOLANA_DEPLOY,
+            Self::SolanaUpgradeCheck(_) => AUTONOMOUS_TOOL_SOLANA_UPGRADE_CHECK,
+            Self::SolanaSquads(_) => AUTONOMOUS_TOOL_SOLANA_SQUADS,
+            Self::SolanaVerifiedBuild(_) => AUTONOMOUS_TOOL_SOLANA_VERIFIED_BUILD,
+            Self::SolanaAuditStatic(_) => AUTONOMOUS_TOOL_SOLANA_AUDIT_STATIC,
+            Self::SolanaAuditExternal(_) => AUTONOMOUS_TOOL_SOLANA_AUDIT_EXTERNAL,
+            Self::SolanaAuditFuzz(_) => AUTONOMOUS_TOOL_SOLANA_AUDIT_FUZZ,
+            Self::SolanaAuditCoverage(_) => AUTONOMOUS_TOOL_SOLANA_AUDIT_COVERAGE,
+            Self::SolanaReplay(_) => AUTONOMOUS_TOOL_SOLANA_REPLAY,
+            Self::SolanaIndexer(_) => AUTONOMOUS_TOOL_SOLANA_INDEXER,
+            Self::SolanaSecrets(_) => AUTONOMOUS_TOOL_SOLANA_SECRETS,
+            Self::SolanaClusterDrift(_) => AUTONOMOUS_TOOL_SOLANA_CLUSTER_DRIFT,
+            Self::SolanaCost(_) => AUTONOMOUS_TOOL_SOLANA_COST,
+            Self::SolanaDocs(_) => AUTONOMOUS_TOOL_SOLANA_DOCS,
+        }
+    }
+}
+
+fn project_context_tool_name(action: AutonomousProjectContextAction) -> &'static str {
+    match action {
+        AutonomousProjectContextAction::SearchProjectRecords
+        | AutonomousProjectContextAction::SearchApprovedMemory
+        | AutonomousProjectContextAction::ListRecentHandoffs
+        | AutonomousProjectContextAction::ListActiveDecisionsConstraints
+        | AutonomousProjectContextAction::ListOpenQuestionsBlockers
+        | AutonomousProjectContextAction::ExplainCurrentContextPackage => {
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+        }
+        AutonomousProjectContextAction::GetProjectRecord
+        | AutonomousProjectContextAction::GetMemory => AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+        AutonomousProjectContextAction::RecordContext
+        | AutonomousProjectContextAction::ProposeRecordCandidate => {
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
+        }
+        AutonomousProjectContextAction::UpdateContext => AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+        AutonomousProjectContextAction::RefreshFreshness => AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+    }
+}
+
+fn browser_tool_name(action: &AutonomousBrowserAction) -> &'static str {
+    match action {
+        AutonomousBrowserAction::Open { .. }
+        | AutonomousBrowserAction::TabOpen { .. }
+        | AutonomousBrowserAction::Navigate { .. }
+        | AutonomousBrowserAction::Back
+        | AutonomousBrowserAction::Forward
+        | AutonomousBrowserAction::Reload
+        | AutonomousBrowserAction::Stop
+        | AutonomousBrowserAction::Click { .. }
+        | AutonomousBrowserAction::Type { .. }
+        | AutonomousBrowserAction::Scroll { .. }
+        | AutonomousBrowserAction::PressKey { .. }
+        | AutonomousBrowserAction::CookiesSet { .. }
+        | AutonomousBrowserAction::StorageWrite { .. }
+        | AutonomousBrowserAction::StorageClear { .. }
+        | AutonomousBrowserAction::StateRestore { .. }
+        | AutonomousBrowserAction::TabClose { .. }
+        | AutonomousBrowserAction::TabFocus { .. } => AUTONOMOUS_TOOL_BROWSER_CONTROL,
+        AutonomousBrowserAction::ReadText { .. }
+        | AutonomousBrowserAction::Query { .. }
+        | AutonomousBrowserAction::WaitForSelector { .. }
+        | AutonomousBrowserAction::WaitForLoad { .. }
+        | AutonomousBrowserAction::CurrentUrl
+        | AutonomousBrowserAction::HistoryState
+        | AutonomousBrowserAction::Screenshot
+        | AutonomousBrowserAction::CookiesGet
+        | AutonomousBrowserAction::StorageRead { .. }
+        | AutonomousBrowserAction::ConsoleLogs { .. }
+        | AutonomousBrowserAction::NetworkSummary { .. }
+        | AutonomousBrowserAction::AccessibilityTree { .. }
+        | AutonomousBrowserAction::StateSnapshot { .. }
+        | AutonomousBrowserAction::HarnessExtensionContract
+        | AutonomousBrowserAction::TabList => AUTONOMOUS_TOOL_BROWSER_OBSERVE,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousReadRequest {
@@ -3356,7 +3937,10 @@ pub enum AutonomousReadMode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousFindRequest {
     pub pattern: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -3903,6 +4487,211 @@ impl AutonomousSubagentRole {
     }
 }
 
+fn autonomous_subagent_role_from_str(value: &str) -> Option<AutonomousSubagentRole> {
+    match value {
+        "engineer" => Some(AutonomousSubagentRole::Engineer),
+        "debugger" => Some(AutonomousSubagentRole::Debugger),
+        "planner" => Some(AutonomousSubagentRole::Planner),
+        "researcher" => Some(AutonomousSubagentRole::Researcher),
+        "reviewer" => Some(AutonomousSubagentRole::Reviewer),
+        "agent_builder" => Some(AutonomousSubagentRole::AgentBuilder),
+        "browser" => Some(AutonomousSubagentRole::Browser),
+        "emulator" => Some(AutonomousSubagentRole::Emulator),
+        "solana" => Some(AutonomousSubagentRole::Solana),
+        "database" => Some(AutonomousSubagentRole::Database),
+        _ => None,
+    }
+}
+
+pub(super) fn persist_subagent_task_for_parent(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+    task: &AutonomousSubagentTask,
+) -> CommandResult<()> {
+    let record = agent_subagent_task_record_from_task(project_id, parent_run_id, task)?;
+    project_store::upsert_agent_subagent_task(repo_root, &record)
+}
+
+pub(super) fn load_subagent_tasks_for_parent(
+    repo_root: &Path,
+    project_id: &str,
+    parent_run_id: &str,
+) -> CommandResult<BTreeMap<String, AutonomousSubagentTask>> {
+    let records =
+        project_store::list_agent_subagent_tasks_for_parent(repo_root, project_id, parent_run_id)?;
+    records
+        .into_iter()
+        .map(|record| {
+            let task = autonomous_subagent_task_from_record(record)?;
+            Ok((task.subagent_id.clone(), task))
+        })
+        .collect()
+}
+
+fn agent_subagent_task_record_from_task(
+    project_id: &str,
+    parent_run_id: &str,
+    task: &AutonomousSubagentTask,
+) -> CommandResult<project_store::AgentSubagentTaskRecord> {
+    let write_set_json = serde_json::to_string(&task.write_set).map_err(|error| {
+        CommandError::system_fault(
+            "agent_subagent_write_set_serialize_failed",
+            format!("Xero could not serialize subagent writeSet state: {error}"),
+        )
+    })?;
+    let input_log_json = serde_json::to_string(&task.input_log).map_err(|error| {
+        CommandError::system_fault(
+            "agent_subagent_input_log_serialize_failed",
+            format!("Xero could not serialize subagent input log: {error}"),
+        )
+    })?;
+    let budget_diagnostic_json = task
+        .budget_diagnostic
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_budget_diagnostic_serialize_failed",
+                format!("Xero could not serialize subagent budget diagnostics: {error}"),
+            )
+        })?;
+    Ok(project_store::AgentSubagentTaskRecord {
+        project_id: project_id.into(),
+        parent_run_id: task
+            .parent_run_id
+            .as_deref()
+            .unwrap_or(parent_run_id)
+            .into(),
+        subagent_id: task.subagent_id.clone(),
+        role: task.role.as_str().into(),
+        role_label: task.role_label.clone(),
+        prompt_hash: subagent_prompt_hash(&task.prompt),
+        prompt_preview: subagent_prompt_preview(&task.prompt),
+        model_id: task.model_id.clone(),
+        write_set_json,
+        verification_contract: task.verification_contract.clone(),
+        depth: task.depth as u64,
+        max_tool_calls: task.max_tool_calls as u64,
+        max_tokens: task.max_tokens,
+        max_cost_micros: task.max_cost_micros,
+        used_tool_calls: task.used_tool_calls as u64,
+        used_tokens: task.used_tokens,
+        used_cost_micros: task.used_cost_micros,
+        budget_status: if task.budget_status.trim().is_empty() {
+            "within_budget".into()
+        } else {
+            task.budget_status.clone()
+        },
+        budget_diagnostic_json,
+        status: task.status.clone(),
+        created_at: task.created_at.clone(),
+        started_at: task.started_at.clone(),
+        completed_at: task.completed_at.clone(),
+        cancelled_at: task.cancelled_at.clone(),
+        integrated_at: task.integrated_at.clone(),
+        child_run_id: task.run_id.clone(),
+        child_trace_id: task.trace_id.clone(),
+        parent_trace_id: task.parent_trace_id.clone(),
+        input_log_json,
+        result_summary: task.result_summary.clone(),
+        result_artifact: task.result_artifact.clone(),
+        parent_decision: task.parent_decision.clone(),
+        latest_summary: task.result_summary.clone(),
+        updated_at: crate::auth::now_timestamp(),
+    })
+}
+
+fn autonomous_subagent_task_from_record(
+    record: project_store::AgentSubagentTaskRecord,
+) -> CommandResult<AutonomousSubagentTask> {
+    let role = autonomous_subagent_role_from_str(&record.role).ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_subagent_role_decode_failed",
+            format!(
+                "Xero could not decode durable subagent role `{}`.",
+                record.role
+            ),
+        )
+    })?;
+    let write_set =
+        serde_json::from_str::<Vec<String>>(&record.write_set_json).map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_write_set_decode_failed",
+                format!("Xero could not decode durable subagent writeSet state: {error}"),
+            )
+        })?;
+    let input_log =
+        serde_json::from_str::<Vec<AutonomousSubagentInputRecord>>(&record.input_log_json)
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "agent_subagent_input_log_decode_failed",
+                    format!("Xero could not decode durable subagent input log: {error}"),
+                )
+            })?;
+    let budget_diagnostic = record
+        .budget_diagnostic_json
+        .as_deref()
+        .map(serde_json::from_str::<JsonValue>)
+        .transpose()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_subagent_budget_diagnostic_decode_failed",
+                format!("Xero could not decode durable subagent budget diagnostics: {error}"),
+            )
+        })?;
+    Ok(AutonomousSubagentTask {
+        subagent_id: record.subagent_id,
+        role,
+        role_label: record.role_label,
+        prompt: record.prompt_preview,
+        model_id: record.model_id,
+        write_set,
+        verification_contract: record.verification_contract,
+        depth: record.depth as usize,
+        max_tool_calls: record.max_tool_calls as usize,
+        max_tokens: record.max_tokens,
+        max_cost_micros: record.max_cost_micros,
+        used_tool_calls: record.used_tool_calls as usize,
+        used_tokens: record.used_tokens,
+        used_cost_micros: record.used_cost_micros,
+        budget_status: record.budget_status,
+        budget_diagnostic,
+        status: record.status,
+        created_at: record.created_at,
+        started_at: record.started_at,
+        completed_at: record.completed_at,
+        cancelled_at: record.cancelled_at,
+        integrated_at: record.integrated_at,
+        run_id: record.child_run_id,
+        trace_id: record.child_trace_id,
+        parent_run_id: Some(record.parent_run_id),
+        parent_trace_id: record.parent_trace_id,
+        input_log,
+        result_summary: record.result_summary,
+        result_artifact: record.result_artifact,
+        parent_decision: record.parent_decision,
+    })
+}
+
+fn subagent_prompt_hash(prompt: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prompt.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn subagent_prompt_preview(prompt: &str) -> String {
+    if let Some(reason) = find_prohibited_persistence_content(prompt) {
+        return format!("[REDACTED: {reason}]");
+    }
+    prompt
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+        .take(512)
+        .collect::<String>()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousSubagentRequest {
@@ -3952,6 +4741,16 @@ pub struct AutonomousSubagentTask {
     pub max_tool_calls: usize,
     pub max_tokens: u64,
     pub max_cost_micros: u64,
+    #[serde(default)]
+    pub used_tool_calls: usize,
+    #[serde(default)]
+    pub used_tokens: u64,
+    #[serde(default)]
+    pub used_cost_micros: u64,
+    #[serde(default)]
+    pub budget_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_diagnostic: Option<JsonValue>,
     pub status: String,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5604,5 +6403,302 @@ mod tests {
                 "planning should block {blocked_tool}"
             );
         }
+    }
+
+    #[test]
+    fn agent_definition_object_policy_allows_broad_effect_classes_when_opted_in() {
+        let policy = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": ["observe", "command"],
+                "allowedTools": [],
+                "deniedTools": [],
+                "allowedToolPacks": [],
+                "deniedToolPacks": [],
+                "commandAllowed": true,
+                "destructiveWriteAllowed": false
+            }
+        }))
+        .expect("policy");
+
+        assert!(policy.allows_tool(AUTONOMOUS_TOOL_READ));
+        assert!(policy.allows_tool(AUTONOMOUS_TOOL_COMMAND_PROBE));
+        assert!(!policy.allows_tool(AUTONOMOUS_TOOL_WRITE));
+    }
+
+    #[test]
+    fn agent_definition_object_policy_denials_override_allowed_tools() {
+        let policy = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": ["observe"],
+                "allowedTools": [AUTONOMOUS_TOOL_READ],
+                "deniedTools": [AUTONOMOUS_TOOL_READ],
+                "allowedToolPacks": [],
+                "deniedToolPacks": [],
+                "commandAllowed": false,
+                "destructiveWriteAllowed": false
+            }
+        }))
+        .expect("policy");
+
+        assert!(!policy.allows_tool(AUTONOMOUS_TOOL_READ));
+        assert!(policy.allows_tool(AUTONOMOUS_TOOL_SEARCH));
+    }
+
+    #[test]
+    fn s21_agent_definition_tool_packs_expand_and_intersect_with_runtime_policy() {
+        let allowed = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": [],
+                "allowedTools": [],
+                "deniedTools": [],
+                "allowedToolPacks": ["project_context"],
+                "deniedToolPacks": [],
+                "commandAllowed": false,
+                "destructiveWriteAllowed": false,
+                "skillRuntimeAllowed": false
+            }
+        }))
+        .expect("allowed pack policy");
+
+        assert!(allowed.allowed_tool_packs.contains("project_context"));
+        assert!(tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            Some(&allowed),
+        ));
+        assert!(tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            Some(&allowed),
+        ));
+        assert!(!tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_SKILL,
+            Some(&allowed),
+        ));
+        assert!(!tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Ask,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+            Some(&allowed),
+        ));
+
+        let denied = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": ["observe"],
+                "allowedTools": [],
+                "deniedTools": [],
+                "allowedToolPacks": [],
+                "deniedToolPacks": ["project_context"],
+                "commandAllowed": false,
+                "destructiveWriteAllowed": false,
+                "skillRuntimeAllowed": false
+            }
+        }))
+        .expect("denied pack policy");
+
+        assert!(denied.denied_tool_packs.contains("project_context"));
+        assert!(!tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+            Some(&denied),
+        ));
+        assert!(tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_READ,
+            Some(&denied),
+        ));
+    }
+
+    #[test]
+    fn s23_custom_agent_subagent_policy_requires_declared_child_roles() {
+        let policy = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": ["agent_delegation"],
+                "allowedTools": [AUTONOMOUS_TOOL_SUBAGENT],
+                "deniedTools": [],
+                "allowedToolPacks": [],
+                "deniedToolPacks": [],
+                "subagentAllowed": true,
+                "allowedSubagentRoles": ["reviewer"],
+                "deniedSubagentRoles": ["browser"]
+            }
+        }))
+        .expect("subagent policy");
+
+        assert!(policy.allows_tool(AUTONOMOUS_TOOL_SUBAGENT));
+        assert!(policy.allows_subagent_role(AutonomousSubagentRole::Reviewer));
+        assert!(!policy.allows_subagent_role(AutonomousSubagentRole::Engineer));
+        assert!(!policy.allows_subagent_role(AutonomousSubagentRole::Browser));
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_tool_policy(Some(policy));
+        let allowed = runtime
+            .subagent(AutonomousSubagentRequest {
+                action: AutonomousSubagentAction::Spawn,
+                task_id: None,
+                role: Some(AutonomousSubagentRole::Reviewer),
+                prompt: Some("Review the proposed change and summarize risks.".into()),
+                model_id: None,
+                timeout_ms: None,
+                max_tool_calls: None,
+                max_tokens: None,
+                max_cost_micros: None,
+                write_set: Vec::new(),
+                decision: None,
+            })
+            .expect("declared role can spawn");
+        match allowed.output {
+            AutonomousToolOutput::Subagent(output) => {
+                assert_eq!(output.task.role, AutonomousSubagentRole::Reviewer);
+                assert_eq!(output.task.status, "registered");
+            }
+            output => panic!("unexpected output: {output:?}"),
+        }
+
+        let denied = runtime
+            .subagent(AutonomousSubagentRequest {
+                action: AutonomousSubagentAction::Spawn,
+                task_id: None,
+                role: Some(AutonomousSubagentRole::Engineer),
+                prompt: Some("Edit the implementation.".into()),
+                model_id: None,
+                timeout_ms: None,
+                max_tool_calls: None,
+                max_tokens: None,
+                max_cost_micros: None,
+                write_set: vec!["src/lib.rs".into()],
+                decision: None,
+            })
+            .expect_err("undeclared role is blocked");
+        assert_eq!(denied.code, "policy_denied");
+        assert!(denied.message.contains("allowedSubagentRoles"));
+    }
+
+    #[test]
+    fn s22_custom_workflow_fails_closed_until_required_gate_is_satisfied() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [
+                            {"kind": "todo_completed", "todoId": "inspect_done"}
+                        ],
+                        "retryLimit": 1,
+                        "branches": [
+                            {
+                                "targetPhaseId": "edit",
+                                "condition": {"kind": "todo_completed", "todoId": "inspect_done"}
+                            }
+                        ]
+                    },
+                    {
+                        "id": "edit",
+                        "title": "Edit",
+                        "allowedTools": [AUTONOMOUS_TOOL_WRITE],
+                        "requiredChecks": []
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+
+        let denied = runtime
+            .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
+                path: "notes.txt".into(),
+                content: "premature write\n".into(),
+            }))
+            .expect_err("write is gated before inspect todo completes");
+        assert_eq!(denied.code, "policy_denied");
+        assert!(denied.message.contains("required gates"));
+        assert!(!tempdir.path().join("notes.txt").exists());
+
+        runtime
+            .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::Upsert,
+                id: Some("inspect_done".into()),
+                title: Some("Inspection gate satisfied".into()),
+                notes: None,
+                status: Some(AutonomousTodoStatus::Completed),
+                mode: None,
+                debug_stage: None,
+                evidence: Some("Read required context.".into()),
+                phase_id: Some("inspect".into()),
+                phase_title: Some("Inspect".into()),
+                slice_id: None,
+                handoff_note: None,
+            }))
+            .expect("complete gate todo");
+
+        runtime
+            .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
+                path: "notes.txt".into(),
+                content: "gated write\n".into(),
+            }))
+            .expect("write allowed after workflow gate");
+        assert_eq!(
+            std::fs::read_to_string(tempdir.path().join("notes.txt")).expect("read written file"),
+            "gated write\n"
+        );
+    }
+
+    #[test]
+    fn s24_external_service_and_browser_control_require_explicit_policy_flags() {
+        let denied = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": ["observe", "external_service", "browser_control"],
+                "allowedTools": [],
+                "deniedTools": [],
+                "allowedToolPacks": [],
+                "deniedToolPacks": [],
+                "externalServiceAllowed": false,
+                "browserControlAllowed": false
+            }
+        }))
+        .expect("denied risky policy");
+
+        assert!(!tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_WEB_FETCH,
+            Some(&denied),
+        ));
+        assert!(!tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            Some(&denied),
+        ));
+
+        let allowed = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+            "toolPolicy": {
+                "allowedEffectClasses": ["observe", "external_service", "browser_control"],
+                "allowedTools": [],
+                "deniedTools": [],
+                "allowedToolPacks": [],
+                "deniedToolPacks": [],
+                "externalServiceAllowed": true,
+                "browserControlAllowed": true
+            }
+        }))
+        .expect("allowed risky policy");
+
+        assert!(tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_WEB_FETCH,
+            Some(&allowed),
+        ));
+        assert!(tool_allowed_for_runtime_agent_with_policy(
+            RuntimeAgentIdDto::Engineer,
+            AUTONOMOUS_TOOL_BROWSER_CONTROL,
+            Some(&allowed),
+        ));
     }
 }

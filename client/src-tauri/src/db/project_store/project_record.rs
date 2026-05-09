@@ -12,6 +12,8 @@ use crate::{
 
 use super::{
     agent_embeddings::embedding_for_storage,
+    begin_cross_store_outbox_operation, cross_store_outbox_operation_id,
+    finish_cross_store_outbox_operation,
     freshness::{
         capture_source_fingerprints, evaluate_freshness, freshness_update_changed,
         parse_freshness_state, source_fingerprint_paths, source_fingerprint_paths_overlap,
@@ -20,7 +22,7 @@ use super::{
     },
     load_agent_file_changes, open_runtime_database,
     project_record_lance::{self, ProjectRecordRow},
-    read_project_row, validate_non_empty_text,
+    read_project_row, validate_non_empty_text, NewCrossStoreOutboxRecord,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,10 +245,84 @@ pub fn insert_project_record(
         embedding_dimension: Some(embedding.dimension),
         embedding_version: Some(embedding.version),
     };
-    let inserted = store.insert_dedup(row)?;
+    let outbox_operation_id = cross_store_outbox_operation_id(
+        &record.project_id,
+        "project_record_lance",
+        "project_record",
+        &record.record_id,
+        "insert",
+        &row.text_hash,
+    );
+    let outbox_row_payload = serde_json::to_value(&row).map_err(|error| {
+        CommandError::system_fault(
+            "project_record_outbox_payload_failed",
+            format!("Xero could not prepare a project-record outbox payload: {error}"),
+        )
+    })?;
+    begin_cross_store_outbox_operation(
+        repo_root,
+        &NewCrossStoreOutboxRecord {
+            operation_id: outbox_operation_id.clone(),
+            project_id: record.project_id.clone(),
+            store_kind: "project_record_lance".into(),
+            entity_kind: "project_record".into(),
+            entity_id: record.record_id.clone(),
+            operation: "insert".into(),
+            payload: serde_json::json!({
+                "recordId": &record.record_id,
+                "textHash": &row.text_hash,
+                "row": outbox_row_payload,
+            }),
+            created_at: record.created_at.clone(),
+        },
+    )?;
+    let inserted = match store.insert_dedup(row) {
+        Ok(inserted) => inserted,
+        Err(error) => {
+            let _ = finish_cross_store_outbox_operation(
+                repo_root,
+                &record.project_id,
+                &outbox_operation_id,
+                "failed",
+                Some(serde_json::json!({
+                    "code": error.code.clone(),
+                    "message": error.message.clone(),
+                })),
+                &record.created_at,
+            );
+            return Err(error);
+        }
+    };
     if inserted.record_id == record.record_id {
-        apply_project_record_supersession(&store, &inserted, &fact_key, &record.created_at)?;
+        if let Err(error) =
+            apply_project_record_supersession(&store, &inserted, &fact_key, &record.created_at)
+        {
+            let _ = finish_cross_store_outbox_operation(
+                repo_root,
+                &record.project_id,
+                &outbox_operation_id,
+                "failed",
+                Some(serde_json::json!({
+                    "code": error.code.clone(),
+                    "message": error.message.clone(),
+                    "phase": "post_insert_supersession",
+                })),
+                &record.created_at,
+            );
+            return Err(error);
+        }
     }
+    let _ = finish_cross_store_outbox_operation(
+        repo_root,
+        &record.project_id,
+        &outbox_operation_id,
+        "applied",
+        Some(serde_json::json!({
+            "insertedId": &inserted.record_id,
+            "deduplicated": inserted.record_id != record.record_id,
+        })),
+        &record.created_at,
+    );
     row_into_record(inserted)
 }
 
@@ -417,6 +493,24 @@ pub fn list_project_records(
         .into_iter()
         .map(row_into_record)
         .collect::<Result<Vec<_>, _>>()
+}
+
+pub fn delete_project_record(
+    repo_root: &Path,
+    project_id: &str,
+    record_id: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(project_id, "projectId", "project_record_project_required")?;
+    validate_non_empty_text(record_id, "recordId", "project_record_id_required")?;
+    let store = open_store_with_project_check(repo_root, project_id)?;
+    let removed = store.delete(record_id)?;
+    if !removed {
+        return Err(CommandError::user_fixable(
+            "project_record_not_found",
+            format!("Project record `{record_id}` was not found."),
+        ));
+    }
+    Ok(())
 }
 
 pub fn refresh_all_project_record_freshness(
@@ -1008,6 +1102,327 @@ mod tests {
         assert!(fingerprints["fingerprints"][0]["hash"].is_string());
         assert!(lance_dir.join("project_records.lance").exists());
         assert!(!repo_root.join(".xero").exists());
+        let applied_outbox = crate::db::project_store::list_cross_store_outbox_by_status(
+            &repo_root, project_id, "applied",
+        )
+        .expect("list applied outbox");
+        assert_eq!(applied_outbox.len(), 2);
+        let primary_outbox = applied_outbox
+            .iter()
+            .find(|operation| operation.entity_id == "project-record-1")
+            .expect("primary project-record outbox");
+        assert_eq!(primary_outbox.store_kind, "project_record_lance");
+        assert_eq!(primary_outbox.entity_kind, "project_record");
+        assert_eq!(primary_outbox.operation, "insert");
+        assert_eq!(
+            primary_outbox.payload["recordId"].as_str(),
+            Some("project-record-1")
+        );
+        assert_eq!(
+            primary_outbox
+                .diagnostic
+                .as_ref()
+                .expect("primary diagnostic")["deduplicated"]
+                .as_bool(),
+            Some(false)
+        );
+        let duplicate_outbox = applied_outbox
+            .iter()
+            .find(|operation| operation.entity_id == "project-record-2")
+            .expect("duplicate project-record outbox");
+        assert_eq!(
+            duplicate_outbox
+                .diagnostic
+                .as_ref()
+                .expect("duplicate diagnostic")["insertedId"]
+                .as_str(),
+            Some(inserted.record_id.as_str())
+        );
+        assert_eq!(
+            duplicate_outbox
+                .diagnostic
+                .as_ref()
+                .expect("duplicate diagnostic")["deduplicated"]
+                .as_bool(),
+            Some(true)
+        );
+
+        crate::db::project_store::begin_cross_store_outbox_operation(
+            &repo_root,
+            &crate::db::project_store::NewCrossStoreOutboxRecord {
+                operation_id: "cross-store-reconcile-project-record".into(),
+                project_id: project_id.into(),
+                store_kind: "project_record_lance".into(),
+                entity_kind: "project_record".into(),
+                entity_id: inserted.record_id.clone(),
+                operation: "insert".into(),
+                payload: json!({
+                    "recordId": &inserted.record_id,
+                    "source": "test-reconciliation",
+                }),
+                created_at: "2026-05-01T00:01:00Z".into(),
+            },
+        )
+        .expect("seed pending outbox");
+        let report = crate::db::project_store::reconcile_cross_store_outbox(
+            &repo_root,
+            project_id,
+            "2026-05-01T00:02:00Z",
+        )
+        .expect("reconcile outbox");
+        assert_eq!(report.inspected_count, 1);
+        assert_eq!(report.reconciled_count, 1);
+        let reconciled_outbox = crate::db::project_store::list_cross_store_outbox_by_status(
+            &repo_root,
+            project_id,
+            "reconciled",
+        )
+        .expect("list reconciled outbox");
+        assert_eq!(reconciled_outbox.len(), 1);
+        assert_eq!(
+            reconciled_outbox[0]
+                .diagnostic
+                .as_ref()
+                .expect("reconciled diagnostic")["entityFound"]
+                .as_bool(),
+            Some(true)
+        );
+
+        let replay_row = ProjectRecordRow {
+            record_id: "project-record-replayed".into(),
+            project_id: project_id.into(),
+            record_kind: project_record_kind_sql_value(&ProjectRecordKind::ContextNote).into(),
+            runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask".into(),
+            agent_definition_version: crate::db::project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_session_id: None,
+            run_id: "run-replayed".into(),
+            workflow_run_id: None,
+            workflow_step_id: None,
+            title: "Replayed context".into(),
+            summary: "Recovered from a pending cross-store outbox operation.".into(),
+            text: "The cross-store outbox can replay missing project-record Lance inserts.".into(),
+            text_hash: project_record_text_hash(
+                "The cross-store outbox can replay missing project-record Lance inserts.",
+            ),
+            content_json: None,
+            content_hash: None,
+            schema_name: None,
+            schema_version: 1,
+            importance: project_record_importance_sql_value(&ProjectRecordImportance::Normal)
+                .into(),
+            confidence: Some(0.9),
+            tags_json: "[]".into(),
+            source_item_ids_json: "[]".into(),
+            related_paths_json: "[]".into(),
+            produced_artifact_refs_json: "[]".into(),
+            redaction_state: project_record_redaction_state_sql_value(
+                &ProjectRecordRedactionState::Clean,
+            )
+            .into(),
+            visibility: project_record_visibility_sql_value(&ProjectRecordVisibility::Retrieval)
+                .into(),
+            freshness_state: FreshnessState::Current.as_str().into(),
+            freshness_checked_at: Some("2026-05-01T00:03:00Z".into()),
+            stale_reason: None,
+            source_fingerprints_json: json!({"fingerprints": []}).to_string(),
+            supersedes_id: None,
+            superseded_by_id: None,
+            invalidated_at: None,
+            fact_key: Some("test:cross-store-replay".into()),
+            created_at: "2026-05-01T00:03:00Z".into(),
+            updated_at: "2026-05-01T00:03:00Z".into(),
+            embedding: None,
+            embedding_model: None,
+            embedding_dimension: None,
+            embedding_version: None,
+        };
+        let replay_operation_id = crate::db::project_store::cross_store_outbox_operation_id(
+            project_id,
+            "project_record_lance",
+            "project_record",
+            &replay_row.record_id,
+            "insert",
+            &replay_row.text_hash,
+        );
+        crate::db::project_store::begin_cross_store_outbox_operation(
+            &repo_root,
+            &crate::db::project_store::NewCrossStoreOutboxRecord {
+                operation_id: replay_operation_id,
+                project_id: project_id.into(),
+                store_kind: "project_record_lance".into(),
+                entity_kind: "project_record".into(),
+                entity_id: replay_row.record_id.clone(),
+                operation: "insert".into(),
+                payload: json!({
+                    "recordId": &replay_row.record_id,
+                    "textHash": &replay_row.text_hash,
+                    "row": serde_json::to_value(&replay_row).expect("serialize replay row"),
+                }),
+                created_at: "2026-05-01T00:03:00Z".into(),
+            },
+        )
+        .expect("seed replayable pending outbox");
+        let replay_report = crate::db::project_store::reconcile_cross_store_outbox(
+            &repo_root,
+            project_id,
+            "2026-05-01T00:04:00Z",
+        )
+        .expect("replay pending outbox");
+        assert_eq!(replay_report.inspected_count, 1);
+        assert_eq!(replay_report.reconciled_count, 1);
+        let records_after_replay =
+            list_project_records(&repo_root, project_id).expect("list replayed records");
+        assert!(records_after_replay
+            .iter()
+            .any(|record| record.record_id == "project-record-replayed"));
+    }
+
+    #[test]
+    fn project_records_supersede_with_same_timestamp_without_row_version_error() {
+        project_record_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("src")).expect("repo src dir");
+        fs::write(repo_root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        let project_id = "project-record-same-timestamp-supersession";
+        create_project_database(&repo_root, project_id);
+
+        let mut first = new_project_record(
+            project_id,
+            "project-record-same-timestamp-old",
+            "Ask found that the app stores project context in LanceDB.",
+        );
+        first.title = "Ask current problem continuity".into();
+        let mut second = new_project_record(
+            project_id,
+            "project-record-same-timestamp-new",
+            "Ask found that the app keeps durable project context in LanceDB.",
+        );
+        second.title = first.title.clone();
+        second.created_at = first.created_at.clone();
+
+        insert_project_record(&repo_root, &first).expect("insert first record");
+        insert_project_record(&repo_root, &second)
+            .expect("same-timestamp supersession should advance the row version");
+
+        let records = list_project_records(&repo_root, project_id).expect("list records");
+        let old = records
+            .iter()
+            .find(|record| record.record_id == "project-record-same-timestamp-old")
+            .expect("old record");
+        let new = records
+            .iter()
+            .find(|record| record.record_id == "project-record-same-timestamp-new")
+            .expect("new record");
+
+        assert_eq!(
+            old.superseded_by_id.as_deref(),
+            Some("project-record-same-timestamp-new")
+        );
+        assert_eq!(
+            new.supersedes_id.as_deref(),
+            Some("project-record-same-timestamp-old")
+        );
+        assert_ne!(old.updated_at, first.created_at);
+    }
+
+    #[test]
+    fn s65_project_record_delete_removes_project_fact_from_retrieval_store() {
+        project_record_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("src")).expect("repo src dir");
+        fs::write(repo_root.join("src/main.rs"), "fn main() {}\n").expect("write source");
+        let project_id = "project-record-delete";
+        create_project_database(&repo_root, project_id);
+
+        insert_project_record(
+            &repo_root,
+            &new_project_record(
+                project_id,
+                "project-record-delete-target",
+                "Project fact delete should remove this stale fact from retrieval.",
+            ),
+        )
+        .expect("insert project record");
+        assert!(list_project_records(&repo_root, project_id)
+            .expect("list records before delete")
+            .iter()
+            .any(|record| record.record_id == "project-record-delete-target"));
+
+        delete_project_record(&repo_root, project_id, "project-record-delete-target")
+            .expect("delete project record");
+
+        assert!(!list_project_records(&repo_root, project_id)
+            .expect("list records after delete")
+            .iter()
+            .any(|record| record.record_id == "project-record-delete-target"));
+        let error = delete_project_record(&repo_root, project_id, "project-record-delete-target")
+            .expect_err("second delete should report missing record");
+        assert_eq!(error.code, "project_record_not_found");
+    }
+
+    #[test]
+    fn s65_project_record_supersede_links_correction_for_retrieval_ranking() {
+        project_record_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("src")).expect("repo src dir");
+        fs::write(repo_root.join("src/old.rs"), "pub fn old() {}\n").expect("write old source");
+        fs::write(repo_root.join("src/new.rs"), "pub fn new() {}\n").expect("write new source");
+        let project_id = "project-record-supersede";
+        create_project_database(&repo_root, project_id);
+
+        let mut old_record = new_project_record(
+            project_id,
+            "project-record-stale",
+            "The app stores project state in the legacy repo-local directory.",
+        );
+        old_record.related_paths = vec!["src/old.rs".into()];
+        let mut corrected_record = new_project_record(
+            project_id,
+            "project-record-corrected",
+            "The app stores new project state under the OS app-data directory.",
+        );
+        corrected_record.related_paths = vec!["src/new.rs".into()];
+        insert_project_record(&repo_root, &old_record).expect("insert stale record");
+        insert_project_record(&repo_root, &corrected_record).expect("insert corrected record");
+
+        mark_project_record_superseded_by(
+            &repo_root,
+            project_id,
+            "project-record-stale",
+            "project-record-corrected",
+            "2026-05-09T01:00:00Z",
+        )
+        .expect("mark superseded");
+
+        let records = list_project_records(&repo_root, project_id).expect("list records");
+        let stale = records
+            .iter()
+            .find(|record| record.record_id == "project-record-stale")
+            .expect("stale record");
+        let corrected = records
+            .iter()
+            .find(|record| record.record_id == "project-record-corrected")
+            .expect("corrected record");
+        assert_eq!(
+            stale.superseded_by_id.as_deref(),
+            Some("project-record-corrected")
+        );
+        assert_eq!(
+            corrected.supersedes_id.as_deref(),
+            Some("project-record-stale")
+        );
+        assert_eq!(
+            stale.invalidated_at.as_deref(),
+            Some("2026-05-09T01:00:00Z")
+        );
+        assert!(stale
+            .stale_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("project-record-corrected")));
     }
 
     #[test]

@@ -19,6 +19,7 @@
     "rust:test": "pnpm --dir ./client run rust:test",
     "rust:target:prune": "pnpm --dir ./client run rust:target:prune",
     "rust:target:prune:dry-run": "pnpm --dir ./client run rust:target:prune:dry-run",
+    "agent-system:verify-plan": "node scripts/verify-agent-system-plan.mjs",
     "db:up": "node scripts/docker-compose.mjs -f server/docker-compose.yml up -d",
     "db:down": "node scripts/docker-compose.mjs -f server/docker-compose.yml down",
     "db:reset": "cd server && mix ecto.reset",

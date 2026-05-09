@@ -22,7 +22,7 @@ const MAX_TITLE_CHARS: usize = 64;
 const MAX_PROMPT_CHARS: usize = 4_000;
 
 #[tauri::command]
-pub fn auto_name_agent_session<R: Runtime>(
+pub async fn auto_name_agent_session<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: AutoNameAgentSessionRequestDto,
@@ -31,7 +31,25 @@ pub fn auto_name_agent_session<R: Runtime>(
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     validate_non_empty(&request.prompt, "prompt")?;
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        auto_name_agent_session_blocking(app, state, request)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_session_title_task_failed",
+            format!("Xero could not finish background session-title generation: {error}"),
+        )
+    })?
+}
+
+fn auto_name_agent_session_blocking<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    request: AutoNameAgentSessionRequestDto,
+) -> CommandResult<AgentSessionDto> {
+    let repo_root = resolve_project_root(&app, &state, &request.project_id)?;
     let existing = project_store::get_agent_session(
         &repo_root,
         &request.project_id,
@@ -51,12 +69,8 @@ pub fn auto_name_agent_session<R: Runtime>(
         return Ok(agent_session_dto(&existing));
     }
 
-    let generated_title = generate_session_title(
-        &app,
-        state.inner(),
-        request.controls.as_ref(),
-        &request.prompt,
-    )?;
+    let generated_title =
+        generate_session_title(&app, &state, request.controls.as_ref(), &request.prompt)?;
 
     let current = project_store::get_agent_session(
         &repo_root,

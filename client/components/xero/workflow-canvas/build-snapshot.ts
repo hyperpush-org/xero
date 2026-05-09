@@ -1,5 +1,10 @@
 import type { Edge } from '@xyflow/react'
 
+import {
+  AGENT_DEFINITION_SCHEMA,
+  AGENT_DEFINITION_SCHEMA_VERSION,
+} from '@/src/lib/xero-model/agent-definition'
+
 import type {
   AgentGraphNode,
   AgentHeaderAdvancedFields,
@@ -267,6 +272,8 @@ export function buildSnapshotFromGraph(
   )
 
   const snapshot: Record<string, unknown> = {
+    schema: AGENT_DEFINITION_SCHEMA,
+    schemaVersion: AGENT_DEFINITION_SCHEMA_VERSION,
     id: definitionId,
     displayName: headerDto.displayName.trim() || 'Untitled agent',
     shortLabel: headerDto.shortLabel.trim() || 'Untitled',
@@ -319,9 +326,17 @@ function buildToolPolicy(
   const allowedToolGroups = Array.from(
     new Set([...advanced.allowedToolGroups, ...inferred.toolGroups]),
   ).sort((a, b) => a.localeCompare(b))
+  const allowedEffectClasses = Array.from(
+    new Set([...advanced.allowedEffectClasses, ...inferred.effectClasses]),
+  ).sort((a, b) => a.localeCompare(b))
   const policy: Record<string, unknown> = {
     allowedTools: [...allowedTools],
+    deniedTools: [...advanced.deniedTools],
+    allowedToolPacks: [...advanced.allowedToolPacks],
+    deniedToolPacks: [...advanced.deniedToolPacks],
     allowedToolGroups,
+    deniedToolGroups: [...advanced.deniedToolGroups],
+    allowedEffectClasses,
   }
   if (advanced.externalServiceAllowed || inferred.flags.externalServiceAllowed) {
     policy.externalServiceAllowed = true
@@ -352,6 +367,7 @@ function inferFromSnapshotPieces(
   dbWrites: readonly { table: string }[],
 ): AgentInferredAdvanced {
   const groupReasons: Record<string, string[]> = {}
+  const effectClasses = new Set<string>()
   const flagReasons = {
     externalServiceAllowed: [] as string[],
     browserControlAllowed: [] as string[],
@@ -373,6 +389,9 @@ function inferFromSnapshotPieces(
     if (!flagReasons[key].includes(source)) flagReasons[key].push(source)
   }
   for (const tool of tools) {
+    if (tool.effectClass) {
+      effectClasses.add(tool.effectClass)
+    }
     if (tool.group) {
       const list = groupReasons[tool.group] ?? (groupReasons[tool.group] = [])
       if (!list.includes(tool.name)) list.push(tool.name)
@@ -405,6 +424,7 @@ function inferFromSnapshotPieces(
     noteFlag('destructiveWriteAllowed', `db:${entry.table}`)
   }
   return {
+    effectClasses: Array.from(effectClasses).sort((a, b) => a.localeCompare(b)),
     toolGroups: Object.keys(groupReasons).sort((a, b) => a.localeCompare(b)),
     flags,
     toolGroupReasons: groupReasons,

@@ -11,14 +11,15 @@ use xero_desktop_lib::{
     commands::{
         branch_agent_session, compact_session_history, delete_session_memory,
         export_session_transcript, extract_session_memory_candidates, get_session_context_snapshot,
-        get_session_transcript, list_session_memories, rewind_agent_session,
-        save_session_transcript_export, search_session_transcripts, update_session_memory,
-        validate_context_snapshot_contract, validate_export_payload_contract,
-        validate_session_memory_record_contract, validate_session_transcript_contract,
-        AgentSessionLineageBoundaryKindDto, BranchAgentSessionRequestDto,
-        CompactSessionHistoryRequestDto, DeleteSessionMemoryRequestDto,
-        ExportSessionTranscriptRequestDto, ExtractSessionMemoryCandidatesRequestDto,
-        GetSessionContextSnapshotRequestDto, GetSessionTranscriptRequestDto,
+        get_session_memory_review_queue, get_session_transcript, list_session_memories,
+        rewind_agent_session, save_session_transcript_export, search_session_transcripts,
+        update_session_memory, validate_context_snapshot_contract,
+        validate_export_payload_contract, validate_session_memory_record_contract,
+        validate_session_transcript_contract, AgentSessionLineageBoundaryKindDto,
+        BranchAgentSessionRequestDto, CompactSessionHistoryRequestDto,
+        DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
+        ExtractSessionMemoryCandidatesRequestDto, GetSessionContextSnapshotRequestDto,
+        GetSessionMemoryReviewQueueRequestDto, GetSessionTranscriptRequestDto,
         ListSessionMemoriesRequestDto, RewindAgentSessionRequestDto,
         SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
         SessionCompactionTriggerDto, SessionContextContributorKindDto,
@@ -185,6 +186,19 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             updated_at: "2026-04-26T10:05:00Z".into(),
         }),
     );
+    project_store::append_agent_message(
+        &repo_root,
+        &project_store::NewAgentMessageRecord {
+            project_id: project_id.clone(),
+            run_id: "run-history-1".into(),
+            role: project_store::AgentMessageRole::Assistant,
+            content: String::new(),
+            provider_metadata_json: Some(json!({"providerMessageId": "msg-empty"}).to_string()),
+            created_at: "2026-04-26T10:00:02.500Z".into(),
+            attachments: Vec::new(),
+        },
+    )
+    .expect("append empty assistant message");
     seed_history_run(
         &repo_root,
         &project_id,
@@ -195,7 +209,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     );
     let rollback = seed_code_rollback_operation(&repo_root, &project_id, "run-history-1");
 
-    let transcript = get_session_transcript(
+    let transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -203,7 +217,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             agent_session_id: SESSION_ID.into(),
             run_id: None,
         },
-    )
+    ))
     .expect("project session transcript");
     validate_session_transcript_contract(&transcript).expect("valid session transcript");
 
@@ -330,7 +344,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
     )
     .expect("publish history mailbox notice");
 
-    let context_snapshot = get_session_context_snapshot(
+    let context_snapshot = tauri::async_runtime::block_on(get_session_context_snapshot(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionContextSnapshotRequestDto {
@@ -341,9 +355,16 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             model_id: None,
             pending_prompt: Some("Continue with final checks.".into()),
         },
-    )
+    ))
     .expect("run context snapshot");
     validate_context_snapshot_contract(&context_snapshot).expect("valid context snapshot");
+    assert!(context_snapshot.contributors.iter().all(|contributor| {
+        contributor
+            .text
+            .as_deref()
+            .map(|text| !text.trim().is_empty())
+            .unwrap_or(true)
+    }));
     assert_eq!(context_snapshot.run_id.as_deref(), Some("run-history-1"));
     assert_eq!(
         context_snapshot.budget.estimation_source,
@@ -595,7 +616,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
 
     project_store::archive_agent_session(&repo_root, &project_id, SESSION_ID)
         .expect("archive session");
-    let archived_transcript = get_session_transcript(
+    let archived_transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -603,7 +624,7 @@ fn transcript_export_and_search_cover_active_archived_and_deleted_sessions() {
             agent_session_id: SESSION_ID.into(),
             run_id: None,
         },
-    )
+    ))
     .expect("archived transcript remains readable");
     assert!(archived_transcript.archived);
     assert!(archived_transcript.archived_at.is_some());
@@ -687,7 +708,7 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
         "Inspect the parallel run.",
     );
 
-    let mismatch = get_session_transcript(
+    let mismatch = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -695,11 +716,11 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
             agent_session_id: SESSION_ID.into(),
             run_id: Some("run-parallel-history".into()),
         },
-    )
+    ))
     .expect_err("run scoped transcript should reject another session's run");
     assert_eq!(mismatch.code, "agent_run_session_mismatch");
 
-    let context_mismatch = get_session_context_snapshot(
+    let context_mismatch = tauri::async_runtime::block_on(get_session_context_snapshot(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionContextSnapshotRequestDto {
@@ -710,11 +731,11 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
             model_id: None,
             pending_prompt: None,
         },
-    )
+    ))
     .expect_err("run scoped context should reject another session's run");
     assert_eq!(context_mismatch.code, "agent_run_session_mismatch");
 
-    let transcript = get_session_transcript(
+    let transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -722,7 +743,7 @@ fn run_scoped_projection_rejects_mismatched_sessions() {
             agent_session_id: second_session.agent_session_id,
             run_id: Some("run-parallel-history".into()),
         },
-    )
+    ))
     .expect("run scoped transcript");
     assert_eq!(transcript.runs.len(), 1);
     assert!(transcript
@@ -747,7 +768,7 @@ fn context_snapshot_handles_sessions_without_runs() {
     )
     .expect("create empty session");
 
-    let snapshot = get_session_context_snapshot(
+    let snapshot = tauri::async_runtime::block_on(get_session_context_snapshot(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionContextSnapshotRequestDto {
@@ -758,7 +779,7 @@ fn context_snapshot_handles_sessions_without_runs() {
             model_id: Some(MODEL_ID.into()),
             pending_prompt: None,
         },
-    )
+    ))
     .expect("empty session context snapshot");
 
     validate_context_snapshot_contract(&snapshot).expect("valid empty context snapshot");
@@ -788,7 +809,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
         "Compact the durable replay path.",
         None,
     );
-    let transcript_before = get_session_transcript(
+    let transcript_before = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -796,7 +817,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
             agent_session_id: SESSION_ID.into(),
             run_id: Some("run-compact-1".into()),
         },
-    )
+    ))
     .expect("transcript before compact");
 
     let response = compact_session_history(
@@ -838,7 +859,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
                 && contributor.label == "Compacted history summary"
         }));
 
-    let transcript_after = get_session_transcript(
+    let transcript_after = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -846,7 +867,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
             agent_session_id: SESSION_ID.into(),
             run_id: Some("run-compact-1".into()),
         },
-    )
+    ))
     .expect("transcript after compact");
     assert_eq!(transcript_after.items.len(), transcript_before.items.len());
     let raw_snapshot = project_store::load_agent_run(&repo_root, &project_id, "run-compact-1")
@@ -1163,6 +1184,40 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
             && memory.agent_session_id.as_deref() == Some(SESSION_ID)
     }));
 
+    let review_queue = get_session_memory_review_queue(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetSessionMemoryReviewQueueRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: Some(SESSION_ID.into()),
+            limit: Some(2),
+        },
+    )
+    .expect("load memory review queue");
+    assert_eq!(
+        review_queue["schema"],
+        json!("xero.agent_memory_review_queue.v1")
+    );
+    assert_eq!(review_queue["limit"], json!(2));
+    assert_eq!(review_queue["counts"]["candidate"], json!(4));
+    assert_eq!(review_queue["counts"]["approved"], json!(0));
+    assert_eq!(review_queue["counts"]["disabled"], json!(4));
+    assert_eq!(
+        review_queue["items"]
+            .as_array()
+            .expect("review queue page")
+            .len(),
+        2
+    );
+    assert_eq!(
+        review_queue["items"][0]["redaction"]["rawTextHidden"],
+        json!(true)
+    );
+    assert!(review_queue["actions"]["approve"]
+        .as_str()
+        .expect("approve action")
+        .contains("approved"));
+
     let duplicate = extract_session_memory_candidates(
         app.handle().clone(),
         app.state::<DesktopState>(),
@@ -1200,7 +1255,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
     assert_eq!(approved.review_state, SessionMemoryReviewStateDto::Approved);
     assert!(approved.enabled);
 
-    let approved_snapshot = get_session_context_snapshot(
+    let approved_snapshot = tauri::async_runtime::block_on(get_session_context_snapshot(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionContextSnapshotRequestDto {
@@ -1211,7 +1266,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
             model_id: None,
             pending_prompt: None,
         },
-    )
+    ))
     .expect("context snapshot with approved memory");
     validate_context_snapshot_contract(&approved_snapshot).expect("valid approved-memory context");
     assert!(approved_snapshot.contributors.iter().any(|contributor| {
@@ -1250,7 +1305,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
     assert_eq!(disabled.review_state, SessionMemoryReviewStateDto::Approved);
     assert!(!disabled.enabled);
 
-    let disabled_snapshot = get_session_context_snapshot(
+    let disabled_snapshot = tauri::async_runtime::block_on(get_session_context_snapshot(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionContextSnapshotRequestDto {
@@ -1261,7 +1316,7 @@ fn memory_extraction_review_and_context_injection_are_review_gated() {
             model_id: None,
             pending_prompt: None,
         },
-    )
+    ))
     .expect("context snapshot with disabled memory");
     assert!(!disabled_snapshot.contributors.iter().any(|contributor| {
         contributor.kind == SessionContextContributorKindDto::ApprovedMemory
@@ -1368,6 +1423,7 @@ fn memory_extraction_rejects_reverted_code_facts_without_history_provenance() {
             content:
                 "Project fact: src/tracked.txt uses rollback candidate content after the temporary implementation."
                     .into(),
+            provider_metadata_json: None,
             created_at: plus_seconds(started_at, 1),
             attachments: Vec::new(),
         },
@@ -1382,6 +1438,7 @@ fn memory_extraction_rejects_reverted_code_facts_without_history_provenance() {
             content:
                 "Project fact: Historical before code undo operation: src/tracked.txt temporarily used rollback candidate content."
                     .into(),
+            provider_metadata_json: None,
             created_at: plus_seconds(started_at, 2),
             attachments: Vec::new(),
         },
@@ -1457,6 +1514,7 @@ fn session_context_privacy_hardening_covers_exports_search_compaction_and_memory
             run_id: "run-privacy-1".into(),
             role: project_store::AgentMessageRole::User,
             content: "Retry https://user:pass@example.invalid/v1?token=opaque-url-token with Authorization:Bearer opaque-header-token.".into(),
+            provider_metadata_json: None,
             created_at: plus_seconds(started_at, 11),
             attachments: Vec::new(),
         },
@@ -1503,7 +1561,7 @@ fn session_context_privacy_hardening_covers_exports_search_compaction_and_memory
     )
     .expect("finish secret-bearing tool call");
 
-    let transcript = get_session_transcript(
+    let transcript = tauri::async_runtime::block_on(get_session_transcript(
         app.handle().clone(),
         app.state::<DesktopState>(),
         GetSessionTranscriptRequestDto {
@@ -1511,7 +1569,7 @@ fn session_context_privacy_hardening_covers_exports_search_compaction_and_memory
             agent_session_id: SESSION_ID.into(),
             run_id: Some("run-privacy-1".into()),
         },
-    )
+    ))
     .expect("privacy transcript");
     let transcript_json = serde_json::to_string(&transcript).expect("serialize transcript");
     for leaked in [
@@ -1741,6 +1799,7 @@ fn seed_history_run_with_provider(
             run_id: run_id.into(),
             role: project_store::AgentMessageRole::User,
             content: "Use api_key=sk-history-secret for the fixture.".into(),
+            provider_metadata_json: None,
             created_at: plus_seconds(started_at, 1),
             attachments: Vec::new(),
         },
@@ -1753,6 +1812,7 @@ fn seed_history_run_with_provider(
             run_id: run_id.into(),
             role: project_store::AgentMessageRole::Assistant,
             content: "The durable validation path is ready for export.".into(),
+            provider_metadata_json: None,
             created_at: plus_seconds(started_at, 2),
             attachments: Vec::new(),
         },
@@ -1786,6 +1846,7 @@ fn seed_history_run_with_provider(
                 }
             })
             .to_string(),
+            provider_metadata_json: None,
             created_at: plus_seconds(started_at, 3),
             attachments: Vec::new(),
         },
@@ -1999,6 +2060,7 @@ fn seed_memory_candidate_run(repo_root: &Path, project_id: &str) {
                 run_id: run_id.into(),
                 role,
                 content: content.into(),
+                provider_metadata_json: None,
                 created_at: plus_seconds(started_at, index as u32 + 1),
                 attachments: Vec::new(),
             },

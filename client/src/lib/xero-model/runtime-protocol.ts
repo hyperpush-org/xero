@@ -9,6 +9,7 @@ const spanIdSchema = z
   .string()
   .regex(/^[0-9a-f]{16}$/, 'Runtime protocol span IDs must be lowercase 16-character hex strings.')
 const nonEmptyTextSchema = z.string().trim().min(1)
+const jsonObjectSchema = z.record(z.string(), z.unknown())
 
 export const runtimeProtocolTraceContextSchema = z
   .object({
@@ -168,7 +169,7 @@ const providerModelChangeRequestSchema = z
 const runtimeSettingsChangeRequestSchema = z
   .object({
     projectId: nonEmptyTextSchema.optional(),
-    settings: z.unknown(),
+    settings: jsonObjectSchema,
     reason: z.string().optional(),
   })
   .strict()
@@ -425,6 +426,25 @@ export const runtimeProtocolEventSchema = z
     occurredAt: nonEmptyTextSchema,
   })
   .strict()
+  .superRefine((event, ctx) => {
+    if (event.payload.kind === 'untyped') {
+      if (event.payload.payload.eventKind !== event.eventKind) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['payload', 'payload', 'eventKind'],
+          message: 'Untyped runtime protocol event payload kind must match eventKind.',
+        })
+      }
+      return
+    }
+    if (event.payload.kind !== event.eventKind) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['payload', 'kind'],
+        message: 'Runtime protocol event payload kind must match eventKind.',
+      })
+    }
+  })
 
 export type RuntimeProtocolTraceContextDto = z.infer<typeof runtimeProtocolTraceContextSchema>
 export type RuntimeSubmissionEnvelopeDto = z.infer<typeof runtimeSubmissionEnvelopeSchema>

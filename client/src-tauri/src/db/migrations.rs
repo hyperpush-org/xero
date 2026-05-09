@@ -22,6 +22,11 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_013_CODE_HISTORY_OPERATIONS_SQL),
             M::up(MIGRATION_014_AGENT_RESERVATION_INVALIDATIONS_SQL),
             M::up_with_hook("", migrate_agent_trace_columns_repair),
+            M::up(MIGRATION_015_CROSS_STORE_OUTBOX_SQL),
+            M::up(MIGRATION_016_PROJECT_STORAGE_MAINTENANCE_SQL),
+            M::up(MIGRATION_017_AGENT_AUDIT_AND_REVOCATION_SQL),
+            M::up_with_hook("", migrate_agent_messages_provider_metadata_json),
+            M::up(MIGRATION_018_AGENT_SUBAGENT_TASKS_SQL),
         ])
     });
 
@@ -351,6 +356,195 @@ const MIGRATION_014_AGENT_RESERVATION_INVALIDATIONS_SQL: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_agent_file_reservations_invalidated
         ON agent_file_reservations(project_id, invalidated_at, invalidating_history_operation_id);
+"#;
+
+const MIGRATION_015_CROSS_STORE_OUTBOX_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS cross_store_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        store_kind TEXT NOT NULL,
+        entity_kind TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        payload_json TEXT NOT NULL,
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (operation_id <> ''),
+        CHECK (store_kind <> ''),
+        CHECK (entity_kind <> ''),
+        CHECK (entity_id <> ''),
+        CHECK (operation <> ''),
+        CHECK (status IN ('pending', 'applied', 'failed', 'reconciled')),
+        CHECK (payload_json <> '' AND json_valid(payload_json)),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (created_at <> ''),
+        CHECK (updated_at <> ''),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, operation_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cross_store_outbox_status
+        ON cross_store_outbox(project_id, status, created_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_cross_store_outbox_entity
+        ON cross_store_outbox(project_id, entity_kind, entity_id, status);
+"#;
+
+const MIGRATION_016_PROJECT_STORAGE_MAINTENANCE_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS project_storage_maintenance_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        maintenance_kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        diagnostic_json TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (run_id <> ''),
+        CHECK (maintenance_kind <> ''),
+        CHECK (status IN ('running', 'succeeded', 'failed')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (started_at <> ''),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, run_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_storage_maintenance_runs_latest
+        ON project_storage_maintenance_runs(project_id, status, completed_at DESC, id DESC);
+"#;
+
+const MIGRATION_017_AGENT_AUDIT_AND_REVOCATION_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_runtime_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        audit_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        actor_kind TEXT NOT NULL,
+        actor_id TEXT,
+        action_kind TEXT NOT NULL,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        run_id TEXT,
+        agent_definition_id TEXT,
+        agent_definition_version INTEGER,
+        risk_class TEXT,
+        approval_action_id TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload_json)),
+        created_at TEXT NOT NULL,
+        CHECK (audit_id <> ''),
+        CHECK (actor_kind IN ('system', 'user', 'agent', 'runtime')),
+        CHECK (action_kind <> ''),
+        CHECK (subject_kind <> ''),
+        CHECK (subject_id <> ''),
+        CHECK (run_id IS NULL OR run_id <> ''),
+        CHECK (agent_definition_id IS NULL OR agent_definition_id <> ''),
+        CHECK (agent_definition_version IS NULL OR agent_definition_version > 0),
+        CHECK (risk_class IS NULL OR risk_class <> ''),
+        CHECK (approval_action_id IS NULL OR approval_action_id <> ''),
+        UNIQUE (project_id, audit_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_runtime_audit_events_subject
+        ON agent_runtime_audit_events(project_id, subject_kind, subject_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_runtime_audit_events_run
+        ON agent_runtime_audit_events(project_id, run_id, created_at DESC, id DESC)
+        WHERE run_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_capability_revocations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        revocation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        scope_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(scope_json)),
+        reason TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        cleared_at TEXT,
+        CHECK (revocation_id <> ''),
+        CHECK (subject_kind IN ('custom_agent', 'tool_pack', 'external_integration', 'browser_control', 'destructive_write')),
+        CHECK (subject_id <> ''),
+        CHECK (reason <> ''),
+        CHECK (created_by <> ''),
+        CHECK (status IN ('active', 'cleared')),
+        CHECK ((status = 'active' AND cleared_at IS NULL) OR (status = 'cleared' AND cleared_at IS NOT NULL)),
+        UNIQUE (project_id, revocation_id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_capability_revocations_active_subject
+        ON agent_capability_revocations(project_id, subject_kind, subject_id)
+        WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_agent_capability_revocations_status
+        ON agent_capability_revocations(project_id, status, created_at DESC, id DESC);
+"#;
+
+const MIGRATION_018_AGENT_SUBAGENT_TASKS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_subagent_tasks (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        parent_run_id TEXT NOT NULL,
+        subagent_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        role_label TEXT NOT NULL,
+        prompt_hash TEXT NOT NULL,
+        prompt_preview TEXT NOT NULL DEFAULT '',
+        model_id TEXT,
+        write_set_json TEXT NOT NULL DEFAULT '[]' CHECK (write_set_json <> '' AND json_valid(write_set_json)),
+        verification_contract TEXT NOT NULL,
+        depth INTEGER NOT NULL DEFAULT 0 CHECK (depth >= 0),
+        max_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (max_tool_calls >= 0),
+        max_tokens INTEGER NOT NULL DEFAULT 0 CHECK (max_tokens >= 0),
+        max_cost_micros INTEGER NOT NULL DEFAULT 0 CHECK (max_cost_micros >= 0),
+        used_tool_calls INTEGER NOT NULL DEFAULT 0 CHECK (used_tool_calls >= 0),
+        used_tokens INTEGER NOT NULL DEFAULT 0 CHECK (used_tokens >= 0),
+        used_cost_micros INTEGER NOT NULL DEFAULT 0 CHECK (used_cost_micros >= 0),
+        budget_status TEXT NOT NULL DEFAULT 'within_budget',
+        budget_diagnostic_json TEXT CHECK (budget_diagnostic_json IS NULL OR (budget_diagnostic_json <> '' AND json_valid(budget_diagnostic_json))),
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        cancelled_at TEXT,
+        integrated_at TEXT,
+        child_run_id TEXT,
+        child_trace_id TEXT,
+        parent_trace_id TEXT,
+        input_log_json TEXT NOT NULL DEFAULT '[]' CHECK (input_log_json <> '' AND json_valid(input_log_json)),
+        result_summary TEXT,
+        result_artifact TEXT,
+        parent_decision TEXT,
+        latest_summary TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, parent_run_id, subagent_id),
+        CHECK (parent_run_id <> ''),
+        CHECK (subagent_id <> ''),
+        CHECK (role IN ('engineer', 'debugger', 'planner', 'researcher', 'reviewer', 'agent_builder', 'browser', 'emulator', 'solana', 'database')),
+        CHECK (role_label <> ''),
+        CHECK (length(prompt_hash) = 64 AND prompt_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (model_id IS NULL OR model_id <> ''),
+        CHECK (verification_contract <> ''),
+        CHECK (budget_status IN ('within_budget', 'tool_calls_exhausted', 'tokens_exhausted', 'cost_exhausted')),
+        CHECK (status IN ('none', 'registered', 'starting', 'running', 'paused', 'cancelling', 'cancelled', 'handed_off', 'completed', 'failed', 'interrupted', 'closed', 'budget_exhausted')),
+        CHECK (child_run_id IS NULL OR child_run_id <> ''),
+        CHECK (child_trace_id IS NULL OR (length(child_trace_id) = 32 AND child_trace_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (parent_trace_id IS NULL OR (length(parent_trace_id) = 32 AND parent_trace_id NOT GLOB '*[^0-9a-f]*')),
+        CHECK (result_artifact IS NULL OR result_artifact <> ''),
+        CHECK (parent_decision IS NULL OR parent_decision <> ''),
+        CHECK (
+            (status IN ('registered', 'starting', 'running', 'paused', 'cancelling') AND completed_at IS NULL)
+            OR status NOT IN ('registered', 'starting', 'running', 'paused', 'cancelling')
+        ),
+        FOREIGN KEY (project_id, parent_run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_subagent_tasks_parent_status
+        ON agent_subagent_tasks(project_id, parent_run_id, status, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_subagent_tasks_child
+        ON agent_subagent_tasks(project_id, child_run_id)
+        WHERE child_run_id IS NOT NULL;
 "#;
 
 const MIGRATION_005_AGENT_PLAN_PACKS_SQL: &str = r#"
@@ -1200,7 +1394,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (display_name <> ''),
         CHECK (short_label <> ''),
         CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
-        CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
+        CHECK (lifecycle_state IN ('draft', 'valid', 'active', 'archived', 'blocked')),
         CHECK (base_capability_profile IN ('observe_only', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder', 'harness_test'))
     );
 
@@ -1232,6 +1426,69 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     BEGIN
         SELECT RAISE(ABORT, 'agent definition versions are immutable');
     END;
+
+    CREATE TABLE IF NOT EXISTS agent_runtime_audit_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        audit_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        actor_kind TEXT NOT NULL,
+        actor_id TEXT,
+        action_kind TEXT NOT NULL,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        run_id TEXT,
+        agent_definition_id TEXT,
+        agent_definition_version INTEGER,
+        risk_class TEXT,
+        approval_action_id TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload_json)),
+        created_at TEXT NOT NULL,
+        CHECK (audit_id <> ''),
+        CHECK (actor_kind IN ('system', 'user', 'agent', 'runtime')),
+        CHECK (action_kind <> ''),
+        CHECK (subject_kind <> ''),
+        CHECK (subject_id <> ''),
+        CHECK (run_id IS NULL OR run_id <> ''),
+        CHECK (agent_definition_id IS NULL OR agent_definition_id <> ''),
+        CHECK (agent_definition_version IS NULL OR agent_definition_version > 0),
+        CHECK (risk_class IS NULL OR risk_class <> ''),
+        CHECK (approval_action_id IS NULL OR approval_action_id <> ''),
+        UNIQUE (project_id, audit_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_runtime_audit_events_subject
+        ON agent_runtime_audit_events(project_id, subject_kind, subject_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_runtime_audit_events_run
+        ON agent_runtime_audit_events(project_id, run_id, created_at DESC, id DESC)
+        WHERE run_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS agent_capability_revocations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        revocation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        subject_kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        scope_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(scope_json)),
+        reason TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        cleared_at TEXT,
+        CHECK (revocation_id <> ''),
+        CHECK (subject_kind IN ('custom_agent', 'tool_pack', 'external_integration', 'browser_control', 'destructive_write')),
+        CHECK (subject_id <> ''),
+        CHECK (reason <> ''),
+        CHECK (created_by <> ''),
+        CHECK (status IN ('active', 'cleared')),
+        CHECK ((status = 'active' AND cleared_at IS NULL) OR (status = 'cleared' AND cleared_at IS NOT NULL)),
+        UNIQUE (project_id, revocation_id)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_capability_revocations_active_subject
+        ON agent_capability_revocations(project_id, subject_kind, subject_id)
+        WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_agent_capability_revocations_status
+        ON agent_capability_revocations(project_id, status, created_at DESC, id DESC);
 
     INSERT OR IGNORE INTO agent_definitions (
         definition_id,
@@ -2316,6 +2573,60 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_agent_embedding_backfill_jobs_source
         ON agent_embedding_backfill_jobs(project_id, source_kind, source_id);
 
+    CREATE TABLE IF NOT EXISTS cross_store_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        store_kind TEXT NOT NULL,
+        entity_kind TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        payload_json TEXT NOT NULL,
+        diagnostic_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (operation_id <> ''),
+        CHECK (store_kind <> ''),
+        CHECK (entity_kind <> ''),
+        CHECK (entity_id <> ''),
+        CHECK (operation <> ''),
+        CHECK (status IN ('pending', 'applied', 'failed', 'reconciled')),
+        CHECK (payload_json <> '' AND json_valid(payload_json)),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (created_at <> ''),
+        CHECK (updated_at <> ''),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, operation_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cross_store_outbox_status
+        ON cross_store_outbox(project_id, status, created_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_cross_store_outbox_entity
+        ON cross_store_outbox(project_id, entity_kind, entity_id, status);
+
+    CREATE TABLE IF NOT EXISTS project_storage_maintenance_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        maintenance_kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        diagnostic_json TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        CHECK (run_id <> ''),
+        CHECK (maintenance_kind <> ''),
+        CHECK (status IN ('running', 'succeeded', 'failed')),
+        CHECK (diagnostic_json IS NULL OR (diagnostic_json <> '' AND json_valid(diagnostic_json))),
+        CHECK (started_at <> ''),
+        CHECK (completed_at IS NULL OR completed_at <> ''),
+        UNIQUE (project_id, run_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_storage_maintenance_runs_latest
+        ON project_storage_maintenance_runs(project_id, status, completed_at DESC, id DESC);
+
     CREATE TABLE IF NOT EXISTS meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         project_id TEXT NOT NULL,
@@ -2477,6 +2788,21 @@ fn migrate_agent_trace_columns_repair(
     transaction: &Transaction<'_>,
 ) -> rusqlite_migration::HookResult {
     migrate_agent_trace_columns(transaction)
+}
+
+fn migrate_agent_messages_provider_metadata_json(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    if table_exists(transaction, "agent_messages")? {
+        add_column_if_missing(
+            transaction,
+            "agent_messages",
+            "provider_metadata_json",
+            "TEXT",
+        )?;
+    }
+
+    Ok(())
 }
 
 fn migrate_environment_lifecycle_schema(
@@ -2888,6 +3214,7 @@ mod tests {
             tables,
             vec![
                 "agent_action_requests",
+                "agent_capability_revocations",
                 "agent_checkpoints",
                 "agent_compactions",
                 "agent_context_manifests",
@@ -2915,8 +3242,10 @@ mod tests {
                 "agent_retrieval_queries",
                 "agent_retrieval_results",
                 "agent_runs",
+                "agent_runtime_audit_events",
                 "agent_session_lineage",
                 "agent_sessions",
+                "agent_subagent_tasks",
                 "agent_tool_calls",
                 "agent_usage",
                 "autonomous_runs",
@@ -2932,6 +3261,7 @@ mod tests {
                 "code_rollback_operations",
                 "code_snapshots",
                 "code_workspace_heads",
+                "cross_store_outbox",
                 "installed_plugin_records",
                 "installed_skill_records",
                 "meta",
@@ -2941,6 +3271,7 @@ mod tests {
                 "operator_approvals",
                 "operator_resume_history",
                 "operator_verification_records",
+                "project_storage_maintenance_runs",
                 "projects",
                 "repositories",
                 "runtime_run_checkpoints",
@@ -2951,6 +3282,31 @@ mod tests {
             ],
             "fresh project databases should start from the current baseline schema"
         );
+    }
+
+    #[test]
+    fn agent_subagent_tasks_table_tracks_budget_and_resolution_state() {
+        let connection = migrate_to_latest_in_memory();
+        let columns = table_columns(&connection, "agent_subagent_tasks");
+        for column in [
+            "prompt_hash",
+            "prompt_preview",
+            "max_tool_calls",
+            "max_tokens",
+            "max_cost_micros",
+            "used_tool_calls",
+            "used_tokens",
+            "used_cost_micros",
+            "budget_status",
+            "budget_diagnostic_json",
+            "parent_decision",
+            "latest_summary",
+        ] {
+            assert!(
+                columns.contains(&column.to_string()),
+                "agent_subagent_tasks should include {column}"
+            );
+        }
     }
 
     #[test]
@@ -3777,6 +4133,64 @@ mod tests {
             .expect("read migrated file change");
         assert_eq!(change_trace_id, trace_id);
         assert_eq!(top_level_run_id, "run-legacy");
+    }
+
+    #[test]
+    fn current_app_data_project_state_repairs_agent_message_provider_metadata_column() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE agent_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                INSERT INTO agent_messages (
+                    project_id,
+                    run_id,
+                    role,
+                    content,
+                    created_at
+                )
+                VALUES (
+                    'project-v19',
+                    'run-v19',
+                    'user',
+                    'hello',
+                    '2026-05-09T14:00:00Z'
+                );
+
+                PRAGMA user_version = 19;
+                "#,
+            )
+            .expect("seed current app-data schema missing provider metadata column");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("repair current app-data schema");
+
+        let message_columns = table_columns(&connection, "agent_messages");
+        assert!(
+            message_columns.contains(&"provider_metadata_json".to_string()),
+            "agent_messages should include provider_metadata_json after repair"
+        );
+
+        connection
+            .prepare(
+                "SELECT id, project_id, run_id, role, content, provider_metadata_json, created_at
+                 FROM agent_messages
+                 WHERE project_id = ?1
+                   AND run_id = ?2
+                 ORDER BY id ASC",
+            )
+            .expect("owned-agent message query prepares after repair");
     }
 
     #[test]
