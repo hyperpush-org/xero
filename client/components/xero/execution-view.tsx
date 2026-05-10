@@ -23,14 +23,19 @@ import { DeleteFileDialog } from './delete-file-dialog'
 import { RenameFileDialog } from './rename-file-dialog'
 import { EditorEmptyState, LoadingState } from './execution-view/editor-empty-state'
 import { ExplorerPane } from './execution-view/explorer-pane'
-import { EditorStatusBar, EditorToolbar, PreviewStatusBar } from './execution-view/editor-status-bar'
-import { EditorTabs } from './execution-view/editor-tabs'
+import { EditorStatusBar, PreviewStatusBar } from './execution-view/editor-status-bar'
+import { EditorTopBar } from './execution-view/editor-top-bar'
 import {
   FileEditorHost,
   defaultModeForResource,
   resourceSupportsPreviewToggle,
   type FileEditorMode,
 } from './execution-view/file-editor-host'
+import {
+  DEFAULT_IMAGE_CONTROLS,
+  type ImageControlsState,
+  type ImageDimensions,
+} from './execution-view/file-renderers'
 import { useExecutionWorkspaceController } from './execution-view/use-execution-workspace-controller'
 
 const LazyFindReplacePane = lazy(() =>
@@ -144,10 +149,18 @@ function EditorView({
   const previousProjectIdRef = useRef(projectId)
   const editorViewRef = useRef<{ path: string; view: CodeMirrorView } | null>(null)
   const [editorModeByPath, setEditorModeByPath] = useState<Record<string, FileEditorMode>>({})
+  const [imageControlsByPath, setImageControlsByPath] = useState<Record<string, ImageControlsState>>({})
+  const [imageDimensionsByPath, setImageDimensionsByPath] = useState<Record<string, ImageDimensions | null>>({})
 
   const activeMode: FileEditorMode = activePath
     ? editorModeByPath[activePath] ?? defaultModeForResource(activeResource)
     : 'source'
+  const activeImageControls: ImageControlsState = activePath
+    ? imageControlsByPath[activePath] ?? DEFAULT_IMAGE_CONTROLS
+    : DEFAULT_IMAGE_CONTROLS
+  const activeImageDimensions: ImageDimensions | null = activePath
+    ? imageDimensionsByPath[activePath] ?? null
+    : null
 
   // When the active project changes the controller resets caches, so prune mode state too.
   useEffect(() => {
@@ -157,6 +170,8 @@ function EditorView({
       previousProjectIdRef.current = projectId
     }
     setEditorModeByPath({})
+    setImageControlsByPath({})
+    setImageDimensionsByPath({})
     assetPreviewUrlCacheRef.current.clear()
   }, [projectId, revokeProjectAssetTokens])
 
@@ -247,6 +262,41 @@ function EditorView({
     },
     [activePath, flushEditorSnapshot],
   )
+
+  const handleImageControlsChange = useCallback(
+    (next: ImageControlsState) => {
+      if (!activePath) return
+      setImageControlsByPath((current) => ({ ...current, [activePath]: next }))
+    },
+    [activePath],
+  )
+
+  const handleImageDimensionsChange = useCallback(
+    (dimensions: ImageDimensions | null) => {
+      if (!activePath) return
+      setImageDimensionsByPath((current) => ({ ...current, [activePath]: dimensions }))
+    },
+    [activePath],
+  )
+
+  const activeIsImageView =
+    !!activeResource &&
+    ((activeResource.kind === 'renderable' && activeResource.rendererKind === 'image') ||
+      (activeResource.kind === 'text' && activeResource.rendererKind === 'svg' && activeMode === 'preview'))
+
+  const activeIsRenderable =
+    !!activeResource &&
+    activeResource.kind === 'renderable' &&
+    (activeResource.rendererKind === 'pdf' ||
+      activeResource.rendererKind === 'audio' ||
+      activeResource.rendererKind === 'video')
+
+  const activePathActions = activePath && activeIsRenderable
+    ? {
+        onCopyPath: () => handleCopyPath(activePath),
+        onOpenExternal: openProjectFileExternal ? () => handleOpenExternal(activePath) : undefined,
+      }
+    : undefined
 
   const handleSaveActive = useCallback(
     (snapshot?: string) => {
@@ -435,27 +485,27 @@ function EditorView({
       )}
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <EditorTabs
+        <EditorTopBar
           openTabs={openTabs}
           activePath={activePath}
           dirtyPaths={dirtyPaths}
           pendingFilePath={pendingFilePath}
           onSelectTab={handleSelectTab}
           onCloseTab={handleCloseTab}
+          supportsModeToggle={!!activeResource && resourceSupportsPreviewToggle(activeResource)}
+          mode={activeMode}
+          onModeChange={handleModeChange}
+          imageControls={activeIsImageView ? activeImageControls : undefined}
+          onImageControlsChange={activeIsImageView ? handleImageControlsChange : undefined}
+          showSaveControls={isActiveText}
+          isDirty={isActiveDirty}
+          isSaving={isActiveSaving}
+          onSave={() => {
+            handleSaveActive()
+          }}
+          onRevert={revertActive}
+          pathActions={activePathActions}
         />
-
-        {activePath ? (
-          <EditorToolbar
-            activePath={activePath}
-            isDirty={isActiveDirty}
-            isSaving={isActiveSaving}
-            showSaveControls={isActiveText}
-            onRevert={revertActive}
-            onSave={() => {
-              handleSaveActive()
-            }}
-          />
-        ) : null}
 
         <div className="flex min-h-0 flex-1 flex-col bg-background">
           {activePath && activeNode?.type === 'file' ? (
@@ -482,7 +532,8 @@ function EditorView({
                     onCopyPath={handleCopyPath}
                     onOpenExternal={openProjectFileExternal ? handleOpenExternal : undefined}
                     mode={activeMode}
-                    onModeChange={handleModeChange}
+                    imageControls={activeIsImageView ? activeImageControls : undefined}
+                    onImageDimensionsChange={activeIsImageView ? handleImageDimensionsChange : undefined}
                   />
                 </div>
                 {isActiveText && (activeMode === 'source' || !resourceSupportsPreviewToggle(activeResource)) ? (
@@ -498,6 +549,7 @@ function EditorView({
                     rendererKind={activeResource.rendererKind ?? 'binary'}
                     mimeType={activeResource.mimeType}
                     byteLength={activeResource.byteLength}
+                    dimensions={activeIsImageView ? activeImageDimensions : null}
                   />
                 )}
               </>

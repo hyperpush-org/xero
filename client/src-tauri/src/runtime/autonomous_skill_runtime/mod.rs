@@ -1,3 +1,4 @@
+mod attached;
 mod cache;
 mod contract;
 mod discovery;
@@ -8,6 +9,13 @@ mod settings;
 mod skill_tool;
 mod source;
 
+pub use attached::{
+    validate_attached_skill_resolution_request, XeroAttachedSkillDiagnostic, XeroAttachedSkillRef,
+    XeroAttachedSkillRepairHint, XeroAttachedSkillResolutionReport,
+    XeroAttachedSkillResolutionRequest, XeroAttachedSkillResolutionSnapshot,
+    XeroAttachedSkillResolutionStatus, XeroAttachedSkillScope, XeroResolvedAttachedSkill,
+    XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION,
+};
 pub use cache::{
     AutonomousSkillCacheError, AutonomousSkillCacheInstallFile, AutonomousSkillCacheManifest,
     AutonomousSkillCacheManifestFile, AutonomousSkillCacheStatus, AutonomousSkillCacheStore,
@@ -19,10 +27,11 @@ pub use contract::{
     XeroSkillTrustState, XERO_SKILL_SOURCE_CONTRACT_VERSION,
 };
 pub use discovery::{
-    discover_bundled_skill_directory, discover_local_skill_directory,
-    discover_plugin_skill_contribution, discover_project_skill_directory,
-    load_discovered_skill_context, load_skill_context_from_directory, XeroDiscoveredSkill,
-    XeroSkillDirectoryDiscovery, XeroSkillDiscoveryDiagnostic, PROJECT_SKILL_DIRECTORY,
+    compute_skill_directory_version_hash, discover_bundled_skill_directory,
+    discover_local_skill_directory, discover_plugin_skill_contribution,
+    discover_project_skill_directory, load_discovered_skill_context,
+    load_skill_context_from_directory, XeroDiscoveredSkill, XeroSkillDirectoryDiscovery,
+    XeroSkillDiscoveryDiagnostic, PROJECT_SKILL_DIRECTORY,
 };
 pub use plugin::{
     discover_plugin_roots, normalize_plugin_contribution_id, normalize_plugin_id,

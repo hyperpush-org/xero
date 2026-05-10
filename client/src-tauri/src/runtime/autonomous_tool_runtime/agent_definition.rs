@@ -26,15 +26,20 @@ use crate::{
     runtime::{
         agent_core::{PromptCompiler, PromptFragment, ToolRegistry, ToolRegistryOptions},
         redaction::find_prohibited_persistence_content,
+        XeroSkillSourceKind, XeroSkillSourceScope, XeroSkillSourceState, XeroSkillTrustState,
     },
 };
 
 pub const AUTONOMOUS_TOOL_AGENT_DEFINITION: &str = "agent_definition";
 
 const AGENT_DEFINITION_SCHEMA: &str = "xero.agent_definition.v1";
-const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 1;
+const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 2;
+const AGENT_ATTACHABLE_SKILL_CATALOG_CONTRACT_VERSION: u32 = 1;
 const AGENT_EFFECTIVE_RUNTIME_PREVIEW_SCHEMA: &str = "xero.agent_effective_runtime_preview.v1";
 const AGENT_EFFECTIVE_RUNTIME_PREVIEW_SCHEMA_VERSION: u64 = 1;
+const AGENT_ATTACHED_SKILL_INJECTION_PREVIEW_SCHEMA: &str =
+    "xero.agent_attached_skill_injection_preview.v1";
+const AGENT_ATTACHED_SKILL_INJECTION_PREVIEW_SCHEMA_VERSION: u64 = 1;
 const MAX_DEFINITION_ID_CHARS: usize = 80;
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
 const MAX_SHORT_LABEL_CHARS: usize = 24;
@@ -80,6 +85,7 @@ pub enum AutonomousAgentDefinitionAction {
     Archive,
     Clone,
     List,
+    ListAttachableSkills,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -111,6 +117,8 @@ pub struct AutonomousAgentDefinitionOutput {
     pub validation_report: Option<AutonomousAgentDefinitionValidationReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_runtime_preview: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachable_skill_catalog: Option<AutonomousAgentAttachableSkillCatalog>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +134,50 @@ pub struct AutonomousAgentDefinitionSummary {
     pub base_capability_profile: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousAgentAttachableSkillCatalog {
+    pub contract_version: u32,
+    pub generated_at: String,
+    pub entries: Vec<AutonomousAgentAttachableSkillEntry>,
+    pub diagnostics: Vec<AutonomousAgentAttachableSkillDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousAgentAttachableSkillEntry {
+    pub attachment_id: String,
+    pub source_id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub source_kind: String,
+    pub scope: String,
+    pub version_hash: String,
+    pub source_state: String,
+    pub trust_state: String,
+    pub attachable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousAgentAttachableSkillDiagnostic {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +208,23 @@ pub struct AutonomousAgentDefinitionValidationDiagnostic {
     pub base_capability_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutonomousAgentAttachedSkillDefinition {
+    id: String,
+    source_id: String,
+    skill_id: String,
+    name: String,
+    description: String,
+    source_kind: String,
+    scope: String,
+    version_hash: String,
+    include_supporting_assets: bool,
+    required: bool,
 }
 
 impl AutonomousToolRuntime {
@@ -195,6 +264,9 @@ impl AutonomousToolRuntime {
                 self.clone_agent_definition(request, operator_approved)?
             }
             AutonomousAgentDefinitionAction::List => self.list_agent_definitions(request)?,
+            AutonomousAgentDefinitionAction::ListAttachableSkills => {
+                self.list_attachable_skills(request)?
+            }
         };
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_AGENT_DEFINITION.into(),
@@ -214,7 +286,7 @@ impl AutonomousToolRuntime {
             1,
             true,
         )?;
-        let validation_report = validate_definition_snapshot(&draft);
+        let validation_report = self.validate_definition_snapshot(&draft);
         let summary = summary_from_snapshot(&draft)?;
         Ok(AutonomousAgentDefinitionOutput {
             action: request.action,
@@ -228,6 +300,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
         })
     }
 
@@ -241,7 +314,7 @@ impl AutonomousToolRuntime {
             1,
             false,
         )?;
-        let validation_report = validate_definition_snapshot(&snapshot);
+        let validation_report = self.validate_definition_snapshot(&snapshot);
         let summary = summary_from_snapshot(&snapshot)?;
         let valid = validation_report.status == AutonomousAgentDefinitionValidationStatus::Valid;
         Ok(AutonomousAgentDefinitionOutput {
@@ -264,6 +337,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
         })
     }
 
@@ -278,7 +352,7 @@ impl AutonomousToolRuntime {
             version,
             false,
         )?;
-        let validation_report = validate_definition_snapshot(&snapshot);
+        let validation_report = self.validate_definition_snapshot(&snapshot);
         let summary = summary_from_snapshot(&snapshot)?;
         let effective_runtime_preview =
             self.effective_runtime_preview(&snapshot, &validation_report)?;
@@ -295,6 +369,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: Some(validation_report),
             effective_runtime_preview: Some(effective_runtime_preview),
+            attachable_skill_catalog: None,
         })
     }
 
@@ -310,7 +385,7 @@ impl AutonomousToolRuntime {
             false,
         )?;
         set_snapshot_string(&mut snapshot, "lifecycleState", "active");
-        let validation_report = validate_definition_snapshot(&snapshot);
+        let validation_report = self.validate_definition_snapshot(&snapshot);
         let summary = summary_from_snapshot(&snapshot)?;
         if validation_report.status != AutonomousAgentDefinitionValidationStatus::Valid {
             return Ok(invalid_output(
@@ -371,6 +446,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
         })
     }
 
@@ -389,7 +465,7 @@ impl AutonomousToolRuntime {
             next_version,
             false,
         )?;
-        let validation_report = validate_definition_snapshot(&snapshot);
+        let validation_report = self.validate_definition_snapshot(&snapshot);
         let summary = summary_from_snapshot(&snapshot)?;
         if validation_report.status != AutonomousAgentDefinitionValidationStatus::Valid {
             return Ok(invalid_output(
@@ -410,6 +486,7 @@ impl AutonomousToolRuntime {
         }
 
         let now = now_timestamp();
+        let audit_snapshot = snapshot.clone();
         let saved = project_store::insert_agent_definition(
             &self.repo_root,
             &project_store::NewAgentDefinitionRecord {
@@ -424,9 +501,22 @@ impl AutonomousToolRuntime {
                 snapshot,
                 validation_report: Some(validation_report_json(&validation_report)?),
                 created_at: now.clone(),
-                updated_at: now,
+                updated_at: now.clone(),
             },
         )?;
+        let _ = project_store::record_agent_definition_custom_audit_event(
+            &self.repo_root,
+            "agent_definition_updated",
+            &summary.definition_id,
+            next_version,
+            &summary.scope,
+            &summary.lifecycle_state,
+            &summary.base_capability_profile,
+            Some("valid"),
+            Some(&audit_snapshot),
+            json!({ "previousVersion": existing.current_version }),
+            &now,
+        );
         let saved_summary = summary_from_record(saved, None);
         Ok(AutonomousAgentDefinitionOutput {
             action: request.action,
@@ -440,6 +530,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
         })
     }
 
@@ -463,6 +554,7 @@ impl AutonomousToolRuntime {
                 definitions: Vec::new(),
                 validation_report: None,
                 effective_runtime_preview: None,
+                attachable_skill_catalog: None,
             });
         }
         let archived = project_store::archive_agent_definition(
@@ -483,6 +575,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: None,
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
         })
     }
 
@@ -520,7 +613,7 @@ impl AutonomousToolRuntime {
         let mut snapshot =
             normalize_definition_snapshot(&merged, request.definition_id.as_deref(), 1, false)?;
         set_snapshot_string(&mut snapshot, "lifecycleState", "active");
-        let validation_report = validate_definition_snapshot(&snapshot);
+        let validation_report = self.validate_definition_snapshot(&snapshot);
         let summary = summary_from_snapshot(&snapshot)?;
         if validation_report.status != AutonomousAgentDefinitionValidationStatus::Valid {
             return Ok(invalid_output(
@@ -551,6 +644,7 @@ impl AutonomousToolRuntime {
         }
 
         let now = now_timestamp();
+        let audit_snapshot = snapshot.clone();
         let saved = project_store::insert_agent_definition(
             &self.repo_root,
             &project_store::NewAgentDefinitionRecord {
@@ -565,9 +659,25 @@ impl AutonomousToolRuntime {
                 snapshot,
                 validation_report: Some(validation_report_json(&validation_report)?),
                 created_at: now.clone(),
-                updated_at: now,
+                updated_at: now.clone(),
             },
         )?;
+        let _ = project_store::record_agent_definition_custom_audit_event(
+            &self.repo_root,
+            "agent_definition_cloned",
+            &summary.definition_id,
+            1,
+            &summary.scope,
+            "active",
+            &summary.base_capability_profile,
+            Some("valid"),
+            Some(&audit_snapshot),
+            json!({
+                "sourceDefinitionId": &source.definition_id,
+                "sourceVersion": source.current_version
+            }),
+            &now,
+        );
         let saved_summary = summary_from_record(saved, None);
         Ok(AutonomousAgentDefinitionOutput {
             action: request.action,
@@ -581,6 +691,7 @@ impl AutonomousToolRuntime {
             definitions: Vec::new(),
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
         })
     }
 
@@ -602,6 +713,117 @@ impl AutonomousToolRuntime {
             definitions,
             validation_report: None,
             effective_runtime_preview: None,
+            attachable_skill_catalog: None,
+        })
+    }
+
+    fn list_attachable_skills(
+        &self,
+        request: AutonomousAgentDefinitionRequest,
+    ) -> CommandResult<AutonomousAgentDefinitionOutput> {
+        let catalog = self.attachable_skill_catalog()?;
+        let attachable_count = catalog
+            .entries
+            .iter()
+            .filter(|entry| entry.attachable)
+            .count();
+        Ok(AutonomousAgentDefinitionOutput {
+            action: request.action,
+            message: format!(
+                "Listed {attachable_count} attachable skill(s) from the project skill registry."
+            ),
+            applied: false,
+            approval_required: false,
+            definition: None,
+            definitions: Vec::new(),
+            validation_report: None,
+            effective_runtime_preview: None,
+            attachable_skill_catalog: Some(catalog),
+        })
+    }
+
+    fn attachable_skill_catalog(&self) -> CommandResult<AutonomousAgentAttachableSkillCatalog> {
+        let mut records = project_store::list_installed_skills(
+            &self.repo_root,
+            project_store::InstalledSkillScopeFilter::All,
+        )?;
+        records.sort_by(|left, right| {
+            left.skill_id
+                .cmp(&right.skill_id)
+                .then_with(|| left.source.source_id.cmp(&right.source.source_id))
+        });
+
+        let mut used_attachment_ids = BTreeSet::new();
+        let mut entries = Vec::with_capacity(records.len());
+        let mut diagnostics = Vec::new();
+        for record in records {
+            let source = match record.source.clone().validate() {
+                Ok(source) => source,
+                Err(_) => {
+                    diagnostics.push(AutonomousAgentAttachableSkillDiagnostic {
+                        code: "agent_definition_attachable_skill_registry_entry_invalid".into(),
+                        message: "Xero skipped a skill registry entry because its source metadata is invalid.".into(),
+                        source_id: Some(record.source.source_id.clone()),
+                        skill_id: Some(record.skill_id.clone()),
+                        repair_hint: Some("reload_source".into()),
+                    });
+                    continue;
+                }
+            };
+            let source_id = source.source_id.clone();
+            let attachment_id =
+                unique_attached_skill_id(&record.skill_id, &source_id, &mut used_attachment_ids);
+            let version_hash = record.version_hash.clone().unwrap_or_default();
+            let unavailable = attached_skill_unavailable_reason(&record);
+            let attachable = unavailable.is_none();
+            let attachment = attachable.then(|| {
+                json!({
+                    "id": attachment_id.clone(),
+                    "sourceId": source_id.clone(),
+                    "skillId": record.skill_id.clone(),
+                    "name": record.name.clone(),
+                    "description": record.description.clone(),
+                    "sourceKind": skill_source_kind_label(source.locator.kind()),
+                    "scope": skill_source_scope_label(&source.scope),
+                    "versionHash": version_hash.clone(),
+                    "includeSupportingAssets": false,
+                    "required": true
+                })
+            });
+
+            if let Some(reason) = unavailable.as_ref() {
+                diagnostics.push(AutonomousAgentAttachableSkillDiagnostic {
+                    code: reason.code.into(),
+                    message: (reason.message)(&source_id),
+                    source_id: Some(source_id.clone()),
+                    skill_id: Some(record.skill_id.clone()),
+                    repair_hint: Some(reason.repair_hint.into()),
+                });
+            }
+
+            entries.push(AutonomousAgentAttachableSkillEntry {
+                attachment_id,
+                source_id,
+                skill_id: record.skill_id,
+                name: record.name,
+                description: record.description,
+                source_kind: skill_source_kind_label(source.locator.kind()).into(),
+                scope: skill_source_scope_label(&source.scope).into(),
+                version_hash,
+                source_state: skill_source_state_label(source.state).into(),
+                trust_state: skill_trust_state_label(source.trust).into(),
+                attachable,
+                unavailable_reason: unavailable.as_ref().map(|reason| reason.code.into()),
+                repair_hint: unavailable.as_ref().map(|reason| reason.repair_hint.into()),
+                attachment,
+            });
+        }
+
+        Ok(AutonomousAgentAttachableSkillCatalog {
+            contract_version: AGENT_ATTACHABLE_SKILL_CATALOG_CONTRACT_VERSION,
+            generated_at: now_timestamp(),
+            entries,
+            diagnostics,
         })
     }
 
@@ -617,6 +839,13 @@ impl AutonomousToolRuntime {
                 .map(|definition| definition.current_version.saturating_add(1))
                 .unwrap_or(1),
         )
+    }
+
+    fn validate_definition_snapshot(
+        &self,
+        snapshot: &JsonValue,
+    ) -> AutonomousAgentDefinitionValidationReport {
+        validate_definition_snapshot_with_registry(snapshot, Some(&self.repo_root))
     }
 
     fn effective_runtime_preview(
@@ -671,6 +900,8 @@ impl AutonomousToolRuntime {
         );
         let graph_validation = graph_validation_summary(validation_report);
         let graph_repair_hints = graph_repair_hints(validation_report, &effective_tool_access);
+        let attached_skill_injection =
+            attached_skill_injection_preview(snapshot, validation_report, &self.repo_root);
 
         Ok(json!({
             "schema": AGENT_EFFECTIVE_RUNTIME_PREVIEW_SCHEMA,
@@ -702,6 +933,7 @@ impl AutonomousToolRuntime {
             },
             "graphValidation": graph_validation,
             "graphRepairHints": graph_repair_hints,
+            "attachedSkillInjection": attached_skill_injection,
             "effectiveToolAccess": effective_tool_access,
             "capabilityPermissionExplanations": capability_permission_explanations(snapshot),
             "policies": {
@@ -711,6 +943,7 @@ impl AutonomousToolRuntime {
                 "memoryPolicy": snapshot.get("memoryCandidatePolicy").cloned().unwrap_or(JsonValue::Null),
                 "retrievalPolicy": snapshot.get("retrievalDefaults").cloned().unwrap_or(JsonValue::Null),
                 "handoffPolicy": snapshot.get("handoffPolicy").cloned().unwrap_or(JsonValue::Null),
+                "attachedSkills": snapshot.get("attachedSkills").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
                 "workflowContract": snapshot.get("workflowContract").cloned().unwrap_or(JsonValue::Null),
                 "workflowStructure": snapshot.get("workflowStructure").cloned().unwrap_or(JsonValue::Null),
                 "finalResponseContract": snapshot.get("finalResponseContract").cloned().unwrap_or(JsonValue::Null)
@@ -738,6 +971,187 @@ fn prompt_fragment_preview_json(fragment: &PromptFragment) -> JsonValue {
         "sha256": fragment.sha256.clone(),
         "tokenEstimate": fragment.token_estimate
     })
+}
+
+fn attached_skill_injection_preview(
+    snapshot: &JsonValue,
+    validation_report: &AutonomousAgentDefinitionValidationReport,
+    repo_root: &std::path::Path,
+) -> JsonValue {
+    let attachments = snapshot
+        .get("attachedSkills")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut entries = Vec::with_capacity(attachments.len());
+    let mut resolved_count = 0usize;
+    let mut stale_count = 0usize;
+    let mut unavailable_count = 0usize;
+    let mut blocked_count = 0usize;
+
+    for (index, attachment) in attachments.iter().enumerate() {
+        let diagnostics = attached_skill_preview_diagnostics(validation_report, index);
+        let source_id = attachment
+            .get("sourceId")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        let registry_record = if source_id.is_empty() {
+            None
+        } else {
+            project_store::load_installed_skill_by_source_id(repo_root, &source_id)
+                .ok()
+                .flatten()
+        };
+        let status = attached_skill_preview_status(&diagnostics);
+        match status {
+            "resolved" => resolved_count += 1,
+            "stale" => stale_count += 1,
+            "blocked" => blocked_count += 1,
+            _ => unavailable_count += 1,
+        }
+
+        let reason_codes = diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.get("code").and_then(JsonValue::as_str))
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut repair_hints = diagnostics
+            .iter()
+            .filter_map(|diagnostic| {
+                diagnostic
+                    .get("repairHint")
+                    .or_else(|| diagnostic.get("reason"))
+                    .and_then(JsonValue::as_str)
+            })
+            .filter(|hint| {
+                matches!(
+                    *hint,
+                    "enable_source"
+                        | "approve_source"
+                        | "refresh_pin"
+                        | "remove_attachment"
+                        | "install_or_remove_attachment"
+                )
+            })
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>();
+        if status == "stale" {
+            repair_hints.insert("remove_attachment".into());
+        }
+        let repair_hints = repair_hints.into_iter().collect::<Vec<_>>();
+
+        entries.push(json!({
+            "attachmentId": attachment.get("id").and_then(JsonValue::as_str).unwrap_or_default(),
+            "sourceId": source_id,
+            "skillId": attachment.get("skillId").and_then(JsonValue::as_str).unwrap_or_default(),
+            "name": attachment.get("name").and_then(JsonValue::as_str).unwrap_or_default(),
+            "sourceKind": attachment.get("sourceKind").and_then(JsonValue::as_str).unwrap_or_default(),
+            "scope": attachment.get("scope").and_then(JsonValue::as_str).unwrap_or_default(),
+            "required": attachment.get("required").and_then(JsonValue::as_bool).unwrap_or(false),
+            "includeSupportingAssets": attachment.get("includeSupportingAssets").and_then(JsonValue::as_bool).unwrap_or(false),
+            "pinnedVersionHash": attachment.get("versionHash").and_then(JsonValue::as_str).unwrap_or_default(),
+            "registryVersionHash": registry_record.as_ref().and_then(|record| record.version_hash.clone()),
+            "sourceState": registry_record.as_ref().map(|record| skill_source_state_label(record.source.state)),
+            "trustState": registry_record.as_ref().map(|record| skill_trust_state_label(record.source.trust)),
+            "status": status,
+            "willInject": status == "resolved",
+            "skillToolRequired": false,
+            "reasonCodes": reason_codes,
+            "repairHints": repair_hints,
+            "explanation": attached_skill_preview_explanation(status),
+            "diagnostics": diagnostics
+        }));
+    }
+
+    json!({
+        "schema": AGENT_ATTACHED_SKILL_INJECTION_PREVIEW_SCHEMA,
+        "schemaVersion": AGENT_ATTACHED_SKILL_INJECTION_PREVIEW_SCHEMA_VERSION,
+        "selectionMode": "definition_attached_skills_without_skill_tool",
+        "status": if stale_count == 0 && unavailable_count == 0 && blocked_count == 0 {
+            "resolved"
+        } else {
+            "blocked"
+        },
+        "skillToolRequired": false,
+        "attachmentCount": attachments.len(),
+        "resolvedCount": resolved_count,
+        "staleCount": stale_count,
+        "unavailableCount": unavailable_count,
+        "blockedCount": blocked_count,
+        "entries": entries
+    })
+}
+
+fn attached_skill_preview_diagnostics(
+    validation_report: &AutonomousAgentDefinitionValidationReport,
+    index: usize,
+) -> Vec<JsonValue> {
+    let path_prefix = format!("attachedSkills[{index}]");
+    validation_report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.path == path_prefix
+                || diagnostic.path.starts_with(&format!("{path_prefix}."))
+        })
+        .map(|diagnostic| {
+            json!({
+                "code": diagnostic.code.clone(),
+                "path": diagnostic.path.clone(),
+                "message": diagnostic.message.clone(),
+                "reason": diagnostic.reason.clone(),
+                "repairHint": diagnostic.repair_hint.clone()
+            })
+        })
+        .collect()
+}
+
+fn attached_skill_preview_status(diagnostics: &[JsonValue]) -> &'static str {
+    if diagnostics.is_empty() {
+        return "resolved";
+    }
+    if diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .get("code")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|code| code.contains("_blocked") || code.contains("required_flag_invalid"))
+    }) {
+        return "blocked";
+    }
+    if diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .get("code")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|code| {
+                code.contains("_stale")
+                    || code.contains("version_hash")
+                    || code.contains("metadata_mismatch")
+            })
+    }) {
+        return "stale";
+    }
+    "unavailable"
+}
+
+fn attached_skill_preview_explanation(status: &str) -> &'static str {
+    match status {
+        "resolved" => {
+            "This pinned skill source will inject as attached context; the skill tool is not required."
+        }
+        "stale" => {
+            "This attachment will not inject until the pinned skill metadata is refreshed or the attachment is removed."
+        }
+        "blocked" => {
+            "This attachment will not inject because the skill source or attachment is blocked."
+        }
+        _ => {
+            "This attachment will not inject until the skill source is enabled, approved, repaired, or removed."
+        }
+    }
 }
 
 fn effective_tool_access_preview(
@@ -1032,8 +1446,37 @@ fn capability_permission_explanations(snapshot: &JsonValue) -> Vec<JsonValue> {
             "destructive_write",
         );
     }
+    if flag_enabled("skillRuntimeAllowed") || has_requested_effect("skill_runtime") {
+        push_capability_permission_explanation(
+            &mut explanations,
+            &mut seen,
+            "skill_runtime_tool",
+            "skill_tool",
+        );
+    }
+    for source_id in attached_skill_source_ids(snapshot) {
+        push_capability_permission_explanation(
+            &mut explanations,
+            &mut seen,
+            "attached_skill_context",
+            &source_id,
+        );
+    }
 
     explanations
+}
+
+fn attached_skill_source_ids(snapshot: &JsonValue) -> Vec<String> {
+    snapshot
+        .get("attachedSkills")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|skill| skill.get("sourceId").and_then(JsonValue::as_str))
+        .map(str::trim)
+        .filter(|source_id| !source_id.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn push_capability_permission_explanation(
@@ -1093,6 +1536,10 @@ fn graph_validation_summary(report: &AutonomousAgentDefinitionValidationReport) 
             ]
             .as_slice(),
         ),
+        (
+            "attached_skills",
+            ["agent_definition_attached_skill_"].as_slice(),
+        ),
     ]
     .into_iter()
     .map(|(category, prefixes)| {
@@ -1112,7 +1559,8 @@ fn graph_validation_summary(report: &AutonomousAgentDefinitionValidationReport) 
                     "deniedTool": diagnostic.denied_tool.clone(),
                     "deniedEffectClass": diagnostic.denied_effect_class.clone(),
                     "baseCapabilityProfile": diagnostic.base_capability_profile.clone(),
-                    "reason": diagnostic.reason.clone()
+                    "reason": diagnostic.reason.clone(),
+                    "repairHint": diagnostic.repair_hint.clone()
                 })
             })
             .collect::<Vec<_>>();
@@ -1262,6 +1710,8 @@ fn repair_hint_kind(diagnostic: &AutonomousAgentDefinitionValidationDiagnostic) 
         "output_contract"
     } else if diagnostic.path.contains("dbTouchpoints") {
         "database_touchpoint"
+    } else if diagnostic.path.contains("attachedSkills") {
+        "attached_skill"
     } else if diagnostic.path.contains("workflow") {
         "workflow"
     } else {
@@ -1481,6 +1931,13 @@ fn normalize_definition_snapshot(
     snapshot.insert("examplePrompts".into(), example_prompts);
     snapshot.insert("refusalEscalationCases".into(), refusal_escalation_cases);
     snapshot.insert(
+        "attachedSkills".into(),
+        object
+            .get("attachedSkills")
+            .cloned()
+            .unwrap_or(JsonValue::Null),
+    );
+    snapshot.insert(
         "prompts".into(),
         object.get("prompts").cloned().unwrap_or(JsonValue::Null),
     );
@@ -1517,7 +1974,15 @@ fn normalize_definition_snapshot(
     Ok(JsonValue::Object(snapshot))
 }
 
+#[cfg(test)]
 fn validate_definition_snapshot(snapshot: &JsonValue) -> AutonomousAgentDefinitionValidationReport {
+    validate_definition_snapshot_with_registry(snapshot, None)
+}
+
+fn validate_definition_snapshot_with_registry(
+    snapshot: &JsonValue,
+    repo_root: Option<&std::path::Path>,
+) -> AutonomousAgentDefinitionValidationReport {
     let mut diagnostics = Vec::new();
     let object = snapshot.as_object();
     validate_schema_metadata(snapshot, &mut diagnostics);
@@ -1600,6 +2065,7 @@ fn validate_definition_snapshot(snapshot: &JsonValue) -> AutonomousAgentDefiniti
     validate_memory_policy(snapshot.get("memoryCandidatePolicy"), &mut diagnostics);
     validate_handoff_policy(snapshot.get("handoffPolicy"), &mut diagnostics);
     validate_canonical_graph_fields(snapshot, &mut diagnostics);
+    validate_attached_skills(snapshot.get("attachedSkills"), repo_root, &mut diagnostics);
     validate_instruction_hierarchy(snapshot, &mut diagnostics);
 
     let status = if diagnostics.is_empty() {
@@ -1677,11 +2143,457 @@ fn validate_canonical_graph_fields(
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
 ) {
     validate_array_field(snapshot, "prompts", diagnostics);
+    validate_array_field(snapshot, "attachedSkills", diagnostics);
     validate_array_field(snapshot, "tools", diagnostics);
     validate_array_field(snapshot, "consumes", diagnostics);
     validate_prompt_intent(snapshot, diagnostics);
     validate_output_field(snapshot.get("output"), diagnostics);
     validate_db_touchpoints_field(snapshot.get("dbTouchpoints"), diagnostics);
+}
+
+fn validate_attached_skills(
+    value: Option<&JsonValue>,
+    repo_root: Option<&std::path::Path>,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    let Some(skills) = value.and_then(JsonValue::as_array) else {
+        diagnostics.push(diagnostic(
+            "agent_definition_attached_skill_array_required",
+            "attachedSkills must be an array in the canonical custom-agent snapshot.",
+            "attachedSkills",
+        ));
+        return;
+    };
+
+    let mut parsed_skills = Vec::with_capacity(skills.len());
+    for (index, skill) in skills.iter().enumerate() {
+        match serde_json::from_value::<AutonomousAgentAttachedSkillDefinition>(skill.clone()) {
+            Ok(attachment) => {
+                validate_attached_skill_shape(&attachment, index, diagnostics);
+                parsed_skills.push((index, attachment));
+            }
+            Err(error) => diagnostics.push(diagnostic(
+                "agent_definition_attached_skill_invalid",
+                format!(
+                    "attachedSkills[{index}] must include only canonical attached-skill fields: {error}"
+                ),
+                format!("attachedSkills[{index}]"),
+            )),
+        }
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut source_ids = BTreeSet::new();
+    for (index, attachment) in &parsed_skills {
+        if !ids.insert(attachment.id.trim().to_string()) {
+            diagnostics.push(diagnostic(
+                "agent_definition_attached_skill_duplicate_id",
+                format!(
+                    "attachedSkills[{index}].id `{}` is duplicated.",
+                    attachment.id.trim()
+                ),
+                format!("attachedSkills[{index}].id"),
+            ));
+        }
+        if !source_ids.insert(attachment.source_id.trim().to_string()) {
+            diagnostics.push(diagnostic(
+                "agent_definition_attached_skill_duplicate_source_id",
+                format!(
+                    "attachedSkills[{index}].sourceId `{}` is duplicated.",
+                    attachment.source_id.trim()
+                ),
+                format!("attachedSkills[{index}].sourceId"),
+            ));
+        }
+    }
+
+    if let Some(repo_root) = repo_root {
+        for (index, attachment) in parsed_skills {
+            validate_attached_skill_registry_state(repo_root, index, &attachment, diagnostics);
+        }
+    }
+}
+
+fn validate_attached_skill_shape(
+    attachment: &AutonomousAgentAttachedSkillDefinition,
+    index: usize,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    for (field, value) in [
+        ("id", attachment.id.as_str()),
+        ("sourceId", attachment.source_id.as_str()),
+        ("skillId", attachment.skill_id.as_str()),
+        ("name", attachment.name.as_str()),
+        ("versionHash", attachment.version_hash.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            diagnostics.push(diagnostic(
+                "agent_definition_attached_skill_text_required",
+                format!("attachedSkills[{index}].{field} must be a non-empty string."),
+                format!("attachedSkills[{index}].{field}"),
+            ));
+        }
+    }
+    if !matches!(
+        attachment.source_kind.trim(),
+        "bundled" | "local" | "project" | "github" | "dynamic" | "mcp" | "plugin"
+    ) {
+        diagnostics.push(diagnostic(
+            "agent_definition_attached_skill_source_kind_invalid",
+            format!(
+                "attachedSkills[{index}].sourceKind `{}` is not supported.",
+                attachment.source_kind
+            ),
+            format!("attachedSkills[{index}].sourceKind"),
+        ));
+    }
+    if !matches!(attachment.scope.trim(), "global" | "project") {
+        diagnostics.push(diagnostic(
+            "agent_definition_attached_skill_scope_invalid",
+            format!(
+                "attachedSkills[{index}].scope `{}` is not supported.",
+                attachment.scope
+            ),
+            format!("attachedSkills[{index}].scope"),
+        ));
+    }
+    if !attachment.required {
+        diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_required_flag_invalid",
+            format!("attachedSkills[{index}].required must be true in this release."),
+            format!("attachedSkills[{index}].required"),
+            "remove_attachment",
+        ));
+    }
+}
+
+fn validate_attached_skill_registry_state(
+    repo_root: &std::path::Path,
+    index: usize,
+    attachment: &AutonomousAgentAttachedSkillDefinition,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    let source_id = attachment.source_id.trim();
+    if source_id.is_empty() {
+        return;
+    }
+    let record = match project_store::load_installed_skill_by_source_id(repo_root, source_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            diagnostics.push(diagnostic_with_reason(
+                "agent_definition_attached_skill_source_missing",
+                format!(
+                    "attachedSkills[{index}] references skill source `{source_id}`, but it is not installed in the project skill registry."
+                ),
+                format!("attachedSkills[{index}].sourceId"),
+                "install_or_remove_attachment",
+            ));
+            return;
+        }
+        Err(error) => {
+            diagnostics.push(diagnostic_with_reason(
+                "agent_definition_attached_skill_registry_unavailable",
+                format!(
+                    "Xero could not validate attached skill source `{source_id}`: {}",
+                    error.message
+                ),
+                format!("attachedSkills[{index}].sourceId"),
+                "retry_validation",
+            ));
+            return;
+        }
+    };
+
+    if record.skill_id != attachment.skill_id.trim() {
+        diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_metadata_mismatch",
+            format!(
+                "attachedSkills[{index}].skillId `{}` does not match registry skill `{}` for source `{source_id}`.",
+                attachment.skill_id.trim(),
+                record.skill_id
+            ),
+            format!("attachedSkills[{index}].skillId"),
+            "refresh_pin",
+        ));
+    }
+    let expected_kind = skill_source_kind_label(record.source.locator.kind());
+    if attachment.source_kind.trim() != expected_kind {
+        diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_metadata_mismatch",
+            format!(
+                "attachedSkills[{index}].sourceKind `{}` does not match registry source kind `{expected_kind}`.",
+                attachment.source_kind.trim()
+            ),
+            format!("attachedSkills[{index}].sourceKind"),
+            "refresh_pin",
+        ));
+    }
+    let expected_scope = skill_source_scope_label(&record.source.scope);
+    if attachment.scope.trim() != expected_scope {
+        diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_metadata_mismatch",
+            format!(
+                "attachedSkills[{index}].scope `{}` does not match registry scope `{expected_scope}`.",
+                attachment.scope.trim()
+            ),
+            format!("attachedSkills[{index}].scope"),
+            "refresh_pin",
+        ));
+    }
+
+    match record.source.state {
+        XeroSkillSourceState::Enabled => {}
+        XeroSkillSourceState::Disabled | XeroSkillSourceState::Installed => {
+            diagnostics.push(diagnostic_with_reason(
+                "agent_definition_attached_skill_source_not_enabled",
+                format!(
+                    "Attached skill source `{source_id}` must be enabled before it can be hard-attached."
+                ),
+                format!("attachedSkills[{index}].sourceId"),
+                "enable_source",
+            ));
+        }
+        XeroSkillSourceState::Stale => diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_source_stale",
+            format!(
+                "Attached skill source `{source_id}` is stale. Refresh the attachment pin or remove it before saving."
+            ),
+            format!("attachedSkills[{index}].sourceId"),
+            "refresh_pin",
+        )),
+        XeroSkillSourceState::Failed => diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_source_failed",
+            format!(
+                "Attached skill source `{source_id}` is in a failed state. Reload the source or remove the attachment before saving."
+            ),
+            format!("attachedSkills[{index}].sourceId"),
+            "refresh_pin",
+        )),
+        XeroSkillSourceState::Blocked | XeroSkillSourceState::Discoverable => {
+            diagnostics.push(diagnostic_with_reason(
+                "agent_definition_attached_skill_source_blocked",
+                format!(
+                    "Attached skill source `{source_id}` is not attachable in its current state."
+                ),
+                format!("attachedSkills[{index}].sourceId"),
+                "remove_attachment",
+            ));
+        }
+    }
+
+    match record.source.trust {
+        XeroSkillTrustState::Trusted | XeroSkillTrustState::UserApproved => {}
+        XeroSkillTrustState::ApprovalRequired | XeroSkillTrustState::Untrusted => {
+            diagnostics.push(diagnostic_with_reason(
+                "agent_definition_attached_skill_trust_required",
+                format!(
+                    "Attached skill source `{source_id}` requires user approval before model-visible attachment."
+                ),
+                format!("attachedSkills[{index}].sourceId"),
+                "approve_source",
+            ));
+        }
+        XeroSkillTrustState::Blocked => diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_trust_blocked",
+            format!("Attached skill source `{source_id}` is blocked by trust policy."),
+            format!("attachedSkills[{index}].sourceId"),
+            "remove_attachment",
+        )),
+    }
+
+    match record.version_hash.as_deref() {
+        Some(version_hash) if version_hash == attachment.version_hash.trim() => {}
+        Some(version_hash) => diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_version_hash_mismatch",
+            format!(
+                "attachedSkills[{index}].versionHash is pinned to `{}`, but registry source `{source_id}` is `{version_hash}`.",
+                attachment.version_hash.trim()
+            ),
+            format!("attachedSkills[{index}].versionHash"),
+            "refresh_pin",
+        )),
+        None => diagnostics.push(diagnostic_with_reason(
+            "agent_definition_attached_skill_version_hash_missing",
+            format!(
+                "Registry source `{source_id}` does not have a version hash to pin."
+            ),
+            format!("attachedSkills[{index}].versionHash"),
+            "refresh_pin",
+        )),
+    }
+}
+
+fn skill_source_kind_label(kind: XeroSkillSourceKind) -> &'static str {
+    match kind {
+        XeroSkillSourceKind::Bundled => "bundled",
+        XeroSkillSourceKind::Local => "local",
+        XeroSkillSourceKind::Project => "project",
+        XeroSkillSourceKind::Github => "github",
+        XeroSkillSourceKind::Dynamic => "dynamic",
+        XeroSkillSourceKind::Mcp => "mcp",
+        XeroSkillSourceKind::Plugin => "plugin",
+    }
+}
+
+fn skill_source_scope_label(scope: &XeroSkillSourceScope) -> &'static str {
+    match scope {
+        XeroSkillSourceScope::Global => "global",
+        XeroSkillSourceScope::Project { .. } => "project",
+    }
+}
+
+fn skill_source_state_label(state: XeroSkillSourceState) -> &'static str {
+    match state {
+        XeroSkillSourceState::Discoverable => "discoverable",
+        XeroSkillSourceState::Installed => "installed",
+        XeroSkillSourceState::Enabled => "enabled",
+        XeroSkillSourceState::Disabled => "disabled",
+        XeroSkillSourceState::Stale => "stale",
+        XeroSkillSourceState::Failed => "failed",
+        XeroSkillSourceState::Blocked => "blocked",
+    }
+}
+
+fn skill_trust_state_label(trust: XeroSkillTrustState) -> &'static str {
+    match trust {
+        XeroSkillTrustState::Trusted => "trusted",
+        XeroSkillTrustState::UserApproved => "user_approved",
+        XeroSkillTrustState::ApprovalRequired => "approval_required",
+        XeroSkillTrustState::Untrusted => "untrusted",
+        XeroSkillTrustState::Blocked => "blocked",
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AttachedSkillUnavailableReason {
+    code: &'static str,
+    repair_hint: &'static str,
+    message: fn(&str) -> String,
+}
+
+fn attached_skill_unavailable_reason(
+    record: &project_store::InstalledSkillRecord,
+) -> Option<AttachedSkillUnavailableReason> {
+    match record.source.state {
+        XeroSkillSourceState::Enabled => {}
+        XeroSkillSourceState::Disabled | XeroSkillSourceState::Installed => {
+            return Some(AttachedSkillUnavailableReason {
+                code: "agent_definition_attachable_skill_source_not_enabled",
+                repair_hint: "enable_source",
+                message: |source_id| {
+                    format!("Skill source `{source_id}` must be enabled before Agent Create can attach it.")
+                },
+            });
+        }
+        XeroSkillSourceState::Stale => {
+            return Some(AttachedSkillUnavailableReason {
+                code: "agent_definition_attachable_skill_source_stale",
+                repair_hint: "refresh_pin",
+                message: |source_id| {
+                    format!("Skill source `{source_id}` is stale; refresh the pin or remove the attachment.")
+                },
+            });
+        }
+        XeroSkillSourceState::Failed => {
+            return Some(AttachedSkillUnavailableReason {
+                code: "agent_definition_attachable_skill_source_failed",
+                repair_hint: "refresh_pin",
+                message: |source_id| {
+                    format!("Skill source `{source_id}` is in a failed state and must be reloaded before attachment.")
+                },
+            });
+        }
+        XeroSkillSourceState::Blocked | XeroSkillSourceState::Discoverable => {
+            return Some(AttachedSkillUnavailableReason {
+                code: "agent_definition_attachable_skill_source_blocked",
+                repair_hint: "remove_attachment",
+                message: |source_id| {
+                    format!("Skill source `{source_id}` is not attachable in its current state.")
+                },
+            });
+        }
+    }
+
+    match record.source.trust {
+        XeroSkillTrustState::Trusted | XeroSkillTrustState::UserApproved => {}
+        XeroSkillTrustState::ApprovalRequired | XeroSkillTrustState::Untrusted => {
+            return Some(AttachedSkillUnavailableReason {
+                code: "agent_definition_attachable_skill_trust_required",
+                repair_hint: "approve_source",
+                message: |source_id| {
+                    format!("Skill source `{source_id}` requires user approval before Agent Create can attach it.")
+                },
+            });
+        }
+        XeroSkillTrustState::Blocked => {
+            return Some(AttachedSkillUnavailableReason {
+                code: "agent_definition_attachable_skill_trust_blocked",
+                repair_hint: "remove_attachment",
+                message: |source_id| {
+                    format!("Skill source `{source_id}` is blocked by trust policy.")
+                },
+            });
+        }
+    }
+
+    record
+        .version_hash
+        .as_deref()
+        .filter(|version_hash| !version_hash.trim().is_empty())
+        .is_none()
+        .then_some(AttachedSkillUnavailableReason {
+            code: "agent_definition_attachable_skill_version_hash_missing",
+            repair_hint: "refresh_pin",
+            message: |source_id| {
+                format!("Skill source `{source_id}` does not have a version hash to pin.")
+            },
+        })
+}
+
+fn unique_attached_skill_id(
+    skill_id: &str,
+    source_id: &str,
+    used_ids: &mut BTreeSet<String>,
+) -> String {
+    let base = stable_attachment_id_seed(skill_id);
+    if used_ids.insert(base.clone()) {
+        return base;
+    }
+
+    let hash = stable_text_sha256(source_id);
+    for width in [8usize, 12, 16, 64] {
+        let suffix = &hash[..width.min(hash.len())];
+        let candidate = format!("{base}-{suffix}");
+        if used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("sha256 suffix should make attached skill ids unique")
+}
+
+fn stable_attachment_id_seed(value: &str) -> String {
+    let mut id = String::new();
+    let mut last_was_separator = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            id.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if matches!(character, '-' | '_') {
+            if !last_was_separator && !id.is_empty() {
+                id.push(character);
+                last_was_separator = true;
+            }
+        } else if !last_was_separator && !id.is_empty() {
+            id.push('-');
+            last_was_separator = true;
+        }
+    }
+    let id = id.trim_matches(['-', '_']).to_string();
+    if id.is_empty() {
+        "attached-skill".into()
+    } else {
+        id
+    }
 }
 
 fn validate_array_field(
@@ -2745,6 +3657,7 @@ fn invalid_output(
         definitions: Vec::new(),
         validation_report: Some(validation_report),
         effective_runtime_preview: None,
+        attachable_skill_catalog: None,
     }
 }
 
@@ -2763,6 +3676,7 @@ fn approval_required_output(
         definitions: Vec::new(),
         validation_report: Some(validation_report),
         effective_runtime_preview: None,
+        attachable_skill_catalog: None,
     }
 }
 
@@ -2938,6 +3852,21 @@ fn diagnostic(
         denied_effect_class: None,
         base_capability_profile: None,
         reason: None,
+        repair_hint: None,
+    }
+}
+
+fn diagnostic_with_reason(
+    code: impl Into<String>,
+    message: impl Into<String>,
+    path: impl Into<String>,
+    reason: impl Into<String>,
+) -> AutonomousAgentDefinitionValidationDiagnostic {
+    let reason = reason.into();
+    AutonomousAgentDefinitionValidationDiagnostic {
+        repair_hint: Some(reason.clone()),
+        reason: Some(reason),
+        ..diagnostic(code, message, path)
     }
 }
 
@@ -2958,6 +3887,7 @@ fn denied_tool_diagnostic(
         denied_effect_class: Some(effect_class),
         base_capability_profile: Some(base_profile.into()),
         reason: Some(reason.into()),
+        repair_hint: None,
     }
 }
 
@@ -2977,6 +3907,7 @@ fn denied_effect_diagnostic(
         denied_effect_class: Some(effect_class.into()),
         base_capability_profile: Some(base_profile.into()),
         reason: Some(reason.into()),
+        repair_hint: None,
     }
 }
 
@@ -3404,7 +4335,60 @@ mod tests {
                 "Refuse to edit files or run commands.",
                 "Escalate when release context is missing.",
                 "Refuse to invent unreviewed release claims."
-            ]
+            ],
+            "attachedSkills": []
+        })
+    }
+
+    fn seed_installed_attached_skill(
+        repo_root: &Path,
+        state: XeroSkillSourceState,
+        trust: XeroSkillTrustState,
+        version_hash: &str,
+    ) -> project_store::InstalledSkillRecord {
+        let source = crate::runtime::XeroSkillSourceRecord::new(
+            crate::runtime::XeroSkillSourceScope::global(),
+            crate::runtime::XeroSkillSourceLocator::Bundled {
+                bundle_id: "core".into(),
+                skill_id: "rust-best-practices".into(),
+                version: "2026-05-01".into(),
+            },
+            state,
+            trust,
+        )
+        .expect("skill source");
+        project_store::upsert_installed_skill(
+            repo_root,
+            project_store::InstalledSkillRecord {
+                source,
+                skill_id: "rust-best-practices".into(),
+                name: "Rust Best Practices".into(),
+                description: "Guide for writing idiomatic Rust code.".into(),
+                user_invocable: Some(true),
+                cache_key: None,
+                local_location: Some("/tmp/xero-rust-best-practices".into()),
+                version_hash: Some(version_hash.into()),
+                installed_at: "2026-05-09T12:00:00Z".into(),
+                updated_at: "2026-05-09T12:00:00Z".into(),
+                last_used_at: None,
+                last_diagnostic: None,
+            },
+        )
+        .expect("seed installed skill")
+    }
+
+    fn attached_rust_skill(record: &project_store::InstalledSkillRecord) -> JsonValue {
+        json!({
+            "id": "rust-best-practices",
+            "sourceId": record.source.source_id.clone(),
+            "skillId": record.skill_id.clone(),
+            "name": record.name.clone(),
+            "description": record.description.clone(),
+            "sourceKind": "bundled",
+            "scope": "global",
+            "versionHash": record.version_hash.as_deref().unwrap_or("missing"),
+            "includeSupportingAssets": false,
+            "required": true
         })
     }
 
@@ -3500,6 +4484,500 @@ mod tests {
             fs::read_to_string(repo_root.join("README.md")).expect("read repo file"),
             "project file\n"
         );
+    }
+
+    #[test]
+    fn agent_definition_saves_enabled_trusted_attached_skill_without_skill_tool_access() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-attached-skill");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Trusted,
+            "version-hash-a",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        definition["attachedSkills"] = json!([attached_rust_skill(&skill)]);
+        definition["toolPolicy"]["skillRuntimeAllowed"] = json!(false);
+
+        let saved = runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Save,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("approved save");
+        let AutonomousToolOutput::AgentDefinition(output) = saved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(output.applied);
+        assert_eq!(
+            output
+                .validation_report
+                .as_ref()
+                .expect("validation report")
+                .status,
+            AutonomousAgentDefinitionValidationStatus::Valid
+        );
+
+        let saved_version =
+            project_store::load_agent_definition_version(&repo_root, "release_notes_helper", 1)
+                .expect("load saved version")
+                .expect("saved version");
+        assert_eq!(
+            saved_version.snapshot["attachedSkills"][0]["sourceId"],
+            json!(skill.source.source_id)
+        );
+        assert_eq!(
+            saved_version.snapshot["toolPolicy"]["skillRuntimeAllowed"],
+            json!(false),
+            "attached skill context must not implicitly grant the skill tool"
+        );
+    }
+
+    #[test]
+    fn s7_agent_definition_preview_reports_attached_skill_injection_policy() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-attached-skill-preview");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Trusted,
+            "version-hash-preview",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        definition["attachedSkills"] = json!([attached_rust_skill(&skill)]);
+        definition["toolPolicy"]["skillRuntimeAllowed"] = json!(false);
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Preview,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("preview attached skill");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let preview = output
+            .effective_runtime_preview
+            .as_ref()
+            .expect("effective runtime preview");
+        let injection = &preview["attachedSkillInjection"];
+        assert_eq!(
+            injection["schema"],
+            json!("xero.agent_attached_skill_injection_preview.v1")
+        );
+        assert_eq!(injection["status"], json!("resolved"));
+        assert_eq!(injection["skillToolRequired"], json!(false));
+        assert_eq!(injection["resolvedCount"], json!(1));
+        assert_eq!(
+            injection["entries"][0]["sourceId"],
+            json!(skill.source.source_id)
+        );
+        assert_eq!(injection["entries"][0]["status"], json!("resolved"));
+        assert_eq!(injection["entries"][0]["willInject"], json!(true));
+        assert_eq!(injection["entries"][0]["repairHints"], json!([]));
+        assert!(injection["entries"][0]["explanation"]
+            .as_str()
+            .expect("injection explanation")
+            .contains("skill tool is not required"));
+
+        let explanations = preview["capabilityPermissionExplanations"]
+            .as_array()
+            .expect("capability explanations");
+        assert!(
+            explanations.contains(&project_store::capability_permission_explanation(
+                "attached_skill_context",
+                &skill.source.source_id,
+            ))
+        );
+        assert!(
+            !explanations.contains(&project_store::capability_permission_explanation(
+                "skill_runtime_tool",
+                "skill_tool",
+            ))
+        );
+        assert!(
+            !serde_json::to_string(preview)
+                .expect("preview json")
+                .contains("/tmp/xero-rust-best-practices"),
+            "attached-skill preview must not expose local skill paths"
+        );
+    }
+
+    #[test]
+    fn agent_create_lists_metadata_only_attachable_skill_catalog() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-attachable-skill-catalog");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Trusted,
+            "version-hash-catalog",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::ListAttachableSkills,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: None,
+            })
+            .expect("list attachable skills");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let catalog = output
+            .attachable_skill_catalog
+            .expect("attachable skill catalog");
+        assert_eq!(catalog.contract_version, 1);
+        assert!(catalog.diagnostics.is_empty(), "{:?}", catalog.diagnostics);
+        let entry = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.source_id == skill.source.source_id)
+            .expect("catalog entry");
+        assert!(entry.attachable);
+        assert_eq!(entry.skill_id, "rust-best-practices");
+        assert_eq!(entry.source_kind, "bundled");
+        assert_eq!(entry.scope, "global");
+        assert_eq!(entry.version_hash, "version-hash-catalog");
+        assert_eq!(entry.source_state, "enabled");
+        assert_eq!(entry.trust_state, "trusted");
+        let attachment = entry.attachment.clone().expect("attachment template");
+        assert_eq!(attachment["sourceId"], json!(skill.source.source_id));
+        assert_eq!(attachment["includeSupportingAssets"], json!(false));
+        assert_eq!(attachment["required"], json!(true));
+        let catalog_json = serde_json::to_string(&catalog).expect("catalog json");
+        assert!(
+            !catalog_json.contains("/tmp/xero-rust-best-practices"),
+            "Agent Create catalog must not leak local skill paths"
+        );
+
+        let mut definition = valid_observe_only_definition();
+        definition["attachedSkills"] = json!([attachment]);
+        definition["toolPolicy"]["skillRuntimeAllowed"] = json!(false);
+        let validation = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("validate definition with catalog attachment");
+        let AutonomousToolOutput::AgentDefinition(output) = validation.output else {
+            panic!("expected agent definition output");
+        };
+        assert_eq!(
+            output.validation_report.expect("validation report").status,
+            AutonomousAgentDefinitionValidationStatus::Valid
+        );
+    }
+
+    #[test]
+    fn agent_create_fails_closed_for_unknown_or_untrusted_attached_skills() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-untrusted-attached-skill");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Untrusted,
+            "version-hash-untrusted",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+
+        let catalog_result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::ListAttachableSkills,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: None,
+            })
+            .expect("list attachable skills");
+        let AutonomousToolOutput::AgentDefinition(catalog_output) = catalog_result.output else {
+            panic!("expected agent definition output");
+        };
+        let catalog = catalog_output
+            .attachable_skill_catalog
+            .expect("attachable skill catalog");
+        let entry = catalog
+            .entries
+            .iter()
+            .find(|entry| entry.source_id == skill.source.source_id)
+            .expect("catalog entry");
+        assert!(!entry.attachable);
+        assert!(entry.attachment.is_none());
+        assert_eq!(entry.repair_hint.as_deref(), Some("approve_source"));
+        assert!(catalog.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attachable_skill_trust_required"
+                && diagnostic.repair_hint.as_deref() == Some("approve_source")
+        }));
+
+        let mut untrusted_definition = valid_observe_only_definition();
+        untrusted_definition["attachedSkills"] = json!([attached_rust_skill(&skill)]);
+        let untrusted_result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(untrusted_definition),
+            })
+            .expect("validate untrusted attachment");
+        let AutonomousToolOutput::AgentDefinition(output) = untrusted_result.output else {
+            panic!("expected agent definition output");
+        };
+        let diagnostics = output
+            .validation_report
+            .expect("validation report")
+            .diagnostics;
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_trust_required"
+                && diagnostic.reason.as_deref() == Some("approve_source")
+        }));
+
+        let mut unknown_definition = valid_observe_only_definition();
+        let mut unknown_attachment = attached_rust_skill(&skill);
+        unknown_attachment["sourceId"] = json!("skill-source:v1:missing");
+        unknown_definition["attachedSkills"] = json!([unknown_attachment]);
+        let unknown_result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(unknown_definition),
+            })
+            .expect("validate unknown attachment");
+        let AutonomousToolOutput::AgentDefinition(output) = unknown_result.output else {
+            panic!("expected agent definition output");
+        };
+        let diagnostics = output
+            .validation_report
+            .expect("validation report")
+            .diagnostics;
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_source_missing"
+                && diagnostic.reason.as_deref() == Some("install_or_remove_attachment")
+        }));
+    }
+
+    #[test]
+    fn agent_definition_validation_rejects_duplicate_attached_skill_source_ids() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-duplicate-attached-skill");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Enabled,
+            XeroSkillTrustState::Trusted,
+            "version-hash-a",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        let mut second = attached_rust_skill(&skill);
+        second["id"] = json!("rust-best-practices-copy");
+        definition["attachedSkills"] = json!([attached_rust_skill(&skill), second]);
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("validation response");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let diagnostics = output
+            .validation_report
+            .expect("validation report")
+            .diagnostics;
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_duplicate_source_id"
+        }));
+    }
+
+    #[test]
+    fn s7_agent_definition_preview_reports_stale_attached_skill_repair_hints() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-stale-attached-skill");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Stale,
+            XeroSkillTrustState::Trusted,
+            "version-hash-current",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        let mut attachment = attached_rust_skill(&skill);
+        attachment["versionHash"] = json!("version-hash-old");
+        definition["attachedSkills"] = json!([attachment]);
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Preview,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("preview response");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let diagnostics = output
+            .validation_report
+            .as_ref()
+            .expect("validation report")
+            .diagnostics
+            .clone();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_source_stale"
+                && diagnostic.reason.as_deref() == Some("refresh_pin")
+                && diagnostic.repair_hint.as_deref() == Some("refresh_pin")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_version_hash_mismatch"
+                && diagnostic.reason.as_deref() == Some("refresh_pin")
+                && diagnostic.repair_hint.as_deref() == Some("refresh_pin")
+        }));
+
+        let preview = output
+            .effective_runtime_preview
+            .as_ref()
+            .expect("effective runtime preview");
+        let injection_entry = &preview["attachedSkillInjection"]["entries"][0];
+        assert_eq!(injection_entry["status"], json!("stale"));
+        assert_eq!(injection_entry["willInject"], json!(false));
+        assert!(injection_entry["reasonCodes"]
+            .as_array()
+            .expect("reason codes")
+            .contains(&json!(
+                "agent_definition_attached_skill_version_hash_mismatch"
+            )));
+        assert!(injection_entry["repairHints"]
+            .as_array()
+            .expect("repair hints")
+            .contains(&json!("refresh_pin")));
+        assert!(injection_entry["repairHints"]
+            .as_array()
+            .expect("repair hints")
+            .contains(&json!("remove_attachment")));
+        assert!(injection_entry["explanation"]
+            .as_str()
+            .expect("stale explanation")
+            .contains("refreshed or the attachment is removed"));
+    }
+
+    #[test]
+    fn agent_definition_validation_rejects_stale_or_hash_mismatched_attached_skill() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-stale-attached-skill-validate");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Stale,
+            XeroSkillTrustState::Trusted,
+            "version-hash-current",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        let mut attachment = attached_rust_skill(&skill);
+        attachment["versionHash"] = json!("version-hash-old");
+        definition["attachedSkills"] = json!([attachment]);
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("validation response");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let diagnostics = output
+            .validation_report
+            .expect("validation report")
+            .diagnostics;
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_source_stale"
+                && diagnostic.reason.as_deref() == Some("refresh_pin")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_version_hash_mismatch"
+                && diagnostic.reason.as_deref() == Some("refresh_pin")
+        }));
+    }
+
+    #[test]
+    fn agent_definition_validation_rejects_blocked_attached_skill_source() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-blocked-attached-skill");
+        let skill = seed_installed_attached_skill(
+            &repo_root,
+            XeroSkillSourceState::Blocked,
+            XeroSkillTrustState::Blocked,
+            "version-hash-blocked",
+        );
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        definition["attachedSkills"] = json!([attached_rust_skill(&skill)]);
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("validation response");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let diagnostics = output
+            .validation_report
+            .expect("validation report")
+            .diagnostics;
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_source_blocked"
+                && diagnostic.reason.as_deref() == Some("remove_attachment")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_attached_skill_trust_blocked"
+                && diagnostic.reason.as_deref() == Some("remove_attachment")
+        }));
     }
 
     #[test]
@@ -4152,6 +5630,43 @@ mod tests {
 
         assert_eq!(error.code, "agent_definition_schema_version_unsupported");
         assert!(error.message.contains("unsupported"));
+    }
+
+    #[test]
+    fn s8_agent_definition_requires_explicit_attached_skills_field() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-missing-attached-skills");
+        let runtime = agent_create_runtime(&repo_root);
+        let mut definition = valid_observe_only_definition();
+        definition
+            .as_object_mut()
+            .expect("definition object")
+            .remove("attachedSkills");
+
+        let result = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Validate,
+                definition_id: None,
+                source_definition_id: None,
+                include_archived: false,
+                definition: Some(definition),
+            })
+            .expect("validation response");
+        let AutonomousToolOutput::AgentDefinition(output) = result.output else {
+            panic!("expected agent definition output");
+        };
+        let report = output.validation_report.expect("validation report");
+
+        assert_eq!(
+            report.status,
+            AutonomousAgentDefinitionValidationStatus::Invalid
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_graph_array_required"
+                && diagnostic.path == "attachedSkills"
+        }));
     }
 
     #[test]

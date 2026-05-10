@@ -2,8 +2,6 @@
 
 import { lazy, Suspense } from 'react'
 import type { EditorView as CodeMirrorView } from '@codemirror/view'
-import { Code2, Eye } from 'lucide-react'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { ProjectFileResource } from './use-execution-workspace-controller'
 import { LoadingState } from './editor-empty-state'
 import {
@@ -15,6 +13,8 @@ import {
   PreviewUnavailablePanel,
   SvgTextPreview,
   UnsupportedFilePanel,
+  type ImageControlsState,
+  type ImageDimensions,
   type ResolveAssetPreviewUrl,
 } from './file-renderers'
 
@@ -61,9 +61,11 @@ interface FileEditorHostProps {
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
   onCopyPath?: (path: string) => void
   onOpenExternal?: (path: string) => void
-  // Mode toggle (per-tab state owned by parent)
+  // Mode toggle (per-tab state owned by parent — toggle UI lives in EditorTopBar)
   mode: FileEditorMode
-  onModeChange: (mode: FileEditorMode) => void
+  // Image controls (lifted to parent; rendered in EditorTopBar)
+  imageControls?: ImageControlsState
+  onImageDimensionsChange?: (dimensions: ImageDimensions | null) => void
 }
 
 export function FileEditorHost(props: FileEditorHostProps) {
@@ -92,6 +94,8 @@ export function FileEditorHost(props: FileEditorHostProps) {
         resource={resource}
         onCopyPath={props.onCopyPath}
         onOpenExternal={props.onOpenExternal}
+        imageControls={props.imageControls}
+        onImageDimensionsChange={props.onImageDimensionsChange}
       />
     )
   }
@@ -101,76 +105,35 @@ export function FileEditorHost(props: FileEditorHostProps) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {supportsToggle ? (
-        <SourcePreviewToggle mode={effectiveMode} onModeChange={props.onModeChange} />
-      ) : null}
-      <div className="flex min-h-0 flex-1 flex-col">
-        {effectiveMode === 'source' ? (
-          <Suspense fallback={<LoadingState path={filePath} />}>
-            <LazyCodeEditor
-              key={filePath}
-              value={props.textValue}
-              savedValue={props.textSavedValue}
-              documentVersion={props.textDocumentVersion}
-              filePath={filePath}
-              onSnapshotChange={props.onSnapshotChange}
-              onDirtyChange={props.onDirtyChange}
-              onDocumentStatsChange={props.onDocumentStatsChange}
-              onSave={props.onSave}
-              onCursorChange={props.onCursorChange}
-              onOpenFind={props.onOpenFind}
-              onViewReady={props.onViewReady}
-            />
-          </Suspense>
-        ) : (
-          <TextBackedPreview
+      {effectiveMode === 'source' ? (
+        <Suspense fallback={<LoadingState path={filePath} />}>
+          <LazyCodeEditor
+            key={filePath}
+            value={props.textValue}
+            savedValue={props.textSavedValue}
+            documentVersion={props.textDocumentVersion}
             filePath={filePath}
-            rendererKind={resource.rendererKind}
-            mimeType={resource.mimeType}
-            text={props.textValue}
-            preview={props.textValue === props.textSavedValue ? resource.preview : null}
-            onResolveAssetPreviewUrl={props.onResolveAssetPreviewUrl}
+            onSnapshotChange={props.onSnapshotChange}
+            onDirtyChange={props.onDirtyChange}
+            onDocumentStatsChange={props.onDocumentStatsChange}
+            onSave={props.onSave}
+            onCursorChange={props.onCursorChange}
+            onOpenFind={props.onOpenFind}
+            onViewReady={props.onViewReady}
           />
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SourcePreviewToggle({
-  mode,
-  onModeChange,
-}: {
-  mode: FileEditorMode
-  onModeChange: (mode: FileEditorMode) => void
-}) {
-  return (
-    <div
-      className="flex shrink-0 items-center justify-between border-b border-border bg-secondary/10 px-3 py-1"
-      data-testid="file-editor-host-toolbar"
-      role="toolbar"
-      aria-label="Source and preview controls"
-    >
-      <ToggleGroup
-        type="single"
-        size="sm"
-        value={mode}
-        onValueChange={(value) => {
-          if (value === 'source' || value === 'preview') {
-            onModeChange(value)
-          }
-        }}
-        aria-label="Editor mode"
-      >
-        <ToggleGroupItem value="source" aria-label="Show source">
-          <Code2 className="mr-1 h-3 w-3" />
-          Source
-        </ToggleGroupItem>
-        <ToggleGroupItem value="preview" aria-label="Show preview">
-          <Eye className="mr-1 h-3 w-3" />
-          Preview
-        </ToggleGroupItem>
-      </ToggleGroup>
+        </Suspense>
+      ) : (
+        <TextBackedPreview
+          filePath={filePath}
+          rendererKind={resource.rendererKind}
+          mimeType={resource.mimeType}
+          text={props.textValue}
+          preview={props.textValue === props.textSavedValue ? resource.preview : null}
+          onResolveAssetPreviewUrl={props.onResolveAssetPreviewUrl}
+          imageControls={props.imageControls}
+          onImageDimensionsChange={props.onImageDimensionsChange}
+        />
+      )}
     </div>
   )
 }
@@ -182,6 +145,8 @@ function TextBackedPreview({
   text,
   preview,
   onResolveAssetPreviewUrl,
+  imageControls,
+  onImageDimensionsChange,
 }: {
   filePath: string
   rendererKind: TextRendererKind
@@ -189,9 +154,19 @@ function TextBackedPreview({
   text: string
   preview?: Extract<ProjectFileResource, { kind: 'text' }>['preview']
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
+  imageControls?: ImageControlsState
+  onImageDimensionsChange?: (dimensions: ImageDimensions | null) => void
 }) {
   if (rendererKind === 'svg') {
-    return <SvgTextPreview filePath={filePath} text={text} mimeType={mimeType} />
+    return (
+      <SvgTextPreview
+        filePath={filePath}
+        text={text}
+        mimeType={mimeType}
+        controls={imageControls}
+        onDimensionsChange={onImageDimensionsChange}
+      />
+    )
   }
 
   if (rendererKind === 'markdown') {
@@ -224,52 +199,36 @@ function RenderablePreview({
   onCopyPath,
   onOpenExternal,
   resource,
+  imageControls,
+  onImageDimensionsChange,
 }: {
   filePath: string
   onCopyPath?: (path: string) => void
   onOpenExternal?: (path: string) => void
   resource: Extract<ProjectFileResource, { kind: 'renderable' }>
+  imageControls?: ImageControlsState
+  onImageDimensionsChange?: (dimensions: ImageDimensions | null) => void
 }) {
-  const { previewUrl, rendererKind, mimeType } = resource
+  const { previewUrl, rendererKind } = resource
 
   if (rendererKind === 'image') {
     return (
       <ImagePreview
         filePath={filePath}
         src={previewUrl}
-        byteLength={resource.byteLength}
-        mimeType={mimeType}
         testId="image-preview"
+        controls={imageControls}
+        onDimensionsChange={onImageDimensionsChange}
       />
     )
   }
 
   if (rendererKind === 'audio') {
-    return (
-      <MediaPreview
-        filePath={filePath}
-        src={previewUrl}
-        byteLength={resource.byteLength}
-        mimeType={mimeType}
-        rendererKind="audio"
-        onCopyPath={onCopyPath}
-        onOpenExternal={onOpenExternal}
-      />
-    )
+    return <MediaPreview filePath={filePath} src={previewUrl} rendererKind="audio" />
   }
 
   if (rendererKind === 'video') {
-    return (
-      <MediaPreview
-        filePath={filePath}
-        src={previewUrl}
-        byteLength={resource.byteLength}
-        mimeType={mimeType}
-        rendererKind="video"
-        onCopyPath={onCopyPath}
-        onOpenExternal={onOpenExternal}
-      />
-    )
+    return <MediaPreview filePath={filePath} src={previewUrl} rendererKind="video" />
   }
 
   // pdf
@@ -277,8 +236,6 @@ function RenderablePreview({
     <PdfPreview
       filePath={filePath}
       src={previewUrl}
-      byteLength={resource.byteLength}
-      mimeType={mimeType}
       onCopyPath={onCopyPath}
       onOpenExternal={onOpenExternal}
     />

@@ -9,7 +9,9 @@ import {
   GitMerge,
   Layers,
   Lock,
+  Sparkles,
   Wrench,
+  type LucideIcon,
 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
@@ -21,6 +23,7 @@ import { getRuntimeRunApprovalModeLabel } from '@/src/lib/xero-model/runtime'
 
 import {
   AGENT_GRAPH_HEADER_HANDLES,
+  AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS,
   AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
   type AgentHeaderFlowNode,
 } from '../build-agent-graph'
@@ -35,6 +38,13 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         type="source"
         position={Position.Top}
         className="!bg-amber-500"
+      />
+      <Handle
+        id={AGENT_GRAPH_HEADER_HANDLES.skills}
+        type="source"
+        position={Position.Left}
+        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.skills * 100}%` }}
+        className="!bg-rose-500"
       />
       {/* Two source handles share the right edge (tool, db). React Flow
           centers them at 50% by default, so they overlap visually; stagger
@@ -63,6 +73,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         id={AGENT_GRAPH_HEADER_HANDLES.consumed}
         type="target"
         position={Position.Left}
+        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed * 100}%` }}
         className="!bg-teal-500"
       />
       <div
@@ -114,6 +125,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         </div>
         <div className="agent-node-chip-row px-3.5 py-2.5 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] text-muted-foreground border-b border-border/60 bg-foreground/[0.04]">
           <SummaryChip icon={FileText} count={summary.prompts} label="prompts" />
+          <SummaryChip icon={Sparkles} count={summary.attachedSkills} label="skills" />
           <SummaryChip icon={Wrench} count={summary.tools} label="tools" />
           <SummaryChip icon={Database} count={summary.dbTables} label="touchpoints" />
           <SummaryChip icon={Layers} count={summary.outputSections} label="sections" />
@@ -137,7 +149,7 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
 })
 
 interface SummaryChipProps {
-  icon: typeof FileText
+  icon: LucideIcon
   count: number
   label: string
 }

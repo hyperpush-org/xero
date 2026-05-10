@@ -12,6 +12,7 @@ use crate::{
         RuntimeRunApprovalModeDto,
     },
     db::database_path_for_repo,
+    runtime::XeroAttachedSkillResolutionSnapshot,
 };
 
 use super::{open_runtime_database, read_project_row, validate_non_empty_text};
@@ -614,6 +615,20 @@ pub fn upsert_runtime_run(
                     "Xero could not clear the prior runtime-run checkpoints before rotating the run id.",
                 )
             })?;
+
+        transaction
+            .execute(
+                "DELETE FROM runtime_run_attached_skill_snapshots WHERE project_id = ?1 AND run_id = ?2",
+                params![payload.run.project_id.as_str(), run_id],
+            )
+            .map_err(|error| {
+                map_runtime_run_write_error(
+                    "runtime_run_attached_skill_snapshot_reset_failed",
+                    &database_path,
+                    error,
+                    "Xero could not clear the prior attached-skill snapshot before rotating the run id.",
+                )
+            })?;
     }
 
     if let Some(checkpoint) = payload.checkpoint.as_ref() {
@@ -809,6 +824,189 @@ pub fn upsert_runtime_run(
     })
 }
 
+pub fn persist_runtime_attached_skill_snapshot(
+    repo_root: &Path,
+    snapshot: &XeroAttachedSkillResolutionSnapshot,
+) -> Result<XeroAttachedSkillResolutionSnapshot, CommandError> {
+    validate_non_empty_text(
+        &snapshot.project_id,
+        "projectId",
+        "runtime_attached_skill_snapshot_invalid",
+    )?;
+    validate_non_empty_text(
+        &snapshot.run_id,
+        "runId",
+        "runtime_attached_skill_snapshot_invalid",
+    )?;
+    validate_non_empty_text(
+        &snapshot.resolved_at,
+        "resolvedAt",
+        "runtime_attached_skill_snapshot_invalid",
+    )?;
+
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    read_project_row(&connection, &database_path, repo_root, &snapshot.project_id)?;
+
+    let run_exists: bool = connection
+        .query_row(
+            "SELECT 1 FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![snapshot.project_id.as_str(), snapshot.run_id.as_str()],
+            |_| Ok(true),
+        )
+        .or_else(|error| match error {
+            SqlError::QueryReturnedNoRows => Ok(false),
+            other => Err(other),
+        })
+        .map_err(|error| {
+            map_runtime_run_write_error(
+                "runtime_attached_skill_snapshot_query_failed",
+                &database_path,
+                error,
+                "Xero could not verify the durable agent run for attached-skill snapshot persistence.",
+            )
+        })?;
+    if !run_exists {
+        return Ok(snapshot.clone());
+    }
+
+    let snapshot_json = serde_json::to_string(snapshot).map_err(|error| {
+        CommandError::system_fault(
+            "runtime_attached_skill_snapshot_encode_failed",
+            format!(
+                "Xero could not encode attached-skill context snapshot for run `{}`: {error}",
+                snapshot.run_id
+            ),
+        )
+    })?;
+
+    connection
+        .execute(
+            r#"
+            INSERT INTO runtime_run_attached_skill_snapshots (
+                project_id,
+                run_id,
+                snapshot_json,
+                resolved_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            ON CONFLICT(project_id, run_id) DO UPDATE SET
+                snapshot_json = excluded.snapshot_json,
+                resolved_at = excluded.resolved_at,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                snapshot.project_id.as_str(),
+                snapshot.run_id.as_str(),
+                snapshot_json.as_str(),
+                snapshot.resolved_at.as_str(),
+            ],
+        )
+        .map_err(|error| {
+            map_runtime_run_write_error(
+                "runtime_attached_skill_snapshot_persist_failed",
+                &database_path,
+                error,
+                "Xero could not persist the attached-skill context snapshot.",
+            )
+        })?;
+
+    read_runtime_attached_skill_snapshot_with_connection(
+        &connection,
+        &database_path,
+        &snapshot.project_id,
+        &snapshot.run_id,
+    )?
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "runtime_attached_skill_snapshot_missing_after_persist",
+            format!(
+                "Xero persisted attached-skill context for run `{}` but could not read it back.",
+                snapshot.run_id
+            ),
+        )
+    })
+}
+
+pub fn load_runtime_attached_skill_snapshot(
+    repo_root: &Path,
+    expected_project_id: &str,
+    expected_run_id: &str,
+) -> Result<Option<XeroAttachedSkillResolutionSnapshot>, CommandError> {
+    validate_non_empty_text(
+        expected_project_id,
+        "projectId",
+        "runtime_attached_skill_snapshot_invalid",
+    )?;
+    validate_non_empty_text(
+        expected_run_id,
+        "runId",
+        "runtime_attached_skill_snapshot_invalid",
+    )?;
+    let project_id = expected_project_id.trim();
+    let run_id = expected_run_id.trim();
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    read_project_row(&connection, &database_path, repo_root, project_id)?;
+    read_runtime_attached_skill_snapshot_with_connection(
+        &connection,
+        &database_path,
+        project_id,
+        run_id,
+    )
+}
+
+fn read_runtime_attached_skill_snapshot_with_connection(
+    connection: &Connection,
+    database_path: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<XeroAttachedSkillResolutionSnapshot>, CommandError> {
+    let row = connection.query_row(
+        r#"
+        SELECT snapshot_json
+        FROM runtime_run_attached_skill_snapshots
+        WHERE project_id = ?1
+          AND run_id = ?2
+        "#,
+        params![project_id, run_id],
+        |row| row.get::<_, String>(0),
+    );
+
+    match row {
+        Ok(snapshot_json) => {
+            let snapshot =
+                serde_json::from_str::<XeroAttachedSkillResolutionSnapshot>(&snapshot_json)
+                    .map_err(|error| {
+                        map_runtime_run_decode_error(
+                            &database_path,
+                            format!(
+                                "Attached-skill snapshot for run `{run_id}` is not valid: {error}"
+                            ),
+                        )
+                    })?;
+            if snapshot.project_id != project_id || snapshot.run_id != run_id {
+                return Err(map_runtime_run_decode_error(
+                    &database_path,
+                    format!(
+                        "Attached-skill snapshot identity is `{}`/`{}` but `{project_id}`/`{run_id}` was requested.",
+                        snapshot.project_id, snapshot.run_id
+                    ),
+                ));
+            }
+            Ok(Some(snapshot))
+        }
+        Err(SqlError::QueryReturnedNoRows) => Ok(None),
+        Err(other) => Err(map_runtime_run_write_error(
+            "runtime_attached_skill_snapshot_query_failed",
+            &database_path,
+            other,
+            "Xero could not read the attached-skill context snapshot.",
+        )),
+    }
+}
+
 pub(crate) fn read_runtime_session_row(
     connection: &Connection,
     database_path: &Path,
@@ -910,7 +1108,7 @@ fn decode_runtime_session_row(
                     return Err(map_runtime_decode_error(
                         database_path,
                         format!("Field `last_error_retryable` must be 0 or 1, found {other}."),
-                    ))
+                    ));
                 }
             },
         }),
@@ -918,7 +1116,7 @@ fn decode_runtime_session_row(
             return Err(map_runtime_decode_error(
                 database_path,
                 "last_error fields must be all null or all populated.".into(),
-            ))
+            ));
         }
     };
 
@@ -1003,7 +1201,7 @@ pub(crate) fn read_runtime_run_snapshot(
                     "Xero could not read durable runtime-run metadata from {}: {other}",
                     database_path.display()
                 ),
-            ))
+            ));
         }
     };
 
@@ -1318,7 +1516,7 @@ fn decode_runtime_run_row(
             return Err(map_runtime_run_decode_error(
                 database_path,
                 "Runtime run last_error fields must be all null or all populated.".into(),
-            ))
+            ));
         }
     };
 
@@ -1780,7 +1978,7 @@ fn validate_runtime_run_pending_control_snapshot(
             return Err(CommandError::system_fault(
                 "runtime_run_request_invalid",
                 "Xero requires queuedPrompt and queuedPromptAt to be populated together.",
-            ))
+            ));
         }
     }
 

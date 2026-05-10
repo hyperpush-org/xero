@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 
 export type ClusterKind = "localnet" | "mainnet_fork" | "devnet" | "mainnet"
 
@@ -3605,7 +3606,18 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
     let cancelled = false
     const unsubs: UnlistenFn[] = []
 
-    void listen<ToolchainInstallEvent>(
+    const trackUnlisten = (promise: Promise<UnlistenFn>) => {
+      void promise.then((unsub) => {
+        const safeUnsub = createSafeTauriUnlisten(unsub)
+        if (cancelled) {
+          safeUnsub()
+        } else {
+          unsubs.push(safeUnsub)
+        }
+      })
+    }
+
+    trackUnlisten(listen<ToolchainInstallEvent>(
       SOLANA_TOOLCHAIN_INSTALL_EVENT,
       (event) => {
         if (cancelled) return
@@ -3622,15 +3634,9 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
           setError(payload.error)
         }
       },
-    ).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    ))
 
-    void listen<ValidatorStatusPayload>(
+    trackUnlisten(listen<ValidatorStatusPayload>(
       SOLANA_VALIDATOR_STATUS_EVENT,
       (event) => {
         if (cancelled) return
@@ -3656,73 +3662,37 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
           setError(event.payload.message)
         }
       },
-    ).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    ))
 
-    void listen<PersonaEventPayload>(SOLANA_PERSONA_EVENT, (event) => {
+    trackUnlisten(listen<PersonaEventPayload>(SOLANA_PERSONA_EVENT, (event) => {
       if (cancelled) return
       setLastPersonaEvent(event.payload)
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
-    void listen<ScenarioEventPayload>(SOLANA_SCENARIO_EVENT, (event) => {
+    trackUnlisten(listen<ScenarioEventPayload>(SOLANA_SCENARIO_EVENT, (event) => {
       if (cancelled) return
       setLastScenarioEvent(event.payload)
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
-    void listen<TxEventPayload>(SOLANA_TX_EVENT, (event) => {
+    trackUnlisten(listen<TxEventPayload>(SOLANA_TX_EVENT, (event) => {
       if (cancelled) return
       setLastTxEvent(event.payload)
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
-    void listen<IdlChangedEvent>(SOLANA_IDL_CHANGED_EVENT, (event) => {
+    trackUnlisten(listen<IdlChangedEvent>(SOLANA_IDL_CHANGED_EVENT, (event) => {
       if (cancelled) return
       setLastIdlEvent(event.payload)
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
-    void listen<DeployProgressPayload>(
+    trackUnlisten(listen<DeployProgressPayload>(
       SOLANA_DEPLOY_PROGRESS_EVENT,
       (event) => {
         if (cancelled) return
         setLastDeployProgress(event.payload)
       },
-    ).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    ))
 
-    void listen<AuditEventPayload>(SOLANA_AUDIT_EVENT, (event) => {
+    trackUnlisten(listen<AuditEventPayload>(SOLANA_AUDIT_EVENT, (event) => {
       if (cancelled) return
       const payload = event.payload
       setAuditEvents((current) => {
@@ -3741,26 +3711,14 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
             : next
         })
       }
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
-    void listen<LogRawEventPayload>(SOLANA_LOG_EVENT, (event) => {
+    trackUnlisten(listen<LogRawEventPayload>(SOLANA_LOG_EVENT, (event) => {
       if (cancelled) return
       mergeLogEntries([event.payload.entry])
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
-    void listen<LogDecodedEventPayload>(SOLANA_LOG_DECODED_EVENT, (event) => {
+    trackUnlisten(listen<LogDecodedEventPayload>(SOLANA_LOG_DECODED_EVENT, (event) => {
       if (cancelled) return
       const payload = event.payload
       setDecodedLogEvents((current) => {
@@ -3769,13 +3727,7 @@ export function useSolanaWorkbench({ active }: Options): UseSolanaWorkbench {
           ? next.slice(next.length - MAX_DECODED_LOG_EVENTS)
           : next
       })
-    }).then((unsub) => {
-      if (cancelled) {
-        unsub()
-      } else {
-        unsubs.push(unsub)
-      }
-    })
+    }))
 
     // Nudge the backend to re-emit the current status so the UI syncs.
     void invoke("solana_subscribe_ready").catch(() => {

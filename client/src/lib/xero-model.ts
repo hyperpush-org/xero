@@ -6,7 +6,9 @@ import {
   mapRepository,
   phaseSummarySchema,
   projectSummarySchema,
+  repositoryStatusResponseSchema,
   repositorySummarySchema,
+  type RepositoryStatusResponseDto,
   type RepositoryStatusView,
   type RepositoryView,
 } from './xero-model/project'
@@ -26,21 +28,29 @@ import {
 import {
   mapNotificationBroker,
   notificationDispatchSchema,
+  notificationRouteSchema,
   notificationReplyClaimSchema,
   type NotificationBrokerView,
   type NotificationDispatchDto,
+  type NotificationRouteDto,
 } from './xero-model/notifications'
 import {
   autonomousRunSchema,
+  autonomousRunStateSchema,
   mapAutonomousRun,
+  type AutonomousRunStateDto,
   type AutonomousRunView,
 } from './xero-model/autonomous'
 import {
   agentSessionSchema,
   mapAgentSession,
+  runtimeRunSchema,
+  runtimeSessionSchema,
   selectAgentSessionId,
   type AgentSessionView,
+  type RuntimeRunDto,
   type RuntimeRunView,
+  type RuntimeSessionDto,
   type RuntimeSessionView,
 } from './xero-model/runtime'
 
@@ -111,6 +121,41 @@ export const projectSnapshotResponseSchema = z
 
 export type ProjectSnapshotResponseDto = z.infer<typeof projectSnapshotResponseSchema>
 
+export const projectLoadBundleRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    includeNotificationRoutes: z.boolean().default(false),
+  })
+  .strict()
+export type ProjectLoadBundleRequestDto = z.infer<typeof projectLoadBundleRequestSchema>
+
+export const projectLoadBundleDiagnosticSchema = z
+  .object({
+    section: z.string().trim().min(1),
+    code: z.string().trim().min(1),
+    message: z.string(),
+    retryable: z.boolean(),
+  })
+  .strict()
+export type ProjectLoadBundleDiagnosticDto = z.infer<
+  typeof projectLoadBundleDiagnosticSchema
+>
+
+export const projectLoadBundleSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    projectSnapshot: projectSnapshotResponseSchema,
+    repositoryStatus: repositoryStatusResponseSchema.nullable().optional(),
+    runtimeSession: runtimeSessionSchema.nullable().optional(),
+    runtimeRun: runtimeRunSchema.nullable().optional(),
+    autonomousRun: autonomousRunStateSchema.nullable().optional(),
+    notificationDispatches: z.array(notificationDispatchSchema).default([]),
+    notificationRoutes: z.array(notificationRouteSchema).default([]),
+    diagnostics: z.array(projectLoadBundleDiagnosticSchema).default([]),
+  })
+  .strict()
+export type ProjectLoadBundleDto = z.infer<typeof projectLoadBundleSchema>
+
 export interface ProjectDetailView extends Project {
   branchLabel: string
   runtimeLabel: string
@@ -129,6 +174,18 @@ export interface ProjectDetailView extends Project {
   runtimeSession?: RuntimeSessionView | null
   runtimeRun?: RuntimeRunView | null
   autonomousRun?: AutonomousRunView | null
+}
+
+export interface ProjectLoadBundleView {
+  projectId: string
+  projectSnapshot: ProjectSnapshotResponseDto
+  repositoryStatus: RepositoryStatusResponseDto | null
+  runtimeSession: RuntimeSessionDto | null
+  runtimeRun: RuntimeRunDto | null
+  autonomousRun: AutonomousRunStateDto | null
+  notificationDispatches: NotificationDispatchDto[]
+  notificationRoutes: NotificationRouteDto[]
+  diagnostics: ProjectLoadBundleDiagnosticDto[]
 }
 
 export function mapProjectSnapshot(

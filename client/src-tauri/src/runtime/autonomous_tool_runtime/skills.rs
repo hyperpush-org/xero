@@ -20,19 +20,24 @@ use crate::{
     },
     mcp::{load_mcp_registry_from_path, McpConnectionStatus, McpServerRecord},
     runtime::autonomous_skill_runtime::{
-        decide_skill_tool_access, discover_bundled_skill_directory, discover_local_skill_directory,
-        discover_plugin_roots, discover_plugin_skill_contribution,
-        discover_project_skill_directory, load_discovered_skill_context,
-        load_skill_context_from_directory, sanitize_skill_tool_model_text,
-        skill_tool_diagnostic_from_command_error, validate_skill_tool_context_payload,
+        compute_skill_directory_version_hash, decide_skill_tool_access,
+        discover_bundled_skill_directory, discover_local_skill_directory, discover_plugin_roots,
+        discover_plugin_skill_contribution, discover_project_skill_directory,
+        load_discovered_skill_context, load_skill_context_from_directory,
+        sanitize_skill_tool_model_text, skill_tool_diagnostic_from_command_error,
+        validate_attached_skill_resolution_request, validate_skill_tool_context_payload,
         AutonomousSkillInstallRequest, AutonomousSkillInvokeRequest, AutonomousSkillResolveOutput,
-        AutonomousSkillResolveRequest, AutonomousSkillSourceMetadata, XeroDiscoveredSkill,
-        XeroPluginRoot, XeroSkillDirectoryDiscovery, XeroSkillSourceLocator, XeroSkillSourceRecord,
-        XeroSkillSourceScope, XeroSkillSourceState, XeroSkillToolAccessStatus,
-        XeroSkillToolContextAsset, XeroSkillToolContextDocument, XeroSkillToolContextPayload,
-        XeroSkillToolDiagnostic, XeroSkillToolDynamicAssetInput, XeroSkillToolInput,
-        XeroSkillToolLifecycleEvent, XeroSkillToolLifecycleResult, XeroSkillToolOperation,
-        XeroSkillTrustState, XERO_SKILL_TOOL_CONTRACT_VERSION,
+        AutonomousSkillResolveRequest, AutonomousSkillSourceMetadata, XeroAttachedSkillDiagnostic,
+        XeroAttachedSkillRef, XeroAttachedSkillRepairHint, XeroAttachedSkillResolutionReport,
+        XeroAttachedSkillResolutionRequest, XeroAttachedSkillResolutionSnapshot,
+        XeroAttachedSkillResolutionStatus, XeroAttachedSkillScope, XeroDiscoveredSkill,
+        XeroPluginRoot, XeroResolvedAttachedSkill, XeroSkillDirectoryDiscovery,
+        XeroSkillSourceLocator, XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState,
+        XeroSkillToolAccessStatus, XeroSkillToolContextAsset, XeroSkillToolContextDocument,
+        XeroSkillToolContextPayload, XeroSkillToolDiagnostic, XeroSkillToolDynamicAssetInput,
+        XeroSkillToolInput, XeroSkillToolLifecycleEvent, XeroSkillToolLifecycleResult,
+        XeroSkillToolOperation, XeroSkillTrustState,
+        XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION, XERO_SKILL_TOOL_CONTRACT_VERSION,
     },
 };
 
@@ -462,6 +467,328 @@ impl AutonomousToolRuntime {
             diagnostics: Vec::new(),
             truncated: false,
         })
+    }
+
+    pub fn resolve_attached_skills(
+        &self,
+        request: XeroAttachedSkillResolutionRequest,
+    ) -> CommandResult<XeroAttachedSkillResolutionReport> {
+        let request = validate_attached_skill_resolution_request(request)?;
+        let resolved_at = now_timestamp();
+
+        if request.attached_skills.is_empty() {
+            let snapshot = XeroAttachedSkillResolutionSnapshot {
+                contract_version: XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION,
+                project_id: request.project_id,
+                run_id: request.run_id,
+                resolved_at,
+                attached_skills: Vec::new(),
+            };
+            let snapshot =
+                project_store::persist_runtime_attached_skill_snapshot(&self.repo_root, &snapshot)?;
+            return Ok(attached_skill_resolution_success(snapshot));
+        }
+
+        let Some(skill_tool) = self.skill_tool.as_ref() else {
+            let diagnostics = request
+                .attached_skills
+                .iter()
+                .map(|attachment| {
+                    XeroAttachedSkillDiagnostic::user_fixable(
+                        "attached_skill_registry_unavailable",
+                        "Xero cannot resolve attached skills because the skill registry is unavailable for this run.",
+                        attachment,
+                        XeroAttachedSkillRepairHint::Retry,
+                    )
+                })
+                .collect::<CommandResult<Vec<_>>>()?;
+            return Ok(attached_skill_resolution_failure(diagnostics));
+        };
+
+        let discovered = self.collect_skill_tool_candidates(
+            skill_tool,
+            None,
+            true,
+            usize::MAX / 2,
+            XeroSkillToolOperation::Invoke,
+        )?;
+        self.cache_skill_candidates(&discovered.entries)?;
+        let entries = discovered
+            .entries
+            .into_iter()
+            .map(|entry| (candidate_source_id(&entry), entry))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut diagnostics = Vec::new();
+        let mut resolved = Vec::with_capacity(request.attached_skills.len());
+        for attachment in &request.attached_skills {
+            let Some(entry) = entries.get(&attachment.source_id) else {
+                diagnostics.push(XeroAttachedSkillDiagnostic::user_fixable(
+                    "attached_skill_source_missing",
+                    format!(
+                        "Xero could not find attached skill source `{}` for configured skill `{}`.",
+                        attachment.source_id, attachment.skill_id
+                    ),
+                    attachment,
+                    XeroAttachedSkillRepairHint::RemoveAttachment,
+                )?);
+                continue;
+            };
+
+            match self.resolve_attached_skill_entry(skill_tool, attachment, entry) {
+                Ok(skill) => resolved.push(skill),
+                Err(diagnostic) => diagnostics.push(diagnostic),
+            }
+        }
+
+        if !diagnostics.is_empty() {
+            return Ok(attached_skill_resolution_failure(diagnostics));
+        }
+
+        let snapshot = XeroAttachedSkillResolutionSnapshot {
+            contract_version: XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION,
+            project_id: request.project_id,
+            run_id: request.run_id,
+            resolved_at,
+            attached_skills: resolved,
+        };
+        let snapshot =
+            project_store::persist_runtime_attached_skill_snapshot(&self.repo_root, &snapshot)?;
+        Ok(attached_skill_resolution_success(snapshot))
+    }
+
+    fn resolve_attached_skill_entry(
+        &self,
+        skill_tool: &super::AutonomousSkillToolRuntime,
+        attachment: &XeroAttachedSkillRef,
+        entry: &CachedSkillToolCandidate,
+    ) -> Result<XeroResolvedAttachedSkill, XeroAttachedSkillDiagnostic> {
+        let record = source_record_for_entry(entry).map_err(|error| {
+            attached_skill_error_diagnostic(
+                attachment,
+                &error,
+                Some(XeroAttachedSkillRepairHint::RemoveAttachment),
+            )
+        })?;
+        let source_kind = record.locator.kind();
+        let scope = XeroAttachedSkillScope::from_source_scope(&record.scope);
+        if source_kind != attachment.source_kind {
+            return Err(
+                XeroAttachedSkillDiagnostic::user_fixable(
+                    "attached_skill_source_kind_mismatch",
+                    format!(
+                        "Attached skill `{}` expects source kind `{:?}`, but registry source `{}` is `{:?}`.",
+                        attachment.id, attachment.source_kind, attachment.source_id, source_kind
+                    ),
+                    attachment,
+                    XeroAttachedSkillRepairHint::RefreshPin,
+                )
+                .expect("static attached skill diagnostic should validate"),
+            );
+        }
+        if scope != attachment.scope {
+            return Err(XeroAttachedSkillDiagnostic::user_fixable(
+                "attached_skill_scope_mismatch",
+                format!(
+                    "Attached skill `{}` expects scope `{:?}`, but registry source `{}` is `{:?}`.",
+                    attachment.id, attachment.scope, attachment.source_id, scope
+                ),
+                attachment,
+                XeroAttachedSkillRepairHint::RefreshPin,
+            )
+            .expect("static attached skill diagnostic should validate"));
+        }
+
+        if candidate_skill_id(entry) != attachment.skill_id {
+            return Err(XeroAttachedSkillDiagnostic::user_fixable(
+                "attached_skill_skill_id_mismatch",
+                format!(
+                    "Attached skill `{}` expects skill id `{}`, but source `{}` resolves to `{}`.",
+                    attachment.id,
+                    attachment.skill_id,
+                    attachment.source_id,
+                    candidate_skill_id(entry)
+                ),
+                attachment,
+                XeroAttachedSkillRepairHint::RefreshPin,
+            )
+            .expect("static attached skill diagnostic should validate"));
+        }
+
+        if let Some(diagnostic) = attached_skill_state_diagnostic(attachment, record.state) {
+            return Err(diagnostic);
+        }
+        if let Some(diagnostic) = attached_skill_trust_diagnostic(attachment, record.trust) {
+            return Err(diagnostic);
+        }
+
+        let current_version_hash = self
+            .current_attached_skill_version_hash(skill_tool, entry)
+            .map_err(|error| {
+                attached_skill_error_diagnostic(
+                    attachment,
+                    &error,
+                    Some(if error.retryable {
+                        XeroAttachedSkillRepairHint::Retry
+                    } else {
+                        XeroAttachedSkillRepairHint::RefreshPin
+                    }),
+                )
+            })?;
+        if current_version_hash != attachment.version_hash {
+            return Err(
+                XeroAttachedSkillDiagnostic::user_fixable(
+                    "attached_skill_version_hash_mismatch",
+                    format!(
+                        "Attached skill `{}` is pinned to `{}`, but source `{}` currently resolves to `{}`.",
+                        attachment.id, attachment.version_hash, attachment.source_id, current_version_hash
+                    ),
+                    attachment,
+                    XeroAttachedSkillRepairHint::RefreshPin,
+                )
+                .expect("static attached skill diagnostic should validate"),
+            );
+        }
+
+        let context = self
+            .attached_skill_context_for_entry(
+                skill_tool,
+                entry,
+                attachment.include_supporting_assets,
+            )
+            .map_err(|error| {
+                attached_skill_error_diagnostic(
+                    attachment,
+                    &error,
+                    Some(if error.retryable {
+                        XeroAttachedSkillRepairHint::Retry
+                    } else {
+                        XeroAttachedSkillRepairHint::RefreshPin
+                    }),
+                )
+            })?;
+
+        Ok(XeroResolvedAttachedSkill {
+            id: attachment.id.clone(),
+            source_id: record.source_id,
+            skill_id: candidate_skill_id(entry),
+            name: sanitize_candidate_text(&candidate_name(entry), &attachment.name),
+            description: sanitize_candidate_text(&candidate_description(entry), ""),
+            source_kind,
+            scope,
+            version_hash: current_version_hash,
+            include_supporting_assets: attachment.include_supporting_assets,
+            required: true,
+            content_hash: context_hash(&context),
+            context,
+        })
+    }
+
+    fn current_attached_skill_version_hash(
+        &self,
+        skill_tool: &super::AutonomousSkillToolRuntime,
+        entry: &CachedSkillToolCandidate,
+    ) -> CommandResult<String> {
+        match entry {
+            CachedSkillToolCandidate::Installed(record) => match &record.source.locator {
+                XeroSkillSourceLocator::Github { .. } => {
+                    let source = record
+                        .source
+                        .locator
+                        .to_autonomous_github_source()
+                        .ok_or_else(|| {
+                            CommandError::user_fixable(
+                            "attached_skill_source_unsupported",
+                            "Xero could not map this installed GitHub skill back to its source.",
+                        )
+                        })?;
+                    let latest =
+                        skill_tool
+                            .github_runtime
+                            .resolve(AutonomousSkillResolveRequest {
+                                skill_id: record.skill_id.clone(),
+                                timeout_ms: None,
+                                source_repo: Some(source.repo),
+                                source_ref: Some(source.reference),
+                            })?;
+                    Ok(latest.source.tree_hash)
+                }
+                XeroSkillSourceLocator::Dynamic { .. } => {
+                    let context = load_installed_filesystem_context(record, true)?;
+                    Ok(context_hash(&context))
+                }
+                XeroSkillSourceLocator::Mcp { .. } => {
+                    record.version_hash.clone().ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "attached_skill_version_hash_missing",
+                            "Xero requires attached MCP skill records to carry a version hash.",
+                        )
+                    })
+                }
+                _ => {
+                    let local_location = record.local_location.as_deref().ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "attached_skill_location_missing",
+                            format!(
+                                "Installed skill `{}` does not have a local location.",
+                                record.skill_id
+                            ),
+                        )
+                    })?;
+                    compute_skill_directory_version_hash(Path::new(local_location))
+                }
+            },
+            CachedSkillToolCandidate::Discovered(candidate) => Ok(candidate.version_hash.clone()),
+            CachedSkillToolCandidate::Github(candidate) => {
+                let latest = skill_tool
+                    .github_runtime
+                    .resolve(AutonomousSkillResolveRequest {
+                        skill_id: candidate.skill_id.clone(),
+                        timeout_ms: None,
+                        source_repo: Some(candidate.github_source.repo.clone()),
+                        source_ref: Some(candidate.github_source.reference.clone()),
+                    })?;
+                Ok(latest.source.tree_hash)
+            }
+            CachedSkillToolCandidate::Mcp(candidate) => Ok(candidate.version_hash.clone()),
+        }
+    }
+
+    fn attached_skill_context_for_entry(
+        &self,
+        skill_tool: &super::AutonomousSkillToolRuntime,
+        entry: &CachedSkillToolCandidate,
+        include_supporting_assets: bool,
+    ) -> CommandResult<XeroSkillToolContextPayload> {
+        match entry.clone() {
+            CachedSkillToolCandidate::Installed(record) => match &record.source.locator {
+                XeroSkillSourceLocator::Github { .. } => {
+                    let source = record.source.locator.to_autonomous_github_source().ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "attached_skill_source_unsupported",
+                            "Xero could not map this installed GitHub skill back to its source.",
+                        )
+                    })?;
+                    self.invoke_github_skill(skill_tool, &source, include_supporting_assets)
+                }
+                XeroSkillSourceLocator::Mcp { .. } => Err(CommandError::user_fixable(
+                    "attached_skill_mcp_installed_state_unsupported",
+                    "MCP-provided attached skills must resolve from the connected MCP server rather than installed filesystem state.",
+                )),
+                _ => load_installed_filesystem_context(&record, include_supporting_assets),
+            },
+            CachedSkillToolCandidate::Discovered(candidate) => {
+                load_discovered_skill_context(&candidate, include_supporting_assets)
+            }
+            CachedSkillToolCandidate::Github(candidate) => self.invoke_github_skill(
+                skill_tool,
+                &candidate.github_source,
+                include_supporting_assets,
+            ),
+            CachedSkillToolCandidate::Mcp(candidate) => {
+                self.invoke_mcp_skill(&candidate, include_supporting_assets)
+            }
+        }
     }
 
     fn collect_skill_tool_candidates(
@@ -1354,6 +1681,130 @@ impl AutonomousToolRuntime {
     }
 }
 
+fn attached_skill_resolution_success(
+    snapshot: XeroAttachedSkillResolutionSnapshot,
+) -> XeroAttachedSkillResolutionReport {
+    XeroAttachedSkillResolutionReport {
+        contract_version: XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION,
+        status: XeroAttachedSkillResolutionStatus::Succeeded,
+        snapshot: Some(snapshot),
+        diagnostics: Vec::new(),
+    }
+}
+
+fn attached_skill_resolution_failure(
+    diagnostics: Vec<XeroAttachedSkillDiagnostic>,
+) -> XeroAttachedSkillResolutionReport {
+    XeroAttachedSkillResolutionReport {
+        contract_version: XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION,
+        status: XeroAttachedSkillResolutionStatus::Failed,
+        snapshot: None,
+        diagnostics,
+    }
+}
+
+fn attached_skill_state_diagnostic(
+    attachment: &XeroAttachedSkillRef,
+    state: XeroSkillSourceState,
+) -> Option<XeroAttachedSkillDiagnostic> {
+    let (code, repair_hint, message) = match state {
+        XeroSkillSourceState::Enabled => return None,
+        XeroSkillSourceState::Stale => (
+            "attached_skill_source_stale",
+            XeroAttachedSkillRepairHint::RefreshPin,
+            format!(
+                "Attached skill source `{}` is stale. Refresh the attachment pin before starting this agent.",
+                attachment.source_id
+            ),
+        ),
+        XeroSkillSourceState::Blocked => (
+            "attached_skill_source_blocked",
+            XeroAttachedSkillRepairHint::RemoveAttachment,
+            format!(
+                "Attached skill source `{}` is blocked and cannot be injected.",
+                attachment.source_id
+            ),
+        ),
+        XeroSkillSourceState::Disabled => (
+            "attached_skill_source_disabled",
+            XeroAttachedSkillRepairHint::EnableSource,
+            format!(
+                "Attached skill source `{}` is disabled. Enable the source or remove the attachment.",
+                attachment.source_id
+            ),
+        ),
+        XeroSkillSourceState::Failed => (
+            "attached_skill_source_failed",
+            XeroAttachedSkillRepairHint::Retry,
+            format!(
+                "Attached skill source `{}` is in a failed state. Reload the source or remove the attachment.",
+                attachment.source_id
+            ),
+        ),
+        XeroSkillSourceState::Discoverable | XeroSkillSourceState::Installed => (
+            "attached_skill_source_not_enabled",
+            XeroAttachedSkillRepairHint::EnableSource,
+            format!(
+                "Attached skill source `{}` must be enabled before it can be injected.",
+                attachment.source_id
+            ),
+        ),
+    };
+    Some(
+        XeroAttachedSkillDiagnostic::user_fixable(code, message, attachment, repair_hint)
+            .expect("static attached skill diagnostic should validate"),
+    )
+}
+
+fn attached_skill_trust_diagnostic(
+    attachment: &XeroAttachedSkillRef,
+    trust: XeroSkillTrustState,
+) -> Option<XeroAttachedSkillDiagnostic> {
+    let (code, repair_hint, message) = match trust {
+        XeroSkillTrustState::Trusted | XeroSkillTrustState::UserApproved => return None,
+        XeroSkillTrustState::ApprovalRequired => (
+            "attached_skill_approval_required",
+            XeroAttachedSkillRepairHint::ApproveSource,
+            format!(
+                "Attached skill source `{}` requires user approval before it can be injected.",
+                attachment.source_id
+            ),
+        ),
+        XeroSkillTrustState::Untrusted => (
+            "attached_skill_source_untrusted",
+            XeroAttachedSkillRepairHint::ApproveSource,
+            format!(
+                "Attached skill source `{}` is untrusted. Approve the source or remove the attachment.",
+                attachment.source_id
+            ),
+        ),
+        XeroSkillTrustState::Blocked => (
+            "attached_skill_trust_blocked",
+            XeroAttachedSkillRepairHint::RemoveAttachment,
+            format!(
+                "Attached skill source `{}` is blocked by trust policy and cannot be injected.",
+                attachment.source_id
+            ),
+        ),
+    };
+    Some(
+        XeroAttachedSkillDiagnostic::user_fixable(code, message, attachment, repair_hint)
+            .expect("static attached skill diagnostic should validate"),
+    )
+}
+
+fn attached_skill_error_diagnostic(
+    attachment: &XeroAttachedSkillRef,
+    error: &CommandError,
+    repair_hint: Option<XeroAttachedSkillRepairHint>,
+) -> XeroAttachedSkillDiagnostic {
+    let mut diagnostic = skill_tool_diagnostic_from_command_error(error);
+    if diagnostic.code == "skill_tool_failed" {
+        diagnostic.code = "attached_skill_resolution_failed".into();
+    }
+    XeroAttachedSkillDiagnostic::from_skill_tool_diagnostic(diagnostic, attachment, repair_hint)
+}
+
 fn collect_mcp_resource_skill_candidates(
     skill_tool: &super::AutonomousSkillToolRuntime,
     server: &McpServerRecord,
@@ -1939,12 +2390,12 @@ fn github_candidate(
     {
         XeroSkillTrustState::Trusted
     } else {
-        XeroSkillTrustState::ApprovalRequired
+        XeroSkillTrustState::UserApproved
     };
     let source = XeroSkillSourceRecord::github_autonomous(
         XeroSkillSourceScope::project(skill_tool.project_id.clone())?,
         &resolved.source,
-        XeroSkillSourceState::Discoverable,
+        XeroSkillSourceState::Enabled,
         trust,
     )?;
     Ok(ResolvedGithubSkillCandidate {

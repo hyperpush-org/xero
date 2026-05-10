@@ -436,7 +436,10 @@ fn replay_cross_store_operation(
     }
 
     let database_path = database_path_for_repo(repo_root);
-    match (operation.store_kind.as_str(), operation.entity_kind.as_str()) {
+    match (
+        operation.store_kind.as_str(),
+        operation.entity_kind.as_str(),
+    ) {
         ("project_record_lance", "project_record") => {
             let row: project_record_lance::ProjectRecordRow = decode_outbox_row(operation)?;
             let store =
@@ -489,7 +492,10 @@ fn cross_store_entity_exists(
     operation: &CrossStoreOutboxRecord,
 ) -> Result<bool, CommandError> {
     let database_path = database_path_for_repo(repo_root);
-    match (operation.store_kind.as_str(), operation.entity_kind.as_str()) {
+    match (
+        operation.store_kind.as_str(),
+        operation.entity_kind.as_str(),
+    ) {
         ("project_record_lance", "project_record") => {
             let store =
                 project_record_lance::open_for_database_path(&database_path, &operation.project_id);

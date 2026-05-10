@@ -344,6 +344,7 @@ function makeLargeDiffPatch(lineCount: number): string {
 
 function makeProviderModelCatalog(modelCount: number): ProviderModelCatalogDto {
   return {
+    contractVersion: 1,
     profileId: 'openrouter-default',
     providerId: 'openrouter',
     configuredModelId: 'model-0',
@@ -360,6 +361,7 @@ function makeProviderModelCatalog(modelCount: number): ProviderModelCatalogDto {
         defaultEffort: index % 2 === 0 ? ('medium' as const) : null,
       },
     })),
+    contractDiagnostics: [],
   }
 }
 

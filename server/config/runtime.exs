@@ -1,9 +1,15 @@
 import Config
 
 # Load .env files for non-prod environments. In production, env vars are
-# expected to be provided by the host (systemd, fly.io, k8s, etc.). The
-# `source/1` (non-bang) variant tolerates missing files.
-if config_env() != :prod do
+# expected to be provided by the host (systemd, fly.io, k8s, etc.) — except
+# when running via `pnpm start` from a source checkout, signalled by
+# `XERO_LAUNCH_MODE=local-source`. That path auto-generates `server/.env`
+# with sensible defaults so first-time users don't hand-edit anything; real
+# prod deploys never set the var, so they remain unaffected.
+load_dotenv? =
+  config_env() != :prod or System.get_env("XERO_LAUNCH_MODE") == "local-source"
+
+if load_dotenv? do
   import Dotenvy
 
   {:ok, parsed_env} =

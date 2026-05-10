@@ -25,6 +25,7 @@ export interface EdgeValidationDiagnostic {
 const ALLOWED_PAIRS: ReadonlyArray<readonly [AgentGraphNodeKind, AgentGraphNodeKind]> = [
   // Header drives the major lanes
   ['agent-header', 'prompt'],
+  ['agent-header', 'skills'],
   ['agent-header', 'tool'],
   ['agent-header', 'db-table'],
   ['agent-header', 'agent-output'],
@@ -123,6 +124,7 @@ export function applyEdgeValidationClasses<T extends Edge>(
 const KIND_LABELS: Record<AgentGraphNodeKind, string> = {
   'agent-header': 'agent header',
   prompt: 'prompt',
+  skills: 'skill',
   tool: 'tool',
   'db-table': 'DB table',
   'agent-output': 'output',

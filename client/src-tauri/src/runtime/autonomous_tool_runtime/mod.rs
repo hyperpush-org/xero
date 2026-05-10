@@ -64,10 +64,12 @@ pub use agent_coordination::{
     AutonomousAgentCoordinationRequest,
 };
 pub use agent_definition::{
-    AutonomousAgentDefinitionAction, AutonomousAgentDefinitionOutput,
-    AutonomousAgentDefinitionRequest, AutonomousAgentDefinitionSummary,
-    AutonomousAgentDefinitionValidationDiagnostic, AutonomousAgentDefinitionValidationReport,
-    AutonomousAgentDefinitionValidationStatus, AUTONOMOUS_TOOL_AGENT_DEFINITION,
+    AutonomousAgentAttachableSkillCatalog, AutonomousAgentAttachableSkillDiagnostic,
+    AutonomousAgentAttachableSkillEntry, AutonomousAgentDefinitionAction,
+    AutonomousAgentDefinitionOutput, AutonomousAgentDefinitionRequest,
+    AutonomousAgentDefinitionSummary, AutonomousAgentDefinitionValidationDiagnostic,
+    AutonomousAgentDefinitionValidationReport, AutonomousAgentDefinitionValidationStatus,
+    AUTONOMOUS_TOOL_AGENT_DEFINITION,
 };
 pub use browser::{
     AutonomousBrowserAction, AutonomousBrowserOutput, AutonomousBrowserRequest, BrowserExecutor,

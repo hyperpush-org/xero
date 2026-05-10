@@ -808,6 +808,7 @@ export function useAgentRuntimeController({
     areControlsDisabled,
     isRuntimeAgentSwitchDisabled,
     canSubmitPrompt,
+    canStopRuntimeRun,
     runtimeSessionBindInFlight,
     operatorAnswers,
     pendingOperatorIntent,

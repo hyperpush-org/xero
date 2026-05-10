@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type {
+  AgentAttachedSkillDto,
   AgentDbTouchpointDetailDto,
   AgentToolSummaryDto,
   WorkflowAgentDetailDto,
@@ -10,6 +11,7 @@ import {
   AGENT_GRAPH_HEADER_NODE_ID,
   AGENT_GRAPH_OUTPUT_NODE_ID,
   AGENT_GRAPH_TRIGGER_HANDLES,
+  agentGraphFromProjection,
   buildAgentGraph,
   humanizeIdentifier,
   type AgentHeaderNodeData,
@@ -41,6 +43,25 @@ function toolSummary(name: string, group: string): AgentToolSummaryDto {
     tags: [],
     schemaFields: [],
     examples: [],
+  }
+}
+
+function attachedSkill(): AgentAttachedSkillDto {
+  return {
+    id: 'rust-best-practices',
+    sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+    skillId: 'rust-best-practices',
+    name: 'Rust Best Practices',
+    description: 'Guide for writing idiomatic Rust.',
+    sourceKind: 'bundled',
+    scope: 'global',
+    versionHash: 'hash-rust',
+    includeSupportingAssets: false,
+    required: true,
+    sourceState: 'enabled',
+    trustState: 'trusted',
+    availabilityStatus: 'available',
+    availabilityReason: 'Skill source is enabled, trusted, and pinned for attachment.',
   }
 }
 
@@ -155,10 +176,66 @@ function fixtureDetail(): WorkflowAgentDetailDto {
         required: true,
       },
     ],
+    attachedSkills: [],
   }
 }
 
 describe('buildAgentGraph', () => {
+  it('hydrates Rust graph projection DTOs into React Flow nodes and edges', () => {
+    const graph = agentGraphFromProjection({
+      schema: 'xero.workflow_agent_graph_projection.v1',
+      nodes: [
+        {
+          id: 'tool-group-frame:mcp',
+          type: 'tool-group-frame',
+          position: { x: 0, y: 0 },
+          data: { label: 'MCP', count: 1, order: 110, sourceGroups: ['mcp_invoke'] },
+          dragHandle: '.agent-tool-group-frame__drag-handle',
+          style: { pointerEvents: 'none' },
+        },
+        {
+          id: 'tool:Mcp Call Tool',
+          type: 'tool',
+          position: { x: 12, y: 26 },
+          parentId: 'tool-group-frame:mcp',
+          extent: 'parent',
+          draggable: false,
+          style: { pointerEvents: 'all' },
+          data: {
+            tool: toolSummary('Mcp Call Tool', 'mcp_invoke'),
+            directConnectionHandles: { source: true, target: false },
+          },
+        },
+      ],
+      edges: [
+        {
+          id: 'e:header->tool-group-frame:mcp',
+          source: AGENT_GRAPH_HEADER_NODE_ID,
+          target: 'tool-group-frame:mcp',
+          sourceHandle: 'tools',
+          type: 'smoothstep',
+          data: { category: 'tool' },
+          className: 'agent-edge agent-edge-tool',
+          marker: 'arrow_closed',
+        },
+      ],
+      groups: [
+        {
+          key: 'mcp',
+          label: 'MCP',
+          kind: 'tool_category',
+          order: 110,
+          nodeIds: ['tool:Mcp Call Tool'],
+          sourceGroups: ['mcp_invoke'],
+        },
+      ],
+    })
+
+    expect(graph.nodes[1]?.parentId).toBe('tool-group-frame:mcp')
+    expect(graph.nodes[1]?.draggable).toBe(false)
+    expect(graph.edges[0]?.markerEnd).toBeDefined()
+  })
+
   it('produces one node per logical entity plus header, output, sections, and consumes', () => {
     const detail = fixtureDetail()
     const { nodes } = buildAgentGraph(detail)
@@ -198,6 +275,8 @@ describe('buildAgentGraph', () => {
       browserControlAllowed: false,
       skillRuntimeAllowed: false,
       subagentAllowed: false,
+      allowedSubagentRoles: [],
+      deniedSubagentRoles: [],
       commandAllowed: true,
       destructiveWriteAllowed: false,
     }
@@ -229,6 +308,44 @@ describe('buildAgentGraph', () => {
     )
     expect(touchpoints).toContain('read')
     expect(touchpoints).toContain('write')
+  })
+
+  it('renders attached skills as dedicated skills nodes and header context', () => {
+    const detail = fixtureDetail()
+    detail.attachedSkills = [attachedSkill()]
+
+    const { nodes, edges } = buildAgentGraph(detail)
+    const skillNode = nodes.find((node) => node.id === 'skills:rust-best-practices')
+    const header = nodes.find((node) => node.id === AGENT_GRAPH_HEADER_NODE_ID)
+    const skillEdge = edges.find((edge) => edge.target === skillNode?.id)
+
+    expect(skillNode?.type).toBe('skills')
+    expect(skillNode?.data.skill).toMatchObject({
+      skillId: 'rust-best-practices',
+      sourceKind: 'bundled',
+      availabilityStatus: 'available',
+    })
+    expect((header?.data as AgentHeaderNodeData | undefined)?.summary.attachedSkills).toBe(1)
+    expect(skillEdge).toMatchObject({
+      source: AGENT_GRAPH_HEADER_NODE_ID,
+      sourceHandle: 'skills',
+      className: 'agent-edge agent-edge-skill',
+    })
+  })
+
+  it('hides the skills lane until a skill is attached', () => {
+    const detail = fixtureDetail()
+    detail.ref = { kind: 'custom', definitionId: 'custom-agent', version: 1 }
+    detail.header = {
+      ...detail.header,
+      scope: 'project_custom',
+    }
+
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(nodes, new Map())
+    const skillsLane = placed.find((node) => node.id === 'lane:skills')
+
+    expect(skillsLane).toBeUndefined()
   })
 
   it('connects every non-header, non-section, non-consumed node back to the header', () => {

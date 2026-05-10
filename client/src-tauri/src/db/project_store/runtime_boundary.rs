@@ -333,11 +333,9 @@ pub fn prepare_runtime_operator_run_resume(
         read_operator_approval_by_action_id(&connection, &database_path, project_id, action_id)?
             .ok_or_else(|| {
                 CommandError::user_fixable(
-                    "operator_action_not_found",
-                    format!(
-                "Xero could not find operator request `{action_id}` for the selected project."
-            ),
-                )
+            "operator_action_not_found",
+            format!("Xero could not find operator request `{action_id}` for the selected project."),
+        )
             })?;
 
     let Some(runtime_target) = decode_runtime_operator_resume_target(&approval_request)? else {

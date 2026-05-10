@@ -250,6 +250,7 @@ fn map_validation_diagnostic(
         denied_effect_class: diagnostic.denied_effect_class.clone(),
         base_capability_profile: diagnostic.base_capability_profile.clone(),
         reason: diagnostic.reason.clone(),
+        repair_hint: diagnostic.repair_hint.clone(),
     }
 }
 

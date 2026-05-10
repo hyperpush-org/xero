@@ -201,6 +201,15 @@ export const skillProjectSourceSchema = z
   })
   .strict()
 
+export const skillRegistryContractDiagnosticSchema = z
+  .object({
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    severity: z.enum(['info', 'warning', 'error']),
+    path: z.array(z.string()),
+  })
+  .strict()
+
 export const skillSourceSettingsSchema = z
   .object({
     localRoots: z.array(skillLocalRootSchema).default([]),
@@ -213,12 +222,14 @@ export const skillSourceSettingsSchema = z
 
 export const skillRegistrySchema = z
   .object({
+    contractVersion: z.literal(1).default(1),
     projectId: nonEmptyOptionalTextSchema,
     entries: z.array(skillRegistryEntrySchema).default([]),
     plugins: z.array(pluginRegistryEntrySchema).default([]),
     pluginCommands: z.array(pluginCommandContributionSchema).default([]),
     sources: skillSourceSettingsSchema,
     diagnostics: z.array(skillDiscoveryDiagnosticSchema).default([]),
+    contractDiagnostics: z.array(skillRegistryContractDiagnosticSchema).default([]),
     reloadedAt: isoTimestampSchema,
   })
   .strict()
@@ -343,6 +354,7 @@ export type PluginCommandContributionDto = z.infer<typeof pluginCommandContribut
 export type PluginRegistryEntryDto = z.infer<typeof pluginRegistryEntrySchema>
 export type SkillGithubSourceDto = z.infer<typeof skillGithubSourceSchema>
 export type SkillProjectSourceDto = z.infer<typeof skillProjectSourceSchema>
+export type SkillRegistryContractDiagnosticDto = z.infer<typeof skillRegistryContractDiagnosticSchema>
 export type SkillSourceSettingsDto = z.infer<typeof skillSourceSettingsSchema>
 export type SkillRegistryDto = z.infer<typeof skillRegistrySchema>
 export type ListSkillRegistryRequestDto = z.infer<typeof listSkillRegistryRequestSchema>

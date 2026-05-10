@@ -54,16 +54,22 @@ import type {
 import {
   agentRefKey,
   type AgentAuthoringCatalogDto,
+  type AgentAuthoringAttachableSkillDto,
+  type AgentAuthoringSkillSearchResultDto,
+  type SearchAgentAuthoringSkillsResponseDto,
   type AgentTriggerRefDto,
   type WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
+import { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 
 import {
   AGENT_GRAPH_HEADER_HANDLES,
+  AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS,
   AGENT_GRAPH_HEADER_NODE_ID,
   AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
   AGENT_GRAPH_OUTPUT_NODE_ID,
   AGENT_GRAPH_TRIGGER_HANDLES,
+  agentGraphFromProjection,
   buildAgentGraph,
   buildAgentGraphForEditing,
   decodeAgentGraphNodeId,
@@ -73,6 +79,7 @@ import {
   inferAdvancedFromConnections,
   lifecycleEventLabel,
   promptNodeId,
+  skillNodeId,
   toolNodeId,
   type AgentGraph,
   type AgentGraphEdge,
@@ -108,6 +115,7 @@ import { LaneLabelNode } from './nodes/lane-label-node'
 import { OutputNode } from './nodes/output-node'
 import { OutputSectionNode } from './nodes/output-section-node'
 import { PromptNode } from './nodes/prompt-node'
+import { SkillNode } from './nodes/skill-node'
 import { ToolGroupFrameNode } from './nodes/tool-group-frame-node'
 import { ToolNode } from './nodes/tool-node'
 
@@ -116,6 +124,7 @@ import './agent-visualization.css'
 const NODE_TYPES = {
   'agent-header': AgentHeaderNode,
   prompt: PromptNode,
+  skills: SkillNode,
   tool: ToolNode,
   'db-table': DbTableNode,
   'agent-output': OutputNode,
@@ -160,6 +169,7 @@ const DEFAULT_EDGE_OPTIONS = {
 const NODE_SIZE_BY_TYPE: Record<string, NodeSize> = {
   'agent-header': { width: 320, height: 210 },
   prompt: { width: 300, height: 48 },
+  skills: { width: 260, height: 112 },
   // Tool / output-section heights are intentionally close to the rendered
   // collapsed-card height so layout doesn't pad the column with empty
   // vertical slack between rows. Expansion delta is added separately via
@@ -185,6 +195,7 @@ const EXPANDED_BODY_EXTRA: Partial<Record<string, number>> = {
 
 const POSITIONS_STORAGE_PREFIX = 'xero.workflows.canvas-positions:'
 const SNAP_TO_GRID_STORAGE_KEY = 'xero.workflows.canvas-snap-to-grid'
+const SNAP_TO_GRID_APP_STATE_KEY = 'workflow.canvas.snapToGrid.v1'
 const INTERACTION_SETTLE_MS = 110
 const EXPANSION_MEASUREMENT_SETTLE_MS = 280
 const DOT_GRID_GAP = 32
@@ -228,6 +239,7 @@ type StoredPositions = Record<string, { x: number; y: number }>
 
 type LaneDragCategory =
   | 'prompt'
+  | 'skills'
   | 'tool'
   | 'db-table'
   | 'agent-output'
@@ -254,6 +266,7 @@ export interface AgentVisualizationEditingStatus {
 
 interface AgentVisualizationProps {
   active?: boolean
+  projectId?: string | null
   detail?: WorkflowAgentDetailDto | null
   emptyState?: ReactNode
   emptyStateVisible?: boolean
@@ -270,6 +283,14 @@ interface AgentVisualizationProps {
   // editing palette. When null the canvas falls back to empty pickers so the
   // UI degrades gracefully if the catalog hasn't loaded yet.
   authoringCatalog?: AgentAuthoringCatalogDto | null
+  onSearchAttachableSkills?: (params: {
+    query: string
+    offset: number
+    limit: number
+  }) => Promise<SearchAgentAuthoringSkillsResponseDto>
+  onResolveAttachableSkill?: (
+    skill: AgentAuthoringSkillSearchResultDto,
+  ) => Promise<AgentAuthoringAttachableSkillDto>
   onSubmit?: (params: {
     snapshot: Record<string, unknown>
     mode: CanvasMode
@@ -278,6 +299,8 @@ interface AgentVisualizationProps {
   onSaved?: (response: AgentDefinitionWriteResponseDto) => void
   onCancel?: () => void
   onEditingStatusChange?: (status: AgentVisualizationEditingStatus | null) => void
+  onReadProjectUiState?: (key: string) => Promise<unknown | null>
+  onWriteProjectUiState?: (key: string, value: unknown | null) => Promise<void>
   // Fired when the inline properties / details panel becomes visible or hidden
   // so the surrounding chrome can react (e.g. App.tsx auto-collapses any open
   // sidebar so the panel has the canvas to itself, then reopens it on close).
@@ -488,26 +511,29 @@ function readStoredPositions(key: string): StoredPositions {
   try {
     const raw = window.localStorage.getItem(key)
     if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return {}
-    const out: StoredPositions = {}
-    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (
-        value &&
-        typeof value === 'object' &&
-        typeof (value as { x?: unknown }).x === 'number' &&
-        typeof (value as { y?: unknown }).y === 'number'
-      ) {
-        out[id] = {
-          x: (value as { x: number }).x,
-          y: (value as { y: number }).y,
-        }
-      }
-    }
-    return out
+    return parseStoredPositions(JSON.parse(raw))
   } catch {
     return {}
   }
+}
+
+function parseStoredPositions(value: unknown): StoredPositions {
+  if (!value || typeof value !== 'object') return {}
+  const out: StoredPositions = {}
+  for (const [id, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      entry &&
+      typeof entry === 'object' &&
+      typeof (entry as { x?: unknown }).x === 'number' &&
+      typeof (entry as { y?: unknown }).y === 'number'
+    ) {
+      out[id] = {
+        x: (entry as { x: number }).x,
+        y: (entry as { y: number }).y,
+      }
+    }
+  }
+  return out
 }
 
 function writeStoredPositions(key: string, positions: StoredPositions): void {
@@ -679,6 +705,7 @@ function laneCategoryFromNodeId(nodeId: string): LaneDragCategory | null {
   const category = nodeId.slice(LANE_NODE_PREFIX.length)
   switch (category) {
     case 'prompt':
+    case 'skills':
     case 'tool':
     case 'db-table':
     case 'agent-output':
@@ -731,6 +758,8 @@ function nodeMovesWithLane(node: Node, category: LaneDragCategory): boolean {
   switch (category) {
     case 'prompt':
       return node.type === 'prompt'
+    case 'skills':
+      return node.type === 'skills'
     case 'tool':
       // Tool cards are children of their group frames. Moving the frame moves
       // the cards visually while preserving each card's relative coordinates.
@@ -895,6 +924,14 @@ function knownHandlesForNode(node: AgentGraphNode, width: number, height: number
         nodeHandle('source', Position.Top, width, height, AGENT_GRAPH_HEADER_HANDLES.prompt),
         nodeHandle(
           'source',
+          Position.Left,
+          width,
+          height,
+          AGENT_GRAPH_HEADER_HANDLES.skills,
+          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.skills) },
+        ),
+        nodeHandle(
+          'source',
           Position.Right,
           width,
           height,
@@ -910,9 +947,18 @@ function knownHandlesForNode(node: AgentGraphNode, width: number, height: number
           { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db) },
         ),
         nodeHandle('source', Position.Bottom, width, height, AGENT_GRAPH_HEADER_HANDLES.output),
-        nodeHandle('target', Position.Left, width, height, AGENT_GRAPH_HEADER_HANDLES.consumed),
+        nodeHandle(
+          'target',
+          Position.Left,
+          width,
+          height,
+          AGENT_GRAPH_HEADER_HANDLES.consumed,
+          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed) },
+        ),
       ]
     case 'prompt':
+      return [nodeHandle('target', Position.Bottom, width, height)]
+    case 'skills':
       return [nodeHandle('target', Position.Bottom, width, height)]
     case 'tool': {
       const handles: KnownNodeHandle[] = []
@@ -1290,6 +1336,7 @@ function WorkflowCanvasDots() {
 
 function AgentVisualizationInner({
   active = true,
+  projectId = null,
   detail = null,
   emptyState,
   emptyStateVisible = detail === null,
@@ -1297,10 +1344,14 @@ function AgentVisualizationInner({
   mode,
   initialDetail = null,
   authoringCatalog = null,
+  onSearchAttachableSkills,
+  onResolveAttachableSkill,
   onSubmit,
   onSaved,
   onCancel,
   onEditingStatusChange,
+  onReadProjectUiState,
+  onWriteProjectUiState,
   onSelectedNodeChange,
 }: AgentVisualizationProps) {
   // ============================================================
@@ -1397,10 +1448,20 @@ function AgentVisualizationInner({
     () => (!editing && renderedDetail ? storageKeyFor(renderedDetail) : ''),
     [editing, renderedDetail],
   )
+  const projectUiStateKey = useMemo(
+    () => (!editing && renderedDetail ? `workflow.canvas.positions:${agentRefKey(renderedDetail.ref)}` : ''),
+    [editing, renderedDetail],
+  )
+  const hasProjectUiStateStorage = Boolean(
+    projectId && projectUiStateKey && onReadProjectUiState && onWriteProjectUiState,
+  )
 
   const baseGraph = useMemo(() => {
     if (!renderedDetail) return EMPTY_AGENT_GRAPH
-    const graph = buildAgentGraph(renderedDetail)
+    const graph =
+      !editing && renderedDetail.graphProjection
+        ? agentGraphFromProjection(renderedDetail.graphProjection)
+        : buildAgentGraph(renderedDetail)
     if (!editing) return graph
     // Editing mode merges the current advanced-panel state into the header
     // node's data so the agent-header card renders with the user's typed
@@ -1428,11 +1489,45 @@ function AgentVisualizationInner({
   // computation re-runs even when storage was already empty.
   const [resetNonce, setResetNonce] = useState(0)
   const [snapToGrid, setSnapToGrid] = useState<boolean>(() => readSnapToGridPreference())
+  const [snapPreferenceHydrated, setSnapPreferenceHydrated] = useState(false)
   const [canvasLocked, setCanvasLocked] = useState(false)
   const canvasInteractionsLocked = editing && canvasLocked
+
+  useEffect(() => {
+    const readAppUiState = XeroDesktopAdapter.readAppUiState
+    if (typeof readAppUiState !== 'function') {
+      setSnapPreferenceHydrated(true)
+      return
+    }
+
+    let cancelled = false
+    void readAppUiState({ key: SNAP_TO_GRID_APP_STATE_KEY })
+      .then((response) => {
+        if (cancelled) return
+        if (typeof response.value === 'boolean') {
+          setSnapToGrid(response.value)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (cancelled) return
+        setSnapPreferenceHydrated(true)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   useEffect(() => {
     writeSnapToGridPreference(snapToGrid)
-  }, [snapToGrid])
+    if (snapPreferenceHydrated) {
+      void XeroDesktopAdapter.writeAppUiState?.({
+        key: SNAP_TO_GRID_APP_STATE_KEY,
+        value: snapToGrid,
+      }).catch(() => undefined)
+    }
+  }, [snapPreferenceHydrated, snapToGrid])
   const handleToggleSnapToGrid = useCallback(() => {
     setSnapToGrid((prev) => !prev)
   }, [])
@@ -1518,21 +1613,56 @@ function AgentVisualizationInner({
   )
   const [storedPositionsNonce, setStoredPositionsNonce] = useState(0)
 
+  useEffect(() => {
+    if (!hasProjectUiStateStorage || !projectUiStateKey || !onReadProjectUiState) {
+      return
+    }
+
+    let cancelled = false
+    onReadProjectUiState(projectUiStateKey)
+      .then((value) => {
+        if (cancelled) return
+        storedPositionsRef.current = {
+          key: projectUiStateKey,
+          positions: parseStoredPositions(value),
+        }
+        setStoredPositionsNonce((nonce) => nonce + 1)
+      })
+      .catch(() => {
+        if (cancelled) return
+        storedPositionsRef.current = { key: projectUiStateKey, positions: {} }
+        setStoredPositionsNonce((nonce) => nonce + 1)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [hasProjectUiStateStorage, onReadProjectUiState, projectUiStateKey])
+
   const getStoredPositions = useCallback(() => {
+    if (hasProjectUiStateStorage) {
+      const cached = storedPositionsRef.current
+      return cached?.key === projectUiStateKey ? cached.positions : {}
+    }
     const cached = storedPositionsRef.current
     if (cached?.key === storageKey) return cached.positions
     const positions = readStoredPositions(storageKey)
     storedPositionsRef.current = { key: storageKey, positions }
     return positions
-  }, [storageKey])
+  }, [hasProjectUiStateStorage, projectUiStateKey, storageKey])
 
   const commitStoredPositions = useCallback(
     (positions: StoredPositions) => {
-      storedPositionsRef.current = { key: storageKey, positions }
-      writeStoredPositions(storageKey, positions)
+      if (hasProjectUiStateStorage) {
+        storedPositionsRef.current = { key: projectUiStateKey, positions }
+        void onWriteProjectUiState?.(projectUiStateKey, positions).catch(() => {})
+      } else {
+        storedPositionsRef.current = { key: storageKey, positions }
+        writeStoredPositions(storageKey, positions)
+      }
       setStoredPositionsNonce((nonce) => nonce + 1)
     },
-    [storageKey],
+    [hasProjectUiStateStorage, onWriteProjectUiState, projectUiStateKey, storageKey],
   )
 
   // Track which nodes are inline-expanded. Stored separately so changes here
@@ -1699,7 +1829,7 @@ function AgentVisualizationInner({
 
   const layoutResult = useMemo(() => {
     // resetNonce participates so "Reset layout" forces a recompute after the
-    // localStorage entry is wiped.
+    // persisted position overrides are wiped.
     void resetNonce
     const sizes = buildSizeMap(baseGraph.nodes, expandedIds, measuredSizes)
     const placed = layoutAgentGraphByCategory(baseGraph.nodes, sizes, {
@@ -1710,9 +1840,9 @@ function AgentVisualizationInner({
 
   const computedNodes = useMemo(() => {
     const { placed, sizes } = layoutResult
-    // View mode reads persisted user-drag positions from localStorage; editing
-    // mode keeps overrides in memory only (no stable storage key for an
-    // unsaved create) so we plug in the in-memory map here instead.
+    // View mode reads persisted user-drag positions from project UI state when
+    // available; editing mode keeps overrides in memory only (no stable storage
+    // key for an unsaved create) so we plug in the in-memory map here instead.
     const stored = editing ? editingPositionOverrides : getStoredPositions()
     const positioned = applyStoredPositions(placed, stored)
     const classed = applyExpandedNodeClass(positioned, expandedIds)
@@ -2390,6 +2520,7 @@ function AgentVisualizationInner({
                   current.dbTouchpoints.encouraged.length,
                 outputSections: current.output.sections.length,
                 consumes: current.consumes.length,
+                attachedSkills: current.attachedSkills.length,
               },
               advanced: editingAdvancedRef.current,
             }
@@ -2415,6 +2546,15 @@ function AgentVisualizationInner({
               return next.prompt
             })
             return { ...current, prompts }
+          }
+          case 'skills': {
+            const attachedSkills = current.attachedSkills.map((skill) => {
+              if (skillNodeId(skill) !== nodeId) return skill
+              const prev = { skill }
+              const next = updater(prev as never) as typeof prev
+              return next.skill
+            })
+            return { ...current, attachedSkills }
           }
           case 'tool': {
             const tools = current.tools.map((tool) => {
@@ -2505,6 +2645,13 @@ function AgentVisualizationInner({
             ...current,
             prompts: current.prompts.filter(
               (p, i) => promptNodeId(p, i) !== nodeId,
+            ),
+          }
+        case 'skills':
+          return {
+            ...current,
+            attachedSkills: current.attachedSkills.filter(
+              (skill) => skillNodeId(skill) !== nodeId,
             ),
           }
         case 'tool': {
@@ -2655,7 +2802,7 @@ function AgentVisualizationInner({
     handleType: 'source' | 'target'
   } | null>(null)
 
-  type DropPickerKind = 'tool-category' | 'db-table' | 'consumed-artifact'
+  type DropPickerKind = 'skill' | 'tool-category' | 'db-table' | 'consumed-artifact'
   interface DropPickerState {
     kind: DropPickerKind
     // Screen-space anchor for the popup itself.
@@ -2770,6 +2917,35 @@ function AgentVisualizationInner({
     [authoringCatalog, closeDropPicker],
   )
 
+  const addSkillFromDrag = useCallback(
+    (entry: AgentAuthoringAttachableSkillDto) => {
+      setEditingDetail((current) => {
+        if (!current) return current
+        if (current.attachedSkills.some((skill) => skill.sourceId === entry.sourceId)) {
+          return current
+        }
+        const id = uniqueEntityId(entry.attachment.id, current.attachedSkills)
+        return {
+          ...current,
+          attachedSkills: [
+            ...current.attachedSkills,
+            {
+              ...entry.attachment,
+              id,
+              sourceState: entry.sourceState,
+              trustState: entry.trustState,
+              availabilityStatus: entry.availabilityStatus,
+              availabilityReason: 'Skill source is available in the authoring catalog.',
+              repairHint: null,
+            },
+          ],
+        }
+      })
+      closeDropPicker()
+    },
+    [closeDropPicker],
+  )
+
   const addDbTableFromDrag = useCallback(
     (tableName: string) => {
       if (!authoringCatalog) return
@@ -2880,6 +3056,19 @@ function AgentVisualizationInner({
       if (attempt.sourceId === AGENT_GRAPH_HEADER_NODE_ID) {
         if (attempt.sourceHandle === AGENT_GRAPH_HEADER_HANDLES.prompt) {
           addPromptFromDrag()
+          return
+        }
+        if (attempt.sourceHandle === AGENT_GRAPH_HEADER_HANDLES.skills) {
+          setDropPicker({
+            kind: 'skill',
+            screenX: clientX,
+            screenY: clientY,
+            flowX: flowPos.x,
+            flowY: flowPos.y,
+            sourceId: attempt.sourceId,
+            sourceHandle: attempt.sourceHandle,
+            handleType: attempt.handleType,
+          })
           return
         }
         if (attempt.sourceHandle === AGENT_GRAPH_HEADER_HANDLES.tool) {
@@ -2993,7 +3182,10 @@ function AgentVisualizationInner({
       const { snapshot, definitionId } = buildSnapshotFromGraph(
         computedNodes as unknown as AgentGraphNode[],
         computedEdges,
-        { initialDefinitionId },
+        {
+          initialDefinitionId,
+          attachedSkills: editingDetail?.attachedSkills ?? [],
+        },
       )
       const response = await onSubmit({
         snapshot,
@@ -3015,6 +3207,7 @@ function AgentVisualizationInner({
     computedEdges,
     computedNodes,
     editingInitial,
+    editingDetail,
     editingSaving,
     editingStructuralDiagnostics.length,
     editingValidation.invalidEdgeIds,
@@ -3383,16 +3576,21 @@ function AgentVisualizationInner({
   }, [active, computedNodes.length, editing, hasDetail, nodes.length, reactFlow, renderedDetail])
 
   const handleResetLayout = useCallback(() => {
-    if (typeof window !== 'undefined') {
+    if (hasProjectUiStateStorage) {
+      void onWriteProjectUiState?.(projectUiStateKey, null).catch(() => {})
+    } else if (typeof window !== 'undefined') {
       try {
         window.localStorage.removeItem(storageKey)
       } catch {
         // Ignore — storage may be disabled.
       }
     }
-    storedPositionsRef.current = { key: storageKey, positions: {} }
+    storedPositionsRef.current = {
+      key: hasProjectUiStateStorage ? projectUiStateKey : storageKey,
+      positions: {},
+    }
     setStoredPositionsNonce((nonce) => nonce + 1)
-    // Editing mode keeps drag overrides in memory instead of localStorage,
+    // Editing mode keeps drag overrides in memory instead of durable storage,
     // so a reset has to clear that map too — otherwise the layout pipeline
     // keeps replaying the user's manual moves. We also force a fitView
     // because the per-detail fit-view effect only runs on storageKey
@@ -3409,7 +3607,14 @@ function AgentVisualizationInner({
     canvasInteractingRef.current = false
     canvasRef.current?.classList.remove('is-dragging')
     setResetNonce((n) => n + 1)
-  }, [editing, reactFlow, storageKey])
+  }, [
+    editing,
+    hasProjectUiStateStorage,
+    onWriteProjectUiState,
+    projectUiStateKey,
+    reactFlow,
+    storageKey,
+  ])
 
   // Resolve final ReactFlow inputs based on mode. Edit mode uses mutable
   // editing state; view mode uses the layout-derived pipeline above. Both
@@ -3667,6 +3872,9 @@ function AgentVisualizationInner({
               screenX={dropPicker.screenX}
               screenY={dropPicker.screenY}
               catalog={authoringCatalog}
+              onSelectSkill={addSkillFromDrag}
+              onSearchSkills={onSearchAttachableSkills}
+              onResolveSkill={onResolveAttachableSkill}
               onSelectToolCategory={addToolCategoryFromDrag}
               onSelectDbTable={addDbTableFromDrag}
               onSelectConsumedArtifact={addConsumedArtifactFromDrag}
@@ -3714,6 +3922,7 @@ const EDITING_DEFAULT_EDGE_OPTIONS = {
 
 interface EditingPositionCounters {
   prompt: number
+  skills: number
   tool: number
   'db-table': number
   'output-section': number
@@ -3722,6 +3931,7 @@ interface EditingPositionCounters {
 
 const EDITING_BLANK_COUNTERS: EditingPositionCounters = {
   prompt: 0,
+  skills: 0,
   tool: 0,
   'db-table': 0,
   'output-section': 0,
@@ -3747,6 +3957,8 @@ function defaultLanePosition(
       return { x: 0, y: 480 }
     case 'prompt':
       return { x: -380, y: -260 + index * 130 }
+    case 'skills':
+      return { x: -700, y: -180 + index * 120 }
     case 'tool':
       return { x: 380, y: -80 + index * 70 }
     case 'db-table':

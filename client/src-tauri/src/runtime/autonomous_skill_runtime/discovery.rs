@@ -385,6 +385,96 @@ pub fn load_skill_context_from_directory(
     })
 }
 
+pub fn compute_skill_directory_version_hash(
+    skill_directory: impl AsRef<Path>,
+) -> CommandResult<String> {
+    let skill_directory = skill_directory.as_ref();
+    let mut files = Vec::new();
+    collect_skill_files(skill_directory, skill_directory, &mut files)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    if files.is_empty() {
+        return Err(CommandError::user_fixable(
+            "autonomous_skill_document_missing",
+            "Xero rejected discovered skill because the skill directory contained no files.",
+        ));
+    }
+    if files.len() > MAX_SKILL_FILES {
+        return Err(CommandError::user_fixable(
+            "autonomous_skill_layout_unsupported",
+            format!(
+                "Xero rejected discovered skill because it exceeded the {MAX_SKILL_FILES} file limit."
+            ),
+        ));
+    }
+
+    let mut total_bytes = 0usize;
+    let mut has_skill_markdown = false;
+    let mut hash_input = Vec::new();
+    for (relative_path, path) in &files {
+        validate_skill_asset_path(relative_path)?;
+        let bytes = fs::read(path).map_err(|error| {
+            CommandError::retryable(
+                "autonomous_skill_asset_read_failed",
+                format!(
+                    "Xero could not read skill asset {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        if bytes.is_empty() || bytes.len() > MAX_SKILL_FILE_BYTES {
+            return Err(CommandError::user_fixable(
+                "autonomous_skill_layout_unsupported",
+                format!(
+                    "Xero rejected discovered skill asset `{relative_path}` because assets must be between 1 and {MAX_SKILL_FILE_BYTES} bytes."
+                ),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        if total_bytes > MAX_TOTAL_SKILL_BYTES {
+            return Err(CommandError::user_fixable(
+                "autonomous_skill_layout_unsupported",
+                format!(
+                    "Xero rejected discovered skill because it exceeded the {MAX_TOTAL_SKILL_BYTES} byte total skill budget."
+                ),
+            ));
+        }
+        if relative_path == "SKILL.md" {
+            has_skill_markdown = true;
+            let markdown = String::from_utf8(bytes.clone()).map_err(|error| {
+                CommandError::user_fixable(
+                    "autonomous_skill_document_invalid",
+                    format!(
+                        "Xero rejected discovered skill because SKILL.md was not valid UTF-8 text: {error}"
+                    ),
+                )
+            })?;
+            parse_skill_frontmatter(&markdown)?;
+        } else {
+            String::from_utf8(bytes.clone()).map_err(|error| {
+                CommandError::user_fixable(
+                    "autonomous_skill_layout_unsupported",
+                    format!(
+                        "Xero rejected discovered skill asset `{relative_path}` because it was not valid UTF-8 text: {error}"
+                    ),
+                )
+            })?;
+        }
+        hash_input.extend_from_slice(relative_path.as_bytes());
+        hash_input.push(0);
+        hash_input.extend_from_slice(&bytes);
+        hash_input.push(0);
+    }
+
+    if !has_skill_markdown {
+        return Err(CommandError::user_fixable(
+            "autonomous_skill_document_missing",
+            "Xero rejected discovered skill because SKILL.md was missing.",
+        ));
+    }
+
+    Ok(sha256_hex(&hash_input))
+}
+
 fn discover_skill_directory(
     root: SkillDiscoveryRoot,
 ) -> CommandResult<XeroSkillDirectoryDiscovery> {

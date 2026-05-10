@@ -156,10 +156,26 @@ pub fn search_agent_context(
     )
 }
 
+pub fn search_agent_context_without_freshness_refresh(
+    repo_root: &Path,
+    request: AgentContextRetrievalRequest,
+) -> Result<AgentContextRetrievalResponse, CommandError> {
+    search_agent_context_internal(repo_root, request, Some(default_embedding_service()), false)
+}
+
 pub fn search_agent_context_with_embedding_service(
     repo_root: &Path,
     request: AgentContextRetrievalRequest,
     embedding_service: Option<&dyn AgentEmbeddingService>,
+) -> Result<AgentContextRetrievalResponse, CommandError> {
+    search_agent_context_internal(repo_root, request, embedding_service, true)
+}
+
+fn search_agent_context_internal(
+    repo_root: &Path,
+    request: AgentContextRetrievalRequest,
+    embedding_service: Option<&dyn AgentEmbeddingService>,
+    refresh_freshness: bool,
 ) -> Result<AgentContextRetrievalResponse, CommandError> {
     validate_retrieval_request(&request)?;
     if let Some(service) = embedding_service {
@@ -181,8 +197,11 @@ pub fn search_agent_context_with_embedding_service(
         .map(|service| embedding_with_service(service, &request.query_text))
         .transpose()?;
     let query_tokens = token_set(&request.query_text);
-    let freshness_diagnostics =
-        refresh_retrieval_freshness(repo_root, &record_store, &memory_store, &request)?;
+    let freshness_diagnostics = if refresh_freshness {
+        refresh_retrieval_freshness(repo_root, &record_store, &memory_store, &request)?
+    } else {
+        FreshnessRefreshSummary::default()
+    };
     let collection = collect_candidates(
         &record_store,
         &memory_store,
@@ -219,6 +238,11 @@ pub fn search_agent_context_with_embedding_service(
         &retrieval_semantics,
         query_embedding.as_ref(),
         &degradation,
+        if refresh_freshness {
+            "synchronous"
+        } else {
+            "skipped_for_provider_turn_latency"
+        },
     );
 
     let filters_json = retrieval_filters_json(&request.filters);
@@ -1799,10 +1823,12 @@ fn retrieval_diagnostic(
     retrieval_semantics: &str,
     query_embedding: Option<&AgentEmbedding>,
     degradation: &RetrievalDegradationSummary,
+    freshness_refresh_mode: &str,
 ) -> Option<JsonValue> {
     freshness.blocked_count = freshness.blocked_count.max(blocked_excluded_count);
     let mut freshness_json = freshness.as_json();
     if let Some(object) = freshness_json.as_object_mut() {
+        object.insert("refreshMode".into(), json!(freshness_refresh_mode));
         object.insert(
             "reasonCounts".into(),
             json!(freshness_reason_counts
@@ -1833,6 +1859,7 @@ fn retrieval_diagnostic(
         Some(mut diagnostic) => {
             if let Some(object) = diagnostic.as_object_mut() {
                 object.insert("freshnessDiagnostics".into(), freshness_json);
+                object.insert("freshnessRefreshMode".into(), json!(freshness_refresh_mode));
                 object.insert("storageDiagnostics".into(), storage_json);
                 object.insert("retrievalSemantics".into(), json!(retrieval_semantics));
                 object.insert("embeddingProvider".into(), json!(embedding_provider));
@@ -1844,6 +1871,7 @@ fn retrieval_diagnostic(
                 Some(json!({
                     "detail": diagnostic,
                     "freshnessDiagnostics": freshness_json,
+                    "freshnessRefreshMode": freshness_refresh_mode,
                     "storageDiagnostics": storage_json,
                     "retrievalSemantics": retrieval_semantics,
                     "embeddingProvider": embedding_provider,
@@ -1855,6 +1883,7 @@ fn retrieval_diagnostic(
         }
         None => Some(json!({
             "freshnessDiagnostics": freshness_json,
+            "freshnessRefreshMode": freshness_refresh_mode,
             "storageDiagnostics": storage_json,
             "retrievalSemantics": retrieval_semantics,
             "embeddingProvider": embedding_provider,
@@ -2885,6 +2914,7 @@ mod tests {
                 fallback_reason: None,
             }),
             &RetrievalDegradationSummary::from_candidates(true, &[]),
+            "synchronous",
         )
         .expect("diagnostic");
         assert_eq!(

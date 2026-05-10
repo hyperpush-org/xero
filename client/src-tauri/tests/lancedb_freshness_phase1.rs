@@ -1228,8 +1228,12 @@ fn lancedb_freshness_phase1_context_manifests_record_tool_retrieval_and_freshnes
     assert_eq!(manifest["retrieval"]["deliveryModel"], "tool_mediated");
     assert_eq!(manifest["retrieval"]["rawContextInjected"], false);
     assert_eq!(
-        manifest["retrieval"]["freshnessDiagnostics"]["currentCount"],
-        1
+        manifest["retrieval"]["freshnessDiagnostics"]["inspectedCount"],
+        0
+    );
+    assert_eq!(
+        manifest["retrieval"]["freshnessDiagnostics"]["refreshMode"],
+        "skipped_for_provider_turn_latency"
     );
     assert!(manifest["retrieval"]["freshnessDiagnostics"]
         .get("staleCount")

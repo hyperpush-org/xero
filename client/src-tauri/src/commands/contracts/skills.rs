@@ -239,13 +239,24 @@ pub struct SkillSourceSettingsDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillRegistryContractDiagnosticDto {
+    pub code: String,
+    pub message: String,
+    pub severity: String,
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillRegistryDto {
+    pub contract_version: u32,
     pub project_id: Option<String>,
     pub entries: Vec<SkillRegistryEntryDto>,
     pub plugins: Vec<PluginRegistryEntryDto>,
     pub plugin_commands: Vec<PluginCommandContributionDto>,
     pub sources: SkillSourceSettingsDto,
     pub diagnostics: Vec<SkillDiscoveryDiagnosticDto>,
+    pub contract_diagnostics: Vec<SkillRegistryContractDiagnosticDto>,
     pub reloaded_at: String,
 }
 

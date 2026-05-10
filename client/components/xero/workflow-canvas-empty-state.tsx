@@ -22,10 +22,10 @@ export function WorkflowCanvasEmptyState({
   className,
 }: WorkflowCanvasEmptyStateProps) {
   const actions: Action[] = [
-    { icon: Plus, label: 'Create workflow', comingSoon: true },
     { icon: Bot, label: 'Create agent', onSelect: onCreateAgent },
+    { icon: Plus, label: 'Create workflow', comingSoon: true },
     ...(onBrowseWorkflows
-      ? [{ icon: Play, label: 'Run an existing workflow', onSelect: onBrowseWorkflows }]
+      ? [{ icon: Play, label: 'Run an existing workflow', comingSoon: true }]
       : []),
   ]
 

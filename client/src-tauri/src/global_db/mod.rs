@@ -1,6 +1,8 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 
@@ -15,6 +17,14 @@ pub mod permissions;
 pub mod user_added_tools;
 
 pub const GLOBAL_DATABASE_FILE_NAME: &str = "xero.db";
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct MigratedGlobalDatabaseKey {
+    path: PathBuf,
+}
+
+static MIGRATED_GLOBAL_DATABASES: LazyLock<Mutex<HashSet<MigratedGlobalDatabaseKey>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub fn global_database_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(GLOBAL_DATABASE_FILE_NAME)
@@ -46,6 +56,17 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
 
     configure_connection(&connection)?;
 
+    let migration_key = migrated_global_database_key(database_path);
+    let mut migrated_databases = MIGRATED_GLOBAL_DATABASES.lock().map_err(|_| {
+        CommandError::system_fault(
+            "global_database_migration_cache_failed",
+            "Xero could not check the global database migration cache.",
+        )
+    })?;
+    if migrated_databases.contains(&migration_key) {
+        return Ok(connection);
+    }
+
     match migrations::migrations().to_latest(&mut connection) {
         Ok(()) => {}
         Err(error) if database_existed && is_database_too_far_ahead(&error) => {
@@ -72,6 +93,8 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
         }
         Err(error) => return Err(global_database_migration_error(database_path, error)),
     }
+
+    migrated_databases.insert(migration_key);
 
     Ok(connection)
 }
@@ -115,6 +138,12 @@ fn is_database_too_far_ahead(error: &MigrationError) -> bool {
         error,
         MigrationError::MigrationDefinition(MigrationDefinitionError::DatabaseTooFarAhead)
     )
+}
+
+fn migrated_global_database_key(database_path: &Path) -> MigratedGlobalDatabaseKey {
+    let path = fs::canonicalize(database_path).unwrap_or_else(|_| database_path.to_path_buf());
+
+    MigratedGlobalDatabaseKey { path }
 }
 
 fn read_user_version(connection: &Connection) -> i64 {

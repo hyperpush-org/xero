@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type SetStateAction,
+} from 'react'
 import {
   XeroDesktopError,
   XeroDesktopAdapter,
@@ -171,6 +178,7 @@ const RUNTIME_STREAM_SESSION_CACHE_MAX_ENTRIES = 24
 const PROVIDER_MODEL_CATALOG_CACHE_MAX_BYTES = 2 * 1024 * 1024
 const PROVIDER_MODEL_CATALOG_CACHE_MAX_ENTRIES = 24
 const AGENT_WORKSPACE_LAYOUT_STORAGE_KEY = 'agentWorkspaceLayout'
+const AGENT_WORKSPACE_LAYOUT_UI_STATE_KEY = 'agent-workspace.layout.v1'
 const AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS = 250
 const AGENT_WORKSPACE_MAX_PANES = 6
 const SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'engineer'
@@ -725,8 +733,11 @@ export function useXeroDesktopState(
   const [projects, setProjects] = useState<ProjectListItem[]>([])
   const [activeProject, setActiveProject] = useState<ProjectDetailView | null>(null)
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
+  const hasProjectUiStateStorage = Boolean(adapter.readProjectUiState && adapter.writeProjectUiState)
   const [agentWorkspaceLayouts, setAgentWorkspaceLayouts] =
-    useState<Record<string, AgentWorkspaceLayoutState>>(readAgentWorkspaceLayoutStore)
+    useState<Record<string, AgentWorkspaceLayoutState>>(() =>
+      hasProjectUiStateStorage ? {} : readAgentWorkspaceLayoutStore(),
+    )
   const [repositoryDiffs, setRepositoryDiffs] = useState<Record<RepositoryDiffScope, RepositoryDiffState>>(
     createInitialRepositoryDiffs,
   )
@@ -839,6 +850,7 @@ export function useXeroDesktopState(
   const runtimeStreamsBySessionRef = useRef<Record<string, RuntimeStreamView>>({})
   const agentSessionRuntimePrefetchInFlightRef = useRef<Partial<Record<string, Promise<void>>>>({})
   const agentWorkspaceLayoutsRef = useRef<Record<string, AgentWorkspaceLayoutState>>(agentWorkspaceLayouts)
+  const projectUiStateLayoutHydratedRef = useRef<Set<string>>(new Set())
   const pendingSpawnPaneIdsRef = useRef<Set<string>>(new Set())
   const notificationRoutesRef = useRef<Record<string, NotificationRouteDto[]>>({})
   const notificationRouteLoadStatusesRef = useRef<Record<string, NotificationRoutesLoadStatus>>({})
@@ -923,6 +935,74 @@ export function useXeroDesktopState(
   }, [agentWorkspaceLayouts])
 
   useEffect(() => {
+    if (!hasProjectUiStateStorage) {
+      return
+    }
+
+    if (!activeProject || projectPreviewShellsRef.current.has(activeProject)) {
+      return
+    }
+
+    const projectId = activeProject.id
+    if (projectUiStateLayoutHydratedRef.current.has(projectId) || !adapter.readProjectUiState) {
+      return
+    }
+
+    let cancelled = false
+    adapter
+      .readProjectUiState({ projectId, key: AGENT_WORKSPACE_LAYOUT_UI_STATE_KEY })
+      .then((response) => {
+        if (cancelled) return
+        projectUiStateLayoutHydratedRef.current.add(projectId)
+        const layout = sanitizeAgentWorkspaceLayout(response.value)
+        if (!layout) return
+        const nextLayout = reconcileAgentWorkspaceLayout(activeProject, layout)
+        setAgentWorkspaceLayouts((currentLayouts) => {
+          if (areAgentWorkspaceLayoutsEqual(currentLayouts[projectId], nextLayout)) {
+            return currentLayouts
+          }
+          return {
+            ...currentLayouts,
+            [projectId]: nextLayout,
+          }
+        })
+      })
+      .catch(() => {
+        if (cancelled) return
+        projectUiStateLayoutHydratedRef.current.add(projectId)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [adapter, activeProject, hasProjectUiStateStorage])
+
+  useEffect(() => {
+    if (hasProjectUiStateStorage) {
+      const projectId = activeProjectId
+      const layout = projectId ? agentWorkspaceLayouts[projectId] : null
+      const writeProjectUiState = adapter.writeProjectUiState
+      if (
+        !projectId ||
+        !layout ||
+        !writeProjectUiState ||
+        !projectUiStateLayoutHydratedRef.current.has(projectId)
+      ) {
+        return
+      }
+
+      const handle = window.setTimeout(() => {
+        void writeProjectUiState({
+          projectId,
+          key: AGENT_WORKSPACE_LAYOUT_UI_STATE_KEY,
+          value: layout,
+        })
+          .catch(() => {})
+      }, AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS)
+
+      return () => window.clearTimeout(handle)
+    }
+
     if (typeof window === 'undefined') {
       return
     }
@@ -932,7 +1012,7 @@ export function useXeroDesktopState(
     }, AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS)
 
     return () => window.clearTimeout(handle)
-  }, [agentWorkspaceLayouts])
+  }, [adapter, activeProjectId, agentWorkspaceLayouts, hasProjectUiStateStorage])
 
   useEffect(() => {
     if (!activeProject) {
@@ -2223,6 +2303,9 @@ export function useXeroDesktopState(
           setAutonomousRuns,
           setNotificationSyncSummaries,
           setNotificationSyncErrors,
+          setNotificationRoutes,
+          setNotificationRouteLoadStatuses,
+          setNotificationRouteLoadErrors,
           setRuntimeLoadErrors,
           setRuntimeRunLoadErrors,
           setAutonomousRunLoadErrors,
@@ -2514,15 +2597,25 @@ export function useXeroDesktopState(
         return
       }
 
-      const previewProject = createProjectShell(previewSource)
-      projectPreviewShellsRef.current.add(previewProject)
+      const previewProject = cachedProject ?? createProjectShell(projectSummary!)
+      if (!cachedProject) {
+        projectPreviewShellsRef.current.add(previewProject)
+      }
 
       activeProjectIdRef.current = projectId
       activeProjectRef.current = previewProject
-      setRepositoryStatus(null)
-      setActiveProjectId(projectId)
-      setActiveProject(previewProject)
-      resetRepositoryDiffs(null)
+      setRepositoryStatus((currentStatus) =>
+        projectSelectionRequestRef.current === requestId ? null : currentStatus,
+      )
+      setActiveProjectId((currentProjectId) =>
+        projectSelectionRequestRef.current === requestId ? projectId : currentProjectId,
+      )
+      setActiveProject((currentProject) =>
+        projectSelectionRequestRef.current === requestId ? previewProject : currentProject,
+      )
+      if (projectSelectionRequestRef.current === requestId) {
+        resetRepositoryDiffs(null)
+      }
 
       await waitForProjectSelectionPaint()
 

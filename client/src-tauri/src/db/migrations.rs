@@ -27,6 +27,9 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_017_AGENT_AUDIT_AND_REVOCATION_SQL),
             M::up_with_hook("", migrate_agent_messages_provider_metadata_json),
             M::up(MIGRATION_018_AGENT_SUBAGENT_TASKS_SQL),
+            M::up_with_hook("", migrate_agent_messages_allow_empty_assistant_metadata),
+            M::up_with_hook("", migrate_agent_events_current_event_kinds),
+            M::up(MIGRATION_019_RUNTIME_ATTACHED_SKILL_SNAPSHOTS_SQL),
         ])
     });
 
@@ -545,6 +548,27 @@ const MIGRATION_018_AGENT_SUBAGENT_TASKS_SQL: &str = r#"
     CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_subagent_tasks_child
         ON agent_subagent_tasks(project_id, child_run_id)
         WHERE child_run_id IS NOT NULL;
+"#;
+
+const MIGRATION_019_RUNTIME_ATTACHED_SKILL_SNAPSHOTS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS runtime_run_attached_skill_snapshots (
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        resolved_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (project_id, run_id),
+        CHECK (project_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+        CHECK (resolved_at <> ''),
+        CHECK (updated_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_run_attached_skill_snapshots_updated
+        ON runtime_run_attached_skill_snapshots(project_id, updated_at DESC);
 "#;
 
 const MIGRATION_005_AGENT_PLAN_PACKS_SQL: &str = r#"
@@ -1596,6 +1620,25 @@ const BASELINE_SCHEMA_SQL: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_runtime_run_checkpoints_project_created
         ON runtime_run_checkpoints(project_id, created_at DESC, id DESC);
 
+    CREATE TABLE IF NOT EXISTS runtime_run_attached_skill_snapshots (
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        resolved_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (project_id, run_id),
+        CHECK (project_id <> ''),
+        CHECK (run_id <> ''),
+        CHECK (snapshot_json <> '' AND json_valid(snapshot_json)),
+        CHECK (resolved_at <> ''),
+        CHECK (updated_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_runtime_run_attached_skill_snapshots_updated
+        ON runtime_run_attached_skill_snapshots(project_id, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS notification_dispatches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id TEXT NOT NULL,
@@ -1843,6 +1886,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             'tool_permission_grant',
             'provider_model_changed',
             'runtime_settings_changed',
+            'subagent_lifecycle',
             'run_paused',
             'run_completed',
             'run_failed'
@@ -2805,6 +2849,18 @@ fn migrate_agent_messages_provider_metadata_json(
     Ok(())
 }
 
+fn migrate_agent_messages_allow_empty_assistant_metadata(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    if table_exists(transaction, "agent_messages")?
+        && agent_messages_has_content_non_empty_constraint(transaction)?
+    {
+        rebuild_agent_messages_without_content_non_empty_constraint(transaction)?;
+    }
+
+    Ok(())
+}
+
 fn migrate_environment_lifecycle_schema(
     transaction: &Transaction<'_>,
 ) -> rusqlite_migration::HookResult {
@@ -2954,10 +3010,145 @@ const CURRENT_AGENT_EVENT_KIND_SQL_VALUES: &[&str] = &[
     "tool_permission_grant",
     "provider_model_changed",
     "runtime_settings_changed",
+    "subagent_lifecycle",
     "run_paused",
     "run_completed",
     "run_failed",
 ];
+
+fn agent_messages_has_content_non_empty_constraint(
+    transaction: &Transaction<'_>,
+) -> rusqlite::Result<bool> {
+    let sql = transaction.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_messages'",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    let normalized = sql
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    Ok(normalized.contains("check(content<>'')"))
+}
+
+fn rebuild_agent_messages_without_content_non_empty_constraint(
+    transaction: &Transaction<'_>,
+) -> rusqlite::Result<()> {
+    let has_attachments = table_exists(transaction, "agent_message_attachments")?;
+    if has_attachments {
+        transaction.execute_batch(
+            "ALTER TABLE agent_message_attachments RENAME TO agent_message_attachments_before_content_relax;",
+        )?;
+    }
+
+    transaction.execute_batch(
+        r#"
+        ALTER TABLE agent_messages RENAME TO agent_messages_before_content_relax;
+
+        CREATE TABLE agent_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            provider_metadata_json TEXT,
+            created_at TEXT NOT NULL,
+            CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
+            FOREIGN KEY (project_id, run_id)
+                REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+        );
+
+        INSERT INTO agent_messages (
+            id,
+            project_id,
+            run_id,
+            role,
+            content,
+            provider_metadata_json,
+            created_at
+        )
+        SELECT
+            id,
+            project_id,
+            run_id,
+            role,
+            content,
+            provider_metadata_json,
+            created_at
+        FROM agent_messages_before_content_relax;
+
+        CREATE INDEX IF NOT EXISTS idx_agent_messages_project_run_id
+            ON agent_messages(project_id, run_id, id ASC);
+        "#,
+    )?;
+
+    if has_attachments {
+        transaction.execute_batch(
+            r#"
+            CREATE TABLE agent_message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
+                project_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                storage_path TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                width INTEGER,
+                height INTEGER,
+                created_at TEXT NOT NULL,
+                CHECK (kind IN ('image', 'document', 'text')),
+                CHECK (storage_path <> ''),
+                CHECK (media_type <> ''),
+                CHECK (original_name <> ''),
+                CHECK (size_bytes >= 0),
+                FOREIGN KEY (project_id, run_id)
+                    REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+            );
+
+            INSERT INTO agent_message_attachments (
+                id,
+                message_id,
+                project_id,
+                run_id,
+                kind,
+                storage_path,
+                media_type,
+                original_name,
+                size_bytes,
+                width,
+                height,
+                created_at
+            )
+            SELECT
+                id,
+                message_id,
+                project_id,
+                run_id,
+                kind,
+                storage_path,
+                media_type,
+                original_name,
+                size_bytes,
+                width,
+                height,
+                created_at
+            FROM agent_message_attachments_before_content_relax;
+
+            CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_message
+                ON agent_message_attachments(message_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_message_attachments_run
+                ON agent_message_attachments(project_id, run_id);
+
+            DROP TABLE agent_message_attachments_before_content_relax;
+            "#,
+        )?;
+    }
+
+    transaction.execute_batch("DROP TABLE agent_messages_before_content_relax;")
+}
 
 fn rebuild_agent_events_with_current_event_kind_constraint(
     transaction: &Transaction<'_>,
@@ -3000,6 +3191,7 @@ fn rebuild_agent_events_with_current_event_kind_constraint(
                 'tool_permission_grant',
                 'provider_model_changed',
                 'runtime_settings_changed',
+                'subagent_lifecycle',
                 'run_paused',
                 'run_completed',
                 'run_failed'
@@ -3189,11 +3381,24 @@ mod tests {
                 ],
             )
             .expect("insert context_manifest_recorded after repair");
+        connection
+            .execute(
+                "INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "project-1",
+                    "run-1",
+                    "subagent_lifecycle",
+                    "{}",
+                    "2026-05-05T16:32:50Z"
+                ],
+            )
+            .expect("insert subagent_lifecycle after repair");
 
         let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM agent_events", [], |row| row.get(0))
             .expect("count events");
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
     }
 
     #[test]
@@ -3274,6 +3479,7 @@ mod tests {
                 "project_storage_maintenance_runs",
                 "projects",
                 "repositories",
+                "runtime_run_attached_skill_snapshots",
                 "runtime_run_checkpoints",
                 "runtime_runs",
                 "runtime_sessions",
@@ -4191,6 +4397,146 @@ mod tests {
                  ORDER BY id ASC",
             )
             .expect("owned-agent message query prepares after repair");
+    }
+
+    #[test]
+    fn current_app_data_project_state_relaxes_empty_assistant_tool_turn_messages() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE agent_runs (
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    PRIMARY KEY (project_id, run_id)
+                );
+
+                CREATE TABLE agent_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    provider_metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    CHECK (role IN ('system', 'developer', 'user', 'assistant', 'tool')),
+                    CHECK (content <> ''),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE agent_message_attachments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id INTEGER NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
+                    project_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    original_name TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    created_at TEXT NOT NULL,
+                    CHECK (kind IN ('image', 'document', 'text')),
+                    CHECK (storage_path <> ''),
+                    CHECK (media_type <> ''),
+                    CHECK (original_name <> ''),
+                    CHECK (size_bytes >= 0),
+                    FOREIGN KEY (project_id, run_id)
+                        REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO agent_runs (project_id, run_id)
+                VALUES ('project-v19', 'run-v19');
+
+                INSERT INTO agent_messages (
+                    id,
+                    project_id,
+                    run_id,
+                    role,
+                    content,
+                    provider_metadata_json,
+                    created_at
+                )
+                VALUES (
+                    1,
+                    'project-v19',
+                    'run-v19',
+                    'user',
+                    'hello',
+                    NULL,
+                    '2026-05-09T14:00:00Z'
+                );
+
+                INSERT INTO agent_message_attachments (
+                    message_id,
+                    project_id,
+                    run_id,
+                    kind,
+                    storage_path,
+                    media_type,
+                    original_name,
+                    size_bytes,
+                    width,
+                    height,
+                    created_at
+                )
+                VALUES (
+                    1,
+                    'project-v19',
+                    'run-v19',
+                    'text',
+                    '/tmp/note.txt',
+                    'text/plain',
+                    'note.txt',
+                    12,
+                    NULL,
+                    NULL,
+                    '2026-05-09T14:00:01Z'
+                );
+
+                PRAGMA user_version = 19;
+                "#,
+            )
+            .expect("seed current app-data schema with strict message content constraint");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("repair strict message content constraint");
+
+        connection
+            .execute(
+                "INSERT INTO agent_messages (
+                    project_id,
+                    run_id,
+                    role,
+                    content,
+                    provider_metadata_json,
+                    created_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "project-v19",
+                    "run-v19",
+                    "assistant",
+                    "",
+                    r#"{"providerMessageId":"provider-assistant-run-v19-1","assistantToolCalls":[]}"#,
+                    "2026-05-09T14:00:02Z"
+                ],
+            )
+            .expect("insert empty assistant tool-turn message after repair");
+
+        let attachment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM agent_message_attachments",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count migrated attachments");
+        assert_eq!(attachment_count, 1);
     }
 
     #[test]

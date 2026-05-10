@@ -11,6 +11,7 @@ use crate::{
 };
 
 use super::{
+    agent_session::{read_agent_sessions_with_connection, AgentSessionRecord},
     map_project_query_error, open_project_database, read_operator_approvals, read_resume_history,
     read_verification_records, ProjectSummaryRow,
 };
@@ -44,14 +45,50 @@ pub fn load_project_snapshot(
 ) -> Result<ProjectSnapshotRecord, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_project_database(repo_root, &database_path)?;
+    read_project_snapshot_with_connection(
+        &connection,
+        &database_path,
+        repo_root,
+        expected_project_id,
+    )
+}
+
+pub fn load_project_snapshot_and_agent_sessions(
+    repo_root: &Path,
+    expected_project_id: &str,
+    include_archived_agent_sessions: bool,
+) -> Result<(ProjectSnapshotRecord, Vec<AgentSessionRecord>), CommandError> {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_project_database(repo_root, &database_path)?;
+    let snapshot = read_project_snapshot_with_connection(
+        &connection,
+        &database_path,
+        repo_root,
+        expected_project_id,
+    )?;
+    let agent_sessions = read_agent_sessions_with_connection(
+        &connection,
+        &database_path,
+        expected_project_id,
+        include_archived_agent_sessions,
+    )?;
+    Ok((snapshot, agent_sessions))
+}
+
+fn read_project_snapshot_with_connection(
+    connection: &Connection,
+    database_path: &Path,
+    repo_root: &Path,
+    expected_project_id: &str,
+) -> Result<ProjectSnapshotRecord, CommandError> {
     let projection =
-        read_project_projection(&connection, &database_path, repo_root, expected_project_id)?;
-    let repository = read_repository_summary(&connection, &database_path, expected_project_id)?;
+        read_project_projection(connection, database_path, repo_root, expected_project_id)?;
+    let repository = read_repository_summary(connection, database_path, expected_project_id)?;
     let approval_requests =
-        read_operator_approvals(&connection, &database_path, expected_project_id)?;
+        read_operator_approvals(connection, database_path, expected_project_id)?;
     let verification_records =
-        read_verification_records(&connection, &database_path, expected_project_id)?;
-    let resume_history = read_resume_history(&connection, &database_path, expected_project_id)?;
+        read_verification_records(connection, database_path, expected_project_id)?;
+    let resume_history = read_resume_history(connection, database_path, expected_project_id)?;
     Ok(ProjectSnapshotRecord {
         snapshot: ProjectSnapshotResponseDto {
             project: projection.project,
@@ -63,7 +100,7 @@ pub fn load_project_snapshot(
             agent_sessions: Vec::new(),
             autonomous_run: None,
         },
-        database_path,
+        database_path: database_path.to_path_buf(),
     })
 }
 

@@ -1,10 +1,12 @@
 use std::{
+    cmp::Ordering,
     path::Path,
     str::FromStr,
     thread,
     time::{Duration, Instant},
 };
 
+use serde::Serialize;
 use tauri::{
     ipc::{Channel, JavaScriptChannelId},
     AppHandle, Runtime, State, Webview,
@@ -17,10 +19,12 @@ use crate::{
         CommandResult, CommandToolResultSummaryDto, FileToolResultSummaryDto,
         GitToolResultScopeDto, GitToolResultSummaryDto, McpCapabilityKindDto,
         McpCapabilityToolResultSummaryDto, RuntimeActionAnswerShape,
-        RuntimeActionRequiredOptionDto, RuntimeStreamItemDto, RuntimeStreamItemKind,
-        RuntimeStreamPlanItemDto, RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole,
-        RuntimeToolCallState, SubscribeRuntimeStreamRequestDto, SubscribeRuntimeStreamResponseDto,
-        ToolResultSummaryDto, WebToolResultContentKindDto, WebToolResultSummaryDto,
+        RuntimeActionRequiredOptionDto, RuntimeStreamIssueDto, RuntimeStreamItemDto,
+        RuntimeStreamItemKind, RuntimeStreamPatchDto, RuntimeStreamPlanItemDto,
+        RuntimeStreamPlanItemStatus, RuntimeStreamTranscriptRole, RuntimeStreamViewSnapshotDto,
+        RuntimeStreamViewStatusDto, RuntimeToolCallState, SubscribeRuntimeStreamRequestDto,
+        SubscribeRuntimeStreamResponseDto, ToolResultSummaryDto, WebToolResultContentKindDto,
+        WebToolResultSummaryDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentRunEventKind, AgentRunStatus, RuntimeRunSnapshotRecord,
@@ -36,6 +40,507 @@ use crate::{
 use super::runtime_support::{load_persisted_runtime_run, resolve_project_root};
 
 const INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT: usize = 200;
+const RUNTIME_STREAM_VIEW_SCHEMA: &str = "xero.runtime_stream_view_snapshot.v1";
+const RUNTIME_STREAM_PATCH_SCHEMA: &str = "xero.runtime_stream_patch.v1";
+const MAX_RUNTIME_STREAM_ACTION_REQUIRED: usize = 10;
+const OWNED_AGENT_REASONING_ACTIVITY_CODE: &str = "owned_agent_reasoning";
+const RUNTIME_STREAM_IPC_MAX_BYTES: usize = 96 * 1024;
+const RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS: usize = 4_000;
+const RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS: usize = 1_000;
+const RUNTIME_STREAM_IPC_TEXT_CHARS: usize = 2_000;
+
+#[derive(Debug, Clone)]
+struct RuntimeStreamProjectionContext {
+    project_id: String,
+    agent_session_id: String,
+    runtime_kind: String,
+    run_id: String,
+    session_id: String,
+    flow_id: Option<String>,
+    subscribed_item_kinds: Vec<RuntimeStreamItemKind>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeStreamProjection {
+    context: RuntimeStreamProjectionContext,
+    status: RuntimeStreamViewStatusDto,
+    items: Vec<RuntimeStreamItemDto>,
+    transcript_items: Vec<RuntimeStreamItemDto>,
+    tool_calls: Vec<RuntimeStreamItemDto>,
+    skill_items: Vec<RuntimeStreamItemDto>,
+    activity_items: Vec<RuntimeStreamItemDto>,
+    action_required: Vec<RuntimeStreamItemDto>,
+    plan: Option<RuntimeStreamItemDto>,
+    completion: Option<RuntimeStreamItemDto>,
+    failure: Option<RuntimeStreamItemDto>,
+    last_issue: Option<RuntimeStreamIssueDto>,
+    last_item_at: Option<String>,
+    last_sequence: Option<u64>,
+}
+
+impl RuntimeStreamProjection {
+    fn new(context: RuntimeStreamProjectionContext) -> Self {
+        Self {
+            context,
+            status: RuntimeStreamViewStatusDto::Subscribing,
+            items: Vec::new(),
+            transcript_items: Vec::new(),
+            tool_calls: Vec::new(),
+            skill_items: Vec::new(),
+            activity_items: Vec::new(),
+            action_required: Vec::new(),
+            plan: None,
+            completion: None,
+            failure: None,
+            last_issue: None,
+            last_item_at: None,
+            last_sequence: None,
+        }
+    }
+
+    fn apply_item(&mut self, item: RuntimeStreamItemDto) -> RuntimeStreamPatchDto {
+        let previous_timeline_item = latest_timeline_item(&self.items).cloned();
+        let patch_item = item.clone();
+        self.last_item_at = Some(item.created_at.clone());
+        self.last_sequence = Some(item.sequence);
+
+        match &item.kind {
+            RuntimeStreamItemKind::Complete => {
+                self.status = RuntimeStreamViewStatusDto::Complete;
+                self.completion = Some(item.clone());
+                self.failure = None;
+                self.last_issue = None;
+            }
+            RuntimeStreamItemKind::Failure => {
+                let retryable = item.retryable.unwrap_or(false);
+                self.status = if retryable {
+                    RuntimeStreamViewStatusDto::Stale
+                } else {
+                    RuntimeStreamViewStatusDto::Error
+                };
+                self.last_issue = Some(RuntimeStreamIssueDto {
+                    code: item
+                        .code
+                        .clone()
+                        .unwrap_or_else(|| "runtime_stream_failure".into()),
+                    message: item
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "Runtime stream failed.".into()),
+                    retryable,
+                    observed_at: item.created_at.clone(),
+                });
+                self.failure = Some(item.clone());
+            }
+            _ => {
+                self.status = RuntimeStreamViewStatusDto::Live;
+                self.failure = None;
+                self.last_issue = None;
+            }
+        }
+
+        let timeline_item = match item.kind.clone() {
+            RuntimeStreamItemKind::Transcript => {
+                self.transcript_items = merge_transcript_items(
+                    &self.transcript_items,
+                    item,
+                    previous_timeline_item.as_ref(),
+                );
+                None
+            }
+            RuntimeStreamItemKind::Tool => {
+                self.tool_calls = replace_tool_call_item(&self.tool_calls, item.clone());
+                Some(item)
+            }
+            RuntimeStreamItemKind::Skill => {
+                self.skill_items = push_item(&self.skill_items, item.clone());
+                Some(item)
+            }
+            RuntimeStreamItemKind::Activity => {
+                self.activity_items = push_item(&self.activity_items, item.clone());
+                Some(item)
+            }
+            RuntimeStreamItemKind::ActionRequired => {
+                self.action_required = cap_recent(
+                    replace_action_required_item(&self.action_required, item.clone()),
+                    MAX_RUNTIME_STREAM_ACTION_REQUIRED,
+                );
+                Some(item)
+            }
+            RuntimeStreamItemKind::Plan => {
+                self.plan = Some(item.clone());
+                Some(item)
+            }
+            RuntimeStreamItemKind::Complete | RuntimeStreamItemKind::Failure => Some(item),
+            RuntimeStreamItemKind::SubagentLifecycle => Some(item),
+        };
+
+        self.items = project_timeline_items(
+            &self.items,
+            &self.transcript_items,
+            timeline_item,
+            previous_timeline_item.as_ref(),
+        );
+
+        RuntimeStreamPatchDto {
+            schema: RUNTIME_STREAM_PATCH_SCHEMA.into(),
+            item: patch_item,
+            snapshot: self.snapshot(),
+        }
+    }
+
+    fn snapshot(&self) -> RuntimeStreamViewSnapshotDto {
+        RuntimeStreamViewSnapshotDto {
+            schema: RUNTIME_STREAM_VIEW_SCHEMA.into(),
+            project_id: self.context.project_id.clone(),
+            agent_session_id: self.context.agent_session_id.clone(),
+            runtime_kind: self.context.runtime_kind.clone(),
+            run_id: self.context.run_id.clone(),
+            session_id: self.context.session_id.clone(),
+            flow_id: self.context.flow_id.clone(),
+            subscribed_item_kinds: self.context.subscribed_item_kinds.clone(),
+            status: self.status.clone(),
+            items: self.items.clone(),
+            transcript_items: self.transcript_items.clone(),
+            tool_calls: self.tool_calls.clone(),
+            skill_items: self.skill_items.clone(),
+            activity_items: self.activity_items.clone(),
+            action_required: self.action_required.clone(),
+            plan: self.plan.clone(),
+            completion: self.completion.clone(),
+            failure: self.failure.clone(),
+            last_issue: self.last_issue.clone(),
+            last_item_at: self.last_item_at.clone(),
+            last_sequence: self.last_sequence,
+        }
+    }
+}
+
+fn push_item(
+    items: &[RuntimeStreamItemDto],
+    item: RuntimeStreamItemDto,
+) -> Vec<RuntimeStreamItemDto> {
+    let mut next = Vec::with_capacity(items.len() + 1);
+    next.extend(items.iter().cloned());
+    next.push(item);
+    next
+}
+
+fn cap_recent(mut items: Vec<RuntimeStreamItemDto>, limit: usize) -> Vec<RuntimeStreamItemDto> {
+    if items.len() <= limit {
+        return items;
+    }
+
+    let keep_from = items.len().saturating_sub(limit);
+    items.split_off(keep_from)
+}
+
+fn runtime_timeline_update_sequence(item: &RuntimeStreamItemDto) -> u64 {
+    item.updated_sequence.unwrap_or(item.sequence)
+}
+
+fn runtime_item_kind_sort_key(kind: &RuntimeStreamItemKind) -> u8 {
+    match kind {
+        RuntimeStreamItemKind::Activity => 0,
+        RuntimeStreamItemKind::ActionRequired => 1,
+        RuntimeStreamItemKind::Complete => 2,
+        RuntimeStreamItemKind::Failure => 3,
+        RuntimeStreamItemKind::Plan => 4,
+        RuntimeStreamItemKind::Skill => 5,
+        RuntimeStreamItemKind::SubagentLifecycle => 6,
+        RuntimeStreamItemKind::Tool => 7,
+        RuntimeStreamItemKind::Transcript => 8,
+    }
+}
+
+fn compare_runtime_stream_items(
+    left: &RuntimeStreamItemDto,
+    right: &RuntimeStreamItemDto,
+) -> Ordering {
+    left.sequence
+        .cmp(&right.sequence)
+        .then_with(|| {
+            runtime_item_kind_sort_key(&left.kind).cmp(&runtime_item_kind_sort_key(&right.kind))
+        })
+        .then_with(|| left.run_id.cmp(&right.run_id))
+        .then_with(|| left.created_at.cmp(&right.created_at))
+}
+
+fn compare_runtime_stream_item_updates(
+    left: &RuntimeStreamItemDto,
+    right: &RuntimeStreamItemDto,
+) -> Ordering {
+    runtime_timeline_update_sequence(left)
+        .cmp(&runtime_timeline_update_sequence(right))
+        .then_with(|| compare_runtime_stream_items(left, right))
+}
+
+fn latest_timeline_item(items: &[RuntimeStreamItemDto]) -> Option<&RuntimeStreamItemDto> {
+    items
+        .iter()
+        .max_by(|left, right| compare_runtime_stream_item_updates(left, right))
+}
+
+fn transcript_role_is_assistant(item: &RuntimeStreamItemDto) -> bool {
+    matches!(
+        item.transcript_role.as_ref(),
+        None | Some(RuntimeStreamTranscriptRole::Assistant)
+    )
+}
+
+fn same_runtime_timeline_identity(
+    left: &RuntimeStreamItemDto,
+    right: &RuntimeStreamItemDto,
+) -> bool {
+    left.kind.as_str() == right.kind.as_str()
+        && left.run_id == right.run_id
+        && left.sequence == right.sequence
+}
+
+fn merge_transcript_items(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+    previous_timeline_item: Option<&RuntimeStreamItemDto>,
+) -> Vec<RuntimeStreamItemDto> {
+    if !transcript_role_is_assistant(&next_item) {
+        return push_item(current_items, next_item);
+    }
+
+    let Some(previous_item) = current_items.last() else {
+        return push_item(current_items, next_item);
+    };
+
+    let can_merge = previous_item.run_id == next_item.run_id
+        && transcript_role_is_assistant(previous_item)
+        && previous_timeline_item
+            .map(|timeline_item| {
+                matches!(&timeline_item.kind, RuntimeStreamItemKind::Transcript)
+                    && same_runtime_timeline_identity(timeline_item, previous_item)
+            })
+            .unwrap_or(false);
+
+    if !can_merge {
+        return push_item(current_items, next_item);
+    }
+
+    let mut merged_item = previous_item.clone();
+    merged_item.updated_sequence = Some(next_item.sequence);
+    merged_item.text = Some(format!(
+        "{}{}",
+        previous_item.text.as_deref().unwrap_or_default(),
+        next_item.text.as_deref().unwrap_or_default()
+    ));
+
+    let mut merged_items = current_items.to_vec();
+    if let Some(last_item) = merged_items.last_mut() {
+        *last_item = merged_item;
+    }
+    merged_items
+}
+
+fn replace_tool_call_item(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+) -> Vec<RuntimeStreamItemDto> {
+    let Some(tool_call_id) = next_item.tool_call_id.as_deref() else {
+        return push_item(current_items, next_item);
+    };
+
+    let mut items = current_items
+        .iter()
+        .filter(|item| item.tool_call_id.as_deref() != Some(tool_call_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    items.push(next_item);
+    items
+}
+
+fn replace_action_required_item(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+) -> Vec<RuntimeStreamItemDto> {
+    let Some(action_id) = next_item.action_id.as_deref() else {
+        return push_item(current_items, next_item);
+    };
+
+    let mut items = current_items
+        .iter()
+        .filter(|item| {
+            !(item.run_id == next_item.run_id && item.action_id.as_deref() == Some(action_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    items.push(next_item);
+    items
+}
+
+fn replace_plan_timeline_item(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+) -> Vec<RuntimeStreamItemDto> {
+    let Some(plan_id) = next_item.plan_id.as_deref() else {
+        return push_item(current_items, next_item);
+    };
+
+    let mut items = current_items
+        .iter()
+        .filter(|item| {
+            !(item.run_id == next_item.run_id && item.plan_id.as_deref() == Some(plan_id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    items.push(next_item);
+    items
+}
+
+fn merge_timeline_tool_item(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+) -> Vec<RuntimeStreamItemDto> {
+    let Some(tool_call_id) = next_item.tool_call_id.as_deref() else {
+        return push_item(current_items, next_item);
+    };
+
+    let Some(existing_item_index) = current_items.iter().position(|item| {
+        matches!(&item.kind, RuntimeStreamItemKind::Tool)
+            && item.tool_call_id.as_deref() == Some(tool_call_id)
+    }) else {
+        return push_item(current_items, next_item);
+    };
+
+    let existing_item = &current_items[existing_item_index];
+    let updated_sequence = runtime_timeline_update_sequence(&next_item);
+    let mut merged_item = next_item;
+    merged_item.sequence = existing_item.sequence;
+    merged_item.created_at = existing_item.created_at.clone();
+    merged_item.updated_sequence = Some(updated_sequence);
+
+    current_items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            if index == existing_item_index {
+                merged_item.clone()
+            } else {
+                item.clone()
+            }
+        })
+        .collect()
+}
+
+fn reasoning_activity_text(item: &RuntimeStreamItemDto) -> &str {
+    item.text
+        .as_deref()
+        .or(item.detail.as_deref())
+        .unwrap_or_default()
+}
+
+fn is_reasoning_activity_item(item: &RuntimeStreamItemDto) -> bool {
+    matches!(&item.kind, RuntimeStreamItemKind::Activity)
+        && item.code.as_deref() == Some(OWNED_AGENT_REASONING_ACTIVITY_CODE)
+        && !reasoning_activity_text(item).trim().is_empty()
+}
+
+fn merge_reasoning_timeline_item(
+    current_items: &[RuntimeStreamItemDto],
+    next_item: RuntimeStreamItemDto,
+    previous_timeline_item: Option<&RuntimeStreamItemDto>,
+) -> Vec<RuntimeStreamItemDto> {
+    let Some(previous_timeline_item) = previous_timeline_item else {
+        return push_item(current_items, next_item);
+    };
+
+    if !is_reasoning_activity_item(previous_timeline_item)
+        || previous_timeline_item.run_id != next_item.run_id
+    {
+        return push_item(current_items, next_item);
+    }
+
+    let Some(previous_item_index) = current_items
+        .iter()
+        .position(|item| same_runtime_timeline_identity(item, previous_timeline_item))
+    else {
+        return push_item(current_items, next_item);
+    };
+
+    let previous_item = &current_items[previous_item_index];
+    if !is_reasoning_activity_item(previous_item) {
+        return push_item(current_items, next_item);
+    }
+
+    let merged_text = format!(
+        "{}{}",
+        reasoning_activity_text(previous_item),
+        reasoning_activity_text(&next_item)
+    );
+    let merged_detail = if merged_text.trim().is_empty() {
+        previous_item
+            .detail
+            .clone()
+            .or_else(|| next_item.detail.clone())
+    } else {
+        Some(merged_text.trim().to_owned())
+    };
+    let mut merged_item = previous_item.clone();
+    merged_item.updated_sequence = Some(next_item.sequence);
+    merged_item.text = Some(merged_text);
+    merged_item.detail = merged_detail;
+
+    current_items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            if index == previous_item_index {
+                merged_item.clone()
+            } else {
+                item.clone()
+            }
+        })
+        .collect()
+}
+
+fn project_timeline_items(
+    current_items: &[RuntimeStreamItemDto],
+    transcript_items: &[RuntimeStreamItemDto],
+    next_item: Option<RuntimeStreamItemDto>,
+    previous_timeline_item: Option<&RuntimeStreamItemDto>,
+) -> Vec<RuntimeStreamItemDto> {
+    let mut non_transcript_items = current_items
+        .iter()
+        .filter(|item| !matches!(&item.kind, RuntimeStreamItemKind::Transcript))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if let Some(next_item) = next_item {
+        non_transcript_items = match next_item.kind.clone() {
+            RuntimeStreamItemKind::Tool => {
+                merge_timeline_tool_item(&non_transcript_items, next_item)
+            }
+            RuntimeStreamItemKind::ActionRequired => {
+                replace_action_required_item(&non_transcript_items, next_item)
+            }
+            RuntimeStreamItemKind::Plan => {
+                replace_plan_timeline_item(&non_transcript_items, next_item)
+            }
+            RuntimeStreamItemKind::Activity if is_reasoning_activity_item(&next_item) => {
+                merge_reasoning_timeline_item(
+                    &non_transcript_items,
+                    next_item,
+                    previous_timeline_item,
+                )
+            }
+            RuntimeStreamItemKind::Transcript => non_transcript_items,
+            _ => push_item(&non_transcript_items, next_item),
+        };
+    }
+
+    let mut projected_items =
+        Vec::with_capacity(transcript_items.len() + non_transcript_items.len());
+    projected_items.extend(transcript_items.iter().cloned());
+    projected_items.extend(non_transcript_items);
+    projected_items.sort_by(compare_runtime_stream_items);
+    projected_items
+}
 
 #[tauri::command]
 pub async fn subscribe_runtime_stream<R: Runtime + 'static>(
@@ -119,15 +624,25 @@ fn subscribe_owned_runtime_stream(
     request: &SubscribeRuntimeStreamRequestDto,
     runtime_run: RuntimeRunSnapshotRecord,
     item_kinds: Vec<RuntimeStreamItemKind>,
-    channel: Channel<RuntimeStreamItemDto>,
+    channel: Channel<serde_json::Value>,
 ) -> CommandResult<SubscribeRuntimeStreamResponseDto> {
     let run_id = runtime_run.run.run_id.clone();
+    let runtime_kind = runtime_run.run.runtime_kind.clone();
     let runtime_terminal = matches!(
         runtime_run.run.status,
         RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed
     );
     let session_id = format!("owned-agent:{run_id}");
     let subscription = subscribe_agent_events(&request.project_id, &run_id);
+    let mut projection = RuntimeStreamProjection::new(RuntimeStreamProjectionContext {
+        project_id: request.project_id.clone(),
+        agent_session_id: request.agent_session_id.clone(),
+        runtime_kind: runtime_kind.clone(),
+        run_id: run_id.clone(),
+        session_id: session_id.clone(),
+        flow_id: None,
+        subscribed_item_kinds: item_kinds.clone(),
+    });
     let (last_event_id, terminal) = replay_owned_agent_events(
         repo_root,
         &request.project_id,
@@ -135,6 +650,7 @@ fn subscribe_owned_runtime_stream(
         &session_id,
         &item_kinds,
         &channel,
+        &mut projection,
         request.after_sequence,
         request.replay_limit,
     )?;
@@ -152,6 +668,7 @@ fn subscribe_owned_runtime_stream(
                 run_id_for_thread,
                 session_id_for_thread,
                 requested_item_kinds,
+                projection,
                 last_event_id,
             );
         });
@@ -160,7 +677,7 @@ fn subscribe_owned_runtime_stream(
     Ok(SubscribeRuntimeStreamResponseDto {
         project_id: request.project_id.clone(),
         agent_session_id: request.agent_session_id.clone(),
-        runtime_kind: runtime_run.run.runtime_kind,
+        runtime_kind,
         run_id,
         session_id,
         flow_id: None,
@@ -178,7 +695,8 @@ fn replay_owned_agent_events(
     run_id: &str,
     session_id: &str,
     item_kinds: &[RuntimeStreamItemKind],
-    channel: &Channel<RuntimeStreamItemDto>,
+    channel: &Channel<serde_json::Value>,
+    projection: &mut RuntimeStreamProjection,
     after_sequence: Option<u64>,
     replay_limit: Option<u16>,
 ) -> CommandResult<(i64, bool)> {
@@ -202,53 +720,86 @@ fn replay_owned_agent_events(
     let after_event_id = after_sequence
         .and_then(|sequence| i64::try_from(sequence).ok())
         .unwrap_or(0);
-    let events = if after_event_id > 0 {
-        project_store::read_agent_events_after(
-            repo_root,
-            project_id,
-            run_id,
-            after_event_id,
-            incremental_replay_limit,
-        )?
-    } else {
-        project_store::read_latest_agent_events(
-            repo_root,
-            project_id,
-            run_id,
-            incremental_replay_limit,
-        )?
-    };
+    let (events, replay_mode) = load_owned_agent_replay_events(
+        repo_root,
+        project_id,
+        run_id,
+        after_sequence,
+        replay_limit,
+        incremental_replay_limit,
+    )?;
     let mut last_event_id = after_event_id;
     let replayed_count = events.len();
+    let mut delivered_patch = false;
+    let mut last_projected_patch: Option<RuntimeStreamPatchDto> = None;
     for event in events {
         last_event_id = last_event_id.max(event.id);
         if let Some(item) = owned_agent_event_runtime_item(event, session_id, None) {
             if should_emit_owned_runtime_item(item_kinds, &item.kind) {
-                channel.send(item).map_err(|error| {
-                    CommandError::retryable(
-                        "runtime_stream_channel_closed",
-                        format!(
-                            "Xero could not deliver an owned-agent runtime stream replay item because the desktop channel closed: {error}"
-                        ),
-                    )
-                })?;
+                let should_deliver_patch = after_sequence
+                    .map(|sequence| item.sequence > sequence)
+                    .unwrap_or(true);
+                let patch = projection.apply_item(item);
+                if should_deliver_patch {
+                    send_runtime_stream_patch(channel, patch)?;
+                    delivered_patch = true;
+                } else {
+                    last_projected_patch = Some(patch);
+                }
             }
         }
     }
+    if !delivered_patch {
+        if let (Some(_), Some(patch)) = (after_sequence, last_projected_patch) {
+            send_runtime_stream_patch(channel, patch)?;
+        }
+    }
     eprintln!(
-        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} last_event_id={last_event_id} duration_ms={}",
+        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} last_event_id={last_event_id} duration_ms={}",
         started.elapsed().as_millis()
     );
     Ok((last_event_id, terminal))
 }
 
+fn load_owned_agent_replay_events(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    after_sequence: Option<u64>,
+    replay_limit: Option<u16>,
+    incremental_replay_limit: usize,
+) -> CommandResult<(Vec<AgentEventRecord>, &'static str)> {
+    if after_sequence.is_none() && replay_limit.is_none() {
+        return Ok((
+            project_store::read_all_agent_events(repo_root, project_id, run_id)?,
+            "full",
+        ));
+    }
+
+    let replay_mode = if after_sequence.is_some() {
+        "incremental"
+    } else {
+        "limited-full"
+    };
+    Ok((
+        project_store::read_latest_agent_events(
+            repo_root,
+            project_id,
+            run_id,
+            incremental_replay_limit,
+        )?,
+        replay_mode,
+    ))
+}
+
 fn stream_live_owned_agent_events(
     subscription: AgentEventSubscription,
-    channel: Channel<RuntimeStreamItemDto>,
+    channel: Channel<serde_json::Value>,
     project_id: String,
     run_id: String,
     session_id: String,
     item_kinds: Vec<RuntimeStreamItemKind>,
+    mut projection: RuntimeStreamProjection,
     mut last_event_id: i64,
 ) {
     const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -269,14 +820,148 @@ fn stream_live_owned_agent_events(
         );
         last_event_id = event.id;
         if let Some(item) = owned_agent_event_runtime_item(event, &session_id, None) {
-            if should_emit_owned_runtime_item(&item_kinds, &item.kind)
-                && channel.send(item).is_err()
-            {
-                return;
+            if should_emit_owned_runtime_item(&item_kinds, &item.kind) {
+                let patch = projection.apply_item(item);
+                if send_runtime_stream_patch(&channel, patch).is_err() {
+                    return;
+                }
             }
         }
         if terminal {
             break;
+        }
+    }
+}
+
+fn send_runtime_stream_patch(
+    channel: &Channel<serde_json::Value>,
+    patch: RuntimeStreamPatchDto,
+) -> CommandResult<()> {
+    let payload = runtime_stream_patch_payload_for_ipc(patch)?;
+    channel.send(payload).map_err(|error| {
+        CommandError::retryable(
+            "runtime_stream_channel_closed",
+            format!(
+                "Xero could not deliver an owned-agent runtime stream replay patch because the desktop channel closed: {error}"
+            ),
+        )
+    })
+}
+
+fn runtime_stream_patch_payload_for_ipc(
+    patch: RuntimeStreamPatchDto,
+) -> CommandResult<serde_json::Value> {
+    let mut compact_patch = patch;
+    compact_runtime_stream_patch_for_ipc(
+        &mut compact_patch,
+        RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS,
+    );
+    if estimated_ipc_payload_bytes(&compact_patch) <= RUNTIME_STREAM_IPC_MAX_BYTES {
+        return runtime_stream_payload_value(compact_patch);
+    }
+
+    compact_runtime_stream_patch_for_ipc(
+        &mut compact_patch,
+        RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS,
+    );
+    if estimated_ipc_payload_bytes(&compact_patch) <= RUNTIME_STREAM_IPC_MAX_BYTES {
+        return runtime_stream_payload_value(compact_patch);
+    }
+
+    compact_runtime_stream_patch_for_ipc(&mut compact_patch, 0);
+    if estimated_ipc_payload_bytes(&compact_patch) <= RUNTIME_STREAM_IPC_MAX_BYTES {
+        return runtime_stream_payload_value(compact_patch);
+    }
+
+    let mut item = compact_patch.item;
+    compact_runtime_stream_item_for_ipc(&mut item, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
+    if estimated_ipc_payload_bytes(&item) > RUNTIME_STREAM_IPC_MAX_BYTES {
+        compact_runtime_stream_item_for_ipc(&mut item, 0);
+    }
+    runtime_stream_payload_value(item)
+}
+
+fn runtime_stream_payload_value<T: Serialize>(payload: T) -> CommandResult<serde_json::Value> {
+    serde_json::to_value(payload).map_err(|error| {
+        CommandError::system_fault(
+            "runtime_stream_payload_encode_failed",
+            format!("Xero could not encode a runtime stream channel payload: {error}"),
+        )
+    })
+}
+
+fn estimated_ipc_payload_bytes<T: Serialize>(payload: &T) -> usize {
+    serde_json::to_string(payload)
+        .map(|json| json.len().saturating_mul(2))
+        .unwrap_or(usize::MAX)
+}
+
+fn compact_runtime_stream_patch_for_ipc(patch: &mut RuntimeStreamPatchDto, preview_max: usize) {
+    compact_runtime_stream_item_for_ipc(&mut patch.item, preview_max);
+    compact_runtime_stream_items_for_ipc(&mut patch.snapshot.items, preview_max);
+    compact_runtime_stream_items_for_ipc(&mut patch.snapshot.transcript_items, preview_max);
+    compact_runtime_stream_items_for_ipc(&mut patch.snapshot.tool_calls, preview_max);
+    compact_runtime_stream_items_for_ipc(&mut patch.snapshot.skill_items, preview_max);
+    compact_runtime_stream_items_for_ipc(&mut patch.snapshot.activity_items, preview_max);
+    compact_runtime_stream_items_for_ipc(&mut patch.snapshot.action_required, preview_max);
+    if let Some(item) = &mut patch.snapshot.plan {
+        compact_runtime_stream_item_for_ipc(item, preview_max);
+    }
+    if let Some(item) = &mut patch.snapshot.completion {
+        compact_runtime_stream_item_for_ipc(item, preview_max);
+    }
+    if let Some(item) = &mut patch.snapshot.failure {
+        compact_runtime_stream_item_for_ipc(item, preview_max);
+    }
+}
+
+fn compact_runtime_stream_items_for_ipc(items: &mut [RuntimeStreamItemDto], preview_max: usize) {
+    for item in items {
+        compact_runtime_stream_item_for_ipc(item, preview_max);
+    }
+}
+
+fn compact_runtime_stream_item_for_ipc(item: &mut RuntimeStreamItemDto, preview_max: usize) {
+    truncate_optional_runtime_text(&mut item.tool_result_preview, preview_max);
+    if item.kind != RuntimeStreamItemKind::Transcript {
+        truncate_optional_runtime_text(&mut item.text, RUNTIME_STREAM_IPC_TEXT_CHARS);
+        truncate_optional_runtime_text(&mut item.detail, RUNTIME_STREAM_IPC_TEXT_CHARS);
+        truncate_optional_runtime_text(&mut item.message, RUNTIME_STREAM_IPC_TEXT_CHARS);
+    }
+    truncate_optional_runtime_text(&mut item.subagent_prompt, RUNTIME_STREAM_IPC_TEXT_CHARS);
+    truncate_optional_runtime_text(
+        &mut item.subagent_result_summary,
+        RUNTIME_STREAM_IPC_TEXT_CHARS,
+    );
+    if let Some(options) = &mut item.options {
+        for option in options {
+            truncate_optional_runtime_text(&mut option.description, RUNTIME_STREAM_IPC_TEXT_CHARS);
+        }
+    }
+    if let Some(plan_items) = &mut item.plan_items {
+        for plan_item in plan_items {
+            truncate_optional_runtime_text(&mut plan_item.notes, RUNTIME_STREAM_IPC_TEXT_CHARS);
+            truncate_optional_runtime_text(
+                &mut plan_item.handoff_note,
+                RUNTIME_STREAM_IPC_TEXT_CHARS,
+            );
+        }
+    }
+}
+
+fn truncate_optional_runtime_text(value: &mut Option<String>, max_chars: usize) {
+    if value.is_none() {
+        return;
+    }
+
+    if max_chars == 0 {
+        *value = None;
+        return;
+    }
+
+    if let Some(current) = value.as_mut() {
+        if current.chars().count() > max_chars {
+            *current = truncate_chars(current, max_chars);
         }
     }
 }
@@ -302,6 +987,7 @@ fn owned_agent_event_runtime_item(
         kind: RuntimeStreamItemKind::Activity,
         run_id: event.run_id.clone(),
         sequence: event_id.max(0) as u64,
+        updated_sequence: None,
         session_id: Some(session_id.to_string()),
         flow_id,
         text: None,
@@ -447,8 +1133,9 @@ fn owned_agent_event_runtime_item(
                         .and_then(model_visible_tool_result_output);
                     let summary_output = model_visible_output.as_ref().unwrap_or(output);
                     item.tool_summary = tool_result_summary_from_output(summary_output, ok);
-                    item.tool_result_preview =
-                        model_visible_result.or_else(|| tool_result_preview_from_output(output));
+                    item.tool_result_preview = model_visible_result
+                        .and_then(truncate_result_preview)
+                        .or_else(|| tool_result_preview_from_output(output));
                 }
             }
             item.code = payload_string(&payload, "code");
@@ -1797,7 +2484,7 @@ fn command_output_summary(payload: &serde_json::Value) -> String {
 fn resolve_channel<R: Runtime>(
     webview: &Webview<R>,
     raw_channel: Option<&str>,
-) -> CommandResult<Channel<RuntimeStreamItemDto>> {
+) -> CommandResult<Channel<serde_json::Value>> {
     let Some(raw_channel) = raw_channel else {
         return Err(CommandError::user_fixable(
             "runtime_stream_channel_missing",
@@ -1820,14 +2507,192 @@ mod tests {
     use super::*;
 
     fn event(event_kind: AgentRunEventKind, payload_json: &str) -> AgentEventRecord {
+        event_with_id(42, event_kind, payload_json)
+    }
+
+    fn event_with_id(
+        id: i64,
+        event_kind: AgentRunEventKind,
+        payload_json: &str,
+    ) -> AgentEventRecord {
         AgentEventRecord {
-            id: 42,
+            id,
             project_id: "project-1".into(),
             run_id: "run-1".into(),
             event_kind,
             payload_json: payload_json.into(),
             created_at: "2026-04-24T00:00:00Z".into(),
         }
+    }
+
+    fn projection_context() -> RuntimeStreamProjectionContext {
+        RuntimeStreamProjectionContext {
+            project_id: "project-1".into(),
+            agent_session_id: "agent-session-1".into(),
+            runtime_kind: "openai_codex".into(),
+            run_id: "run-1".into(),
+            session_id: "owned-agent:run-1".into(),
+            flow_id: None,
+            subscribed_item_kinds: vec![
+                RuntimeStreamItemKind::Transcript,
+                RuntimeStreamItemKind::Tool,
+                RuntimeStreamItemKind::Activity,
+                RuntimeStreamItemKind::ActionRequired,
+                RuntimeStreamItemKind::Complete,
+                RuntimeStreamItemKind::Failure,
+            ],
+        }
+    }
+
+    fn seed_replay_project(root: &tempfile::TempDir) -> std::path::PathBuf {
+        let repo_root = root.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("create replay repo root");
+        let canonical_root = std::fs::canonicalize(&repo_root).expect("canonical replay repo root");
+        let repository = crate::git::repository::CanonicalRepository {
+            project_id: "project-1".into(),
+            repository_id: "repo-1".into(),
+            root_path: canonical_root.clone(),
+            root_path_string: canonical_root.to_string_lossy().into_owned(),
+            common_git_dir: canonical_root.join(".git"),
+            display_name: "repo".into(),
+            branch_name: Some("main".into()),
+            head_sha: Some("abc123".into()),
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        };
+
+        crate::db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
+        let state = crate::state::DesktopState::default();
+        crate::db::import_project(&repository, state.import_failpoints()).expect("import project");
+        canonical_root
+    }
+
+    fn seed_replay_run(repo_root: &std::path::Path, event_count: usize) {
+        let session = project_store::create_agent_session(
+            repo_root,
+            &project_store::AgentSessionCreateRecord {
+                project_id: "project-1".into(),
+                title: "Replay test session".into(),
+                summary: String::new(),
+                selected: true,
+            },
+        )
+        .expect("create replay test session");
+
+        project_store::insert_agent_run(
+            repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: crate::commands::RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(project_store::BUILTIN_AGENT_DEFINITION_VERSION),
+                project_id: "project-1".into(),
+                agent_session_id: session.agent_session_id,
+                run_id: "run-1".into(),
+                provider_id: "fake".into(),
+                model_id: "fake-model".into(),
+                prompt: "test prompt".into(),
+                system_prompt: "test system".into(),
+                now: "2026-04-24T00:00:00Z".into(),
+            },
+        )
+        .expect("insert replay test run");
+
+        for index in 0..event_count {
+            project_store::append_agent_event(
+                repo_root,
+                &project_store::NewAgentEventRecord {
+                    project_id: "project-1".into(),
+                    run_id: "run-1".into(),
+                    event_kind: AgentRunEventKind::MessageDelta,
+                    payload_json: serde_json::json!({
+                        "delta": format!("chunk-{index}")
+                    })
+                    .to_string(),
+                    created_at: "2026-04-24T00:00:00Z".into(),
+                },
+            )
+            .expect("append replay test event");
+        }
+    }
+
+    #[test]
+    fn fresh_runtime_stream_subscription_replays_full_run_history() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let repo_root = seed_replay_project(&root);
+        let event_count = INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT + 5;
+        seed_replay_run(&repo_root, event_count);
+
+        let (full_events, full_mode) = load_owned_agent_replay_events(
+            &repo_root,
+            "project-1",
+            "run-1",
+            None,
+            None,
+            INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT,
+        )
+        .expect("load full replay events");
+        assert_eq!(full_mode, "full");
+        assert_eq!(full_events.len(), event_count);
+        assert_eq!(full_events.first().expect("first event").id, 1);
+        assert_eq!(
+            full_events.last().expect("last event").id,
+            event_count as i64
+        );
+
+        let (limited_events, limited_mode) =
+            load_owned_agent_replay_events(&repo_root, "project-1", "run-1", None, Some(10), 10)
+                .expect("load limited replay events");
+        assert_eq!(limited_mode, "limited-full");
+        assert_eq!(limited_events.len(), 10);
+        assert_eq!(
+            limited_events.first().expect("first limited event").id,
+            event_count as i64 - 9
+        );
+    }
+
+    #[test]
+    fn oversized_tool_result_stream_payload_falls_back_under_ipc_budget() {
+        let large_content = "x".repeat(180_000);
+        let payload = serde_json::json!({
+            "toolCallId": "call-large-read",
+            "toolName": "read",
+            "ok": true,
+            "summary": "read returned a large file",
+            "output": {
+                "kind": "read",
+                "path": "src/large.ts",
+                "content": large_content,
+                "lineCount": 6000,
+                "truncated": false
+            }
+        });
+        let item = owned_agent_event_runtime_item(
+            event(AgentRunEventKind::ToolCompleted, &payload.to_string()),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("tool item");
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let patch = projection.apply_item(item);
+        let channel_payload =
+            runtime_stream_patch_payload_for_ipc(patch).expect("encode stream payload");
+
+        assert!(
+            estimated_ipc_payload_bytes(&channel_payload) <= RUNTIME_STREAM_IPC_MAX_BYTES,
+            "stream payload should fit the frontend runtime-stream IPC budget"
+        );
+        let serialized = serde_json::to_string(&channel_payload).expect("serialize payload");
+        assert!(!serialized.contains(&"x".repeat(20_000)));
+        assert!(
+            channel_payload.get("schema").is_some() || channel_payload.get("kind").is_some(),
+            "payload remains either a patch or an item envelope"
+        );
     }
 
     #[test]
@@ -1977,6 +2842,187 @@ mod tests {
     }
 
     #[test]
+    fn runtime_stream_projection_coalesces_transcript_reasoning_and_replaces_tools() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+
+        let first_transcript = owned_agent_event_runtime_item(
+            event_with_id(
+                1,
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"assistant","text":"Hello "}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("first transcript item");
+        projection.apply_item(first_transcript);
+        let second_transcript = owned_agent_event_runtime_item(
+            event_with_id(
+                2,
+                AgentRunEventKind::MessageDelta,
+                r#"{"role":"assistant","text":"world"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("second transcript item");
+        let transcript_patch = projection.apply_item(second_transcript);
+
+        assert_eq!(transcript_patch.schema, RUNTIME_STREAM_PATCH_SCHEMA);
+        assert_eq!(transcript_patch.snapshot.schema, RUNTIME_STREAM_VIEW_SCHEMA);
+        assert_eq!(transcript_patch.snapshot.transcript_items.len(), 1);
+        let transcript = &transcript_patch.snapshot.transcript_items[0];
+        assert_eq!(transcript.sequence, 1);
+        assert_eq!(transcript.updated_sequence, Some(2));
+        assert_eq!(transcript.text.as_deref(), Some("Hello world"));
+
+        let tool_started = owned_agent_event_runtime_item(
+            event_with_id(
+                3,
+                AgentRunEventKind::ToolStarted,
+                r#"{"toolCallId":"call-read","toolName":"read","input":{"path":"client/src/App.tsx"}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("tool started item");
+        projection.apply_item(tool_started);
+        let tool_completed = owned_agent_event_runtime_item(
+            event_with_id(
+                4,
+                AgentRunEventKind::ToolCompleted,
+                r#"{"toolCallId":"call-read","toolName":"read","ok":true,"summary":"Read App.","output":{"kind":"read","path":"client/src/App.tsx","lineCount":2,"truncated":false,"content":"export function App() {}\n"}}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("tool completed item");
+        let tool_patch = projection.apply_item(tool_completed);
+
+        assert_eq!(tool_patch.snapshot.tool_calls.len(), 1);
+        assert_eq!(
+            tool_patch.snapshot.tool_calls[0].tool_state,
+            Some(RuntimeToolCallState::Succeeded)
+        );
+        let timeline_tool = tool_patch
+            .snapshot
+            .items
+            .iter()
+            .find(|item| item.tool_call_id.as_deref() == Some("call-read"))
+            .expect("timeline tool");
+        assert_eq!(timeline_tool.sequence, 3);
+        assert_eq!(timeline_tool.updated_sequence, Some(4));
+        assert_eq!(timeline_tool.detail.as_deref(), Some("Read App."));
+
+        let reasoning_one = owned_agent_event_runtime_item(
+            event_with_id(
+                5,
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":"Inspecting"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("first reasoning item");
+        projection.apply_item(reasoning_one);
+        let reasoning_two = owned_agent_event_runtime_item(
+            event_with_id(
+                6,
+                AgentRunEventKind::ReasoningSummary,
+                r#"{"summary":" files"}"#,
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("second reasoning item");
+        let reasoning_patch = projection.apply_item(reasoning_two);
+        let reasoning = reasoning_patch
+            .snapshot
+            .items
+            .iter()
+            .filter(|item| item.code.as_deref() == Some(OWNED_AGENT_REASONING_ACTIVITY_CODE))
+            .collect::<Vec<_>>();
+
+        assert_eq!(reasoning.len(), 1);
+        assert_eq!(reasoning[0].sequence, 5);
+        assert_eq!(reasoning[0].updated_sequence, Some(6));
+        assert_eq!(reasoning[0].text.as_deref(), Some("Inspecting files"));
+        assert_eq!(reasoning_patch.snapshot.last_sequence, Some(6));
+    }
+
+    #[test]
+    fn runtime_stream_projection_retains_full_replay_beyond_recent_tail() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let retained_count = 25;
+
+        for index in 0..retained_count {
+            let transcript = owned_agent_event_runtime_item(
+                event_with_id(
+                    (index + 1) as i64,
+                    AgentRunEventKind::MessageDelta,
+                    &serde_json::json!({
+                        "role": "user",
+                        "text": format!("turn-{index}")
+                    })
+                    .to_string(),
+                ),
+                "owned-agent:run-1",
+                None,
+            )
+            .expect("transcript item");
+            projection.apply_item(transcript);
+        }
+
+        for index in 0..retained_count {
+            let tool = owned_agent_event_runtime_item(
+                event_with_id(
+                    (100 + index) as i64,
+                    AgentRunEventKind::ToolCompleted,
+                    &serde_json::json!({
+                        "toolCallId": format!("call-read-{index}"),
+                        "toolName": "read",
+                        "ok": true,
+                        "summary": format!("Read file {index}.")
+                    })
+                    .to_string(),
+                ),
+                "owned-agent:run-1",
+                None,
+            )
+            .expect("tool item");
+            projection.apply_item(tool);
+        }
+
+        let snapshot = projection.snapshot();
+        assert_eq!(snapshot.transcript_items.len(), retained_count);
+        assert_eq!(snapshot.tool_calls.len(), retained_count);
+        assert_eq!(snapshot.transcript_items[0].text.as_deref(), Some("turn-0"));
+        assert_eq!(
+            snapshot
+                .tool_calls
+                .first()
+                .and_then(|item| item.tool_call_id.as_deref()),
+            Some("call-read-0")
+        );
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .filter(|item| matches!(&item.kind, RuntimeStreamItemKind::Transcript))
+                .count(),
+            retained_count
+        );
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .filter(|item| matches!(&item.kind, RuntimeStreamItemKind::Tool))
+                .count(),
+            retained_count
+        );
+    }
+
+    #[test]
     fn owned_agent_tool_started_projection_carries_concise_input_detail() {
         let read = owned_agent_event_runtime_item(
             event(
@@ -2111,10 +3157,6 @@ mod tests {
         assert_eq!(
             search_preview["output"]["kind"],
             serde_json::json!("search")
-        );
-        assert_eq!(
-            search_preview["output"]["matches"][0]["preview"],
-            serde_json::json!("appendTranscriptDelta()")
         );
 
         let find = owned_agent_event_runtime_item(

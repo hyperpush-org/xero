@@ -20,11 +20,15 @@ import type {
 import type { AgentDefinitionWriteResponseDto } from '@/src/lib/xero-model/agent-definition'
 import type {
   AgentAuthoringCatalogDto,
+  AgentAuthoringAttachableSkillDto,
+  AgentAuthoringSkillSearchResultDto,
+  SearchAgentAuthoringSkillsResponseDto,
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
 
 interface PhaseViewProps {
   active?: boolean
+  projectId?: string | null
   workflow?: WorkflowPaneView
   onStartRun?: () => Promise<unknown>
   onOpenSettings?: () => void
@@ -43,6 +47,14 @@ interface PhaseViewProps {
     initialDetail: WorkflowAgentDetailDto | null
   } | null
   authoringCatalog?: AgentAuthoringCatalogDto | null
+  onSearchAttachableSkills?: (params: {
+    query: string
+    offset: number
+    limit: number
+  }) => Promise<SearchAgentAuthoringSkillsResponseDto>
+  onResolveAttachableSkill?: (
+    skill: AgentAuthoringSkillSearchResultDto,
+  ) => Promise<AgentAuthoringAttachableSkillDto>
   onAuthoringSubmit?: (params: {
     snapshot: Record<string, unknown>
     mode: CanvasMode
@@ -50,6 +62,8 @@ interface PhaseViewProps {
   }) => Promise<AgentDefinitionWriteResponseDto>
   onAuthoringSaved?: (response: AgentDefinitionWriteResponseDto) => void
   onAuthoringCancel?: () => void
+  onReadProjectUiState?: (key: string) => Promise<unknown | null>
+  onWriteProjectUiState?: (key: string, value: unknown | null) => Promise<void>
   onSelectedNodeChange?: (hasSelection: boolean) => void
 }
 
@@ -78,10 +92,15 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     onReloadAgentDetail,
     authoringSession = null,
     authoringCatalog = null,
+    onSearchAttachableSkills,
+    onResolveAttachableSkill,
     onAuthoringSubmit,
     onAuthoringSaved,
     onAuthoringCancel,
+    onReadProjectUiState,
+    onWriteProjectUiState,
     onSelectedNodeChange,
+    projectId = null,
   } = props
 
   const isAuthoring = Boolean(authoringSession && onAuthoringSubmit && onAuthoringSaved && onAuthoringCancel)
@@ -181,22 +200,30 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       {isAuthoring && authoringSession && onAuthoringSubmit && onAuthoringSaved && onAuthoringCancel ? (
         <AgentVisualization
           active={active}
+          projectId={projectId}
           editing
           mode={authoringSession.mode}
           initialDetail={authoringSession.initialDetail}
           authoringCatalog={authoringCatalog}
+          onSearchAttachableSkills={onSearchAttachableSkills}
+          onResolveAttachableSkill={onResolveAttachableSkill}
           onSubmit={onAuthoringSubmit}
           onSaved={onAuthoringSaved}
           onCancel={onAuthoringCancel}
           onEditingStatusChange={handleEditingStatusChange}
+          onReadProjectUiState={onReadProjectUiState}
+          onWriteProjectUiState={onWriteProjectUiState}
           onSelectedNodeChange={onSelectedNodeChange}
         />
       ) : (
         <AgentVisualization
           active={active}
+          projectId={projectId}
           detail={selectedAgent}
           emptyState={agentErrorState ?? emptyCanvasState}
           emptyStateVisible={!showAgentVisualization && agentDetailStatus !== 'loading'}
+          onReadProjectUiState={onReadProjectUiState}
+          onWriteProjectUiState={onWriteProjectUiState}
           onSelectedNodeChange={onSelectedNodeChange}
         />
       )}

@@ -25,6 +25,15 @@ export const providerModelCatalogDiagnosticSchema = z
   })
   .strict()
 
+export const providerModelCatalogContractDiagnosticSchema = z
+  .object({
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    severity: z.enum(['info', 'warning', 'error']),
+    path: z.array(z.string()),
+  })
+  .strict()
+
 export const providerModelThinkingCapabilitySchema = z
   .object({
     supported: z.boolean(),
@@ -288,6 +297,7 @@ function validateRuntimeProviderModel(
 
 export const providerModelCatalogSchema = z
   .object({
+    contractVersion: z.literal(1).default(1),
     profileId: z.string().trim().min(1),
     providerId: runtimeProviderIdSchema,
     configuredModelId: z.string().trim().min(1),
@@ -299,6 +309,7 @@ export const providerModelCatalogSchema = z
     cacheAgeSeconds: z.number().int().nullable().optional(),
     cacheTtlSeconds: z.number().int().positive().nullable().optional(),
     models: z.array(providerModelSchema),
+    contractDiagnostics: z.array(providerModelCatalogContractDiagnosticSchema).default([]),
   })
   .strict()
   .superRefine((catalog, ctx) => {
@@ -404,6 +415,7 @@ export type ProviderModelCatalogSourceDto = z.infer<typeof providerModelCatalogS
 export type ProviderModelThinkingEffortDto = z.infer<typeof providerModelThinkingEffortSchema>
 export type ProviderCapabilityStatusDto = z.infer<typeof providerCapabilityStatusSchema>
 export type ProviderModelCatalogDiagnosticDto = z.infer<typeof providerModelCatalogDiagnosticSchema>
+export type ProviderModelCatalogContractDiagnosticDto = z.infer<typeof providerModelCatalogContractDiagnosticSchema>
 export type ProviderModelThinkingCapabilityDto = z.infer<typeof providerModelThinkingCapabilitySchema>
 export type ProviderFeatureCapabilityDto = z.infer<typeof providerFeatureCapabilitySchema>
 export type ProviderToolCallCapabilityDto = z.infer<typeof providerToolCallCapabilitySchema>

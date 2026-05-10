@@ -15,8 +15,6 @@ import {
   mapRepositoryStatus,
   mapRuntimeRun,
   mapRuntimeSession,
-  MAX_RUNTIME_STREAM_ITEMS,
-  MAX_RUNTIME_STREAM_TRANSCRIPTS,
   mergeRuntimeStreamEvent,
   mergeRuntimeUpdated,
   projectSnapshotResponseSchema,
@@ -44,6 +42,9 @@ import {
   type RuntimeStreamEventDto,
   type RuntimeStreamItemDto,
 } from '@/src/lib/xero-model'
+
+const LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP = 40
+const LEGACY_RUNTIME_STREAM_TRANSCRIPT_CAP = 20
 
 function makeSnapshot(overrides: Partial<ProjectSnapshotResponseDto> = {}): ProjectSnapshotResponseDto {
   return {
@@ -1722,7 +1723,7 @@ describe('xero-model', () => {
       toolState: 'succeeded',
     })
 
-    for (let index = 0; index < MAX_RUNTIME_STREAM_ITEMS + 5; index += 1) {
+    for (let index = 0; index < LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 5; index += 1) {
       stream = mergeRuntimeStreamEvent(
         stream,
         makeStreamEvent(
@@ -1752,8 +1753,9 @@ describe('xero-model', () => {
       'Reading the relevant files.',
     ])
     expect(stream.items.filter((item) => item.kind !== 'transcript')).toHaveLength(
-      MAX_RUNTIME_STREAM_ITEMS + 6,
+      LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 6,
     )
+    expect(stream.toolCalls).toHaveLength(LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 6)
   })
 
   it('preserves whitespace-bearing assistant transcript deltas while compacting the live turn', () => {
@@ -1776,7 +1778,7 @@ describe('xero-model', () => {
   it('keeps a long streamed assistant reply as one expanding transcript instead of a capped delta window', () => {
     let stream = createRuntimeStreamFromSubscription(streamSubscription)
     const deltas = Array.from(
-      { length: MAX_RUNTIME_STREAM_TRANSCRIPTS + 12 },
+      { length: LEGACY_RUNTIME_STREAM_TRANSCRIPT_CAP + 12 },
       (_, index) => (index === 0 ? 'Chunk' : ` ${index}`),
     )
 
@@ -1790,6 +1792,26 @@ describe('xero-model', () => {
     expect(stream.transcriptItems).toHaveLength(1)
     expect(stream.transcriptItems[0]?.text).toBe(deltas.join(''))
     expect(stream.items.filter((item) => item.kind === 'transcript')).toHaveLength(1)
+  })
+
+  it('keeps replayed transcript turns beyond the old recent-tail cap', () => {
+    let stream = createRuntimeStreamFromSubscription(streamSubscription)
+    const turnCount = LEGACY_RUNTIME_STREAM_TRANSCRIPT_CAP + 5
+
+    for (let index = 0; index < turnCount; index += 1) {
+      stream = mergeRuntimeStreamEvent(
+        stream,
+        makeTranscriptStreamEvent(`turn-${index}`, {
+          sequence: index + 1,
+          role: 'user',
+        }),
+      )
+    }
+
+    expect(stream.transcriptItems).toHaveLength(turnCount)
+    expect(stream.items.filter((item) => item.kind === 'transcript')).toHaveLength(turnCount)
+    expect(stream.transcriptItems[0]?.text).toBe('turn-0')
+    expect(stream.transcriptItems.at(-1)?.text).toBe(`turn-${turnCount - 1}`)
   })
 
   it('keeps streamed reasoning activity deltas as one expanding timeline item', () => {

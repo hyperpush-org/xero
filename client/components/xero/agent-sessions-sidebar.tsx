@@ -51,6 +51,8 @@ interface AgentSessionsSidebarProps {
   onDeleteSession?: (agentSessionId: string) => Promise<void>
   onSearchSessions?: (query: string) => Promise<SessionTranscriptSearchResultSnippetDto[]>
   onOpenSearchResult?: (result: SessionTranscriptSearchResultSnippetDto) => void
+  onReadProjectUiState?: (key: string) => Promise<unknown | null>
+  onWriteProjectUiState?: (key: string, value: unknown | null) => Promise<void>
   pendingSessionId?: string | null
   isCreating?: boolean
   collapsed?: boolean
@@ -70,6 +72,7 @@ interface AgentSessionsSidebarProps {
 type ArchivedLoadStatus = 'idle' | 'loading' | 'loaded' | 'error'
 
 const PINNED_SESSIONS_STORAGE_PREFIX = 'xero:pinned-sessions:'
+const PINNED_SESSIONS_UI_STATE_KEY = 'agent-sessions.pinned.v1'
 const MIN_WIDTH = 220
 const DEFAULT_WIDTH = 260
 const MAX_WIDTH = 560
@@ -90,6 +93,11 @@ export function readPinnedSessionIds(projectId: string | null): Set<string> {
   } catch {
     return new Set()
   }
+}
+
+function parsePinnedSessionIds(value: unknown): Set<string> {
+  if (!Array.isArray(value)) return new Set()
+  return new Set(value.filter((id): id is string => typeof id === 'string'))
 }
 
 function writePinnedSessionIds(projectId: string | null, ids: Set<string>) {
@@ -154,6 +162,8 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
   onDeleteSession,
   onSearchSessions,
   onOpenSearchResult,
+  onReadProjectUiState,
+  onWriteProjectUiState,
   pendingSessionId,
   isCreating,
   collapsed = false,
@@ -175,7 +185,9 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
     [sessions],
   )
 
-  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => readPinnedSessionIds(projectId))
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() =>
+    onReadProjectUiState ? new Set() : readPinnedSessionIds(projectId),
+  )
   const [width, setWidth] = useState(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
@@ -217,8 +229,31 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
   }, [])
 
   useEffect(() => {
-    setPinnedIds(readPinnedSessionIds(projectId))
-  }, [projectId])
+    if (!projectId) {
+      setPinnedIds(new Set())
+      return
+    }
+
+    if (!onReadProjectUiState) {
+      setPinnedIds(readPinnedSessionIds(projectId))
+      return
+    }
+
+    let cancelled = false
+    onReadProjectUiState(PINNED_SESSIONS_UI_STATE_KEY)
+      .then((value) => {
+        if (cancelled) return
+        setPinnedIds(parsePinnedSessionIds(value))
+      })
+      .catch(() => {
+        if (cancelled) return
+        setPinnedIds(new Set())
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [onReadProjectUiState, projectId])
 
   useLayoutEffect(() => {
     const wasStripMode = wasStripModeRef.current
@@ -464,11 +499,15 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
         } else {
           next.add(agentSessionId)
         }
-        writePinnedSessionIds(projectId, next)
+        if (projectId && onWriteProjectUiState) {
+          void onWriteProjectUiState(PINNED_SESSIONS_UI_STATE_KEY, [...next]).catch(() => {})
+        } else {
+          writePinnedSessionIds(projectId, next)
+        }
         return next
       })
     },
-    [projectId],
+    [onWriteProjectUiState, projectId],
   )
 
   const isFirstSyncRef = useRef(true)

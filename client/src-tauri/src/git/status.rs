@@ -64,26 +64,10 @@ pub fn lookup_registry_candidates(
     expected_project_id: &str,
     registry_path: &Path,
 ) -> Result<Vec<RegistryProjectRecord>, CommandError> {
-    let registry = registry::read_registry(registry_path)?;
-    let mut live_root_records = Vec::new();
-    let mut snapshot_candidates = Vec::new();
-    let mut pruned_stale_roots = false;
-
-    for record in registry.projects {
-        if !Path::new(&record.root_path).is_dir() {
-            pruned_stale_roots = true;
-            continue;
-        }
-
-        if record.project_id == expected_project_id {
-            snapshot_candidates.push(record.clone());
-        }
-        live_root_records.push(record);
-    }
-
-    if pruned_stale_roots {
-        let _ = registry::replace_projects(registry_path, live_root_records);
-    }
+    let snapshot_candidates = registry::read_project_records(registry_path, expected_project_id)?
+        .into_iter()
+        .filter(|record| Path::new(&record.root_path).is_dir())
+        .collect::<Vec<_>>();
 
     if snapshot_candidates.is_empty() {
         return Err(CommandError::project_not_found());

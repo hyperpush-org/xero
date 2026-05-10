@@ -5,6 +5,7 @@ import type {
   CustomAgentToolPolicyDto,
 } from '@/src/lib/xero-model/agent-definition'
 import type {
+  AgentAttachedSkillDto,
   AgentToolPolicyDetailsDto,
   AgentHeaderDto,
   WorkflowAgentDetailDto,
@@ -53,6 +54,8 @@ function detail(): WorkflowAgentDetailDto {
       browserControlAllowed: false,
       skillRuntimeAllowed: false,
       subagentAllowed: false,
+      allowedSubagentRoles: [],
+      deniedSubagentRoles: [],
       commandAllowed: false,
       destructiveWriteAllowed: false,
     },
@@ -116,6 +119,26 @@ function detail(): WorkflowAgentDetailDto {
         required: false,
       },
     ],
+    attachedSkills: [],
+  }
+}
+
+function attachedRustSkill(): AgentAttachedSkillDto {
+  return {
+    id: 'rust-best-practices',
+    sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+    skillId: 'rust-best-practices',
+    name: 'Rust Best Practices',
+    description: 'Guide for writing idiomatic Rust.',
+    sourceKind: 'bundled',
+    scope: 'global',
+    versionHash: 'hash-rust',
+    includeSupportingAssets: false,
+    required: true,
+    sourceState: 'enabled',
+    trustState: 'trusted',
+    availabilityStatus: 'available',
+    availabilityReason: 'Skill source is enabled, trusted, and pinned for attachment.',
   }
 }
 
@@ -158,6 +181,8 @@ function broadDetail(): WorkflowAgentDetailDto {
       browserControlAllowed: true,
       skillRuntimeAllowed: true,
       subagentAllowed: true,
+      allowedSubagentRoles: ['engineer'],
+      deniedSubagentRoles: [],
       commandAllowed: true,
       destructiveWriteAllowed: true,
     },
@@ -270,6 +295,13 @@ function detailFromSnapshot(
       sections: snapshot.output.sections.map((section) => ({ ...section })),
     },
     consumes: snapshot.consumes.map((entry) => ({ ...entry })),
+    attachedSkills: snapshot.attachedSkills.map((skill) => ({
+      ...skill,
+      sourceState: 'enabled',
+      trustState: 'trusted',
+      availabilityStatus: 'available',
+      availabilityReason: 'Skill source is enabled, trusted, and pinned for attachment.',
+    })),
   }
 }
 
@@ -289,6 +321,8 @@ function completeToolPolicyDetails(
     browserControlAllowed: policy.browserControlAllowed ?? false,
     skillRuntimeAllowed: policy.skillRuntimeAllowed ?? false,
     subagentAllowed: policy.subagentAllowed ?? false,
+    allowedSubagentRoles: policy.allowedSubagentRoles ?? (policy.subagentAllowed ? ['engineer'] : []),
+    deniedSubagentRoles: policy.deniedSubagentRoles ?? [],
     commandAllowed: policy.commandAllowed ?? false,
     destructiveWriteAllowed: policy.destructiveWriteAllowed ?? false,
   }
@@ -312,6 +346,7 @@ function stableProjection(snapshot: CanonicalCustomAgentDefinitionDto) {
     output: snapshot.output,
     dbTouchpoints: snapshot.dbTouchpoints,
     consumes: snapshot.consumes,
+    attachedSkills: snapshot.attachedSkills,
   }
 }
 
@@ -323,6 +358,7 @@ function parsedSnapshot(
   return canonicalCustomAgentDefinitionSchema.parse(
     buildSnapshotFromGraph(graph.nodes, graph.edges, {
       initialDefinitionId: definitionId,
+      attachedSkills: source.attachedSkills,
     }).snapshot,
   )
 }
@@ -345,7 +381,8 @@ describe('buildSnapshotFromGraph', () => {
     })
 
     expect(snapshot.schema).toBe(AGENT_DEFINITION_SCHEMA)
-    expect(snapshot.schemaVersion).toBe(1)
+    expect(snapshot.schemaVersion).toBe(2)
+    expect(snapshot.attachedSkills).toEqual([])
     expect(snapshot.tools).toMatchObject([{ name: 'read', group: 'core' }])
     expect(snapshot.output).toMatchObject({
       contract: 'answer',
@@ -421,6 +458,7 @@ describe('buildSnapshotFromGraph', () => {
       displayName: 'Release Notes Helper Copy',
       shortLabel: 'Release Copy',
     }
+    source.attachedSkills = [attachedRustSkill()]
 
     const snapshot = parsedSnapshot(source, null)
 
@@ -429,5 +467,53 @@ describe('buildSnapshotFromGraph', () => {
     expect(snapshot.tools).toMatchObject([{ name: 'read', group: 'core' }])
     expect(snapshot.dbTouchpoints.reads[0]?.table).toBe('project_context_records')
     expect(snapshot.consumes[0]?.id).toBe('plan_pack')
+    expect(snapshot.attachedSkills).toEqual([
+      {
+        id: 'rust-best-practices',
+        sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+        skillId: 'rust-best-practices',
+        name: 'Rust Best Practices',
+        description: 'Guide for writing idiomatic Rust.',
+        sourceKind: 'bundled',
+        scope: 'global',
+        versionHash: 'hash-rust',
+        includeSupportingAssets: false,
+        required: true,
+      },
+    ])
+  })
+
+  it('serializes attached skills from skills nodes', () => {
+    const source = detail()
+    source.attachedSkills = [attachedRustSkill()]
+    const graph = buildAgentGraph(source)
+    const skillNode = graph.nodes.find((node) => node.id === 'skills:rust-best-practices')
+    if (skillNode?.type === 'skills') {
+      skillNode.data.skill = {
+        ...skillNode.data.skill,
+        includeSupportingAssets: true,
+      }
+    }
+
+    const snapshot = canonicalCustomAgentDefinitionSchema.parse(
+      buildSnapshotFromGraph(graph.nodes, graph.edges, {
+        initialDefinitionId: 'release_notes_helper',
+      }).snapshot,
+    )
+
+    expect(snapshot.attachedSkills).toEqual([
+      {
+        id: 'rust-best-practices',
+        sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+        skillId: 'rust-best-practices',
+        name: 'Rust Best Practices',
+        description: 'Guide for writing idiomatic Rust.',
+        sourceKind: 'bundled',
+        scope: 'global',
+        versionHash: 'hash-rust',
+        includeSupportingAssets: true,
+        required: true,
+      },
+    ])
   })
 })

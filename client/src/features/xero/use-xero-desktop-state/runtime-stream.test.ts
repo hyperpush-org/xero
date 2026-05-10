@@ -9,16 +9,18 @@ import {
   RUNTIME_STREAM_BATCH_WINDOW_MS,
 } from './runtime-stream'
 import {
-  MAX_RUNTIME_STREAM_ITEMS,
   createRuntimeStreamView,
   estimateRuntimeStreamViewBytes,
   type RuntimeStreamEventDto,
   type RuntimeStreamActivityItemView,
+  type RuntimeStreamPatchDto,
   type RuntimeStreamToolItemView,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
 import type { RuntimeRunDto, RuntimeRunView, RuntimeSessionView } from '@/src/lib/xero-model/runtime'
 import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
+
+const LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP = 40
 
 function makeRuntimeStreamEvent(
   sequence: number,
@@ -78,6 +80,69 @@ function makeRuntimeStream(): RuntimeStreamView {
     subscribedItemKinds: ['transcript', 'tool', 'skill', 'activity', 'action_required', 'complete', 'failure'],
     status: 'live',
   })
+}
+
+function makeRuntimeStreamPatch(sequence: number): RuntimeStreamPatchDto {
+  return {
+    schema: 'xero.runtime_stream_patch.v1',
+    item: {
+      kind: 'transcript',
+      runId: 'run-1',
+      sequence,
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      text: `projected-${sequence}`,
+      transcriptRole: 'assistant',
+      createdAt: `2026-04-16T13:31:${String(sequence).padStart(2, '0')}Z`,
+    },
+    snapshot: {
+      schema: 'xero.runtime_stream_view_snapshot.v1',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeKind: 'openai_codex',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      subscribedItemKinds: ['transcript', 'tool', 'activity'],
+      status: 'live',
+      items: [
+        {
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 1,
+          updatedSequence: sequence,
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: `projected-${sequence}`,
+          transcriptRole: 'assistant',
+          createdAt: '2026-04-16T13:31:01Z',
+        },
+      ],
+      transcriptItems: [
+        {
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 1,
+          updatedSequence: sequence,
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          text: `projected-${sequence}`,
+          transcriptRole: 'assistant',
+          createdAt: '2026-04-16T13:31:01Z',
+        },
+      ],
+      toolCalls: [],
+      skillItems: [],
+      activityItems: [],
+      actionRequired: [],
+      plan: null,
+      completion: null,
+      failure: null,
+      lastIssue: null,
+      lastItemAt: `2026-04-16T13:31:${String(sequence).padStart(2, '0')}Z`,
+      lastSequence: sequence,
+    },
+  }
 }
 
 function makeReasoningRuntimeStreamEvent(sequence: number, text: string): RuntimeStreamEventDto {
@@ -409,6 +474,21 @@ describe('runtime stream event coalescing', () => {
     expect(stream?.transcriptItems[0]?.text).toBe('message-1')
   })
 
+  it('applies projected stream patches without replaying client-side merge history', () => {
+    const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
+      makeRuntimeStreamEvent(1, { text: 'raw-client-event' }),
+      makeRuntimeStreamPatch(8),
+    ])
+
+    expect(stream?.lastSequence).toBe(8)
+    expect(stream?.transcriptItems).toHaveLength(1)
+    expect(stream?.transcriptItems[0]).toMatchObject({
+      sequence: 1,
+      updatedSequence: 8,
+      text: 'projected-8',
+    })
+  })
+
   it('accepts sparse stream sequences while preserving the latest stream projection', () => {
     const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
       makeRuntimeStreamEvent(1),
@@ -422,7 +502,7 @@ describe('runtime stream event coalescing', () => {
   })
 
   it('keeps reasoning bubbles and earlier tools in one ordered timeline', () => {
-    const toolBurst = Array.from({ length: MAX_RUNTIME_STREAM_ITEMS + 8 }, (_, index) =>
+    const toolBurst = Array.from({ length: LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 8 }, (_, index) =>
       makeToolRuntimeStreamEvent(index + 3, `call-read-${index}`),
     )
 
@@ -441,8 +521,26 @@ describe('runtime stream event coalescing', () => {
       kind: 'activity',
       text: 'I should inspect the files first.',
     })
-    expect(retainedTools).toHaveLength(MAX_RUNTIME_STREAM_ITEMS + 8)
+    expect(retainedTools).toHaveLength(LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 8)
     expect(retainedTools[0]?.toolCallId).toBe('call-read-0')
+  })
+
+  it('retains replayed transcript turns beyond the old recent-tail cap', () => {
+    const turnCount = LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 5
+    const stream = mergeRuntimeStreamEvents(
+      makeRuntimeStream(),
+      Array.from({ length: turnCount }, (_, index) =>
+        makeRuntimeStreamEvent(index + 1, {
+          text: `turn-${index}`,
+          transcriptRole: 'user',
+        }),
+      ),
+    )
+
+    expect(stream?.transcriptItems).toHaveLength(turnCount)
+    expect(stream?.items.filter((item) => item.kind === 'transcript')).toHaveLength(turnCount)
+    expect(stream?.transcriptItems[0]?.text).toBe('turn-0')
+    expect(stream?.transcriptItems.at(-1)?.text).toBe(`turn-${turnCount - 1}`)
   })
 
   it('does not merge reasoning across intervening transcript turns', () => {
@@ -573,7 +671,7 @@ describe('runtime stream event coalescing', () => {
     const firstToolBurst = Array.from({ length: 7 }, (_, index) =>
       makeToolRuntimeStreamEvent(index + 2, `call-first-${index}`),
     )
-    const secondToolBurst = Array.from({ length: MAX_RUNTIME_STREAM_ITEMS + 4 }, (_, index) =>
+    const secondToolBurst = Array.from({ length: LEGACY_RUNTIME_STREAM_RECENT_ITEM_CAP + 4 }, (_, index) =>
       makeToolRuntimeStreamEvent(index + 10, `call-second-${index}`),
     )
 

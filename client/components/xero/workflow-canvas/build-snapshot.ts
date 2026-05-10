@@ -3,6 +3,7 @@ import type { Edge } from '@xyflow/react'
 import {
   AGENT_DEFINITION_SCHEMA,
   AGENT_DEFINITION_SCHEMA_VERSION,
+  type CustomAgentAttachedSkillDto,
 } from '@/src/lib/xero-model/agent-definition'
 
 import type {
@@ -15,6 +16,7 @@ import type {
   OutputFlowNode,
   OutputSectionFlowNode,
   PromptFlowNode,
+  SkillFlowNode,
   ToolFlowNode,
 } from './build-agent-graph'
 
@@ -78,6 +80,10 @@ function isPrompt(node: AgentGraphNode): node is PromptFlowNode {
   return node.type === 'prompt'
 }
 
+function isSkill(node: AgentGraphNode): node is SkillFlowNode {
+  return node.type === 'skills'
+}
+
 function isTool(node: AgentGraphNode): node is ToolFlowNode {
   return node.type === 'tool'
 }
@@ -109,6 +115,7 @@ export interface BuildSnapshotOptions {
   workflowContract?: string
   finalResponseContract?: string
   scope?: 'project_custom' | 'global_custom'
+  attachedSkills?: readonly CustomAgentAttachedSkillDto[]
 }
 
 /**
@@ -270,6 +277,21 @@ export function buildSnapshotFromGraph(
     options.refusalEscalationCases ?? trimAll(advanced.refusalEscalationCases ?? []),
     headerDto.displayName,
   )
+  const skillNodeAttachments = nodes.filter(isSkill).map((node) => node.data.skill)
+  const attachedSkillSource =
+    skillNodeAttachments.length > 0 ? skillNodeAttachments : options.attachedSkills ?? []
+  const attachedSkills = attachedSkillSource.map((skill) => ({
+    id: skill.id,
+    sourceId: skill.sourceId,
+    skillId: skill.skillId,
+    name: skill.name,
+    description: skill.description,
+    sourceKind: skill.sourceKind,
+    scope: skill.scope,
+    versionHash: skill.versionHash,
+    includeSupportingAssets: skill.includeSupportingAssets,
+    required: skill.required,
+  }))
 
   const snapshot: Record<string, unknown> = {
     schema: AGENT_DEFINITION_SCHEMA,
@@ -289,6 +311,7 @@ export function buildSnapshotFromGraph(
     finalResponseContract,
     examplePrompts,
     refusalEscalationCases,
+    attachedSkills,
     output: output
       ? {
           contract: output.data.output.contract,
@@ -349,6 +372,7 @@ function buildToolPolicy(
   }
   if (advanced.subagentAllowed || inferred.flags.subagentAllowed) {
     policy.subagentAllowed = true
+    policy.allowedSubagentRoles = ['engineer']
   }
   if (advanced.commandAllowed || inferred.flags.commandAllowed) {
     policy.commandAllowed = true

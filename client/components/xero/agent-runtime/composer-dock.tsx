@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, ListChecks, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Users, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, FlaskConical, ListChecks, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Square, Users, Wrench, X } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { forwardRef, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
@@ -89,6 +89,8 @@ interface ComposerDockProps {
   sendButtonLabel: string
   isPromptDisabled: boolean
   isSendDisabled: boolean
+  isStopVisible?: boolean
+  isStopDisabled?: boolean
   composerRuntimeAgentId: RuntimeAgentIdDto
   composerRuntimeAgentLabel: string
   availableRuntimeAgentIds?: readonly RuntimeAgentIdDto[]
@@ -117,6 +119,7 @@ interface ComposerDockProps {
   onOpenDiagnostics?: () => void
   onDraftPromptChange: (value: string) => void
   onSubmitDraftPrompt: () => void
+  onStopRuntimeRun?: () => void
   onAutoCompactEnabledChange: (value: boolean) => void
   onComposerRuntimeAgentChange: (value: RuntimeAgentIdDto) => void
   onComposerAgentSelectionChange?: (selectionKey: string) => void
@@ -194,6 +197,8 @@ export function ComposerDock({
   sendButtonLabel,
   isPromptDisabled,
   isSendDisabled,
+  isStopVisible = false,
+  isStopDisabled = false,
   composerRuntimeAgentId,
   composerRuntimeAgentLabel,
   availableRuntimeAgentIds,
@@ -222,6 +227,7 @@ export function ComposerDock({
   onOpenDiagnostics,
   onDraftPromptChange,
   onSubmitDraftPrompt,
+  onStopRuntimeRun,
   onAutoCompactEnabledChange,
   onComposerRuntimeAgentChange,
   onComposerAgentSelectionChange,
@@ -288,6 +294,10 @@ export function ComposerDock({
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== 'Enter' || event.shiftKey) {
+      return
+    }
+
+    if (isStopVisible) {
       return
     }
 
@@ -534,7 +544,28 @@ export function ComposerDock({
     </Tooltip>
   ) : null
 
-  const sendButton = (
+  const sendButton = isStopVisible ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label="Stop agent run"
+          className={cn(actionButtonClassName, 'rounded-md px-0')}
+          disabled={isStopDisabled || !onStopRuntimeRun}
+          onClick={onStopRuntimeRun}
+          size="icon-sm"
+          type="button"
+          variant="secondary"
+        >
+          {isStopDisabled ? (
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
+          ) : (
+            <Square className="h-3.5 w-3.5 fill-current" strokeWidth={2.5} />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">Stop agent run</TooltipContent>
+    </Tooltip>
+  ) : (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button

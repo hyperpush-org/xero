@@ -14,11 +14,6 @@ import {
   type ToolResultSummaryDto,
 } from './shared'
 
-export const MAX_RUNTIME_STREAM_ITEMS = 40
-export const MAX_RUNTIME_STREAM_TRANSCRIPTS = 20
-export const MAX_RUNTIME_STREAM_TOOL_CALLS = 20
-export const MAX_RUNTIME_STREAM_SKILLS = 20
-export const MAX_RUNTIME_STREAM_ACTIVITY = 20
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED = 10
 export const MAX_RUNTIME_STREAM_PLAN_ITEMS = 50
 export const MAX_RUNTIME_STREAM_ACTION_REQUIRED_OPTIONS = 20
@@ -106,6 +101,7 @@ export const runtimeStreamItemSchema = z
     kind: runtimeStreamItemKindSchema,
     runId: z.string().trim().min(1),
     sequence: z.number().int().positive(),
+    updatedSequence: z.number().int().positive().nullable().optional(),
     sessionId: nonEmptyOptionalTextSchema,
     flowId: nonEmptyOptionalTextSchema,
     text: z.string().min(1).nullable().optional(),
@@ -438,6 +434,59 @@ export const subscribeRuntimeStreamResponseSchema = z.object({
   subscribedItemKinds: z.array(runtimeStreamItemKindSchema).min(1),
 }).strict()
 
+export const runtimeStreamStatusSchema = z.enum([
+  'idle',
+  'subscribing',
+  'replaying',
+  'live',
+  'complete',
+  'stale',
+  'error',
+])
+
+export const runtimeStreamIssueSchema = z
+  .object({
+    code: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    retryable: z.boolean(),
+    observedAt: isoTimestampSchema,
+  })
+  .strict()
+
+export const runtimeStreamViewSnapshotSchema = z
+  .object({
+    schema: z.literal('xero.runtime_stream_view_snapshot.v1'),
+    projectId: z.string().trim().min(1),
+    agentSessionId: z.string().trim().min(1),
+    runtimeKind: z.string().trim().min(1),
+    runId: z.string().trim().min(1),
+    sessionId: z.string().trim().min(1),
+    flowId: nonEmptyOptionalTextSchema,
+    subscribedItemKinds: z.array(runtimeStreamItemKindSchema).min(1),
+    status: runtimeStreamStatusSchema,
+    items: z.array(runtimeStreamItemSchema),
+    transcriptItems: z.array(runtimeStreamItemSchema),
+    toolCalls: z.array(runtimeStreamItemSchema),
+    skillItems: z.array(runtimeStreamItemSchema),
+    activityItems: z.array(runtimeStreamItemSchema),
+    actionRequired: z.array(runtimeStreamItemSchema).max(MAX_RUNTIME_STREAM_ACTION_REQUIRED),
+    plan: runtimeStreamItemSchema.nullable().optional(),
+    completion: runtimeStreamItemSchema.nullable().optional(),
+    failure: runtimeStreamItemSchema.nullable().optional(),
+    lastIssue: runtimeStreamIssueSchema.nullable().optional(),
+    lastItemAt: isoTimestampSchema.nullable().optional(),
+    lastSequence: z.number().int().positive().nullable().optional(),
+  })
+  .strict()
+
+export const runtimeStreamPatchSchema = z
+  .object({
+    schema: z.literal('xero.runtime_stream_patch.v1'),
+    item: runtimeStreamItemSchema,
+    snapshot: runtimeStreamViewSnapshotSchema,
+  })
+  .strict()
+
 export type RuntimeToolCallStateDto = z.infer<typeof runtimeToolCallStateSchema>
 export type RuntimeSkillLifecycleStageDto = z.infer<typeof runtimeSkillLifecycleStageSchema>
 export type RuntimeSkillLifecycleResultDto = z.infer<typeof runtimeSkillLifecycleResultSchema>
@@ -449,8 +498,10 @@ export type RuntimeStreamTranscriptRoleDto = z.infer<typeof runtimeStreamTranscr
 export type RuntimeStreamItemDto = z.infer<typeof runtimeStreamItemSchema>
 export type SubscribeRuntimeStreamRequestDto = z.infer<typeof subscribeRuntimeStreamRequestSchema>
 export type SubscribeRuntimeStreamResponseDto = z.infer<typeof subscribeRuntimeStreamResponseSchema>
+export type RuntimeStreamViewSnapshotDto = z.infer<typeof runtimeStreamViewSnapshotSchema>
+export type RuntimeStreamPatchDto = z.infer<typeof runtimeStreamPatchSchema>
 
-export type RuntimeStreamStatus = 'idle' | 'subscribing' | 'replaying' | 'live' | 'complete' | 'stale' | 'error'
+export type RuntimeStreamStatus = z.infer<typeof runtimeStreamStatusSchema>
 
 export interface RuntimeStreamIssueView {
   code: string
@@ -649,6 +700,7 @@ function normalizeRuntimeCodeHistoryMetadata(
   item: RuntimeStreamItemDto,
 ): Pick<
   RuntimeStreamBaseItemView,
+  | 'updatedSequence'
   | 'codeChangeGroupId'
   | 'codeCommitId'
   | 'codeWorkspaceEpoch'
@@ -658,6 +710,8 @@ function normalizeRuntimeCodeHistoryMetadata(
   | 'subagentRoleLabel'
 > {
   return {
+    updatedSequence:
+      typeof item.updatedSequence === 'number' ? item.updatedSequence : undefined,
     codeChangeGroupId: normalizeOptionalText(item.codeChangeGroupId),
     codeCommitId: normalizeOptionalText(item.codeCommitId),
     codeWorkspaceEpoch:
@@ -828,7 +882,7 @@ function mergeRuntimeTranscriptItems(
   previousTimelineItem: RuntimeStreamViewItem | null,
 ): RuntimeStreamTranscriptItemView[] {
   if (nextItem.role !== 'assistant') {
-    return capRecent([...currentItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
+    return [...currentItems, nextItem]
   }
 
   const previousItem = currentItems.at(-1)
@@ -839,7 +893,7 @@ function mergeRuntimeTranscriptItems(
     previousTimelineItem?.kind !== 'transcript' ||
     previousTimelineItem.id !== previousItem.id
   ) {
-    return capRecent([...currentItems, nextItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
+    return [...currentItems, nextItem]
   }
 
   const mergedItem: RuntimeStreamTranscriptItemView = {
@@ -849,7 +903,7 @@ function mergeRuntimeTranscriptItems(
     text: `${previousItem.text}${nextItem.text}`,
   }
 
-  return capRecent([...currentItems.slice(0, -1), mergedItem], MAX_RUNTIME_STREAM_TRANSCRIPTS)
+  return [...currentItems.slice(0, -1), mergedItem]
 }
 
 function normalizeRuntimeToolSummary(summary: ToolResultSummaryDto | null | undefined): ToolResultSummaryDto | null {
@@ -1237,6 +1291,112 @@ export function createRuntimeStreamFromSubscription(
   })
 }
 
+function normalizeProjectedRuntimeStreamItem(
+  snapshot: RuntimeStreamViewSnapshotDto,
+  item: RuntimeStreamItemDto,
+): RuntimeStreamViewItem {
+  return normalizeRuntimeStreamItem({
+    projectId: snapshot.projectId,
+    agentSessionId: snapshot.agentSessionId,
+    runtimeKind: snapshot.runtimeKind,
+    runId: snapshot.runId,
+    sessionId: snapshot.sessionId,
+    flowId: snapshot.flowId ?? null,
+    subscribedItemKinds: snapshot.subscribedItemKinds,
+    item,
+  })
+}
+
+function normalizeProjectedRuntimeStreamItemOfKind<
+  TKind extends RuntimeStreamViewItem['kind'],
+>(
+  snapshot: RuntimeStreamViewSnapshotDto,
+  item: RuntimeStreamItemDto | null | undefined,
+  kind: TKind,
+): Extract<RuntimeStreamViewItem, { kind: TKind }> | null {
+  if (!item) {
+    return null
+  }
+
+  const normalizedItem = normalizeProjectedRuntimeStreamItem(snapshot, item)
+  if (normalizedItem.kind !== kind) {
+    throw new Error(
+      `Xero received a runtime stream snapshot ${kind} slot containing ${normalizedItem.kind}.`,
+    )
+  }
+
+  return normalizedItem as Extract<RuntimeStreamViewItem, { kind: TKind }>
+}
+
+function normalizeProjectedRuntimeStreamItemsOfKind<
+  TKind extends RuntimeStreamViewItem['kind'],
+>(
+  snapshot: RuntimeStreamViewSnapshotDto,
+  items: RuntimeStreamItemDto[],
+  kind: TKind,
+): Extract<RuntimeStreamViewItem, { kind: TKind }>[] {
+  return items.map((item) => {
+    const normalizedItem = normalizeProjectedRuntimeStreamItemOfKind(snapshot, item, kind)
+    if (!normalizedItem) {
+      throw new Error(`Xero received an empty runtime stream snapshot ${kind} item.`)
+    }
+    return normalizedItem
+  })
+}
+
+export function createRuntimeStreamViewFromSnapshot(
+  snapshot: RuntimeStreamViewSnapshotDto,
+): RuntimeStreamView {
+  const items = snapshot.items.map((item) => normalizeProjectedRuntimeStreamItem(snapshot, item))
+  const transcriptItems = normalizeProjectedRuntimeStreamItemsOfKind(
+    snapshot,
+    snapshot.transcriptItems,
+    'transcript',
+  )
+  const toolCalls = normalizeProjectedRuntimeStreamItemsOfKind(snapshot, snapshot.toolCalls, 'tool')
+  const skillItems = normalizeProjectedRuntimeStreamItemsOfKind(snapshot, snapshot.skillItems, 'skill')
+  const activityItems = normalizeProjectedRuntimeStreamItemsOfKind(
+    snapshot,
+    snapshot.activityItems,
+    'activity',
+  )
+  const actionRequired = normalizeProjectedRuntimeStreamItemsOfKind(
+    snapshot,
+    snapshot.actionRequired,
+    'action_required',
+  )
+
+  return {
+    projectId: snapshot.projectId,
+    agentSessionId: snapshot.agentSessionId,
+    runtimeKind: normalizeText(snapshot.runtimeKind, 'openai_codex'),
+    runId: normalizeOptionalText(snapshot.runId),
+    sessionId: normalizeOptionalText(snapshot.sessionId),
+    flowId: normalizeOptionalText(snapshot.flowId),
+    subscribedItemKinds: uniqueRuntimeStreamKinds(snapshot.subscribedItemKinds),
+    status: snapshot.status,
+    items,
+    transcriptItems,
+    toolCalls,
+    skillItems,
+    activityItems,
+    actionRequired,
+    plan: normalizeProjectedRuntimeStreamItemOfKind(snapshot, snapshot.plan, 'plan'),
+    completion: normalizeProjectedRuntimeStreamItemOfKind(snapshot, snapshot.completion, 'complete'),
+    failure: normalizeProjectedRuntimeStreamItemOfKind(snapshot, snapshot.failure, 'failure'),
+    lastIssue: snapshot.lastIssue
+      ? {
+          code: snapshot.lastIssue.code,
+          message: snapshot.lastIssue.message,
+          retryable: snapshot.lastIssue.retryable,
+          observedAt: snapshot.lastIssue.observedAt,
+        }
+      : null,
+    lastItemAt: snapshot.lastItemAt ?? null,
+    lastSequence: snapshot.lastSequence ?? null,
+  }
+}
+
 export function mergeRuntimeStreamEvent(
   current: RuntimeStreamView | null,
   event: RuntimeStreamEventDto,
@@ -1283,17 +1443,14 @@ export function mergeRuntimeStreamEvent(
   const nextItem = normalizeRuntimeStreamItem(event)
   const nextToolCalls =
     nextItem.kind === 'tool'
-      ? capRecent(
-          [
-            ...base.toolCalls.filter((toolCall) => toolCall.toolCallId !== nextItem.toolCallId),
-            nextItem,
-          ],
-          MAX_RUNTIME_STREAM_TOOL_CALLS,
-        )
+      ? [
+          ...base.toolCalls.filter((toolCall) => toolCall.toolCallId !== nextItem.toolCallId),
+          nextItem,
+        ]
       : base.toolCalls
   const nextSkillItems =
     nextItem.kind === 'skill'
-      ? capRecent([...base.skillItems, nextItem], MAX_RUNTIME_STREAM_SKILLS)
+      ? [...base.skillItems, nextItem]
       : base.skillItems
   const nextTranscriptItems =
     nextItem.kind === 'transcript'
@@ -1306,7 +1463,7 @@ export function mergeRuntimeStreamEvent(
   const nextItems = capRuntimeTimelineItems(base.items, nextTranscriptItems, nextItem)
   const nextActivityItems =
     nextItem.kind === 'activity'
-      ? capRecent([...base.activityItems, nextItem], MAX_RUNTIME_STREAM_ACTIVITY)
+      ? [...base.activityItems, nextItem]
       : base.activityItems
   const nextActionRequired =
     nextItem.kind === 'action_required'

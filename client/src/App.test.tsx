@@ -418,6 +418,7 @@ function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDt
 
 function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegistryDto {
   return {
+    contractVersion: 1,
     projectId: 'project-1',
     entries: [],
     plugins: [],
@@ -436,6 +437,7 @@ function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegi
       updatedAt: '2026-04-24T04:00:00Z',
     },
     diagnostics: [],
+    contractDiagnostics: [],
     reloadedAt: '2026-04-24T04:00:00Z',
     ...overrides,
   }
@@ -1865,10 +1867,18 @@ function createAdapter(options?: {
       throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
     },
     getAgentAuthoringCatalog: async () => ({
+      contractVersion: 1,
       tools: [],
       toolCategories: [],
       dbTables: [],
       upstreamArtifacts: [],
+      attachableSkills: [],
+      policyControls: [],
+      templates: [],
+      creationFlows: [],
+      profileAvailability: [],
+      constraintExplanations: [],
+      diagnostics: [],
     }),
     createAgentSession: async (request) => {
       const now = '2026-04-23T12:00:00Z'

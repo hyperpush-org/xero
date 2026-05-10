@@ -71,6 +71,7 @@ describe('agent definition contracts', () => {
     finalResponseContract: 'Return changes, fixes, risks, and unknowns.',
     examplePrompts: ['Draft release notes.', 'Summarize fixes.', 'List risks.'],
     refusalEscalationCases: ['Refuse file edits.', 'Escalate missing context.', 'Refuse secrets.'],
+    attachedSkills: [],
     prompts: [
       {
         id: 'system_prompt',
@@ -153,7 +154,7 @@ describe('agent definition contracts', () => {
   it('accepts the canonical custom-agent graph contract', () => {
     const parsed = canonicalCustomAgentDefinitionSchema.parse(canonicalDefinition)
 
-    expect(parsed.schemaVersion).toBe(1)
+    expect(parsed.schemaVersion).toBe(AGENT_DEFINITION_SCHEMA_VERSION)
     expect(parsed.tools[0]?.name).toBe('read')
     expect(parsed.dbTouchpoints.reads[0]?.table).toBe('project_context_records')
     expect(parsed.consumes[0]?.id).toBe('plan_pack')
@@ -301,6 +302,93 @@ describe('agent definition contracts', () => {
     expect(() =>
       canonicalCustomAgentDefinitionSchema.parse({
         ...canonicalDefinition,
+        attachedSkills: [
+          {
+            id: 'rust-guidance',
+            sourceId: 'skill-source:v1:global:bundled:core:rust-best-practices',
+            skillId: 'rust-best-practices',
+            name: 'Rust Best Practices',
+            description: 'Guide for writing idiomatic Rust code.',
+            sourceKind: 'bundled',
+            scope: 'global',
+            versionHash: 'sha256-rust-best-practices',
+            includeSupportingAssets: false,
+            required: true,
+          },
+          {
+            id: 'rust-guidance',
+            sourceId: 'skill-source:v1:global:bundled:core:rust-best-practices-copy',
+            skillId: 'rust-best-practices-copy',
+            name: 'Rust Best Practices Copy',
+            description: 'Guide for writing idiomatic Rust code.',
+            sourceKind: 'bundled',
+            scope: 'global',
+            versionHash: 'sha256-rust-best-practices-copy',
+            includeSupportingAssets: false,
+            required: true,
+          },
+        ],
+      }),
+    ).toThrow(/attached skill ids/)
+    expect(() =>
+      canonicalCustomAgentDefinitionSchema.parse({
+        ...canonicalDefinition,
+        attachedSkills: [
+          {
+            id: 'rust-guidance',
+            sourceId: 'skill-source:v1:global:bundled:core:rust-best-practices',
+            skillId: 'rust-best-practices',
+            name: 'Rust Best Practices',
+            description: 'Guide for writing idiomatic Rust code.',
+            sourceKind: 'bundled',
+            scope: 'global',
+            versionHash: 'sha256-rust-best-practices',
+            includeSupportingAssets: false,
+            required: true,
+          },
+          {
+            id: 'rust-guidance-2',
+            sourceId: 'skill-source:v1:global:bundled:core:rust-best-practices',
+            skillId: 'rust-best-practices',
+            name: 'Rust Best Practices',
+            description: 'Guide for writing idiomatic Rust code.',
+            sourceKind: 'bundled',
+            scope: 'global',
+            versionHash: 'sha256-rust-best-practices',
+            includeSupportingAssets: true,
+            required: true,
+          },
+        ],
+      }),
+    ).toThrow(/attached skill source ids/)
+    expect(() =>
+      canonicalCustomAgentDefinitionSchema.parse({
+        ...canonicalDefinition,
+        attachedSkills: undefined,
+      }),
+    ).toThrow()
+    expect(() =>
+      canonicalCustomAgentDefinitionSchema.parse({
+        ...canonicalDefinition,
+        attachedSkills: [
+          {
+            id: 'rust-guidance',
+            sourceId: 'skill-source:v1:global:bundled:core:rust-best-practices',
+            skillId: 'rust-best-practices',
+            name: 'Rust Best Practices',
+            description: 'Guide for writing idiomatic Rust code.',
+            sourceKind: 'bundled',
+            scope: 'global',
+            versionHash: 'sha256-rust-best-practices',
+            includeSupportingAssets: false,
+            required: false,
+          },
+        ],
+      }),
+    ).toThrow(/true/)
+    expect(() =>
+      canonicalCustomAgentDefinitionSchema.parse({
+        ...canonicalDefinition,
         projectDataPolicy: {
           ...canonicalDefinition.projectDataPolicy,
           recordKinds: ['project_fact', 'project_fact'],
@@ -415,7 +503,7 @@ describe('agent definition contracts', () => {
       fromCreatedAt: '2026-05-01T12:00:00Z',
       toCreatedAt: '2026-05-01T12:05:00Z',
       changed: true,
-      changedSections: ['prompts', 'toolPolicy'],
+      changedSections: ['prompts', 'attachedSkills', 'toolPolicy'],
       sections: [
         {
           section: 'prompts',
@@ -426,6 +514,21 @@ describe('agent definition contracts', () => {
           },
           after: {
             prompts: [{ id: 'new' }],
+          },
+        },
+        {
+          section: 'attachedSkills',
+          changed: true,
+          fields: ['attachedSkills'],
+          before: {
+            attachedSkills: [],
+          },
+          after: {
+            attachedSkills: [
+              {
+                sourceId: 'skill-source:v1:global:bundled:core:rust-best-practices',
+              },
+            ],
           },
         },
         {
@@ -447,7 +550,7 @@ describe('agent definition contracts', () => {
     expect(() =>
       agentDefinitionVersionDiffSchema.parse({
         ...diff,
-        changedSections: ['prompts'],
+        changedSections: ['prompts', 'attachedSkills'],
       }),
     ).toThrow(/changedSections/)
     expect(() =>
@@ -488,6 +591,7 @@ describe('agent definition contracts', () => {
             fields: ['prompts', 'prompts'],
           },
           diff.sections[1]!,
+          diff.sections[2]!,
         ],
       }),
     ).toThrow(/fields/)
@@ -593,6 +697,19 @@ describe('agent definition contracts', () => {
           partiallySupported: [],
           unsupported: [],
         },
+        attachedSkillInjection: {
+          schema: 'xero.agent_attached_skill_injection_preview.v1',
+          schemaVersion: 1,
+          selectionMode: 'definition_attached_skills_without_skill_tool',
+          status: 'resolved',
+          skillToolRequired: false,
+          attachmentCount: 0,
+          resolvedCount: 0,
+          staleCount: 0,
+          unavailableCount: 0,
+          blockedCount: 0,
+          entries: [],
+        },
         effectiveToolAccess: {
           selectionMode: 'capability_ceiling_without_task_prompt',
           skillToolEnabled: false,
@@ -642,6 +759,7 @@ describe('agent definition contracts', () => {
           memoryPolicy: canonicalDefinition.memoryCandidatePolicy,
           retrievalPolicy: canonicalDefinition.retrievalDefaults,
           handoffPolicy: canonicalDefinition.handoffPolicy,
+          attachedSkills: canonicalDefinition.attachedSkills,
           workflowContract: canonicalDefinition.workflowContract,
           workflowStructure: canonicalDefinition.workflowStructure,
           finalResponseContract: canonicalDefinition.finalResponseContract,

@@ -1,4 +1,8 @@
+use std::{fs, io::ErrorKind, path::Path};
+
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
@@ -29,6 +33,59 @@ pub struct RestoreProjectStateBackupRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RepairProjectStateRequestDto {
     pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadProjectUiStateRequestDto {
+    pub project_id: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteProjectUiStateRequestDto {
+    pub project_id: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUiStateResponseDto {
+    pub schema: String,
+    pub project_id: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<JsonValue>,
+    pub storage_scope: String,
+    pub ui_deferred: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadAppUiStateRequestDto {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WriteAppUiStateRequestDto {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUiStateResponseDto {
+    pub schema: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<JsonValue>,
+    pub storage_scope: String,
+    pub ui_deferred: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,6 +141,87 @@ pub struct ProjectStateRepairDiagnosticDto {
     pub code: String,
     pub message: String,
     pub severity: String,
+}
+
+#[tauri::command]
+pub fn read_project_ui_state<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ReadProjectUiStateRequestDto,
+) -> CommandResult<ProjectUiStateResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let key = validate_project_ui_state_key(&request.key)?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let value = read_project_ui_state_value(&repo_root, &key)?;
+    Ok(ProjectUiStateResponseDto {
+        schema: "xero.project_ui_state.v1".into(),
+        project_id: request.project_id,
+        key,
+        value,
+        storage_scope: "os_app_data".into(),
+        ui_deferred: true,
+    })
+}
+
+#[tauri::command]
+pub fn write_project_ui_state<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: WriteProjectUiStateRequestDto,
+) -> CommandResult<ProjectUiStateResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let key = validate_project_ui_state_key(&request.key)?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    write_project_ui_state_value(&repo_root, &key, request.value.as_ref())?;
+    Ok(ProjectUiStateResponseDto {
+        schema: "xero.project_ui_state.v1".into(),
+        project_id: request.project_id,
+        key,
+        value: request.value,
+        storage_scope: "os_app_data".into(),
+        ui_deferred: true,
+    })
+}
+
+#[tauri::command]
+pub fn read_app_ui_state<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ReadAppUiStateRequestDto,
+) -> CommandResult<AppUiStateResponseDto> {
+    let key = validate_ui_state_key(&request.key)?;
+    let app_data_dir = state.inner().app_data_dir(&app)?;
+    let value = read_ui_state_value(&app_data_dir.join("ui-state"), &key, "app")?;
+    Ok(AppUiStateResponseDto {
+        schema: "xero.app_ui_state.v1".into(),
+        key,
+        value,
+        storage_scope: "os_app_data".into(),
+        ui_deferred: true,
+    })
+}
+
+#[tauri::command]
+pub fn write_app_ui_state<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: WriteAppUiStateRequestDto,
+) -> CommandResult<AppUiStateResponseDto> {
+    let key = validate_ui_state_key(&request.key)?;
+    let app_data_dir = state.inner().app_data_dir(&app)?;
+    write_ui_state_value(
+        &app_data_dir.join("ui-state"),
+        &key,
+        request.value.as_ref(),
+        "app",
+    )?;
+    Ok(AppUiStateResponseDto {
+        schema: "xero.app_ui_state.v1".into(),
+        key,
+        value: request.value,
+        storage_scope: "os_app_data".into(),
+        ui_deferred: true,
+    })
 }
 
 #[tauri::command]
@@ -205,4 +343,214 @@ fn sanitize_backup_id(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn validate_project_ui_state_key(value: &str) -> CommandResult<String> {
+    validate_ui_state_key(value)
+}
+
+fn validate_ui_state_key(value: &str) -> CommandResult<String> {
+    validate_non_empty(value, "key")?;
+    let trimmed = value.trim();
+    if trimmed.len() > 160
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '@'))
+    {
+        return Err(CommandError::invalid_request("key"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn read_project_ui_state_value(repo_root: &Path, key: &str) -> CommandResult<Option<JsonValue>> {
+    read_ui_state_value(
+        &project_app_data_dir_for_repo(repo_root).join("ui-state"),
+        key,
+        "project",
+    )
+}
+
+fn read_ui_state_value(
+    state_dir: &Path,
+    key: &str,
+    storage_label: &str,
+) -> CommandResult<Option<JsonValue>> {
+    let path = ui_state_file_path(state_dir, key);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(CommandError::retryable(
+                format!("{storage_label}_ui_state_read_failed"),
+                format!(
+                    "Xero could not read {storage_label} UI state `{key}` from app-data storage: {error}"
+                ),
+            ));
+        }
+    };
+
+    let envelope: JsonValue = serde_json::from_str(&text).map_err(|error| {
+        CommandError::retryable(
+            format!("{storage_label}_ui_state_decode_failed"),
+            format!("Xero could not decode {storage_label} UI state `{key}`: {error}"),
+        )
+    })?;
+    if envelope.get("key").and_then(JsonValue::as_str) != Some(key) {
+        return Err(CommandError::retryable(
+            format!("{storage_label}_ui_state_key_mismatch"),
+            format!(
+                "Xero found app-data {storage_label} UI state under the wrong key while reading `{key}`."
+            ),
+        ));
+    }
+    Ok(envelope.get("value").cloned())
+}
+
+fn write_project_ui_state_value(
+    repo_root: &Path,
+    key: &str,
+    value: Option<&JsonValue>,
+) -> CommandResult<()> {
+    write_ui_state_value(
+        &project_app_data_dir_for_repo(repo_root).join("ui-state"),
+        key,
+        value,
+        "project",
+    )
+}
+
+fn write_ui_state_value(
+    state_dir: &Path,
+    key: &str,
+    value: Option<&JsonValue>,
+    storage_label: &str,
+) -> CommandResult<()> {
+    let path = ui_state_file_path(state_dir, key);
+    if value.is_none() {
+        match fs::remove_file(&path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(CommandError::retryable(
+                    format!("{storage_label}_ui_state_remove_failed"),
+                    format!(
+                        "Xero could not remove {storage_label} UI state `{key}` from app-data storage: {error}"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let parent = path.parent().ok_or_else(|| {
+        CommandError::system_fault(
+            "project_ui_state_path_invalid",
+            "Xero could not determine where to store project UI state.",
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        CommandError::retryable(
+            format!("{storage_label}_ui_state_dir_failed"),
+            format!("Xero could not create {storage_label} UI state app-data storage: {error}"),
+        )
+    })?;
+    let envelope = json!({
+        "schema": format!("xero.{storage_label}_ui_state.v1"),
+        "key": key,
+        "value": value,
+    });
+    let bytes = serde_json::to_vec_pretty(&envelope).map_err(|error| {
+        CommandError::system_fault(
+            format!("{storage_label}_ui_state_encode_failed"),
+            format!("Xero could not encode {storage_label} UI state `{key}`: {error}"),
+        )
+    })?;
+    fs::write(&path, bytes).map_err(|error| {
+        CommandError::retryable(
+            format!("{storage_label}_ui_state_write_failed"),
+            format!(
+                "Xero could not write {storage_label} UI state `{key}` to app-data storage: {error}"
+            ),
+        )
+    })
+}
+
+#[cfg(test)]
+fn project_ui_state_file_path(repo_root: &Path, key: &str) -> std::path::PathBuf {
+    ui_state_file_path(
+        &project_app_data_dir_for_repo(repo_root).join("ui-state"),
+        key,
+    )
+}
+
+fn ui_state_file_path(state_dir: &Path, key: &str) -> std::path::PathBuf {
+    state_dir.join(format!(
+        "{}.json",
+        hex_digest(Sha256::digest(key.as_bytes()).as_slice())
+    ))
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_ui_state_round_trips_under_app_data_and_deletes() {
+        let repo = tempfile::tempdir().expect("repo");
+        let key = validate_project_ui_state_key("workflow.canvas.positions:ask:1").expect("key");
+        let value = json!({
+            "agent-header": { "x": 12, "y": -4 },
+            "tool:read": { "x": 100, "y": 48 }
+        });
+
+        write_project_ui_state_value(repo.path(), &key, Some(&value)).expect("write state");
+        assert_eq!(
+            read_project_ui_state_value(repo.path(), &key).expect("read state"),
+            Some(value)
+        );
+        assert!(project_ui_state_file_path(repo.path(), &key)
+            .starts_with(project_app_data_dir_for_repo(repo.path())));
+
+        write_project_ui_state_value(repo.path(), &key, None).expect("delete state");
+        assert_eq!(
+            read_project_ui_state_value(repo.path(), &key).expect("read deleted"),
+            None
+        );
+    }
+
+    #[test]
+    fn app_ui_state_round_trips_under_app_data_and_deletes() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let key = validate_ui_state_key("theme.active.v1").expect("key");
+        let value = json!("midnight");
+        let state_dir = app_data.path().join("ui-state");
+
+        write_ui_state_value(&state_dir, &key, Some(&value), "app").expect("write state");
+        assert_eq!(
+            read_ui_state_value(&state_dir, &key, "app").expect("read state"),
+            Some(value)
+        );
+        assert!(ui_state_file_path(&state_dir, &key).starts_with(app_data.path()));
+
+        write_ui_state_value(&state_dir, &key, None, "app").expect("delete state");
+        assert_eq!(
+            read_ui_state_value(&state_dir, &key, "app").expect("read deleted"),
+            None
+        );
+    }
+
+    #[test]
+    fn project_ui_state_rejects_path_like_keys() {
+        assert!(validate_project_ui_state_key("../escape").is_err());
+        assert!(validate_project_ui_state_key("workflow/canvas").is_err());
+        assert!(validate_project_ui_state_key("workflow.canvas:agent_1@2").is_ok());
+    }
 }

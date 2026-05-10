@@ -281,7 +281,9 @@ pub fn sync_discovered_plugins(
                 &plugin_id,
                 XeroSkillSourceState::Stale,
                 Some("xero_plugin_source_missing"),
-                Some("Xero marked this plugin skill stale because its plugin was not found during reload."),
+                Some(
+                    "Xero marked this plugin skill stale because its plugin was not found during reload.",
+                ),
             )?;
         }
     }

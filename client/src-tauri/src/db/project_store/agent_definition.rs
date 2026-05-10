@@ -17,7 +17,7 @@ pub const BUILTIN_AGENT_DEFINITION_VERSION: u32 = 1;
 const AGENT_ACTIVATION_PREFLIGHT_SCHEMA: &str = "xero.custom_agent_activation_preflight.v1";
 const AGENT_ACTIVATION_PREFLIGHT_SCHEMA_VERSION: u64 = 1;
 const AGENT_DEFINITION_SCHEMA: &str = "xero.agent_definition.v1";
-const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 1;
+const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDefinitionRecord {
@@ -224,6 +224,7 @@ pub fn insert_agent_definition(
                     "lifecycleState": &record.lifecycle_state,
                     "baseCapabilityProfile": &record.base_capability_profile,
                     "validationStatus": record.validation_report.as_ref().and_then(|report| report.get("status")).and_then(JsonValue::as_str),
+                    "attachedSkills": attached_skill_audit_summary(Some(&record.snapshot)),
                 }),
                 created_at: record.updated_at.clone(),
             },
@@ -381,6 +382,12 @@ fn agent_definition_version_diff(
                 "examples",
                 "escalationCases",
             ],
+        ),
+        diff_section(
+            "attachedSkills",
+            &from.snapshot,
+            &to.snapshot,
+            &["attachedSkills"],
         ),
         diff_section(
             "toolPolicy",
@@ -633,6 +640,12 @@ pub fn archive_agent_definition(
             map_agent_definition_write_error("agent_definition_archive_failed", error)
         })?;
 
+    let archived_version_snapshot =
+        load_agent_definition_version(repo_root, definition_id, definition.current_version)
+            .ok()
+            .flatten()
+            .map(|version| version.snapshot);
+
     if let Ok(project_id) = project_id_for_agent_definition_audit(repo_root) {
         let _ = record_agent_runtime_audit_event(
             repo_root,
@@ -662,6 +675,7 @@ pub fn archive_agent_definition(
                     "definitionId": definition_id,
                     "previousLifecycleState": &definition.lifecycle_state,
                     "lifecycleState": "archived",
+                    "attachedSkills": attached_skill_audit_summary(archived_version_snapshot.as_ref()),
                 }),
                 created_at: updated_at.to_string(),
             },
@@ -911,6 +925,16 @@ fn custom_agent_activation_preflight_report(
                 "memoryCandidatePolicy": snapshot.get("memoryCandidatePolicy").cloned().unwrap_or(JsonValue::Null),
                 "retrievalDefaults": snapshot.get("retrievalDefaults").cloned().unwrap_or(JsonValue::Null),
                 "handoffPolicy": snapshot.get("handoffPolicy").cloned().unwrap_or(JsonValue::Null)
+            }),
+        ),
+        activation_check_from_failures(
+            "attached_skills",
+            "Attached skills contract",
+            activation_attached_skill_failures(snapshot.get("attachedSkills")),
+            "The snapshot declares an attachedSkills array with unique ids and source ids.",
+            true,
+            json!({
+                "attachedSkills": snapshot.get("attachedSkills").cloned().unwrap_or(JsonValue::Null)
             }),
         ),
         activation_check_from_failures(
@@ -1328,6 +1352,73 @@ fn activation_context_policy_failures(snapshot: &JsonValue) -> Vec<String> {
     failures
 }
 
+fn activation_attached_skill_failures(value: Option<&JsonValue>) -> Vec<String> {
+    let mut failures = Vec::new();
+    let Some(skills) = value.and_then(JsonValue::as_array) else {
+        failures.push("attachedSkills must be an array".to_string());
+        return failures;
+    };
+    let mut ids = std::collections::BTreeSet::new();
+    let mut source_ids = std::collections::BTreeSet::new();
+    for (index, skill) in skills.iter().enumerate() {
+        let path = format!("attachedSkills[{index}]");
+        let Some(object) = skill.as_object() else {
+            failures.push(format!("{path} must be an object"));
+            continue;
+        };
+        for required in [
+            "id",
+            "sourceId",
+            "skillId",
+            "name",
+            "sourceKind",
+            "scope",
+            "versionHash",
+        ] {
+            if object
+                .get(required)
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                failures.push(format!("{path}.{required} must be a non-empty string"));
+            }
+        }
+        if object
+            .get("includeSupportingAssets")
+            .and_then(JsonValue::as_bool)
+            .is_none()
+        {
+            failures.push(format!("{path}.includeSupportingAssets must be a boolean"));
+        }
+        if object.get("required").and_then(JsonValue::as_bool) != Some(true) {
+            failures.push(format!("{path}.required must be true"));
+        }
+        if let Some(id) = object
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !ids.insert(id.to_string()) {
+                failures.push(format!("{path}.id `{id}` is duplicated"));
+            }
+        }
+        if let Some(source_id) = object
+            .get("sourceId")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !source_ids.insert(source_id.to_string()) {
+                failures.push(format!("{path}.sourceId `{source_id}` is duplicated"));
+            }
+        }
+    }
+    failures
+}
+
 fn activation_policy_object<'a>(
     snapshot: &'a JsonValue,
     field: &str,
@@ -1662,6 +1753,132 @@ fn parse_runtime_approval_mode(value: &str) -> Option<RuntimeRunApprovalModeDto>
     }
 }
 
+pub fn record_agent_definition_custom_audit_event(
+    repo_root: &Path,
+    action_kind: &str,
+    definition_id: &str,
+    version: u32,
+    scope: &str,
+    lifecycle_state: &str,
+    base_capability_profile: &str,
+    validation_status: Option<&str>,
+    snapshot: Option<&JsonValue>,
+    extra_payload: JsonValue,
+    created_at: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(
+        action_kind,
+        "actionKind",
+        "agent_definition_audit_request_invalid",
+    )?;
+    validate_non_empty_text(
+        definition_id,
+        "definitionId",
+        "agent_definition_audit_request_invalid",
+    )?;
+    validate_non_empty_text(
+        created_at,
+        "createdAt",
+        "agent_definition_audit_request_invalid",
+    )?;
+    if version == 0 {
+        return Err(CommandError::invalid_request("version"));
+    }
+
+    let project_id = project_id_for_agent_definition_audit(repo_root)?;
+    let mut payload = JsonMap::new();
+    payload.insert("definitionId".into(), json!(definition_id));
+    payload.insert("version".into(), json!(version));
+    payload.insert("scope".into(), json!(scope));
+    payload.insert("lifecycleState".into(), json!(lifecycle_state));
+    payload.insert(
+        "baseCapabilityProfile".into(),
+        json!(base_capability_profile),
+    );
+    payload.insert(
+        "validationStatus".into(),
+        validation_status
+            .map(|status| JsonValue::String(status.to_string()))
+            .unwrap_or(JsonValue::Null),
+    );
+    payload.insert(
+        "attachedSkills".into(),
+        attached_skill_audit_summary(snapshot),
+    );
+    if let Some(extra) = extra_payload.as_object() {
+        for (key, value) in extra {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
+
+    record_agent_runtime_audit_event(
+        repo_root,
+        &NewAgentRuntimeAuditEventRecord {
+            audit_id: agent_runtime_audit_id(
+                &project_id,
+                action_kind,
+                "custom_agent",
+                definition_id,
+                created_at,
+            ),
+            project_id,
+            actor_kind: "user".into(),
+            actor_id: None,
+            action_kind: action_kind.into(),
+            subject_kind: "custom_agent".into(),
+            subject_id: definition_id.to_string(),
+            run_id: None,
+            agent_definition_id: Some(definition_id.to_string()),
+            agent_definition_version: Some(version),
+            risk_class: capability_permission_explanation("custom_agent", definition_id)
+                .get("riskClass")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned),
+            approval_action_id: None,
+            payload: JsonValue::Object(payload),
+            created_at: created_at.to_string(),
+        },
+    )
+    .map(|_| ())
+}
+
+fn attached_skill_audit_summary(snapshot: Option<&JsonValue>) -> JsonValue {
+    let entries = snapshot
+        .and_then(|snapshot| snapshot.get("attachedSkills"))
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|skill| {
+            let object = skill.as_object()?;
+            let source_id = object
+                .get("sourceId")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            Some(json!({
+                "id": object.get("id").and_then(JsonValue::as_str).unwrap_or_default(),
+                "sourceId": source_id,
+                "skillId": object.get("skillId").and_then(JsonValue::as_str).unwrap_or_default(),
+                "sourceKind": object.get("sourceKind").and_then(JsonValue::as_str).unwrap_or_default(),
+                "scope": object.get("scope").and_then(JsonValue::as_str).unwrap_or_default(),
+                "versionHash": object.get("versionHash").and_then(JsonValue::as_str).unwrap_or_default(),
+                "includeSupportingAssets": object.get("includeSupportingAssets").and_then(JsonValue::as_bool).unwrap_or(false),
+                "required": object.get("required").and_then(JsonValue::as_bool).unwrap_or(false),
+            }))
+        })
+        .collect::<Vec<_>>();
+    let source_ids = entries
+        .iter()
+        .filter_map(|entry| entry.get("sourceId").and_then(JsonValue::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    json!({
+        "count": entries.len(),
+        "sourceIds": source_ids,
+        "entries": entries
+    })
+}
+
 fn project_id_for_agent_definition_audit(repo_root: &Path) -> Result<String, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
@@ -1778,7 +1995,7 @@ mod tests {
             base_capability_profile: "observe_only".into(),
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 1,
+                "schemaVersion": AGENT_DEFINITION_SCHEMA_VERSION,
                 "id": "project_researcher",
                 "version": version,
                 "displayName": "Project Researcher",
@@ -1855,7 +2072,8 @@ mod tests {
                 "handoffPolicy": {
                     "enabled": true,
                     "preserveDefinitionVersion": true
-                }
+                },
+                "attachedSkills": []
             }),
             validation_report: Some(json!({
                 "status": "valid",
@@ -1997,6 +2215,20 @@ mod tests {
                 "required": true
             }
         ]);
+        version_two.snapshot["attachedSkills"] = json!([
+            {
+                "id": "rust-best-practices",
+                "sourceId": "skill-source:v1:global:bundled:core:rust-best-practices",
+                "skillId": "rust-best-practices",
+                "name": "Rust Best Practices",
+                "description": "Guide for writing idiomatic Rust code.",
+                "sourceKind": "bundled",
+                "scope": "global",
+                "versionHash": "version-hash-rust",
+                "includeSupportingAssets": false,
+                "required": true
+            }
+        ]);
         insert_agent_definition(&repo_root, &version_two).expect("insert definition v2");
 
         let diff = load_agent_definition_version_diff(&repo_root, "project_researcher", 1, 2)
@@ -2018,6 +2250,7 @@ mod tests {
             .collect::<Vec<_>>();
         for expected in [
             "prompts",
+            "attachedSkills",
             "toolPolicy",
             "memoryPolicy",
             "retrievalPolicy",
@@ -2039,6 +2272,16 @@ mod tests {
             .expect("prompt diff section");
         assert_eq!(prompts["before"]["prompts"][0]["id"], json!("prompt-v1"));
         assert_eq!(prompts["after"]["prompts"][0]["id"], json!("prompt-v2"));
+        let attached_skills = diff["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .find(|section| section["section"] == json!("attachedSkills"))
+            .expect("attached skills diff section");
+        assert_eq!(
+            attached_skills["after"]["attachedSkills"][0]["sourceId"],
+            json!("skill-source:v1:global:bundled:core:rust-best-practices")
+        );
         let db_access = diff["sections"]
             .as_array()
             .expect("sections")
@@ -2049,6 +2292,67 @@ mod tests {
             db_access["after"]["dbTouchpoints"]["writes"][0]["table"],
             json!("agent_runtime_audit_events")
         );
+    }
+
+    #[test]
+    fn s7_agent_definition_audit_payloads_include_redacted_attached_skill_sources() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-definition-attached-skill-audit";
+        create_project_database(&repo_root, project_id);
+        let mut definition = custom_definition(1, "2026-05-01T12:01:00Z");
+        definition.snapshot["attachedSkills"] = json!([
+            {
+                "id": "rust-best-practices",
+                "sourceId": "skill-source:v1:global:bundled:core:rust-best-practices",
+                "skillId": "rust-best-practices",
+                "name": "Rust Best Practices",
+                "description": "Guide for writing idiomatic Rust code.",
+                "sourceKind": "bundled",
+                "scope": "global",
+                "versionHash": "version-hash-rust",
+                "includeSupportingAssets": false,
+                "required": true
+            }
+        ]);
+
+        insert_agent_definition(&repo_root, &definition).expect("insert attached skill definition");
+        archive_agent_definition(&repo_root, "project_researcher", "2026-05-01T12:05:00Z")
+            .expect("archive attached skill definition");
+
+        let audit_events = project_store::list_agent_runtime_audit_events_for_subject(
+            &repo_root,
+            project_id,
+            "custom_agent",
+            "project_researcher",
+        )
+        .expect("list custom agent audit events");
+        let saved = audit_events
+            .iter()
+            .find(|event| event.action_kind == "agent_definition_saved")
+            .expect("saved audit event");
+        let archived = audit_events
+            .iter()
+            .find(|event| event.action_kind == "agent_definition_archived")
+            .expect("archived audit event");
+        for event in [saved, archived] {
+            assert_eq!(event.payload["attachedSkills"]["count"], json!(1));
+            assert_eq!(
+                event.payload["attachedSkills"]["sourceIds"][0],
+                json!("skill-source:v1:global:bundled:core:rust-best-practices")
+            );
+            assert_eq!(
+                event.payload["attachedSkills"]["entries"][0]["versionHash"],
+                json!("version-hash-rust")
+            );
+            assert!(
+                !serde_json::to_string(&event.payload)
+                    .expect("audit payload json")
+                    .contains("/"),
+                "attached skill audit payload must not expose local paths"
+            );
+        }
     }
 
     #[test]

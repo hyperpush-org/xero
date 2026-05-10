@@ -516,40 +516,6 @@ function scheduleForegroundWork(callback: () => void): () => void {
   }
 }
 
-function scheduleAfterNextPaint(callback: () => void): () => void {
-  if (typeof window === 'undefined') {
-    callback()
-    return () => {}
-  }
-
-  let cancelled = false
-  let frameId = 0
-  let timeoutId = 0
-  const run = () => {
-    if (!cancelled) {
-      callback()
-    }
-  }
-
-  if (typeof window.requestAnimationFrame === 'function') {
-    frameId = window.requestAnimationFrame(() => {
-      timeoutId = window.setTimeout(run, 0)
-    })
-  } else {
-    timeoutId = window.setTimeout(run, 0)
-  }
-
-  return () => {
-    cancelled = true
-    if (frameId !== 0 && typeof window.cancelAnimationFrame === 'function') {
-      window.cancelAnimationFrame(frameId)
-    }
-    if (timeoutId !== 0) {
-      window.clearTimeout(timeoutId)
-    }
-  }
-}
-
 function useDeferredForegroundWork(active: boolean): boolean {
   const [ready, setReady] = useState(active)
 
@@ -1057,12 +1023,46 @@ function mergeConversationContinuityTurns(
   currentTurns: readonly ConversationTurn[],
 ): ConversationTurn[] {
   const previousIds = new Set(previousTurns.map((turn) => turn.id))
-  const additions = currentTurns.filter((turn) => !previousIds.has(turn.id))
-  if (additions.length === 0) {
-    return previousTurns as ConversationTurn[]
+  const mergedTurns = previousTurns.slice() as ConversationTurn[]
+  const additions: ConversationTurn[] = []
+
+  for (const currentTurn of currentTurns) {
+    if (previousIds.has(currentTurn.id)) {
+      continue
+    }
+
+    const equivalentPendingPromptIndex = mergedTurns.findIndex((previousTurn) =>
+      areEquivalentPendingPromptTurns(previousTurn, currentTurn),
+    )
+    if (equivalentPendingPromptIndex >= 0) {
+      mergedTurns[equivalentPendingPromptIndex] = currentTurn
+      previousIds.add(currentTurn.id)
+      continue
+    }
+
+    additions.push(currentTurn)
   }
 
-  return [...previousTurns, ...additions]
+  if (additions.length === 0) {
+    return mergedTurns
+  }
+
+  return [...mergedTurns, ...additions]
+}
+
+function areEquivalentPendingPromptTurns(
+  left: ConversationTurn,
+  right: ConversationTurn,
+): boolean {
+  return (
+    left.kind === 'message' &&
+    right.kind === 'message' &&
+    left.role === 'user' &&
+    right.role === 'user' &&
+    left.id.startsWith('pending-prompt:') &&
+    right.id.startsWith('pending-prompt:') &&
+    left.text.trim() === right.text.trim()
+  )
 }
 
 function useContinuousConversationTurns(
@@ -1607,7 +1607,9 @@ export const AgentRuntime = memo(function AgentRuntime({
 
     const matchedTranscript = findTranscriptForPendingPrompt(runtimeStreamItems, pendingPromptForStableId)
     if (matchedTranscript && pendingPromptForStableId) {
-      overrides.set(matchedTranscript.id, getPendingPromptTurnId(pendingPromptForStableId))
+      if (!overrides.has(matchedTranscript.id)) {
+        overrides.set(matchedTranscript.id, getPendingPromptTurnId(pendingPromptForStableId))
+      }
     }
 
     if (overrides.size === 0) {
@@ -2412,18 +2414,27 @@ export const AgentRuntime = memo(function AgentRuntime({
     scrollToLatest('auto', { defer: true })
     setPromptSubmissionPending(true)
     promptSubmissionCancelRef.current?.()
-    promptSubmissionCancelRef.current = scheduleAfterNextPaint(() => {
-      promptSubmissionCancelRef.current = null
-      void controller.handleSubmitDraftPrompt().then((submitted) => {
+    let cancelled = false
+    const cancelSubmission = () => {
+      cancelled = true
+    }
+    promptSubmissionCancelRef.current = cancelSubmission
+    void controller.handleSubmitDraftPrompt().then((submitted) => {
+      if (!cancelled) {
         if (!submitted && optimisticPrompt) {
           setOptimisticPromptTurn((current) =>
             current?.id === optimisticPrompt.id ? null : current,
           )
         }
-      }).finally(() => {
+      }
+    }).finally(() => {
+      if (!cancelled) {
         setPromptSubmissionPending(false)
         scrollToLatest('auto', { defer: true })
-      })
+      }
+      if (promptSubmissionCancelRef.current === cancelSubmission) {
+        promptSubmissionCancelRef.current = null
+      }
     })
   }, [controller, promptSubmissionPending, scrollToLatest])
 
@@ -2451,6 +2462,13 @@ export const AgentRuntime = memo(function AgentRuntime({
   const isDense = isCompact || paneCount >= 4 || useBackgroundPaneFastPath
   const showPaneNumberChip = paneCount > 1 && paneNumber != null
   const showCloseButton = paneCount > 1 && typeof onClosePane === 'function'
+  const isStopComposerMode = Boolean(
+    controller.canStopRuntimeRun &&
+      renderableRuntimeRun?.isActive &&
+      !renderableRuntimeRun.isTerminal &&
+      hasLiveRuntimeStream,
+  )
+  const isStoppingRuntimeRun = runtimeRunActionStatus === 'running' && pendingRuntimeRunAction === 'stop'
   const closeState = useMemo<AgentPaneCloseState>(
     () => ({
       hasRunningRun: Boolean(renderableRuntimeRun && !renderableRuntimeRun.isTerminal),
@@ -2752,6 +2770,9 @@ export const AgentRuntime = memo(function AgentRuntime({
           draftPrompt={controller.draftPrompt}
           isPromptDisabled={controller.isPromptDisabled || promptSubmissionPending}
           isSendDisabled={!controller.canSubmitPrompt || promptSubmissionPending}
+          isStopVisible={isStopComposerMode}
+          isStopDisabled={isStoppingRuntimeRun}
+          onStopRuntimeRun={() => void controller.handleStopRuntimeRun()}
           onComposerApprovalModeChange={controller.handleComposerApprovalModeChange}
           onComposerRuntimeAgentChange={controller.handleComposerRuntimeAgentChange}
           onComposerAgentSelectionChange={controller.handleComposerAgentSelectionChange}

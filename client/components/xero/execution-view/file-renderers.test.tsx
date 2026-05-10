@@ -17,28 +17,29 @@ describe('file renderers', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders image metadata, zoom controls, and decoded dimensions without reading image bytes through IPC', async () => {
+  it('renders the image canvas and reports decoded dimensions through the controlled callback', async () => {
+    const onDimensionsChange = vi.fn()
     render(
       <ImagePreview
         filePath="/assets/logo.png"
         src="project-asset://image-token"
-        byteLength={2048}
-        mimeType="image/png"
+        onDimensionsChange={onDimensionsChange}
       />,
     )
 
     const preview = screen.getByTestId('image-preview')
     const image = preview.querySelector('img')
     expect(image).toHaveAttribute('src', 'project-asset://image-token')
-    expect(screen.getByRole('toolbar', { name: 'logo.png image preview toolbar' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Zoom in' })).toBeVisible()
+    // ImagePreview no longer owns a toolbar — controls live in EditorTopBar.
+    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Zoom in' })).not.toBeInTheDocument()
 
     Object.defineProperty(image!, 'naturalWidth', { configurable: true, value: 32 })
     Object.defineProperty(image!, 'naturalHeight', { configurable: true, value: 24 })
     fireEvent.load(image!)
 
     await waitFor(() =>
-      expect(screen.getByTestId('image-preview-dimensions')).toHaveTextContent('32 x 24'),
+      expect(onDimensionsChange).toHaveBeenCalledWith({ width: 32, height: 24 }),
     )
   })
 
@@ -191,8 +192,6 @@ describe('file renderers', () => {
       <PdfPreview
         filePath="/paper.pdf"
         src="project-asset://pdf-token"
-        byteLength={8192}
-        mimeType="application/pdf"
         onCopyPath={onCopyPath}
         onOpenExternal={onOpenExternal}
       />,
@@ -201,15 +200,13 @@ describe('file renderers', () => {
     const object = screen.getByTestId('pdf-preview').querySelector('object')
     expect(object).toHaveAttribute('data', 'project-asset://pdf-token')
     expect(object).toHaveAttribute('type', 'application/pdf')
-    fireEvent.click(screen.getAllByRole('button', { name: 'Open externally' })[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Open externally' }))
     expect(onOpenExternal).toHaveBeenCalledWith('/paper.pdf')
 
     rerender(
       <MediaPreview
         filePath="/theme.mp3"
         src="project-asset://audio-token"
-        byteLength={4096}
-        mimeType="audio/mpeg"
         rendererKind="audio"
       />,
     )
@@ -222,8 +219,6 @@ describe('file renderers', () => {
       <MediaPreview
         filePath="/demo.mp4"
         src="project-asset://video-token"
-        byteLength={4096}
-        mimeType="video/mp4"
         rendererKind="video"
       />,
     )

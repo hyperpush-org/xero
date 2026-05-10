@@ -12,7 +12,8 @@ use rusqlite::Connection;
 use tempfile::TempDir;
 use xero_desktop_lib::{
     commands::{
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto,
+        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlStateDto,
     },
     db::{self, project_store},
     mcp::{
@@ -26,10 +27,12 @@ use xero_desktop_lib::{
         AutonomousSkillSourceFileRequest, AutonomousSkillSourceFileResponse,
         AutonomousSkillSourceMetadata, AutonomousSkillSourceTreeEntry,
         AutonomousSkillSourceTreeRequest, AutonomousSkillSourceTreeResponse,
-        AutonomousSkillToolStatus, AutonomousToolAccessAction, AutonomousToolAccessRequest,
-        AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime,
-        AutonomousToolSearchRequest, FilesystemAutonomousSkillCacheStore, ToolRegistry,
-        ToolRegistryOptions, XeroSkillSourceKind, XeroSkillSourceState,
+        AutonomousSkillToolCandidate, AutonomousSkillToolStatus, AutonomousToolAccessAction,
+        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
+        AutonomousToolRuntime, AutonomousToolSearchRequest, FilesystemAutonomousSkillCacheStore,
+        ToolRegistry, ToolRegistryOptions, XeroAttachedSkillRef,
+        XeroAttachedSkillResolutionRequest, XeroAttachedSkillResolutionStatus,
+        XeroAttachedSkillScope, XeroSkillSourceKind, XeroSkillSourceState,
         XeroSkillToolDynamicAssetInput, XeroSkillToolInput, XeroSkillTrustState,
     },
 };
@@ -198,6 +201,101 @@ fn init_project_state(repo_root: &Path) {
             ("project-1", "Project", "SkillTool test project"),
         )
         .expect("seed project row");
+}
+
+fn seed_runtime_run(repo_root: &Path, project_id: &str, run_id: &str) {
+    let session = project_store::create_agent_session(
+        repo_root,
+        &project_store::AgentSessionCreateRecord {
+            project_id: project_id.into(),
+            title: "Attached skill run".into(),
+            summary: String::new(),
+            selected: true,
+        },
+    )
+    .expect("create agent session");
+    let session_id = session.agent_session_id.clone();
+    let timestamp = "2026-04-25T00:00:00Z";
+    let controls = project_store::build_runtime_run_control_state(
+        "test-model",
+        None,
+        RuntimeRunApprovalModeDto::Yolo,
+        timestamp,
+        None,
+    )
+    .expect("runtime controls");
+    project_store::upsert_runtime_run(
+        repo_root,
+        &project_store::RuntimeRunUpsertRecord {
+            run: project_store::RuntimeRunRecord {
+                project_id: project_id.into(),
+                agent_session_id: session_id.clone(),
+                run_id: run_id.into(),
+                runtime_kind: "owned_agent".into(),
+                provider_id: "openai_codex".into(),
+                supervisor_kind: "internal".into(),
+                status: project_store::RuntimeRunStatus::Running,
+                transport: project_store::RuntimeRunTransportRecord {
+                    kind: "internal".into(),
+                    endpoint: "xero://owned-agent".into(),
+                    liveness: project_store::RuntimeRunTransportLiveness::Reachable,
+                },
+                started_at: timestamp.into(),
+                last_heartbeat_at: Some(timestamp.into()),
+                stopped_at: None,
+                last_error: None,
+                updated_at: timestamp.into(),
+            },
+            checkpoint: Some(project_store::RuntimeRunCheckpointRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                sequence: 1,
+                kind: project_store::RuntimeRunCheckpointKind::Bootstrap,
+                summary: "Attached skill resolver test run.".into(),
+                created_at: timestamp.into(),
+            }),
+            control_state: Some(controls),
+        },
+    )
+    .expect("seed runtime run");
+    project_store::insert_agent_run(
+        repo_root,
+        &project_store::NewAgentRunRecord {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            project_id: project_id.into(),
+            agent_session_id: session_id,
+            run_id: run_id.into(),
+            provider_id: "openai_codex".into(),
+            model_id: "test-model".into(),
+            prompt: "Attached skill resolver test.".into(),
+            system_prompt: "Resolve attached skill context.".into(),
+            now: timestamp.into(),
+        },
+    )
+    .expect("seed durable agent run");
+}
+
+fn attached_ref(
+    candidate: &AutonomousSkillToolCandidate,
+    scope: XeroAttachedSkillScope,
+) -> XeroAttachedSkillRef {
+    XeroAttachedSkillRef {
+        id: candidate.skill_id.clone(),
+        source_id: candidate.source_id.clone(),
+        skill_id: candidate.skill_id.clone(),
+        name: candidate.name.clone(),
+        description: candidate.description.clone(),
+        source_kind: candidate.source_kind,
+        scope,
+        version_hash: candidate
+            .version_hash
+            .clone()
+            .expect("attached skill candidate has version hash"),
+        include_supporting_assets: false,
+        required: true,
+    }
 }
 
 fn github_source_metadata(skill_id: &str, tree_hash: &str) -> AutonomousSkillSourceMetadata {
@@ -766,6 +864,101 @@ fn skill_tool_merges_sources_filters_trust_and_invokes_validated_context() {
         }
         other => panic!("unexpected output: {other:?}"),
     }
+}
+
+#[test]
+fn attached_skill_resolver_persists_pinned_context_and_blocks_changed_sources() {
+    let root = tempfile::tempdir().expect("temp dir");
+    init_project_state(root.path());
+    let local_root = root.path().join("local-skills");
+    let bundled_root = root.path().join("bundled-skills");
+    write_skill(&local_root, "local-skill", "local-skill", "Local skill.");
+
+    let source = Arc::new(FixtureSkillSource::default());
+    source.set_tree_response(Ok(AutonomousSkillSourceTreeResponse {
+        entries: Vec::new(),
+    }));
+    let runtime = runtime_with_skills(&root, source, &local_root, &bundled_root);
+    let listed = runtime
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::List {
+            query: Some("local".into()),
+            include_unavailable: true,
+            limit: Some(10),
+        }))
+        .expect("list local skill");
+    let source_id = match listed.output {
+        AutonomousToolOutput::Skill(output) => output
+            .candidates
+            .iter()
+            .find(|candidate| candidate.skill_id == "local-skill")
+            .expect("local candidate")
+            .source_id
+            .clone(),
+        other => panic!("unexpected output: {other:?}"),
+    };
+
+    let invoked = runtime
+        .execute(AutonomousToolRequest::Skill(XeroSkillToolInput::Invoke {
+            source_id,
+            approval_grant_id: Some("approval-1".into()),
+            include_supporting_assets: false,
+        }))
+        .expect("approve and invoke local skill");
+    let attachment = match invoked.output {
+        AutonomousToolOutput::Skill(output) => {
+            assert_eq!(output.status, AutonomousSkillToolStatus::Succeeded);
+            attached_ref(
+                output.selected.as_ref().expect("selected local skill"),
+                XeroAttachedSkillScope::Global,
+            )
+        }
+        other => panic!("unexpected output: {other:?}"),
+    };
+
+    let run_id = "run-attached-skills-1";
+    seed_runtime_run(root.path(), "project-1", run_id);
+    let resolved = runtime
+        .resolve_attached_skills(XeroAttachedSkillResolutionRequest {
+            project_id: "project-1".into(),
+            run_id: run_id.into(),
+            attached_skills: vec![attachment.clone()],
+        })
+        .expect("resolve attached skills");
+    assert_eq!(
+        resolved.status,
+        XeroAttachedSkillResolutionStatus::Succeeded
+    );
+    let snapshot = resolved.snapshot.as_ref().expect("resolved snapshot");
+    assert_eq!(snapshot.attached_skills.len(), 1);
+    assert!(snapshot.attached_skills[0]
+        .context
+        .markdown
+        .content
+        .contains("Local skill."));
+
+    write_skill(&local_root, "local-skill", "local-skill", "Local skill v2.");
+    let blocked = runtime
+        .resolve_attached_skills(XeroAttachedSkillResolutionRequest {
+            project_id: "project-1".into(),
+            run_id: run_id.into(),
+            attached_skills: vec![attachment],
+        })
+        .expect("stale attached skill returns diagnostics");
+    assert_eq!(blocked.status, XeroAttachedSkillResolutionStatus::Failed);
+    assert!(blocked.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code.as_str(),
+            "attached_skill_source_stale" | "attached_skill_version_hash_mismatch"
+        )
+    }));
+
+    let persisted =
+        project_store::load_runtime_attached_skill_snapshot(root.path(), "project-1", run_id)
+            .expect("load persisted attached skill snapshot")
+            .expect("snapshot persists from successful resolution");
+    let persisted_markdown = &persisted.attached_skills[0].context.markdown.content;
+    assert!(persisted_markdown.contains("Local skill."));
+    assert!(!persisted_markdown.contains("Local skill v2."));
 }
 
 #[test]

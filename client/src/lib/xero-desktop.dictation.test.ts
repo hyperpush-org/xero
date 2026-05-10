@@ -377,6 +377,36 @@ function makeRuntimeStreamItem(sequence: number, text: string) {
   }
 }
 
+function makeRuntimeStreamPatch(sequence: number, text: string) {
+  return {
+    schema: 'xero.runtime_stream_patch.v1',
+    item: makeRuntimeStreamItem(sequence, text),
+    snapshot: {
+      schema: 'xero.runtime_stream_view_snapshot.v1',
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeKind: 'openai_codex',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      flowId: null,
+      subscribedItemKinds: ['transcript'],
+      status: 'live',
+      items: [makeRuntimeStreamItem(1, text)],
+      transcriptItems: [makeRuntimeStreamItem(1, text)],
+      toolCalls: [],
+      skillItems: [],
+      activityItems: [],
+      actionRequired: [],
+      plan: null,
+      completion: null,
+      failure: null,
+      lastIssue: null,
+      lastItemAt: '2026-04-30T22:41:55Z',
+      lastSequence: sequence,
+    },
+  }
+}
+
 describe('XeroDesktopAdapter runtime stream', () => {
   beforeEach(() => {
     mocks.invoke.mockReset()
@@ -426,6 +456,48 @@ describe('XeroDesktopAdapter runtime stream', () => {
         item: expect.objectContaining({
           sequence: 3,
           text: 'newest replay item',
+        }),
+      }),
+    )
+    expect(onError).not.toHaveBeenCalled()
+
+    subscription.unsubscribe()
+  })
+
+  it('delivers projected runtime stream patches from the channel', async () => {
+    const { XeroDesktopAdapter } = await import('./xero-desktop')
+    const handler = vi.fn()
+    const onError = vi.fn()
+
+    mocks.invoke.mockImplementationOnce(async (_command, args) => {
+      args.request.channel.onmessage(makeRuntimeStreamPatch(4, 'projected transcript'))
+
+      return {
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        runtimeKind: 'openai_codex',
+        runId: 'run-1',
+        sessionId: 'session-1',
+        flowId: null,
+        subscribedItemKinds: ['transcript'],
+      }
+    })
+
+    const subscription = await XeroDesktopAdapter.subscribeRuntimeStream(
+      'project-1',
+      'agent-session-main',
+      ['transcript'],
+      handler,
+      onError,
+    )
+    await flushRuntimeStreamDelivery()
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schema: 'xero.runtime_stream_patch.v1',
+        snapshot: expect.objectContaining({
+          projectId: 'project-1',
+          lastSequence: 4,
         }),
       }),
     )

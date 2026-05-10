@@ -896,6 +896,10 @@ fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
 fn phase2_retrieval_fallback_dimension_mismatch_redaction_and_backfill_jobs() {
     struct BadDimensionEmbeddingService;
     impl project_store::AgentEmbeddingService for BadDimensionEmbeddingService {
+        fn provider(&self) -> &str {
+            "bad-provider"
+        }
+
         fn model(&self) -> &str {
             "bad-dimension"
         }

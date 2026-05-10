@@ -101,8 +101,13 @@ impl AutonomousSkillLifecycleEvent {
 
 fn persist_autonomous_run_scaffold(
     repo_root: &Path,
+    existing: Option<&AutonomousRunSnapshotRecord>,
     payload: AutonomousRunUpsertRecord,
 ) -> Result<AutonomousRunSnapshotRecord, CommandError> {
+    if let Some(existing) = existing.filter(|existing| existing.run == payload.run) {
+        return Ok(existing.clone());
+    }
+
     let mut last_retryable_error: Option<CommandError> = None;
 
     for attempt in 1..=AUTONOMOUS_RUN_PERSIST_MAX_ATTEMPTS {

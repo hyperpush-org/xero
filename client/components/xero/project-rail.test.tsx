@@ -108,6 +108,28 @@ describe('ProjectRail', () => {
     expect(onImportProject).not.toHaveBeenCalled()
   })
 
+  it('does not render project load errors as a destructive rail slot', () => {
+    const { container } = render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage="Repository not found"
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={projects}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: 'Open mesh-lang (active)' })).toBeVisible()
+    expect(screen.queryByText('!')).not.toBeInTheDocument()
+    expect(container.querySelector('[title="Repository not found"]')).toBeNull()
+    expect(container.querySelector('.text-destructive')).toBeNull()
+  })
+
   it('imports a project from the compact rail add button', () => {
     const onImportProject = vi.fn()
 
@@ -158,6 +180,81 @@ describe('ProjectRail', () => {
 
     expect(pendingProjectButton).not.toHaveAttribute('aria-busy')
     expect(within(pendingProjectButton).getByText('N')).toBeVisible()
+  })
+
+  it('does not start native project prefetch from pointerdown selection preview', () => {
+    const onPreloadProject = vi.fn()
+    const onPreviewProject = vi.fn()
+    const onSelectProject = vi.fn()
+    const secondProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onPreloadProject={onPreloadProject}
+        onPreviewProject={onPreviewProject}
+        onRemoveProject={() => undefined}
+        onSelectProject={onSelectProject}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={[...projects, secondProject]}
+      />,
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open nova-ui' })
+    fireEvent.pointerDown(projectButton, { button: 0 })
+
+    expect(onPreviewProject).toHaveBeenCalledWith('project-2')
+    expect(onPreviewProject).toHaveBeenCalledTimes(1)
+    expect(onPreloadProject).not.toHaveBeenCalled()
+
+    fireEvent.click(projectButton)
+
+    expect(onSelectProject).toHaveBeenCalledWith('project-2')
+    expect(onPreviewProject).toHaveBeenLastCalledWith('project-2')
+    expect(onPreviewProject).toHaveBeenCalledTimes(2)
+    expect(onPreloadProject).not.toHaveBeenCalled()
+  })
+
+  it('preloads a project from rail hover and keyboard focus intent', () => {
+    const onPreloadProject = vi.fn()
+    const secondProject = {
+      ...projects[0],
+      id: 'project-2',
+      name: 'nova-ui',
+    }
+
+    render(
+      <ProjectRail
+        activeProjectId="project-1"
+        errorMessage={null}
+        isImporting={false}
+        isLoading={false}
+        onImportProject={() => undefined}
+        onPreloadProject={onPreloadProject}
+        onRemoveProject={() => undefined}
+        onSelectProject={() => undefined}
+        pendingProjectRemovalId={null}
+        projectRemovalStatus="idle"
+        projects={[...projects, secondProject]}
+      />,
+    )
+
+    const projectButton = screen.getByRole('button', { name: 'Open nova-ui' })
+    fireEvent.pointerEnter(projectButton)
+    expect(onPreloadProject).toHaveBeenCalledWith('project-2')
+
+    fireEvent.focus(projectButton)
+    expect(onPreloadProject).toHaveBeenLastCalledWith('project-2')
+    expect(onPreloadProject).toHaveBeenCalledTimes(2)
   })
 
   it('never renders session controls inside the project rail', () => {

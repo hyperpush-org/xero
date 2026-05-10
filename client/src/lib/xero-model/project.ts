@@ -428,6 +428,61 @@ export const writeProjectFileResponseSchema = z
   })
   .strict()
 
+export const projectUiStateKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .regex(/^[A-Za-z0-9_.:@-]+$/, 'Project UI state keys must be filename-safe identifiers.')
+
+export const readProjectUiStateRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    key: projectUiStateKeySchema,
+  })
+  .strict()
+
+export const writeProjectUiStateRequestSchema = readProjectUiStateRequestSchema
+  .extend({
+    value: z.unknown().nullable().optional(),
+  })
+  .strict()
+
+export const projectUiStateResponseSchema = z
+  .object({
+    schema: z.literal('xero.project_ui_state.v1'),
+    projectId: z.string().trim().min(1),
+    key: projectUiStateKeySchema,
+    value: z.unknown().nullable().optional(),
+    storageScope: z.literal('os_app_data'),
+    uiDeferred: z.boolean(),
+  })
+  .strict()
+
+export const appUiStateKeySchema = projectUiStateKeySchema
+
+export const readAppUiStateRequestSchema = z
+  .object({
+    key: appUiStateKeySchema,
+  })
+  .strict()
+
+export const writeAppUiStateRequestSchema = readAppUiStateRequestSchema
+  .extend({
+    value: z.unknown().nullable().optional(),
+  })
+  .strict()
+
+export const appUiStateResponseSchema = z
+  .object({
+    schema: z.literal('xero.app_ui_state.v1'),
+    key: appUiStateKeySchema,
+    value: z.unknown().nullable().optional(),
+    storageScope: z.literal('os_app_data'),
+    uiDeferred: z.boolean(),
+  })
+  .strict()
+
 export const createProjectEntryResponseSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -671,6 +726,12 @@ export type ProjectFileMarkdownPreviewDto = z.infer<typeof projectFileMarkdownPr
 export type ProjectFilePreviewDto = z.infer<typeof projectFilePreviewSchema>
 export type ReadProjectFileResponseDto = z.infer<typeof readProjectFileResponseSchema>
 export type WriteProjectFileResponseDto = z.infer<typeof writeProjectFileResponseSchema>
+export type ReadProjectUiStateRequestDto = z.infer<typeof readProjectUiStateRequestSchema>
+export type WriteProjectUiStateRequestDto = z.infer<typeof writeProjectUiStateRequestSchema>
+export type ProjectUiStateResponseDto = z.infer<typeof projectUiStateResponseSchema>
+export type ReadAppUiStateRequestDto = z.infer<typeof readAppUiStateRequestSchema>
+export type WriteAppUiStateRequestDto = z.infer<typeof writeAppUiStateRequestSchema>
+export type AppUiStateResponseDto = z.infer<typeof appUiStateResponseSchema>
 export type CreateProjectEntryResponseDto = z.infer<typeof createProjectEntryResponseSchema>
 export type RenameProjectEntryResponseDto = z.infer<typeof renameProjectEntryResponseSchema>
 export type MoveProjectEntryResponseDto = z.infer<typeof moveProjectEntryResponseSchema>

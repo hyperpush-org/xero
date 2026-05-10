@@ -1367,29 +1367,13 @@ pub(crate) fn resolve_project_root<R: Runtime>(
     project_id: &str,
 ) -> CommandResult<PathBuf> {
     let registry_path = state.global_db_path(app)?;
-    let registry = registry::read_registry(&registry_path)?;
-    let mut live_root_records = Vec::new();
-    let mut pruned_stale_roots = false;
-    let mut resolved_root = None;
-
-    for record in registry.projects {
-        if !Path::new(&record.root_path).is_dir() {
-            pruned_stale_roots = true;
-            continue;
-        }
-
-        if record.project_id == project_id && resolved_root.is_none() {
-            resolved_root = Some(PathBuf::from(&record.root_path));
-        }
-
-        live_root_records.push(record);
-    }
-
-    if pruned_stale_roots {
-        let _ = registry::replace_projects(&registry_path, live_root_records);
-    }
-
-    resolved_root.ok_or_else(CommandError::project_not_found)
+    registry::read_project_records(&registry_path, project_id)?
+        .into_iter()
+        .find_map(|record| {
+            let root = PathBuf::from(&record.root_path);
+            root.is_dir().then_some(root)
+        })
+        .ok_or_else(CommandError::project_not_found)
 }
 
 struct BuiltProjectTree {

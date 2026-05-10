@@ -1,8 +1,119 @@
 import { describe, expect, it } from 'vitest'
 
-import { createRuntimeStreamView, mergeRuntimeStreamEvent, runtimeStreamItemSchema } from './runtime-stream'
+import {
+  createRuntimeStreamView,
+  createRuntimeStreamViewFromSnapshot,
+  mergeRuntimeStreamEvent,
+  runtimeStreamItemSchema,
+  runtimeStreamPatchSchema,
+} from './runtime-stream'
 
 describe('runtime stream contracts', () => {
+  it('hydrates projected runtime stream snapshots from Rust patches', () => {
+    const patch = runtimeStreamPatchSchema.parse({
+      schema: 'xero.runtime_stream_patch.v1',
+      item: {
+        kind: 'tool',
+        runId: 'run-projected-1',
+        sequence: 4,
+        sessionId: 'owned-agent:run-projected-1',
+        toolCallId: 'call-read',
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: 'Read App.',
+        createdAt: '2026-05-06T12:03:03Z',
+      },
+      snapshot: {
+        schema: 'xero.runtime_stream_view_snapshot.v1',
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-1',
+        runtimeKind: 'openai_codex',
+        runId: 'run-projected-1',
+        sessionId: 'owned-agent:run-projected-1',
+        flowId: null,
+        subscribedItemKinds: ['transcript', 'tool', 'activity'],
+        status: 'live',
+        items: [
+          {
+            kind: 'transcript',
+            runId: 'run-projected-1',
+            sequence: 1,
+            updatedSequence: 2,
+            sessionId: 'owned-agent:run-projected-1',
+            text: 'Hello world',
+            transcriptRole: 'assistant',
+            createdAt: '2026-05-06T12:03:00Z',
+          },
+          {
+            kind: 'tool',
+            runId: 'run-projected-1',
+            sequence: 3,
+            updatedSequence: 4,
+            sessionId: 'owned-agent:run-projected-1',
+            toolCallId: 'call-read',
+            toolName: 'read',
+            toolState: 'succeeded',
+            detail: 'Read App.',
+            createdAt: '2026-05-06T12:03:02Z',
+          },
+        ],
+        transcriptItems: [
+          {
+            kind: 'transcript',
+            runId: 'run-projected-1',
+            sequence: 1,
+            updatedSequence: 2,
+            sessionId: 'owned-agent:run-projected-1',
+            text: 'Hello world',
+            transcriptRole: 'assistant',
+            createdAt: '2026-05-06T12:03:00Z',
+          },
+        ],
+        toolCalls: [
+          {
+            kind: 'tool',
+            runId: 'run-projected-1',
+            sequence: 4,
+            sessionId: 'owned-agent:run-projected-1',
+            toolCallId: 'call-read',
+            toolName: 'read',
+            toolState: 'succeeded',
+            detail: 'Read App.',
+            createdAt: '2026-05-06T12:03:03Z',
+          },
+        ],
+        skillItems: [],
+        activityItems: [],
+        actionRequired: [],
+        plan: null,
+        completion: null,
+        failure: null,
+        lastIssue: null,
+        lastItemAt: '2026-05-06T12:03:03Z',
+        lastSequence: 4,
+      },
+    })
+
+    const stream = createRuntimeStreamViewFromSnapshot(patch.snapshot)
+
+    expect(stream.status).toBe('live')
+    expect(stream.transcriptItems[0]).toMatchObject({
+      sequence: 1,
+      updatedSequence: 2,
+      text: 'Hello world',
+    })
+    expect(stream.items[1]).toMatchObject({
+      kind: 'tool',
+      sequence: 3,
+      updatedSequence: 4,
+      toolCallId: 'call-read',
+    })
+    expect(stream.toolCalls[0]).toMatchObject({
+      sequence: 4,
+      toolState: 'succeeded',
+    })
+  })
+
   it('accepts planning input shapes and phase-aware plan items', () => {
     const actionItem = runtimeStreamItemSchema.parse({
       kind: 'action_required',

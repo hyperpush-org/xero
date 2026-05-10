@@ -1,7 +1,7 @@
 'use client'
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import type { ComponentProps, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
@@ -10,11 +10,7 @@ import {
   Code2,
   Copy,
   ExternalLink,
-  FileAudio2,
-  FileText,
-  FileVideo2,
   Grid3X3,
-  Image as ImageIcon,
   Info,
   Maximize2,
   Minimize2,
@@ -36,7 +32,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { formatBytes } from '@/lib/agent-attachments'
 import { cn } from '@/lib/utils'
@@ -58,7 +53,24 @@ const CSV_PREVIEW_ROW_LIMIT = 1_000
 const CSV_PREVIEW_COLUMN_LIMIT = 80
 const MARKDOWN_CODE_BLOCK_HIGHLIGHT_BYTE_LIMIT = 96 * 1024
 
-type ImageScaleMode = 'fit' | 'actual'
+export type ImageScaleMode = 'fit' | 'actual'
+
+export interface ImageControlsState {
+  scaleMode: ImageScaleMode
+  zoom: number
+  showCheckerboard: boolean
+}
+
+export const DEFAULT_IMAGE_CONTROLS: ImageControlsState = {
+  scaleMode: 'fit',
+  zoom: 1,
+  showCheckerboard: true,
+}
+
+export interface ImageDimensions {
+  width: number
+  height: number
+}
 
 export interface ResolveAssetPreviewUrl {
   (projectPath: string): Promise<string | null>
@@ -72,178 +84,227 @@ interface PreviewFileActions {
 export function ImagePreview({
   filePath,
   src,
-  byteLength,
-  mimeType,
   testId = 'image-preview',
   alt,
+  controls = DEFAULT_IMAGE_CONTROLS,
+  onDimensionsChange,
 }: {
   filePath: string
   src: string
-  byteLength: number
-  mimeType: string
   testId?: string
   alt?: string
+  controls?: ImageControlsState
+  onDimensionsChange?: (dimensions: ImageDimensions | null) => void
 }) {
-  const [scaleMode, setScaleMode] = useState<ImageScaleMode>('fit')
-  const [zoom, setZoom] = useState(1)
-  const [showCheckerboard, setShowCheckerboard] = useState(true)
-  const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
+  const { scaleMode, zoom, showCheckerboard } = controls
+  const [dimensions, setDimensions] = useState<ImageDimensions | null>(null)
   const [loadState, setLoadState] = useState<'loading' | 'loaded' | 'error'>('loading')
   const fileName = basename(filePath)
   const displayAlt = alt?.trim() || `Preview of ${fileName}`
-  const zoomPercent = Math.round(zoom * 100)
 
   useEffect(() => {
     setLoadState('loading')
     setDimensions(null)
-  }, [src])
+    onDimensionsChange?.(null)
+  }, [src, onDimensionsChange])
 
-  const setActualSize = () => {
-    setScaleMode('actual')
-    setZoom(1)
+  return (
+    <div
+      className={cn(
+        'relative flex min-h-0 flex-1 items-center justify-center overflow-auto p-4',
+        showCheckerboard ? checkerboardClassName : 'bg-background',
+      )}
+      data-testid={testId}
+    >
+      {loadState === 'loading' ? (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+          <Skeleton className="h-28 w-44" aria-label={`Loading preview of ${fileName}`} />
+        </div>
+      ) : null}
+
+      {loadState === 'error' ? (
+        <PreviewErrorState
+          title={`Xero could not render ${fileName}`}
+          description="The file was classified as an image, but the preview surface could not decode it."
+        />
+      ) : (
+        <img
+          src={src}
+          alt={displayAlt}
+          className={cn(
+            'block rounded-sm transition-[opacity]',
+            loadState === 'loading' && 'opacity-0',
+            scaleMode === 'fit' ? 'max-h-full max-w-full object-contain' : 'max-w-none',
+          )}
+          style={
+            scaleMode === 'actual' && dimensions
+              ? {
+                  height: dimensions.height * zoom,
+                  width: dimensions.width * zoom,
+                }
+              : undefined
+          }
+          onLoad={(event) => {
+            const image = event.currentTarget
+            const next = { width: image.naturalWidth, height: image.naturalHeight }
+            setDimensions(next)
+            setLoadState('loaded')
+            onDimensionsChange?.(next)
+          }}
+          onError={() => setLoadState('error')}
+        />
+      )}
+    </div>
+  )
+}
+
+export function ImageControls({
+  controls,
+  onControlsChange,
+}: {
+  controls: ImageControlsState
+  onControlsChange: (next: ImageControlsState) => void
+}) {
+  const { scaleMode, zoom, showCheckerboard } = controls
+  const zoomPercent = Math.round(zoom * 100)
+
+  const setScaleMode = (mode: ImageScaleMode) => {
+    onControlsChange({ ...controls, scaleMode: mode, zoom: mode === 'actual' ? 1 : zoom })
   }
 
   const changeZoom = (delta: number) => {
-    setScaleMode('actual')
-    setZoom((current) => clamp(roundZoom(current + delta), IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX))
+    onControlsChange({
+      ...controls,
+      scaleMode: 'actual',
+      zoom: clamp(roundZoom(zoom + delta), IMAGE_ZOOM_MIN, IMAGE_ZOOM_MAX),
+    })
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background" data-testid={testId}>
+    <div className="flex items-center gap-1.5" role="group" aria-label="Image controls">
       <div
-        className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/10 px-3 py-1.5"
-        role="toolbar"
-        aria-label={`${fileName} image preview toolbar`}
+        role="radiogroup"
+        aria-label="Image sizing"
+        className="inline-flex h-6 items-center rounded-md bg-secondary/40 p-0.5"
       >
-        <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
-          <ImageIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span className="truncate font-mono text-foreground/85">{fileName}</span>
-          <span className="text-muted-foreground/40" aria-hidden="true">
-            ·
-          </span>
-          <span className="tabular-nums" data-testid={`${testId}-dimensions`}>
-            {dimensions ? `${dimensions.width} x ${dimensions.height}` : 'Dimensions pending'}
-          </span>
-          <span className="text-muted-foreground/40" aria-hidden="true">
-            ·
-          </span>
-          <span className="tabular-nums">{formatBytes(byteLength)}</span>
-          {mimeType ? (
-            <>
-              <span className="text-muted-foreground/40" aria-hidden="true">
-                ·
-              </span>
-              <span className="hidden font-mono sm:inline">{mimeType}</span>
-            </>
-          ) : null}
-        </div>
-
-        <div className="flex items-center gap-1">
-          <ToggleGroup
-            type="single"
-            size="sm"
-            value={scaleMode}
-            onValueChange={(value) => {
-              if (value === 'fit') {
-                setScaleMode('fit')
-                return
-              }
-              if (value === 'actual') {
-                setActualSize()
-              }
-            }}
-            aria-label="Image sizing"
-          >
-            <TooltipIconToggle value="fit" label="Fit to editor">
-              <Minimize2 className="h-3.5 w-3.5" aria-hidden="true" />
-            </TooltipIconToggle>
-            <TooltipIconToggle value="actual" label="Actual size">
-              <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
-            </TooltipIconToggle>
-          </ToggleGroup>
-
-          <Separator orientation="vertical" className="mx-1 h-5" />
-
-          <TooltipIconButton
-            label="Zoom out"
-            onClick={() => changeZoom(-IMAGE_ZOOM_STEP)}
-            disabled={scaleMode === 'actual' && zoom <= IMAGE_ZOOM_MIN}
-          >
-            <ZoomOut className="h-3.5 w-3.5" aria-hidden="true" />
-          </TooltipIconButton>
-          <span
-            className="min-w-10 text-center font-mono text-[11px] text-muted-foreground tabular-nums"
-            aria-live="polite"
-          >
-            {scaleMode === 'fit' ? 'Fit' : `${zoomPercent}%`}
-          </span>
-          <TooltipIconButton
-            label="Zoom in"
-            onClick={() => changeZoom(IMAGE_ZOOM_STEP)}
-            disabled={scaleMode === 'actual' && zoom >= IMAGE_ZOOM_MAX}
-          >
-            <ZoomIn className="h-3.5 w-3.5" aria-hidden="true" />
-          </TooltipIconButton>
-
-          <Separator orientation="vertical" className="mx-1 h-5" />
-
-          <TooltipIconButton
-            label={showCheckerboard ? 'Hide transparent background grid' : 'Show transparent background grid'}
-            onClick={() => setShowCheckerboard((current) => !current)}
-            aria-pressed={showCheckerboard}
-          >
-            <Grid3X3 className="h-3.5 w-3.5" aria-hidden="true" />
-          </TooltipIconButton>
-        </div>
+        <CompactToggleIcon
+          active={scaleMode === 'fit'}
+          label="Fit to editor"
+          onClick={() => setScaleMode('fit')}
+        >
+          <Minimize2 className="h-3 w-3" aria-hidden="true" />
+        </CompactToggleIcon>
+        <CompactToggleIcon
+          active={scaleMode === 'actual'}
+          label="Actual size"
+          onClick={() => setScaleMode('actual')}
+        >
+          <Maximize2 className="h-3 w-3" aria-hidden="true" />
+        </CompactToggleIcon>
       </div>
 
-      <div
-        className={cn(
-          'relative flex min-h-0 flex-1 items-center justify-center overflow-auto p-4',
-          showCheckerboard ? checkerboardClassName : 'bg-background',
-        )}
-      >
-        {loadState === 'loading' ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
-            <Skeleton className="h-28 w-44" aria-label={`Loading preview of ${fileName}`} />
-          </div>
-        ) : null}
-
-        {loadState === 'error' ? (
-          <PreviewErrorState
-            title={`Xero could not render ${fileName}`}
-            description="The file was classified as an image, but the preview surface could not decode it."
-          />
-        ) : (
-          <img
-            src={src}
-            alt={displayAlt}
-            className={cn(
-              'block rounded-sm transition-[opacity]',
-              loadState === 'loading' && 'opacity-0',
-              scaleMode === 'fit' ? 'max-h-full max-w-full object-contain' : 'max-w-none',
-            )}
-            style={
-              scaleMode === 'actual' && dimensions
-                ? {
-                    height: dimensions.height * zoom,
-                    width: dimensions.width * zoom,
-                  }
-                : undefined
-            }
-            onLoad={(event) => {
-              const image = event.currentTarget
-              setDimensions({
-                width: image.naturalWidth,
-                height: image.naturalHeight,
-              })
-              setLoadState('loaded')
-            }}
-            onError={() => setLoadState('error')}
-          />
-        )}
+      <div className="flex items-center gap-0.5">
+        <CompactIconButton
+          label="Zoom out"
+          onClick={() => changeZoom(-IMAGE_ZOOM_STEP)}
+          disabled={scaleMode === 'actual' && zoom <= IMAGE_ZOOM_MIN}
+        >
+          <ZoomOut className="h-3 w-3" aria-hidden="true" />
+        </CompactIconButton>
+        <span
+          className="min-w-9 text-center font-mono text-[10px] text-muted-foreground tabular-nums"
+          aria-live="polite"
+        >
+          {scaleMode === 'fit' ? 'Fit' : `${zoomPercent}%`}
+        </span>
+        <CompactIconButton
+          label="Zoom in"
+          onClick={() => changeZoom(IMAGE_ZOOM_STEP)}
+          disabled={scaleMode === 'actual' && zoom >= IMAGE_ZOOM_MAX}
+        >
+          <ZoomIn className="h-3 w-3" aria-hidden="true" />
+        </CompactIconButton>
       </div>
+
+      <CompactIconButton
+        label={showCheckerboard ? 'Hide transparent background grid' : 'Show transparent background grid'}
+        onClick={() => onControlsChange({ ...controls, showCheckerboard: !showCheckerboard })}
+        active={showCheckerboard}
+      >
+        <Grid3X3 className="h-3 w-3" aria-hidden="true" />
+      </CompactIconButton>
     </div>
+  )
+}
+
+function CompactIconButton({
+  active,
+  children,
+  disabled,
+  label,
+  onClick,
+}: {
+  active?: boolean
+  children: ReactNode
+  disabled?: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          aria-pressed={active}
+          disabled={disabled}
+          onClick={onClick}
+          className={cn(
+            'inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors',
+            'hover:bg-secondary/50 hover:text-foreground disabled:pointer-events-none disabled:opacity-40',
+            active && 'bg-secondary/60 text-foreground',
+          )}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function CompactToggleIcon({
+  active,
+  children,
+  label,
+  onClick,
+}: {
+  active: boolean
+  children: ReactNode
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          role="radio"
+          type="button"
+          aria-label={label}
+          aria-checked={active}
+          onClick={onClick}
+          className={cn(
+            'inline-flex h-5 w-6 items-center justify-center rounded transition-colors',
+            active
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -251,10 +312,14 @@ export function SvgTextPreview({
   filePath,
   text,
   mimeType,
+  controls,
+  onDimensionsChange,
 }: {
   filePath: string
   text: string
   mimeType: string
+  controls?: ImageControlsState
+  onDimensionsChange?: (dimensions: ImageDimensions | null) => void
 }) {
   const src = useSvgObjectUrl(text, mimeType)
 
@@ -274,10 +339,10 @@ export function SvgTextPreview({
       <ImagePreview
         filePath={filePath}
         src={src}
-        byteLength={utf8ByteLength(text)}
-        mimeType={mimeType || 'image/svg+xml'}
         testId="svg-image-preview"
         alt={`SVG preview of ${basename(filePath)}`}
+        controls={controls}
+        onDimensionsChange={onDimensionsChange}
       />
     </div>
   )
@@ -470,30 +535,18 @@ export function CsvPreview({
 }
 
 export function PdfPreview({
-  byteLength,
   filePath,
-  mimeType,
   src,
   onCopyPath,
   onOpenExternal,
 }: PreviewFileActions & {
-  byteLength: number
   filePath: string
-  mimeType: string
   src: string
 }) {
   const fileName = basename(filePath)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background" data-testid="pdf-preview">
-      <PreviewToolbar
-        ariaLabel={`${fileName} PDF preview toolbar`}
-        fileName={fileName}
-        icon={<FileText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-        metadata={[formatBytes(byteLength), mimeType]}
-        onCopyPath={onCopyPath ? () => onCopyPath(filePath) : undefined}
-        onOpenExternal={onOpenExternal ? () => onOpenExternal(filePath) : undefined}
-      />
       <object
         aria-label={`PDF preview of ${filePath}`}
         className="min-h-0 flex-1 border-0"
@@ -512,24 +565,17 @@ export function PdfPreview({
 }
 
 export function MediaPreview({
-  byteLength,
   filePath,
-  mimeType,
   rendererKind,
   src,
-  onCopyPath,
-  onOpenExternal,
-}: PreviewFileActions & {
-  byteLength: number
+}: {
   filePath: string
-  mimeType: string
   rendererKind: 'audio' | 'video'
   src: string
 }) {
   const [loadState, setLoadState] = useState<'ready' | 'error'>('ready')
   const fileName = basename(filePath)
   const isAudio = rendererKind === 'audio'
-  const Icon = isAudio ? FileAudio2 : FileVideo2
 
   useEffect(() => {
     setLoadState('ready')
@@ -540,15 +586,6 @@ export function MediaPreview({
       className="flex min-h-0 flex-1 flex-col bg-background"
       data-testid={`${rendererKind}-preview`}
     >
-      <PreviewToolbar
-        ariaLabel={`${fileName} ${rendererKind} preview toolbar`}
-        fileName={fileName}
-        icon={<Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-        metadata={[formatBytes(byteLength), mimeType]}
-        onCopyPath={onCopyPath ? () => onCopyPath(filePath) : undefined}
-        onOpenExternal={onOpenExternal ? () => onOpenExternal(filePath) : undefined}
-      />
-
       <div className="flex min-h-0 flex-1 items-center justify-center bg-background p-6">
         {loadState === 'error' ? (
           <PreviewErrorState
@@ -1086,58 +1123,6 @@ function ShikiTokens({ tokens }: { tokens: TokenizedLine[] }) {
   )
 }
 
-function PreviewToolbar({
-  ariaLabel,
-  fileName,
-  icon,
-  metadata,
-  onCopyPath,
-  onOpenExternal,
-}: {
-  ariaLabel: string
-  fileName: string
-  icon: ReactNode
-  metadata: string[]
-  onCopyPath?: () => void
-  onOpenExternal?: () => void
-}) {
-  return (
-    <div
-      className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-secondary/10 px-3 py-1.5"
-      role="toolbar"
-      aria-label={ariaLabel}
-    >
-      <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
-        {icon}
-        <span className="truncate font-mono text-foreground/85">{fileName}</span>
-        {metadata.filter(Boolean).map((item, index) => (
-          <Fragment key={`${item}-${index}`}>
-            <span className="text-muted-foreground/40" aria-hidden="true">
-              ·
-            </span>
-            <span className="truncate font-mono tabular-nums">{item}</span>
-          </Fragment>
-        ))}
-      </div>
-
-      {onCopyPath || onOpenExternal ? (
-        <div className="flex items-center gap-1">
-          {onCopyPath ? (
-            <TooltipIconButton label="Copy path" onClick={onCopyPath}>
-              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-            </TooltipIconButton>
-          ) : null}
-          {onOpenExternal ? (
-            <TooltipIconButton label="Open externally" onClick={onOpenExternal}>
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-            </TooltipIconButton>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function PdfFallbackState({
   fileName,
   filePath,
@@ -1219,47 +1204,6 @@ function PreviewErrorState({
         </div>
       </div>
     </div>
-  )
-}
-
-function TooltipIconButton({
-  children,
-  label,
-  ...props
-}: Omit<ComponentProps<typeof Button>, 'size' | 'variant'> & {
-  children: ReactNode
-  label: string
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label={label} {...props}>
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  )
-}
-
-function TooltipIconToggle({
-  children,
-  label,
-  value,
-}: {
-  children: ReactNode
-  label: string
-  value: ImageScaleMode
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <ToggleGroupItem value={value} aria-label={label} className="h-8 w-8 flex-none px-0">
-          {children}
-        </ToggleGroupItem>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
   )
 }
 
@@ -1371,13 +1315,6 @@ function clamp(value: number, min: number, max: number): number {
 
 function roundZoom(value: number): number {
   return Math.round(value / IMAGE_ZOOM_STEP) * IMAGE_ZOOM_STEP
-}
-
-function utf8ByteLength(value: string): number {
-  if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(value).byteLength
-  }
-  return value.length
 }
 
 function shortHash(value: string): string {

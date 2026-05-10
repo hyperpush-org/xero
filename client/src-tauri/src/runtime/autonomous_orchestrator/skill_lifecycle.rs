@@ -31,7 +31,7 @@ pub fn persist_skill_lifecycle_event(
         AutonomousRuntimeReconcileIntent::Observe,
     );
 
-    persist_autonomous_run_scaffold(repo_root, payload).map(Some)
+    persist_autonomous_run_scaffold(repo_root, existing.as_ref(), payload).map(Some)
 }
 
 pub(super) fn autonomous_skill_cache_key(source: &AutonomousSkillSourceMetadata) -> String {

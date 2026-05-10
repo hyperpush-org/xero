@@ -26,6 +26,7 @@ interface ProjectRailProps {
   errorMessage: string | null
   onSelectProject: (projectId: string) => void
   onPreloadProject?: (projectId: string) => void
+  onPreviewProject?: (projectId: string) => void
   onImportProject: () => void
   onRemoveProject: (projectId: string) => void
   onOpenSettings?: () => void
@@ -41,9 +42,9 @@ export function ProjectRail({
   projectRemovalStatus,
   pendingProjectRemovalId,
   pendingProjectSelectionId = null,
-  errorMessage,
   onSelectProject,
   onPreloadProject,
+  onPreviewProject,
   onImportProject,
   onRemoveProject,
   onOpenSettings,
@@ -66,34 +67,24 @@ export function ProjectRail({
     }
   }, [activeProjectId, optimisticProjectId, projects])
 
-  const handleSelectProject = useCallback(
-    (projectId: string) => {
-      setOptimisticProjectId((current) => {
-        const currentDisplayed = current ?? pendingProjectSelectionId ?? activeProjectId
-        return currentDisplayed === projectId ? current : projectId
-      })
-      onSelectProject(projectId)
-    },
-    [activeProjectId, onSelectProject, pendingProjectSelectionId],
-  )
-
   const handlePreviewProject = useCallback(
     (projectId: string) => {
-      onPreloadProject?.(projectId)
       setOptimisticProjectId((current) => {
         const currentDisplayed = current ?? pendingProjectSelectionId ?? activeProjectId
         return currentDisplayed === projectId ? current : projectId
       })
+      onPreviewProject?.(projectId)
     },
-    [activeProjectId, onPreloadProject, pendingProjectSelectionId],
-  )
-  const handlePreloadProject = useCallback(
-    (projectId: string) => {
-      onPreloadProject?.(projectId)
-    },
-    [onPreloadProject],
+    [activeProjectId, onPreviewProject, pendingProjectSelectionId],
   )
 
+  const handleSelectProject = useCallback(
+    (projectId: string) => {
+      handlePreviewProject(projectId)
+      onSelectProject(projectId)
+    },
+    [handlePreviewProject, onSelectProject],
+  )
   return (
     <aside
       aria-label="Projects"
@@ -102,15 +93,6 @@ export function ProjectRail({
       onPointerEnter={onSessionsHoverEnter}
       onPointerLeave={onSessionsHoverLeave}
     >
-      {errorMessage ? (
-        <div
-          className="border-b border-destructive/30 bg-destructive/10 py-1 text-center text-[9px] font-semibold uppercase tracking-wider text-destructive"
-          title={errorMessage}
-        >
-          !
-        </div>
-      ) : null}
-
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
         <ul className="flex flex-col items-center gap-1 px-2 py-2.5">
           {projects.map((project) => (
@@ -120,7 +102,7 @@ export function ProjectRail({
                 isActive={project.id === displayedActiveProjectId}
                 isRemovalPending={project.id === pendingProjectRemovalId}
                 isRemovalLocked={isRemovingProject}
-                onPreloadProject={handlePreloadProject}
+                onPreloadProject={onPreloadProject}
                 onPreviewProject={handlePreviewProject}
                 onRemoveProject={onRemoveProject}
                 onSelectProject={handleSelectProject}
@@ -183,7 +165,7 @@ interface ProjectRailItemProps {
   isRemovalPending: boolean
   isRemovalLocked: boolean
   onSelectProject: (projectId: string) => void
-  onPreloadProject: (projectId: string) => void
+  onPreloadProject?: (projectId: string) => void
   onPreviewProject: (projectId: string) => void
   onRemoveProject: (projectId: string) => void
 }
@@ -219,11 +201,11 @@ const ProjectRailItem = memo(function ProjectRailItem({
             event.preventDefault()
             if (!isRemovalLocked) setConfirmOpen(true)
           }}
+          onFocus={() => onPreloadProject?.(project.id)}
           onPointerDown={(event) => {
             if (event.button === 0) onPreviewProject(project.id)
           }}
-          onPointerEnter={() => onPreloadProject(project.id)}
-          onFocus={() => onPreloadProject(project.id)}
+          onPointerEnter={() => onPreloadProject?.(project.id)}
           title={project.name}
           type="button"
         >

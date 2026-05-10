@@ -1,4 +1,9 @@
-use std::path::Path;
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
+};
 
 use crate::{
     commands::CommandError,
@@ -9,7 +14,20 @@ use crate::{
 };
 use rusqlite::Connection;
 
-fn open_state_database(repo_root: &Path, database_path: &Path) -> Result<Connection, CommandError> {
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct VerifiedStateDatabaseKey {
+    path: PathBuf,
+}
+
+static VERIFIED_STATE_DATABASES: LazyLock<Mutex<HashSet<VerifiedStateDatabaseKey>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static MIGRATED_STATE_DATABASES: LazyLock<Mutex<HashSet<VerifiedStateDatabaseKey>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn open_state_database(
+    repo_root: &Path,
+    database_path: &Path,
+) -> Result<(Connection, VerifiedStateDatabaseKey), CommandError> {
     if !repo_root.is_dir() {
         return Err(CommandError::user_fixable(
             "project_root_unavailable",
@@ -52,9 +70,37 @@ fn open_state_database(repo_root: &Path, database_path: &Path) -> Result<Connect
             ),
         )
     })?;
-    verify_state_database_integrity(&connection, database_path)?;
-    verify_state_database_checkpoint(&connection, database_path)?;
-    Ok(connection)
+    let verified_key = verify_state_database_once(&connection, database_path)?;
+    Ok((connection, verified_key))
+}
+
+fn verify_state_database_once(
+    connection: &Connection,
+    database_path: &Path,
+) -> Result<VerifiedStateDatabaseKey, CommandError> {
+    let key = verified_state_database_key(database_path)?;
+    let mut verified_databases = VERIFIED_STATE_DATABASES.lock().map_err(|_| {
+        CommandError::system_fault(
+            "project_state_verification_cache_failed",
+            "Xero could not check the project-state verification cache.",
+        )
+    })?;
+    if verified_databases.contains(&key) {
+        return Ok(key);
+    }
+
+    verify_state_database_integrity(connection, database_path)?;
+    verify_state_database_checkpoint(connection, database_path)?;
+    verified_databases.insert(key.clone());
+    Ok(key)
+}
+
+fn verified_state_database_key(
+    database_path: &Path,
+) -> Result<VerifiedStateDatabaseKey, CommandError> {
+    let path = fs::canonicalize(database_path).unwrap_or_else(|_| database_path.to_path_buf());
+
+    Ok(VerifiedStateDatabaseKey { path })
 }
 
 fn verify_state_database_integrity(
@@ -117,31 +163,43 @@ pub(crate) fn open_project_database(
     repo_root: &Path,
     database_path: &Path,
 ) -> Result<Connection, CommandError> {
-    let mut connection = open_state_database(repo_root, database_path)?;
-    match migrations().to_latest(&mut connection) {
-        Ok(()) => {}
-        Err(error) if is_database_too_far_ahead(&error) => {
-            connection =
-                rebuild_incompatible_project_database(repo_root, database_path, connection)?;
-        }
-        Err(error) => {
-            return Err(CommandError::retryable(
-                "project_state_migration_failed",
-                format!(
-                    "Xero could not initialize selected-project state at {}. The local project state may need to be reset: {error}",
-                    database_path.display()
-                ),
-            ));
-        }
-    }
-    Ok(connection)
+    open_migrated_state_database(
+        repo_root,
+        database_path,
+        "project_state_migration_failed",
+        "Xero could not initialize selected-project state",
+    )
 }
 
 pub(crate) fn open_runtime_database(
     repo_root: &Path,
     database_path: &Path,
 ) -> Result<Connection, CommandError> {
-    let mut connection = open_state_database(repo_root, database_path)?;
+    open_migrated_state_database(
+        repo_root,
+        database_path,
+        "runtime_session_migration_failed",
+        "Xero could not initialize runtime-session tables",
+    )
+}
+
+fn open_migrated_state_database(
+    repo_root: &Path,
+    database_path: &Path,
+    migration_error_code: &'static str,
+    migration_error_message: &'static str,
+) -> Result<Connection, CommandError> {
+    let (mut connection, key) = open_state_database(repo_root, database_path)?;
+    let mut migrated_databases = MIGRATED_STATE_DATABASES.lock().map_err(|_| {
+        CommandError::system_fault(
+            "project_state_migration_cache_failed",
+            "Xero could not check the project-state migration cache.",
+        )
+    })?;
+    if migrated_databases.contains(&key) {
+        return Ok(connection);
+    }
+
     match migrations().to_latest(&mut connection) {
         Ok(()) => {}
         Err(error) if is_database_too_far_ahead(&error) => {
@@ -150,14 +208,15 @@ pub(crate) fn open_runtime_database(
         }
         Err(error) => {
             return Err(CommandError::retryable(
-                "runtime_session_migration_failed",
+                migration_error_code,
                 format!(
-                    "Xero could not initialize runtime-session tables at {}. The local project state may need to be reset: {error}",
+                    "{migration_error_message} at {}. The local project state may need to be reset: {error}",
                     database_path.display()
                 ),
             ));
         }
     }
+    migrated_databases.insert(key);
     Ok(connection)
 }
 

@@ -186,6 +186,28 @@ describe('AgentSessionsSidebar', () => {
     )
   })
 
+  it('uses project UI state for pinned sessions when app-data storage is available', async () => {
+    const onReadProjectUiState = vi.fn(async () => ['agent-session-main'])
+    const onWriteProjectUiState = vi.fn(async () => undefined)
+
+    renderSidebar({ onReadProjectUiState, onWriteProjectUiState })
+
+    await waitFor(() =>
+      expect(onReadProjectUiState).toHaveBeenCalledWith('agent-sessions.pinned.v1'),
+    )
+    expect(await screen.findByText('Pinned')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unpin Main session' }))
+
+    await waitFor(() =>
+      expect(onWriteProjectUiState).toHaveBeenCalledWith(
+        'agent-sessions.pinned.v1',
+        [],
+      ),
+    )
+    expect(window.localStorage.getItem('xero:pinned-sessions:project-1')).toBeNull()
+  })
+
   it('keeps the resize control hidden while collapsed', () => {
     const { container } = renderSidebar({ collapsed: true })
 

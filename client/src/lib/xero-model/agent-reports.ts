@@ -64,6 +64,8 @@ export const capabilityPermissionSubjectKindSchema = z.enum([
   'external_integration',
   'browser_control',
   'destructive_write',
+  'skill_runtime_tool',
+  'attached_skill_context',
 ])
 
 export const getCapabilityPermissionExplanationRequestSchema = z

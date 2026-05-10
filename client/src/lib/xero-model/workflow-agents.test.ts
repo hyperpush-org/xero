@@ -8,13 +8,17 @@ import {
   agentToolPolicyDetailsSchema,
   agentToolPackCatalogSchema,
   agentToolPackManifestSchema,
+  getAgentAuthoringCatalogRequestSchema,
   getAgentToolPackCatalogRequestSchema,
+  resolveAgentAuthoringSkillRequestSchema,
+  searchAgentAuthoringSkillsRequestSchema,
+  searchAgentAuthoringSkillsResponseSchema,
   workflowAgentDetailSchema,
 } from './workflow-agents'
 
 const templateDefinition = {
   schema: 'xero.agent_definition.v1',
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'engineering_patch_agent',
   displayName: 'Engineering Patch',
   shortLabel: 'Patch',
@@ -54,6 +58,7 @@ const templateDefinition = {
     'Escalate missing repository context.',
     'Refuse to expose secrets.',
   ],
+  attachedSkills: [],
   prompts: [
     {
       id: 'engineering_patch_prompt',
@@ -102,7 +107,105 @@ const templateDefinition = {
   handoffPolicy: { enabled: true, preserveDefinitionVersion: true },
 } as const
 
+const attachedRustSkill = {
+  id: 'rust-best-practices',
+  sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+  skillId: 'rust-best-practices',
+  name: 'Rust Best Practices',
+  description: 'Guide for writing idiomatic Rust.',
+  sourceKind: 'bundled',
+  scope: 'global',
+  versionHash: 'hash-rust',
+  includeSupportingAssets: false,
+  required: true,
+} as const
+
+const availableAttachedRustSkill = {
+  ...attachedRustSkill,
+  sourceState: 'enabled',
+  trustState: 'trusted',
+  availabilityStatus: 'available',
+  availabilityReason: 'Skill source is enabled, trusted, and pinned for attachment.',
+} as const
+
 describe('workflow agent model contracts', () => {
+  it('accepts a scoped authoring skill search query', () => {
+    expect(
+      getAgentAuthoringCatalogRequestSchema.parse({
+        projectId: 'project-1',
+        skillQuery: ' rust ',
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      skillQuery: 'rust',
+    })
+    expect(
+      getAgentAuthoringCatalogRequestSchema.parse({
+        projectId: 'project-1',
+        skillQuery: '*',
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      skillQuery: '*',
+    })
+  })
+
+  it('parses paginated online authoring skill search contracts', () => {
+    expect(
+      searchAgentAuthoringSkillsRequestSchema.parse({
+        projectId: 'project-1',
+        query: ' react ',
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      query: 'react',
+      offset: 0,
+      limit: 10,
+    })
+
+    expect(
+      searchAgentAuthoringSkillsResponseSchema.parse({
+        entries: [
+          {
+            source: 'vercel-labs/agent-skills',
+            skillId: 'vercel-react-best-practices',
+            name: 'vercel-react-best-practices',
+            description: '',
+            installs: 42,
+            isOfficial: false,
+          },
+        ],
+        offset: 10,
+        limit: 10,
+        nextOffset: 20,
+        hasMore: true,
+      }),
+    ).toMatchObject({
+      entries: [
+        {
+          source: 'vercel-labs/agent-skills',
+          skillId: 'vercel-react-best-practices',
+        },
+      ],
+      nextOffset: 20,
+      hasMore: true,
+    })
+  })
+
+  it('parses a single online authoring skill resolve request', () => {
+    expect(
+      resolveAgentAuthoringSkillRequestSchema.parse({
+        projectId: 'project-1',
+        source: ' vercel-labs/agent-skills ',
+        skillId: ' vercel-react-best-practices ',
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      source: 'vercel-labs/agent-skills',
+      skillId: 'vercel-react-best-practices',
+    })
+  })
+
   it('parses profile-aware authoring catalog availability metadata', () => {
     const catalog = agentAuthoringCatalogSchema.parse({
       contractVersion: 1,
@@ -153,6 +256,33 @@ describe('workflow agent model contracts', () => {
           label: 'Plan output',
           description: 'Accepted plan output.',
           sections: [],
+        },
+      ],
+      attachableSkills: [
+        {
+          attachmentId: 'rust-best-practices',
+          sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+          skillId: 'rust-best-practices',
+          name: 'Rust Best Practices',
+          description: 'Guide for writing idiomatic Rust.',
+          sourceKind: 'bundled',
+          scope: 'global',
+          versionHash: 'hash-rust',
+          sourceState: 'enabled',
+          trustState: 'trusted',
+          availabilityStatus: 'available',
+          attachment: {
+            id: 'rust-best-practices',
+            sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+            skillId: 'rust-best-practices',
+            name: 'Rust Best Practices',
+            description: 'Guide for writing idiomatic Rust.',
+            sourceKind: 'bundled',
+            scope: 'global',
+            versionHash: 'hash-rust',
+            includeSupportingAssets: false,
+            required: true,
+          },
         },
       ],
       policyControls: [
@@ -239,6 +369,9 @@ describe('workflow agent model contracts', () => {
     })
 
     expect(catalog.profileAvailability).toHaveLength(2)
+    expect(catalog.attachableSkills[0]?.attachment.sourceId).toBe(
+      'skill-source:v1:global:bundled:xero:rust-best-practices',
+    )
     expect(catalog.profileAvailability[0]?.requiredProfile).toBe('engineering')
     expect(catalog.policyControls.map((control) => control.id)).toContain(
       'memory.reviewRequired',
@@ -289,6 +422,20 @@ describe('workflow agent model contracts', () => {
         ],
       }),
     ).toThrow(/snapshot paths/)
+    expect(() =>
+      agentAuthoringCatalogSchema.parse({
+        ...catalog,
+        attachableSkills: [
+          {
+            ...catalog.attachableSkills[0]!,
+            attachment: {
+              ...catalog.attachableSkills[0]!.attachment,
+              sourceId: 'skill-source:v1:global:bundled:xero:other',
+            },
+          },
+        ],
+      }),
+    ).toThrow(/sourceId/)
     expect(catalog.templates[0]?.baseCapabilityProfile).toBe('engineering')
     expect(catalog.templates[0]?.definition.schema).toBe('xero.agent_definition.v1')
     expect(catalog.templates[0]?.definition.output.contract).toBe('engineering_summary')
@@ -381,7 +528,7 @@ describe('workflow agent model contracts', () => {
             ...catalog.templates[0],
             definition: {
               ...templateDefinition,
-              schemaVersion: 2,
+              schemaVersion: 3,
             },
           },
         ],
@@ -443,6 +590,7 @@ describe('workflow agent model contracts', () => {
         sections: [],
       },
       consumes: [],
+      attachedSkills: [availableAttachedRustSkill],
       authoringGraph: {
         schema: 'xero.agent_authoring_graph.v1',
         source: {
@@ -456,9 +604,10 @@ describe('workflow agent model contracts', () => {
           generatedBy: 'agent_builder',
           uiDeferred: true,
         },
-        editableFields: ['prompts', 'tools', 'toolPolicy'],
+        editableFields: ['prompts', 'attachedSkills', 'tools', 'toolPolicy'],
         canonicalGraph: {
           ...templateDefinition,
+          attachedSkills: [attachedRustSkill],
           version: 1,
         },
       },
@@ -468,6 +617,14 @@ describe('workflow agent model contracts', () => {
     expect(detail.authoringGraph?.canonicalGraph.output.contract).toBe(
       'engineering_summary',
     )
+    expect(detail.attachedSkills[0]).toMatchObject({
+      sourceId: attachedRustSkill.sourceId,
+      availabilityStatus: 'available',
+    })
+    expect(detail.authoringGraph?.canonicalGraph.attachedSkills[0]).toMatchObject({
+      sourceId: attachedRustSkill.sourceId,
+      required: true,
+    })
     expect(() =>
       workflowAgentDetailSchema.parse({
         ...detail,

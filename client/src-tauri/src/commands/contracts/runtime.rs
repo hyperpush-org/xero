@@ -900,6 +900,15 @@ pub struct ProviderModelCatalogDiagnosticDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderModelCatalogContractDiagnosticDto {
+    pub code: String,
+    pub message: String,
+    pub severity: String,
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelThinkingCapabilityDto {
     pub supported: bool,
     #[serde(default)]
@@ -930,6 +939,7 @@ pub struct ProviderModelDto {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderModelCatalogDto {
+    pub contract_version: u32,
     pub profile_id: String,
     pub provider_id: String,
     pub configured_model_id: String,
@@ -943,6 +953,7 @@ pub struct ProviderModelCatalogDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_refresh_error: Option<ProviderModelCatalogDiagnosticDto>,
     pub models: Vec<ProviderModelDto>,
+    pub contract_diagnostics: Vec<ProviderModelCatalogContractDiagnosticDto>,
 }
 
 pub type RuntimeAuthStatusDto = RuntimeSessionDto;
@@ -1526,6 +1537,8 @@ pub struct RuntimeStreamItemDto {
     pub kind: RuntimeStreamItemKind,
     pub run_id: String,
     pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_sequence: Option<u64>,
     pub session_id: Option<String>,
     pub flow_id: Option<String>,
     pub text: Option<String>,
@@ -1623,6 +1636,61 @@ impl RuntimeStreamItemDto {
     pub fn allowed_kind_names() -> &'static [&'static str] {
         &Self::ALLOWED_KIND_NAMES
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeStreamViewStatusDto {
+    Idle,
+    Subscribing,
+    Replaying,
+    Live,
+    Complete,
+    Stale,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeStreamIssueDto {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+    pub observed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeStreamViewSnapshotDto {
+    pub schema: String,
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub runtime_kind: String,
+    pub run_id: String,
+    pub session_id: String,
+    pub flow_id: Option<String>,
+    pub subscribed_item_kinds: Vec<RuntimeStreamItemKind>,
+    pub status: RuntimeStreamViewStatusDto,
+    pub items: Vec<RuntimeStreamItemDto>,
+    pub transcript_items: Vec<RuntimeStreamItemDto>,
+    pub tool_calls: Vec<RuntimeStreamItemDto>,
+    pub skill_items: Vec<RuntimeStreamItemDto>,
+    pub activity_items: Vec<RuntimeStreamItemDto>,
+    pub action_required: Vec<RuntimeStreamItemDto>,
+    pub plan: Option<RuntimeStreamItemDto>,
+    pub completion: Option<RuntimeStreamItemDto>,
+    pub failure: Option<RuntimeStreamItemDto>,
+    pub last_issue: Option<RuntimeStreamIssueDto>,
+    pub last_item_at: Option<String>,
+    pub last_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeStreamPatchDto {
+    pub schema: String,
+    pub item: RuntimeStreamItemDto,
+    pub snapshot: RuntimeStreamViewSnapshotDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

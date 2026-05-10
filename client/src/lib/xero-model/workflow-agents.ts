@@ -6,6 +6,7 @@ import {
   agentDefinitionScopeSchema,
   canonicalCustomAgentDefinitionBaseSchema,
   canonicalCustomAgentDefinitionSchema,
+  customAgentAttachedSkillSchema,
   customAgentHandoffPolicySchema,
   customAgentMemoryPolicySchema,
   customAgentProjectDataPolicySchema,
@@ -16,6 +17,7 @@ import {
 } from './agent-definition'
 import { isoTimestampSchema } from './shared'
 import { runtimeAgentIdSchema, runtimeRunApprovalModeSchema } from './runtime'
+import { skillSourceKindSchema, skillSourceScopeSchema, skillSourceStateSchema, skillTrustStateSchema } from './skills'
 
 const addDuplicateStringIssues = (
   ctx: z.RefinementCtx,
@@ -452,6 +454,54 @@ export const agentConsumedArtifactSchema = z
   })
 export type AgentConsumedArtifactDto = z.infer<typeof agentConsumedArtifactSchema>
 
+export const agentAttachedSkillAvailabilityStatusSchema = z.enum([
+  'available',
+  'unavailable',
+  'stale',
+  'blocked',
+  'missing',
+])
+export type AgentAttachedSkillAvailabilityStatusDto = z.infer<
+  typeof agentAttachedSkillAvailabilityStatusSchema
+>
+
+export const agentAttachedSkillSchema = customAgentAttachedSkillSchema
+  .extend({
+    sourceState: skillSourceStateSchema.nullable().optional(),
+    trustState: skillTrustStateSchema.nullable().optional(),
+    availabilityStatus: agentAttachedSkillAvailabilityStatusSchema,
+    availabilityReason: z.string().trim().min(1),
+    repairHint: z
+      .enum(['enable_source', 'approve_source', 'refresh_pin', 'remove_attachment'])
+      .nullable()
+      .optional(),
+  })
+  .strict()
+  .superRefine((skill, ctx) => {
+    if (skill.availabilityStatus === 'available' && skill.repairHint != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['repairHint'],
+        message: 'Available attached skills must not include a repair hint.',
+      })
+    }
+    if (skill.availabilityStatus !== 'missing' && skill.sourceState == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceState'],
+        message: 'Attached skill availability must include source state unless the source is missing.',
+      })
+    }
+    if (skill.availabilityStatus !== 'missing' && skill.trustState == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['trustState'],
+        message: 'Attached skill availability must include trust state unless the source is missing.',
+      })
+    }
+  })
+export type AgentAttachedSkillDto = z.infer<typeof agentAttachedSkillSchema>
+
 export const agentAuthoringGraphSourceSchema = z
   .object({
     kind: z.literal('agent_definition_version'),
@@ -477,11 +527,20 @@ export const agentAuthoringCanonicalGraphSchema = canonicalCustomAgentDefinition
     handoffPolicy: customAgentHandoffPolicySchema.nullable().optional(),
   })
   .strict()
-  .superRefine(validateCanonicalCustomAgentDefinition)
+  .superRefine((definition, ctx) => {
+    validateCanonicalCustomAgentDefinition(
+      {
+        ...definition,
+        version: definition.version ?? undefined,
+      } as z.infer<typeof canonicalCustomAgentDefinitionBaseSchema>,
+      ctx,
+    )
+  })
 export type AgentAuthoringCanonicalGraphDto = z.infer<typeof agentAuthoringCanonicalGraphSchema>
 
 export const agentAuthoringEditableFieldSchema = z.enum([
   'prompts',
+  'attachedSkills',
   'tools',
   'toolPolicy',
   'output',
@@ -553,6 +612,74 @@ export const agentAuthoringGraphSchema = z
   })
 export type AgentAuthoringGraphDto = z.infer<typeof agentAuthoringGraphSchema>
 
+export const workflowAgentGraphPositionSchema = z
+  .object({
+    x: z.number(),
+    y: z.number(),
+  })
+  .strict()
+export type WorkflowAgentGraphPositionDto = z.infer<typeof workflowAgentGraphPositionSchema>
+
+export const workflowAgentGraphMarkerSchema = z.enum(['arrow', 'arrow_closed'])
+export type WorkflowAgentGraphMarkerDto = z.infer<typeof workflowAgentGraphMarkerSchema>
+
+export const workflowAgentGraphNodeSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    type: z.string().trim().min(1),
+    position: workflowAgentGraphPositionSchema,
+    data: z.record(z.string(), z.unknown()),
+    parentId: z.string().trim().min(1).optional(),
+    extent: z.string().trim().min(1).optional(),
+    draggable: z.boolean().optional(),
+    selectable: z.boolean().optional(),
+    dragHandle: z.string().trim().min(1).optional(),
+    style: z.record(z.string(), z.unknown()).optional(),
+    width: z.number().positive().optional(),
+    height: z.number().positive().optional(),
+  })
+  .strict()
+export type WorkflowAgentGraphNodeDto = z.infer<typeof workflowAgentGraphNodeSchema>
+
+export const workflowAgentGraphEdgeSchema = z
+  .object({
+    id: z.string().trim().min(1),
+    source: z.string().trim().min(1),
+    target: z.string().trim().min(1),
+    type: z.string().trim().min(1),
+    sourceHandle: z.string().trim().min(1).optional(),
+    targetHandle: z.string().trim().min(1).optional(),
+    data: z.record(z.string(), z.unknown()),
+    className: z.string().trim().min(1),
+    marker: workflowAgentGraphMarkerSchema.optional(),
+  })
+  .strict()
+export type WorkflowAgentGraphEdgeDto = z.infer<typeof workflowAgentGraphEdgeSchema>
+
+export const workflowAgentGraphGroupSchema = z
+  .object({
+    key: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    kind: z.string().trim().min(1),
+    order: z.number().int(),
+    nodeIds: z.array(z.string().trim().min(1)),
+    sourceGroups: z.array(z.string().trim().min(1)).default([]),
+  })
+  .strict()
+export type WorkflowAgentGraphGroupDto = z.infer<typeof workflowAgentGraphGroupSchema>
+
+export const workflowAgentGraphProjectionSchema = z
+  .object({
+    schema: z.literal('xero.workflow_agent_graph_projection.v1'),
+    nodes: z.array(workflowAgentGraphNodeSchema),
+    edges: z.array(workflowAgentGraphEdgeSchema),
+    groups: z.array(workflowAgentGraphGroupSchema),
+  })
+  .strict()
+export type WorkflowAgentGraphProjectionDto = z.infer<
+  typeof workflowAgentGraphProjectionSchema
+>
+
 export const workflowAgentDetailSchema = z
   .object({
     ref: agentRefSchema,
@@ -565,10 +692,24 @@ export const workflowAgentDetailSchema = z
     dbTouchpoints: agentDbTouchpointsSchema,
     output: agentOutputContractSchema,
     consumes: z.array(agentConsumedArtifactSchema),
+    attachedSkills: z.array(agentAttachedSkillSchema),
     authoringGraph: agentAuthoringGraphSchema.nullable().optional(),
+    graphProjection: workflowAgentGraphProjectionSchema.nullable().optional(),
   })
   .strict()
   .superRefine((detail, ctx) => {
+    addDuplicateStringIssues(
+      ctx,
+      ['attachedSkills'],
+      detail.attachedSkills.map((skill) => skill.id),
+      'Workflow agent attached skill ids must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['attachedSkills'],
+      detail.attachedSkills.map((skill) => skill.sourceId),
+      'Workflow agent attached skill source ids must be unique.',
+    )
     const graph = detail.authoringGraph
     if (!graph) {
       return
@@ -642,6 +783,11 @@ export const getWorkflowAgentDetailRequestSchema = z
   .strict()
 export type GetWorkflowAgentDetailRequestDto = z.infer<typeof getWorkflowAgentDetailRequestSchema>
 
+export const getWorkflowAgentGraphProjectionRequestSchema = getWorkflowAgentDetailRequestSchema
+export type GetWorkflowAgentGraphProjectionRequestDto = z.infer<
+  typeof getWorkflowAgentGraphProjectionRequestSchema
+>
+
 export const agentAuthoringDbTableSchema = z
   .object({
     table: z.string().trim().min(1),
@@ -673,6 +819,84 @@ export const agentAuthoringToolCategorySchema = z
   })
   .strict()
 export type AgentAuthoringToolCategoryDto = z.infer<typeof agentAuthoringToolCategorySchema>
+
+export const agentAuthoringAttachableSkillSchema = z
+  .object({
+    attachmentId: z.string().trim().min(1),
+    sourceId: z.string().trim().min(1),
+    skillId: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    description: z.string(),
+    sourceKind: skillSourceKindSchema,
+    scope: skillSourceScopeSchema,
+    versionHash: z.string().trim().min(1),
+    sourceState: skillSourceStateSchema,
+    trustState: skillTrustStateSchema,
+    availabilityStatus: z.literal('available'),
+    attachment: customAgentAttachedSkillSchema,
+  })
+  .strict()
+  .superRefine((entry, ctx) => {
+    if (entry.attachment.id !== entry.attachmentId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachment', 'id'],
+        message: 'Attachable skill template id must match attachmentId.',
+      })
+    }
+    if (entry.attachment.sourceId !== entry.sourceId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachment', 'sourceId'],
+        message: 'Attachable skill template sourceId must match the catalog entry.',
+      })
+    }
+    if (entry.attachment.skillId !== entry.skillId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachment', 'skillId'],
+        message: 'Attachable skill template skillId must match the catalog entry.',
+      })
+    }
+    if (entry.attachment.sourceKind !== entry.sourceKind) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachment', 'sourceKind'],
+        message: 'Attachable skill template sourceKind must match the catalog entry.',
+      })
+    }
+    if (entry.attachment.scope !== entry.scope) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachment', 'scope'],
+        message: 'Attachable skill template scope must match the catalog entry.',
+      })
+    }
+    if (entry.attachment.versionHash !== entry.versionHash) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachment', 'versionHash'],
+        message: 'Attachable skill template versionHash must match the catalog entry.',
+      })
+    }
+  })
+export type AgentAuthoringAttachableSkillDto = z.infer<
+  typeof agentAuthoringAttachableSkillSchema
+>
+
+export const agentAuthoringSkillSearchResultSchema = z
+  .object({
+    source: z.string().trim().min(1),
+    skillId: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    description: z.string(),
+    installs: z.number().int().nonnegative().nullable().optional(),
+    isOfficial: z.boolean(),
+  })
+  .strict()
+export type AgentAuthoringSkillSearchResultDto = z.infer<
+  typeof agentAuthoringSkillSearchResultSchema
+>
 
 export const agentAuthoringPolicyControlKindSchema = z.enum([
   'context',
@@ -1248,6 +1472,7 @@ export const agentAuthoringCatalogSchema = z
     toolCategories: z.array(agentAuthoringToolCategorySchema),
     dbTables: z.array(agentAuthoringDbTableSchema),
     upstreamArtifacts: z.array(agentAuthoringUpstreamArtifactSchema),
+    attachableSkills: z.array(agentAuthoringAttachableSkillSchema),
     policyControls: z.array(agentAuthoringPolicyControlSchema).default([]),
     templates: z.array(agentAuthoringTemplateSchema).default([]),
     creationFlows: z.array(agentAuthoringCreationFlowSchema).default([]),
@@ -1308,6 +1533,19 @@ export const agentAuthoringCatalogSchema = z
         [artifact.sourceAgent, artifact.contract].join(':'),
       ),
       'Authoring catalog upstream artifacts must be unique per source and contract.',
+    )
+
+    addDuplicateStringIssues(
+      ctx,
+      ['attachableSkills'],
+      catalog.attachableSkills.map((skill) => skill.sourceId),
+      'Authoring catalog attachable skill source ids must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['attachableSkills'],
+      catalog.attachableSkills.map((skill) => skill.attachmentId),
+      'Authoring catalog attachable skill attachment ids must be unique.',
     )
 
     addDuplicateStringIssues(
@@ -1464,10 +1702,47 @@ export type AgentAuthoringCatalogDto = z.infer<typeof agentAuthoringCatalogSchem
 export const getAgentAuthoringCatalogRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
+    skillQuery: z.string().trim().min(1).optional(),
   })
   .strict()
 export type GetAgentAuthoringCatalogRequestDto = z.infer<
   typeof getAgentAuthoringCatalogRequestSchema
+>
+
+export const searchAgentAuthoringSkillsRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    query: z.string().trim().optional(),
+    offset: z.number().int().nonnegative().default(0),
+    limit: z.number().int().min(1).max(50).default(10),
+  })
+  .strict()
+export type SearchAgentAuthoringSkillsRequestDto = z.infer<
+  typeof searchAgentAuthoringSkillsRequestSchema
+>
+
+export const searchAgentAuthoringSkillsResponseSchema = z
+  .object({
+    entries: z.array(agentAuthoringSkillSearchResultSchema),
+    offset: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(50),
+    nextOffset: z.number().int().nonnegative().nullable(),
+    hasMore: z.boolean(),
+  })
+  .strict()
+export type SearchAgentAuthoringSkillsResponseDto = z.infer<
+  typeof searchAgentAuthoringSkillsResponseSchema
+>
+
+export const resolveAgentAuthoringSkillRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    source: z.string().trim().min(1),
+    skillId: z.string().trim().min(1),
+  })
+  .strict()
+export type ResolveAgentAuthoringSkillRequestDto = z.infer<
+  typeof resolveAgentAuthoringSkillRequestSchema
 >
 
 export function agentRefKey(ref: AgentRefDto): string {

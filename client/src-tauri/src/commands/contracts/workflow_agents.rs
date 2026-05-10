@@ -9,6 +9,9 @@ use super::runtime::{
     RuntimeAgentIdDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
     RuntimeAgentToolPolicyDto, RuntimeRunApprovalModeDto,
 };
+use super::skills::{
+    SkillSourceKindDto, SkillSourceScopeDto, SkillSourceStateDto, SkillTrustStateDto,
+};
 use xero_agent_core::{DomainToolPackHealthReport, DomainToolPackManifest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -266,6 +269,39 @@ pub struct AgentConsumedArtifactDto {
     pub required: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAttachedSkillAvailabilityStatusDto {
+    Available,
+    Unavailable,
+    Stale,
+    Blocked,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAttachedSkillDto {
+    pub id: String,
+    pub source_id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub source_kind: SkillSourceKindDto,
+    pub scope: SkillSourceScopeDto,
+    pub version_hash: String,
+    pub include_supporting_assets: bool,
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_state: Option<SkillSourceStateDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_state: Option<SkillTrustStateDto>,
+    pub availability_status: AgentAttachedSkillAvailabilityStatusDto,
+    pub availability_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_hint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowAgentDetailDto {
@@ -280,8 +316,11 @@ pub struct WorkflowAgentDetailDto {
     pub db_touchpoints: AgentDbTouchpointsDto,
     pub output: AgentOutputContractDto,
     pub consumes: Vec<AgentConsumedArtifactDto>,
+    pub attached_skills: Vec<AgentAttachedSkillDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authoring_graph: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_projection: Option<WorkflowAgentGraphProjectionDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -303,6 +342,92 @@ pub struct ListWorkflowAgentsResponseDto {
 pub struct GetWorkflowAgentDetailRequestDto {
     pub project_id: String,
     pub r#ref: AgentRefDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetWorkflowAgentGraphProjectionRequestDto {
+    pub project_id: String,
+    pub r#ref: AgentRefDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowAgentGraphPositionDto {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowAgentGraphMarkerDto {
+    Arrow,
+    ArrowClosed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowAgentGraphNodeDto {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub position: WorkflowAgentGraphPositionDto,
+    pub data: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draggable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selectable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drag_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowAgentGraphEdgeDto {
+    pub id: String,
+    pub source: String,
+    pub target: String,
+    #[serde(rename = "type")]
+    pub edge_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_handle: Option<String>,
+    pub data: JsonValue,
+    pub class_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<WorkflowAgentGraphMarkerDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowAgentGraphGroupDto {
+    pub key: String,
+    pub label: String,
+    pub kind: String,
+    pub order: i32,
+    pub node_ids: Vec<String>,
+    #[serde(default)]
+    pub source_groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowAgentGraphProjectionDto {
+    pub schema: String,
+    pub nodes: Vec<WorkflowAgentGraphNodeDto>,
+    pub edges: Vec<WorkflowAgentGraphEdgeDto>,
+    pub groups: Vec<WorkflowAgentGraphGroupDto>,
 }
 
 // Catalog entries the canvas authoring UI uses to populate pickers. The shapes
@@ -339,6 +464,35 @@ pub struct AgentAuthoringToolCategoryDto {
     pub description: String,
     // Tools in this category, in catalog order.
     pub tools: Vec<AgentToolSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringAttachableSkillDto {
+    pub attachment_id: String,
+    pub source_id: String,
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    pub source_kind: SkillSourceKindDto,
+    pub scope: SkillSourceScopeDto,
+    pub version_hash: String,
+    pub source_state: SkillSourceStateDto,
+    pub trust_state: SkillTrustStateDto,
+    pub availability_status: AgentAttachedSkillAvailabilityStatusDto,
+    pub attachment: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuthoringSkillSearchResultDto {
+    pub source: String,
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installs: Option<u64>,
+    pub is_official: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -439,6 +593,7 @@ pub struct AgentAuthoringCatalogDto {
     pub tool_categories: Vec<AgentAuthoringToolCategoryDto>,
     pub db_tables: Vec<AgentAuthoringDbTableDto>,
     pub upstream_artifacts: Vec<AgentAuthoringUpstreamArtifactDto>,
+    pub attachable_skills: Vec<AgentAuthoringAttachableSkillDto>,
     pub policy_controls: Vec<AgentAuthoringPolicyControlDto>,
     pub templates: Vec<AgentAuthoringTemplateDto>,
     pub creation_flows: Vec<AgentAuthoringCreationFlowDto>,
@@ -451,6 +606,37 @@ pub struct AgentAuthoringCatalogDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetAgentAuthoringCatalogRequestDto {
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchAgentAuthoringSkillsRequestDto {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchAgentAuthoringSkillsResponseDto {
+    pub entries: Vec<AgentAuthoringSkillSearchResultDto>,
+    pub offset: usize,
+    pub limit: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveAgentAuthoringSkillRequestDto {
+    pub project_id: String,
+    pub source: String,
+    pub skill_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

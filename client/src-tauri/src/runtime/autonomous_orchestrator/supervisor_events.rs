@@ -61,5 +61,5 @@ pub fn persist_supervisor_event(
         payload.run.last_checkpoint_at = Some(boundary_id.clone());
     }
 
-    persist_autonomous_run_scaffold(repo_root, payload).map(Some)
+    persist_autonomous_run_scaffold(repo_root, existing.as_ref(), payload).map(Some)
 }

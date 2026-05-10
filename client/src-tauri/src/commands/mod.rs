@@ -18,6 +18,7 @@ pub mod emulator;
 pub mod environment_discovery;
 pub mod environment_user_tools;
 pub mod get_autonomous_run;
+pub mod get_project_load_bundle;
 pub mod get_project_snapshot;
 pub mod get_project_usage_summary;
 pub mod get_repository_diff;
@@ -33,6 +34,7 @@ pub mod list_mcp_servers;
 pub mod list_notification_dispatches;
 pub mod list_notification_routes;
 pub mod list_projects;
+pub mod local_environment;
 pub mod logout_runtime_session;
 pub mod payload_budget;
 pub mod platform;
@@ -142,6 +144,7 @@ pub use environment_user_tools::{
     environment_remove_user_tool, environment_save_user_tool, environment_verify_user_tool,
 };
 pub use get_autonomous_run::get_autonomous_run;
+pub use get_project_load_bundle::get_project_load_bundle;
 pub use get_project_snapshot::get_project_snapshot;
 pub use get_repository_diff::get_repository_diff;
 pub use get_repository_status::get_repository_status;
@@ -158,6 +161,10 @@ pub use list_mcp_servers::{list_mcp_servers, refresh_mcp_server_statuses};
 pub use list_notification_dispatches::list_notification_dispatches;
 pub use list_notification_routes::list_notification_routes;
 pub use list_projects::list_projects;
+pub use local_environment::{
+    get_launch_mode, get_local_environment_config, regenerate_secret_key_base,
+    save_local_environment_config, LocalEnvironmentConfig, SaveLocalEnvironmentConfigRequest,
+};
 pub use logout_runtime_session::logout_runtime_session;
 pub use platform::desktop_platform;
 pub use project_assets::{revoke_project_asset_tokens, ProjectAssetState};
@@ -171,10 +178,13 @@ pub use project_records::{
     SupersedeProjectContextRecordRequestDto, SupersedeProjectContextRecordResponseDto,
 };
 pub use project_state::{
-    create_project_state_backup, repair_project_state, restore_project_state_backup,
-    CreateProjectStateBackupRequestDto, ProjectStateBackupResponseDto,
+    create_project_state_backup, read_app_ui_state, read_project_ui_state, repair_project_state,
+    restore_project_state_backup, write_app_ui_state, write_project_ui_state,
+    AppUiStateResponseDto, CreateProjectStateBackupRequestDto, ProjectStateBackupResponseDto,
     ProjectStateRepairDiagnosticDto, ProjectStateRepairResponseDto, ProjectStateRestoreResponseDto,
-    RepairProjectStateRequestDto, RestoreProjectStateBackupRequestDto,
+    ProjectUiStateResponseDto, ReadAppUiStateRequestDto, ReadProjectUiStateRequestDto,
+    RepairProjectStateRequestDto, RestoreProjectStateBackupRequestDto, WriteAppUiStateRequestDto,
+    WriteProjectUiStateRequestDto,
 };
 pub use provider_credentials::{
     delete_provider_credential, list_provider_credentials, upsert_provider_credential,
@@ -241,7 +251,8 @@ pub use upsert_notification_route::upsert_notification_route;
 pub use upsert_notification_route_credentials::upsert_notification_route_credentials;
 pub use workflow_agents::{
     get_agent_authoring_catalog, get_agent_tool_pack_catalog, get_workflow_agent_detail,
-    list_workflow_agents,
+    get_workflow_agent_graph_projection, list_workflow_agents, resolve_agent_authoring_skill,
+    search_agent_authoring_skills,
 };
 pub use workspace_index::{
     workspace_explain, workspace_index, workspace_query, workspace_reset, workspace_status,

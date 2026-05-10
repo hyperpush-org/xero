@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { createFrameCoalescer, isDocumentHidden, type FrameCoalescer } from "@/lib/frame-governance"
+import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 
 export type EmulatorPlatform = "ios" | "android"
 
@@ -170,10 +171,11 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
         setError(payload.message)
       }
     }).then((unsub) => {
+      const safeUnsub = createSafeTauriUnlisten(unsub)
       if (cancelled) {
-        unsub()
+        safeUnsub()
       } else {
-        unsubs.push(unsub)
+        unsubs.push(safeUnsub)
       }
     })
 
@@ -181,10 +183,11 @@ export function useEmulatorSession({ platform, active }: Options): UseEmulatorSe
       if (cancelled) return
       frameCoalescerRef.current?.schedule(event.payload)
     }).then((unsub) => {
+      const safeUnsub = createSafeTauriUnlisten(unsub)
       if (cancelled) {
-        unsub()
+        safeUnsub()
       } else {
-        unsubs.push(unsub)
+        unsubs.push(safeUnsub)
       }
     })
 

@@ -24,6 +24,7 @@ import { PhaseView } from '@/components/xero/phase-view'
 import { ProjectAddDialog } from '@/components/xero/project-add-dialog'
 import { ProjectRail } from '@/components/xero/project-rail'
 import { XeroShell, type PlatformVariant, type SurfacePreloadTarget } from '@/components/xero/shell'
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import type { StatusFooterProps } from '@/components/xero/status-footer'
 import type { SettingsSection } from '@/components/xero/settings-dialog'
 import type { VcsCommitMessageModel } from '@/components/xero/vcs-sidebar'
@@ -45,6 +46,9 @@ import {
 } from '@/src/lib/xero-model/agent-definition'
 import type {
   AgentAuthoringCatalogDto,
+  AgentAuthoringAttachableSkillDto,
+  AgentAuthoringSkillSearchResultDto,
+  SearchAgentAuthoringSkillsResponseDto,
   AgentRefDto,
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
@@ -66,6 +70,10 @@ import {
   type AgentPaneView,
   type RefreshSource,
 } from '@/src/features/xero/use-xero-desktop-state'
+import {
+  clearProjectSelectionPreview,
+  previewProjectSelection,
+} from '@/src/features/xero/project-selection-preview'
 import { useGitHubAuth } from '@/src/lib/github-auth'
 import { getCloudProviderDefaultProfileId } from '@/src/lib/xero-model/provider-presets'
 import { SHORTCUT_DEFINITIONS, type ShortcutId } from '@/src/features/shortcuts/shortcuts-definitions'
@@ -524,6 +532,23 @@ interface LazyActivityPaneProps {
   prewarm?: boolean
 }
 
+function useFrozenSurfaceChildren(
+  children: ReactNode,
+  options: { active: boolean; prewarm?: boolean },
+): ReactNode {
+  const { active, prewarm = false } = options
+  const previousActiveRef = useRef(active)
+  const renderedChildrenRef = useRef(children)
+  const activeChanged = previousActiveRef.current !== active
+
+  if (active || prewarm || activeChanged) {
+    renderedChildrenRef.current = children
+  }
+  previousActiveRef.current = active
+
+  return renderedChildrenRef.current
+}
+
 function LazyActivityPane({
   active,
   children,
@@ -532,6 +557,10 @@ function LazyActivityPane({
   prewarm = false,
 }: LazyActivityPaneProps) {
   const shouldMount = useActivatedSurface(active, prewarm)
+  const renderedChildren = useFrozenSurfaceChildren(children, {
+    active,
+    prewarm,
+  })
 
   if (!shouldMount) {
     return null
@@ -543,7 +572,7 @@ function LazyActivityPane({
       className={className}
       inert={!active ? true : undefined}
     >
-      {children}
+      {renderedChildren}
     </div>
   )
 
@@ -561,6 +590,10 @@ function LazyMountedPane({
   prewarm = false,
 }: Omit<LazyActivityPaneProps, 'name'>) {
   const shouldMount = useActivatedSurface(active, prewarm)
+  const renderedChildren = useFrozenSurfaceChildren(children, {
+    active,
+    prewarm,
+  })
 
   if (!shouldMount) {
     return null
@@ -572,7 +605,7 @@ function LazyMountedPane({
       className={className}
       inert={!active ? true : undefined}
     >
-      {children}
+      {renderedChildren}
     </div>
   )
 }
@@ -589,12 +622,16 @@ function LazyPrerenderedSurface({
   prewarm = false,
 }: LazyPrerenderedSurfaceProps) {
   const shouldMount = useActivatedSurface(open, prewarm)
+  const renderedChildren = useFrozenSurfaceChildren(children, {
+    active: open,
+    prewarm,
+  })
 
   if (!shouldMount) {
     return null
   }
 
-  return <>{children}</>
+  return <>{renderedChildren}</>
 }
 
 function SolanaWorkbenchOpeningShell({ open }: { open: boolean }) {
@@ -1372,6 +1409,23 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [platformOverride, setPlatformOverride] = useState<PlatformVariant | null>(null)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
+  const [launchMode, setLaunchMode] = useState<string | null>(null)
+  useEffect(() => {
+    if (!isTauri()) return
+    let cancelled = false
+    void invoke<string>('get_launch_mode')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string' && value.length > 0) {
+          setLaunchMode(value)
+        }
+      })
+      .catch(() => {
+        // Command unavailable in older builds — leave launchMode null.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
   useEffect(() => {
     const wasBrowserOpen = previousBrowserOpenRef.current
 
@@ -1778,10 +1832,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [],
   )
 
-  // Lazy-load the authoring catalog once a session opens. The catalog is
-  // project-rooted but its content is static (built-in tools / tables /
-  // upstream agents), so we cache after first fetch and reuse it for the rest
-  // of the project session.
+  // Lazy-load the baseline authoring catalog once a session opens. Skills can
+  // be expanded later by query-scoped online search from the picker.
   useEffect(() => {
     if (!agentAuthoringSession) return
     if (!activeProjectId) return
@@ -1801,6 +1853,57 @@ export function XeroApp({ adapter }: XeroAppProps) {
       cancelled = true
     }
   }, [agentAuthoringSession, activeProjectId, agentAuthoringCatalog, resolvedAdapter])
+
+  const handleSearchAttachableSkills = useCallback(
+    async (params: {
+      query: string
+      offset: number
+      limit: number
+    }): Promise<SearchAgentAuthoringSkillsResponseDto> => {
+      const emptyResponse: SearchAgentAuthoringSkillsResponseDto = {
+        entries: [],
+        offset: params.offset,
+        limit: params.limit,
+        nextOffset: null,
+        hasMore: false,
+      }
+      if (!activeProjectId || !resolvedAdapter.searchAgentAuthoringSkills) return emptyResponse
+      return resolvedAdapter.searchAgentAuthoringSkills({
+        projectId: activeProjectId,
+        query: params.query,
+        offset: params.offset,
+        limit: params.limit,
+      })
+    },
+    [activeProjectId, resolvedAdapter],
+  )
+
+  const handleResolveAttachableSkill = useCallback(
+    async (result: AgentAuthoringSkillSearchResultDto): Promise<AgentAuthoringAttachableSkillDto> => {
+      if (!activeProjectId || !resolvedAdapter.resolveAgentAuthoringSkill) {
+        throw new Error('Online skill resolution is unavailable.')
+      }
+      const skill = await resolvedAdapter.resolveAgentAuthoringSkill({
+        projectId: activeProjectId,
+        source: result.source,
+        skillId: result.skillId,
+      })
+      setAgentAuthoringCatalog((current) => {
+        if (!current) return current
+        const bySourceId = new Map<string, AgentAuthoringAttachableSkillDto>()
+        for (const skill of current.attachableSkills) {
+          bySourceId.set(skill.sourceId, skill)
+        }
+        bySourceId.set(skill.sourceId, skill)
+        return {
+          ...current,
+          attachableSkills: [...bySourceId.values()],
+        }
+      })
+      return skill
+    },
+    [activeProjectId, resolvedAdapter],
+  )
 
   const handleStartAgentAuthoringCreate = useCallback(() => {
     setWorkflowsOpen(false)
@@ -1887,6 +1990,23 @@ export function XeroApp({ adapter }: XeroAppProps) {
     refreshCustomAgentDefinitions()
     void workflowAgentInspector.refreshAgents()
   }, [refreshCustomAgentDefinitions, workflowAgentInspector])
+
+  const handleReadProjectUiState = useCallback(
+    async (key: string): Promise<unknown | null> => {
+      if (!activeProjectId || !resolvedAdapter.readProjectUiState) return null
+      const response = await resolvedAdapter.readProjectUiState({ projectId: activeProjectId, key })
+      return response.value ?? null
+    },
+    [activeProjectId, resolvedAdapter],
+  )
+
+  const handleWriteProjectUiState = useCallback(
+    async (key: string, value: unknown | null): Promise<void> => {
+      if (!activeProjectId || !resolvedAdapter.writeProjectUiState) return
+      await resolvedAdapter.writeProjectUiState({ projectId: activeProjectId, key, value })
+    },
+    [activeProjectId, resolvedAdapter],
+  )
 
   const handleArchiveAgentDefinition = useCallback(
     async (ref: AgentRefDto) => {
@@ -2085,6 +2205,22 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [selectProject],
   )
 
+  const handlePreviewProject = useCallback(
+    (projectId: string) => {
+      const project = projects.find((candidate) => candidate.id === projectId)
+      if (!project) {
+        return
+      }
+
+      previewProjectSelection(project.id, project.name)
+    },
+    [projects],
+  )
+
+  useEffect(() => {
+    clearProjectSelectionPreview(activeProjectId)
+  }, [activeProjectId])
+
   const handleRemoveProject = useCallback(
     (projectId: string) => {
       void removeProject(projectId)
@@ -2221,6 +2357,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
               : undefined
           }
           onOpenSearchResult={handleOpenSearchResult}
+          onReadProjectUiState={
+            resolvedAdapter.readProjectUiState ? handleReadProjectUiState : undefined
+          }
+          onWriteProjectUiState={
+            resolvedAdapter.writeProjectUiState ? handleWriteProjectUiState : undefined
+          }
           pendingSessionId={pendingAgentSessionId}
           isCreating={isCreatingAgentSession}
           collapsed={activeView !== 'agent' || explorerCollapsed}
@@ -2279,6 +2421,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             >
               <PhaseView
                 active={activeView === 'phases'}
+                projectId={activeProjectId}
                 workflow={workflowView}
                 canStartRun={Boolean(
                   agentView?.runtimeRunActionStatus !== undefined &&
@@ -2298,12 +2441,20 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onReloadAgentDetail={workflowAgentInspector.reloadDetail}
                 authoringSession={agentAuthoringSession}
                 authoringCatalog={agentAuthoringCatalog}
+                onSearchAttachableSkills={handleSearchAttachableSkills}
+                onResolveAttachableSkill={handleResolveAttachableSkill}
                 onAuthoringSubmit={handleAgentAuthoringSubmit}
                 onAuthoringSaved={(response) => {
                   handleAgentAuthoringSaved()
                   if (response.applied) handleCloseAgentAuthoring()
                 }}
                 onAuthoringCancel={handleCloseAgentAuthoring}
+                onReadProjectUiState={
+                  resolvedAdapter.readProjectUiState ? handleReadProjectUiState : undefined
+                }
+                onWriteProjectUiState={
+                  resolvedAdapter.writeProjectUiState ? handleWriteProjectUiState : undefined
+                }
                 onSelectedNodeChange={handlePhaseSelectedNodeChange}
               />
             </LazyActivityPane>
@@ -2401,12 +2552,18 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const shouldAutoOpenOnboarding = !onboardingDismissed && !isLoading && projects.length === 0
   const showOnboarding = (onboardingOpen || shouldAutoOpenOnboarding) && !onboardingDismissed && !isLoading
   const isForegroundProjectSelection = pendingProjectSelectionId !== null
+  const pendingProjectSelectionName = pendingProjectSelectionId
+    ? projects.find((project) => project.id === pendingProjectSelectionId)?.name ?? null
+    : null
+  const shellProjectName = pendingProjectSelectionName ?? activeProject?.name
   const foregroundProjectLoad = isForegroundProjectLoad(refreshSource)
   const isBlockingProjectLoading =
     isProjectLoading &&
     foregroundProjectLoad &&
     !isForegroundProjectSelection &&
     !activeProject
+  const isProjectSelectionShellPending =
+    pendingProjectSelectionId !== null && activeProjectId !== pendingProjectSelectionId
   const startupSurfacePrewarm = useStartupSurfacePrewarm(
     !showOnboarding && !isLoading && !isBlockingProjectLoading,
   )
@@ -2458,7 +2615,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
         onViewChange={setActiveView}
         onViewPreload={preloadViewChunk}
         onSurfacePreload={preloadSurfaceChunk}
-        projectName={activeProject?.name}
+        projectId={activeProjectId}
+        projectName={shellProjectName}
         onToggleBrowser={toggleBrowser}
         browserOpen={browserOpen}
         onToggleIos={toggleIos}
@@ -2497,6 +2655,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           notificationRouteMutationError={agentView?.notificationRouteMutationError ?? null}
           environmentPermissionRequests={environmentDiscoveryStatus?.permissionRequests ?? []}
           onResolveEnvironmentPermissions={resolveEnvironmentPermissions}
+          launchMode={launchMode}
           onImportProject={async () => {
             await importProject()
           }}
@@ -2530,7 +2689,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onViewChange={setActiveView}
           onViewPreload={preloadViewChunk}
           onSurfacePreload={preloadSurfaceChunk}
-          projectName={activeProject?.name}
+          projectId={activeProjectId}
+          projectName={shellProjectName}
           onToggleBrowser={toggleBrowser}
           browserOpen={browserOpen}
           onToggleIos={toggleIos}
@@ -2558,6 +2718,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
             onImportProject={() => setProjectAddOpen(true)}
             onOpenSettings={() => openSettings('providers')}
             onPreloadProject={prefetchProject}
+            onPreviewProject={handlePreviewProject}
             onRemoveProject={handleRemoveProject}
             onSelectProject={handleSelectProject}
             pendingProjectSelectionId={pendingProjectSelectionId}
@@ -2575,7 +2736,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 : undefined
             }
           />
-          {renderBody()}
+          {isProjectSelectionShellPending ? <LoadingScreen /> : renderBody()}
           <LazyPrerenderedSurface
             open={browserOpen}
             prewarm={startupSurfacePrewarm.shouldMount}

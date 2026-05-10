@@ -781,18 +781,10 @@ impl AutonomousSkillRuntime {
             )
         })?;
         let frontmatter = parse_skill_frontmatter(&skill_markdown)?;
-        if frontmatter.name != inspected.skill_id {
-            return Err(CommandError::user_fixable(
-                "autonomous_skill_document_invalid",
-                format!(
-                    "Xero rejected `{}` because SKILL.md frontmatter name `{}` did not match the resolved skill id.",
-                    inspected.skill_id, frontmatter.name
-                ),
-            ));
-        }
+        let skill_id = normalize_skill_id(&frontmatter.name)?;
 
         Ok(InspectedSkill {
-            skill_id: inspected.skill_id,
+            skill_id,
             name: frontmatter.name,
             description: frontmatter.description,
             user_invocable: frontmatter.user_invocable,

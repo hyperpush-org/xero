@@ -8,6 +8,7 @@ import {
   GitMerge,
   Layers,
   Lock,
+  RefreshCcw,
   Sparkles,
   Target,
   Trash2,
@@ -47,6 +48,8 @@ import {
   type RuntimeRunApprovalModeDto,
 } from '@/src/lib/xero-model/runtime'
 import type {
+  AgentAttachedSkillDto,
+  AgentAuthoringAttachableSkillDto,
   AgentDbTouchpointKindDto,
   AgentOutputSectionEmphasisDto,
   AgentPromptRoleDto,
@@ -63,6 +66,7 @@ import type {
   OutputNodeData,
   OutputSectionNodeData,
   PromptNodeData,
+  SkillNodeData,
   ToolNodeData,
 } from './build-agent-graph'
 import { humanizeIdentifier, humanizeToolGroupKey } from './build-agent-graph'
@@ -171,6 +175,8 @@ function renderEditor(node: AgentGraphNode): React.ReactNode {
       return <AgentHeaderEditor nodeId={node.id} data={node.data as AgentHeaderNodeData} />
     case 'prompt':
       return <PromptEditor nodeId={node.id} data={node.data as PromptNodeData} />
+    case 'skills':
+      return <SkillEditor nodeId={node.id} data={node.data as SkillNodeData} />
     case 'tool':
       return <ToolEditor nodeId={node.id} data={node.data as ToolNodeData} />
     case 'db-table':
@@ -213,6 +219,15 @@ export function panelMetaForNode(node: AgentGraphNode): PanelMeta {
         subtitle: 'Prompt',
         Icon: FileText,
         iconWrap: 'bg-amber-500/15 text-amber-500 ring-1 ring-amber-500/30',
+      }
+    }
+    case 'skills': {
+      const data = node.data as SkillNodeData
+      return {
+        title: data.skill.name || 'Skill',
+        subtitle: 'Attached skill',
+        Icon: Sparkles,
+        iconWrap: 'bg-violet-500/15 text-violet-500 ring-1 ring-violet-500/30',
       }
     }
     case 'tool': {
@@ -824,6 +839,174 @@ function PromptEditor({ nodeId, data }: { nodeId: string; data: PromptNodeData }
         />
       </FieldGroup>
       <RemoveRow onRemove={() => removeNode(nodeId)} label="Remove prompt" />
+    </div>
+  )
+}
+
+function skillFromCatalogEntry(
+  entry: AgentAuthoringAttachableSkillDto,
+  options: { id?: string; includeSupportingAssets?: boolean } = {},
+): AgentAttachedSkillDto {
+  return {
+    ...entry.attachment,
+    id: options.id ?? entry.attachment.id,
+    includeSupportingAssets:
+      options.includeSupportingAssets ?? entry.attachment.includeSupportingAssets,
+    sourceState: entry.sourceState,
+    trustState: entry.trustState,
+    availabilityStatus: entry.availabilityStatus,
+    availabilityReason: 'Skill source is available in the authoring catalog.',
+    repairHint: null,
+  }
+}
+
+function SkillEditor({ nodeId, data }: { nodeId: string; data: SkillNodeData }) {
+  const { updateNodeData, removeNode, authoringCatalog } = useCanvasMode()
+  const { skill } = data
+  const catalogEntry = authoringCatalog?.attachableSkills.find(
+    (entry) => entry.sourceId === skill.sourceId,
+  )
+
+  const skillOptions = useMemo<CatalogPickerOption<string>[]>(() => {
+    const entries = authoringCatalog?.attachableSkills ?? []
+    const options = entries.map((entry) => ({
+      value: entry.sourceId,
+      label: entry.name,
+      description: entry.description,
+      meta: humanizeIdentifier(entry.sourceKind),
+      group: humanizeIdentifier(entry.scope),
+      keywords: [entry.skillId, entry.sourceId, entry.sourceKind, entry.scope],
+    }))
+    if (skill.sourceId && !options.some((option) => option.value === skill.sourceId)) {
+      options.push({
+        value: skill.sourceId,
+        label: skill.name,
+        description: skill.description,
+        meta: humanizeIdentifier(skill.availabilityStatus),
+        group: humanizeIdentifier(skill.scope),
+        keywords: [skill.skillId, skill.sourceId, skill.sourceKind, skill.scope],
+      })
+    }
+    return options
+  }, [authoringCatalog, skill])
+
+  const updateSkill = (next: Partial<AgentAttachedSkillDto>) =>
+    updateNodeData(nodeId, (current) => {
+      const cur = current as SkillNodeData
+      return { ...cur, skill: { ...cur.skill, ...next } }
+    })
+
+  const handlePickSkill = (sourceId: string) => {
+    const entry = authoringCatalog?.attachableSkills.find(
+      (candidate) => candidate.sourceId === sourceId,
+    )
+    if (!entry) return
+    updateNodeData(nodeId, (current) => {
+      const cur = current as SkillNodeData
+      return {
+        ...cur,
+        skill: skillFromCatalogEntry(entry, {
+          includeSupportingAssets: cur.skill.includeSupportingAssets,
+        }),
+      }
+    })
+  }
+
+  const handleRefreshPin = () => {
+    if (!catalogEntry) return
+    updateNodeData(nodeId, (current) => {
+      const cur = current as SkillNodeData
+      return {
+        ...cur,
+        skill: skillFromCatalogEntry(catalogEntry, {
+          id: cur.skill.id,
+          includeSupportingAssets: cur.skill.includeSupportingAssets,
+        }),
+      }
+    })
+  }
+
+  return (
+    <div className="space-y-3">
+      <FieldGroup label="Skill">
+        <CatalogPicker
+          options={skillOptions}
+          value={skill.sourceId || null}
+          onChange={handlePickSkill}
+          placeholder="Pick an attachable skill"
+          searchPlaceholder="Search skills, sources…"
+          emptyMessage="No attachable skills available."
+          loading={!authoringCatalog}
+          loadingMessage="Loading skill catalog…"
+        />
+      </FieldGroup>
+
+      <div className="grid grid-cols-2 gap-2">
+        <FieldGroup label="Source">
+          <Badge
+            variant="outline"
+            className="w-fit max-w-full font-mono text-[9.5px] font-normal"
+          >
+            {skill.sourceKind}
+          </Badge>
+        </FieldGroup>
+        <FieldGroup label="State">
+          <Badge
+            variant={skill.availabilityStatus === 'available' ? 'secondary' : 'outline'}
+            className="w-fit max-w-full font-mono text-[9.5px] font-normal"
+          >
+            {skill.availabilityStatus}
+          </Badge>
+        </FieldGroup>
+      </div>
+
+      {skill.description ? (
+        <FieldGroup label="Description">
+          <p className="text-[10.5px] leading-relaxed text-muted-foreground">
+            {skill.description}
+          </p>
+        </FieldGroup>
+      ) : null}
+
+      <FieldGroup label="Pin">
+        <div className="space-y-1.5 rounded-md border border-border/50 bg-background/40 p-2">
+          <p className="break-all font-mono text-[9.5px] leading-snug text-foreground/80">
+            {skill.versionHash}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleRefreshPin}
+            disabled={!catalogEntry}
+            className="h-7 w-full justify-start gap-1.5 px-2 text-[10px]"
+            aria-label="Refresh skill pin"
+          >
+            <RefreshCcw className="h-3 w-3" />
+            Refresh pin
+          </Button>
+        </div>
+      </FieldGroup>
+
+      <FieldGroup label="Supporting assets">
+        <CheckboxToggle
+          checked={skill.includeSupportingAssets}
+          onChange={(next) => updateSkill({ includeSupportingAssets: next })}
+          label="Include supporting assets"
+        />
+      </FieldGroup>
+
+      <FieldGroup label="Required">
+        <CheckboxToggle
+          checked={skill.required}
+          onChange={() => undefined}
+          label="Required every run"
+          locked
+          reasonTooltip="Required attachments block the run when unavailable."
+        />
+      </FieldGroup>
+
+      <RemoveRow onRemove={() => removeNode(nodeId)} label="Remove skill" />
     </div>
   )
 }

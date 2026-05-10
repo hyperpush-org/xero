@@ -9,15 +9,20 @@ use tauri::Manager;
 use tempfile::TempDir;
 use xero_desktop_lib::{
     commands::{
-        get_workflow_agent_detail, list_workflow_agents, AgentDbTouchpointKindDto,
-        AgentDefinitionScopeDto, AgentOutputSectionEmphasisDto, AgentRefDto,
-        AgentToolEffectClassDto, AgentTriggerRefDto, GetWorkflowAgentDetailRequestDto,
+        get_agent_authoring_catalog, get_workflow_agent_detail, list_workflow_agents,
+        AgentDbTouchpointKindDto, AgentDefinitionScopeDto, AgentOutputSectionEmphasisDto,
+        AgentRefDto, AgentToolEffectClassDto, AgentTriggerRefDto,
+        GetAgentAuthoringCatalogRequestDto, GetWorkflowAgentDetailRequestDto,
         ListWorkflowAgentsRequestDto, RuntimeAgentIdDto, RuntimeAgentOutputContractDto,
     },
     configure_builder_with_state,
     db::{self, project_store},
     git::repository::CanonicalRepository,
     registry::{self, RegistryProjectRecord},
+    runtime::{
+        XeroSkillSourceLocator, XeroSkillSourceRecord, XeroSkillSourceScope, XeroSkillSourceState,
+        XeroSkillTrustState,
+    },
     state::DesktopState,
 };
 
@@ -131,7 +136,7 @@ fn seed_custom_definition(repo_root: &Path) -> String {
             base_capability_profile: "engineering".into(),
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "id": definition_id,
                 "version": 1,
                 "displayName": "Security Reviewer",
@@ -164,6 +169,17 @@ fn seed_custom_definition(repo_root: &Path) -> String {
                 ],
                 "workflowContract": "Read diff, map to threats, propose mitigations.",
                 "finalResponseContract": "Return a numbered list of mitigations.",
+                "examplePrompts": [
+                    "Review this diff for security risks.",
+                    "Map the recent changes to the threat model.",
+                    "Summarize mitigations for this patch."
+                ],
+                "refusalEscalationCases": [
+                    "Refuse to expose secrets.",
+                    "Escalate missing threat-model context.",
+                    "Refuse to bypass approval policy."
+                ],
+                "attachedSkills": [],
                 "output": {
                     "contract": "engineering_summary",
                     "label": "Mitigations",
@@ -211,6 +227,49 @@ fn seed_custom_definition(repo_root: &Path) -> String {
     )
     .expect("insert custom definition");
     definition_id
+}
+
+fn seed_installed_skill(repo_root: &Path, source_state: XeroSkillSourceState) -> String {
+    seed_installed_skill_with_id(repo_root, "rust-best-practices", "1.0.0", source_state)
+}
+
+fn seed_installed_skill_with_id(
+    repo_root: &Path,
+    skill_id: &str,
+    version: &str,
+    source_state: XeroSkillSourceState,
+) -> String {
+    let source = XeroSkillSourceRecord::new(
+        XeroSkillSourceScope::global(),
+        XeroSkillSourceLocator::Bundled {
+            bundle_id: "xero".into(),
+            skill_id: skill_id.into(),
+            version: version.into(),
+        },
+        source_state,
+        XeroSkillTrustState::Trusted,
+    )
+    .expect("skill source");
+    let source_id = source.source_id.clone();
+    project_store::upsert_installed_skill(
+        repo_root,
+        project_store::InstalledSkillRecord {
+            source,
+            skill_id: skill_id.into(),
+            name: format!("{skill_id} skill"),
+            description: format!("Guide for {skill_id}."),
+            user_invocable: Some(true),
+            cache_key: None,
+            local_location: Some(format!("/tmp/xero-{skill_id}")),
+            version_hash: Some(format!("version-hash-{skill_id}")),
+            installed_at: "2026-05-07T10:00:00Z".into(),
+            updated_at: "2026-05-07T10:00:00Z".into(),
+            last_used_at: None,
+            last_diagnostic: None,
+        },
+    )
+    .expect("install skill");
+    source_id
 }
 
 #[test]
@@ -293,6 +352,53 @@ fn list_workflow_agents_includes_custom_definition() {
 }
 
 #[test]
+fn get_agent_authoring_catalog_includes_attachable_enabled_trusted_skills() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let source_id = seed_installed_skill(&repo_root, XeroSkillSourceState::Enabled);
+    let unavailable_source_id = seed_installed_skill_with_id(
+        &repo_root,
+        "stale-rust",
+        "1.0.0",
+        XeroSkillSourceState::Stale,
+    );
+
+    let catalog = get_agent_authoring_catalog(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetAgentAuthoringCatalogRequestDto {
+            project_id,
+            skill_query: None,
+        },
+    )
+    .expect("authoring catalog");
+
+    let entry = catalog
+        .attachable_skills
+        .iter()
+        .find(|entry| entry.source_id == source_id)
+        .expect("attachable skill entry");
+    assert_eq!(entry.skill_id, "rust-best-practices");
+    assert_eq!(entry.version_hash, "version-hash-rust-best-practices");
+    assert_eq!(
+        entry.availability_status,
+        xero_desktop_lib::commands::AgentAttachedSkillAvailabilityStatusDto::Available
+    );
+    assert_eq!(entry.attachment["sourceId"], json!(source_id));
+    assert!(catalog
+        .attachable_skills
+        .iter()
+        .all(|entry| entry.source_id != unavailable_source_id));
+    assert!(catalog.diagnostics.iter().any(|diagnostic| diagnostic.code
+        == "authoring_catalog_attachable_skill_source_stale"
+        && diagnostic
+            .path
+            .iter()
+            .any(|segment| segment == &unavailable_source_id)));
+}
+
+#[test]
 fn get_workflow_agent_detail_for_engineer_returns_prompts_tools_and_tables() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
@@ -312,6 +418,7 @@ fn get_workflow_agent_detail_for_engineer_returns_prompts_tools_and_tables() {
     .expect("engineer detail");
 
     assert_eq!(detail.header.display_name, "Engineer");
+    assert!(detail.attached_skills.is_empty());
     assert!(
         !detail.prompts.is_empty(),
         "engineer should expose system prompt"
@@ -429,6 +536,7 @@ fn get_workflow_agent_detail_for_custom_definition_pulls_prompt_fragments() {
         .writes
         .iter()
         .any(|entry| entry.table == "code_history_operations"));
+    assert!(detail.attached_skills.is_empty());
 }
 
 #[test]

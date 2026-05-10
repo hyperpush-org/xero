@@ -43,6 +43,7 @@ function makeCatalog(
   models: { modelId: string; displayName: string; thinking?: boolean }[],
 ): ProviderModelCatalogDto {
   return {
+    contractVersion: 1,
     profileId: `${providerId}-default`,
     providerId,
     configuredModelId: models[0]?.modelId ?? '',
@@ -59,6 +60,7 @@ function makeCatalog(
         defaultEffort: m.thinking ? 'medium' : null,
       },
     })),
+    contractDiagnostics: [],
   }
 }
 

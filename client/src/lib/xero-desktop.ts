@@ -7,6 +7,7 @@ import {
   createBackendRequestCoordinator,
 } from '@/src/lib/backend-request-coordinator'
 import { recordIpcPayloadSample } from '@/src/lib/ipc-payload-budget'
+import { createSafeTauriUnlisten } from '@/src/lib/tauri-events'
 import {
   autonomousRunStateSchema,
   cancelAutonomousRunRequestSchema,
@@ -41,15 +42,27 @@ import {
   agentAuthoringCatalogSchema,
   getAgentAuthoringCatalogRequestSchema,
   getWorkflowAgentDetailRequestSchema,
+  getWorkflowAgentGraphProjectionRequestSchema,
   listWorkflowAgentsRequestSchema,
   listWorkflowAgentsResponseSchema,
+  resolveAgentAuthoringSkillRequestSchema,
+  searchAgentAuthoringSkillsRequestSchema,
+  searchAgentAuthoringSkillsResponseSchema,
+  agentAuthoringAttachableSkillSchema,
+  workflowAgentGraphProjectionSchema,
   workflowAgentDetailSchema,
+  type AgentAuthoringAttachableSkillDto,
   type AgentAuthoringCatalogDto,
   type GetAgentAuthoringCatalogRequestDto,
   type GetWorkflowAgentDetailRequestDto,
+  type GetWorkflowAgentGraphProjectionRequestDto,
   type ListWorkflowAgentsRequestDto,
   type ListWorkflowAgentsResponseDto,
+  type ResolveAgentAuthoringSkillRequestDto,
+  type SearchAgentAuthoringSkillsRequestDto,
+  type SearchAgentAuthoringSkillsResponseDto,
   type WorkflowAgentDetailDto,
+  type WorkflowAgentGraphProjectionDto,
 } from '@/src/lib/xero-model/workflow-agents'
 import {
   agentRunEventSchema,
@@ -169,8 +182,12 @@ import {
   listProjectsResponseSchema,
   moveProjectEntryRequestSchema,
   moveProjectEntryResponseSchema,
+  appUiStateResponseSchema,
   projectFileRequestSchema,
+  projectUiStateResponseSchema,
   projectUpdatedPayloadSchema,
+  readAppUiStateRequestSchema,
+  readProjectUiStateRequestSchema,
   readProjectFileResponseSchema,
   renameProjectEntryRequestSchema,
   renameProjectEntryResponseSchema,
@@ -191,6 +208,8 @@ import {
   workspaceQueryResponseSchema,
   writeProjectFileRequestSchema,
   writeProjectFileResponseSchema,
+  writeAppUiStateRequestSchema,
+  writeProjectUiStateRequestSchema,
   gitCommitRequestSchema,
   gitCommitResponseSchema,
   gitGenerateCommitMessageRequestSchema,
@@ -216,7 +235,11 @@ import {
   type MoveProjectEntryRequestDto,
   type MoveProjectEntryResponseDto,
   type ProjectUpdatedPayloadDto,
+  type AppUiStateResponseDto,
   type ReadProjectFileResponseDto,
+  type ReadAppUiStateRequestDto,
+  type ProjectUiStateResponseDto,
+  type ReadProjectUiStateRequestDto,
   type RenameProjectEntryRequestDto,
   type RenameProjectEntryResponseDto,
   type ReplaceInProjectRequestDto,
@@ -235,7 +258,9 @@ import {
   type WorkspaceIndexStatusDto,
   type WorkspaceQueryRequestDto,
   type WorkspaceQueryResponseDto,
+  type WriteAppUiStateRequestDto,
   type WriteProjectFileResponseDto,
+  type WriteProjectUiStateRequestDto,
 } from '@/src/lib/xero-model/project'
 import {
   runtimeRunSchema,
@@ -313,11 +338,13 @@ import {
 } from '@/src/lib/xero-model/diagnostics'
 import {
   runtimeStreamItemSchema,
+  runtimeStreamPatchSchema,
   subscribeRuntimeStreamRequestSchema,
   subscribeRuntimeStreamResponseSchema,
   type RuntimeStreamEventDto,
   type RuntimeStreamItemKindDto,
   type RuntimeStreamItemDto,
+  type RuntimeStreamPatchDto,
   type SubscribeRuntimeStreamResponseDto,
 } from '@/src/lib/xero-model/runtime-stream'
 import {
@@ -390,7 +417,14 @@ import {
   type UpdateSessionMemoryRequestDto,
   updateSessionMemoryRequestSchema,
 } from '@/src/lib/xero-model/session-context'
-import { projectSnapshotResponseSchema, type ProjectSnapshotResponseDto } from '@/src/lib/xero-model'
+import {
+  projectLoadBundleRequestSchema,
+  projectLoadBundleSchema,
+  projectSnapshotResponseSchema,
+  type ProjectLoadBundleDto,
+  type ProjectLoadBundleRequestDto,
+  type ProjectSnapshotResponseDto,
+} from '@/src/lib/xero-model'
 import {
   agentUsageUpdatedPayloadSchema,
   projectUsageSummarySchema,
@@ -419,6 +453,11 @@ const COMMANDS = {
   createRepository: 'create_repository',
   listProjects: 'list_projects',
   removeProject: 'remove_project',
+  readAppUiState: 'read_app_ui_state',
+  writeAppUiState: 'write_app_ui_state',
+  readProjectUiState: 'read_project_ui_state',
+  writeProjectUiState: 'write_project_ui_state',
+  getProjectLoadBundle: 'get_project_load_bundle',
   getProjectSnapshot: 'get_project_snapshot',
   getProjectUsageSummary: 'get_project_usage_summary',
   getRepositoryStatus: 'get_repository_status',
@@ -457,7 +496,10 @@ const COMMANDS = {
   updateAgentDefinition: 'update_agent_definition',
   listWorkflowAgents: 'list_workflow_agents',
   getWorkflowAgentDetail: 'get_workflow_agent_detail',
+  getWorkflowAgentGraphProjection: 'get_workflow_agent_graph_projection',
   getAgentAuthoringCatalog: 'get_agent_authoring_catalog',
+  searchAgentAuthoringSkills: 'search_agent_authoring_skills',
+  resolveAgentAuthoringSkill: 'resolve_agent_authoring_skill',
   listAgentSessions: 'list_agent_sessions',
   getAgentSession: 'get_agent_session',
   updateAgentSession: 'update_agent_session',
@@ -749,7 +791,14 @@ export interface XeroDesktopAdapter {
   createRepository(parentPath: string, name: string): Promise<ImportRepositoryResponseDto>
   listProjects(): Promise<ListProjectsResponseDto>
   removeProject(projectId: string): Promise<ListProjectsResponseDto>
+  readAppUiState?(request: ReadAppUiStateRequestDto): Promise<AppUiStateResponseDto>
+  writeAppUiState?(request: WriteAppUiStateRequestDto): Promise<AppUiStateResponseDto>
+  readProjectUiState?(request: ReadProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
+  writeProjectUiState?(request: WriteProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
   getProjectSnapshot(projectId: string): Promise<ProjectSnapshotResponseDto>
+  getProjectLoadBundle?(
+    request: ProjectLoadBundleRequestDto,
+  ): Promise<ProjectLoadBundleDto>
   getProjectUsageSummary(projectId: string): Promise<ProjectUsageSummaryDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
@@ -803,9 +852,18 @@ export interface XeroDesktopAdapter {
   getWorkflowAgentDetail(
     request: GetWorkflowAgentDetailRequestDto,
   ): Promise<WorkflowAgentDetailDto>
+  getWorkflowAgentGraphProjection?(
+    request: GetWorkflowAgentGraphProjectionRequestDto,
+  ): Promise<WorkflowAgentGraphProjectionDto>
   getAgentAuthoringCatalog(
     request: GetAgentAuthoringCatalogRequestDto,
   ): Promise<AgentAuthoringCatalogDto>
+  searchAgentAuthoringSkills?(
+    request: SearchAgentAuthoringSkillsRequestDto,
+  ): Promise<SearchAgentAuthoringSkillsResponseDto>
+  resolveAgentAuthoringSkill?(
+    request: ResolveAgentAuthoringSkillRequestDto,
+  ): Promise<AgentAuthoringAttachableSkillDto>
   listAgentSessions(request: ListAgentSessionsRequestDto): Promise<ListAgentSessionsResponseDto>
   getAgentSession(request: GetAgentSessionRequestDto): Promise<AgentSessionDto | null>
   updateAgentSession(request: UpdateAgentSessionRequestDto): Promise<AgentSessionDto>
@@ -1045,7 +1103,7 @@ export interface XeroDesktopAdapter {
     projectId: string,
     agentSessionId: string,
     itemKinds: RuntimeStreamItemKindDto[],
-    handler: (payload: RuntimeStreamEventDto) => void,
+    handler: (payload: RuntimeStreamChannelPayloadDto) => void,
     onError?: (error: XeroDesktopError) => void,
     options?: { afterSequence?: number | null; replayLimit?: number | null },
   ): Promise<XeroRuntimeStreamSubscription>
@@ -1127,7 +1185,9 @@ function normalizeError(error: unknown, context: string): XeroDesktopError {
 const LARGE_RESPONSE_CONTRACT_COMMANDS = new Set<string>([
   'get_agent_authoring_catalog',
   'get_provider_model_catalog',
+  'get_project_load_bundle',
   'get_workflow_agent_detail',
+  'get_workflow_agent_graph_projection',
   'list_agent_definitions',
   'list_skill_registry',
   'list_workflow_agents',
@@ -1202,28 +1262,7 @@ async function listenTyped<TPayload>(
     }
   })
 
-  return createSafeUnlisten(unlisten)
-}
-
-function createSafeUnlisten(unlisten: UnlistenFn): UnlistenFn {
-  let disposed = false
-
-  return () => {
-    if (disposed) {
-      return
-    }
-
-    disposed = true
-
-    try {
-      const maybePromise = unlisten() as unknown
-      if (maybePromise && typeof (maybePromise as PromiseLike<unknown>).then === 'function') {
-        void Promise.resolve(maybePromise).catch(() => undefined)
-      }
-    } catch {
-      // Tauri can drop WebView listener internals during teardown; cleanup is best-effort.
-    }
-  }
+  return createSafeTauriUnlisten(unlisten)
 }
 
 const RUNTIME_STREAM_ITEM_KINDS = new Set<string>([
@@ -1235,7 +1274,10 @@ const RUNTIME_STREAM_ITEM_KINDS = new Set<string>([
   'plan',
   'complete',
   'failure',
+  'subagent_lifecycle',
 ])
+
+type RuntimeStreamChannelPayloadDto = RuntimeStreamEventDto | RuntimeStreamPatchDto
 
 const RUNTIME_STREAM_DELIVERY_BATCH_SIZE = 24
 const RUNTIME_STREAM_DELIVERY_TIME_BUDGET_MS = 4
@@ -1269,15 +1311,60 @@ function hasCheapRuntimeStreamItemShape(payload: unknown): payload is RuntimeStr
   )
 }
 
+function hasRuntimeStreamPatchEnvelope(payload: unknown): payload is { schema: string } {
+  return (
+    Boolean(payload)
+    && typeof payload === 'object'
+    && (payload as { schema?: unknown }).schema === 'xero.runtime_stream_patch.v1'
+  )
+}
+
+function hasCheapRuntimeStreamPatchShape(payload: unknown): payload is RuntimeStreamPatchDto {
+  if (!hasRuntimeStreamPatchEnvelope(payload)) {
+    return false
+  }
+
+  const patch = payload as {
+    item?: unknown
+    snapshot?: {
+      schema?: unknown
+      projectId?: unknown
+      agentSessionId?: unknown
+      runId?: unknown
+      sessionId?: unknown
+      lastSequence?: unknown
+    }
+  }
+  const snapshot = patch.snapshot
+  return (
+    hasCheapRuntimeStreamItemShape(patch.item)
+    && Boolean(snapshot)
+    && snapshot?.schema === 'xero.runtime_stream_view_snapshot.v1'
+    && typeof snapshot.projectId === 'string'
+    && snapshot.projectId.trim().length > 0
+    && typeof snapshot.agentSessionId === 'string'
+    && snapshot.agentSessionId.trim().length > 0
+    && typeof snapshot.runId === 'string'
+    && snapshot.runId.trim().length > 0
+    && typeof snapshot.sessionId === 'string'
+    && snapshot.sessionId.trim().length > 0
+    && (
+      snapshot.lastSequence == null
+      || (typeof snapshot.lastSequence === 'number' && Number.isInteger(snapshot.lastSequence))
+    )
+  )
+}
+
 function shouldUseFullRuntimeStreamChannelValidation(): boolean {
   return import.meta.env.MODE === 'test' || import.meta.env.VITE_XERO_RUNTIME_STREAM_ZOD === '1'
 }
 
-function parseRuntimeStreamChannelItem(payload: unknown): RuntimeStreamItemDto {
+function parseRuntimeStreamChannelPayload(payload: unknown): RuntimeStreamItemDto | RuntimeStreamPatchDto {
+  const isPatchEnvelope = hasRuntimeStreamPatchEnvelope(payload)
   const budgetSample = recordIpcPayloadSample({
     boundary: 'channel',
     budgetKey: 'runtimeStreamItem',
-    name: 'subscribe_runtime_stream:item',
+    name: isPatchEnvelope ? 'subscribe_runtime_stream:patch' : 'subscribe_runtime_stream:item',
     payload,
   })
   if (budgetSample?.overMaxBudget) {
@@ -1290,7 +1377,14 @@ function parseRuntimeStreamChannelItem(payload: unknown): RuntimeStreamItemDto {
   }
 
   if (shouldUseFullRuntimeStreamChannelValidation()) {
+    if (isPatchEnvelope) {
+      return runtimeStreamPatchSchema.parse(payload)
+    }
     return runtimeStreamItemSchema.parse(payload)
+  }
+
+  if (hasCheapRuntimeStreamPatchShape(payload)) {
+    return payload
   }
 
   if (hasCheapRuntimeStreamItemShape(payload)) {
@@ -1304,11 +1398,17 @@ function parseRuntimeStreamChannelItem(payload: unknown): RuntimeStreamItemDto {
   })
 }
 
+function isRuntimeStreamPatchPayload(
+  payload: RuntimeStreamItemDto | RuntimeStreamPatchDto,
+): payload is RuntimeStreamPatchDto {
+  return 'schema' in payload && payload.schema === 'xero.runtime_stream_patch.v1'
+}
+
 async function createRuntimeStreamSubscription(
   projectId: string,
   agentSessionId: string,
   itemKinds: RuntimeStreamItemKindDto[],
-  handler: (payload: RuntimeStreamEventDto) => void,
+  handler: (payload: RuntimeStreamChannelPayloadDto) => void,
   onError?: (error: XeroDesktopError) => void,
   options: { afterSequence?: number | null; replayLimit?: number | null } = {},
 ): Promise<XeroRuntimeStreamSubscription> {
@@ -1340,7 +1440,9 @@ async function createRuntimeStreamSubscription(
     }
 
     try {
-      const item = parseRuntimeStreamChannelItem(payload)
+      const channelPayload = parseRuntimeStreamChannelPayload(payload)
+      const isPatch = isRuntimeStreamPatchPayload(channelPayload)
+      const item = isPatch ? channelPayload.item : channelPayload
       if (item.runId !== activeResponse.runId) {
         throw new XeroDesktopError({
           code: 'adapter_contract_mismatch',
@@ -1348,18 +1450,45 @@ async function createRuntimeStreamSubscription(
           message: `Command ${COMMANDS.subscribeRuntimeStream} channel returned a stream item for run ${item.runId} while ${activeResponse.runId} is subscribed.`,
         })
       }
+      if (isPatch) {
+        if (channelPayload.snapshot.runId !== activeResponse.runId) {
+          throw new XeroDesktopError({
+            code: 'adapter_contract_mismatch',
+            errorClass: 'adapter_contract_mismatch',
+            message: `Command ${COMMANDS.subscribeRuntimeStream} channel returned a stream snapshot for run ${channelPayload.snapshot.runId} while ${activeResponse.runId} is subscribed.`,
+          })
+        }
+        if (
+          channelPayload.snapshot.projectId !== activeResponse.projectId
+          || channelPayload.snapshot.agentSessionId !== activeResponse.agentSessionId
+        ) {
+          throw new XeroDesktopError({
+            code: 'adapter_contract_mismatch',
+            errorClass: 'adapter_contract_mismatch',
+            message: `Command ${COMMANDS.subscribeRuntimeStream} channel returned a stream snapshot for a different project or agent session.`,
+          })
+        }
+      }
 
+      const deliveredSequence = isPatch
+        ? channelPayload.snapshot.lastSequence ?? item.sequence
+        : item.sequence
       if (lastDeliveredSequence !== null) {
-        if (item.sequence < lastDeliveredSequence) {
+        if (deliveredSequence < lastDeliveredSequence) {
           return
         }
 
-        if (item.sequence === lastDeliveredSequence) {
+        if (deliveredSequence === lastDeliveredSequence) {
           return
         }
       }
 
-      lastDeliveredSequence = item.sequence
+      lastDeliveredSequence = deliveredSequence
+
+      if (isPatch) {
+        handler(channelPayload)
+        return
+      }
 
       handler({
         projectId: activeResponse.projectId,
@@ -1707,9 +1836,44 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  readAppUiState(request) {
+    const parsed = readAppUiStateRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.readAppUiState, appUiStateResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  writeAppUiState(request) {
+    const parsed = writeAppUiStateRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.writeAppUiState, appUiStateResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  readProjectUiState(request) {
+    const parsed = readProjectUiStateRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.readProjectUiState, projectUiStateResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  writeProjectUiState(request) {
+    const parsed = writeProjectUiStateRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.writeProjectUiState, projectUiStateResponseSchema, {
+      request: parsed,
+    })
+  },
+
   getProjectSnapshot(projectId) {
     return invokeTyped(COMMANDS.getProjectSnapshot, projectSnapshotResponseSchema, {
       request: { projectId },
+    })
+  },
+
+  getProjectLoadBundle(request) {
+    const parsed = projectLoadBundleRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.getProjectLoadBundle, projectLoadBundleSchema, {
+      request: parsed,
     })
   },
 
@@ -1973,9 +2137,38 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  getWorkflowAgentGraphProjection(request) {
+    const parsed = getWorkflowAgentGraphProjectionRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.getWorkflowAgentGraphProjection,
+      workflowAgentGraphProjectionSchema,
+      {
+        request: parsed,
+      },
+    )
+  },
+
   getAgentAuthoringCatalog(request) {
     const parsed = getAgentAuthoringCatalogRequestSchema.parse(request)
     return invokeTyped(COMMANDS.getAgentAuthoringCatalog, agentAuthoringCatalogSchema, {
+      request: parsed,
+    })
+  },
+
+  searchAgentAuthoringSkills(request) {
+    const parsed = searchAgentAuthoringSkillsRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.searchAgentAuthoringSkills,
+      searchAgentAuthoringSkillsResponseSchema,
+      {
+        request: parsed,
+      },
+    )
+  },
+
+  resolveAgentAuthoringSkill(request) {
+    const parsed = resolveAgentAuthoringSkillRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.resolveAgentAuthoringSkill, agentAuthoringAttachableSkillSchema, {
       request: parsed,
     })
   },

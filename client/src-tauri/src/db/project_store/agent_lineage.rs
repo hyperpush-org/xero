@@ -9,13 +9,15 @@ use sha2::{Digest, Sha256};
 use crate::{auth::now_timestamp, commands::CommandError, db::database_path_for_repo};
 
 use super::{
-    agent_context::{load_active_agent_compaction, AgentCompactionRecord, AgentCompactionTrigger},
+    agent_context::{
+        read_active_agent_compaction_with_connection, AgentCompactionRecord, AgentCompactionTrigger,
+    },
     agent_continuity::copy_agent_context_manifests_for_branch,
     agent_core::{
         agent_event_kind_sql_value, agent_message_role_sql_value, agent_run_status_sql_value,
-        agent_tool_call_state_sql_value, load_agent_run, load_agent_usage, AgentMessageRecord,
-        AgentMessageRole, AgentRunDiagnosticRecord, AgentRunEventKind, AgentRunSnapshotRecord,
-        AgentRunStatus,
+        agent_tool_call_state_sql_value, read_agent_run_snapshot,
+        read_agent_run_snapshot_with_usage, AgentMessageRecord, AgentMessageRole,
+        AgentRunDiagnosticRecord, AgentRunEventKind, AgentRunSnapshotRecord, AgentRunStatus,
     },
     agent_session::{
         clear_selected_agent_session, generate_agent_session_id, read_agent_session_row,
@@ -165,18 +167,22 @@ pub fn create_agent_session_branch(
             ),
         )
     })?;
-    let source_snapshot = load_agent_run(repo_root, &request.project_id, &request.source_run_id)?;
+    let (source_snapshot, source_usage) = read_agent_run_snapshot_with_usage(
+        &connection,
+        repo_root,
+        &request.project_id,
+        &request.source_run_id,
+    )?;
     ensure_source_run_belongs_to_session(&source_snapshot, request)?;
     let boundary = resolve_branch_boundary(&source_snapshot, &request.boundary)?;
-    let active_compaction = load_active_agent_compaction(
-        repo_root,
+    let active_compaction = read_active_agent_compaction_with_connection(
+        &connection,
         &request.project_id,
         &request.source_agent_session_id,
     )?
     .filter(|compaction| {
         compaction.covered_run_ids.len() == 1 && compaction.covers_run(&request.source_run_id)
     });
-    let source_usage = load_agent_usage(repo_root, &request.project_id, &request.source_run_id)?;
 
     let child_agent_session_id = request
         .target_agent_session_id
@@ -423,7 +429,8 @@ pub fn create_agent_session_branch(
             ),
         )
     })?;
-    let replay_run = load_agent_run(repo_root, &request.project_id, &replay_run_id)?;
+    let replay_run =
+        read_agent_run_snapshot(&connection, repo_root, &request.project_id, &replay_run_id)?;
 
     Ok(AgentSessionBranchRecord {
         session,
@@ -1361,7 +1368,9 @@ fn default_branch_title(source_title: &str, boundary: &ResolvedBranchBoundary) -
 fn branch_summary(source_title: &str, boundary: &ResolvedBranchBoundary) -> String {
     match boundary.kind {
         AgentSessionLineageBoundaryKind::Run => {
-            format!("Branched conversation history from `{source_title}` without changing project files.")
+            format!(
+                "Branched conversation history from `{source_title}` without changing project files."
+            )
         }
         AgentSessionLineageBoundaryKind::Message => format!(
             "Rewound conversation history from `{source_title}` at message boundary {}. Project files stay at the current workspace state unless code rollback is applied separately.",

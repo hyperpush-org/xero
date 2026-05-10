@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value as JsonValue;
 
 use crate::{auth::now_timestamp, commands::CommandError, db::database_path_for_repo};
@@ -180,7 +180,7 @@ pub fn insert_agent_compaction(
         )
     })?;
 
-    read_agent_compaction_by_id(repo_root, &record.project_id, inserted_id)
+    read_agent_compaction_by_id_with_connection(&connection, &record.project_id, inserted_id)
 }
 
 pub fn load_active_agent_compaction(
@@ -191,6 +191,14 @@ pub fn load_active_agent_compaction(
     validate_non_empty(project_id, "projectId")?;
     validate_non_empty(agent_session_id, "agentSessionId")?;
     let connection = open_agent_context_database(repo_root)?;
+    read_active_agent_compaction_with_connection(&connection, project_id, agent_session_id)
+}
+
+pub(crate) fn read_active_agent_compaction_with_connection(
+    connection: &Connection,
+    project_id: &str,
+    agent_session_id: &str,
+) -> Result<Option<AgentCompactionRecord>, CommandError> {
     connection
         .query_row(
             compaction_select_sql(
@@ -268,12 +276,11 @@ pub fn supersede_agent_compaction(
     Ok(())
 }
 
-fn read_agent_compaction_by_id(
-    repo_root: &Path,
+fn read_agent_compaction_by_id_with_connection(
+    connection: &Connection,
     project_id: &str,
     id: i64,
 ) -> Result<AgentCompactionRecord, CommandError> {
-    let connection = open_agent_context_database(repo_root)?;
     connection
         .query_row(
             compaction_select_sql("WHERE project_id = ?1 AND id = ?2").as_str(),

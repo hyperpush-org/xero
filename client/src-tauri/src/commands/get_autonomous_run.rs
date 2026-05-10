@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::runtime_support::{
-    emit_runtime_run_updated_if_changed, load_runtime_run_status, resolve_project_root,
+    emit_runtime_run_updated_if_changed, resolve_project_root, runtime_run_status_from_persisted,
     sync_autonomous_run_state, AutonomousSyncIntent,
 };
 
@@ -27,12 +27,7 @@ pub fn get_autonomous_run<R: Runtime>(
         &request.project_id,
         &request.agent_session_id,
     )?;
-    let after = load_runtime_run_status(
-        state.inner(),
-        &repo_root,
-        &request.project_id,
-        &request.agent_session_id,
-    )?;
+    let after = runtime_run_status_from_persisted(&before);
     emit_runtime_run_updated_if_changed(
         &app,
         &request.project_id,

@@ -422,7 +422,7 @@ pub fn record_notification_dispatch_outcome(
             return Err(CommandError::user_fixable(
                 "notification_dispatch_outcome_invalid",
                 "Dispatch outcomes must use `sent` or `failed` status updates.",
-            ))
+            ));
         }
     };
 
@@ -2227,7 +2227,7 @@ fn decode_notification_route_row(
                 "notification_route_decode_failed",
                 database_path,
                 format!("Field `enabled` must be 0 or 1, found {value}."),
-            ))
+            ));
         }
     };
 

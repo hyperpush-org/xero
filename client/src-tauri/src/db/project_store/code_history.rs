@@ -1673,7 +1673,7 @@ fn current_exact_state_for_session_lineage_plan(
                 format!(
                     "Xero could not inspect `{path}` before session rollback planning: {error}"
                 ),
-            ))
+            ));
         }
     };
 

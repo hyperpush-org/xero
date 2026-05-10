@@ -173,6 +173,22 @@ pub fn capability_permission_explanation(subject_kind: &str, subject_id: &str) -
                 true,
                 "destructive_write",
             ),
+            "skill_runtime_tool" => (
+                "Skill runtime tool access lets the model discover and invoke skills during a run.",
+                "skill registry metadata and model-visible skill content selected through tool calls",
+                "depends_on_skill_source",
+                "none_by_default",
+                true,
+                "skill_runtime_tool",
+            ),
+            "attached_skill_context" => (
+                "Attached skill context injects pinned skill instructions into every run without granting the skill tool.",
+                "pinned model-visible skill content for the configured source id",
+                "none_by_attachment",
+                "none_by_attachment",
+                true,
+                "attached_skill_context",
+            ),
             _ => (
                 "Unknown capability grant.",
                 "unknown",
@@ -1051,7 +1067,7 @@ pub fn load_agent_knowledge_inspection(
                     "Xero could not inspect run `{}` with agent session `{requested}` because the run belongs to session `{}`.",
                     export.run_id, export.agent_session_id
                 ),
-            ))
+            ));
         }
         (Some(requested), _) => Some(requested.to_string()),
         (None, Some(export)) => Some(export.agent_session_id.clone()),
@@ -1945,7 +1961,7 @@ mod tests {
             base_capability_profile: "observe_only".into(),
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "id": definition_id,
                 "version": version,
                 "displayName": "Project Researcher",
@@ -1973,6 +1989,7 @@ mod tests {
                 },
                 "workflowContract": "Answer project questions from reviewed project state.",
                 "finalResponseContract": "Return a concise answer with uncertainty called out.",
+                "attachedSkills": [],
                 "prompts": [
                     {
                         "id": "project-researcher-intent",

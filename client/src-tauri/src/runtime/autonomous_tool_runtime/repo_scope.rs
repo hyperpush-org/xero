@@ -1,7 +1,10 @@
 use std::{
+    collections::HashMap,
     ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
+    sync::{LazyLock, Mutex},
+    time::UNIX_EPOCH,
 };
 
 use globset::{GlobBuilder, GlobMatcher};
@@ -11,7 +14,6 @@ use super::AutonomousToolRuntime;
 
 use crate::{
     commands::{validate_non_empty, CommandError, CommandErrorClass, CommandResult},
-    db::project_store,
     registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
@@ -28,6 +30,18 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
     ".yarn",
     ".pnpm-store",
 ];
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct RepoRootCacheKey {
+    registry_path: PathBuf,
+    project_id: String,
+    len: u64,
+    modified_secs: u64,
+    modified_nanos: u32,
+}
+
+static IMPORTED_REPO_ROOT_CACHE: LazyLock<Mutex<HashMap<RepoRootCacheKey, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Default)]
 pub(super) struct WalkState {
@@ -258,49 +272,67 @@ pub fn resolve_imported_repo_root_from_registry(
     project_id: &str,
 ) -> CommandResult<PathBuf> {
     crate::db::configure_project_database_paths(registry_path);
-    let registry = registry::read_registry(registry_path)?;
-    let mut live_root_records = Vec::new();
-    let mut candidates = Vec::new();
-    let mut pruned_stale_roots = false;
 
-    for record in registry.projects {
-        if !Path::new(&record.root_path).is_dir() {
-            pruned_stale_roots = true;
-            continue;
-        }
-
-        if record.project_id == project_id {
-            candidates.push(record.clone());
-        }
-        live_root_records.push(record);
+    let cache_key = repo_root_cache_key(registry_path, project_id);
+    if let Some(root) = cache_key
+        .as_ref()
+        .and_then(|key| cached_imported_repo_root(key))
+        .filter(|root| root.is_dir())
+    {
+        return Ok(root);
     }
 
-    if pruned_stale_roots {
-        let _ = registry::replace_projects(registry_path, live_root_records);
-    }
+    let candidates = registry::read_project_records(registry_path, project_id)?;
 
     if candidates.is_empty() {
         return Err(CommandError::project_not_found());
     }
 
-    let mut first_error: Option<CommandError> = None;
-    for RegistryProjectRecord {
-        project_id,
-        root_path,
-        ..
-    } in candidates
-    {
-        match project_store::load_project_summary(Path::new(&root_path), &project_id) {
-            Ok(_) => return Ok(PathBuf::from(root_path)),
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
+    for RegistryProjectRecord { root_path, .. } in candidates {
+        let root = Path::new(&root_path);
+        if !root.is_dir() {
+            continue;
         }
+
+        let resolved = PathBuf::from(root_path);
+        if let Some(key) = cache_key.or_else(|| repo_root_cache_key(registry_path, project_id)) {
+            cache_imported_repo_root(key, &resolved);
+        }
+        return Ok(resolved);
     }
 
-    Err(first_error.unwrap_or_else(CommandError::project_not_found))
+    Err(CommandError::project_not_found())
+}
+
+fn repo_root_cache_key(registry_path: &Path, project_id: &str) -> Option<RepoRootCacheKey> {
+    let metadata = fs::metadata(registry_path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok());
+    Some(RepoRootCacheKey {
+        registry_path: fs::canonicalize(registry_path)
+            .unwrap_or_else(|_| registry_path.to_path_buf()),
+        project_id: project_id.to_owned(),
+        len: metadata.len(),
+        modified_secs: modified.map(|duration| duration.as_secs()).unwrap_or(0),
+        modified_nanos: modified
+            .map(|duration| duration.subsec_nanos())
+            .unwrap_or(0),
+    })
+}
+
+fn cached_imported_repo_root(key: &RepoRootCacheKey) -> Option<PathBuf> {
+    IMPORTED_REPO_ROOT_CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(key).cloned())
+}
+
+fn cache_imported_repo_root(key: RepoRootCacheKey, root: &Path) {
+    if let Ok(mut cache) = IMPORTED_REPO_ROOT_CACHE.lock() {
+        cache.insert(key, root.to_path_buf());
+    }
 }
 
 pub(super) fn normalize_relative_path(value: &str, field: &'static str) -> CommandResult<PathBuf> {

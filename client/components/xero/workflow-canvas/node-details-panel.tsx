@@ -34,6 +34,7 @@ import type {
   OutputNodeData,
   OutputSectionNodeData,
   PromptNodeData,
+  SkillNodeData,
   ToolNodeData,
 } from './build-agent-graph'
 import { humanizeIdentifier, lifecycleEventLabel } from './build-agent-graph'
@@ -111,6 +112,8 @@ function renderDetails(node: AgentGraphNode): ReactNode {
       return <AgentHeaderDetails data={node.data as AgentHeaderNodeData} />
     case 'prompt':
       return <PromptDetails data={node.data as PromptNodeData} />
+    case 'skills':
+      return <SkillDetails data={node.data as SkillNodeData} />
     case 'tool':
       return <ToolDetails data={node.data as ToolNodeData} />
     case 'db-table':
@@ -443,6 +446,62 @@ function PromptDetails({ data }: { data: PromptNodeData }) {
   )
 }
 
+function SkillDetails({ data }: { data: SkillNodeData }) {
+  const { skill } = data
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/40 px-3 py-2">
+        <div className="min-w-0">
+          <p className="text-[9.5px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+            Attached skill
+          </p>
+          <p className="truncate text-[12px] font-medium text-foreground/95">
+            {skill.name}
+          </p>
+        </div>
+        <span
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium leading-none',
+            skill.availabilityStatus === 'available'
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+              : skill.availabilityStatus === 'blocked' || skill.availabilityStatus === 'missing'
+                ? 'border-destructive/35 bg-destructive/10 text-destructive'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+          )}
+        >
+          <Sparkles className="h-3 w-3" />
+          {humanizeIdentifier(skill.availabilityStatus)}
+        </span>
+      </div>
+      {skill.description ? (
+        <Section label="Description">
+          <Prose>{skill.description}</Prose>
+        </Section>
+      ) : null}
+      <Section label="Identity">
+        <MetaRow
+          items={[
+            { label: 'Skill ID', value: skill.skillId },
+            { label: 'Source', value: humanizeIdentifier(skill.sourceKind) },
+            { label: 'Scope', value: humanizeIdentifier(skill.scope) },
+            { label: 'Required', value: skill.required ? 'true' : 'false' },
+          ]}
+        />
+      </Section>
+      <Section label="Pinned version">
+        <Body>{skill.versionHash}</Body>
+      </Section>
+      <Section label="Availability">
+        <Prose>{skill.availabilityReason}</Prose>
+        <ChipRow>
+          <Chip>{skill.includeSupportingAssets ? 'assets included' : 'skill body only'}</Chip>
+          {skill.repairHint ? <Chip>{humanizeIdentifier(skill.repairHint)}</Chip> : null}
+        </ChipRow>
+      </Section>
+    </>
+  )
+}
+
 function ToolDetails({ data }: { data: ToolNodeData }) {
   const { tool } = data
   return (
@@ -621,4 +680,3 @@ function ConsumedArtifactDetails({ data }: { data: ConsumedArtifactNodeData }) {
     </>
   )
 }
-

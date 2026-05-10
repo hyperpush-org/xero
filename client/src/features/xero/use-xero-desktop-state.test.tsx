@@ -17,6 +17,7 @@ import {
   type ProviderModelCatalogDto,
   type ProviderPreflightRequiredFeaturesDto,
   type ProviderPreflightSnapshotDto,
+  type ProjectLoadBundleDto,
   type RepositoryDiffResponseDto,
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
@@ -342,6 +343,7 @@ function makeProviderModelCatalog(
     (providerId === 'openrouter' ? 'openai/gpt-4.1-mini' : 'openai_codex')
 
   return {
+    contractVersion: 1 as const,
     profileId,
     providerId,
     configuredModelId,
@@ -383,6 +385,7 @@ function makeProviderModelCatalog(
               },
             },
           ]),
+    contractDiagnostics: [],
   }
 }
 
@@ -548,6 +551,7 @@ function makeMcpRegistry(overrides: Partial<McpRegistryDto> = {}): McpRegistryDt
 
 function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegistryDto {
   return {
+    contractVersion: 1,
     projectId: 'project-1',
     reloadedAt: '2026-04-24T05:00:00Z',
     entries: [
@@ -601,6 +605,7 @@ function makeSkillRegistry(overrides: Partial<SkillRegistryDto> = {}): SkillRegi
       updatedAt: '2026-04-24T05:00:00Z',
     },
     diagnostics: [],
+    contractDiagnostics: [],
     plugins: [],
     pluginCommands: [],
     ...overrides,
@@ -1012,10 +1017,18 @@ function createMockAdapter(options?: {
     throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
   })
   const getAgentAuthoringCatalog = vi.fn(async () => ({
+    contractVersion: 1 as const,
     tools: [],
     toolCategories: [],
     dbTables: [],
     upstreamArtifacts: [],
+    attachableSkills: [],
+    policyControls: [],
+    templates: [],
+    creationFlows: [],
+    profileAvailability: [],
+    constraintExplanations: [],
+    diagnostics: [],
   }))
   const updateAgentSession = vi.fn(async (request: {
     projectId: string
@@ -3478,6 +3491,35 @@ describe('useXeroDesktopState', () => {
     expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
   })
 
+  it('shows the clicked project shell before its snapshot resolves', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
+    })
+    const projectTwoSnapshot = createDeferred<ProjectSnapshotResponseDto>()
+
+    setup.getProjectSnapshot.mockImplementation(async (projectId: string) => {
+      if (projectId === 'project-2') {
+        return projectTwoSnapshot.promise
+      }
+
+      return makeSnapshot(projectId, 'Xero')
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+
+    await act(async () => {
+      projectTwoSnapshot.resolve(makeSnapshot('project-2', 'orchestra'))
+      await projectTwoSnapshot.promise
+    })
+  })
+
   it('switches project selection after the snapshot without waiting for secondary hydration', async () => {
     const setup = createMockAdapter({
       listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
@@ -3544,7 +3586,7 @@ describe('useXeroDesktopState', () => {
     await waitFor(() => expect(screen.getByTestId('pending-project-selection-id')).toHaveTextContent('none'))
   })
 
-  it('shows a lightweight project preview before hydrating a cached project selection', async () => {
+  it('keeps project rail selection on the snapshot-first path when bundle loading exists', async () => {
     const setup = createMockAdapter({
       listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
     })
@@ -3552,13 +3594,26 @@ describe('useXeroDesktopState', () => {
     render(<Harness adapter={setup.adapter} />)
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
-    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    const bundleDeferred = createDeferred<ProjectLoadBundleDto>()
+    const getProjectLoadBundle = vi.fn(async () => bundleDeferred.promise)
+    setup.adapter.getProjectLoadBundle = getProjectLoadBundle
 
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
-    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
-    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select project 1' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+    await waitFor(() => expect(screen.getByTestId('project-loading')).toHaveTextContent('false'))
+    expect(getProjectLoadBundle).not.toHaveBeenCalled()
+  })
+
+  it('shows a lightweight project preview before hydrating a cached project selection', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')] },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
     await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
 
@@ -3570,6 +3625,14 @@ describe('useXeroDesktopState', () => {
 
       return makeSnapshot(projectId, 'Xero')
     })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 1' }))
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
 
     fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
 
@@ -3915,6 +3978,57 @@ describe('useXeroDesktopState', () => {
     expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-main,agent-session-2')
     expect(screen.getByTestId('workspace-pane-runtime-agent-ids')).toHaveTextContent('ask,engineer')
     expect(screen.getByTestId('workspace-splitter-ratios')).toHaveTextContent('2,1,1')
+  })
+
+  it('persists agent workspace panes through project UI state when available', async () => {
+    const setup = createMockAdapter({
+      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
+    })
+    const readProjectUiState = vi.fn(async () => ({
+      schema: 'xero.project_ui_state.v1' as const,
+      projectId: 'project-1',
+      key: 'agent-workspace.layout.v1',
+      value: null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    const writeProjectUiState = vi.fn(
+      async (request: { projectId: string; key: string; value?: unknown | null }) => ({
+        schema: 'xero.project_ui_state.v1' as const,
+        projectId: request.projectId,
+        key: request.key,
+        value: request.value ?? null,
+        storageScope: 'os_app_data' as const,
+        uiDeferred: true,
+      }),
+    )
+    setup.adapter.readProjectUiState = readProjectUiState
+    setup.adapter.writeProjectUiState = writeProjectUiState
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() =>
+      expect(readProjectUiState).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        key: 'agent-workspace.layout.v1',
+      }),
+    )
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn pane' }))
+
+    await waitFor(() => expect(screen.getByTestId('workspace-pane-count')).toHaveTextContent('2'))
+    await waitFor(() =>
+      expect(
+        writeProjectUiState.mock.calls.some(([request]) => {
+          if (request.projectId !== 'project-1' || request.key !== 'agent-workspace.layout.v1') {
+            return false
+          }
+          return JSON.stringify(request.value).includes('agent-session-2')
+        }),
+      ).toBe(true),
+    )
+    expect(window.localStorage.getItem('agentWorkspaceLayout')).toBeNull()
   })
 
   it('renders a spawned pane before the fresh session create call resolves', async () => {

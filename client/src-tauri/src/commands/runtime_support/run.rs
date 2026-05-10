@@ -92,10 +92,17 @@ pub(crate) fn load_runtime_run_status(
     project_id: &str,
     agent_session_id: &str,
 ) -> CommandResult<Option<RuntimeRunSnapshotRecord>> {
-    Ok(
-        load_persisted_runtime_run(repo_root, project_id, agent_session_id)?
-            .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND),
-    )
+    let persisted = load_persisted_runtime_run(repo_root, project_id, agent_session_id)?;
+    Ok(runtime_run_status_from_persisted(&persisted))
+}
+
+pub(crate) fn runtime_run_status_from_persisted(
+    snapshot: &Option<RuntimeRunSnapshotRecord>,
+) -> Option<RuntimeRunSnapshotRecord> {
+    snapshot
+        .as_ref()
+        .filter(|snapshot| snapshot.run.supervisor_kind == OWNED_AGENT_SUPERVISOR_KIND)
+        .cloned()
 }
 
 pub(crate) fn runtime_run_dto_from_snapshot(snapshot: &RuntimeRunSnapshotRecord) -> RuntimeRunDto {

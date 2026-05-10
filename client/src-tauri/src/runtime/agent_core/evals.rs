@@ -3342,6 +3342,8 @@ fn production_agent_definition_eval_cases() -> Vec<AgentDefinitionQualityEvalCas
                 "You are Xero's Agent Create agent.",
                 "definition-registry-only",
                 "app-data-backed registry state",
+                "list_attachable_skills",
+                "not callable tools",
                 "reviewable agent-definition draft",
                 "Final response contract:",
             ],
@@ -3522,7 +3524,7 @@ fn builtin_definition_snapshot(
 fn custom_observe_only_definition_snapshot() -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": "release_notes_helper",
         "version": 1,
         "displayName": "Release Notes Helper",
@@ -3557,6 +3559,7 @@ fn custom_observe_only_definition_snapshot() -> JsonValue {
         },
         "workflowContract": "Clarify the release range, retrieve relevant reviewed context, draft concise notes, and cite uncertainty.",
         "finalResponseContract": "Return release notes grouped by user-visible changes, fixes, risks, and unknowns.",
+        "attachedSkills": [],
         "output": {
             "contract": "answer",
             "label": "Release Notes Answer",
@@ -3637,7 +3640,7 @@ fn custom_observe_only_definition_snapshot() -> JsonValue {
 fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": "implementation_surgeon",
         "version": version,
         "displayName": "Implementation Surgeon",
@@ -3655,6 +3658,7 @@ fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonVal
         },
         "workflowContract": format!("Inspect first, patch the smallest viable surface, and verify immediately. Marker: {marker}."),
         "finalResponseContract": "Summarize the changed files, verification evidence, and unresolved risk without extra ceremony.",
+        "attachedSkills": [],
         "output": {
             "contract": "engineering_summary",
             "label": "Focused Fix Summary",
@@ -3750,7 +3754,7 @@ fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonVal
 fn custom_debugging_definition_snapshot() -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": "root_cause_analyst",
         "version": 1,
         "displayName": "Root Cause Analyst",
@@ -3768,6 +3772,7 @@ fn custom_debugging_definition_snapshot() -> JsonValue {
         },
         "workflowContract": "Reproduce or simulate the issue, keep a root-cause evidence ledger, test hypotheses, patch narrowly, and verify the original failure.",
         "finalResponseContract": "Return symptom, root cause, fix, files changed, verification, saved debugging knowledge, and remaining risks.",
+        "attachedSkills": [],
         "output": {
             "contract": "debug_summary",
             "label": "Root Cause Summary",
@@ -5113,6 +5118,31 @@ mod tests {
         assert_eq!(report.metrics.handoff_behavior_rate, 1.0);
         assert_eq!(report.metrics.prompt_injection_rejection_rate, 1.0);
         assert_eq!(report.metrics.version_pinning_rate, 1.0);
+    }
+
+    #[test]
+    fn s8_agent_create_eval_custom_fixtures_emit_schema_v2_with_attached_skills() {
+        let cases = production_agent_definition_eval_cases();
+        let custom_cases = cases
+            .iter()
+            .filter(|case| case.scope != "built_in")
+            .collect::<Vec<_>>();
+
+        assert!(!custom_cases.is_empty());
+        for case in custom_cases {
+            let snapshot = case.snapshot.as_ref().expect("custom fixture snapshot");
+            assert_eq!(
+                snapshot["schemaVersion"],
+                json!(2),
+                "custom eval fixture `{}` must use the canonical schema v2 contract",
+                case.id
+            );
+            assert!(
+                snapshot["attachedSkills"].as_array().is_some(),
+                "custom eval fixture `{}` must include explicit attachedSkills",
+                case.id
+            );
+        }
     }
 
     #[test]

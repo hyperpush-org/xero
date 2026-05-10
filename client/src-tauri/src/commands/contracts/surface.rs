@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    autonomous::AutonomousRunDto,
+    autonomous::{AutonomousRunDto, AutonomousRunStateDto},
     dictation::{
         SPEECH_DICTATION_CANCEL_COMMAND, SPEECH_DICTATION_SETTINGS_COMMAND,
         SPEECH_DICTATION_START_COMMAND, SPEECH_DICTATION_STOP_COMMAND,
         SPEECH_DICTATION_UPDATE_SETTINGS_COMMAND,
     },
-    runtime::AgentSessionDto,
+    notifications::{NotificationDispatchDto, NotificationRouteDto},
+    runtime::{AgentSessionDto, RuntimeRunDto, RuntimeSessionDto},
     workflow::{
         OperatorApprovalDto, PhaseSummaryDto, ResumeHistoryEntryDto, VerificationRecordDto,
     },
@@ -237,6 +238,44 @@ pub struct CreateRepositoryRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectIdRequestDto {
     pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectLoadBundleRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub include_notification_routes: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectLoadBundleDiagnosticDto {
+    pub section: String,
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectLoadBundleDto {
+    pub project_id: String,
+    pub project_snapshot: ProjectSnapshotResponseDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_status: Option<RepositoryStatusResponseDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_session: Option<RuntimeSessionDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_run: Option<RuntimeRunDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomous_run: Option<AutonomousRunStateDto>,
+    #[serde(default)]
+    pub notification_dispatches: Vec<NotificationDispatchDto>,
+    #[serde(default)]
+    pub notification_routes: Vec<NotificationRouteDto>,
+    #[serde(default)]
+    pub diagnostics: Vec<ProjectLoadBundleDiagnosticDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -617,7 +656,7 @@ pub struct ProjectSnapshotResponseDto {
     pub resume_history: Vec<ResumeHistoryEntryDto>,
     #[serde(default)]
     pub agent_sessions: Vec<AgentSessionDto>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomous_run: Option<AutonomousRunDto>,
 }
 

@@ -11,13 +11,20 @@ import {
 import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 
 const SELECTED_REF_STORAGE_KEY = 'xero.workflows.selectedAgent'
+const SELECTED_REF_UI_STATE_KEY = 'workflows.selected-agent.v1'
 
 export type AgentListStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 export type AgentDetailStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 export interface UseWorkflowAgentInspectorOptions {
-  adapter: Pick<XeroDesktopAdapter, 'listWorkflowAgents' | 'getWorkflowAgentDetail'>
+  adapter: Pick<
+    XeroDesktopAdapter,
+    | 'listWorkflowAgents'
+    | 'getWorkflowAgentDetail'
+    | 'readProjectUiState'
+    | 'writeProjectUiState'
+  >
   projectId: string | null
 }
 
@@ -59,21 +66,36 @@ function persistRef(ref: AgentRefDto | null): void {
   }
 }
 
+function parsePersistedAgentRef(value: unknown): AgentRefDto | null {
+  const parsed = agentRefSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
 export function useWorkflowAgentInspector(
   options: UseWorkflowAgentInspectorOptions,
 ): UseWorkflowAgentInspectorResult {
   const { adapter, projectId } = options
+  const hasProjectUiStateStorage = Boolean(
+    projectId && adapter.readProjectUiState && adapter.writeProjectUiState,
+  )
   const [agents, setAgents] = useState<WorkflowAgentSummaryDto[]>([])
   const [agentsStatus, setAgentsStatus] = useState<AgentListStatus>('idle')
   const [agentsError, setAgentsError] = useState<Error | null>(null)
 
-  const [selectedRef, setSelectedRefState] = useState<AgentRefDto | null>(() => readPersistedRef())
+  const [selectedRef, setSelectedRefState] = useState<AgentRefDto | null>(() =>
+    hasProjectUiStateStorage ? null : readPersistedRef(),
+  )
   const [detail, setDetail] = useState<WorkflowAgentDetailDto | null>(null)
   const [detailStatus, setDetailStatus] = useState<AgentDetailStatus>('idle')
   const [detailError, setDetailError] = useState<Error | null>(null)
 
   const detailRequestId = useRef(0)
   const listRequestId = useRef(0)
+  const persistedSelectionRequestId = useRef(0)
+  const currentProjectIdRef = useRef(projectId)
+  const [stateProjectId, setStateProjectId] = useState(projectId)
+  currentProjectIdRef.current = projectId
+  const isStateForCurrentProject = stateProjectId === projectId
 
   const loadAgents = useCallback(async () => {
     if (!projectId) {
@@ -82,16 +104,27 @@ export function useWorkflowAgentInspector(
       setAgentsError(null)
       return
     }
+    const requestProjectId = projectId
     const requestId = ++listRequestId.current
     setAgentsStatus('loading')
     setAgentsError(null)
     try {
-      const response = await adapter.listWorkflowAgents({ projectId, includeArchived: false })
-      if (requestId !== listRequestId.current) return
+      const response = await adapter.listWorkflowAgents({ projectId: requestProjectId, includeArchived: false })
+      if (
+        requestId !== listRequestId.current ||
+        currentProjectIdRef.current !== requestProjectId
+      ) {
+        return
+      }
       setAgents(response.agents)
       setAgentsStatus('ready')
     } catch (error) {
-      if (requestId !== listRequestId.current) return
+      if (
+        requestId !== listRequestId.current ||
+        currentProjectIdRef.current !== requestProjectId
+      ) {
+        return
+      }
       setAgentsError(error instanceof Error ? error : new Error(String(error)))
       setAgentsStatus('error')
     }
@@ -105,16 +138,27 @@ export function useWorkflowAgentInspector(
         setDetailError(null)
         return
       }
+      const requestProjectId = projectId
       const requestId = ++detailRequestId.current
       setDetailStatus('loading')
       setDetailError(null)
       try {
-        const response = await adapter.getWorkflowAgentDetail({ projectId, ref })
-        if (requestId !== detailRequestId.current) return
+        const response = await adapter.getWorkflowAgentDetail({ projectId: requestProjectId, ref })
+        if (
+          requestId !== detailRequestId.current ||
+          currentProjectIdRef.current !== requestProjectId
+        ) {
+          return
+        }
         setDetail(response)
         setDetailStatus('ready')
       } catch (error) {
-        if (requestId !== detailRequestId.current) return
+        if (
+          requestId !== detailRequestId.current ||
+          currentProjectIdRef.current !== requestProjectId
+        ) {
+          return
+        }
         setDetail(null)
         setDetailError(error instanceof Error ? error : new Error(String(error)))
         setDetailStatus('error')
@@ -123,13 +167,65 @@ export function useWorkflowAgentInspector(
     [adapter, projectId],
   )
 
+  useEffect(() => {
+    listRequestId.current += 1
+    detailRequestId.current += 1
+    persistedSelectionRequestId.current += 1
+    setStateProjectId(projectId)
+    setAgents([])
+    setAgentsStatus(projectId ? 'loading' : 'idle')
+    setAgentsError(null)
+    setSelectedRefState(null)
+    setDetail(null)
+    setDetailStatus('idle')
+    setDetailError(null)
+  }, [projectId])
+
   // Initial load + reload on project change.
   useEffect(() => {
     void loadAgents()
   }, [loadAgents])
 
+  useEffect(() => {
+    const requestId = ++persistedSelectionRequestId.current
+    const requestProjectId = projectId
+    if (!projectId) {
+      setSelectedRefState(null)
+      return
+    }
+
+    if (!adapter.readProjectUiState) {
+      setSelectedRefState(readPersistedRef())
+      return
+    }
+
+    adapter
+      .readProjectUiState({ projectId, key: SELECTED_REF_UI_STATE_KEY })
+      .then((response) => {
+        if (
+          requestId !== persistedSelectionRequestId.current ||
+          currentProjectIdRef.current !== requestProjectId
+        ) {
+          return
+        }
+        setSelectedRefState(parsePersistedAgentRef(response.value ?? null))
+      })
+      .catch(() => {
+        if (
+          requestId !== persistedSelectionRequestId.current ||
+          currentProjectIdRef.current !== requestProjectId
+        ) {
+          return
+        }
+        setSelectedRefState(null)
+      })
+  }, [adapter, projectId])
+
   // Drive detail fetch from selection.
   useEffect(() => {
+    if (!isStateForCurrentProject) {
+      return
+    }
     if (!selectedRef) {
       setDetail(null)
       setDetailStatus('idle')
@@ -137,19 +233,46 @@ export function useWorkflowAgentInspector(
       return
     }
     void loadDetail(selectedRef)
-  }, [selectedRef, loadDetail])
+  }, [isStateForCurrentProject, selectedRef, loadDetail])
 
-  const selectAgent = useCallback((ref: AgentRefDto | null) => {
-    setSelectedRefState((prev) => {
-      if (!ref) {
-        if (prev !== null) persistRef(null)
-        return null
-      }
-      if (prev && agentRefsEqual(prev, ref)) return prev
-      persistRef(ref)
-      return ref
-    })
-  }, [])
+  const selectAgent = useCallback(
+    (ref: AgentRefDto | null) => {
+      setSelectedRefState((prev) => {
+        if (!ref) {
+          if (prev !== null) {
+            persistedSelectionRequestId.current += 1
+            if (projectId && adapter.writeProjectUiState) {
+              void adapter
+                .writeProjectUiState({
+                  projectId,
+                  key: SELECTED_REF_UI_STATE_KEY,
+                  value: null,
+                })
+                .catch(() => {})
+            } else {
+              persistRef(null)
+            }
+          }
+          return null
+        }
+        if (prev && agentRefsEqual(prev, ref)) return prev
+        persistedSelectionRequestId.current += 1
+        if (projectId && adapter.writeProjectUiState) {
+          void adapter
+            .writeProjectUiState({
+              projectId,
+              key: SELECTED_REF_UI_STATE_KEY,
+              value: ref,
+            })
+            .catch(() => {})
+        } else {
+          persistRef(ref)
+        }
+        return ref
+      })
+    },
+    [adapter, projectId],
+  )
 
   const reloadDetail = useCallback(async () => {
     if (!selectedRef) return
@@ -162,32 +285,48 @@ export function useWorkflowAgentInspector(
     const stillExists = agents.some((agent) => agentRefsEqual(agent.ref, selectedRef))
     if (!stillExists) {
       setSelectedRefState(null)
-      persistRef(null)
+      if (projectId && adapter.writeProjectUiState) {
+        void adapter
+          .writeProjectUiState({ projectId, key: SELECTED_REF_UI_STATE_KEY, value: null })
+          .catch(() => {})
+      } else {
+        persistRef(null)
+      }
     }
-  }, [agents, agentsStatus, selectedRef])
+  }, [adapter, agents, agentsStatus, projectId, selectedRef])
+
+  const visibleAgents = isStateForCurrentProject ? agents : []
+  const visibleAgentsStatus = isStateForCurrentProject
+    ? agentsStatus
+    : projectId ? 'loading' : 'idle'
+  const visibleSelectedRef = isStateForCurrentProject ? selectedRef : null
+  const visibleDetail = isStateForCurrentProject ? detail : null
+  const visibleDetailStatus = isStateForCurrentProject ? detailStatus : 'idle'
+  const visibleDetailError = isStateForCurrentProject ? detailError : null
+  const visibleAgentsError = isStateForCurrentProject ? agentsError : null
 
   return useMemo(
     () => ({
-      agents,
-      agentsStatus,
-      agentsError,
-      selectedRef,
+      agents: visibleAgents,
+      agentsStatus: visibleAgentsStatus,
+      agentsError: visibleAgentsError,
+      selectedRef: visibleSelectedRef,
       selectAgent,
-      detail,
-      detailStatus,
-      detailError,
+      detail: visibleDetail,
+      detailStatus: visibleDetailStatus,
+      detailError: visibleDetailError,
       refreshAgents: loadAgents,
       reloadDetail,
     }),
     [
-      agents,
-      agentsStatus,
-      agentsError,
-      selectedRef,
+      visibleAgents,
+      visibleAgentsStatus,
+      visibleAgentsError,
+      visibleSelectedRef,
       selectAgent,
-      detail,
-      detailStatus,
-      detailError,
+      visibleDetail,
+      visibleDetailStatus,
+      visibleDetailError,
       loadAgents,
       reloadDetail,
     ],

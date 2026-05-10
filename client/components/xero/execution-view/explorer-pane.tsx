@@ -209,16 +209,16 @@ export function ExplorerPane({
         </div>
         <div className="flex items-center gap-0.5">
           <IconButton label="New file" onClick={() => onRequestNewFile('/')}>
-            <FilePlus className="h-3.5 w-3.5" />
+            <FilePlus className="size-3" />
           </IconButton>
           <IconButton label="New folder" onClick={() => onRequestNewFolder('/')}>
-            <FolderPlus className="h-3.5 w-3.5" />
+            <FolderPlus className="size-3" />
           </IconButton>
           <IconButton label="Open find and replace" onClick={onOpenFind}>
-            <Search className="h-3.5 w-3.5" />
+            <Search className="size-3" />
           </IconButton>
           <IconButton label="Reload project" onClick={onReload}>
-            <RotateCcw className={cn('h-3.5 w-3.5', isTreeLoading && 'animate-spin')} />
+            <RotateCcw className={cn('size-3', isTreeLoading && 'animate-spin')} />
           </IconButton>
         </div>
       </div>
@@ -305,9 +305,9 @@ function IconButton({
   return (
     <Button
       aria-label={label}
-      className="size-6 rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+      className="rounded text-muted-foreground hover:bg-muted hover:text-foreground"
       onClick={onClick}
-      size="icon"
+      size="icon-xs"
       title={label}
       type="button"
       variant="ghost"

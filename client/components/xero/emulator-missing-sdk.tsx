@@ -5,6 +5,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { CheckCircle2, Download, ExternalLink, Loader2, RefreshCw, XCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 import type { EmulatorPlatform } from "@/src/features/emulator/use-emulator-session"
 
 interface SdkStatus {
@@ -143,11 +144,25 @@ export function EmulatorMissingSdk({ active = true, platform, onDismiss }: Props
           }
         })
       }
-    }).then((fn) => unlisten.push(fn))
+    }).then((fn) => {
+      const safeUnlisten = createSafeTauriUnlisten(fn)
+      if (cancelled) {
+        safeUnlisten()
+      } else {
+        unlisten.push(safeUnlisten)
+      }
+    })
 
     void listen(SDK_STATUS_CHANGED_EVENT, () => {
       if (!cancelled) void probe()
-    }).then((fn) => unlisten.push(fn))
+    }).then((fn) => {
+      const safeUnlisten = createSafeTauriUnlisten(fn)
+      if (cancelled) {
+        safeUnlisten()
+      } else {
+        unlisten.push(safeUnlisten)
+      }
+    })
 
     return () => {
       cancelled = true

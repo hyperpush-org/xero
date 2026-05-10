@@ -41,12 +41,19 @@ pub(crate) fn sync_autonomous_run_state(
     let persisted = match runtime_snapshot {
         Some(snapshot) => {
             let payload = durable_run_payload(existing.as_ref(), snapshot, intent);
-            match project_store::upsert_autonomous_run(repo_root, &payload) {
-                Ok(persisted) => persisted,
-                Err(error) if should_fallback_autonomous_sync(&error, intent) => {
-                    return Ok(autonomous_run_state_from_transient_payload(&payload));
+            if let Some(existing) = existing
+                .as_ref()
+                .filter(|existing| existing.run == payload.run)
+            {
+                existing.clone()
+            } else {
+                match project_store::upsert_autonomous_run(repo_root, &payload) {
+                    Ok(persisted) => persisted,
+                    Err(error) if should_fallback_autonomous_sync(&error, intent) => {
+                        return Ok(autonomous_run_state_from_transient_payload(&payload));
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
         }
         None => {

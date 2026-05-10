@@ -284,6 +284,10 @@
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
   opacity: 0.62;
 }
+.agent-visualization .react-flow__edge.agent-edge-skill .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-rose-500, #f43f5e) 50%, var(--background));
+  opacity: 0.62;
+}
 .agent-visualization .react-flow__edge.agent-edge-tool .react-flow__edge-path {
   stroke: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 50%, var(--background));
   opacity: 0.62;
@@ -368,6 +372,11 @@
 .agent-visualization .react-flow__edge.agent-edge-prompt .react-flow__arrowhead polygon {
   fill: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 50%, var(--background));
+}
+.agent-visualization .react-flow__edge.agent-edge-skill .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-skill .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-rose-500, #f43f5e) 50%, var(--background));
+  stroke: color-mix(in oklab, var(--color-rose-500, #f43f5e) 50%, var(--background));
 }
 .agent-visualization .react-flow__edge.agent-edge-tool .react-flow__arrowhead polyline,
 .agent-visualization .react-flow__edge.agent-edge-tool .react-flow__arrowhead polygon {
@@ -594,6 +603,9 @@
 }
 .agent-visualization .agent-graph-lane-label--prompt .agent-graph-lane-label__bar {
   background: color-mix(in oklab, var(--color-amber-500, #f59e0b) 72%, var(--background));
+}
+.agent-visualization .agent-graph-lane-label--skills .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--color-rose-500, #f43f5e) 72%, var(--background));
 }
 .agent-visualization .agent-graph-lane-label--tool .agent-graph-lane-label__bar {
   background: color-mix(in oklab, var(--color-sky-500, #0ea5e9) 72%, var(--background));

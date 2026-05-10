@@ -722,6 +722,36 @@ describe('AgentRuntime current UI', () => {
     expect(exportAgentTrace).not.toHaveBeenCalled()
   })
 
+  it('turns the composer send control into a stop control while an agent run is active', async () => {
+    const onStopRuntimeRun = vi.fn(async () =>
+      makeRuntimeRun({
+        status: 'stopped',
+        statusLabel: 'Run stopped',
+        isActive: false,
+        isTerminal: true,
+        stoppedAt: '2026-04-29T00:48:09Z',
+      }),
+    )
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+        })}
+        onStopRuntimeRun={onStopRuntimeRun}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Send message' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop agent run' }))
+
+    await waitFor(() => expect(onStopRuntimeRun).toHaveBeenCalledWith('run-1'))
+  })
+
   it('does not render worker lifecycle cards on the Agent tab', () => {
     render(
       <AgentRuntime
@@ -1750,6 +1780,197 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('Review the diff before continuing.')).toBeVisible()
     expect(screen.getByText('You')).toBeVisible()
+  })
+
+  it('keeps a submitted prompt singular when queued run truth replaces the optimistic turn', () => {
+    const submittedPrompt = 'Please inspect the flaky test.'
+    const onUpdateRuntimeRunControls = vi.fn(() => new Promise<RuntimeRunView>(() => undefined))
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun(),
+      runtimeStreamStatus: 'live' as const,
+      runtimeStreamStatusLabel: 'Live stream',
+      runtimeStreamItems: [],
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: submittedPrompt },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          selectedPrompt: {
+            text: submittedPrompt,
+            queuedAt: '2026-04-20T12:05:00Z',
+            hasQueuedPrompt: true,
+          },
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+  })
+
+  it('keeps the submitted prompt row mounted when the runtime echo replaces queued truth', async () => {
+    const submittedPrompt = 'Please inspect the flaky test.'
+    const onUpdateRuntimeRunControls = vi.fn(() => new Promise<RuntimeRunView>(() => undefined))
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun(),
+      runtimeStreamStatus: 'live' as const,
+      runtimeStreamStatusLabel: 'Live stream',
+      runtimeStreamItems: [],
+    }
+    const queuedPrompt = {
+      text: submittedPrompt,
+      queuedAt: '2026-04-20T12:05:00Z',
+      hasQueuedPrompt: true,
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: submittedPrompt },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const promptRow = within(conversation).getByText(submittedPrompt)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          selectedPrompt: queuedPrompt,
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+    expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          selectedPrompt: queuedPrompt,
+          runtimeStreamItems: [
+            {
+              ...makeTranscriptItem({
+                sequence: 2,
+                role: 'user',
+                text: submittedPrompt,
+              }),
+              createdAt: new Date(Date.now() + 1_000).toISOString(),
+            },
+          ],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+    expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
+  })
+
+  it('keeps the first submitted prompt row mounted when the started run echoes it', async () => {
+    const submittedPrompt = 'Kick off the first run.'
+    const onStartRuntimeRun = vi.fn(() => new Promise<RuntimeRunView>(() => undefined))
+    const baseAgent = {
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: null,
+      runtimeStreamStatus: 'idle' as const,
+      runtimeStreamStatusLabel: 'No live stream',
+      runtimeStreamItems: [],
+    }
+    const queuedPrompt = {
+      text: submittedPrompt,
+      queuedAt: '2026-04-20T12:05:00Z',
+      hasQueuedPrompt: true,
+    }
+
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent(baseAgent)}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: submittedPrompt },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const promptRow = within(conversation).getByText(submittedPrompt)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: queuedPrompt,
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+    expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          ...baseAgent,
+          runtimeRun: makeRuntimeRun(),
+          runtimeStreamStatus: 'live',
+          runtimeStreamStatusLabel: 'Live stream',
+          selectedPrompt: queuedPrompt,
+          runtimeStreamItems: [
+            {
+              ...makeTranscriptItem({
+                sequence: 2,
+                role: 'user',
+                text: submittedPrompt,
+              }),
+              createdAt: new Date(Date.now() + 1_000).toISOString(),
+            },
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(within(conversation).getAllByText(submittedPrompt)).toHaveLength(1)
+    expect(within(conversation).getByText(submittedPrompt)).toBe(promptRow)
   })
 
   it('pauses auto-follow when the user scrolls away and resumes from the latest button', () => {

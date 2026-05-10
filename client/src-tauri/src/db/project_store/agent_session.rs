@@ -194,7 +194,15 @@ pub fn list_agent_sessions(
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
     read_project_row(&connection, &database_path, repo_root, project_id)?;
+    read_agent_sessions_with_connection(&connection, &database_path, project_id, include_archived)
+}
 
+pub(crate) fn read_agent_sessions_with_connection(
+    connection: &Connection,
+    database_path: &Path,
+    project_id: &str,
+    include_archived: bool,
+) -> Result<Vec<AgentSessionRecord>, CommandError> {
     let mut statement = connection
         .prepare(
             r#"
@@ -445,7 +453,7 @@ pub fn archive_agent_session(
                 format!(
                     "Xero cannot archive agent session `{agent_session_id}` for project `{project_id}` while run `{run_id}` is {status}. Stop the run first."
                 ),
-            ))
+            ));
         }
         Err(SqlError::QueryReturnedNoRows) => {}
         Err(error) => {
@@ -455,7 +463,7 @@ pub fn archive_agent_session(
                     "Xero could not inspect runtime runs for agent session `{agent_session_id}` in {}: {error}",
                     database_path.display()
                 ),
-            ))
+            ));
         }
     }
 
@@ -1202,7 +1210,7 @@ fn decode_agent_session_row(
                     "Xero found malformed agent-session selected flag `{other}` in {}.",
                     database_path.display()
                 ),
-            ))
+            ));
         }
     };
 

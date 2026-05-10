@@ -120,13 +120,13 @@ fn snapshot_with_app(
     app: &tauri::App<tauri::test::MockRuntime>,
     project_id: &str,
 ) -> Result<ProjectSnapshotResponseDto, CommandError> {
-    get_project_snapshot(
+    tauri::async_runtime::block_on(get_project_snapshot(
         app.handle().clone(),
         app.state::<DesktopState>(),
         ProjectIdRequestDto {
             project_id: project_id.to_owned(),
         },
-    )
+    ))
 }
 
 fn assert_summary_counts_match_snapshot(

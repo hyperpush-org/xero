@@ -1,120 +1,70 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
-        validate_non_empty, CommandError, CommandResult, ProjectIdRequestDto,
-        ProjectSnapshotResponseDto,
+        validate_non_empty, CommandResult, ProjectIdRequestDto, ProjectSnapshotResponseDto,
     },
-    db,
     db::project_store,
-    registry::{self, RegistryProjectRecord},
     state::DesktopState,
 };
 
-use super::runtime_support::{
-    emit_runtime_run_updated_if_changed, load_persisted_runtime_run, load_runtime_run_status,
-    sync_autonomous_run_state, AutonomousSyncIntent,
-};
-
 #[tauri::command]
-pub fn get_project_snapshot<R: Runtime>(
+pub async fn get_project_snapshot<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: ProjectIdRequestDto,
 ) -> CommandResult<ProjectSnapshotResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
 
-    let registry_path = state.global_db_path(&app)?;
-    db::configure_project_database_paths(&registry_path);
-    let registry = registry::read_registry(&registry_path)?;
-    let mut live_root_records = Vec::new();
-    let mut snapshot_candidates = Vec::new();
-    let mut pruned_stale_roots = false;
+    let jobs = state.backend_jobs().clone();
+    let state = state.inner().clone();
+    let project_id = request.project_id;
+    jobs.run_blocking_latest(
+        "project-snapshot",
+        "project snapshot",
+        move |cancellation| {
+            cancellation.check_cancelled("project snapshot")?;
+            project_snapshot_for_project(&app, &state, &project_id)
+        },
+    )
+    .await
+}
 
-    for record in registry.projects {
-        if !Path::new(&record.root_path).is_dir() {
-            pruned_stale_roots = true;
-            continue;
-        }
+pub(crate) struct ProjectSnapshotForProject {
+    pub snapshot: ProjectSnapshotResponseDto,
+    pub repo_root: PathBuf,
+}
 
-        if record.project_id == request.project_id {
-            snapshot_candidates.push(record.clone());
-        }
-        live_root_records.push(record);
-    }
+pub(crate) fn project_snapshot_for_project<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+) -> CommandResult<ProjectSnapshotResponseDto> {
+    project_snapshot_record_for_project(app, state, project_id).map(|record| record.snapshot)
+}
 
-    if pruned_stale_roots {
-        let _ = registry::replace_projects(&registry_path, live_root_records);
-    }
+pub(crate) fn project_snapshot_record_for_project<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+) -> CommandResult<ProjectSnapshotForProject> {
+    validate_non_empty(project_id, "projectId")?;
 
-    if snapshot_candidates.is_empty() {
-        return Err(CommandError::project_not_found());
-    }
+    let registry_path = state.global_db_path(app)?;
+    let repo_root =
+        crate::runtime::resolve_imported_repo_root_from_registry(&registry_path, project_id)?;
 
-    let mut first_error: Option<CommandError> = None;
-
-    for RegistryProjectRecord {
-        project_id,
-        root_path,
-        ..
-    } in snapshot_candidates
-    {
-        match project_store::load_project_snapshot(Path::new(&root_path), &project_id) {
-            Ok(record) => {
-                let mut snapshot = record.snapshot;
-                let agent_sessions =
-                    project_store::list_agent_sessions(Path::new(&root_path), &project_id, false)?;
-                let selected_agent_session_id = agent_sessions
-                    .iter()
-                    .find(|session| session.selected)
-                    .map(|session| session.agent_session_id.clone());
-                snapshot.agent_sessions = agent_sessions
-                    .iter()
-                    .map(super::agent_session::agent_session_dto)
-                    .collect();
-
-                let Some(agent_session_id) = selected_agent_session_id else {
-                    return Ok(snapshot);
-                };
-
-                let before = load_persisted_runtime_run(
-                    Path::new(&root_path),
-                    &project_id,
-                    &agent_session_id,
-                )?;
-                let after = load_runtime_run_status(
-                    state.inner(),
-                    Path::new(&root_path),
-                    &project_id,
-                    &agent_session_id,
-                )?;
-                emit_runtime_run_updated_if_changed(
-                    &app,
-                    &project_id,
-                    &agent_session_id,
-                    &before,
-                    &after,
-                )?;
-
-                let autonomous_state = sync_autonomous_run_state(
-                    Path::new(&root_path),
-                    &project_id,
-                    &agent_session_id,
-                    after.as_ref(),
-                    AutonomousSyncIntent::Observe,
-                )?;
-                snapshot.autonomous_run = autonomous_state.run;
-                return Ok(snapshot);
-            }
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
-        }
-    }
-
-    Err(first_error.unwrap_or_else(CommandError::project_not_found))
+    let (record, agent_sessions) =
+        project_store::load_project_snapshot_and_agent_sessions(&repo_root, project_id, false)?;
+    let mut snapshot = record.snapshot;
+    snapshot.agent_sessions = agent_sessions
+        .iter()
+        .map(super::agent_session::agent_session_dto)
+        .collect();
+    Ok(ProjectSnapshotForProject {
+        snapshot,
+        repo_root,
+    })
 }

@@ -82,6 +82,13 @@ pub(crate) fn drive_provider_loop(
         let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
         let agent_definition_snapshot =
             load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
+        let attached_skill_contexts = attached_skill_contexts_for_provider_turn(
+            repo_root,
+            project_id,
+            run_id,
+            &agent_definition_snapshot,
+            tool_runtime,
+        )?;
         workspace_guard.record_current_code_workspace_epoch(repo_root, project_id)?;
         let turn_context_package = assemble_provider_context_package(
             ProviderContextPackageInput {
@@ -105,6 +112,7 @@ pub(crate) fn drive_provider_loop(
                 provider_preflight,
             },
             skill_contexts,
+            attached_skill_contexts,
         )?;
         let _manifest_id = turn_context_package.manifest.manifest_id.as_str();
         let _fragment_count = turn_context_package.compilation.fragments.len();

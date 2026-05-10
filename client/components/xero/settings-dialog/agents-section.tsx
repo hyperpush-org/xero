@@ -110,6 +110,7 @@ function lifecycleTone(state: AgentDefinitionLifecycleStateDto): Tone {
     case "archived":
       return "warn"
   }
+  return "info"
 }
 
 function formatTimestamp(value: string): string {

@@ -49,5 +49,5 @@ pub fn persist_operator_resume(
     payload.run.pause_reason = None;
     payload.run.updated_at = timestamp;
 
-    persist_autonomous_run_scaffold(repo_root, payload).map(Some)
+    persist_autonomous_run_scaffold(repo_root, existing.as_ref(), payload).map(Some)
 }

@@ -17,6 +17,8 @@ import {
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
+import { useProjectSelectionPreview } from "@/src/features/xero/project-selection-preview"
 import { AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
 import { AppLogo } from "./app-logo"
 import type { View } from "./data"
@@ -84,6 +86,7 @@ interface XeroShellProps {
   onViewPreload?: (view: View) => void
   onSurfacePreload?: (target: SurfacePreloadTarget) => void
   children: React.ReactNode
+  projectId?: string | null
   projectName?: string
   onToggleBrowser?: () => void
   browserOpen?: boolean
@@ -175,10 +178,11 @@ function useEmulatorSdkSignal(desktopRuntime: boolean): EmulatorSdkSignal {
     void listen("emulator:sdk_status_changed", () => {
       void probe()
     }).then((fn) => {
+      const unlisten = createSafeTauriUnlisten(fn)
       if (cancelled) {
-        fn()
+        unlisten()
       } else {
-        unlisteners.push(fn)
+        unlisteners.push(unlisten)
       }
     })
 
@@ -209,6 +213,7 @@ export function XeroShell({
   onViewPreload,
   onSurfacePreload,
   children,
+  projectId = null,
   projectName,
   onToggleBrowser,
   browserOpen = false,
@@ -235,6 +240,7 @@ export function XeroShell({
   const detectedPlatform = useDesktopPlatform(desktopRuntime)
   const platform = platformOverride ?? detectedPlatform
   const emulatorSdk = useEmulatorSdkSignal(desktopRuntime)
+  const projectSelectionPreview = useProjectSelectionPreview()
 
   const handleWindowAction = async (action: WindowAction) => {
     if (!desktopRuntime) return
@@ -285,7 +291,11 @@ export function XeroShell({
   // Shared pieces
   // ------------------------------------------------------------------
 
-  const trimmedProjectName = projectName?.trim()
+  const previewProjectName =
+    projectSelectionPreview.projectId && projectSelectionPreview.projectId !== projectId
+      ? projectSelectionPreview.projectName
+      : null
+  const trimmedProjectName = (previewProjectName ?? projectName)?.trim()
   const Logo = (
     <div className="flex min-w-0 items-center gap-2">
       <AppLogo className="h-3 w-3 shrink-0" />

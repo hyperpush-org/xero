@@ -8,15 +8,20 @@ import type {
   AgentOutputContractDto,
   AgentOutputSectionDto,
   AgentPromptDto,
+  AgentAttachedSkillDto,
   AgentToolSummaryDto,
   AgentTriggerLifecycleEventDto,
   AgentTriggerRefDto,
+  WorkflowAgentGraphEdgeDto,
+  WorkflowAgentGraphNodeDto,
+  WorkflowAgentGraphProjectionDto,
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
 
 export type AgentGraphNodeKind =
   | 'agent-header'
   | 'prompt'
+  | 'skills'
   | 'tool'
   | 'db-table'
   | 'agent-output'
@@ -29,6 +34,7 @@ export interface AgentHeaderSummaryCounts {
   dbTables: number
   outputSections: number
   consumes: number
+  attachedSkills: number
 }
 
 // Advanced authoring fields exposed on the header node's expanded body. These
@@ -96,6 +102,10 @@ export interface ConsumedArtifactNodeData extends Record<string, unknown> {
   artifact: AgentConsumedArtifactDto
 }
 
+export interface SkillNodeData extends Record<string, unknown> {
+  skill: AgentAttachedSkillDto
+}
+
 export interface LaneLabelNodeData extends Record<string, unknown> {
   label: string
   count: number
@@ -110,6 +120,7 @@ export interface ToolGroupFrameNodeData extends Record<string, unknown> {
 
 export type AgentHeaderFlowNode = Node<AgentHeaderNodeData, 'agent-header'>
 export type PromptFlowNode = Node<PromptNodeData, 'prompt'>
+export type SkillFlowNode = Node<SkillNodeData, 'skills'>
 export type ToolFlowNode = Node<ToolNodeData, 'tool'>
 export type DbTableFlowNode = Node<DbTableNodeData, 'db-table'>
 export type OutputFlowNode = Node<OutputNodeData, 'agent-output'>
@@ -124,6 +135,7 @@ export type ToolGroupFrameFlowNode = Node<ToolGroupFrameNodeData, 'tool-group-fr
 export type AgentGraphNodeData =
   | AgentHeaderNodeData
   | PromptNodeData
+  | SkillNodeData
   | ToolNodeData
   | DbTableNodeData
   | OutputNodeData
@@ -133,6 +145,7 @@ export type AgentGraphNodeData =
 export type AgentGraphNode =
   | AgentHeaderFlowNode
   | PromptFlowNode
+  | SkillFlowNode
   | ToolFlowNode
   | DbTableFlowNode
   | OutputFlowNode
@@ -148,11 +161,66 @@ export interface AgentGraph {
   edges: AgentGraphEdge[]
 }
 
+function markerEndFromProjection(
+  marker: WorkflowAgentGraphEdgeDto['marker'] | null | undefined,
+): AgentGraphEdge['markerEnd'] | undefined {
+  if (marker === 'arrow_closed') return ARROW_MARKER
+  if (marker === 'arrow') return TRIGGER_ARROW_MARKER
+  return undefined
+}
+
+function nodeFromProjection(node: WorkflowAgentGraphNodeDto): AgentGraphNode {
+  const projected = {
+    id: node.id,
+    type: node.type,
+    position: node.position,
+    data: node.data,
+    parentId: node.parentId,
+    extent: node.extent,
+    draggable: node.draggable,
+    selectable: node.selectable,
+    dragHandle: node.dragHandle,
+    style: node.style,
+    width: node.width,
+    height: node.height,
+  }
+  return Object.fromEntries(
+    Object.entries(projected).filter(([, value]) => value !== undefined),
+  ) as unknown as AgentGraphNode
+}
+
+function edgeFromProjection(edge: WorkflowAgentGraphEdgeDto): AgentGraphEdge {
+  const projected = {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    type: edge.type,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
+    data: edge.data,
+    className: edge.className,
+    markerEnd: markerEndFromProjection(edge.marker),
+  }
+  return Object.fromEntries(
+    Object.entries(projected).filter(([, value]) => value !== undefined),
+  ) as unknown as AgentGraphEdge
+}
+
+export function agentGraphFromProjection(
+  projection: WorkflowAgentGraphProjectionDto,
+): AgentGraph {
+  return {
+    nodes: projection.nodes.map(nodeFromProjection),
+    edges: projection.edges.map(edgeFromProjection),
+  }
+}
+
 const HEADER_NODE_ID = 'agent-header'
 const OUTPUT_NODE_ID = 'agent-output'
 
 const HEADER_SOURCE_HANDLE = {
   prompt: 'prompts',
+  skills: 'skills',
   tool: 'tools',
   db: 'db',
   output: 'output',
@@ -162,6 +230,11 @@ const HEADER_SOURCE_HANDLE = {
 export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
   tool: 0.32,
   db: 0.68,
+} as const
+
+export const AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS = {
+  consumed: 0.42,
+  skills: 0.68,
 } as const
 
 export const AGENT_GRAPH_TRIGGER_HANDLES = {
@@ -175,6 +248,10 @@ export function promptNodeId(prompt: AgentPromptDto, index: number): string {
 
 export function toolNodeId(tool: AgentToolSummaryDto): string {
   return `tool:${tool.name}`
+}
+
+export function skillNodeId(skill: Pick<AgentAttachedSkillDto, 'id'>): string {
+  return `skills:${skill.id}`
 }
 
 export function toolGroupFrameNodeId(groupKey: string): string {
@@ -569,6 +646,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
         dbTables: dbTouchpointCount,
         outputSections: detail.output.sections.length,
         consumes: detail.consumes.length,
+        attachedSkills: detail.attachedSkills.length,
       },
       advanced: deriveAdvancedFromDetail(detail),
     },
@@ -595,7 +673,29 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
     })
   })
 
-  // 3. Tools and 4. DBs require coordinated ordering: the barycenter heuristic
+  // 3. Attached skills. These are always-injected context, not callable tool
+  // capability, so they get their own lane and edge family.
+  for (const skill of detail.attachedSkills) {
+    const id = skillNodeId(skill)
+    nodes.push({
+      id,
+      type: 'skills',
+      position: { x: 0, y: 0 },
+      data: { skill },
+    })
+    edges.push({
+      id: `e:header->${id}`,
+      source: HEADER_NODE_ID,
+      sourceHandle: HEADER_SOURCE_HANDLE.skills,
+      target: id,
+      type: 'smoothstep',
+      data: { category: 'skills' },
+      className: 'agent-edge agent-edge-skill',
+      markerEnd: ARROW_MARKER,
+    })
+  }
+
+  // 4. Tools and 5. DBs require coordinated ordering: the barycenter heuristic
   // sorts each lane to minimise crossings with the other. We do a two-pass
   // refinement: alphabetical → reorder DBs by tool-row barycenter → reorder
   // tools by DB-row barycenter → reorder DBs once more. Two passes is enough
@@ -778,7 +878,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
     })
   }
 
-  // 5. Output contract (parent) + sections (children).
+  // 6. Output contract (parent) + sections (children).
   nodes.push({
     id: OUTPUT_NODE_ID,
     type: 'agent-output',
@@ -837,7 +937,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
     }
   }
 
-  // 6. Consumed artifacts (left of header).
+  // 7. Consumed artifacts (left of header).
   for (const artifact of detail.consumes) {
     const id = consumedArtifactNodeId(artifact.id)
     nodes.push({
@@ -858,7 +958,7 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
     })
   }
 
-  // 7. Cross-edges driven by db touchpoint triggers. Tool triggers connect
+  // 8. Cross-edges driven by db touchpoint triggers. Tool triggers connect
   // their tool node to the db node; output-section triggers connect their
   // section node to the db node; upstream-artifact triggers connect the
   // existing consumed-artifact node to the db node. Lifecycle triggers do
@@ -1147,6 +1247,7 @@ export function decodeAgentGraphNodeId(
   | { kind: 'header' }
   | { kind: 'output' }
   | { kind: 'prompt'; index: number; promptId: string }
+  | { kind: 'skills'; skillId: string }
   | { kind: 'tool'; toolName: string }
   | { kind: 'db'; touchpoint: 'read' | 'write' | 'encouraged'; table: string }
   | { kind: 'output-section'; sectionId: string }
@@ -1163,6 +1264,9 @@ export function decodeAgentGraphNodeId(
       index: Number.parseInt(indexRaw, 10),
       promptId: rest.join(':'),
     }
+  }
+  if (id.startsWith('skills:')) {
+    return { kind: 'skills', skillId: id.slice('skills:'.length) }
   }
   if (id.startsWith('tool:')) {
     return { kind: 'tool', toolName: id.slice('tool:'.length) }
@@ -1243,6 +1347,7 @@ function blankDetail(): WorkflowAgentDetailDto {
       sections: [],
     },
     consumes: [],
+    attachedSkills: [],
   }
 }
 

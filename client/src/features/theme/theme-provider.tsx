@@ -5,9 +5,11 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
+import { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
   CUSTOM_THEMES_STORAGE_KEY,
   DEFAULT_THEME_ID,
@@ -31,6 +33,8 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
+const THEME_APP_STATE_KEY = 'theme.active.v1'
+const CUSTOM_THEMES_APP_STATE_KEY = 'theme.custom.v1'
 
 /**
  * Read the stored theme id synchronously. Safe in the browser only — callers
@@ -64,6 +68,15 @@ function readStoredCustomThemes(): ThemeDefinition[] {
   } catch {
     return []
   }
+}
+
+function appStateThemeId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null
+}
+
+function appStateCustomThemes(value: unknown): ThemeDefinition[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(isValidThemeDefinition)
 }
 
 function isValidThemeDefinition(value: unknown): value is ThemeDefinition {
@@ -114,6 +127,8 @@ export interface ThemeProviderProps {
 }
 
 export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) {
+  const appStateHydratedRef = useRef(Boolean(initialThemeId))
+  const [appStateHydrated, setAppStateHydrated] = useState(Boolean(initialThemeId))
   const [customThemes, setCustomThemes] = useState<ThemeDefinition[]>(() =>
     initialThemeId ? [] : readStoredCustomThemes(),
   )
@@ -128,6 +143,43 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
 
   const theme = useMemo(() => getThemeById(themeId, allThemes), [themeId, allThemes])
 
+  useEffect(() => {
+    if (initialThemeId) return
+    const readAppUiState = XeroDesktopAdapter.readAppUiState
+    if (typeof readAppUiState !== 'function') {
+      appStateHydratedRef.current = true
+      setAppStateHydrated(true)
+      return
+    }
+
+    let disposed = false
+    void Promise.all([
+      readAppUiState({ key: THEME_APP_STATE_KEY }),
+      readAppUiState({ key: CUSTOM_THEMES_APP_STATE_KEY }),
+    ])
+      .then(([themeResponse, customThemeResponse]) => {
+        if (disposed) return
+        const nextCustomThemes = appStateCustomThemes(customThemeResponse.value)
+        if (nextCustomThemes.length > 0 || customThemeResponse.value != null) {
+          setCustomThemes(nextCustomThemes)
+        }
+        const nextThemeId = appStateThemeId(themeResponse.value)
+        if (nextThemeId) {
+          setThemeIdState(getThemeById(nextThemeId, [...THEMES, ...nextCustomThemes]).id)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (disposed) return
+        appStateHydratedRef.current = true
+        setAppStateHydrated(true)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [initialThemeId])
+
   useLayoutEffect(() => {
     applyThemeToDocument(
       theme,
@@ -139,7 +191,13 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
       // Storage may be disabled (private mode, Tauri sandbox quirks) — the
       // theme still applies for the session, we just can't persist it.
     }
-  }, [theme, allThemes])
+    if (appStateHydrated) {
+      void XeroDesktopAdapter.writeAppUiState?.({
+        key: THEME_APP_STATE_KEY,
+        value: theme.id,
+      }).catch(() => undefined)
+    }
+  }, [theme, allThemes, appStateHydrated])
 
   useEffect(() => {
     void syncThemeDockIcon(theme)
@@ -150,6 +208,12 @@ export function ThemeProvider({ children, initialThemeId }: ThemeProviderProps) 
       window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(next))
     } catch {
       // Same fallback story as the active theme id — best-effort persistence.
+    }
+    if (appStateHydratedRef.current) {
+      void XeroDesktopAdapter.writeAppUiState?.({
+        key: CUSTOM_THEMES_APP_STATE_KEY,
+        value: next,
+      }).catch(() => undefined)
     }
   }, [])
 

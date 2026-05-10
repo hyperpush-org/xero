@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import { recordIpcPayloadSample } from "@/src/lib/ipc-payload-budget"
+import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 import {
   useCookieImport,
   type CookieImportStatus,
@@ -350,6 +351,7 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
   // Wire backend events
   useEffect(() => {
     if (!isTauri()) return
+    let cancelled = false
     const unsubs: UnlistenFn[] = []
     const coalescer = createBrowserEventCoalescer({
       onUrlChanged: (payload) => {
@@ -400,22 +402,40 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
       },
     })
 
-    void listen<BrowserUrlChangedPayload>("browser:url_changed", (event) => {
-      recordIpcPayloadSample({ boundary: "event", name: "browser:url_changed", payload: event.payload })
-      coalescer.enqueueUrlChanged(event.payload)
-    }).then((unsub) => unsubs.push(unsub))
+    const trackUnlisten = (promise: Promise<UnlistenFn>) => {
+      void promise.then((unsub) => {
+        const safeUnsub = createSafeTauriUnlisten(unsub)
+        if (cancelled) {
+          safeUnsub()
+        } else {
+          unsubs.push(safeUnsub)
+        }
+      })
+    }
 
-    void listen<BrowserLoadStatePayload>("browser:load_state", (event) => {
-      recordIpcPayloadSample({ boundary: "event", name: "browser:load_state", payload: event.payload })
-      coalescer.enqueueLoadState(event.payload)
-    }).then((unsub) => unsubs.push(unsub))
+    trackUnlisten(
+      listen<BrowserUrlChangedPayload>("browser:url_changed", (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: "browser:url_changed", payload: event.payload })
+        coalescer.enqueueUrlChanged(event.payload)
+      }),
+    )
 
-    void listen<BrowserTabUpdatedPayload>("browser:tab_updated", (event) => {
-      recordIpcPayloadSample({ boundary: "event", name: "browser:tab_updated", payload: event.payload })
-      coalescer.enqueueTabUpdated(event.payload)
-    }).then((unsub) => unsubs.push(unsub))
+    trackUnlisten(
+      listen<BrowserLoadStatePayload>("browser:load_state", (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: "browser:load_state", payload: event.payload })
+        coalescer.enqueueLoadState(event.payload)
+      }),
+    )
+
+    trackUnlisten(
+      listen<BrowserTabUpdatedPayload>("browser:tab_updated", (event) => {
+        recordIpcPayloadSample({ boundary: "event", name: "browser:tab_updated", payload: event.payload })
+        coalescer.enqueueTabUpdated(event.payload)
+      }),
+    )
 
     return () => {
+      cancelled = true
       coalescer.dispose()
       unsubs.forEach((unsub) => unsub())
     }

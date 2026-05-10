@@ -686,12 +686,13 @@ mod tests {
                 "id": definition_id,
                 "version": 1,
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "scope": "project_custom",
                 "lifecycleState": "active",
                 "baseCapabilityProfile": "observe_only",
                 "label": display_name,
-                "shortLabel": "Backup"
+                "shortLabel": "Backup",
+                "attachedSkills": []
             }),
             validation_report: Some(json!({
                 "status": "valid",

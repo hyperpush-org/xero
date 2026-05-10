@@ -2,9 +2,15 @@ import { z } from 'zod'
 
 import { capabilityPermissionExplanationSchema } from './agent-reports'
 import { isoTimestampSchema } from './shared'
+import {
+  skillSourceKindSchema,
+  skillSourceScopeSchema,
+  skillSourceStateSchema,
+  skillTrustStateSchema,
+} from './skills'
 
 export const AGENT_DEFINITION_SCHEMA = 'xero.agent_definition.v1'
-export const AGENT_DEFINITION_SCHEMA_VERSION = 1
+export const AGENT_DEFINITION_SCHEMA_VERSION = 2
 const jsonObjectSchema = z.record(z.string(), z.unknown())
 
 const addDuplicateStringIssues = (
@@ -551,6 +557,24 @@ export type CustomAgentWorkflowStructureDto = z.infer<
   typeof customAgentWorkflowStructureSchema
 >
 
+export const customAgentAttachedSkillSchema = z
+  .object({
+    id: nonEmptyTextSchema,
+    sourceId: nonEmptyTextSchema,
+    skillId: nonEmptyTextSchema,
+    name: nonEmptyTextSchema,
+    description: z.string(),
+    sourceKind: skillSourceKindSchema,
+    scope: skillSourceScopeSchema,
+    versionHash: nonEmptyTextSchema,
+    includeSupportingAssets: z.boolean(),
+    required: z.literal(true),
+  })
+  .strict()
+export type CustomAgentAttachedSkillDto = z.infer<
+  typeof customAgentAttachedSkillSchema
+>
+
 export const canonicalCustomAgentDefinitionBaseSchema = z
   .object({
     schema: z.literal(AGENT_DEFINITION_SCHEMA),
@@ -575,6 +599,7 @@ export const canonicalCustomAgentDefinitionBaseSchema = z
     finalResponseContract: z.string(),
     examplePrompts: z.array(z.string()).min(3),
     refusalEscalationCases: z.array(z.string()).min(3),
+    attachedSkills: z.array(customAgentAttachedSkillSchema),
     prompts: z.array(customAgentPromptSchema),
     tools: z.array(customAgentToolSummarySchema),
     output: customAgentOutputSchema,
@@ -625,6 +650,18 @@ export const validateCanonicalCustomAgentDefinition = (
     ['consumes'],
     definition.consumes.map((artifact) => artifact.id),
     'Custom agent consumed artifact ids must be unique.',
+  )
+  addDuplicateStringIssues(
+    ctx,
+    ['attachedSkills'],
+    definition.attachedSkills.map((skill) => skill.id),
+    'Custom agent attached skill ids must be unique.',
+  )
+  addDuplicateStringIssues(
+    ctx,
+    ['attachedSkills'],
+    definition.attachedSkills.map((skill) => skill.sourceId),
+    'Custom agent attached skill source ids must be unique.',
   )
 }
 
@@ -919,6 +956,7 @@ export const agentPreviewGraphDiagnosticSchema = z
     deniedEffectClass: z.string().trim().min(1).nullable(),
     baseCapabilityProfile: z.string().trim().min(1).nullable(),
     reason: z.string().trim().min(1).nullable(),
+    repairHint: z.string().trim().min(1).nullable(),
   })
   .strict()
 
@@ -1017,6 +1055,126 @@ export const agentPreviewGraphRepairHintsSchema = z
         seen.add(key)
       })
     })
+  })
+
+export const agentPreviewAttachedSkillDiagnosticSchema = z
+  .object({
+    code: z.string().trim().min(1),
+    path: z.string().trim().min(1),
+    message: z.string().trim().min(1),
+    reason: z.string().trim().min(1).nullable(),
+    repairHint: z.string().trim().min(1).nullable(),
+  })
+  .strict()
+
+export const agentPreviewAttachedSkillInjectionEntrySchema = z
+  .object({
+    attachmentId: z.string(),
+    sourceId: z.string(),
+    skillId: z.string(),
+    name: z.string(),
+    sourceKind: z.union([skillSourceKindSchema, z.literal('')]),
+    scope: z.union([skillSourceScopeSchema, z.literal('')]),
+    required: z.boolean(),
+    includeSupportingAssets: z.boolean(),
+    pinnedVersionHash: z.string(),
+    registryVersionHash: z.string().nullable(),
+    sourceState: skillSourceStateSchema.nullable(),
+    trustState: skillTrustStateSchema.nullable(),
+    status: z.enum(['resolved', 'stale', 'unavailable', 'blocked']),
+    willInject: z.boolean(),
+    skillToolRequired: z.literal(false),
+    reasonCodes: z.array(z.string().trim().min(1)),
+    repairHints: z.array(z.string().trim().min(1)),
+    explanation: z.string().trim().min(1),
+    diagnostics: z.array(agentPreviewAttachedSkillDiagnosticSchema),
+  })
+  .strict()
+  .superRefine((entry, ctx) => {
+    if (entry.status === 'resolved' && !entry.willInject) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['willInject'],
+        message: 'Resolved attached skill preview entries must inject.',
+      })
+    }
+    if (entry.status !== 'resolved' && entry.willInject) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['willInject'],
+        message: 'Blocked attached skill preview entries must not inject.',
+      })
+    }
+  })
+
+export const agentPreviewAttachedSkillInjectionSchema = z
+  .object({
+    schema: z.literal('xero.agent_attached_skill_injection_preview.v1'),
+    schemaVersion: z.literal(1),
+    selectionMode: z.literal('definition_attached_skills_without_skill_tool'),
+    status: z.enum(['resolved', 'blocked']),
+    skillToolRequired: z.literal(false),
+    attachmentCount: z.number().int().nonnegative(),
+    resolvedCount: z.number().int().nonnegative(),
+    staleCount: z.number().int().nonnegative(),
+    unavailableCount: z.number().int().nonnegative(),
+    blockedCount: z.number().int().nonnegative(),
+    entries: z.array(agentPreviewAttachedSkillInjectionEntrySchema),
+  })
+  .strict()
+  .superRefine((preview, ctx) => {
+    if (preview.attachmentCount !== preview.entries.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachmentCount'],
+        message: 'Attached skill preview attachmentCount must match entries.',
+      })
+    }
+    const counts = preview.entries.reduce(
+      (sum, entry) => {
+        sum[entry.status] += 1
+        return sum
+      },
+      { resolved: 0, stale: 0, unavailable: 0, blocked: 0 },
+    )
+    if (preview.resolvedCount !== counts.resolved) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['resolvedCount'],
+        message: 'Attached skill preview resolvedCount must match entries.',
+      })
+    }
+    if (preview.staleCount !== counts.stale) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['staleCount'],
+        message: 'Attached skill preview staleCount must match entries.',
+      })
+    }
+    if (preview.unavailableCount !== counts.unavailable) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['unavailableCount'],
+        message: 'Attached skill preview unavailableCount must match entries.',
+      })
+    }
+    if (preview.blockedCount !== counts.blocked) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['blockedCount'],
+        message: 'Attached skill preview blockedCount must match entries.',
+      })
+    }
+    if (
+      preview.status === 'resolved' &&
+      (preview.staleCount > 0 || preview.unavailableCount > 0 || preview.blockedCount > 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['status'],
+        message: 'Attached skill preview cannot be resolved when an attachment will not inject.',
+      })
+    }
   })
 
 export const agentPreviewToolAccessEntrySchema = z
@@ -1133,6 +1291,7 @@ export const agentPreviewPoliciesSchema = z
     memoryPolicy: jsonObjectSchema.nullable(),
     retrievalPolicy: jsonObjectSchema.nullable(),
     handoffPolicy: jsonObjectSchema.nullable(),
+    attachedSkills: z.array(customAgentAttachedSkillSchema),
     workflowContract: z.string().trim().min(1).nullable(),
     workflowStructure: jsonObjectSchema.nullable(),
     finalResponseContract: z.string().trim().min(1).nullable(),
@@ -1184,6 +1343,7 @@ export const agentEffectiveRuntimePreviewSchema = z
     prompt: agentPreviewPromptSchema,
     graphValidation: agentPreviewGraphValidationSchema,
     graphRepairHints: agentPreviewGraphRepairHintsSchema,
+    attachedSkillInjection: agentPreviewAttachedSkillInjectionSchema,
     effectiveToolAccess: agentPreviewEffectiveToolAccessSchema,
     capabilityPermissionExplanations: z.array(capabilityPermissionExplanationSchema),
     policies: agentPreviewPoliciesSchema,
@@ -1203,6 +1363,15 @@ export type AgentPreviewGraphValidationCategoryDto = z.infer<
 export type AgentPreviewGraphValidationDto = z.infer<typeof agentPreviewGraphValidationSchema>
 export type AgentPreviewGraphRepairHintDto = z.infer<typeof agentPreviewGraphRepairHintSchema>
 export type AgentPreviewGraphRepairHintsDto = z.infer<typeof agentPreviewGraphRepairHintsSchema>
+export type AgentPreviewAttachedSkillDiagnosticDto = z.infer<
+  typeof agentPreviewAttachedSkillDiagnosticSchema
+>
+export type AgentPreviewAttachedSkillInjectionEntryDto = z.infer<
+  typeof agentPreviewAttachedSkillInjectionEntrySchema
+>
+export type AgentPreviewAttachedSkillInjectionDto = z.infer<
+  typeof agentPreviewAttachedSkillInjectionSchema
+>
 export type AgentPreviewToolAccessEntryDto = z.infer<typeof agentPreviewToolAccessEntrySchema>
 export type AgentPreviewEffectiveToolAccessDto = z.infer<
   typeof agentPreviewEffectiveToolAccessSchema
@@ -1229,6 +1398,7 @@ export const agentDefinitionValidationDiagnosticSchema = z
     deniedEffectClass: z.string().nullable().optional(),
     baseCapabilityProfile: z.string().nullable().optional(),
     reason: z.string().nullable().optional(),
+    repairHint: z.string().nullable().optional(),
   })
   .strict()
 export type AgentDefinitionValidationDiagnosticDto = z.infer<
@@ -1344,6 +1514,8 @@ export function getAgentDefinitionLifecycleLabel(
   switch (state) {
     case 'draft':
       return 'Draft'
+    case 'valid':
+      return 'Valid'
     case 'active':
       return 'Active'
     case 'archived':

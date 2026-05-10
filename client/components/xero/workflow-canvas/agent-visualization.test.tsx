@@ -41,6 +41,7 @@ import {
 } from './agent-visualization'
 import {
   AGENT_GRAPH_HEADER_HANDLES,
+  AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS,
   AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
   AGENT_GRAPH_TRIGGER_HANDLES,
   buildAgentGraph,
@@ -241,6 +242,7 @@ function detail(): WorkflowAgentDetailDto {
         required: true,
       },
     ],
+    attachedSkills: [],
   }
 }
 
@@ -266,6 +268,29 @@ function detailWithTriggerLabels(): WorkflowAgentDetailDto {
       },
     ],
   }
+  return next
+}
+
+function detailWithAttachedSkill(): WorkflowAgentDetailDto {
+  const next = detail()
+  next.attachedSkills = [
+    {
+      id: 'rust-best-practices',
+      sourceId: 'skill-source:v1:global:bundled:xero:rust-best-practices',
+      skillId: 'rust-best-practices',
+      name: 'Rust Best Practices',
+      description: 'Guide for writing idiomatic Rust.',
+      sourceKind: 'bundled',
+      scope: 'global',
+      versionHash: 'hash-rust',
+      includeSupportingAssets: false,
+      required: true,
+      sourceState: 'enabled',
+      trustState: 'trusted',
+      availabilityStatus: 'available',
+      availabilityReason: 'Skill source is enabled, trusted, and pinned for attachment.',
+    },
+  ]
   return next
 }
 
@@ -463,6 +488,24 @@ describe('AgentVisualization', () => {
     }
   })
 
+  it('renders attached skills as skills nodes, not tool nodes', () => {
+    installResizeObserverStub()
+
+    const { container } = render(<AgentVisualization detail={detailWithAttachedSkill()} />)
+    const skillNode = container.querySelector<HTMLElement>(
+      '.react-flow__node[data-id="skills:rust-best-practices"]',
+    )
+
+    expect(skillNode).not.toBeNull()
+    expect(container.querySelector('.react-flow__node[data-id="tool:rust-best-practices"]')).toBeNull()
+    const skill = within(skillNode!)
+    expect(skill.getByText('Rust Best Practices')).toBeVisible()
+    expect(skill.getByText('rust-best-practices')).toBeVisible()
+    expect(skill.getByText('Pinned')).toBeVisible()
+    expect(skill.getByText('Required')).toBeVisible()
+    expect(skill.getByText('hash-rust')).toBeVisible()
+  })
+
   it('moves a tool lane label and its tool frames by the same drag delta', () => {
     const graphNodes = [
       {
@@ -540,6 +583,7 @@ describe('AgentVisualization', () => {
               dbTables: 1,
               outputSections: 1,
               consumes: 0,
+              attachedSkills: 0,
             },
             advanced: {
               workflowContract: '',
@@ -596,12 +640,26 @@ describe('AgentVisualization', () => {
     const dbHandle = headerNode?.handles?.find(
       (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.db,
     )
+    const consumedHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.consumed,
+    )
+    const skillsHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.skills,
+    )
 
     expect((toolHandle?.y ?? 0) + (toolHandle?.height ?? 0) / 2).toBeCloseTo(
       210 * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
     )
     expect((dbHandle?.y ?? 0) + (dbHandle?.height ?? 0) / 2).toBeCloseTo(
       210 * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db,
+    )
+    expect(consumedHandle?.position).toBe('left')
+    expect(skillsHandle?.position).toBe('left')
+    expect((consumedHandle?.y ?? 0) + (consumedHandle?.height ?? 0) / 2).toBeCloseTo(
+      210 * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed,
+    )
+    expect((skillsHandle?.y ?? 0) + (skillsHandle?.height ?? 0) / 2).toBeCloseTo(
+      210 * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.skills,
     )
     expect(dbNode?.width).toBeUndefined()
     expect(dbNode?.height).toBeUndefined()
@@ -700,12 +758,12 @@ describe('AgentVisualization', () => {
   it('layers the empty workflow state above the canvas renderer so actions receive clicks', () => {
     installResizeObserverStub()
     vi.useFakeTimers()
-    const onCreateWorkflow = vi.fn()
+    const onCreateAgent = vi.fn()
 
     const { container, getByRole } = render(
       <AgentVisualization
         detail={null}
-        emptyState={<WorkflowCanvasEmptyState onCreateWorkflow={onCreateWorkflow} />}
+        emptyState={<WorkflowCanvasEmptyState onCreateAgent={onCreateAgent} />}
       />,
     )
 
@@ -721,11 +779,37 @@ describe('AgentVisualization', () => {
       zIndexForSelector(AGENT_VISUALIZATION_CSS, '.agent-visualization__empty-state'),
     ).toBeGreaterThan(zIndexForSelector(REACT_FLOW_CSS, '.react-flow__renderer'))
 
-    const createWorkflow = getByRole('button', { name: 'Create workflow' })
-    fireEvent.pointerDown(createWorkflow)
-    fireEvent.click(createWorkflow)
+    const createAgent = getByRole('button', { name: 'Create agent' })
+    fireEvent.pointerDown(createAgent)
+    fireEvent.click(createAgent)
 
-    expect(onCreateWorkflow).toHaveBeenCalledTimes(1)
+    expect(onCreateAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks workflow actions as coming soon in the empty state', () => {
+    const onBrowseWorkflows = vi.fn()
+
+    const { getAllByRole, getAllByText, getByRole } = render(
+      <WorkflowCanvasEmptyState
+        onCreateAgent={vi.fn()}
+        onBrowseWorkflows={onBrowseWorkflows}
+      />,
+    )
+
+    const actions = getAllByRole('button')
+    expect(actions[0]).toHaveTextContent('Create agent')
+    expect(actions[1]).toHaveTextContent('Create workflow')
+    expect(actions[2]).toHaveTextContent('Run an existing workflow')
+
+    expect(getByRole('button', { name: /Create workflow/i })).toBeDisabled()
+    const runExistingWorkflow = getByRole('button', {
+      name: /Run an existing workflow/i,
+    })
+    expect(runExistingWorkflow).toBeDisabled()
+    expect(getAllByText('Coming soon')).toHaveLength(2)
+
+    fireEvent.click(runExistingWorkflow)
+    expect(onBrowseWorkflows).not.toHaveBeenCalled()
   })
 
   it('keeps the selected graph mounted while closing back to the empty canvas', () => {

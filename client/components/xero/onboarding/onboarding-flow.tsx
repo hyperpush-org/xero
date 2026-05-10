@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { StepIndicator } from "./step-indicator"
 import { WelcomeStep } from "./steps/welcome-step"
+import { LocalEnvironmentStep } from "./steps/local-environment-step"
 import { ProvidersStep } from "./steps/providers-step"
 import { ProjectStep } from "./steps/project-step"
 import { NotificationsStep } from "./steps/notifications-step"
@@ -40,6 +41,35 @@ const BASE_STEP_ORDER: Array<{ id: OnboardingStepId; showIndicator: boolean }> =
   { id: "notifications", showIndicator: true },
   { id: "confirm", showIndicator: true },
 ]
+
+/**
+ * Pure helper exported for unit tests. Computes the active step order given
+ * the current launch mode and whether environment-access decisions are
+ * required.
+ */
+export function computeStepOrder(
+  launchMode: string | null | undefined,
+  hasEnvironmentPermissionRequests: boolean,
+): Array<{ id: OnboardingStepId; showIndicator: boolean }> {
+  const withLocalEnv =
+    launchMode === "local-source"
+      ? BASE_STEP_ORDER.flatMap((step) =>
+          step.id === "providers"
+            ? [{ id: "local-environment" as const, showIndicator: true }, step]
+            : [step],
+        )
+      : BASE_STEP_ORDER
+
+  if (!hasEnvironmentPermissionRequests) {
+    return withLocalEnv
+  }
+
+  return withLocalEnv.flatMap((step) =>
+    step.id === "confirm"
+      ? [{ id: "environment-access" as const, showIndicator: true }, step]
+      : [step],
+  )
+}
 
 interface ImportedProjectView {
   name: string
@@ -112,6 +142,11 @@ export interface OnboardingFlowProps {
     id: string
     status: EnvironmentPermissionDecisionStatusDto
   }>) => Promise<EnvironmentDiscoveryStatusDto | null>
+  /**
+   * "local-source" when the app was launched via `pnpm start` from a source
+   * checkout; null otherwise. Toggles the local-environment onboarding step.
+   */
+  launchMode?: string | null
   onImportProject: () => Promise<void>
   onRefreshProviderCredentials?: (options?: {
     force?: boolean
@@ -150,6 +185,7 @@ export function OnboardingFlow({
   notificationRouteMutationError,
   environmentPermissionRequests = [],
   onResolveEnvironmentPermissions,
+  launchMode = null,
   onImportProject,
   onRefreshProviderCredentials,
   onUpsertProviderCredential,
@@ -169,17 +205,10 @@ export function OnboardingFlow({
   const [environmentPermissionSaveError, setEnvironmentPermissionSaveError] = useState<string | null>(null)
   const directionRef = useRef<1 | -1>(1)
 
-  const stepOrder = useMemo(() => {
-    if (environmentPermissionRequests.length === 0) {
-      return BASE_STEP_ORDER
-    }
-
-    return BASE_STEP_ORDER.flatMap((step) =>
-      step.id === "confirm"
-        ? [{ id: "environment-access" as const, showIndicator: true }, step]
-        : [step],
-    )
-  }, [environmentPermissionRequests.length])
+  const stepOrder = useMemo(
+    () => computeStepOrder(launchMode, environmentPermissionRequests.length > 0),
+    [environmentPermissionRequests.length, launchMode],
+  )
   const indicatorSteps = useMemo(
     () => stepOrder.filter((step) => step.showIndicator),
     [stepOrder],
@@ -326,6 +355,9 @@ export function OnboardingFlow({
           >
             {currentStep.id === "welcome" ? (
             <WelcomeStep onContinue={next} onSkipAll={onDismiss} />
+          ) : null}
+          {currentStep.id === "local-environment" ? (
+            <LocalEnvironmentStep />
           ) : null}
           {currentStep.id === "providers" ? (
             <ProvidersStep

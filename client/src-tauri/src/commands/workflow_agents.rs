@@ -1,28 +1,38 @@
-use serde::de::DeserializeOwned;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
         available_builtin_runtime_agent_descriptors, runtime_agent_descriptor, validate_non_empty,
-        AgentAuthoringAvailabilityStatusDto, AgentAuthoringCatalogDiagnosticDto,
-        AgentAuthoringCatalogDto, AgentAuthoringConstraintExplanationDto,
-        AgentAuthoringCreationFlowDto, AgentAuthoringCreationFlowEntryKindDto,
-        AgentAuthoringDbTableDto, AgentAuthoringPolicyControlDto,
-        AgentAuthoringPolicyControlKindDto, AgentAuthoringPolicyControlValueKindDto,
-        AgentAuthoringProfileAvailabilityDto, AgentAuthoringTemplateDto,
-        AgentAuthoringToolCategoryDto, AgentAuthoringUpstreamArtifactDto, AgentConsumedArtifactDto,
-        AgentDbTouchpointDetailDto, AgentDbTouchpointKindDto, AgentDbTouchpointsDto,
-        AgentDefinitionBaseCapabilityProfileDto, AgentDefinitionLifecycleStateDto,
-        AgentDefinitionScopeDto, AgentHeaderDto, AgentOutputContractDto, AgentOutputSectionDto,
-        AgentPromptDto, AgentPromptRoleDto, AgentRefDto, AgentToolEffectClassDto,
-        AgentToolPackCatalogDto, AgentToolPolicyDetailsDto, AgentToolSummaryDto,
-        AgentTriggerRefDto, CommandError, CommandResult, GetAgentAuthoringCatalogRequestDto,
-        GetAgentToolPackCatalogRequestDto, GetWorkflowAgentDetailRequestDto,
-        ListWorkflowAgentsRequestDto, ListWorkflowAgentsResponseDto,
-        RuntimeAgentBaseCapabilityProfileDto, RuntimeAgentDescriptorDto, RuntimeAgentIdDto,
-        RuntimeAgentLifecycleStateDto, RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto,
-        RuntimeAgentScopeDto, RuntimeRunApprovalModeDto, WorkflowAgentDetailDto,
+        AgentAttachedSkillAvailabilityStatusDto, AgentAttachedSkillDto,
+        AgentAuthoringAttachableSkillDto, AgentAuthoringAvailabilityStatusDto,
+        AgentAuthoringCatalogDiagnosticDto, AgentAuthoringCatalogDto,
+        AgentAuthoringConstraintExplanationDto, AgentAuthoringCreationFlowDto,
+        AgentAuthoringCreationFlowEntryKindDto, AgentAuthoringDbTableDto,
+        AgentAuthoringPolicyControlDto, AgentAuthoringPolicyControlKindDto,
+        AgentAuthoringPolicyControlValueKindDto, AgentAuthoringProfileAvailabilityDto,
+        AgentAuthoringTemplateDto, AgentAuthoringToolCategoryDto,
+        AgentAuthoringUpstreamArtifactDto, AgentConsumedArtifactDto, AgentDbTouchpointDetailDto,
+        AgentDbTouchpointKindDto, AgentDbTouchpointsDto, AgentDefinitionBaseCapabilityProfileDto,
+        AgentDefinitionLifecycleStateDto, AgentDefinitionScopeDto, AgentHeaderDto,
+        AgentOutputContractDto, AgentOutputSectionDto, AgentPromptDto, AgentPromptRoleDto,
+        AgentRefDto, AgentToolEffectClassDto, AgentToolPackCatalogDto, AgentToolPolicyDetailsDto,
+        AgentToolSummaryDto, AgentTriggerRefDto, CommandError, CommandResult,
+        GetAgentAuthoringCatalogRequestDto, GetAgentToolPackCatalogRequestDto,
+        GetWorkflowAgentDetailRequestDto, GetWorkflowAgentGraphProjectionRequestDto,
+        ListSkillRegistryRequestDto, ListWorkflowAgentsRequestDto, ListWorkflowAgentsResponseDto,
+        ResolveAgentAuthoringSkillRequestDto, RuntimeAgentBaseCapabilityProfileDto,
+        RuntimeAgentDescriptorDto, RuntimeAgentIdDto, RuntimeAgentLifecycleStateDto,
+        RuntimeAgentOutputContractDto, RuntimeAgentPromptPolicyDto, RuntimeAgentScopeDto,
+        RuntimeRunApprovalModeDto, SearchAgentAuthoringSkillsRequestDto,
+        SearchAgentAuthoringSkillsResponseDto, SkillRegistryEntryDto, SkillSourceKindDto,
+        SkillSourceScopeDto, SkillSourceStateDto, SkillTrustStateDto, WorkflowAgentDetailDto,
+        WorkflowAgentGraphEdgeDto, WorkflowAgentGraphGroupDto, WorkflowAgentGraphMarkerDto,
+        WorkflowAgentGraphNodeDto, WorkflowAgentGraphPositionDto, WorkflowAgentGraphProjectionDto,
         WorkflowAgentSummaryDto,
     },
     db::project_store,
@@ -34,7 +44,8 @@ use crate::{
         },
         autonomous_tool_runtime::{
             deferred_tool_catalog, tool_access_group_descriptors, tool_allowed_for_runtime_agent,
-            tool_effect_class, AutonomousToolEffectClass, AutonomousToolRuntime,
+            tool_effect_class, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
+            AutonomousToolRuntime,
         },
     },
     state::DesktopState,
@@ -80,10 +91,37 @@ pub fn get_workflow_agent_detail<R: Runtime>(
     state: State<'_, DesktopState>,
     request: GetWorkflowAgentDetailRequestDto,
 ) -> CommandResult<WorkflowAgentDetailDto> {
-    validate_non_empty(&request.project_id, "projectId")?;
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let mut detail = workflow_agent_detail_for_request(&app, state.inner(), &request)?;
+    detail.graph_projection = Some(workflow_agent_graph_projection_for_detail(&detail));
+    Ok(detail)
+}
 
-    match request.r#ref {
+#[tauri::command]
+pub fn get_workflow_agent_graph_projection<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: GetWorkflowAgentGraphProjectionRequestDto,
+) -> CommandResult<WorkflowAgentGraphProjectionDto> {
+    let detail = workflow_agent_detail_for_request(
+        &app,
+        state.inner(),
+        &GetWorkflowAgentDetailRequestDto {
+            project_id: request.project_id,
+            r#ref: request.r#ref,
+        },
+    )?;
+    Ok(workflow_agent_graph_projection_for_detail(&detail))
+}
+
+fn workflow_agent_detail_for_request<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    request: &GetWorkflowAgentDetailRequestDto,
+) -> CommandResult<WorkflowAgentDetailDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let repo_root = resolve_project_root(app, state, &request.project_id)?;
+
+    match request.r#ref.clone() {
         AgentRefDto::BuiltIn {
             runtime_agent_id,
             version,
@@ -109,7 +147,21 @@ pub fn get_workflow_agent_detail<R: Runtime>(
                             ),
                         )
                     })?;
-            Ok(custom_detail(definition, version_record))
+            let skill_registry = crate::commands::skills::load_skill_registry(
+                app,
+                state,
+                ListSkillRegistryRequestDto {
+                    project_id: Some(request.project_id.clone()),
+                    query: None,
+                    include_unavailable: true,
+                },
+                false,
+            )?;
+            Ok(custom_detail(
+                definition,
+                version_record,
+                &skill_registry.entries,
+            ))
         }
     }
 }
@@ -122,26 +174,86 @@ pub fn get_agent_authoring_catalog<R: Runtime>(
 ) -> CommandResult<AgentAuthoringCatalogDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     let _repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let skill_registry = crate::commands::skills::load_skill_registry(
+        &app,
+        state.inner(),
+        ListSkillRegistryRequestDto {
+            project_id: Some(request.project_id),
+            query: request.skill_query,
+            include_unavailable: true,
+        },
+        false,
+    )?;
 
-    Ok(agent_authoring_catalog())
+    Ok(agent_authoring_catalog_with_skills(skill_registry.entries))
 }
 
+#[tauri::command]
+pub async fn search_agent_authoring_skills<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: SearchAgentAuthoringSkillsRequestDto,
+) -> CommandResult<SearchAgentAuthoringSkillsResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let _repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::commands::skills::search_agent_authoring_skill_summaries(&request)
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_authoring_skill_search_task_failed",
+            format!("Xero could not finish background skill search work: {error}"),
+        )
+    })?
+}
+
+#[tauri::command]
+pub async fn resolve_agent_authoring_skill<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ResolveAgentAuthoringSkillRequestDto,
+) -> CommandResult<AgentAuthoringAttachableSkillDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    validate_non_empty(&request.source, "source")?;
+    validate_non_empty(&request.skill_id, "skillId")?;
+    let _repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = crate::commands::skills::resolve_agent_authoring_skill_registry_entry(
+            &app, &state, &request,
+        )?;
+        let mut projection = authoring_attachable_skills(vec![entry]);
+        projection.entries.pop().ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_authoring_skill_not_attachable",
+                "Xero found the online skill, but it is not attachable in the current catalog.",
+            )
+        })
+    })
+    .await
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_authoring_skill_resolve_task_failed",
+            format!("Xero could not finish background skill resolve work: {error}"),
+        )
+    })?
+}
+
+#[cfg(test)]
 fn agent_authoring_catalog() -> AgentAuthoringCatalogDto {
+    agent_authoring_catalog_with_skills(Vec::new())
+}
+
+fn agent_authoring_catalog_with_skills(
+    skill_registry_entries: Vec<SkillRegistryEntryDto>,
+) -> AgentAuthoringCatalogDto {
     // Tools: full deferred catalog, exposed unfiltered. The picker will note
     // each tool's effect class so the canvas can warn when a chosen tool
     // exceeds the agent's base capability profile.
     let tools: Vec<AgentToolSummaryDto> = deferred_tool_catalog(true)
         .into_iter()
-        .map(|entry| AgentToolSummaryDto {
-            name: entry.tool_name.to_string(),
-            group: entry.group.to_string(),
-            description: entry.description.to_string(),
-            effect_class: effect_class_from_runtime(tool_effect_class(entry.tool_name)),
-            risk_class: entry.risk_class.to_string(),
-            tags: entry.tags.iter().map(|s| s.to_string()).collect(),
-            schema_fields: entry.schema_fields.iter().map(|s| s.to_string()).collect(),
-            examples: entry.examples.iter().map(|s| s.to_string()).collect(),
-        })
+        .map(agent_tool_summary_from_catalog_entry)
         .collect();
 
     // Tool categories: each access-group becomes a chunk the user can drag in
@@ -232,6 +344,7 @@ fn agent_authoring_catalog() -> AgentAuthoringCatalogDto {
     let creation_flows = authoring_creation_flows();
     let constraint_explanations =
         authoring_constraint_explanations(profile_availability.as_slice());
+    let attachable_projection = authoring_attachable_skills(skill_registry_entries);
 
     let mut catalog = AgentAuthoringCatalogDto {
         contract_version: AGENT_AUTHORING_CATALOG_CONTRACT_VERSION,
@@ -239,15 +352,309 @@ fn agent_authoring_catalog() -> AgentAuthoringCatalogDto {
         tool_categories,
         db_tables,
         upstream_artifacts,
+        attachable_skills: attachable_projection.entries,
         policy_controls,
         templates,
         creation_flows,
         profile_availability,
         constraint_explanations,
-        diagnostics: Vec::new(),
+        diagnostics: attachable_projection.diagnostics,
     };
-    catalog.diagnostics = validate_agent_authoring_catalog(&catalog);
     catalog
+        .diagnostics
+        .extend(validate_agent_authoring_catalog(&catalog));
+    catalog
+}
+
+fn agent_tool_summary_from_catalog_entry(entry: AutonomousToolCatalogEntry) -> AgentToolSummaryDto {
+    AgentToolSummaryDto {
+        name: entry.tool_name.to_string(),
+        group: entry.group.to_string(),
+        description: entry.description.to_string(),
+        effect_class: effect_class_from_runtime(tool_effect_class(entry.tool_name)),
+        risk_class: entry.risk_class.to_string(),
+        tags: entry.tags.iter().map(|s| s.to_string()).collect(),
+        schema_fields: entry.schema_fields.iter().map(|s| s.to_string()).collect(),
+        examples: entry.examples.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+fn fallback_tool_summary(tool_name: &str) -> AgentToolSummaryDto {
+    AgentToolSummaryDto {
+        name: tool_name.to_string(),
+        group: "unknown".to_string(),
+        description: String::new(),
+        effect_class: AgentToolEffectClassDto::Unknown,
+        risk_class: "unknown".to_string(),
+        tags: Vec::new(),
+        schema_fields: Vec::new(),
+        examples: Vec::new(),
+    }
+}
+
+fn template_tool_summaries(tool_names: &[&str]) -> Vec<JsonValue> {
+    let catalog = deferred_tool_catalog(true);
+    tool_names
+        .iter()
+        .map(|tool_name| {
+            let summary = catalog
+                .iter()
+                .find(|entry| entry.tool_name == *tool_name)
+                .map(|entry| agent_tool_summary_from_catalog_entry(*entry))
+                .unwrap_or_else(|| fallback_tool_summary(tool_name));
+            serde_json::to_value(summary).unwrap_or_else(|_| {
+                json!({
+                    "name": tool_name,
+                    "group": "unknown",
+                    "description": "",
+                    "effectClass": "unknown",
+                    "riskClass": "unknown",
+                    "tags": [],
+                    "schemaFields": [],
+                    "examples": []
+                })
+            })
+        })
+        .collect()
+}
+
+struct AuthoringAttachableSkillProjection {
+    entries: Vec<AgentAuthoringAttachableSkillDto>,
+    diagnostics: Vec<AgentAuthoringCatalogDiagnosticDto>,
+}
+
+#[derive(Debug, Clone)]
+struct AttachedSkillAvailability {
+    status: AgentAttachedSkillAvailabilityStatusDto,
+    reason: String,
+    repair_hint: Option<String>,
+    unavailable_code: Option<&'static str>,
+}
+
+fn authoring_attachable_skills(
+    skill_registry_entries: Vec<SkillRegistryEntryDto>,
+) -> AuthoringAttachableSkillProjection {
+    let mut entries = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut used_attachment_ids = BTreeSet::new();
+    let mut sorted = skill_registry_entries;
+    sorted.sort_by(|left, right| {
+        left.skill_id
+            .cmp(&right.skill_id)
+            .then_with(|| left.source_id.cmp(&right.source_id))
+    });
+
+    for entry in sorted {
+        let availability = availability_for_registry_entry(&entry);
+        if availability.status != AgentAttachedSkillAvailabilityStatusDto::Available {
+            diagnostics.push(AgentAuthoringCatalogDiagnosticDto {
+                severity: "warning".into(),
+                code: availability
+                    .unavailable_code
+                    .unwrap_or("authoring_catalog_attachable_skill_unavailable")
+                    .into(),
+                message: availability.reason,
+                path: vec![
+                    "attachableSkills".into(),
+                    entry.source_id.clone(),
+                    "availabilityStatus".into(),
+                ],
+            });
+            continue;
+        }
+
+        let version_hash = entry.version_hash.clone().unwrap_or_default();
+        let attachment_id =
+            unique_attached_skill_id(&entry.skill_id, &entry.source_id, &mut used_attachment_ids);
+        let source_id = entry.source_id.clone();
+        let skill_id = entry.skill_id.clone();
+        let name = entry.name.clone();
+        let description = entry.description.clone();
+        let attachment = json!({
+            "id": attachment_id.clone(),
+            "sourceId": source_id,
+            "skillId": skill_id,
+            "name": name,
+            "description": description,
+            "sourceKind": entry.source_kind.clone(),
+            "scope": entry.scope.clone(),
+            "versionHash": version_hash,
+            "includeSupportingAssets": false,
+            "required": true
+        });
+
+        entries.push(AgentAuthoringAttachableSkillDto {
+            attachment_id,
+            source_id: entry.source_id,
+            skill_id: entry.skill_id,
+            name: entry.name,
+            description: entry.description,
+            source_kind: entry.source_kind,
+            scope: entry.scope,
+            version_hash: entry.version_hash.unwrap_or_default(),
+            source_state: entry.source_state,
+            trust_state: entry.trust_state,
+            availability_status: AgentAttachedSkillAvailabilityStatusDto::Available,
+            attachment,
+        });
+    }
+
+    AuthoringAttachableSkillProjection {
+        entries,
+        diagnostics,
+    }
+}
+
+fn availability_for_registry_entry(entry: &SkillRegistryEntryDto) -> AttachedSkillAvailability {
+    match &entry.source_state {
+        SkillSourceStateDto::Enabled => {}
+        SkillSourceStateDto::Disabled | SkillSourceStateDto::Installed => {
+            return AttachedSkillAvailability {
+                status: AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                reason: format!(
+                    "Skill source `{}` must be enabled before it can be attached.",
+                    entry.source_id
+                ),
+                repair_hint: Some("enable_source".into()),
+                unavailable_code: Some("authoring_catalog_attachable_skill_source_not_enabled"),
+            };
+        }
+        SkillSourceStateDto::Stale => {
+            return AttachedSkillAvailability {
+                status: AgentAttachedSkillAvailabilityStatusDto::Stale,
+                reason: format!(
+                    "Skill source `{}` is stale; refresh the pin or remove the attachment.",
+                    entry.source_id
+                ),
+                repair_hint: Some("refresh_pin".into()),
+                unavailable_code: Some("authoring_catalog_attachable_skill_source_stale"),
+            };
+        }
+        SkillSourceStateDto::Failed => {
+            return AttachedSkillAvailability {
+                status: AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                reason: format!(
+                    "Skill source `{}` is in a failed state and must be reloaded before attachment.",
+                    entry.source_id
+                ),
+                repair_hint: Some("refresh_pin".into()),
+                unavailable_code: Some("authoring_catalog_attachable_skill_source_failed"),
+            };
+        }
+        SkillSourceStateDto::Blocked | SkillSourceStateDto::Discoverable => {
+            return AttachedSkillAvailability {
+                status: AgentAttachedSkillAvailabilityStatusDto::Blocked,
+                reason: format!(
+                    "Skill source `{}` is not attachable in its current state.",
+                    entry.source_id
+                ),
+                repair_hint: Some("remove_attachment".into()),
+                unavailable_code: Some("authoring_catalog_attachable_skill_source_blocked"),
+            };
+        }
+    }
+
+    match &entry.trust_state {
+        SkillTrustStateDto::Trusted | SkillTrustStateDto::UserApproved => {}
+        SkillTrustStateDto::ApprovalRequired | SkillTrustStateDto::Untrusted => {
+            return AttachedSkillAvailability {
+                status: AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                reason: format!(
+                    "Skill source `{}` requires user approval before model-visible attachment.",
+                    entry.source_id
+                ),
+                repair_hint: Some("approve_source".into()),
+                unavailable_code: Some("authoring_catalog_attachable_skill_trust_required"),
+            };
+        }
+        SkillTrustStateDto::Blocked => {
+            return AttachedSkillAvailability {
+                status: AgentAttachedSkillAvailabilityStatusDto::Blocked,
+                reason: format!(
+                    "Skill source `{}` is blocked by trust policy.",
+                    entry.source_id
+                ),
+                repair_hint: Some("remove_attachment".into()),
+                unavailable_code: Some("authoring_catalog_attachable_skill_trust_blocked"),
+            };
+        }
+    }
+
+    if entry
+        .version_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return AttachedSkillAvailability {
+            status: AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+            reason: format!(
+                "Skill source `{}` does not have a version hash to pin.",
+                entry.source_id
+            ),
+            repair_hint: Some("refresh_pin".into()),
+            unavailable_code: Some("authoring_catalog_attachable_skill_version_hash_missing"),
+        };
+    }
+
+    AttachedSkillAvailability {
+        status: AgentAttachedSkillAvailabilityStatusDto::Available,
+        reason: "Skill source is enabled, trusted, and pinned for attachment.".into(),
+        repair_hint: None,
+        unavailable_code: None,
+    }
+}
+
+fn unique_attached_skill_id(
+    skill_id: &str,
+    source_id: &str,
+    used_ids: &mut BTreeSet<String>,
+) -> String {
+    let base = stable_attachment_id_seed(skill_id);
+    if used_ids.insert(base.clone()) {
+        return base;
+    }
+
+    let hash = stable_text_sha256(source_id);
+    for width in [8usize, 12, 16, 64] {
+        let suffix = &hash[..width.min(hash.len())];
+        let candidate = format!("{base}-{suffix}");
+        if used_ids.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("sha256 suffix should make attached skill ids unique")
+}
+
+fn stable_attachment_id_seed(value: &str) -> String {
+    let mut id = String::new();
+    let mut last_was_separator = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            id.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if matches!(character, '-' | '_') {
+            if !last_was_separator && !id.is_empty() {
+                id.push(character);
+                last_was_separator = true;
+            }
+        } else if !last_was_separator && !id.is_empty() {
+            id.push('-');
+            last_was_separator = true;
+        }
+    }
+    let id = id.trim_matches(['-', '_']).to_string();
+    if id.is_empty() {
+        "attached-skill".into()
+    } else {
+        id
+    }
+}
+
+fn stable_text_sha256(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn validate_agent_authoring_catalog(
@@ -349,6 +756,85 @@ fn validate_agent_authoring_catalog(
             })
             .collect(),
     );
+
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_attachable_skill_source",
+        "Authoring catalog attachable skill source ids must be unique.",
+        &["attachableSkills"],
+        catalog
+            .attachable_skills
+            .iter()
+            .enumerate()
+            .map(|(index, skill)| (index, skill.source_id.clone()))
+            .collect(),
+    );
+    push_duplicate_key_diagnostics(
+        &mut diagnostics,
+        "authoring_catalog_duplicate_attachable_skill_attachment_id",
+        "Authoring catalog attachable skill attachment ids must be unique.",
+        &["attachableSkills"],
+        catalog
+            .attachable_skills
+            .iter()
+            .enumerate()
+            .map(|(index, skill)| (index, skill.attachment_id.clone()))
+            .collect(),
+    );
+    for (index, skill) in catalog.attachable_skills.iter().enumerate() {
+        if skill.availability_status != AgentAttachedSkillAvailabilityStatusDto::Available {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_attachable_skill_unavailable_entry",
+                "Authoring catalog attachable skill entries must be available by default.",
+                &["attachableSkills", &index.to_string(), "availabilityStatus"],
+            ));
+        }
+        if skill.attachment.get("sourceId").and_then(JsonValue::as_str)
+            != Some(skill.source_id.as_str())
+        {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_attachable_skill_attachment_mismatch",
+                "Attachable skill attachment template must reference the same source id.",
+                &[
+                    "attachableSkills",
+                    &index.to_string(),
+                    "attachment",
+                    "sourceId",
+                ],
+            ));
+        }
+        if skill.attachment.get("skillId").and_then(JsonValue::as_str)
+            != Some(skill.skill_id.as_str())
+        {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_attachable_skill_attachment_mismatch",
+                "Attachable skill attachment template must reference the same skill id.",
+                &[
+                    "attachableSkills",
+                    &index.to_string(),
+                    "attachment",
+                    "skillId",
+                ],
+            ));
+        }
+        if skill
+            .attachment
+            .get("versionHash")
+            .and_then(JsonValue::as_str)
+            != Some(skill.version_hash.as_str())
+        {
+            diagnostics.push(authoring_catalog_diagnostic(
+                "authoring_catalog_attachable_skill_attachment_mismatch",
+                "Attachable skill attachment template must reference the same version hash.",
+                &[
+                    "attachableSkills",
+                    &index.to_string(),
+                    "attachment",
+                    "versionHash",
+                ],
+            ));
+        }
+    }
 
     push_duplicate_key_diagnostics(
         &mut diagnostics,
@@ -641,6 +1127,817 @@ fn humanize_tool_group(group: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+const WORKFLOW_AGENT_GRAPH_PROJECTION_SCHEMA: &str = "xero.workflow_agent_graph_projection.v1";
+const GRAPH_HEADER_NODE_ID: &str = "agent-header";
+const GRAPH_OUTPUT_NODE_ID: &str = "agent-output";
+const GRAPH_HEADER_HANDLE_PROMPT: &str = "prompts";
+const GRAPH_HEADER_HANDLE_TOOL: &str = "tools";
+const GRAPH_HEADER_HANDLE_DB: &str = "db";
+const GRAPH_HEADER_HANDLE_OUTPUT: &str = "output";
+const GRAPH_HEADER_HANDLE_CONSUMED: &str = "consumed";
+const GRAPH_TRIGGER_SOURCE_HANDLE: &str = "trigger-source";
+const GRAPH_TRIGGER_TARGET_HANDLE: &str = "trigger-target";
+const MAX_GRAPH_TOOLS_PER_COLUMN: usize = 6;
+const DEFAULT_TOOL_CATEGORY_ORDER: i32 = 10_000;
+
+#[derive(Debug, Clone)]
+struct ToolCategoryPresentation {
+    key: String,
+    label: String,
+    order: i32,
+}
+
+#[derive(Debug, Clone)]
+struct ToolGroupBucket {
+    key: String,
+    label: String,
+    order: i32,
+    source_groups: Vec<String>,
+    tools: Vec<AgentToolSummaryDto>,
+}
+
+#[derive(Debug, Clone)]
+struct OrderedTouchpoint {
+    detail: AgentDbTouchpointDetailDto,
+    kind: AgentDbTouchpointKindDto,
+}
+
+fn workflow_agent_graph_projection_for_detail(
+    detail: &WorkflowAgentDetailDto,
+) -> WorkflowAgentGraphProjectionDto {
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut groups = Vec::new();
+
+    let db_touchpoint_count = detail.db_touchpoints.reads.len()
+        + detail.db_touchpoints.writes.len()
+        + detail.db_touchpoints.encouraged.len();
+
+    nodes.push(graph_node(
+        GRAPH_HEADER_NODE_ID,
+        "agent-header",
+        json!({
+            "header": detail.header,
+            "summary": {
+                "prompts": detail.prompts.len(),
+                "tools": detail.tools.len(),
+                "dbTables": db_touchpoint_count,
+                "outputSections": detail.output.sections.len(),
+                "consumes": detail.consumes.len(),
+                "attachedSkills": detail.attached_skills.len(),
+            },
+            "advanced": advanced_fields_for_detail(detail),
+        }),
+    ));
+
+    for (index, prompt) in detail.prompts.iter().enumerate() {
+        let id = prompt_node_id(prompt, index);
+        nodes.push(graph_node(&id, "prompt", json!({ "prompt": prompt })));
+        edges.push(graph_edge(
+            format!("e:header->{id}"),
+            GRAPH_HEADER_NODE_ID,
+            &id,
+            "smoothstep",
+            Some(GRAPH_HEADER_HANDLE_PROMPT),
+            None,
+            json!({ "category": "prompt" }),
+            "agent-edge agent-edge-prompt",
+            Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+        ));
+    }
+
+    let mut sorted_tools = detail.tools.clone();
+    sorted_tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut tool_row_by_name = tool_rows_for(&sorted_tools);
+    let section_row_by_name: HashMap<String, f64> = detail
+        .output
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(index, section)| (section.id.clone(), 1000.0 + index as f64))
+        .collect();
+
+    let db_bucket_entries = db_touchpoints_by_priority(
+        &detail.db_touchpoints.reads,
+        &detail.db_touchpoints.writes,
+        &detail.db_touchpoints.encouraged,
+    );
+
+    let mut db_entries = sort_dbs_by_barycenter(&db_bucket_entries, |trigger| {
+        trigger_source_y(trigger, &tool_row_by_name, &section_row_by_name)
+    });
+
+    let db_row_by_table: HashMap<String, f64> = db_entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.detail.table.clone(), index as f64))
+        .collect();
+    sorted_tools = sorted_tools_by_db_barycenter(sorted_tools, &db_entries, &db_row_by_table);
+    tool_row_by_name = tool_rows_for(&sorted_tools);
+    db_entries = sort_dbs_by_barycenter(&db_bucket_entries, |trigger| {
+        trigger_source_y(trigger, &tool_row_by_name, &section_row_by_name)
+    });
+
+    let mut tool_ids_by_name = HashMap::new();
+    let tool_group_buckets = partition_tool_dtos_by_group(sorted_tools);
+    for bucket in tool_group_buckets {
+        let frame_id = tool_group_frame_node_id(&bucket.key);
+        let tool_node_ids: Vec<String> = bucket.tools.iter().map(tool_node_id).collect();
+        groups.push(WorkflowAgentGraphGroupDto {
+            key: bucket.key.clone(),
+            label: bucket.label.clone(),
+            kind: "tool_category".into(),
+            order: bucket.order,
+            node_ids: tool_node_ids.clone(),
+            source_groups: bucket.source_groups.clone(),
+        });
+        let mut frame = graph_node(
+            &frame_id,
+            "tool-group-frame",
+            json!({
+                "label": bucket.label,
+                "count": bucket.tools.len(),
+                "order": bucket.order,
+                "sourceGroups": bucket.source_groups,
+            }),
+        );
+        frame.drag_handle = Some(".agent-tool-group-frame__drag-handle".into());
+        frame.style = Some(json!({ "pointerEvents": "none" }));
+        nodes.push(frame);
+        edges.push(graph_edge(
+            format!("e:header->{frame_id}"),
+            GRAPH_HEADER_NODE_ID,
+            &frame_id,
+            "smoothstep",
+            Some(GRAPH_HEADER_HANDLE_TOOL),
+            None,
+            json!({ "category": "tool" }),
+            "agent-edge agent-edge-tool",
+            Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+        ));
+        for tool in bucket.tools {
+            let id = tool_node_id(&tool);
+            tool_ids_by_name.insert(tool.name.clone(), id.clone());
+            let mut node = graph_node(
+                &id,
+                "tool",
+                json!({
+                    "tool": tool,
+                    "directConnectionHandles": {
+                        "source": false,
+                        "target": false,
+                    },
+                }),
+            );
+            node.parent_id = Some(frame_id.clone());
+            node.extent = Some("parent".into());
+            node.draggable = Some(false);
+            node.style = Some(json!({ "pointerEvents": "all" }));
+            nodes.push(node);
+        }
+    }
+
+    let mut db_entry_by_id = HashMap::new();
+    for entry in db_entries {
+        let id = db_node_id(&entry.detail.table, entry.kind);
+        db_entry_by_id.insert(id.clone(), entry.clone());
+        nodes.push(graph_node(
+            &id,
+            "db-table",
+            json!({
+                "table": entry.detail.table,
+                "touchpoint": entry.kind,
+                "purpose": entry.detail.purpose,
+                "triggers": entry.detail.triggers,
+                "columns": entry.detail.columns,
+            }),
+        ));
+        edges.push(graph_edge(
+            format!("e:header->{id}"),
+            GRAPH_HEADER_NODE_ID,
+            &id,
+            "smoothstep",
+            Some(GRAPH_HEADER_HANDLE_DB),
+            None,
+            json!({ "category": "db-table" }),
+            "agent-edge agent-edge-db",
+            Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+        ));
+    }
+
+    nodes.push(graph_node(
+        GRAPH_OUTPUT_NODE_ID,
+        "agent-output",
+        json!({ "output": detail.output }),
+    ));
+    edges.push(graph_edge(
+        format!("e:header->{GRAPH_OUTPUT_NODE_ID}"),
+        GRAPH_HEADER_NODE_ID,
+        GRAPH_OUTPUT_NODE_ID,
+        "smoothstep",
+        Some(GRAPH_HEADER_HANDLE_OUTPUT),
+        None,
+        json!({ "category": "agent-output" }),
+        "agent-edge agent-edge-output",
+        Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+    ));
+
+    let mut section_id_to_node = HashMap::new();
+    for section in &detail.output.sections {
+        let id = output_section_node_id(&section.id);
+        section_id_to_node.insert(section.id.clone(), id.clone());
+        nodes.push(graph_node(
+            &id,
+            "output-section",
+            json!({ "section": section }),
+        ));
+        edges.push(graph_edge(
+            format!("e:{GRAPH_OUTPUT_NODE_ID}->{id}"),
+            GRAPH_OUTPUT_NODE_ID,
+            &id,
+            "smoothstep",
+            None,
+            None,
+            json!({ "category": "output-section" }),
+            "agent-edge agent-edge-output-section",
+            Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+        ));
+        for tool_name in &section.produced_by_tools {
+            let Some(tool_id) = tool_ids_by_name.get(tool_name) else {
+                continue;
+            };
+            edges.push(graph_edge(
+                format!("e:trigger:{tool_id}->{id}"),
+                tool_id,
+                &id,
+                "trigger",
+                Some(GRAPH_TRIGGER_SOURCE_HANDLE),
+                Some(GRAPH_TRIGGER_TARGET_HANDLE),
+                json!({ "category": "trigger", "triggerLabel": "produces" }),
+                "agent-edge agent-edge-trigger",
+                Some(WorkflowAgentGraphMarkerDto::Arrow),
+            ));
+        }
+    }
+
+    for artifact in &detail.consumes {
+        let id = consumed_artifact_node_id(&artifact.id);
+        nodes.push(graph_node(
+            &id,
+            "consumed-artifact",
+            json!({ "artifact": artifact }),
+        ));
+        edges.push(graph_edge(
+            format!("e:{id}->{GRAPH_HEADER_NODE_ID}"),
+            &id,
+            GRAPH_HEADER_NODE_ID,
+            "smoothstep",
+            None,
+            Some(GRAPH_HEADER_HANDLE_CONSUMED),
+            json!({ "category": "consumed" }),
+            "agent-edge agent-edge-consume",
+            Some(WorkflowAgentGraphMarkerDto::Arrow),
+        ));
+    }
+
+    let consumed_artifact_exists: HashSet<String> = detail
+        .consumes
+        .iter()
+        .map(|artifact| consumed_artifact_node_id(&artifact.id))
+        .collect();
+
+    for (db_id, entry) in db_entry_by_id {
+        let mut seen_edges = HashSet::new();
+        let touchpoint_label = touchpoint_kind_label(entry.kind);
+
+        for trigger in &entry.detail.triggers {
+            let source_id = match trigger {
+                AgentTriggerRefDto::Tool { name } => tool_ids_by_name.get(name).cloned(),
+                AgentTriggerRefDto::OutputSection { id } => section_id_to_node.get(id).cloned(),
+                AgentTriggerRefDto::UpstreamArtifact { id } => {
+                    let artifact_id = consumed_artifact_node_id(id);
+                    consumed_artifact_exists
+                        .contains(&artifact_id)
+                        .then_some(artifact_id)
+                }
+                AgentTriggerRefDto::Lifecycle { .. } => None,
+            };
+            let Some(source_id) = source_id else {
+                continue;
+            };
+            let edge_id = format!("e:trigger:{source_id}->{db_id}");
+            if !seen_edges.insert(edge_id.clone()) {
+                continue;
+            }
+            edges.push(graph_edge(
+                edge_id,
+                &source_id,
+                &db_id,
+                "trigger",
+                Some(GRAPH_TRIGGER_SOURCE_HANDLE),
+                Some(GRAPH_TRIGGER_TARGET_HANDLE),
+                json!({
+                    "category": "trigger",
+                    "triggerLabel": touchpoint_label,
+                    "touchpoint": entry.kind,
+                }),
+                "agent-edge agent-edge-trigger",
+                Some(WorkflowAgentGraphMarkerDto::Arrow),
+            ));
+        }
+    }
+
+    let tool_node_ids: HashSet<String> = tool_ids_by_name.values().cloned().collect();
+    let mut direct_connection_handles_by_tool_id: HashMap<String, (bool, bool)> = HashMap::new();
+    for edge in &edges {
+        if edge.data.get("category").and_then(JsonValue::as_str) != Some("trigger") {
+            continue;
+        }
+        if tool_node_ids.contains(&edge.source) {
+            let handles = direct_connection_handles_by_tool_id
+                .entry(edge.source.clone())
+                .or_insert((false, false));
+            handles.0 = true;
+        }
+        if tool_node_ids.contains(&edge.target) {
+            let handles = direct_connection_handles_by_tool_id
+                .entry(edge.target.clone())
+                .or_insert((false, false));
+            handles.1 = true;
+        }
+    }
+
+    for node in &mut nodes {
+        if node.node_type != "tool" {
+            continue;
+        }
+        let handles = direct_connection_handles_by_tool_id
+            .get(&node.id)
+            .copied()
+            .unwrap_or((false, false));
+        if let Some(data) = node.data.as_object_mut() {
+            data.insert(
+                "directConnectionHandles".into(),
+                json!({
+                    "source": handles.0,
+                    "target": handles.1,
+                }),
+            );
+        }
+    }
+
+    WorkflowAgentGraphProjectionDto {
+        schema: WORKFLOW_AGENT_GRAPH_PROJECTION_SCHEMA.into(),
+        nodes,
+        edges,
+        groups,
+    }
+}
+
+fn graph_node(id: &str, node_type: &str, data: JsonValue) -> WorkflowAgentGraphNodeDto {
+    WorkflowAgentGraphNodeDto {
+        id: id.into(),
+        node_type: node_type.into(),
+        position: WorkflowAgentGraphPositionDto { x: 0, y: 0 },
+        data,
+        parent_id: None,
+        extent: None,
+        draggable: None,
+        selectable: None,
+        drag_handle: None,
+        style: None,
+        width: None,
+        height: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn graph_edge(
+    id: String,
+    source: &str,
+    target: &str,
+    edge_type: &str,
+    source_handle: Option<&str>,
+    target_handle: Option<&str>,
+    data: JsonValue,
+    class_name: &str,
+    marker: Option<WorkflowAgentGraphMarkerDto>,
+) -> WorkflowAgentGraphEdgeDto {
+    WorkflowAgentGraphEdgeDto {
+        id,
+        source: source.into(),
+        target: target.into(),
+        edge_type: edge_type.into(),
+        source_handle: source_handle.map(str::to_owned),
+        target_handle: target_handle.map(str::to_owned),
+        data,
+        class_name: class_name.into(),
+        marker,
+    }
+}
+
+fn advanced_fields_for_detail(detail: &WorkflowAgentDetailDto) -> JsonValue {
+    let subject = detail.header.display_name.trim();
+    let subject = if subject.is_empty() {
+        "this agent"
+    } else {
+        subject
+    };
+    let mut advanced = json!({
+        "workflowContract": detail.header.task_purpose,
+        "finalResponseContract": detail.output.description,
+        "examplePrompts": [
+            format!("Walk me through how {subject} would tackle a typical assignment."),
+            format!("Give me a concrete example of an interaction {subject} should handle well."),
+            format!("Outline a scenario where {subject} stays in scope and produces a useful result."),
+        ],
+        "refusalEscalationCases": [
+            format!("{subject} is asked to perform an action outside of its capability profile."),
+            format!("{subject} is asked to handle sensitive credentials or secret values."),
+            format!("{subject} is asked to bypass user approvals or operate without explicit consent."),
+        ],
+        "allowedEffectClasses": [],
+        "deniedTools": [],
+        "allowedToolPacks": [],
+        "deniedToolPacks": [],
+        "allowedToolGroups": [],
+        "deniedToolGroups": [],
+        "externalServiceAllowed": false,
+        "browserControlAllowed": false,
+        "skillRuntimeAllowed": false,
+        "subagentAllowed": false,
+        "commandAllowed": false,
+        "destructiveWriteAllowed": false,
+    });
+
+    if let Some(policy) = &detail.tool_policy_details {
+        advanced["allowedEffectClasses"] = json_value(&policy.allowed_effect_classes);
+        advanced["deniedTools"] = json_value(&policy.denied_tools);
+        advanced["allowedToolPacks"] = json_value(&policy.allowed_tool_packs);
+        advanced["deniedToolPacks"] = json_value(&policy.denied_tool_packs);
+        advanced["allowedToolGroups"] = json_value(&policy.allowed_tool_groups);
+        advanced["deniedToolGroups"] = json_value(&policy.denied_tool_groups);
+        advanced["externalServiceAllowed"] = json!(policy.external_service_allowed);
+        advanced["browserControlAllowed"] = json!(policy.browser_control_allowed);
+        advanced["skillRuntimeAllowed"] = json!(policy.skill_runtime_allowed);
+        advanced["subagentAllowed"] = json!(policy.subagent_allowed);
+        advanced["commandAllowed"] = json!(policy.command_allowed);
+        advanced["destructiveWriteAllowed"] = json!(policy.destructive_write_allowed);
+    }
+
+    advanced
+}
+
+fn json_value<T: Serialize>(value: &T) -> JsonValue {
+    serde_json::to_value(value).unwrap_or(JsonValue::Null)
+}
+
+fn prompt_node_id(prompt: &AgentPromptDto, index: usize) -> String {
+    format!("prompt:{index}:{}", prompt.id)
+}
+
+fn tool_node_id(tool: &AgentToolSummaryDto) -> String {
+    format!("tool:{}", tool.name)
+}
+
+fn tool_group_frame_node_id(group_key: &str) -> String {
+    format!("tool-group-frame:{group_key}")
+}
+
+fn db_node_id(table: &str, kind: AgentDbTouchpointKindDto) -> String {
+    format!("db:{}:{table}", db_touchpoint_kind_key(kind))
+}
+
+fn output_section_node_id(id: &str) -> String {
+    format!("output-section:{id}")
+}
+
+fn consumed_artifact_node_id(id: &str) -> String {
+    format!("consumed:{id}")
+}
+
+fn db_touchpoint_kind_key(kind: AgentDbTouchpointKindDto) -> &'static str {
+    match kind {
+        AgentDbTouchpointKindDto::Read => "read",
+        AgentDbTouchpointKindDto::Write => "write",
+        AgentDbTouchpointKindDto::Encouraged => "encouraged",
+    }
+}
+
+fn touchpoint_kind_label(kind: AgentDbTouchpointKindDto) -> &'static str {
+    match kind {
+        AgentDbTouchpointKindDto::Read => "reads",
+        AgentDbTouchpointKindDto::Write => "writes",
+        AgentDbTouchpointKindDto::Encouraged => "encouraged",
+    }
+}
+
+fn db_kind_order(kind: AgentDbTouchpointKindDto) -> i32 {
+    match kind {
+        AgentDbTouchpointKindDto::Write => 0,
+        AgentDbTouchpointKindDto::Read => 1,
+        AgentDbTouchpointKindDto::Encouraged => 2,
+    }
+}
+
+fn db_touchpoints_by_priority(
+    reads: &[AgentDbTouchpointDetailDto],
+    writes: &[AgentDbTouchpointDetailDto],
+    encouraged: &[AgentDbTouchpointDetailDto],
+) -> Vec<OrderedTouchpoint> {
+    let mut ordered = Vec::new();
+    let mut seen_per_kind: HashMap<&'static str, HashSet<String>> = HashMap::new();
+    let mut push = |detail: &AgentDbTouchpointDetailDto, kind: AgentDbTouchpointKindDto| {
+        let seen = seen_per_kind
+            .entry(db_touchpoint_kind_key(kind))
+            .or_default();
+        if !seen.insert(detail.table.clone()) {
+            return;
+        }
+        ordered.push(OrderedTouchpoint {
+            detail: detail.clone(),
+            kind,
+        });
+    };
+    for detail in writes {
+        push(detail, AgentDbTouchpointKindDto::Write);
+    }
+    for detail in reads {
+        push(detail, AgentDbTouchpointKindDto::Read);
+    }
+    for detail in encouraged {
+        push(detail, AgentDbTouchpointKindDto::Encouraged);
+    }
+    ordered
+}
+
+fn sort_dbs_by_barycenter<F>(
+    ordered: &[OrderedTouchpoint],
+    trigger_source_y: F,
+) -> Vec<OrderedTouchpoint>
+where
+    F: Fn(&AgentTriggerRefDto) -> Option<f64>,
+{
+    let mut decorated: Vec<(OrderedTouchpoint, usize, f64)> = ordered
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, entry)| {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for trigger in &entry.detail.triggers {
+                if let Some(y) = trigger_source_y(trigger) {
+                    sum += y;
+                    count += 1;
+                }
+            }
+            let barycenter = if count == 0 {
+                f64::INFINITY
+            } else {
+                sum / count as f64
+            };
+            (entry, index, barycenter)
+        })
+        .collect();
+    decorated.sort_by(|a, b| {
+        db_kind_order(a.0.kind)
+            .cmp(&db_kind_order(b.0.kind))
+            .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.0.detail.table.cmp(&b.0.detail.table))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    decorated.into_iter().map(|(entry, _, _)| entry).collect()
+}
+
+fn tool_lane_row(tool_index: usize, total_tools: usize) -> f64 {
+    if total_tools == 0 {
+        return 0.0;
+    }
+    let col_count = std::cmp::max(1, total_tools.div_ceil(MAX_GRAPH_TOOLS_PER_COLUMN));
+    let rows_per_col = total_tools.div_ceil(col_count);
+    (tool_index % rows_per_col) as f64
+}
+
+fn tool_rows_for(tools: &[AgentToolSummaryDto]) -> HashMap<String, f64> {
+    tools
+        .iter()
+        .enumerate()
+        .map(|(index, tool)| (tool.name.clone(), tool_lane_row(index, tools.len())))
+        .collect()
+}
+
+fn trigger_source_y(
+    trigger: &AgentTriggerRefDto,
+    tool_row_by_name: &HashMap<String, f64>,
+    section_row_by_name: &HashMap<String, f64>,
+) -> Option<f64> {
+    match trigger {
+        AgentTriggerRefDto::Tool { name } => tool_row_by_name.get(name).copied(),
+        AgentTriggerRefDto::OutputSection { id } => section_row_by_name.get(id).copied(),
+        AgentTriggerRefDto::Lifecycle { .. } | AgentTriggerRefDto::UpstreamArtifact { .. } => None,
+    }
+}
+
+fn sorted_tools_by_db_barycenter(
+    tools: Vec<AgentToolSummaryDto>,
+    db_entries: &[OrderedTouchpoint],
+    db_row_by_table: &HashMap<String, f64>,
+) -> Vec<AgentToolSummaryDto> {
+    let mut decorated: Vec<(AgentToolSummaryDto, usize, f64)> = tools
+        .into_iter()
+        .enumerate()
+        .map(|(index, tool)| {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for entry in db_entries {
+                for trigger in &entry.detail.triggers {
+                    if let AgentTriggerRefDto::Tool { name } = trigger {
+                        if name == &tool.name {
+                            if let Some(row) = db_row_by_table.get(&entry.detail.table) {
+                                sum += *row;
+                                count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            let barycenter = if count == 0 {
+                f64::INFINITY
+            } else {
+                sum / count as f64
+            };
+            (tool, index, barycenter)
+        })
+        .collect();
+    decorated.sort_by(|a, b| {
+        a.2.partial_cmp(&b.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.name.cmp(&b.0.name))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    decorated.into_iter().map(|(tool, _, _)| tool).collect()
+}
+
+fn tool_category_presentation_for_group(group: &str) -> ToolCategoryPresentation {
+    let trimmed = group.trim();
+    if trimmed.is_empty() {
+        return ToolCategoryPresentation {
+            key: "other".into(),
+            label: "Other".into(),
+            order: DEFAULT_TOOL_CATEGORY_ORDER,
+        };
+    }
+    match trimmed {
+        "core" => ToolCategoryPresentation {
+            key: "core".into(),
+            label: "Core".into(),
+            order: 10,
+        },
+        "project_context_write" => ToolCategoryPresentation {
+            key: "project_context".into(),
+            label: "Project Context".into(),
+            order: 20,
+        },
+        "intelligence" => ToolCategoryPresentation {
+            key: "code_intelligence".into(),
+            label: "Code Intelligence".into(),
+            order: 30,
+        },
+        "mutation" => ToolCategoryPresentation {
+            key: "file_changes".into(),
+            label: "File Changes".into(),
+            order: 40,
+        },
+        "command_readonly" | "command_mutating" | "command_session" | "command" => {
+            ToolCategoryPresentation {
+                key: "commands".into(),
+                label: "Commands".into(),
+                order: 50,
+            }
+        }
+        "process_manager" => ToolCategoryPresentation {
+            key: "processes".into(),
+            label: "Processes".into(),
+            order: 60,
+        },
+        "system_diagnostics" | "system_diagnostics_observe" | "system_diagnostics_privileged" => {
+            ToolCategoryPresentation {
+                key: "system_diagnostics".into(),
+                label: "System Diagnostics".into(),
+                order: 70,
+            }
+        }
+        "macos" => ToolCategoryPresentation {
+            key: "os_automation".into(),
+            label: "OS Automation".into(),
+            order: 80,
+        },
+        "web_search_only" | "web_fetch" | "web" => ToolCategoryPresentation {
+            key: "web".into(),
+            label: "Web".into(),
+            order: 90,
+        },
+        "browser_observe" | "browser_control" | "browser" => ToolCategoryPresentation {
+            key: "browser".into(),
+            label: "Browser".into(),
+            order: 100,
+        },
+        "mcp_list" | "mcp_invoke" | "mcp" => ToolCategoryPresentation {
+            key: "mcp".into(),
+            label: "MCP".into(),
+            order: 110,
+        },
+        "skills" => ToolCategoryPresentation {
+            key: "skills".into(),
+            label: "Skills".into(),
+            order: 120,
+        },
+        "agent_ops" => ToolCategoryPresentation {
+            key: "agent_ops".into(),
+            label: "Agent Operations".into(),
+            order: 130,
+        },
+        "agent_builder" => ToolCategoryPresentation {
+            key: "agent_builder".into(),
+            label: "Agent Builder".into(),
+            order: 140,
+        },
+        "notebook" => ToolCategoryPresentation {
+            key: "notebooks".into(),
+            label: "Notebooks".into(),
+            order: 150,
+        },
+        "powershell" => ToolCategoryPresentation {
+            key: "powershell".into(),
+            label: "PowerShell".into(),
+            order: 160,
+        },
+        "environment" => ToolCategoryPresentation {
+            key: "environment".into(),
+            label: "Environment".into(),
+            order: 170,
+        },
+        "emulator" => ToolCategoryPresentation {
+            key: "emulator".into(),
+            label: "Emulator".into(),
+            order: 180,
+        },
+        "harness_runner" => ToolCategoryPresentation {
+            key: "test_harness".into(),
+            label: "Test Harness".into(),
+            order: 190,
+        },
+        "solana" => ToolCategoryPresentation {
+            key: "solana".into(),
+            label: "Solana".into(),
+            order: 200,
+        },
+        _ => ToolCategoryPresentation {
+            key: trimmed.to_owned(),
+            label: humanize_tool_group(trimmed),
+            order: DEFAULT_TOOL_CATEGORY_ORDER,
+        },
+    }
+}
+
+fn partition_tool_dtos_by_group(tools: Vec<AgentToolSummaryDto>) -> Vec<ToolGroupBucket> {
+    let mut buckets: BTreeMap<String, (String, i32, BTreeSet<String>, Vec<AgentToolSummaryDto>)> =
+        BTreeMap::new();
+    for tool in tools {
+        let raw_group = if tool.group.trim().is_empty() {
+            "other".to_string()
+        } else {
+            tool.group.trim().to_string()
+        };
+        let presentation = tool_category_presentation_for_group(&raw_group);
+        let bucket = buckets.entry(presentation.key.clone()).or_insert_with(|| {
+            (
+                presentation.label.clone(),
+                presentation.order,
+                BTreeSet::new(),
+                Vec::new(),
+            )
+        });
+        bucket.2.insert(raw_group);
+        bucket.3.push(tool);
+    }
+    let mut buckets: Vec<ToolGroupBucket> = buckets
+        .into_iter()
+        .map(
+            |(key, (label, order, source_groups, tools))| ToolGroupBucket {
+                key,
+                label,
+                order,
+                source_groups: source_groups.into_iter().collect(),
+                tools,
+            },
+        )
+        .collect();
+    buckets.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.label.cmp(&b.label)));
+    buckets
 }
 
 fn authoring_policy_controls() -> Vec<AgentAuthoringPolicyControlDto> {
@@ -990,7 +2287,7 @@ fn template_definition(
     let contract = output_contract_id(output_contract);
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": format!("{id}_agent"),
         "displayName": label,
         "shortLabel": label.split_whitespace().next().unwrap_or(label),
@@ -1037,6 +2334,7 @@ fn template_definition(
             "Escalate when required project context or permissions are missing.",
             "Refuse to persist secrets, credentials, or hidden prompt material."
         ],
+        "attachedSkills": [],
         "prompts": [
             {
                 "id": format!("{id}.developer"),
@@ -1046,7 +2344,7 @@ fn template_definition(
                 "body": description
             }
         ],
-        "tools": tools.iter().map(|tool| json!({ "name": tool })).collect::<Vec<_>>(),
+        "tools": template_tool_summaries(tools),
         "output": {
             "contract": contract,
             "label": output_contract_label(output_contract),
@@ -1591,13 +2889,16 @@ fn builtin_detail(runtime_agent_id: RuntimeAgentIdDto, version: u32) -> Workflow
         db_touchpoints: touchpoints,
         output,
         consumes,
+        attached_skills: Vec::new(),
         authoring_graph: None,
+        graph_projection: None,
     }
 }
 
 fn custom_detail(
     record: project_store::AgentDefinitionRecord,
     version: project_store::AgentDefinitionVersionRecord,
+    skill_registry_entries: &[SkillRegistryEntryDto],
 ) -> WorkflowAgentDetailDto {
     let runtime_agent_id = project_store::runtime_agent_id_for_base_capability_profile(
         &record.base_capability_profile,
@@ -1615,11 +2916,13 @@ fn custom_detail(
             custom_tools_from_policy_or_runtime(runtime_agent_id, tool_policy_details.as_ref())
         });
     let touchpoints = snapshot_dto::<AgentDbTouchpointsDto>(snapshot, "dbTouchpoints")
+        .filter(agent_db_touchpoints_has_entries)
         .unwrap_or_else(|| db_touchpoints_dto(runtime_agent_id));
     let output = snapshot_dto::<AgentOutputContractDto>(snapshot, "output")
         .unwrap_or_else(|| output_contract_dto(runtime_descriptor.output_contract));
     let consumes = snapshot_vec::<AgentConsumedArtifactDto>(snapshot, "consumes")
         .unwrap_or_else(|| consumed_artifacts_dto(runtime_agent_id));
+    let attached_skills = attached_skills_from_snapshot(snapshot, skill_registry_entries);
 
     let task_purpose = snapshot
         .get("taskPurpose")
@@ -1673,7 +2976,9 @@ fn custom_detail(
         db_touchpoints: touchpoints,
         output,
         consumes,
+        attached_skills,
         authoring_graph: Some(authoring_graph_from_snapshot(&record, &version)),
+        graph_projection: None,
     }
 }
 
@@ -1697,6 +3002,7 @@ fn authoring_graph_from_snapshot(
         },
         "editableFields": [
             "prompts",
+            "attachedSkills",
             "tools",
             "toolPolicy",
             "output",
@@ -1722,6 +3028,7 @@ fn authoring_graph_from_snapshot(
             "baseCapabilityProfile": snapshot.get("baseCapabilityProfile").cloned().unwrap_or(JsonValue::Null),
             "defaultApprovalMode": snapshot.get("defaultApprovalMode").cloned().unwrap_or(JsonValue::Null),
             "allowedApprovalModes": snapshot.get("allowedApprovalModes").cloned().unwrap_or(JsonValue::Array(Vec::new())),
+            "attachedSkills": snapshot.get("attachedSkills").cloned().unwrap_or(JsonValue::Array(Vec::new())),
             "promptFragments": snapshot.get("promptFragments").cloned().unwrap_or_else(|| json!({})),
             "prompts": snapshot.get("prompts").cloned().unwrap_or(JsonValue::Array(Vec::new())),
             "toolPolicy": snapshot.get("toolPolicy").cloned().unwrap_or(JsonValue::Null),
@@ -1794,6 +3101,115 @@ where
     T: DeserializeOwned,
 {
     snapshot_dto(snapshot, field)
+}
+
+fn agent_db_touchpoints_has_entries(touchpoints: &AgentDbTouchpointsDto) -> bool {
+    !touchpoints.reads.is_empty()
+        || !touchpoints.writes.is_empty()
+        || !touchpoints.encouraged.is_empty()
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanonicalAttachedSkillDto {
+    id: String,
+    source_id: String,
+    skill_id: String,
+    name: String,
+    description: String,
+    source_kind: SkillSourceKindDto,
+    scope: SkillSourceScopeDto,
+    version_hash: String,
+    include_supporting_assets: bool,
+    required: bool,
+}
+
+fn attached_skills_from_snapshot(
+    snapshot: &JsonValue,
+    skill_registry_entries: &[SkillRegistryEntryDto],
+) -> Vec<AgentAttachedSkillDto> {
+    let Some(attachments) = snapshot_vec::<CanonicalAttachedSkillDto>(snapshot, "attachedSkills")
+    else {
+        return Vec::new();
+    };
+    let registry_by_source = skill_registry_entries
+        .iter()
+        .map(|entry| (entry.source_id.as_str(), entry))
+        .collect::<HashMap<_, _>>();
+
+    attachments
+        .into_iter()
+        .map(|attachment| {
+            let registry_entry = registry_by_source
+                .get(attachment.source_id.as_str())
+                .copied();
+            let availability = availability_for_attachment(&attachment, registry_entry);
+            AgentAttachedSkillDto {
+                id: attachment.id,
+                source_id: attachment.source_id,
+                skill_id: attachment.skill_id,
+                name: attachment.name,
+                description: attachment.description,
+                source_kind: attachment.source_kind,
+                scope: attachment.scope,
+                version_hash: attachment.version_hash,
+                include_supporting_assets: attachment.include_supporting_assets,
+                required: attachment.required,
+                source_state: registry_entry.map(|entry| entry.source_state.clone()),
+                trust_state: registry_entry.map(|entry| entry.trust_state.clone()),
+                availability_status: availability.status,
+                availability_reason: availability.reason,
+                repair_hint: availability.repair_hint,
+            }
+        })
+        .collect()
+}
+
+fn availability_for_attachment(
+    attachment: &CanonicalAttachedSkillDto,
+    registry_entry: Option<&SkillRegistryEntryDto>,
+) -> AttachedSkillAvailability {
+    let Some(entry) = registry_entry else {
+        return AttachedSkillAvailability {
+            status: AgentAttachedSkillAvailabilityStatusDto::Missing,
+            reason: format!(
+                "Attached skill source `{}` is missing from the skill registry.",
+                attachment.source_id
+            ),
+            repair_hint: Some("remove_attachment".into()),
+            unavailable_code: Some("workflow_agent_attached_skill_source_missing"),
+        };
+    };
+
+    let mut availability = availability_for_registry_entry(entry);
+    if availability.status != AgentAttachedSkillAvailabilityStatusDto::Available {
+        return availability;
+    }
+
+    match entry.version_hash.as_deref() {
+        Some(version_hash) if version_hash == attachment.version_hash.trim() => availability,
+        Some(version_hash) => {
+            availability.status = AgentAttachedSkillAvailabilityStatusDto::Stale;
+            availability.reason = format!(
+                "Attached skill `{}` is pinned to `{}`, but the registry source is `{version_hash}`.",
+                attachment.skill_id,
+                attachment.version_hash.trim()
+            );
+            availability.repair_hint = Some("refresh_pin".into());
+            availability.unavailable_code =
+                Some("workflow_agent_attached_skill_version_hash_mismatch");
+            availability
+        }
+        None => AttachedSkillAvailability {
+            status: AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+            reason: format!(
+                "Attached skill source `{}` does not have a version hash to pin.",
+                attachment.source_id
+            ),
+            repair_hint: Some("refresh_pin".into()),
+            unavailable_code: Some("workflow_agent_attached_skill_version_hash_missing"),
+        },
+    }
 }
 
 fn custom_tools_from_policy_or_runtime(
@@ -2192,7 +3608,79 @@ fn effect_class_from_runtime(class: AutonomousToolEffectClass) -> AgentToolEffec
 mod tests {
     use super::*;
 
+    use crate::commands::SkillSourceMetadataDto;
     use serde_json::json;
+
+    fn registry_skill(
+        source_id: &str,
+        source_state: SkillSourceStateDto,
+        trust_state: SkillTrustStateDto,
+        version_hash: Option<&str>,
+    ) -> SkillRegistryEntryDto {
+        let enabled = source_state == SkillSourceStateDto::Enabled;
+        SkillRegistryEntryDto {
+            source_id: source_id.into(),
+            skill_id: "rust-best-practices".into(),
+            name: "Rust Best Practices".into(),
+            description: "Guide for idiomatic Rust.".into(),
+            source_kind: SkillSourceKindDto::Bundled,
+            scope: SkillSourceScopeDto::Global,
+            project_id: None,
+            source_state,
+            trust_state,
+            enabled,
+            installed: true,
+            user_invocable: Some(true),
+            version_hash: version_hash.map(str::to_string),
+            last_used_at: None,
+            last_diagnostic: None,
+            source: SkillSourceMetadataDto {
+                label: "Bundled Rust Best Practices".into(),
+                repo: None,
+                reference: Some("1.0.0".into()),
+                path: None,
+                root_id: None,
+                root_path: None,
+                relative_path: None,
+                bundle_id: Some("xero".into()),
+                plugin_id: None,
+                server_id: None,
+            },
+        }
+    }
+
+    #[test]
+    fn graph_projection_groups_tools_and_emits_react_flow_edges() {
+        let detail = builtin_detail(RuntimeAgentIdDto::Engineer, 1);
+        let projection = workflow_agent_graph_projection_for_detail(&detail);
+
+        assert_eq!(projection.schema, WORKFLOW_AGENT_GRAPH_PROJECTION_SCHEMA);
+        assert!(projection
+            .nodes
+            .iter()
+            .any(|node| node.id == GRAPH_HEADER_NODE_ID && node.node_type == "agent-header"));
+        assert!(projection
+            .nodes
+            .iter()
+            .any(|node| node.id == GRAPH_OUTPUT_NODE_ID && node.node_type == "agent-output"));
+        assert_eq!(
+            projection
+                .nodes
+                .iter()
+                .filter(|node| node.node_type == "tool")
+                .count(),
+            detail.tools.len()
+        );
+        assert!(projection
+            .nodes
+            .iter()
+            .any(|node| node.node_type == "tool-group-frame"));
+        assert!(projection.edges.iter().any(|edge| {
+            edge.source == GRAPH_HEADER_NODE_ID
+                && edge.target == GRAPH_OUTPUT_NODE_ID
+                && edge.marker == Some(WorkflowAgentGraphMarkerDto::ArrowClosed)
+        }));
+    }
 
     #[test]
     fn custom_detail_hydrates_saved_graph_before_runtime_defaults() {
@@ -2303,7 +3791,7 @@ mod tests {
             }),
         };
 
-        let detail = custom_detail(record, version);
+        let detail = custom_detail(record, version, &[]);
 
         assert_eq!(detail.prompts.len(), 1);
         assert_eq!(detail.prompts[0].id, "release_prompt");
@@ -2328,6 +3816,109 @@ mod tests {
     }
 
     #[test]
+    fn custom_detail_round_trips_attached_skills_with_registry_availability() {
+        let source_id = "skill-source:v1:global:bundled:xero:rust-best-practices";
+        let record = project_store::AgentDefinitionRecord {
+            definition_id: "rust_helper".into(),
+            current_version: 1,
+            display_name: "Rust Helper".into(),
+            short_label: "Rust".into(),
+            description: "Uses a pinned Rust skill.".into(),
+            scope: "project_custom".into(),
+            lifecycle_state: "active".into(),
+            base_capability_profile: "engineering".into(),
+            created_at: "2026-05-01T12:00:00Z".into(),
+            updated_at: "2026-05-01T12:00:00Z".into(),
+        };
+        let version = project_store::AgentDefinitionVersionRecord {
+            definition_id: "rust_helper".into(),
+            version: 1,
+            created_at: "2026-05-01T12:00:00Z".into(),
+            validation_report: None,
+            snapshot: json!({
+                "schema": "xero.agent_definition.v1",
+                "schemaVersion": 2,
+                "id": "rust_helper",
+                "version": 1,
+                "displayName": "Rust Helper",
+                "shortLabel": "Rust",
+                "description": "Uses a pinned Rust skill.",
+                "taskPurpose": "Apply Rust guidance.",
+                "scope": "project_custom",
+                "lifecycleState": "active",
+                "baseCapabilityProfile": "engineering",
+                "defaultApprovalMode": "suggest",
+                "allowedApprovalModes": ["suggest"],
+                "toolPolicy": {"allowedTools": [], "allowedEffectClasses": ["observe"]},
+                "prompts": [],
+                "tools": [],
+                "output": {
+                    "contract": "answer",
+                    "label": "Answer",
+                    "description": "Answer.",
+                    "sections": []
+                },
+                "dbTouchpoints": {"reads": [], "writes": [], "encouraged": []},
+                "consumes": [],
+                "workflowContract": "Apply Rust guidance.",
+                "finalResponseContract": "Answer.",
+                "examplePrompts": ["Fix Rust.", "Review Rust.", "Explain Rust."],
+                "refusalEscalationCases": ["Out of scope.", "Missing context.", "Secrets."],
+                "attachedSkills": [
+                    {
+                        "id": "rust-best-practices",
+                        "sourceId": source_id,
+                        "skillId": "rust-best-practices",
+                        "name": "Rust Best Practices",
+                        "description": "Guide for idiomatic Rust.",
+                        "sourceKind": "bundled",
+                        "scope": "global",
+                        "versionHash": "old-hash",
+                        "includeSupportingAssets": false,
+                        "required": true
+                    }
+                ]
+            }),
+        };
+
+        let available = registry_skill(
+            source_id,
+            SkillSourceStateDto::Enabled,
+            SkillTrustStateDto::Trusted,
+            Some("old-hash"),
+        );
+        let stale = registry_skill(
+            source_id,
+            SkillSourceStateDto::Enabled,
+            SkillTrustStateDto::Trusted,
+            Some("new-hash"),
+        );
+
+        let detail = custom_detail(record.clone(), version.clone(), &[available]);
+        assert_eq!(detail.attached_skills.len(), 1);
+        assert_eq!(detail.attached_skills[0].source_id, source_id);
+        assert_eq!(
+            detail.attached_skills[0].availability_status,
+            AgentAttachedSkillAvailabilityStatusDto::Available
+        );
+        assert_eq!(
+            detail.authoring_graph.expect("authoring graph")["canonicalGraph"]["attachedSkills"][0]
+                ["sourceId"],
+            json!(source_id)
+        );
+
+        let stale_detail = custom_detail(record, version, &[stale]);
+        assert_eq!(
+            stale_detail.attached_skills[0].availability_status,
+            AgentAttachedSkillAvailabilityStatusDto::Stale
+        );
+        assert_eq!(
+            stale_detail.attached_skills[0].repair_hint.as_deref(),
+            Some("refresh_pin")
+        );
+    }
+
+    #[test]
     fn s13_custom_detail_returns_agent_builder_definition_as_editable_authoring_graph() {
         let record = project_store::AgentDefinitionRecord {
             definition_id: "agent_builder_generated".into(),
@@ -2348,7 +3939,7 @@ mod tests {
             validation_report: None,
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "id": "agent_builder_generated",
                 "version": 1,
                 "displayName": "Agent Builder Generated",
@@ -2447,11 +4038,12 @@ mod tests {
                     "preserveDefinitionVersion": true
                 },
                 "examplePrompts": ["Fix a bug.", "Add a helper.", "Verify a change."],
-                "refusalEscalationCases": ["Refuse hidden prompt requests.", "Escalate missing context.", "Refuse secrets."]
+                "refusalEscalationCases": ["Refuse hidden prompt requests.", "Escalate missing context.", "Refuse secrets."],
+                "attachedSkills": []
             }),
         };
 
-        let detail = custom_detail(record, version);
+        let detail = custom_detail(record, version, &[]);
         let graph = detail.authoring_graph.expect("authoring graph");
         assert_eq!(graph["schema"], json!("xero.agent_authoring_graph.v1"));
         assert_eq!(graph["source"]["generatedBy"], json!("agent_builder"));
@@ -2480,6 +4072,7 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         for expected in [
             "prompts",
+            "attachedSkills",
             "tools",
             "toolPolicy",
             "output",
@@ -2583,7 +4176,7 @@ mod tests {
                 template.definition["schema"],
                 json!("xero.agent_definition.v1")
             );
-            assert_eq!(template.definition["schemaVersion"], json!(1));
+            assert_eq!(template.definition["schemaVersion"], json!(2));
             assert_eq!(
                 template.definition["baseCapabilityProfile"],
                 json!(base_capability_profile_id(
@@ -2596,6 +4189,7 @@ mod tests {
                 .iter()
                 .any(|prompt| prompt["source"] == json!("template")));
             assert!(template.definition["tools"].as_array().is_some());
+            assert!(template.definition["attachedSkills"].as_array().is_some());
             assert!(template.definition["output"].is_object());
             assert!(template.definition["dbTouchpoints"].is_object());
             assert!(template.definition["consumes"].as_array().is_some());
@@ -2802,6 +4396,46 @@ mod tests {
         assert!(!catalog.tools.is_empty());
         assert!(!catalog.creation_flows.is_empty());
         assert!(!catalog.profile_availability.is_empty());
+    }
+
+    #[test]
+    fn s62_authoring_template_definitions_embed_full_tool_summaries() {
+        let catalog = agent_authoring_catalog();
+        let known_tools = catalog
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for template in catalog.templates {
+            let template_tools = template
+                .definition
+                .get("tools")
+                .cloned()
+                .expect("template definition includes tools");
+            let summaries: Vec<AgentToolSummaryDto> =
+                serde_json::from_value(template_tools).expect("template tools are full summaries");
+            assert!(
+                !summaries.is_empty(),
+                "template {} should include at least one tool",
+                template.id
+            );
+            for summary in summaries {
+                assert!(
+                    known_tools.contains(summary.name.as_str()),
+                    "template {} references unknown tool {}",
+                    template.id,
+                    summary.name
+                );
+                assert_ne!(
+                    summary.effect_class,
+                    AgentToolEffectClassDto::Unknown,
+                    "template {} should resolve effect class for {}",
+                    template.id,
+                    summary.name
+                );
+            }
+        }
     }
 
     #[test]

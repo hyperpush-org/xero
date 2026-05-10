@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -517,7 +517,7 @@ pub fn insert_agent_run(
             map_agent_store_write_error(repo_root, "agent_run_insert_failed", error)
         })?;
 
-    load_agent_run(repo_root, &record.project_id, &record.run_id)
+    read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)
 }
 
 pub fn append_agent_message(
@@ -695,7 +695,7 @@ pub fn update_agent_run_lineage(
             ),
         ));
     }
-    load_agent_run(repo_root, &record.project_id, &record.run_id)
+    read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)
 }
 
 pub fn append_agent_event(
@@ -912,16 +912,21 @@ pub fn upsert_agent_environment_lifecycle_snapshot(
             )
         })?;
 
-    load_agent_environment_lifecycle_snapshot(repo_root, &record.project_id, &record.run_id)?
-        .ok_or_else(|| {
-            CommandError::system_fault(
-                "agent_environment_lifecycle_snapshot_missing",
-                format!(
-                    "Xero could not reload the lifecycle snapshot for run `{}` after saving it.",
-                    record.run_id
-                ),
-            )
-        })
+    read_agent_environment_lifecycle_snapshot(
+        &connection,
+        repo_root,
+        &record.project_id,
+        &record.run_id,
+    )?
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_environment_lifecycle_snapshot_missing",
+            format!(
+                "Xero could not reload the lifecycle snapshot for run `{}` after saving it.",
+                record.run_id
+            ),
+        )
+    })
 }
 
 pub fn load_agent_environment_lifecycle_snapshot(
@@ -932,6 +937,15 @@ pub fn load_agent_environment_lifecycle_snapshot(
     validate_non_empty_text(project_id, "projectId")?;
     validate_non_empty_text(run_id, "runId")?;
     let connection = open_agent_database(repo_root)?;
+    read_agent_environment_lifecycle_snapshot(&connection, repo_root, project_id, run_id)
+}
+
+fn read_agent_environment_lifecycle_snapshot(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<AgentEnvironmentLifecycleSnapshotRecord>, CommandError> {
     connection
         .query_row(
             r#"
@@ -1680,7 +1694,7 @@ pub fn update_agent_run_status(
         .map_err(|error| {
             map_agent_store_write_error(repo_root, "agent_run_status_update_failed", error)
         })?;
-    load_agent_run(repo_root, project_id, run_id)
+    read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
 }
 
 pub fn touch_agent_run_heartbeat(
@@ -1718,6 +1732,15 @@ pub fn load_agent_run_record(
     validate_non_empty_text(project_id, "projectId")?;
     validate_non_empty_text(run_id, "runId")?;
     let connection = open_agent_database(repo_root)?;
+    read_agent_run_record(&connection, repo_root, project_id, run_id)
+}
+
+fn read_agent_run_record(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<AgentRunRecord, CommandError> {
     connection
         .query_row(
             r#"
@@ -1771,14 +1794,44 @@ pub fn load_agent_run(
     validate_non_empty_text(project_id, "projectId")?;
     validate_non_empty_text(run_id, "runId")?;
     let connection = open_agent_database(repo_root)?;
-    let run = load_agent_run_record(repo_root, project_id, run_id)?;
+    read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
+}
 
-    let messages = read_agent_messages(&connection, project_id, run_id, repo_root)?;
-    let events = read_agent_events(&connection, project_id, run_id, repo_root)?;
-    let tool_calls = read_agent_tool_calls(&connection, project_id, run_id, repo_root)?;
-    let file_changes = read_agent_file_changes(&connection, project_id, run_id, repo_root)?;
-    let checkpoints = read_agent_checkpoints(&connection, project_id, run_id, repo_root)?;
-    let action_requests = read_agent_action_requests(&connection, project_id, run_id, repo_root)?;
+pub fn load_agent_run_with_usage(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<(AgentRunSnapshotRecord, Option<AgentUsageRecord>), CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    read_agent_run_snapshot_with_usage(&connection, repo_root, project_id, run_id)
+}
+
+pub(crate) fn read_agent_run_snapshot_with_usage(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<(AgentRunSnapshotRecord, Option<AgentUsageRecord>), CommandError> {
+    let snapshot = read_agent_run_snapshot(connection, repo_root, project_id, run_id)?;
+    let usage = read_agent_usage(connection, repo_root, project_id, run_id)?;
+    Ok((snapshot, usage))
+}
+
+pub(crate) fn read_agent_run_snapshot(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<AgentRunSnapshotRecord, CommandError> {
+    let run = read_agent_run_record(connection, repo_root, project_id, run_id)?;
+    let messages = read_agent_messages(connection, project_id, run_id, repo_root)?;
+    let events = read_agent_events(connection, project_id, run_id, repo_root)?;
+    let tool_calls = read_agent_tool_calls(connection, project_id, run_id, repo_root)?;
+    let file_changes = read_agent_file_changes(connection, project_id, run_id, repo_root)?;
+    let checkpoints = read_agent_checkpoints(connection, project_id, run_id, repo_root)?;
+    let action_requests = read_agent_action_requests(connection, project_id, run_id, repo_root)?;
 
     Ok(AgentRunSnapshotRecord {
         run,
@@ -1810,6 +1863,15 @@ pub fn load_agent_usage(
     validate_non_empty_text(project_id, "projectId")?;
     validate_non_empty_text(run_id, "runId")?;
     let connection = open_agent_database(repo_root)?;
+    read_agent_usage(&connection, repo_root, project_id, run_id)
+}
+
+fn read_agent_usage(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<AgentUsageRecord>, CommandError> {
     connection
         .query_row(
             r#"
@@ -2056,6 +2118,14 @@ pub fn project_usage_totals(
 ) -> Result<ProjectUsageTotalsRecord, CommandError> {
     validate_non_empty_text(project_id, "projectId")?;
     let connection = open_agent_database(repo_root)?;
+    read_project_usage_totals(&connection, repo_root, project_id)
+}
+
+fn read_project_usage_totals(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<ProjectUsageTotalsRecord, CommandError> {
     connection
         .query_row(
             r#"
@@ -2190,6 +2260,31 @@ pub fn project_usage_breakdown(
 ) -> Result<Vec<ProjectUsageModelBreakdownRecord>, CommandError> {
     validate_non_empty_text(project_id, "projectId")?;
     let connection = open_agent_database(repo_root)?;
+    read_project_usage_breakdown(&connection, repo_root, project_id)
+}
+
+pub fn project_usage_summary(
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<
+    (
+        ProjectUsageTotalsRecord,
+        Vec<ProjectUsageModelBreakdownRecord>,
+    ),
+    CommandError,
+> {
+    validate_non_empty_text(project_id, "projectId")?;
+    let connection = open_agent_database(repo_root)?;
+    let totals = read_project_usage_totals(&connection, repo_root, project_id)?;
+    let breakdown = read_project_usage_breakdown(&connection, repo_root, project_id)?;
+    Ok((totals, breakdown))
+}
+
+fn read_project_usage_breakdown(
+    connection: &Connection,
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<Vec<ProjectUsageModelBreakdownRecord>, CommandError> {
     let mut statement = connection
         .prepare(
             r#"
@@ -2245,11 +2340,19 @@ pub fn load_agent_session_run_snapshots(
     project_id: &str,
     agent_session_id: &str,
 ) -> Result<Vec<(AgentRunSnapshotRecord, Option<AgentUsageRecord>)>, CommandError> {
-    let runs = list_agent_runs_for_session(repo_root, project_id, agent_session_id)?;
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(agent_session_id, "agentSessionId")?;
+    let connection = open_agent_database(repo_root)?;
+    let runs = list_agent_runs_for_session_with_connection(
+        &connection,
+        repo_root,
+        project_id,
+        agent_session_id,
+    )?;
     let mut snapshots = Vec::with_capacity(runs.len());
     for run in runs {
-        let usage = load_agent_usage(repo_root, project_id, &run.run_id)?;
-        let snapshot = load_agent_run(repo_root, project_id, &run.run_id)?;
+        let usage = read_agent_usage(&connection, repo_root, project_id, &run.run_id)?;
+        let snapshot = read_agent_run_snapshot(&connection, repo_root, project_id, &run.run_id)?;
         snapshots.push((snapshot, usage));
     }
     Ok(snapshots)
@@ -2311,14 +2414,12 @@ pub fn list_agent_runs(
         .map_err(|error| map_agent_store_query_error(repo_root, "agent_runs_decode_failed", error))
 }
 
-fn list_agent_runs_for_session(
+fn list_agent_runs_for_session_with_connection(
+    connection: &Connection,
     repo_root: &Path,
     project_id: &str,
     agent_session_id: &str,
 ) -> Result<Vec<AgentRunRecord>, CommandError> {
-    validate_non_empty_text(project_id, "projectId")?;
-    validate_non_empty_text(agent_session_id, "agentSessionId")?;
-    let connection = open_agent_database(repo_root)?;
     let mut statement = connection
         .prepare(
             r#"

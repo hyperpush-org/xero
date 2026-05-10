@@ -10,6 +10,7 @@ import type { LaneLabelFlowNode } from '../build-agent-graph'
 // link the lane to its edges at a glance.
 const LANE_TONE_BY_ID: Record<string, string> = {
   'lane:prompt': 'agent-graph-lane-label--prompt',
+  'lane:skills': 'agent-graph-lane-label--skills',
   'lane:tool': 'agent-graph-lane-label--tool',
   'lane:db-table': 'agent-graph-lane-label--db',
   'lane:agent-output': 'agent-graph-lane-label--output',

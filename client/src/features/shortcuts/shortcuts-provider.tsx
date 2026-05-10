@@ -4,9 +4,11 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
+import { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
   SHORTCUTS_STORAGE_KEY,
   SHORTCUT_DEFINITIONS,
@@ -26,6 +28,7 @@ interface ShortcutsContextValue {
 }
 
 const ShortcutsContext = createContext<ShortcutsContextValue | null>(null)
+const SHORTCUTS_APP_STATE_KEY = 'shortcuts.bindings.v1'
 
 function readStoredBindings(): ShortcutBindings {
   const fallback = defaultBindings()
@@ -57,6 +60,20 @@ function persistBindings(bindings: ShortcutBindings): void {
   }
 }
 
+function mergeStoredBindings(value: unknown): ShortcutBindings | null {
+  if (!value || typeof value !== 'object') return null
+  const merged = defaultBindings()
+  let sawBinding = false
+  for (const def of SHORTCUT_DEFINITIONS) {
+    const candidate = (value as Record<string, unknown>)[def.id]
+    if (isShortcutBinding(candidate)) {
+      merged[def.id] = candidate
+      sawBinding = true
+    }
+  }
+  return sawBinding ? merged : null
+}
+
 export interface ShortcutsProviderProps {
   children: ReactNode
   /** Optional override for tests — bypasses localStorage. */
@@ -64,14 +81,52 @@ export interface ShortcutsProviderProps {
 }
 
 export function ShortcutsProvider({ children, initialBindings }: ShortcutsProviderProps) {
+  const appStateHydratedRef = useRef(Boolean(initialBindings))
+  const [appStateHydrated, setAppStateHydrated] = useState(Boolean(initialBindings))
   const [bindings, setBindings] = useState<ShortcutBindings>(
     () => initialBindings ?? readStoredBindings(),
   )
 
   useEffect(() => {
     if (initialBindings) return
+    const readAppUiState = XeroDesktopAdapter.readAppUiState
+    if (typeof readAppUiState !== 'function') {
+      appStateHydratedRef.current = true
+      setAppStateHydrated(true)
+      return
+    }
+
+    let disposed = false
+    void readAppUiState({ key: SHORTCUTS_APP_STATE_KEY })
+      .then((response) => {
+        if (disposed) return
+        const nextBindings = mergeStoredBindings(response.value)
+        if (nextBindings) {
+          setBindings(nextBindings)
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (disposed) return
+        appStateHydratedRef.current = true
+        setAppStateHydrated(true)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [initialBindings])
+
+  useEffect(() => {
+    if (initialBindings) return
     persistBindings(bindings)
-  }, [bindings, initialBindings])
+    if (appStateHydrated) {
+      void XeroDesktopAdapter.writeAppUiState?.({
+        key: SHORTCUTS_APP_STATE_KEY,
+        value: bindings,
+      }).catch(() => undefined)
+    }
+  }, [bindings, initialBindings, appStateHydrated])
 
   const setBinding = useCallback((id: ShortcutId, binding: ShortcutBinding) => {
     setBindings((prev) => ({ ...prev, [id]: binding }))

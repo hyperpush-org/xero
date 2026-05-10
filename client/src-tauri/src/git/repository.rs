@@ -330,15 +330,14 @@ fn git_timestamp_to_rfc3339(unix_timestamp: i64) -> Option<String> {
         .and_then(|value| value.format(&Rfc3339).ok())
 }
 
-/// Best-effort additions/deletions across staged + unstaged + untracked.
-/// Returns (0, 0) on any error so the badge degrades gracefully instead of
-/// failing the whole status read.
+/// Best-effort additions/deletions across staged + unstaged tracked files.
+/// Untracked files are surfaced through status entries, but their contents are
+/// not diffed here: reading every new file made project switches crawl in large
+/// worktrees. Returns (0, 0) on any error so the badge degrades gracefully.
 fn read_diff_line_counts(repository: &Repository) -> (u32, u32) {
     let mut diff_options = DiffOptions::new();
     diff_options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
+        .include_untracked(false)
         .include_typechange(true)
         .ignore_submodules(true);
 
@@ -441,4 +440,61 @@ fn map_unstaged_change(status: Status) -> Option<ChangeKind> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use git2::{Repository, Signature};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn diff_line_counts_skip_untracked_file_contents() {
+        let (temp_dir, repository) = repository_with_committed_file("tracked.txt", "alpha\nbeta\n");
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "alpha\nbeta\ntracked addition\n",
+        )
+        .expect("modify tracked file");
+        fs::write(
+            temp_dir.path().join("untracked.txt"),
+            "untracked one\nuntracked two\nuntracked three\n",
+        )
+        .expect("write untracked file");
+
+        assert_eq!(read_diff_line_counts(&repository), (1, 0));
+
+        let status_entries = read_status_entries(&repository).expect("status entries");
+        assert!(status_entries
+            .iter()
+            .any(|entry| entry.path == "untracked.txt" && entry.untracked));
+    }
+
+    fn repository_with_committed_file(path: &str, content: &str) -> (TempDir, Repository) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let repository = Repository::init(temp_dir.path()).expect("init repository");
+        fs::write(temp_dir.path().join(path), content).expect("write initial file");
+        stage_path(&repository, path);
+        commit_index(&repository, "initial commit");
+        (temp_dir, repository)
+    }
+
+    fn stage_path(repository: &Repository, path: &str) {
+        let mut index = repository.index().expect("index");
+        index.add_path(Path::new(path)).expect("add path");
+        index.write().expect("write index");
+    }
+
+    fn commit_index(repository: &Repository, message: &str) {
+        let signature = Signature::now("Xero Test", "xero@example.test").expect("signature");
+        let mut index = repository.index().expect("index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repository.find_tree(tree_id).expect("tree");
+        repository
+            .commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
+            .expect("commit");
+    }
 }

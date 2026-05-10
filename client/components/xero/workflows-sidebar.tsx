@@ -519,12 +519,6 @@ function WorkflowsComingSoon() {
       >
         Coming soon
       </Badge>
-      <div className="space-y-1.5">
-        <h3 className="text-[13px] font-semibold text-foreground">Workflows</h3>
-        <p className="max-w-[240px] text-[11.5px] leading-relaxed text-muted-foreground/80">
-          Compose agents into multi-step workflows. We&apos;re building this next.
-        </p>
-      </div>
     </div>
   )
 }

@@ -144,6 +144,7 @@ function makeWorkflowAgentDetail(
       sections: [],
     },
     consumes: [],
+    attachedSkills: [],
     ...overrides,
   }
 }
@@ -503,7 +504,7 @@ describe('live views', () => {
         agentDetail={makeWorkflowAgentDetail()}
         agentDetailStatus="ready"
         onClearAgentSelection={vi.fn()}
-        onCreateWorkflow={vi.fn()}
+        onCreateAgent={vi.fn()}
       />,
     )
 
@@ -623,6 +624,62 @@ describe('live views', () => {
               },
             ],
           },
+          view: {
+            rootPath: '/',
+            nodesByPath: {
+              '/': {
+                id: '/',
+                name: 'root',
+                path: '/',
+                type: 'folder',
+                childrenLoaded: true,
+                truncated: false,
+                omittedEntryCount: 0,
+              },
+              '/README.md': {
+                id: '/README.md',
+                name: 'README.md',
+                path: '/README.md',
+                type: 'file',
+                childrenLoaded: true,
+                truncated: false,
+                omittedEntryCount: 0,
+              },
+              '/src': {
+                id: '/src',
+                name: 'src',
+                path: '/src',
+                type: 'folder',
+                childrenLoaded: true,
+                truncated: false,
+                omittedEntryCount: 0,
+              },
+              '/src/App.tsx': {
+                id: '/src/App.tsx',
+                name: 'App.tsx',
+                path: '/src/App.tsx',
+                type: 'file',
+                childrenLoaded: true,
+                truncated: false,
+                omittedEntryCount: 0,
+              },
+            },
+            childPathsByPath: {
+              '/': ['/README.md', '/src'],
+              '/src': ['/src/App.tsx'],
+            },
+            loadedPaths: ['/', '/src'],
+            stats: {
+              byteSize: 1,
+              childListCount: 2,
+              nodeCount: 4,
+              unloadedFolderCount: 0,
+            },
+            truncated: false,
+            omittedEntryCount: 0,
+          },
+          truncated: false,
+          omittedEntryCount: 0,
         })}
         readProjectFile={readProjectFile}
         writeProjectFile={async (projectId: string, path: string) => ({ projectId, path })}

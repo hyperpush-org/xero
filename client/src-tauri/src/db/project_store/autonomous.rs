@@ -446,7 +446,7 @@ fn read_autonomous_run_snapshot(
                     "Xero could not read durable autonomous-run metadata from {}: {other}",
                     database_path.display()
                 ),
-            ))
+            ));
         }
     };
 

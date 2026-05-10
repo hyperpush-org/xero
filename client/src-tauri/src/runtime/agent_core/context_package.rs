@@ -40,6 +40,7 @@ pub(crate) struct ProviderContextPackageInput<'a> {
 pub(crate) fn assemble_provider_context_package(
     input: ProviderContextPackageInput<'_>,
     skill_contexts: Vec<XeroSkillToolContextPayload>,
+    attached_skill_contexts: Vec<XeroSkillToolContextPayload>,
 ) -> CommandResult<ProviderContextPackage> {
     let created_at = now_timestamp();
     let first_turn_context_policy =
@@ -85,6 +86,7 @@ pub(crate) fn assemble_provider_context_package(
             .as_ref()
             .map(|context| context.prompt_summary.as_str()),
     )
+    .with_attached_skill_contexts(attached_skill_contexts.clone())
     .with_skill_contexts(skill_contexts)
     .with_relevant_paths(relevant_paths.iter().map(String::as_str))
     .with_prompt_budget_tokens(budget_tokens)
@@ -357,6 +359,10 @@ pub(crate) fn assemble_provider_context_package(
     );
     manifest_fields.insert("toolExposurePlan".into(), json!(input.tool_exposure_plan));
     manifest_fields.insert("agentDefinition".into(), agent_definition_json);
+    manifest_fields.insert(
+        "attachedSkills".into(),
+        attached_skill_context_manifest_json(&attached_skill_contexts),
+    );
     manifest_fields.insert("promptDiff".into(), prompt_diff);
     manifest_fields.insert("retrieval".into(), retrieval_json);
     manifest_fields.insert("workingSet".into(), working_set_json);
@@ -429,7 +435,7 @@ fn retrieve_project_context(
     created_at: &str,
     policy: &FirstTurnContextPolicy,
 ) -> CommandResult<project_store::AgentContextRetrievalResponse> {
-    project_store::search_agent_context(
+    project_store::search_agent_context_without_freshness_refresh(
         input.repo_root,
         project_store::AgentContextRetrievalRequest {
             query_id: generated_context_id("context-retrieval", input.run_id, input.turn_index),
@@ -767,6 +773,29 @@ fn prompt_fragment_exclusion_manifest_entries(
         }));
     }
     (contributors, exclusions_json)
+}
+
+fn attached_skill_context_manifest_json(contexts: &[XeroSkillToolContextPayload]) -> JsonValue {
+    json!({
+        "schema": "xero.attached_skill_context_manifest.v1",
+        "injectedCount": contexts.len(),
+        "items": contexts
+            .iter()
+            .map(|context| {
+                json!({
+                    "sourceId": context.source_id,
+                    "skillId": context.skill_id,
+                    "markdownSha256": context.markdown.sha256,
+                    "contentHash": skill_context_content_hash(context),
+                    "promptFragmentProvenance": format!(
+                        "attached_agent_skill:{}:{}",
+                        context.source_id, context.markdown.relative_path
+                    ),
+                    "supportingAssetCount": context.supporting_assets.len(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn provider_message_manifest_entries(
@@ -2388,12 +2417,13 @@ mod tests {
     ) -> JsonValue {
         json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "id": id,
             "version": 1,
             "scope": "project_custom",
             "displayName": id,
             "taskPurpose": "Exercise first-turn context policy.",
+            "attachedSkills": [],
             "retrievalDefaults": {
                 "enabled": enabled,
                 "recordKinds": record_kinds,
@@ -2438,6 +2468,7 @@ mod tests {
                 owned_process_summary: None,
                 provider_preflight: None,
             },
+            Vec::new(),
             Vec::new(),
         )
         .expect("assemble snapshot context package")
@@ -2507,8 +2538,10 @@ mod tests {
             provider_preflight: None,
         };
 
-        let first = assemble_provider_context_package(input, Vec::new()).expect("first package");
-        let second = assemble_provider_context_package(input, Vec::new()).expect("second package");
+        let first = assemble_provider_context_package(input, Vec::new(), Vec::new())
+            .expect("first package");
+        let second = assemble_provider_context_package(input, Vec::new(), Vec::new())
+            .expect("second package");
 
         assert_eq!(first.manifest.context_hash, second.manifest.context_hash);
         assert!(first.system_prompt.contains("Durable project context is"));
@@ -2680,12 +2713,13 @@ mod tests {
         }];
         let snapshot = json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "id": "db-scribe",
             "version": 4,
             "scope": "project_custom",
             "displayName": "DB Scribe",
             "taskPurpose": "Use durable project context tables deliberately.",
+            "attachedSkills": [],
             "dbTouchpoints": {
                 "reads": [
                     {
@@ -2747,8 +2781,8 @@ mod tests {
             provider_preflight: None,
         };
 
-        let package =
-            assemble_provider_context_package(input, Vec::new()).expect("assemble context package");
+        let package = assemble_provider_context_package(input, Vec::new(), Vec::new())
+            .expect("assemble context package");
 
         assert!(package
             .system_prompt
@@ -2818,12 +2852,13 @@ mod tests {
         .expect("seed accepted plan pack");
         let snapshot = json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "id": "handoff-engineer",
             "version": 3,
             "scope": "project_custom",
             "displayName": "Handoff Engineer",
             "taskPurpose": "Continue implementation from accepted plan artifacts.",
+            "attachedSkills": [],
             "consumes": [
                 {
                     "id": "plan_pack",
@@ -2879,8 +2914,8 @@ mod tests {
             provider_preflight: None,
         };
 
-        let package =
-            assemble_provider_context_package(input, Vec::new()).expect("assemble context package");
+        let package = assemble_provider_context_package(input, Vec::new(), Vec::new())
+            .expect("assemble context package");
 
         assert!(package.system_prompt.contains("Consumed artifacts:"));
         assert_eq!(
@@ -2917,12 +2952,13 @@ mod tests {
         seed_run(&repo_root, &project_id);
         let snapshot = json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "id": "secret-scribe",
             "version": 1,
             "scope": "project_custom",
             "displayName": "Secret Scribe",
             "taskPurpose": "Verify manifest redaction.",
+            "attachedSkills": [],
             "dbTouchpoints": {
                 "reads": [
                     {
@@ -2981,8 +3017,8 @@ mod tests {
             provider_preflight: None,
         };
 
-        let package =
-            assemble_provider_context_package(input, Vec::new()).expect("assemble context package");
+        let package = assemble_provider_context_package(input, Vec::new(), Vec::new())
+            .expect("assemble context package");
 
         assert_eq!(
             package.manifest.manifest["redactionState"],
@@ -3037,6 +3073,7 @@ mod tests {
                 provider_preflight: None,
             },
             Vec::new(),
+            Vec::new(),
         )
         .expect("assemble first package");
 
@@ -3090,6 +3127,7 @@ mod tests {
                 owned_process_summary: None,
                 provider_preflight: None,
             },
+            Vec::new(),
             Vec::new(),
         )
         .expect("assemble second package");
@@ -3227,6 +3265,7 @@ mod tests {
                 provider_preflight: None,
             },
             Vec::new(),
+            Vec::new(),
         )
         .expect("assemble provider package");
 
@@ -3357,6 +3396,7 @@ mod tests {
                 provider_preflight: None,
             },
             Vec::new(),
+            Vec::new(),
         )
         .expect("assemble provider package");
 
@@ -3486,6 +3526,7 @@ mod tests {
                 owned_process_summary: None,
                 provider_preflight: None,
             },
+            Vec::new(),
             Vec::new(),
         )
         .expect("assemble provider package");

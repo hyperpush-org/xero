@@ -704,6 +704,10 @@ describe('ExecutionView', () => {
     expect(screen.getByText('Explorer')).toBeVisible()
     expect(screen.queryByText('/tmp/Xero')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Search files')).toHaveValue('')
+    const newFileButton = screen.getByRole('button', { name: 'New file' })
+    expect(newFileButton).toHaveClass('size-6')
+    expect(newFileButton).not.toHaveClass('size-9')
+    expect(newFileButton.querySelector('svg')).toHaveClass('size-3')
     expect(screen.getByText('No files open')).toBeVisible()
 
     fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
@@ -1194,7 +1198,7 @@ describe('ExecutionView file editor host', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
 
     expect(await screen.findByLabelText('Editor for /README.md')).toBeVisible()
-    expect(screen.queryByTestId('file-editor-host-toolbar')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Show source' })).not.toBeInTheDocument()
     expect(screen.queryByTestId('preview-status-bar')).not.toBeInTheDocument()
     expect(screen.getByText('Saved')).toBeVisible()
   })
@@ -1207,7 +1211,8 @@ describe('ExecutionView file editor host', () => {
 
     // SVG defaults to preview surface
     expect(await screen.findByTestId('svg-preview')).toBeVisible()
-    expect(screen.getByTestId('file-editor-host-toolbar')).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Show source' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Show preview' })).toBeVisible()
     // Save controls hidden while in preview mode (no dirty state from CodeMirror yet)
     expect(screen.queryByText('Ln 1, Col 1')).not.toBeInTheDocument()
     expect(screen.getByTestId('preview-status-bar')).toBeVisible()
@@ -1228,7 +1233,9 @@ describe('ExecutionView file editor host', () => {
     expect(preview.querySelector('img')).toHaveAttribute('src', 'xero-asset://preview/photo.png')
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Revert' })).not.toBeInTheDocument()
-    expect(screen.queryByTestId('file-editor-host-toolbar')).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Show source' })).not.toBeInTheDocument()
+    // Image controls live in the unified top bar.
+    expect(screen.getByRole('button', { name: 'Zoom in' })).toBeVisible()
     expect(screen.getByTestId('preview-status-bar')).toBeVisible()
   })
 
@@ -1276,7 +1283,7 @@ describe('ExecutionView file editor host', () => {
       'src',
       'xero-asset://preview/large-photo.png',
     )
-    expect(preview).toHaveTextContent('128 MB')
+    expect(screen.getByTestId('preview-status-bar')).toHaveTextContent('128 MB')
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
   })
 

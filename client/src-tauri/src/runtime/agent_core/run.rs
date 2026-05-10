@@ -84,7 +84,16 @@ pub fn create_owned_agent_run(
             agent_tool_policy: agent_tool_policy.clone(),
         },
     );
-    let system_prompt = assemble_system_prompt_for_session(
+    let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &definition_selection.snapshot,
+        &request.tool_runtime,
+    )?;
+    let attached_skill_contexts =
+        attached_skill_contexts_from_resolution_snapshot(&attached_skill_snapshot);
+    let system_prompt = assemble_system_prompt_for_session_with_attached(
         &request.repo_root,
         Some(&request.project_id),
         Some(&request.agent_session_id),
@@ -93,6 +102,8 @@ pub fn create_owned_agent_run(
         tool_registry.descriptors(),
         Some(&definition_selection.snapshot),
         Some(request.tool_runtime.soul_settings()),
+        None,
+        attached_skill_contexts,
     )?;
     let provider = create_provider_adapter(request.provider_config.clone())?;
     let runtime_contract = if matches!(&request.provider_config, AgentProviderConfig::Fake) {
@@ -121,6 +132,10 @@ pub fn create_owned_agent_run(
             system_prompt: system_prompt.clone(),
             now: now.clone(),
         },
+    )?;
+    project_store::persist_runtime_attached_skill_snapshot(
+        &request.repo_root,
+        &attached_skill_snapshot,
     )?;
     if let Some(runtime_contract) = runtime_contract.as_ref() {
         append_event(
@@ -265,6 +280,171 @@ fn owned_agent_production_runtime_contract(
         )
     })?;
     Ok(contract)
+}
+
+pub(crate) fn attached_skill_contexts_from_resolution_snapshot(
+    snapshot: &XeroAttachedSkillResolutionSnapshot,
+) -> Vec<XeroSkillToolContextPayload> {
+    snapshot
+        .attached_skills
+        .iter()
+        .map(|skill| skill.context.clone())
+        .collect()
+}
+
+pub(crate) fn attached_skill_contexts_for_provider_turn(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    definition_snapshot: &JsonValue,
+    tool_runtime: &AutonomousToolRuntime,
+) -> CommandResult<Vec<XeroSkillToolContextPayload>> {
+    if let Some(snapshot) =
+        project_store::load_runtime_attached_skill_snapshot(repo_root, project_id, run_id)?
+    {
+        return Ok(attached_skill_contexts_from_resolution_snapshot(&snapshot));
+    }
+    if !definition_has_attached_skills(definition_snapshot)? {
+        return Ok(Vec::new());
+    }
+    let snapshot = resolve_attached_skill_snapshot_for_run(
+        repo_root,
+        project_id,
+        run_id,
+        definition_snapshot,
+        tool_runtime,
+    )?;
+    Ok(attached_skill_contexts_from_resolution_snapshot(&snapshot))
+}
+
+pub(crate) fn load_persisted_attached_skill_contexts_for_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> CommandResult<Vec<XeroSkillToolContextPayload>> {
+    Ok(
+        project_store::load_runtime_attached_skill_snapshot(repo_root, project_id, run_id)?
+            .map(|snapshot| attached_skill_contexts_from_resolution_snapshot(&snapshot))
+            .unwrap_or_default(),
+    )
+}
+
+fn resolve_attached_skill_snapshot_for_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    definition_snapshot: &JsonValue,
+    tool_runtime: &AutonomousToolRuntime,
+) -> CommandResult<XeroAttachedSkillResolutionSnapshot> {
+    let attached_skills = attached_skill_refs_from_definition_snapshot(definition_snapshot)?;
+    if attached_skills.is_empty() {
+        return Ok(XeroAttachedSkillResolutionSnapshot {
+            contract_version: crate::runtime::XERO_ATTACHED_SKILL_RESOLUTION_CONTRACT_VERSION,
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            resolved_at: now_timestamp(),
+            attached_skills: Vec::new(),
+        });
+    }
+    let report = tool_runtime.resolve_attached_skills(XeroAttachedSkillResolutionRequest {
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        attached_skills,
+    })?;
+    match report.status {
+        XeroAttachedSkillResolutionStatus::Succeeded => {
+            report.snapshot.ok_or_else(|| {
+                CommandError::system_fault(
+                    "attached_skill_resolution_snapshot_missing",
+                    format!(
+                        "Xero resolved attached skills for run `{run_id}` but did not return a run-level snapshot."
+                    ),
+                )
+            })
+        }
+        XeroAttachedSkillResolutionStatus::Failed => {
+            Err(attached_skill_resolution_report_error(repo_root, run_id, report))
+        }
+    }
+}
+
+fn attached_skill_refs_from_definition_snapshot(
+    definition_snapshot: &JsonValue,
+) -> CommandResult<Vec<XeroAttachedSkillRef>> {
+    let Some(value) = definition_snapshot.get("attachedSkills") else {
+        return Err(CommandError::user_fixable(
+            "agent_definition_attached_skills_missing",
+            "Xero cannot start this custom agent because its canonical definition is missing attachedSkills.",
+        ));
+    };
+    serde_json::from_value::<Vec<XeroAttachedSkillRef>>(value.clone()).map_err(|error| {
+        CommandError::user_fixable(
+            "agent_definition_attached_skills_invalid",
+            format!(
+                "Xero cannot start this custom agent because attachedSkills is not canonical: {error}"
+            ),
+        )
+    })
+}
+
+fn definition_has_attached_skills(definition_snapshot: &JsonValue) -> CommandResult<bool> {
+    let Some(value) = definition_snapshot.get("attachedSkills") else {
+        return Err(CommandError::user_fixable(
+            "agent_definition_attached_skills_missing",
+            "Xero cannot continue this custom agent because its canonical definition is missing attachedSkills.",
+        ));
+    };
+    value
+        .as_array()
+        .map(|skills| !skills.is_empty())
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_definition_attached_skills_invalid",
+                "Xero cannot continue this custom agent because attachedSkills is not an array.",
+            )
+        })
+}
+
+fn attached_skill_resolution_report_error(
+    _repo_root: &Path,
+    run_id: &str,
+    report: XeroAttachedSkillResolutionReport,
+) -> CommandError {
+    let detail = attached_skill_resolution_diagnostic_summary(&report.diagnostics);
+    CommandError::user_fixable(
+        "attached_skill_resolution_failed",
+        format!(
+            "Xero refused to start run `{run_id}` because one or more required attached skills could not be injected. {detail}"
+        ),
+    )
+}
+
+fn attached_skill_resolution_diagnostic_summary(
+    diagnostics: &[XeroAttachedSkillDiagnostic],
+) -> String {
+    if diagnostics.is_empty() {
+        return "No resolver diagnostics were returned.".into();
+    }
+    diagnostics
+        .iter()
+        .take(3)
+        .map(|diagnostic| {
+            let source = diagnostic
+                .source_id
+                .as_deref()
+                .or(diagnostic.skill_id.as_deref())
+                .unwrap_or("unknown source");
+            let repair = diagnostic
+                .repair_hint
+                .map(|hint| format!(" Repair hint: {hint:?}."))
+                .unwrap_or_default();
+            format!(
+                "{} for `{source}`: {}{repair}",
+                diagnostic.code, diagnostic.message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn drive_owned_agent_run(
@@ -1037,7 +1217,12 @@ fn estimate_continuation_context_tokens(
         tool_runtime.browser_control_preference(),
         Some(&tool_runtime),
     )?;
-    let system_prompt = assemble_system_prompt_for_session(
+    let attached_skill_contexts = load_persisted_attached_skill_contexts_for_run(
+        &request.repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+    )?;
+    let system_prompt = assemble_system_prompt_for_session_with_attached(
         &request.repo_root,
         Some(&snapshot.run.project_id),
         Some(&snapshot.run.agent_session_id),
@@ -1046,6 +1231,8 @@ fn estimate_continuation_context_tokens(
         tool_registry.descriptors(),
         Some(&definition_snapshot),
         Some(tool_runtime.soul_settings()),
+        None,
+        attached_skill_contexts,
     )?;
     let provider_messages = provider_messages_from_snapshot(&request.repo_root, snapshot)?;
     let message_tokens = provider_messages.iter().try_fold(0_u64, |total, message| {
@@ -1466,7 +1653,16 @@ fn create_or_load_handoff_target_run(
             agent_tool_policy,
         },
     );
-    let system_prompt = assemble_system_prompt_for_session(
+    let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
+        &request.repo_root,
+        &request.project_id,
+        target_run_id,
+        &definition_snapshot,
+        &request.tool_runtime,
+    )?;
+    let attached_skill_contexts =
+        attached_skill_contexts_from_resolution_snapshot(&attached_skill_snapshot);
+    let system_prompt = assemble_system_prompt_for_session_with_attached(
         &request.repo_root,
         Some(&request.project_id),
         Some(&source_snapshot.run.agent_session_id),
@@ -1475,6 +1671,8 @@ fn create_or_load_handoff_target_run(
         tool_registry.descriptors(),
         Some(&definition_snapshot),
         Some(request.tool_runtime.soul_settings()),
+        None,
+        attached_skill_contexts,
     )?;
     let now = now_timestamp();
     project_store::insert_agent_run(
@@ -1492,6 +1690,10 @@ fn create_or_load_handoff_target_run(
             system_prompt: system_prompt.clone(),
             now: now.clone(),
         },
+    )?;
+    project_store::persist_runtime_attached_skill_snapshot(
+        &request.repo_root,
+        &attached_skill_snapshot,
     )?;
     append_message(
         &request.repo_root,
@@ -3095,11 +3297,13 @@ fn refresh_subagent_task_usage(
     let Some(child_run_id) = task.run_id.as_deref() else {
         return;
     };
-    if let Ok(Some(usage)) = project_store::load_agent_usage(repo_root, project_id, child_run_id) {
-        task.used_tokens = usage.total_tokens;
-        task.used_cost_micros = usage.estimated_cost_micros;
-    }
-    if let Ok(snapshot) = project_store::load_agent_run(repo_root, project_id, child_run_id) {
+    if let Ok((snapshot, usage)) =
+        project_store::load_agent_run_with_usage(repo_root, project_id, child_run_id)
+    {
+        if let Some(usage) = usage {
+            task.used_tokens = usage.total_tokens;
+            task.used_cost_micros = usage.estimated_cost_micros;
+        }
         task.used_tool_calls = snapshot.tool_calls.len();
     }
     apply_subagent_usage_budget_status(task);
@@ -3326,6 +3530,15 @@ mod tests {
     }
 
     fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {
+        save_custom_definition_with_attached(repo_root, definition_id, profile, json!([]));
+    }
+
+    fn save_custom_definition_with_attached(
+        repo_root: &Path,
+        definition_id: &str,
+        profile: &str,
+        attached_skills: JsonValue,
+    ) {
         let (display_name, short_label, description, default_mode, allowed_modes, tool_policy) =
             match profile {
                 "engineering" => (
@@ -3380,7 +3593,7 @@ mod tests {
                 base_capability_profile: profile.into(),
                 snapshot: json!({
                     "schema": "xero.agent_definition.v1",
-                    "schemaVersion": 1,
+                    "schemaVersion": 2,
                     "id": definition_id,
                     "version": 1,
                     "displayName": display_name,
@@ -3401,6 +3614,7 @@ mod tests {
                     ],
                     "workflowContract": "Phase 4 custom workflow marker.",
                     "finalResponseContract": "Return a concise completion summary.",
+                    "attachedSkills": attached_skills,
                     "output": {
                         "contract": "engineering_summary",
                         "label": "Completion summary",
@@ -3444,6 +3658,82 @@ mod tests {
             },
         )
         .expect("insert custom definition");
+    }
+
+    fn seed_attached_project_skill(
+        repo_root: &Path,
+        project_id: &str,
+        skill_id: &str,
+        markdown: &str,
+    ) -> project_store::InstalledSkillRecord {
+        let skill_dir = crate::db::project_app_data_dir_for_repo(repo_root)
+            .join("skills")
+            .join(skill_id);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(skill_dir.join("SKILL.md"), markdown).expect("write skill markdown");
+        let version_hash = crate::runtime::compute_skill_directory_version_hash(&skill_dir)
+            .expect("hash skill dir");
+        let source = crate::runtime::XeroSkillSourceRecord::new(
+            crate::runtime::XeroSkillSourceScope::project(project_id.to_owned())
+                .expect("project scope"),
+            crate::runtime::XeroSkillSourceLocator::Project {
+                relative_path: format!("skills/{skill_id}"),
+                skill_id: skill_id.into(),
+            },
+            crate::runtime::XeroSkillSourceState::Enabled,
+            crate::runtime::XeroSkillTrustState::Trusted,
+        )
+        .expect("source record");
+        project_store::upsert_installed_skill(
+            repo_root,
+            project_store::InstalledSkillRecord {
+                source,
+                skill_id: skill_id.into(),
+                name: "Attached Rust Skill".into(),
+                description: "Rust-specific attached guidance.".into(),
+                user_invocable: Some(false),
+                cache_key: None,
+                local_location: Some(skill_dir.display().to_string()),
+                version_hash: Some(version_hash),
+                installed_at: "2026-05-01T12:02:00Z".into(),
+                updated_at: "2026-05-01T12:02:00Z".into(),
+                last_used_at: None,
+                last_diagnostic: None,
+            },
+        )
+        .expect("persist skill")
+    }
+
+    fn attached_skill_json(skill: &project_store::InstalledSkillRecord) -> JsonValue {
+        json!({
+            "id": skill.skill_id,
+            "sourceId": skill.source.source_id,
+            "skillId": skill.skill_id,
+            "name": skill.name,
+            "description": skill.description,
+            "sourceKind": "project",
+            "scope": "project",
+            "versionHash": skill.version_hash.as_ref().expect("version hash"),
+            "includeSupportingAssets": false,
+            "required": true
+        })
+    }
+
+    fn tool_runtime_with_skill_registry(
+        repo_root: &Path,
+        project_id: &str,
+    ) -> AutonomousToolRuntime {
+        crate::runtime::AutonomousToolRuntime::new(repo_root)
+            .expect("runtime")
+            .with_skill_tool(
+                project_id.to_owned(),
+                crate::runtime::AutonomousSkillRuntime::new(
+                    crate::runtime::AutonomousSkillRuntimeConfig::for_platform(),
+                    repo_root.parent().expect("repo parent").join("skill-cache"),
+                ),
+                Vec::new(),
+                Vec::new(),
+            )
     }
 
     fn custom_controls(
@@ -3672,6 +3962,210 @@ mod tests {
             call.tool_name == AUTONOMOUS_TOOL_COMMAND_PROBE
                 && call.state == AgentToolCallState::Succeeded
         }));
+    }
+
+    #[test]
+    fn s3_custom_agent_run_injects_attached_skill_without_skill_tool_access() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "s3-attached-skill-runtime";
+        create_project_database(&repo_root, project_id);
+        let skill = seed_attached_project_skill(
+            &repo_root,
+            project_id,
+            "rust-attached",
+            "---\nname: rust-attached\ndescription: Rust attached guidance.\nuser-invocable: false\n---\n\n# Rust Attached\nUse rust-specific attached guidance.\n",
+        );
+        save_custom_definition_with_attached(
+            &repo_root,
+            "phase4_attached_observer",
+            "observe_only",
+            json!([attached_skill_json(&skill)]),
+        );
+
+        let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "s3-attached-skill-run".into(),
+            prompt: "Summarize the configured guidance.".into(),
+            attachments: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Engineer,
+                "phase4_attached_observer",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: tool_runtime_with_skill_registry(&repo_root, project_id),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("run custom attached-skill agent");
+
+        assert_eq!(snapshot.run.status, AgentRunStatus::Completed);
+        assert!(snapshot
+            .run
+            .system_prompt
+            .contains("Attached skill `rust-attached`"));
+        assert!(snapshot
+            .run
+            .system_prompt
+            .contains("Use rust-specific attached guidance."));
+        assert!(snapshot
+            .run
+            .system_prompt
+            .contains("always-injected lower-priority context"));
+        assert!(!snapshot
+            .run
+            .system_prompt
+            .contains("Invoke model-visible Xero skills"));
+    }
+
+    #[test]
+    fn s8_attached_skill_resolver_succeeds_and_fails_closed_on_hash_mismatch() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "s8-attached-skill-resolver";
+        create_project_database(&repo_root, project_id);
+        let skill = seed_attached_project_skill(
+            &repo_root,
+            project_id,
+            "resolver-attached",
+            "---\nname: resolver-attached\ndescription: Resolver attached guidance.\nuser-invocable: false\n---\n\n# Resolver Attached\nUse resolver-specific guidance.\n",
+        );
+        let runtime = tool_runtime_with_skill_registry(&repo_root, project_id);
+        let attachment =
+            serde_json::from_value(attached_skill_json(&skill)).expect("attached skill ref");
+
+        let report = runtime
+            .resolve_attached_skills(XeroAttachedSkillResolutionRequest {
+                project_id: project_id.into(),
+                run_id: "s8-resolver-run".into(),
+                attached_skills: vec![attachment],
+            })
+            .expect("resolve attached skills");
+
+        assert_eq!(report.status, XeroAttachedSkillResolutionStatus::Succeeded);
+        let snapshot = report.snapshot.expect("resolution snapshot");
+        assert_eq!(snapshot.attached_skills.len(), 1);
+        assert_eq!(
+            snapshot.attached_skills[0].source_id,
+            skill.source.source_id
+        );
+        assert!(snapshot.attached_skills[0]
+            .context
+            .markdown
+            .content
+            .contains("Use resolver-specific guidance."));
+
+        let mut stale_attachment = attached_skill_json(&skill);
+        stale_attachment["versionHash"] = json!("stale-version-hash");
+        let stale_attachment =
+            serde_json::from_value(stale_attachment).expect("stale attached skill ref");
+        let failure = runtime
+            .resolve_attached_skills(XeroAttachedSkillResolutionRequest {
+                project_id: project_id.into(),
+                run_id: "s8-resolver-stale-run".into(),
+                attached_skills: vec![stale_attachment],
+            })
+            .expect("resolve stale attached skills");
+
+        assert_eq!(failure.status, XeroAttachedSkillResolutionStatus::Failed);
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "attached_skill_version_hash_mismatch"
+                && diagnostic.repair_hint
+                    == Some(crate::runtime::XeroAttachedSkillRepairHint::RefreshPin)
+        }));
+    }
+
+    #[test]
+    fn s8_run_creation_persists_attached_skill_context_for_resume_and_provider_turns() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "s8-attached-skill-persistence";
+        create_project_database(&repo_root, project_id);
+        let skill = seed_attached_project_skill(
+            &repo_root,
+            project_id,
+            "persisted-attached",
+            "---\nname: persisted-attached\ndescription: Persisted attached guidance.\nuser-invocable: false\n---\n\n# Persisted Attached\nUse ORIGINAL persisted guidance.\n",
+        );
+        save_custom_definition_with_attached(
+            &repo_root,
+            "phase4_persisted_observer",
+            "observe_only",
+            json!([attached_skill_json(&skill)]),
+        );
+        let request = OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "s8-persisted-attached-run".into(),
+            prompt: "Summarize the persisted guidance.".into(),
+            attachments: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Engineer,
+                "phase4_persisted_observer",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: tool_runtime_with_skill_registry(&repo_root, project_id),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        };
+
+        create_owned_agent_run(&request).expect("create attached-skill run");
+        let persisted = project_store::load_runtime_attached_skill_snapshot(
+            &repo_root,
+            project_id,
+            "s8-persisted-attached-run",
+        )
+        .expect("load persisted attached snapshot")
+        .expect("attached snapshot persisted at run creation");
+        assert_eq!(persisted.attached_skills.len(), 1);
+        assert!(persisted.attached_skills[0]
+            .context
+            .markdown
+            .content
+            .contains("Use ORIGINAL persisted guidance."));
+
+        let skill_dir = std::path::PathBuf::from(
+            skill
+                .local_location
+                .as_ref()
+                .expect("attached skill local location"),
+        );
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: persisted-attached\ndescription: Changed guidance.\nuser-invocable: false\n---\n\n# Persisted Attached\nUse CHANGED guidance that must not appear in this run.\n",
+        )
+        .expect("mutate attached skill after run creation");
+
+        let snapshot = drive_owned_agent_run(request, AgentRunCancellationToken::default())
+            .expect("drive run from persisted attached snapshot");
+
+        assert_eq!(snapshot.run.status, AgentRunStatus::Completed);
+        let manifests = project_store::list_agent_context_manifests_for_run(
+            &repo_root,
+            project_id,
+            "s8-persisted-attached-run",
+        )
+        .expect("list context manifests");
+        let manifest = manifests.first().expect("provider context manifest");
+        assert_eq!(
+            manifest.manifest["attachedSkills"]["injectedCount"],
+            json!(1)
+        );
+        let attached_fragment = manifest.manifest["promptFragments"]
+            .as_array()
+            .expect("prompt fragments")
+            .iter()
+            .find(|fragment| fragment["inclusionReason"] == json!("attached_agent_skill"))
+            .expect("attached skill prompt fragment");
+        let attached_body = attached_fragment["body"].as_str().expect("fragment body");
+        assert!(attached_body.contains("Use ORIGINAL persisted guidance."));
+        assert!(!attached_body.contains("Use CHANGED guidance"));
     }
 
     #[test]

@@ -51,12 +51,13 @@ use crate::{
     },
     runtime::{
         agent_core::{
-            compile_system_prompt_for_session, create_provider_adapter,
-            provider_messages_from_snapshot, runtime_controls_from_request,
-            skill_contexts_from_provider_messages, tool_registry_for_snapshot,
-            CodeHistoryMemoryGuard, CodeHistoryMemoryGuardOutcome, PromptCompilation,
-            PromptFragment, ProviderAdapter, ProviderCompactionRequest, ProviderMemoryCandidate,
-            ProviderMemoryExtractionRequest, ToolRegistry, ToolRegistryOptions,
+            compile_system_prompt_for_session_with_attached, create_provider_adapter,
+            load_persisted_attached_skill_contexts_for_run, provider_messages_from_snapshot,
+            runtime_controls_from_request, skill_contexts_from_provider_messages,
+            tool_registry_for_snapshot, CodeHistoryMemoryGuard, CodeHistoryMemoryGuardOutcome,
+            PromptCompilation, PromptFragment, ProviderAdapter, ProviderCompactionRequest,
+            ProviderMemoryCandidate, ProviderMemoryExtractionRequest, ToolRegistry,
+            ToolRegistryOptions,
         },
         AgentToolDescriptor,
     },
@@ -701,9 +702,9 @@ fn build_session_transcript(
     let session = project_store::get_agent_session(repo_root, project_id, agent_session_id)?
         .ok_or_else(|| missing_session_error(project_id, agent_session_id))?;
     let snapshots = if let Some(run_id) = run_id {
-        let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+        let (snapshot, usage) =
+            project_store::load_agent_run_with_usage(repo_root, project_id, run_id)?;
         ensure_run_belongs_to_session(&snapshot, project_id, agent_session_id)?;
-        let usage = project_store::load_agent_usage(repo_root, project_id, run_id)?;
         vec![(snapshot, usage)]
     } else {
         project_store::load_agent_session_run_snapshots(repo_root, project_id, agent_session_id)?
@@ -2353,19 +2354,19 @@ fn load_context_snapshots(
     )>,
 > {
     if let Some(run_id) = run_id {
-        let snapshot = match project_store::load_agent_run(repo_root, project_id, run_id) {
-            Ok(snapshot) => snapshot,
-            Err(error) if error.code == "agent_run_not_found" => {
-                return project_store::load_agent_session_run_snapshots(
-                    repo_root,
-                    project_id,
-                    agent_session_id,
-                );
-            }
-            Err(error) => return Err(error),
-        };
+        let (snapshot, usage) =
+            match project_store::load_agent_run_with_usage(repo_root, project_id, run_id) {
+                Ok(result) => result,
+                Err(error) if error.code == "agent_run_not_found" => {
+                    return project_store::load_agent_session_run_snapshots(
+                        repo_root,
+                        project_id,
+                        agent_session_id,
+                    );
+                }
+                Err(error) => return Err(error),
+            };
         ensure_run_belongs_to_session(&snapshot, project_id, agent_session_id)?;
-        let usage = project_store::load_agent_usage(repo_root, project_id, run_id)?;
         return Ok(vec![(snapshot, usage)]);
     }
 
@@ -2407,13 +2408,20 @@ fn compile_prompt_context_for_snapshot(
         )
         .into_descriptors()
     };
-    let skill_contexts = if let Some(snapshot) = latest_snapshot {
+    let (skill_contexts, attached_skill_contexts) = if let Some(snapshot) = latest_snapshot {
         let provider_messages = provider_messages_from_snapshot(repo_root, snapshot)?;
-        skill_contexts_from_provider_messages(&provider_messages)?
+        (
+            skill_contexts_from_provider_messages(&provider_messages)?,
+            load_persisted_attached_skill_contexts_for_run(
+                repo_root,
+                project_id,
+                &snapshot.run.run_id,
+            )?,
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    let compilation = compile_system_prompt_for_session(
+    let compilation = compile_system_prompt_for_session_with_attached(
         repo_root,
         Some(project_id),
         Some(agent_session_id),
@@ -2423,6 +2431,7 @@ fn compile_prompt_context_for_snapshot(
         None,
         None,
         None,
+        attached_skill_contexts,
         skill_contexts,
     )?;
     Ok((compilation, descriptors))
@@ -4080,15 +4089,15 @@ fn load_search_snapshots(
     )>,
 > {
     if let Some(run_id) = run_id {
-        let snapshot = match project_store::load_agent_run(repo_root, project_id, run_id) {
-            Ok(snapshot) => snapshot,
-            Err(error) if error.code == "agent_run_not_found" => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
+        let (snapshot, usage) =
+            match project_store::load_agent_run_with_usage(repo_root, project_id, run_id) {
+                Ok(result) => result,
+                Err(error) if error.code == "agent_run_not_found" => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            };
         if snapshot.run.agent_session_id != session.agent_session_id {
             return Ok(Vec::new());
         }
-        let usage = project_store::load_agent_usage(repo_root, project_id, run_id)?;
         return Ok(vec![(snapshot, usage)]);
     }
     project_store::load_agent_session_run_snapshots(

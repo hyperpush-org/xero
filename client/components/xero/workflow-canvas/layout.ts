@@ -89,6 +89,7 @@ export function layoutAgentGraphByCategory(
 
   type CategoryKey =
     | 'prompt'
+    | 'skills'
     | 'tool'
     | 'db-table'
     | 'agent-output'
@@ -97,6 +98,7 @@ export function layoutAgentGraphByCategory(
 
   const CATEGORY_LABELS: Record<CategoryKey, string> = {
     prompt: 'Prompts',
+    skills: 'Skills',
     tool: 'Tools',
     'db-table': 'Database',
     'agent-output': 'Output',
@@ -107,6 +109,7 @@ export function layoutAgentGraphByCategory(
   let header: AgentGraphNode | null = null
   const grouped: Record<CategoryKey, AgentGraphNode[]> = {
     prompt: [],
+    skills: [],
     tool: [],
     'db-table': [],
     'agent-output': [],
@@ -132,6 +135,8 @@ export function layoutAgentGraphByCategory(
       grouped['agent-output'].push(node)
     } else if (node.type === 'prompt') {
       grouped.prompt.push(node)
+    } else if (node.type === 'skills') {
+      grouped.skills.push(node)
     } else if (node.type === 'tool') {
       grouped.tool.push(node)
       const parentId = (node as Node).parentId
@@ -205,6 +210,52 @@ export function layoutAgentGraphByCategory(
       dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS.prompt, count: prompts.length },
       width: totalWidth,
+    } as AgentGraphNode)
+  }
+
+  // 1b. Attached skills: upper-left context lane. The lane label appears only
+  // once at least one skill has been attached; the agent-card handle is the
+  // affordance for creating the first skill.
+  const skills = grouped.skills
+  if (skills.length > 0) {
+    let colWidth = 260
+    let totalHeight = 0
+    for (const s of skills) {
+      const size = sizes.get(s.id) ?? { width: 260, height: 96 }
+      colWidth = Math.max(colWidth, size.width)
+      totalHeight += size.height
+    }
+    totalHeight += Math.max(0, skills.length - 1) * ROW_GAP
+
+    const xRight = headerX - HORIZ_GAP
+    const xLeft = xRight - colWidth
+    const blockTopY = headerY - HEADER_BAND_GAP - totalHeight
+
+    let y = blockTopY
+    for (const s of skills) {
+      const size = sizes.get(s.id) ?? { width: colWidth, height: 96 }
+      placedById.set(s.id, {
+        ...s,
+        position: {
+          x: xLeft + (colWidth - size.width) / 2,
+          y,
+        } as XYPosition,
+      })
+      y += size.height + ROW_GAP
+    }
+
+    laneLabelNodes.push({
+      id: 'lane:skills',
+      type: 'lane-label',
+      position: {
+        x: xLeft,
+        y: blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
+      } as XYPosition,
+      selectable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
+      data: { label: CATEGORY_LABELS.skills, count: skills.length },
+      width: colWidth,
     } as AgentGraphNode)
   }
 

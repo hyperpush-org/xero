@@ -4,9 +4,7 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{CommandResult, ListProjectsResponseDto},
-    db,
-    db::project_store,
-    registry,
+    db, registry,
     state::DesktopState,
 };
 
@@ -14,7 +12,7 @@ pub(crate) fn load_projects_from_registry(
     registry_path: &Path,
 ) -> CommandResult<ListProjectsResponseDto> {
     db::configure_project_database_paths(registry_path);
-    let registry = registry::read_registry(registry_path)?;
+    let registry_projects = registry::read_project_summaries(registry_path)?;
 
     let mut projects = Vec::new();
     let mut seen_project_ids = HashSet::new();
@@ -22,27 +20,18 @@ pub(crate) fn load_projects_from_registry(
     let mut live_root_records = Vec::new();
     let mut pruned_stale_roots = false;
 
-    for record in registry.projects {
-        if !Path::new(&record.root_path).is_dir() {
+    for record in registry_projects {
+        if !Path::new(&record.registry.root_path).is_dir() {
             pruned_stale_roots = true;
             continue;
         }
 
-        live_root_records.push(record.clone());
+        live_root_records.push(record.registry.clone());
 
-        match project_store::load_project_summary(Path::new(&record.root_path), &record.project_id)
+        if seen_project_ids.insert(record.project.id.clone())
+            && seen_root_paths.insert(record.registry.root_path)
         {
-            Ok(project) => {
-                if seen_project_ids.insert(project.id.clone())
-                    && seen_root_paths.insert(record.root_path.clone())
-                {
-                    projects.push(project);
-                }
-            }
-            Err(_error) => {
-                // Keep startup alive for other projects. Direct snapshot requests will surface
-                // typed errors tied to the affected registry root.
-            }
+            projects.push(record.project);
         }
     }
 

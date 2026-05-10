@@ -92,6 +92,11 @@ describe('agent extension model contracts', () => {
     expect(report.descriptor?.telemetryAttributes['xero.extension.id']).toBe(
       'demo_extension',
     )
+    const descriptor = report.descriptor
+    expect(descriptor).not.toBeNull()
+    if (!descriptor) {
+      throw new Error('Expected validation report to include a descriptor.')
+    }
 
     expect(
       toolExtensionManifestSchema.safeParse({
@@ -137,9 +142,9 @@ describe('agent extension model contracts', () => {
       agentToolExtensionManifestValidationSchema.safeParse({
         ...report,
         descriptor: {
-          ...report.descriptor,
+          ...descriptor,
           telemetryAttributes: {
-            ...report.descriptor.telemetryAttributes,
+            ...descriptor.telemetryAttributes,
             'xero.extension.permission_id': 'other_permission',
           },
         },
@@ -149,7 +154,7 @@ describe('agent extension model contracts', () => {
       agentToolExtensionManifestValidationSchema.safeParse({
         ...report,
         descriptor: {
-          ...report.descriptor,
+          ...descriptor,
           effectClass: 'workspace_mutation',
         },
       }).success,
@@ -158,7 +163,7 @@ describe('agent extension model contracts', () => {
       agentToolExtensionManifestValidationSchema.safeParse({
         ...report,
         descriptor: {
-          ...report.descriptor,
+          ...descriptor,
           capabilityTags: ['demo'],
         },
       }).success,

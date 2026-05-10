@@ -19,10 +19,12 @@ import {
 import {
   applyRuntimeStreamIssue,
   createRuntimeStreamFromSubscription,
+  createRuntimeStreamViewFromSnapshot,
   createRuntimeStreamView,
   mergeRuntimeStreamEvent,
   type RuntimeStreamEventDto,
   type RuntimeStreamItemKindDto,
+  type RuntimeStreamPatchDto,
   type RuntimeStreamView,
 } from '@/src/lib/xero-model/runtime-stream'
 
@@ -61,6 +63,7 @@ type RuntimeStreamUpdater = (current: RuntimeStreamView | null) => RuntimeStream
 type RuntimeSessionRecords = Record<string, RuntimeSessionView>
 type RuntimeLoadErrorRecords = Record<string, string | null>
 type RuntimeStreamRecords = Record<string, RuntimeStreamView>
+type RuntimeStreamChannelPayload = RuntimeStreamEventDto | RuntimeStreamPatchDto
 
 type UpdateRuntimeStream = (
   projectId: string,
@@ -167,7 +170,7 @@ export interface RuntimeRunUpdateBuffer {
 }
 
 export interface RuntimeStreamEventBuffer {
-  enqueue: (payload: RuntimeStreamEventDto) => void
+  enqueue: (payload: RuntimeStreamChannelPayload) => void
   reportIssue: (issue: { code: string; message: string; retryable: boolean }) => void
   flush: () => void
   dispose: () => void
@@ -253,11 +256,20 @@ function scheduleRuntimeRunUpdateFlush(callback: () => void): ScheduledFlushCanc
   return () => clearTimeout(timeoutId)
 }
 
-export function isUrgentRuntimeStreamEvent(event: RuntimeStreamEventDto): boolean {
+function isRuntimeStreamPatch(payload: RuntimeStreamChannelPayload): payload is RuntimeStreamPatchDto {
+  return 'schema' in payload && payload.schema === 'xero.runtime_stream_patch.v1'
+}
+
+function getRuntimeStreamPayloadItem(payload: RuntimeStreamChannelPayload) {
+  return payload.item
+}
+
+export function isUrgentRuntimeStreamEvent(event: RuntimeStreamChannelPayload): boolean {
+  const item = getRuntimeStreamPayloadItem(event)
   return (
-    event.item.kind === 'action_required' ||
-    event.item.kind === 'complete' ||
-    event.item.kind === 'failure'
+    item.kind === 'action_required' ||
+    item.kind === 'complete' ||
+    item.kind === 'failure'
   )
 }
 
@@ -282,13 +294,15 @@ function applyRuntimeStreamEventIssue(
 
 export function mergeRuntimeStreamEvents(
   currentStream: RuntimeStreamView | null,
-  events: RuntimeStreamEventDto[],
+  events: RuntimeStreamChannelPayload[],
 ): RuntimeStreamView | null {
   let nextStream = currentStream
 
   for (const event of events) {
     try {
-      nextStream = mergeRuntimeStreamEvent(nextStream, event)
+      nextStream = isRuntimeStreamPatch(event)
+        ? createRuntimeStreamViewFromSnapshot(event.snapshot)
+        : mergeRuntimeStreamEvent(nextStream, event)
     } catch (error) {
       const issue = getRuntimeStreamIssue(error, {
         code: 'runtime_stream_contract_mismatch',
@@ -296,7 +310,20 @@ export function mergeRuntimeStreamEvents(
         retryable: false,
       })
 
-      nextStream = applyRuntimeStreamEventIssue(nextStream, event, issue)
+      nextStream = isRuntimeStreamPatch(event)
+        ? applyRuntimeStreamIssue(nextStream, {
+            projectId: event.snapshot.projectId,
+            agentSessionId: event.snapshot.agentSessionId,
+            runtimeKind: event.snapshot.runtimeKind,
+            runId: event.snapshot.runId,
+            sessionId: event.snapshot.sessionId,
+            flowId: event.snapshot.flowId,
+            subscribedItemKinds: event.snapshot.subscribedItemKinds,
+            code: issue.code,
+            message: issue.message,
+            retryable: issue.retryable,
+          })
+        : applyRuntimeStreamEventIssue(nextStream, event, issue)
     }
   }
 
@@ -305,21 +332,26 @@ export function mergeRuntimeStreamEvents(
 
 function scheduleRuntimeActionRefreshes(
   projectId: string,
-  events: RuntimeStreamEventDto[],
+  events: RuntimeStreamChannelPayload[],
   runtimeActionRefreshKeysRef: MutableRefObject<Record<string, Set<string>>>,
   scheduleRuntimeMetadataRefresh: (projectId: string, source: RuntimeMetadataRefreshSource) => void,
 ) {
   for (const event of events) {
-    if (event.item.kind !== 'action_required') {
+    const item = getRuntimeStreamPayloadItem(event)
+    if (item.kind !== 'action_required') {
       continue
     }
 
-    const actionId = event.item.actionId?.trim()
+    const actionId = item.actionId?.trim()
     if (!actionId) {
       continue
     }
 
-    const refreshKey = `${event.agentSessionId}:${event.runId}:${actionId}`
+    const agentSessionId = isRuntimeStreamPatch(event)
+      ? event.snapshot.agentSessionId
+      : event.agentSessionId
+    const runId = isRuntimeStreamPatch(event) ? event.snapshot.runId : event.runId
+    const refreshKey = `${agentSessionId}:${runId}:${actionId}`
     const knownKeys = runtimeActionRefreshKeysRef.current[projectId] ?? new Set<string>()
     runtimeActionRefreshKeysRef.current[projectId] = knownKeys
 
@@ -420,7 +452,7 @@ export function createRuntimeStreamEventBuffer({
   scheduleRuntimeMetadataRefresh,
   scheduleFlush = scheduleRuntimeStreamFlush,
 }: RuntimeStreamEventBufferArgs): RuntimeStreamEventBuffer {
-  const pendingEvents: RuntimeStreamEventDto[] = []
+  const pendingEvents: RuntimeStreamChannelPayload[] = []
   let cancelScheduledFlush: ScheduledFlushCancel | null = null
   let disposed = false
 
@@ -486,10 +518,13 @@ export function createRuntimeStreamEventBuffer({
         return
       }
 
-      if (payload.projectId !== projectId) {
+      const payloadProjectId = isRuntimeStreamPatch(payload)
+        ? payload.snapshot.projectId
+        : payload.projectId
+      if (payloadProjectId !== projectId) {
         reportIssue({
           code: 'runtime_stream_project_mismatch',
-          message: `Xero received a runtime stream item for ${payload.projectId} while ${projectId} is active.`,
+          message: `Xero received a runtime stream item for ${payloadProjectId} while ${projectId} is active.`,
           retryable: false,
         })
         return
