@@ -57,12 +57,12 @@ export function NodeDetailsPanel({ selectedNode, onClose }: NodeDetailsPanelProp
 
   return (
     <div
-      className="agent-properties-panel pointer-events-auto absolute bottom-4 left-4 top-14 z-30 flex w-[272px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[12px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
+      className="agent-properties-panel pointer-events-auto absolute left-8 top-14 z-30 flex max-h-[calc(100%-4.5rem)] w-[272px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[12px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
       onPointerDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
       <PanelHeader meta={meta} onClose={onClose} />
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 overflow-y-auto">
         <div className="space-y-4 px-3 py-3">{renderDetails(selectedNode)}</div>
       </div>
     </div>

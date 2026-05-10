@@ -78,7 +78,7 @@ describe('runtime run control schemas', () => {
     expect(runtimeAgentIdSchema.parse('plan')).toBe('plan')
     expect(runtimeAgentIdSchema.parse('crawl')).toBe('crawl')
     expect(runtimeAgentIdSchema.parse('agent_create')).toBe('agent_create')
-    expect(runtimeAgentIdSchema.parse('test')).toBe('test')
+    expect(runtimeAgentIdSchema.safeParse('test').success).toBe(false)
     expect(ALL_RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual([
       'ask',
       'plan',
@@ -86,9 +86,8 @@ describe('runtime run control schemas', () => {
       'debug',
       'crawl',
       'agent_create',
-      'test',
     ])
-    expect(RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toContain('test')
+    expect(RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).not.toContain('test')
 
     expect(getRuntimeAgentDescriptor('debug')).toMatchObject({
       id: 'debug',
@@ -146,57 +145,13 @@ describe('runtime run control schemas', () => {
       allowVerificationGate: false,
       allowedApprovalModes: ['suggest'],
     })
-    expect(getRuntimeAgentDescriptor('test')).toMatchObject({
-      id: 'test',
-      label: 'Test',
-      shortLabel: 'Test',
-      scope: 'built_in',
-      lifecycleState: 'active',
-      baseCapabilityProfile: 'harness_test',
-      promptPolicy: 'harness_test',
-      toolPolicy: 'harness_test',
-      outputContract: 'harness_test_report',
-      defaultApprovalMode: 'suggest',
-      allowPlanGate: false,
-      allowVerificationGate: false,
-      allowAutoCompact: false,
-      allowedApprovalModes: ['suggest'],
-    })
   })
 
-  it('filters Test from visible descriptors outside dev, test, CI, or explicit harness opt-in', () => {
-    expect(getRuntimeAgentAvailability({ DEV: false, MODE: 'production' })).toEqual({
-      testAgentEnabled: false,
-    })
+  it('returns the built-in descriptors without environment-gated agent types', () => {
+    expect(getRuntimeAgentAvailability({ DEV: false, MODE: 'production' })).toEqual({})
     expect(
-      getRuntimeAgentDescriptorsForAvailability({ testAgentEnabled: false }).map(
-        (agent) => agent.id,
-      ),
+      getRuntimeAgentDescriptorsForAvailability({}).map((agent) => agent.id),
     ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
-    expect(
-      getRuntimeAgentDescriptorsForAvailability({ testAgentEnabled: true }).map(
-        (agent) => agent.id,
-      ),
-    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create', 'test'])
-
-    expect(
-      getRuntimeAgentAvailability({ DEV: true, MODE: 'development' }).testAgentEnabled,
-    ).toBe(true)
-    expect(getRuntimeAgentAvailability({ DEV: false, MODE: 'test' }).testAgentEnabled).toBe(true)
-    expect(
-      getRuntimeAgentAvailability({
-        DEV: false,
-        MODE: 'production',
-        VITE_CI: 'true',
-      }).testAgentEnabled,
-    ).toBe(true)
-    expect(
-      getRuntimeAgentAvailability({
-        DEV: false,
-        MODE: 'production',
-        VITE_XERO_ENABLE_TEST_AGENT: 'enabled',
-      }).testAgentEnabled,
-    ).toBe(true)
   })
 
   it('shows Crawl only for brownfield project origins', () => {
@@ -208,12 +163,12 @@ describe('runtime run control schemas', () => {
     expect(runtimeAgentIsSelectableForProjectOrigin('ask', 'unknown')).toBe(true)
 
     expect(
-      getRuntimeAgentDescriptorsForProjectOrigin('greenfield', { testAgentEnabled: false }).map(
+      getRuntimeAgentDescriptorsForProjectOrigin('greenfield', {}).map(
         (agent) => agent.id,
       ),
     ).toEqual(['ask', 'plan', 'engineer', 'debug', 'agent_create'])
     expect(
-      getRuntimeAgentDescriptorsForProjectOrigin('brownfield', { testAgentEnabled: false }).map(
+      getRuntimeAgentDescriptorsForProjectOrigin('brownfield', {}).map(
         (agent) => agent.id,
       ),
     ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])

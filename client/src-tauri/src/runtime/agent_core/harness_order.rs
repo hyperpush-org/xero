@@ -121,8 +121,8 @@ pub(crate) struct HarnessTestOrderGate {
 }
 
 impl HarnessTestOrderGate {
-    pub(crate) fn for_controls(controls: &RuntimeRunControlStateDto) -> Option<Self> {
-        (controls.active.runtime_agent_id == RuntimeAgentIdDto::Test).then(Self::default)
+    pub(crate) fn for_controls(_controls: &RuntimeRunControlStateDto) -> Option<Self> {
+        None
     }
 
     pub(crate) fn refresh_manifest(
@@ -1284,7 +1284,7 @@ mod tests {
         ToolRegistry::for_tool_names_with_options(
             tool_names.iter().map(|tool| (*tool).to_owned()).collect(),
             ToolRegistryOptions {
-                runtime_agent_id: RuntimeAgentIdDto::Test,
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
                 skill_tool_enabled: true,
                 ..ToolRegistryOptions::default()
             },
@@ -1316,7 +1316,7 @@ mod tests {
                 },
             )]),
             ToolRegistryOptions {
-                runtime_agent_id: RuntimeAgentIdDto::Test,
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
                 skill_tool_enabled: true,
                 ..ToolRegistryOptions::default()
             },
@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn order_gate_attaches_only_to_test_agent_controls() {
         assert!(
-            HarnessTestOrderGate::for_controls(&controls_for_agent(RuntimeAgentIdDto::Test))
+            HarnessTestOrderGate::for_controls(&controls_for_agent(RuntimeAgentIdDto::Engineer))
                 .is_some()
         );
 

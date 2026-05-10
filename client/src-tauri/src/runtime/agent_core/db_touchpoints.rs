@@ -486,53 +486,6 @@ const AGENT_CREATE_ENTRIES: &[DbTouchpointEntry] = &[
     },
 ];
 
-const TEST_ENTRIES: &[DbTouchpointEntry] = &[
-    COMMON_READ_ENTRIES[0],
-    COMMON_READ_ENTRIES[1],
-    COMMON_READ_ENTRIES[2],
-    COMMON_READ_ENTRIES[3],
-    DbTouchpointEntry {
-        table: "code_history_operations",
-        kind: AgentDbTouchpointKindDto::Read,
-        purpose: "reads the canonical edit ledger to compare against harness expectations",
-        triggers: &[TriggerRef::Tool("Read")],
-        columns: &[],
-    },
-    DbTouchpointEntry {
-        table: "code_workspace_heads",
-        kind: AgentDbTouchpointKindDto::Read,
-        purpose: "reads the workspace head to verify the harness ended on the expected commit",
-        triggers: &[TriggerRef::Lifecycle(
-            AgentTriggerLifecycleEventDto::VerificationGate,
-        )],
-        columns: &[],
-    },
-    COMMON_WRITE_ENTRIES[0],
-    COMMON_WRITE_ENTRIES[1],
-    COMMON_WRITE_ENTRIES[2],
-    DbTouchpointEntry {
-        table: "code_history_operations",
-        kind: AgentDbTouchpointKindDto::Write,
-        purpose: "writes harness-driven mutations through the same ledger as real edits",
-        triggers: &[
-            TriggerRef::Tool("Edit"),
-            TriggerRef::Tool("Write"),
-            TriggerRef::Lifecycle(AgentTriggerLifecycleEventDto::FileEdit),
-        ],
-        columns: &[],
-    },
-    DbTouchpointEntry {
-        table: "code_workspace_heads",
-        kind: AgentDbTouchpointKindDto::Write,
-        purpose: "advances the workspace head as the harness executes its scripted edits",
-        triggers: &[
-            TriggerRef::Tool("Edit"),
-            TriggerRef::Lifecycle(AgentTriggerLifecycleEventDto::FileEdit),
-        ],
-        columns: &[],
-    },
-];
-
 pub const fn db_touchpoints_for_runtime_agent(id: RuntimeAgentIdDto) -> DbTouchpoints {
     let entries = match id {
         RuntimeAgentIdDto::Ask => ASK_ENTRIES,
@@ -541,7 +494,6 @@ pub const fn db_touchpoints_for_runtime_agent(id: RuntimeAgentIdDto) -> DbTouchp
         RuntimeAgentIdDto::Debug => DEBUG_ENTRIES,
         RuntimeAgentIdDto::Crawl => CRAWL_ENTRIES,
         RuntimeAgentIdDto::AgentCreate => AGENT_CREATE_ENTRIES,
-        RuntimeAgentIdDto::Test => TEST_ENTRIES,
     };
     DbTouchpoints { entries }
 }
@@ -566,7 +518,6 @@ mod tests {
             RuntimeAgentIdDto::Debug,
             RuntimeAgentIdDto::Crawl,
             RuntimeAgentIdDto::AgentCreate,
-            RuntimeAgentIdDto::Test,
         ] {
             let touchpoints = db_touchpoints_for_runtime_agent(id);
             assert!(has_table(

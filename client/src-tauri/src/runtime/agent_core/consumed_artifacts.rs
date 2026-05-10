@@ -46,21 +46,10 @@ const DEBUG_CONSUMES: &[ConsumedArtifactEntry] = &[
     },
 ];
 
-const TEST_CONSUMES: &[ConsumedArtifactEntry] = &[ConsumedArtifactEntry {
-    id: "engineering_summary",
-    label: "Engineering Summary Under Test",
-    description: "The summary the harness validates against the canonical manifest.",
-    source_agent: RuntimeAgentIdDto::Engineer,
-    contract: RuntimeAgentOutputContractDto::EngineeringSummary,
-    sections: &["files_changed", "verification"],
-    required: true,
-}];
-
 pub const fn consumed_artifacts_for(id: RuntimeAgentIdDto) -> &'static [ConsumedArtifactEntry] {
     match id {
         RuntimeAgentIdDto::Engineer => ENGINEER_CONSUMES,
         RuntimeAgentIdDto::Debug => DEBUG_CONSUMES,
-        RuntimeAgentIdDto::Test => TEST_CONSUMES,
         RuntimeAgentIdDto::Ask
         | RuntimeAgentIdDto::Plan
         | RuntimeAgentIdDto::Crawl

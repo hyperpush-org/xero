@@ -607,7 +607,6 @@ pub enum AgentDefinitionBaseCapabilityProfileDto {
     Engineering,
     Debugging,
     AgentBuilder,
-    HarnessTest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -820,7 +819,6 @@ fn parse_agent_definition_base_capability_profile(
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,
         "agent_builder" => AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,
-        "harness_test" => AgentDefinitionBaseCapabilityProfileDto::HarnessTest,
         _ => AgentDefinitionBaseCapabilityProfileDto::ObserveOnly,
     }
 }

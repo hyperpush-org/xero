@@ -197,6 +197,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::import_repository::import_repository,
             commands::create_repository::create_repository,

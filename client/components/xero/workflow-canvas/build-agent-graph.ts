@@ -233,7 +233,7 @@ export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
 } as const
 
 export const AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS = {
-  consumed: 0.42,
+  consumed: AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
   skills: 0.68,
 } as const
 
@@ -1237,6 +1237,45 @@ export const AGENT_GRAPH_HEADER_NODE_ID = HEADER_NODE_ID
 export const AGENT_GRAPH_OUTPUT_NODE_ID = OUTPUT_NODE_ID
 export const AGENT_GRAPH_HEADER_HANDLES = HEADER_SOURCE_HANDLE
 export { outputSectionNodeId, consumedArtifactNodeId, dbNodeId }
+
+// Drag-role classification for canvas handles. A 'picker' handle has no
+// meaningful handle-to-handle drop — its only purpose is dropping on empty
+// canvas to open a picker / auto-create an entity. A 'connection' handle is
+// a normal wire endpoint, valid drop targets gated by edge-validation's
+// ALLOWED_PAIRS. Anything not listed defaults to 'connection'.
+//
+// The map is keyed by `${nodeKind}::${handleId}::${handleType}` so the two
+// no-id handles on agent-output (top target / bottom source) are unambiguous.
+export type HandleDragRole = 'picker' | 'connection'
+
+export const HANDLE_DRAG_ROLES: Readonly<Record<string, HandleDragRole>> = {
+  // Agent header source handles open pickers / auto-create on pane drop.
+  // header.output is also picker because the output node always exists; the
+  // edge from header → agent-output is auto-implied, so dragging it onto any
+  // handle would never produce a meaningful change.
+  [`agent-header::${HEADER_SOURCE_HANDLE.prompt}::source`]: 'picker',
+  [`agent-header::${HEADER_SOURCE_HANDLE.skills}::source`]: 'picker',
+  [`agent-header::${HEADER_SOURCE_HANDLE.tool}::source`]: 'picker',
+  [`agent-header::${HEADER_SOURCE_HANDLE.db}::source`]: 'picker',
+  [`agent-header::${HEADER_SOURCE_HANDLE.output}::source`]: 'picker',
+  // header.consumed is a target-type handle; pane drop opens the
+  // consumed-artifact picker, no handle target carries semantics.
+  [`agent-header::${HEADER_SOURCE_HANDLE.consumed}::target`]: 'picker',
+  // agent-output bottom source — pane drop adds a new output-section. The
+  // top target on agent-output is the regular receiver of header.output, so
+  // it stays connection-role by virtue of not being listed.
+  [`agent-output::::source`]: 'picker',
+}
+
+export function getHandleDragRole(
+  nodeKind: string | undefined,
+  handleId: string | null | undefined,
+  handleType: 'source' | 'target',
+): HandleDragRole {
+  if (!nodeKind) return 'connection'
+  const key = `${nodeKind}::${handleId ?? ''}::${handleType}`
+  return HANDLE_DRAG_ROLES[key] ?? 'connection'
+}
 
 // Decode helpers — given a structural node id, return the part of the
 // detail it refers to. Used by editing-mode mutators to translate

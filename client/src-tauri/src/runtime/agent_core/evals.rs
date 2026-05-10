@@ -1094,8 +1094,7 @@ pub fn run_xero_quality_eval_suites(repo_root: &Path) -> XeroQualityEvalReport {
     failures.dedup();
     let passed = runtime_harness.passed && test_agent_ci.passed && agent_definition_quality.passed;
     let summary = if passed {
-        "All runtime harness, Test-agent CI, and agent-definition quality eval suites passed."
-            .into()
+        "All runtime harness and agent-definition quality eval suites passed.".into()
     } else {
         format!(
             "{} combined quality eval failure(s) detected.",
@@ -1115,26 +1114,19 @@ pub fn run_xero_quality_eval_suites(repo_root: &Path) -> XeroQualityEvalReport {
 }
 
 pub fn run_test_agent_ci_eval(repo_root: &Path) -> TestAgentCiEvalReport {
-    let required_tools = TEST_AGENT_CI_REQUIRED_TOOLS
-        .iter()
-        .map(|tool| (*tool).to_owned())
-        .collect::<Vec<_>>();
-
-    match run_test_agent_ci_eval_inner(repo_root) {
-        Ok(evidence) => build_test_agent_ci_report(required_tools, evidence),
-        Err(error) => TestAgentCiEvalReport {
-            suite_id: "test_agent_phase_8_ci_mode".into(),
-            passed: false,
-            summary: "Test-agent CI eval could not complete the scripted provider-loop run.".into(),
-            required_tools,
-            active_tools: Vec::new(),
-            scripted_tool_calls: Vec::new(),
-            persisted_tool_results: Vec::new(),
-            runtime_stream_events: Vec::new(),
-            manifest_outcomes: Vec::new(),
-            final_report: String::new(),
-            failures: vec![format!("Scripted Test-agent run failed: {}", error.message)],
-        },
+    let _ = repo_root;
+    TestAgentCiEvalReport {
+        suite_id: "test_agent_phase_8_ci_mode_removed".into(),
+        passed: true,
+        summary: "The built-in Test agent type has been removed; no Test-agent CI runtime is available.".into(),
+        required_tools: Vec::new(),
+        active_tools: Vec::new(),
+        scripted_tool_calls: Vec::new(),
+        persisted_tool_results: Vec::new(),
+        runtime_stream_events: Vec::new(),
+        manifest_outcomes: Vec::new(),
+        final_report: String::new(),
+        failures: Vec::new(),
     }
 }
 
@@ -1420,7 +1412,7 @@ fn test_agent_ci_sqlite_error(error: rusqlite::Error) -> CommandError {
 
 fn test_agent_ci_controls_input() -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
-        runtime_agent_id: RuntimeAgentIdDto::Test,
+        runtime_agent_id: RuntimeAgentIdDto::Engineer,
         agent_definition_id: None,
         provider_profile_id: None,
         model_id: OPENAI_CODEX_PROVIDER_ID.into(),
@@ -1437,7 +1429,7 @@ fn test_agent_ci_registry() -> ToolRegistry {
             .map(|tool| (*tool).to_owned())
             .collect(),
         ToolRegistryOptions {
-            runtime_agent_id: RuntimeAgentIdDto::Test,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
             ..ToolRegistryOptions::default()
         },
     )
@@ -1528,7 +1520,7 @@ fn build_test_agent_ci_report(
     let runner_registry = ToolRegistry::for_tool_names_with_options(
         evidence.active_tools.iter().cloned().collect(),
         ToolRegistryOptions {
-            runtime_agent_id: RuntimeAgentIdDto::Test,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
             ..ToolRegistryOptions::default()
         },
     );

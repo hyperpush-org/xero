@@ -502,10 +502,27 @@
 
 .agent-visualization .react-flow__handle {
   border: 1.5px solid var(--background);
-  width: 8px;
-  height: 8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
   pointer-events: none;
   opacity: 0.85;
+}
+
+.agent-visualization .react-flow__handle-left {
+  clip-path: inset(0 50% 0 0);
+}
+
+.agent-visualization .react-flow__handle-right {
+  clip-path: inset(0 0 0 50%);
+}
+
+.agent-visualization .react-flow__handle-top {
+  clip-path: inset(0 0 50% 0);
+}
+
+.agent-visualization .react-flow__handle-bottom {
+  clip-path: inset(50% 0 0 0);
 }
 
 .agent-visualization .react-flow__node.is-focused .react-flow__handle {
@@ -517,8 +534,8 @@
    not just the invisible hit target, so grab points are obvious before hover. */
 .agent-visualization.is-editing .react-flow__handle {
   pointer-events: auto;
-  width: 12px !important;
-  height: 12px !important;
+  width: 18px !important;
+  height: 18px !important;
   opacity: 1;
   cursor: crosshair;
   box-sizing: border-box;
@@ -534,10 +551,26 @@
     border-color 120ms ease;
 }
 
-.agent-visualization.is-editing .react-flow__handle:hover,
-.agent-visualization.is-editing .react-flow__handle.connecting,
+/* Honest highlighting:
+   - Plain hover (no drag in progress) gets a subtle ring so the user can see
+     the handle is grabable.
+   - The source handle (where the drag started) keeps the full glow throughout
+     the drag so the user can see what they grabbed.
+   - Hovered target handles glow ONLY when React Flow's `isValidConnection`
+     returned true — that adds the `valid` class. Picker-role drags
+     (header.tools, header.skills, output bottom, etc.) always return false so
+     no other handle ever lights up; the user just drops on the pane.
+   - The neutral `.connecting` (any handle while a drag is in progress) and
+     `.connectingto` without `.valid` (hover over an invalid target) stay at
+     base — no glow, no scale. */
+.agent-visualization.is-editing:not([data-drag-role]) .react-flow__handle:hover {
+  scale: 1.08;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 18%, transparent);
+  border-color: color-mix(in oklab, var(--primary) 60%, var(--background));
+}
+
 .agent-visualization.is-editing .react-flow__handle.connectingfrom,
-.agent-visualization.is-editing .react-flow__handle.connectingto {
+.agent-visualization.is-editing .react-flow__handle.connectingto.valid {
   /* Use independent scale so React Flow's translate(...) anchor stays intact. */
   scale: 1.12;
   box-shadow: 0 0 0 5px color-mix(in oklab, var(--primary) 28%, transparent);

@@ -45,23 +45,16 @@ export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'op
 export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
-export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create', 'test'] as const
+export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'] as const
 export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
 export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'ask'
-export const TEST_RUNTIME_AGENT_ENABLE_ENV = 'VITE_XERO_ENABLE_TEST_AGENT'
 export type RuntimeAgentProjectOrigin = 'brownfield' | 'greenfield' | 'unknown' | null | undefined
 
 export interface RuntimeAgentAvailabilityEnvironment {
-  DEV?: boolean
-  MODE?: string
-  CI?: unknown
-  VITE_CI?: unknown
-  [TEST_RUNTIME_AGENT_ENABLE_ENV]?: unknown
+  [key: string]: unknown
 }
 
-export interface RuntimeAgentAvailability {
-  testAgentEnabled: boolean
-}
+export type RuntimeAgentAvailability = Record<string, never>
 
 export interface RuntimeAgentDescriptor {
   id: RuntimeAgentIdDto
@@ -79,11 +72,10 @@ export interface RuntimeAgentDescriptor {
     | 'engineering'
     | 'debugging'
     | 'agent_builder'
-    | 'harness_test'
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'plan' | 'engineer' | 'debug' | 'crawl' | 'agent_create' | 'harness_test'
-  toolPolicy: 'observe_only' | 'planning' | 'repository_recon' | 'engineering' | 'agent_builder' | 'harness_test'
+  promptPolicy: 'ask' | 'plan' | 'engineer' | 'debug' | 'crawl' | 'agent_create'
+  toolPolicy: 'observe_only' | 'planning' | 'repository_recon' | 'engineering' | 'agent_builder'
   outputContract:
     | 'answer'
     | 'plan_pack'
@@ -91,7 +83,6 @@ export interface RuntimeAgentDescriptor {
     | 'engineering_summary'
     | 'debug_summary'
     | 'agent_definition_draft'
-    | 'harness_test_report'
   projectDataPolicy: {
     required: true
     recordKinds: readonly (
@@ -117,39 +108,10 @@ export interface RuntimeAgentDescriptor {
   allowAutoCompact: boolean
 }
 
-function isTruthyAvailabilityFlag(value: unknown): boolean {
-  if (typeof value === 'boolean') {
-    return value
-  }
-  if (typeof value === 'number') {
-    return value === 1
-  }
-  if (typeof value !== 'string') {
-    return false
-  }
-  switch (value.trim().toLowerCase()) {
-    case '1':
-    case 'true':
-    case 'yes':
-    case 'on':
-    case 'enabled':
-      return true
-    default:
-      return false
-  }
-}
-
 export function getRuntimeAgentAvailability(
-  env: RuntimeAgentAvailabilityEnvironment = import.meta.env,
+  _env: RuntimeAgentAvailabilityEnvironment = import.meta.env,
 ): RuntimeAgentAvailability {
-  return {
-    testAgentEnabled:
-      env.DEV === true ||
-      env.MODE === 'test' ||
-      isTruthyAvailabilityFlag(env.CI) ||
-      isTruthyAvailabilityFlag(env.VITE_CI) ||
-      isTruthyAvailabilityFlag(env[TEST_RUNTIME_AGENT_ENABLE_ENV]),
-  }
+  return {}
 }
 
 export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
@@ -385,53 +347,13 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
     allowVerificationGate: false,
     allowAutoCompact: true,
   },
-  {
-    id: 'test',
-    version: 1,
-    label: 'Test',
-    shortLabel: 'Test',
-    description: 'Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.',
-    taskPurpose: 'Trigger and report a deterministic internal harness validation run instead of fulfilling the user prompt as a normal task.',
-    scope: 'built_in',
-    lifecycleState: 'active',
-    baseCapabilityProfile: 'harness_test',
-    defaultApprovalMode: 'suggest',
-    allowedApprovalModes: ['suggest'],
-    promptPolicy: 'harness_test',
-    toolPolicy: 'harness_test',
-    outputContract: 'harness_test_report',
-    projectDataPolicy: {
-      required: true,
-      recordKinds: [
-        'agent_handoff',
-        'project_fact',
-        'decision',
-        'constraint',
-        'plan',
-        'finding',
-        'verification',
-        'question',
-        'artifact',
-        'context_note',
-        'diagnostic',
-      ],
-      structuredSchemas: ['xero.project_record.v1', 'xero.harness_test_report.v1'],
-      unstructuredScopes: ['answer_note', 'session_summary', 'artifact_excerpt', 'troubleshooting_note'],
-      memoryCandidateKinds: ['project_fact', 'decision', 'session_summary', 'troubleshooting'],
-    },
-    workflowRole: 'interactive',
-    allowPlanGate: false,
-    allowVerificationGate: false,
-    allowAutoCompact: false,
-  },
 ] as const satisfies readonly RuntimeAgentDescriptor[]
 
 export function getRuntimeAgentDescriptorsForAvailability(
   availability: RuntimeAgentAvailability = getRuntimeAgentAvailability(),
 ): RuntimeAgentDescriptor[] {
-  return ALL_RUNTIME_AGENT_DESCRIPTORS.filter(
-    (descriptor) => descriptor.id !== 'test' || availability.testAgentEnabled,
-  )
+  void availability
+  return [...ALL_RUNTIME_AGENT_DESCRIPTORS]
 }
 
 export const RUNTIME_AGENT_DESCRIPTORS = getRuntimeAgentDescriptorsForAvailability()

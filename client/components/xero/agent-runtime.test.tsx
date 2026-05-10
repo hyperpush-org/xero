@@ -2702,36 +2702,6 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: /Start on workflow canvas/i })).not.toBeInTheDocument()
   })
 
-  it('renders Test in the enabled built-in composer selector', async () => {
-    render(
-      <AgentRuntime
-        agent={makeAgent({
-          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
-          selectedRuntimeAgentId: 'test',
-          selectedRuntimeAgentLabel: 'Test',
-          selectedApprovalMode: 'suggest',
-        })}
-        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
-      />,
-    )
-
-    const agentSelector = screen.getByRole('combobox', { name: 'Agent selector' })
-
-    expect(agentSelector).toHaveTextContent('Test')
-    expect(agentSelector).toBeEnabled()
-    expect(screen.queryByRole('combobox', { name: 'Approval mode selector' })).not.toBeInTheDocument()
-
-    fireEvent.pointerDown(agentSelector, {
-      button: 0,
-      buttons: 1,
-      ctrlKey: false,
-      pointerType: 'mouse',
-    })
-
-    expect(await screen.findByRole('option', { name: /Ask/i })).toBeVisible()
-    expect(screen.getByRole('option', { name: /Test/i })).toBeVisible()
-  })
-
   it('keeps model selectors available while a prompt is pending on an active run', async () => {
     const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
 

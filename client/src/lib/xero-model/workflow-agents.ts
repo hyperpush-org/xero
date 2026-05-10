@@ -45,7 +45,6 @@ export const runtimeAgentPromptPolicySchema = z.enum([
   'debug',
   'crawl',
   'agent_create',
-  'harness_test',
 ])
 export type RuntimeAgentPromptPolicyDto = z.infer<typeof runtimeAgentPromptPolicySchema>
 
@@ -55,7 +54,6 @@ export const runtimeAgentToolPolicySchema = z.enum([
   'repository_recon',
   'engineering',
   'agent_builder',
-  'harness_test',
 ])
 export type RuntimeAgentToolPolicyDto = z.infer<typeof runtimeAgentToolPolicySchema>
 
@@ -66,7 +64,6 @@ export const runtimeAgentOutputContractSchema = z.enum([
   'engineering_summary',
   'debug_summary',
   'agent_definition_draft',
-  'harness_test_report',
 ])
 export type RuntimeAgentOutputContractDto = z.infer<typeof runtimeAgentOutputContractSchema>
 

@@ -1,12 +1,10 @@
 'use client'
 
-import { memo, useEffect, useState } from 'react'
+import { memo } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
-  ChevronDown,
-  ChevronRight,
   Database,
   Sparkles,
 } from 'lucide-react'
@@ -23,7 +21,6 @@ import {
   lifecycleEventLabel,
 } from '../build-agent-graph'
 import { useCanvasMode } from '../canvas-mode-context'
-import { useAgentCanvasExpansion } from '../expansion-context'
 
 const TOUCHPOINT_ICON: Record<DbTableTouchpointKind, typeof ArrowDownToLine> = {
   read: ArrowDownToLine,
@@ -79,18 +76,7 @@ const TRIGGER_HANDLE_CLASS = '!bg-fuchsia-500'
 export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbTableFlowNode>) {
   const { table, touchpoint, purpose, triggers, columns } = data
   const { editing } = useCanvasMode()
-  const [expanded, setExpanded] = useState(false)
-  const { locked, setExpanded: reportExpanded } = useAgentCanvasExpansion()
   const isPlaceholder = !table || /^table_\d+$/.test(table)
-  const canExpand = columns.length > 0
-  const isExpanded = canExpand && expanded
-
-  useEffect(() => {
-    reportExpanded(id, isExpanded)
-    return () => {
-      reportExpanded(id, false)
-    }
-  }, [id, isExpanded, reportExpanded])
 
   const Icon = TOUCHPOINT_ICON[touchpoint]
   const displayTable = isPlaceholder
@@ -102,8 +88,8 @@ export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbT
     .map(triggerChipLabel)
     .filter((chip): chip is TriggerChip => chip !== null)
   const visibleChips =
-    canExpand && !isExpanded ? chipTriggers.slice(0, COLLAPSED_TRIGGER_LIMIT) : chipTriggers
-  const hiddenCount = canExpand ? Math.max(0, chipTriggers.length - visibleChips.length) : 0
+    columns.length > 0 ? chipTriggers.slice(0, COLLAPSED_TRIGGER_LIMIT) : chipTriggers
+  const hiddenCount = Math.max(0, chipTriggers.length - visibleChips.length)
 
   return (
     <>
@@ -119,10 +105,7 @@ export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbT
         <Handle type="source" position={Position.Right} className="!bg-emerald-500" />
       ) : null}
       <div
-        className={cn(
-          'agent-card overflow-hidden text-card-foreground',
-          isExpanded && 'is-card-expanded',
-        )}
+        className="agent-card overflow-hidden text-card-foreground"
         style={{ width: 260 }}
       >
         <div className="agent-card-tone-strip" data-tone="emerald" />
@@ -165,48 +148,11 @@ export const DbTableNode = memo(function DbTableNode({ id, data }: NodeProps<DbT
               )
             })}
             {hiddenCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (locked) return
-                  setExpanded(true)
-                }}
-                disabled={locked}
-                className="nodrag nopan text-[10px] px-1.5 py-0.5 rounded border border-dashed border-border/60 text-muted-foreground hover:bg-muted/40"
-              >
+              <span className="text-[10px] px-1.5 py-0.5 rounded border border-dashed border-border/60 text-muted-foreground">
                 +{hiddenCount} more
-              </button>
+              </span>
             ) : null}
           </div>
-        ) : null}
-        {isExpanded ? (
-          <div className="agent-node-detail px-3 pb-1.5 border-t border-border/50 pt-1.5 space-y-1.5">
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70 mb-0.5">
-              columns
-            </p>
-            <p className="text-[11px] font-mono text-foreground/80 leading-snug break-words">
-              {columns.join(', ')}
-            </p>
-          </div>
-        ) : null}
-        {canExpand ? (
-          <button
-            type="button"
-            onClick={() => {
-              if (locked) return
-              setExpanded((v) => !v)
-            }}
-            disabled={locked}
-            aria-expanded={isExpanded}
-            className="nodrag nopan agent-card-base flex w-full items-center gap-1 px-3 py-1.5 text-left text-[10px] text-muted-foreground hover:bg-muted/40 border-t border-border/50"
-          >
-            {isExpanded ? (
-              <ChevronDown className="agent-node-chevron h-3 w-3" />
-            ) : (
-              <ChevronRight className="agent-node-chevron h-3 w-3" />
-            )}
-            <span>{isExpanded ? 'Less' : 'More'}</span>
-          </button>
         ) : null}
       </div>
     </>

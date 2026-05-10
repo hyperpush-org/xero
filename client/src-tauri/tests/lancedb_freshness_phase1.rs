@@ -619,7 +619,6 @@ fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_p
         RuntimeAgentIdDto::Debug,
         RuntimeAgentIdDto::Crawl,
         RuntimeAgentIdDto::AgentCreate,
-        RuntimeAgentIdDto::Test,
     ] {
         let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             runtime_agent_id,
@@ -635,7 +634,7 @@ fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_p
             "{runtime_agent_id:?} should receive project_context_get"
         );
         match runtime_agent_id {
-            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => {
+            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => {
                 for expected in [
                     AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
                     AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
@@ -672,7 +671,6 @@ fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_p
         RuntimeAgentIdDto::Debug,
         RuntimeAgentIdDto::Crawl,
         RuntimeAgentIdDto::AgentCreate,
-        RuntimeAgentIdDto::Test,
     ] {
         let run_id = format!("fresh-tool-{}-run", runtime_agent_id.as_str());
         seed_agent_run_for_agent(&repo_root, &project_id, &run_id, runtime_agent_id);
@@ -694,7 +692,7 @@ fn lancedb_freshness_phase1_project_context_access_matches_runtime_agent_write_p
 
         let result = runtime.execute(AutonomousToolRequest::ProjectContext(request));
         match runtime_agent_id {
-            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => {
+            RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => {
                 let output = result.unwrap_or_else(|error| {
                     panic!(
                         "{runtime_agent_id:?} should be allowed to record durable context: {error:?}"

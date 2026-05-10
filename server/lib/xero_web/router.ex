@@ -25,6 +25,7 @@ defmodule XeroWeb.Router do
   scope "/api", XeroWeb do
     pipe_through :api
 
+    get "/health", HealthController, :show
     post "/github/login", GitHubAuthController, :start
     get "/github/session", GitHubAuthController, :session
     delete "/github/session", GitHubAuthController, :delete_session

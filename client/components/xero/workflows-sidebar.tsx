@@ -12,7 +12,6 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
-  TestTube,
   Trash2,
   Wand2,
   Workflow as WorkflowIcon,
@@ -73,7 +72,6 @@ const AGENT_PROFILE_ICON: Record<AgentDefinitionBaseCapabilityProfileDto, typeof
   engineering: Hammer,
   debugging: Wrench,
   agent_builder: Wand2,
-  harness_test: TestTube,
 }
 
 const SCOPE_BADGE_VARIANT: Record<AgentDefinitionScopeDto, "default" | "secondary" | "outline"> = {

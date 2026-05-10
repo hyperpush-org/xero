@@ -632,58 +632,6 @@ fn summarize_prompt_fragment(mut fragment: PromptFragment) -> PromptFragment {
     fragment
 }
 
-fn harness_test_agent_contract_fragment() -> String {
-    [
-        "You are Xero's Test agent. Treat any user message as a trigger for the built-in dev harness validation run.",
-        "",
-        "Trigger contract: ignore the user message content except as the signal to start the harness. Do not answer questions, implement user-requested changes, debug the user's described issue, or otherwise fulfill the user's prompt as a normal task.",
-        "",
-        "Harness workflow contract: announce the harness run, inspect the active tool registry, build a deterministic manifest from the available tools, execute the canonical tool test sequence in order, mark each step `passed`, `failed`, or `skipped_with_reason`, clean up scratch state, and then produce the final harness report.",
-        "",
-        "Determinism contract: use the canonical order below. Within fixed built-in groups, use the listed target order exactly; within discovered dynamic capability groups, order tools by their registry name in ascending ASCII order. Use stable step ids exactly as written. Do not reorder steps to satisfy convenience, model preference, or user text.",
-        "",
-        "Safety contract: use harmless inputs only. Use repo-scoped scratch files or scratch directories only for mutation probes, and keep them under a clearly named temporary harness path. Do not mutate user project files outside scratch state. Do not create external side effects unless a capability is already present, read-only or fixture-backed, and explicitly safe for harness probing. Do not leak secrets; redact sensitive values in evidence.",
-        "",
-        "Canonical step order v1:",
-        "1. `deterministic_runner`: use `harness_runner` when available to export the canonical machine manifest.",
-        "2. `registry_discovery`: inspect `tool_search` and `tool_access` availability and active registry metadata.",
-        "3. `repo_inspection`: exercise core repo inspection tools: `git_status`, `git_diff`, `find`, `search`, `read`, `list`, and `hash` when available.",
-        "4. `planning_runtime_state`: exercise `todo` and `project_context` with safe read or runtime-owned app-data actions when available.",
-        "5. `scratch_mutation`: exercise scratch-only `mkdir`, `write`, `edit`, `rename`, and `delete` when available.",
-        "6. `commands`: run a short harmless command and a command session start/read/stop sequence when available.",
-        "7. `process_manager`: list or inspect only Xero-owned or harmless processes when available.",
-        "8. `environment_diagnostics`: inspect redacted environment context and bounded system diagnostics when available.",
-        "9. `browser_tools`: observe first; control only against a local or fixture-safe target when available.",
-        "10. `mcp_tools`: list servers, resources, and tools; invoke only a configured safe fixture tool when available.",
-        "11. `skills`: discover, list, or load safe local skill metadata; skip install or invocation unless a safe fixture exists.",
-        "12. `emulator_tools`: skip unless a managed emulator fixture is available.",
-        "13. `solana_tools`: use local, devnet, read-only, or fixture-backed probes only.",
-        "14. `macos_automation`: check permissions/status/read-only probes first; skip control unless explicitly safe.",
-        "15. `cleanup_scratch`: remove all harness-created scratch state and verify cleanup when possible.",
-        "16. `final_report`: produce the final report only after every available manifest item has a terminal status.",
-        "",
-        "Per-step record contract: for each step, record the stable step id, target tool or group, expected effect class, safe input summary, pass condition, skip condition, cleanup requirement, observed tool call or skip reason, and terminal status. A missing unavailable capability is `skipped_with_reason`, not `passed`.",
-        "",
-        "Final response contract: produce exactly this Markdown shape and no extra sections:",
-        "```markdown",
-        "# Harness Test Report",
-        "Status: pass|fail",
-        "Counts: passed=<number> failed=<number> skipped=<number>",
-        "Scratch cleanup: passed|failed|skipped_with_reason - <evidence or reason>",
-        "",
-        "| Step | Target | Status | Evidence | Skip reason |",
-        "| --- | --- | --- | --- | --- |",
-        "| <stable_step_id> | <tool_or_group> | passed|failed|skipped_with_reason | <brief persisted/tool evidence> | <reason or none> |",
-        "",
-        "Failures:",
-        "- none",
-        "```",
-        "",
-        "If failures exist, replace `- none` with one bullet per failed step in this exact form: `- <stable_step_id>: <tool_or_group> - <failure reason> - evidence: <brief evidence>`. `Status` is `pass` only when failed is 0 and scratch cleanup did not fail; otherwise it is `fail`.",
-    ]
-    .join("\n")
-}
-
 fn presentation_fragment() -> &'static str {
     // Tells the agent that the chat renderer supports GFM tables and Mermaid
     // diagrams in fenced ```mermaid blocks, and to prefer them over prose when
@@ -801,7 +749,6 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
             "Final response contract: present a reviewable agent-definition draft with name, short label, purpose, best-use cases, default model and approval posture, capabilities and tool access, memory and retrieval behavior, workflow instructions, final response contract, safety limits, example prompts, validation diagnostics, and saved version when activation succeeds.",
         ]
         .join("\n"),
-        RuntimeAgentIdDto::Test => harness_test_agent_contract_fragment(),
     };
     [
         agent_contract.as_str(),
@@ -1147,9 +1094,6 @@ fn tool_policy_fragment(
         ),
         RuntimeAgentIdDto::AgentCreate => format!(
             "Available agent-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition registry actions. `agent_definition` is the only persistence tool Agent Create may use, and save/update/archive/clone require explicit operator approval. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
-        ),
-        RuntimeAgentIdDto::Test => format!(
-            "Available harness tools: {tool_names}\n\nUse tools only for the dev harness validation run. Use `harness_runner` when present to export the machine-readable manifest before exercising tools. Prefer `tool_search` and `tool_access` to inspect the active registry and activate the smallest safe capability needed for the next canonical harness step only. Execute the manifest in the system-prompt order, mark unavailable capabilities as `skipped_with_reason`, use scratch paths for mutation probes, avoid external side effects unless the capability is already safe for harness probing, and clean up scratch state before the final report.{browser_control_guidance}"
         ),
     }
 }
@@ -2444,14 +2388,6 @@ fn add_startup_surface(plan: &mut ToolExposurePlan, options: &ToolRegistryOption
         "small_startup_surface",
         "Small startup surface for file read/search/status, tool discovery, durable context reads, and workspace-index status.",
     );
-    if options.runtime_agent_id == RuntimeAgentIdDto::Test {
-        plan.add_tool(
-            AUTONOMOUS_TOOL_HARNESS_RUNNER,
-            "startup_core",
-            "test_harness_runner",
-            "Test agent may export the deterministic machine-readable harness manifest.",
-        );
-    }
     if tool_allowed_for_runtime_agent_with_policy(
         options.runtime_agent_id,
         AUTONOMOUS_TOOL_TODO,
@@ -2543,9 +2479,6 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             }
             line if line.starts_with("tool:hash ") => {
                 names.insert(AUTONOMOUS_TOOL_HASH.into());
-            }
-            line if line.starts_with("tool:harness_runner") => {
-                names.insert(AUTONOMOUS_TOOL_HARNESS_RUNNER.into());
             }
             line if line.starts_with("tool:write ") => {
                 names.insert(AUTONOMOUS_TOOL_WRITE.into());
@@ -2841,26 +2774,6 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     (
                         "reason",
                         string_schema("Brief reason the additional capability is needed."),
-                    ),
-                ],
-            ),
-        ),
-        descriptor(
-            AUTONOMOUS_TOOL_HARNESS_RUNNER,
-            "Run deterministic Test-agent harness manifest checks and compare model-driven reports without relying only on final Markdown.",
-            object_schema(
-                &["action"],
-                &[
-                    (
-                        "action",
-                        enum_schema(
-                            "Harness runner action to execute.",
-                            &["manifest", "compare_report"],
-                        ),
-                    ),
-                    (
-                        "finalReport",
-                        string_schema("Draft or final Harness Test Report Markdown for action=compare_report."),
                     ),
                 ],
             ),
@@ -6091,7 +6004,6 @@ mod tests {
             RuntimeAgentIdDto::Debug,
             RuntimeAgentIdDto::Crawl,
             RuntimeAgentIdDto::AgentCreate,
-            RuntimeAgentIdDto::Test,
         ] {
             let compilation = PromptCompiler::new(
                 root.path(),
@@ -6246,7 +6158,7 @@ mod tests {
     fn prompt_compiler_renders_harness_test_contract_and_report_shape() {
         let root = tempfile::tempdir().expect("temp dir");
         let controls_input = RuntimeRunControlInputDto {
-            runtime_agent_id: RuntimeAgentIdDto::Test,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
             provider_profile_id: None,
             model_id: OPENAI_CODEX_PROVIDER_ID.into(),
@@ -6265,7 +6177,7 @@ mod tests {
             root.path(),
             None,
             None,
-            RuntimeAgentIdDto::Test,
+            RuntimeAgentIdDto::Engineer,
             BrowserControlPreferenceDto::Default,
             registry.descriptors(),
         )

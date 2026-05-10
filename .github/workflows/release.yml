@@ -1,0 +1,542 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_REPO: ${{ github.repository }}
+  SERVER_URL: https://xero-server.fly.dev
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Tauri version
+        id: version
+        run: |
+          VERSION=$(jq -r '.version' client/src-tauri/tauri.conf.json)
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ "${GITHUB_REF_NAME:-}" != "$TAG" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match client/src-tauri/tauri.conf.json version $VERSION"
+            exit 1
+          fi
+
+      - name: Validate updater signing secret
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY. Set it to the contents of the Xero updater private key."
+            exit 1
+          fi
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" --repo "$RELEASE_REPO" > /dev/null 2>&1; then
+            gh release delete "$TAG" --repo "$RELEASE_REPO" --yes
+          fi
+
+          gh release create "$TAG" \
+            --repo "$RELEASE_REPO" \
+            --target "$GITHUB_SHA" \
+            --title "Xero $VERSION" \
+            --notes "See assets to download and install Xero." \
+            --draft
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: client
+        env:
+          VITE_XERO_SERVER_URL: ${{ env.SERVER_URL }}
+        run: pnpm build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-dist
+          path: client/dist
+          retention-days: 1
+
+  deploy-server:
+    name: Deploy Server
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy server to Fly.io
+        working-directory: server
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_SERVER_TOKEN || secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
+
+  deploy-landing:
+    name: Deploy Landing
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy landing to Fly.io
+        working-directory: landing
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_LANDING_TOKEN || secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
+
+  build-tauri:
+    name: Build Tauri (${{ matrix.artifact_suffix }})
+    needs: create-release
+    permissions:
+      contents: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            artifact_suffix: macos-aarch64
+            platform_key: darwin-aarch64
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            artifact_suffix: macos-x86_64
+            platform_key: darwin-x86_64
+          - platform: windows-latest
+            args: --bundles nsis
+            artifact_suffix: windows-x86_64
+            platform_key: windows-x86_64
+          - platform: ubuntu-24.04
+            args: --bundles appimage
+            artifact_suffix: linux-x86_64
+            platform_key: linux-x86_64
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: client-dist
+          path: client/dist
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Install Linux Tauri dependencies
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            pkg-config \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+
+      - name: Set up Rust (macOS)
+        if: contains(matrix.platform, 'macos')
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Set up Rust
+        if: ${{ !contains(matrix.platform, 'macos') }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri -> target
+          shared-key: ${{ matrix.artifact_suffix }}
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Skip frontend rebuild during Tauri build
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = 'client/src-tauri/tauri.conf.json'
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'))
+          config.build.beforeBuildCommand = ''
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
+          NODE
+
+      - name: Validate Apple signing secrets
+        if: contains(matrix.platform, 'macos')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing $name for macOS signing/notarization."
+              exit 1
+            fi
+          done
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: client
+          args: ${{ matrix.args }}
+
+      - name: Validate Azure Windows signing configuration
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERT_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERT_PROFILE_NAME }}
+        run: |
+          $missing = @()
+          foreach ($name in @(
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_TRUSTED_SIGNING_ENDPOINT",
+            "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+            "AZURE_TRUSTED_SIGNING_CERT_PROFILE_NAME"
+          )) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
+              $missing += $name
+            }
+          }
+
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing Windows signing configuration: $($missing -join ', ')"
+            exit 1
+          }
+
+      - name: Azure Login (OIDC)
+        if: matrix.platform == 'windows-latest'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows installer with Azure Trusted Signing
+        if: matrix.platform == 'windows-latest'
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_TRUSTED_SIGNING_CERT_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}/client/src-tauri/target/release/bundle
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Xero
+
+      - name: Re-sign Tauri updater signature after Windows code signing
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $exe = Get-ChildItem -Path "client/src-tauri/target" -Recurse -File |
+            Where-Object { $_.Name -like "*-setup.exe" } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "No NSIS setup executable found."
+            exit 1
+          }
+
+          Remove-Item "$($exe.FullName).sig" -ErrorAction SilentlyContinue
+          $signArgs = @("exec", "tauri", "signer", "sign", "-k", $env:TAURI_SIGNING_PRIVATE_KEY)
+          if (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+            $signArgs += @("-p", $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
+          }
+          $signArgs += $exe.FullName
+          & pnpm --dir client @signArgs
+
+      - name: Verify Windows Authenticode signatures
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path "client/src-tauri/target/release/bundle" -Recurse -File |
+            Where-Object { $_.Extension -in @(".exe", ".msi") }
+
+          if (-not $files) {
+            Write-Error "No .exe/.msi files found to verify."
+            exit 1
+          }
+
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -FilePath $file.FullName
+            Write-Host "$($file.FullName): $($signature.Status)"
+            if ($signature.Status -ne "Valid") {
+              Write-Error "Invalid Authenticode signature for $($file.FullName): $($signature.Status)"
+              exit 1
+            }
+          }
+
+      - name: Upload macOS artifacts and latest.json
+        if: contains(matrix.platform, 'macos')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+          PLATFORM_KEY: ${{ matrix.platform_key }}
+        run: |
+          set -euo pipefail
+
+          DMG_FILE=$(find client/src-tauri/target -name "*.dmg" -type f | head -1)
+          if [ -n "$DMG_FILE" ]; then
+            DMG_ASSET="${DMG_FILE##*/}"
+            DMG_ASSET="${DMG_ASSET%.dmg}_${ARTIFACT_SUFFIX}.dmg"
+            cp "$DMG_FILE" "/tmp/$DMG_ASSET"
+            gh release upload "$TAG" "/tmp/$DMG_ASSET" --repo "$RELEASE_REPO" --clobber
+          fi
+
+          APP_TAR=$(find client/src-tauri/target -name "*.app.tar.gz" -type f | head -1)
+          APP_SIG=$(find client/src-tauri/target -name "*.app.tar.gz.sig" -type f | head -1)
+          if [ -z "$APP_TAR" ] || [ -z "$APP_SIG" ]; then
+            echo "::error::Missing macOS updater archive or signature."
+            exit 1
+          fi
+
+          APP_ASSET="${APP_TAR##*/}"
+          APP_ASSET="${APP_ASSET%.app.tar.gz}_${ARTIFACT_SUFFIX}.app.tar.gz"
+          cp "$APP_TAR" "/tmp/$APP_ASSET"
+          cp "$APP_SIG" "/tmp/$APP_ASSET.sig"
+          gh release upload "$TAG" "/tmp/$APP_ASSET" "/tmp/$APP_ASSET.sig" --repo "$RELEASE_REPO" --clobber
+
+          mkdir -p /tmp/latest-json
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "See release notes on GitHub." \
+            --arg pub_date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg platform "$PLATFORM_KEY" \
+            --arg signature "$(cat "$APP_SIG")" \
+            --arg url "https://github.com/$RELEASE_REPO/releases/download/$TAG/$APP_ASSET" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {($platform): {signature: $signature, url: $url}}}' \
+            > /tmp/latest-json/latest.json
+
+      - name: Upload Windows artifacts and latest.json
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          PLATFORM_KEY: ${{ matrix.platform_key }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          $exe = Get-ChildItem -Path "client/src-tauri/target" -Recurse -File |
+            Where-Object { $_.Name -like "*-setup.exe" } |
+            Select-Object -First 1
+          $sig = Get-ChildItem -Path "client/src-tauri/target" -Recurse -File |
+            Where-Object { $_.Name -like "*-setup.exe.sig" } |
+            Select-Object -First 1
+
+          if (-not $exe -or -not $sig) {
+            Write-Error "Missing Windows installer or updater signature."
+            exit 1
+          }
+
+          gh release upload $env:TAG $exe.FullName $sig.FullName --repo $env:RELEASE_REPO --clobber
+
+          $outputDir = Join-Path $env:RUNNER_TEMP "latest-json"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $signature = (Get-Content $sig.FullName -Raw).Trim()
+          @{
+            version = $env:VERSION
+            notes = "See release notes on GitHub."
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              $env:PLATFORM_KEY = @{
+                signature = $signature
+                url = "https://github.com/$env:RELEASE_REPO/releases/download/$env:TAG/$($exe.Name)"
+              }
+            }
+          } | ConvertTo-Json -Depth 10 | Out-File -FilePath "$outputDir/latest.json" -Encoding utf8
+
+      - name: Upload Linux artifacts and latest.json
+        if: matrix.platform == 'ubuntu-24.04'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          PLATFORM_KEY: ${{ matrix.platform_key }}
+        run: |
+          set -euo pipefail
+
+          APPIMAGE=$(find client/src-tauri/target -name "*.AppImage" -type f | head -1)
+          APPIMAGE_SIG=$(find client/src-tauri/target -name "*.AppImage.sig" -type f | head -1)
+          if [ -z "$APPIMAGE" ] || [ -z "$APPIMAGE_SIG" ]; then
+            echo "::error::Missing Linux AppImage or updater signature."
+            exit 1
+          fi
+
+          gh release upload "$TAG" "$APPIMAGE" "$APPIMAGE_SIG" --repo "$RELEASE_REPO" --clobber
+
+          mkdir -p /tmp/latest-json
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "See release notes on GitHub." \
+            --arg pub_date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --arg platform "$PLATFORM_KEY" \
+            --arg signature "$(cat "$APPIMAGE_SIG")" \
+            --arg url "https://github.com/$RELEASE_REPO/releases/download/$TAG/$(basename "$APPIMAGE")" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {($platform): {signature: $signature, url: $url}}}' \
+            > /tmp/latest-json/latest.json
+
+      - name: Upload latest.json fragment
+        if: matrix.platform != 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-json-${{ matrix.artifact_suffix }}
+          path: /tmp/latest-json/latest.json
+          if-no-files-found: error
+
+      - name: Upload latest.json fragment (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-json-${{ matrix.artifact_suffix }}
+          path: ${{ runner.temp }}\latest-json\latest.json
+          if-no-files-found: error
+
+  finalize-release:
+    name: Finalize Release
+    needs:
+      - create-release
+      - deploy-server
+      - deploy-landing
+      - build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download latest.json fragments
+        uses: actions/download-artifact@v4
+        with:
+          pattern: latest-json-*
+          merge-multiple: false
+
+      - name: Merge latest.json
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          JSON_FILES=$(find . -name latest.json -type f)
+          if [ -z "$JSON_FILES" ]; then
+            echo "::error::No latest.json fragments were produced."
+            exit 1
+          fi
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "See release notes on GitHub." \
+            --arg pub_date "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {}}' \
+            > latest.json
+
+          for file in $JSON_FILES; do
+            jq -s '
+              {
+                version: .[0].version,
+                notes: .[0].notes,
+                pub_date: .[0].pub_date,
+                platforms: ((.[0].platforms // {}) + (.[1].platforms // {}))
+              }
+            ' latest.json "$file" > latest.tmp
+            mv latest.tmp latest.json
+          done
+
+          jq . latest.json
+
+      - name: Publish latest.json and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        run: |
+          gh release upload "$TAG" latest.json --repo "$RELEASE_REPO" --clobber
+          gh release edit "$TAG" --repo "$RELEASE_REPO" --draft=false

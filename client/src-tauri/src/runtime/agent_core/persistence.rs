@@ -3913,7 +3913,6 @@ mod tests {
                 1,
                 "agent-create",
             ),
-            (RuntimeAgentIdDto::Test, "test", 1, "test"),
             (
                 RuntimeAgentIdDto::Engineer,
                 "custom-support-agent",

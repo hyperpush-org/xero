@@ -156,7 +156,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       {showTopLeftHeader ? (
         <div
           aria-label="Selected agent"
-          className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_18rem)))] items-center gap-2 rounded-md px-2"
+          className="pointer-events-none absolute left-6 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_19rem)))] items-center gap-2 rounded-md px-2"
         >
           <Bot
             aria-label="Agent"

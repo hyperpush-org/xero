@@ -77,7 +77,7 @@ export function CatalogPicker<TValue extends string = string>({
         disabled={disabled || loading}
         onPointerDown={(event) => event.stopPropagation()}
         className={cn(
-          'nodrag nopan flex w-full items-center gap-2 rounded-md border border-border/70 bg-background/80 px-2 py-1.5 text-left text-[10.5px] hover:bg-muted/40 disabled:opacity-50',
+          'nodrag nopan flex w-full items-center gap-2 rounded-md border border-border/70 bg-background/80 px-2 py-1.5 text-left text-[10px] hover:bg-muted/40 disabled:opacity-50',
           triggerClassName,
         )}
       >
@@ -98,7 +98,7 @@ export function CatalogPicker<TValue extends string = string>({
         onPointerDown={(event) => event.stopPropagation()}
       >
         <Command>
-          <CommandInput placeholder={searchPlaceholder} className="h-9" />
+          <CommandInput placeholder={searchPlaceholder} className="h-9 text-[10px]" />
           <CommandList className="max-h-[280px]">
             <CommandEmpty>{loading ? loadingMessage : emptyMessage}</CommandEmpty>
             {groupKeys.map((key) => (

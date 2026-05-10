@@ -38,6 +38,7 @@ import {
   estimateDbTableCardHeight,
   estimateExpandedCardHeight,
   getLaneDragMemberIds,
+  selectedNodeFocusCenter,
 } from './agent-visualization'
 import {
   AGENT_GRAPH_HEADER_HANDLES,
@@ -301,6 +302,51 @@ describe('AgentVisualization', () => {
     expect(estimateExpandedCardHeight(64, 96, 128, true)).toBe(128)
   })
 
+  it('centers selected nodes from their React Flow absolute viewport position', () => {
+    const node = {
+      id: 'tool:read',
+      type: 'tool',
+      position: { x: 24, y: 18 },
+      measured: { width: 240, height: 36 },
+      internals: {
+        positionAbsolute: { x: 1_400, y: 520 },
+      },
+      data: {},
+    } as unknown as Node
+    const center = selectedNodeFocusCenter(
+      node,
+      [node],
+      320,
+      1.05,
+    )
+
+    expect(center.x).toBeCloseTo(1_400 + 120 - 320 / 2 / 1.05)
+    expect(center.y).toBeCloseTo(520 + 18)
+  })
+
+  it('centers selected grouped tool nodes from their parent frame position', () => {
+    const frame = {
+      id: 'tool-group-frame:test_harness',
+      type: 'tool-group-frame',
+      position: { x: 1_600, y: 320 },
+      measured: { width: 280, height: 110 },
+      data: {},
+    } as unknown as Node
+    const tool = {
+      id: 'tool:Harness Runner',
+      type: 'tool',
+      parentId: frame.id,
+      position: { x: 16, y: 38 },
+      measured: { width: 240, height: 36 },
+      data: {},
+    } as unknown as Node
+
+    const center = selectedNodeFocusCenter(tool, [frame, tool], 320, 1.05)
+
+    expect(center.x).toBeCloseTo(1_600 + 16 + 120 - 320 / 2 / 1.05)
+    expect(center.y).toBeCloseTo(320 + 38 + 18)
+  })
+
   it('reserves enough initial height for wrapped DB trigger chips', () => {
     const triggers = [
       { kind: 'tool' as const, name: 'Edit' },
@@ -330,9 +376,24 @@ describe('AgentVisualization', () => {
     expect(expandedWithColumnsHeight).toBeGreaterThan(collapsedWithColumnsHeight)
   })
 
-  it('keeps edit handles large while hover growth preserves React Flow placement', () => {
+  it('renders handles larger and clips them into half circles by side', () => {
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*width:\s*12px !important;[^}]*height:\s*12px !important;/m,
+      /\.agent-visualization \.react-flow__handle\s*\{[^}]*width:\s*16px;[^}]*height:\s*16px;[^}]*border-radius:\s*999px;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization \.react-flow__handle-left\s*\{[^}]*clip-path:\s*inset\(0 50% 0 0\);/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization \.react-flow__handle-right\s*\{[^}]*clip-path:\s*inset\(0 0 0 50%\);/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization \.react-flow__handle-top\s*\{[^}]*clip-path:\s*inset\(0 0 50% 0\);/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization \.react-flow__handle-bottom\s*\{[^}]*clip-path:\s*inset\(50% 0 0 0\);/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*width:\s*18px !important;[^}]*height:\s*18px !important;/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
       /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*transform-origin:\s*center center;[^}]*scale:\s*1;/m,
@@ -340,8 +401,18 @@ describe('AgentVisualization', () => {
     expect(AGENT_VISUALIZATION_CSS).toMatch(
       /transition:\s*scale 120ms ease,/m,
     )
+    // Hover-only state (no drag in progress) keeps a subtle ring so handles
+    // read as grabable; the full glow is reserved for the active drag's
+    // source and for valid hovered targets.
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization\.is-editing \.react-flow__handle:hover,[^{]*\{[^}]*scale:\s*1\.12;/m,
+      /\.agent-visualization\.is-editing:not\(\[data-drag-role\]\) \.react-flow__handle:hover\s*\{[^}]*scale:\s*1\.08;/m,
+    )
+    // The grabbed source handle and any valid hovered target handle get
+    // the full glow. Crucially, .connecting (every handle during a drag)
+    // and .connectingto (without .valid) are NOT in this rule — they stay
+    // at base, which is the whole point of the honest-highlights change.
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\.connectingfrom,[^{]*\.agent-visualization\.is-editing \.react-flow__handle\.connectingto\.valid\s*\{[^}]*scale:\s*1\.12;/m,
     )
     expect(AGENT_VISUALIZATION_CSS).not.toMatch(
       /\.agent-visualization\.is-editing \.react-flow__handle:hover,[^{]*\{[^}]*transform:/m,
@@ -1382,9 +1453,6 @@ describe('AgentVisualization', () => {
     const frameNode = container.querySelector<HTMLElement>(
       '.react-flow__node[data-id="tool-group-frame:core"]',
     )
-    const readButton = container.querySelector<HTMLButtonElement>(
-      '.react-flow__node[data-id="tool:Read"] button',
-    )
     const readNode = container.querySelector<HTMLElement>(
       '.react-flow__node[data-id="tool:Read"]',
     )
@@ -1393,14 +1461,13 @@ describe('AgentVisualization', () => {
     )
 
     expect(frameNode).not.toBeNull()
-    expect(readButton).not.toBeNull()
     expect(readNode).not.toBeNull()
     expect(grepNode).not.toBeNull()
     expect(container.querySelector('.agent-tool-group-frame__drag-surface')).toBeNull()
     expect(frameNode!.style.pointerEvents).toBe('none')
     expect(readNode!.style.pointerEvents).toBe('all')
 
-    fireEvent.pointerMove(readButton!, { buttons: 0, clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(readNode!, { buttons: 0, clientX: 10, clientY: 10 })
 
     expect(frameNode!.classList.contains('is-focused')).toBe(true)
     expect(readNode!.classList.contains('is-focused')).toBe(true)
@@ -1505,7 +1572,7 @@ describe('AgentVisualization', () => {
     expect(container.textContent).toContain('0tools')
   })
 
-  it('locks authoring card interactions while leaving viewport controls available', () => {
+  it('locks canvas movement while compact cards stay non-expandable', () => {
     installResizeObserverStub()
 
     const { container, getByLabelText } = render(
@@ -1520,14 +1587,13 @@ describe('AgentVisualization', () => {
     const lockButton = getByLabelText('Lock canvas') as HTMLButtonElement
     const snapButton = getByLabelText(/snap to grid/i) as HTMLButtonElement
     const resetButton = getByLabelText('Reset layout') as HTMLButtonElement
-    const toolButton = container.querySelector<HTMLButtonElement>(
-      '.react-flow__node[data-id="tool:Read"] button',
-    )
-    const toolCard = toolButton?.closest<HTMLElement>('.agent-card')
+    const toolNode = container.querySelector<HTMLElement>('.react-flow__node[data-id="tool:Read"]')
+    const toolCard = toolNode?.querySelector<HTMLElement>('.agent-card')
 
     expect(canvas).not.toBeNull()
-    expect(toolButton).not.toBeNull()
+    expect(toolNode).not.toBeNull()
     expect(toolCard).not.toBeNull()
+    expect(toolNode!.querySelector('button')).toBeNull()
 
     fireEvent.click(lockButton)
 
@@ -1536,9 +1602,8 @@ describe('AgentVisualization', () => {
     expect(lockButton.getAttribute('aria-pressed')).toBe('true')
     expect(snapButton.disabled).toBe(true)
     expect(resetButton.disabled).toBe(true)
-    expect(toolButton!.disabled).toBe(true)
 
-    fireEvent.click(toolButton!)
+    fireEvent.click(toolNode!)
     expect(toolCard!.classList.contains('is-card-expanded')).toBe(false)
 
     fireEvent.click(lockButton)
@@ -1547,33 +1612,27 @@ describe('AgentVisualization', () => {
     expect(getByLabelText('Lock canvas')).toBe(lockButton)
     expect(snapButton.disabled).toBe(false)
     expect(resetButton.disabled).toBe(false)
-    expect(toolButton!.disabled).toBe(false)
 
-    fireEvent.click(toolButton!)
-    expect(toolCard!.classList.contains('is-card-expanded')).toBe(true)
+    fireEvent.click(toolNode!)
+    expect(toolCard!.classList.contains('is-card-expanded')).toBe(false)
   })
 
-  it('expands a tool card when its row is clicked inside a category frame', () => {
+  it('keeps tool cards compact when clicked inside a category frame', () => {
     installResizeObserverStub()
 
     const { container } = render(<AgentVisualization detail={detail()} />)
-    const toolButton = container.querySelector<HTMLButtonElement>(
-      '.react-flow__node[data-id="tool:Read"] button',
-    )
-    const toolCard = toolButton?.closest<HTMLElement>('.agent-card')
+    const toolNode = container.querySelector<HTMLElement>('.react-flow__node[data-id="tool:Read"]')
+    const toolCard = toolNode?.querySelector<HTMLElement>('.agent-card')
 
-    expect(toolButton).not.toBeNull()
+    expect(toolNode).not.toBeNull()
     expect(toolCard).not.toBeNull()
-    expect(toolButton!.closest<HTMLElement>('.react-flow__node')?.style.pointerEvents).toBe(
-      'all',
-    )
+    expect(toolNode!.style.pointerEvents).toBe('all')
+    expect(toolNode!.querySelector('button')).toBeNull()
     expect(toolCard!.classList.contains('is-card-expanded')).toBe(false)
 
-    fireEvent.pointerDown(toolButton!, { button: 0 })
-    fireEvent.click(toolButton!)
+    fireEvent.pointerDown(toolNode!, { button: 0 })
+    fireEvent.click(toolNode!)
 
-    expect(toolButton!.classList.contains('nodrag')).toBe(true)
-    expect(toolButton!.classList.contains('nopan')).toBe(true)
-    expect(toolCard!.classList.contains('is-card-expanded')).toBe(true)
+    expect(toolCard!.classList.contains('is-card-expanded')).toBe(false)
   })
 })

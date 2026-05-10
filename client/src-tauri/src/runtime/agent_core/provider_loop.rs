@@ -4085,8 +4085,7 @@ fn dynamic_tool_catalog_metadata(
             "effectClass": "external_service",
             "allowedRuntimeAgents": [
                 RuntimeAgentIdDto::Engineer.as_str(),
-                RuntimeAgentIdDto::Debug.as_str(),
-                RuntimeAgentIdDto::Test.as_str()
+                RuntimeAgentIdDto::Debug.as_str()
             ],
             "runtimeAvailable": true,
             "source": server_id,
@@ -6213,7 +6212,7 @@ mod tests {
 
     fn test_controls_input() -> RuntimeRunControlInputDto {
         RuntimeRunControlInputDto {
-            runtime_agent_id: RuntimeAgentIdDto::Test,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
             agent_definition_id: None,
             provider_profile_id: None,
             model_id: OPENAI_CODEX_PROVIDER_ID.into(),
@@ -6275,7 +6274,7 @@ mod tests {
         ToolRegistry::for_tool_names_with_options(
             tool_names.iter().map(|tool| (*tool).to_owned()).collect(),
             ToolRegistryOptions {
-                runtime_agent_id: RuntimeAgentIdDto::Test,
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
                 ..ToolRegistryOptions::default()
             },
         )

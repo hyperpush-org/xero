@@ -2043,7 +2043,7 @@ mod tests {
     #[test]
     fn test_registry_exposes_harness_surface_without_agent_definition_mutation() {
         let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
-            runtime_agent_id: RuntimeAgentIdDto::Test,
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
             skill_tool_enabled: true,
             ..ToolRegistryOptions::default()
         });

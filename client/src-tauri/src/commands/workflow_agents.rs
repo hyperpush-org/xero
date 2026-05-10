@@ -2782,7 +2782,6 @@ fn output_contract_id(contract: RuntimeAgentOutputContractDto) -> &'static str {
         RuntimeAgentOutputContractDto::EngineeringSummary => "engineering_summary",
         RuntimeAgentOutputContractDto::DebugSummary => "debug_summary",
         RuntimeAgentOutputContractDto::AgentDefinitionDraft => "agent_definition_draft",
-        RuntimeAgentOutputContractDto::HarnessTestReport => "harness_test_report",
     }
 }
 
@@ -2811,7 +2810,6 @@ fn base_capability_profile_id(profile: &AgentDefinitionBaseCapabilityProfileDto)
         AgentDefinitionBaseCapabilityProfileDto::Engineering => "engineering",
         AgentDefinitionBaseCapabilityProfileDto::Debugging => "debugging",
         AgentDefinitionBaseCapabilityProfileDto::AgentBuilder => "agent_builder",
-        AgentDefinitionBaseCapabilityProfileDto::HarnessTest => "harness_test",
     }
 }
 
@@ -3542,9 +3540,6 @@ fn base_capability_from_runtime(
         RuntimeAgentBaseCapabilityProfileDto::AgentBuilder => {
             AgentDefinitionBaseCapabilityProfileDto::AgentBuilder
         }
-        RuntimeAgentBaseCapabilityProfileDto::HarnessTest => {
-            AgentDefinitionBaseCapabilityProfileDto::HarnessTest
-        }
     }
 }
 
@@ -3573,7 +3568,6 @@ fn base_capability_from_str(value: &str) -> AgentDefinitionBaseCapabilityProfile
         "engineering" => AgentDefinitionBaseCapabilityProfileDto::Engineering,
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,
         "agent_builder" => AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,
-        "harness_test" => AgentDefinitionBaseCapabilityProfileDto::HarnessTest,
         _ => AgentDefinitionBaseCapabilityProfileDto::ObserveOnly,
     }
 }

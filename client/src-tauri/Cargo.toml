@@ -100,6 +100,8 @@ url = "2"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 xero-agent-core = { path = "crates/xero-agent-core" }
+tauri-plugin-updater = { version = "2.10", default-features = false, features = ["rustls-tls"] }
+tauri-plugin-process = "2.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.23", features = ["elcapitan"] }

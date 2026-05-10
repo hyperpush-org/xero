@@ -103,7 +103,6 @@ const OUTPUT_CONTRACTS: RuntimeAgentOutputContractDto[] = [
   'engineering_summary',
   'debug_summary',
   'agent_definition_draft',
-  'harness_test_report',
 ]
 const EMPHASIS_OPTIONS: AgentOutputSectionEmphasisDto[] = ['core', 'standard', 'optional']
 const TOUCHPOINT_OPTIONS: AgentDbTouchpointKindDto[] = ['read', 'write', 'encouraged']
@@ -133,7 +132,7 @@ export function NodePropertiesPanel({ selectedNode, onClose }: NodePropertiesPan
   return (
     <TooltipProvider delayDuration={150}>
       <div
-        className="agent-properties-panel pointer-events-auto absolute bottom-4 left-4 top-14 z-30 flex w-[272px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[10.5px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
+        className="agent-properties-panel pointer-events-auto absolute left-8 top-14 z-30 flex max-h-[calc(100%-4.5rem)] w-[272px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[10.5px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
         onPointerDown={(event) => event.stopPropagation()}
         onWheel={(event) => event.stopPropagation()}
       >
@@ -163,7 +162,7 @@ export function NodePropertiesPanel({ selectedNode, onClose }: NodePropertiesPan
             <X className="h-3 w-3" />
           </Button>
         </header>
-        <div className="flex-1 overflow-y-auto px-3 py-3">{renderEditor(selectedNode)}</div>
+        <div className="min-h-0 overflow-y-auto px-3 py-3">{renderEditor(selectedNode)}</div>
       </div>
     </TooltipProvider>
   )
@@ -357,13 +356,13 @@ function PanelSelect<T extends string>({
       <SelectTrigger
         size="sm"
         aria-label={ariaLabel}
-        className="h-8 w-full border-border/60 bg-background/60 text-[10.5px] font-medium text-foreground/90 shadow-none data-[size=sm]:h-8"
+        className="h-8 w-full border-border/60 bg-background/60 text-[10px] font-medium text-foreground/90 shadow-none data-[size=sm]:h-8"
       >
         <SelectValue placeholder={placeholder ?? 'Select…'} />
       </SelectTrigger>
-      <SelectContent className="text-[10.5px]">
+      <SelectContent className="text-[10px]">
         {options.map((option) => (
-          <SelectItem key={option.value} value={option.value} className="text-[10.5px]">
+          <SelectItem key={option.value} value={option.value} className="text-[10px]">
             {option.label}
           </SelectItem>
         ))}
@@ -554,7 +553,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             onChange={(event) => updateHeader({ displayName: event.target.value })}
             placeholder="Display name"
             maxLength={80}
-            className="h-8 text-[11.5px] font-semibold"
+            className="h-8 text-[10.75px] font-semibold"
           />
         </FieldGroup>
         <FieldGroup label="Short label" hint={`${header.shortLabel.length}/24`}>
@@ -563,7 +562,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             onChange={(event) => updateHeader({ shortLabel: event.target.value })}
             placeholder="Short label"
             maxLength={24}
-            className="h-8 text-[10.5px]"
+            className="h-8 text-[10px]"
           />
         </FieldGroup>
         <FieldGroup label="Description">
@@ -572,7 +571,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             onChange={(event) => updateHeader({ description: event.target.value })}
             placeholder="What does this agent do?"
             rows={2}
-            className="resize-none text-[10.5px]"
+            className="resize-none text-[10px]"
           />
         </FieldGroup>
       </div>
@@ -615,11 +614,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
         </div>
         <FieldGroup label="Capability">
           <PanelSelect
-            value={
-              header.baseCapabilityProfile === 'harness_test'
-                ? 'observe_only'
-                : header.baseCapabilityProfile
-            }
+            value={header.baseCapabilityProfile}
             onChange={(value) => {
               const parsed = agentDefinitionBaseCapabilityProfileSchema.safeParse(value)
               if (parsed.success && EDITABLE_PROFILES.includes(parsed.data)) {
@@ -644,7 +639,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             onChange={(event) => updateHeader({ taskPurpose: event.target.value })}
             placeholder="Describe the agent's primary task and constraints."
             rows={3}
-            className="resize-none text-[10.5px]"
+            className="resize-none text-[10px]"
           />
         </FieldGroup>
         <FieldGroup label="Workflow contract">
@@ -653,7 +648,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             onChange={(event) => updateAdvanced({ workflowContract: event.target.value })}
             placeholder="What end-to-end workflow does this agent run?"
             rows={2}
-            className="resize-none text-[10.5px]"
+            className="resize-none text-[10px]"
           />
         </FieldGroup>
         <FieldGroup label="Final response contract">
@@ -662,7 +657,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             onChange={(event) => updateAdvanced({ finalResponseContract: event.target.value })}
             placeholder="What does a successful final response include?"
             rows={2}
-            className="resize-none text-[10.5px]"
+            className="resize-none text-[10px]"
           />
         </FieldGroup>
       </div>
@@ -682,7 +677,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
                 updateAdvanced({ examplePrompts: next })
               }}
               placeholder={`Example #${index + 1}`}
-              className="h-8 text-[10.5px]"
+              className="h-8 text-[10px]"
             />
           ))}
         </div>
@@ -701,7 +696,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
                 updateAdvanced({ refusalEscalationCases: next })
               }}
               placeholder={`Case #${index + 1}`}
-              className="h-8 text-[10.5px]"
+              className="h-8 text-[10px]"
             />
           ))}
         </div>
@@ -713,7 +708,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
         <div className="flex items-center justify-between">
           <SectionHeading label="Allowed approval modes" />
         </div>
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="flex flex-col gap-1">
           {APPROVAL_MODES.map((mode) => {
             const checked = header.allowedApprovalModes.includes(mode)
             const lockedOn = mode === 'suggest'
@@ -746,7 +741,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             Drag tools onto the canvas to auto-fill required groups, or pick extras here.
           </p>
         )}
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="flex flex-col gap-1">
           {visibleToolGroups.map((group) => {
             const inferredHere = inferredGroupSet.has(group)
             const userPicked = advanced.allowedToolGroups.includes(group)
@@ -774,7 +769,7 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
           <SectionHeading label="Capability flags" />
           {Object.values(inferredAdvanced.flags).some(Boolean) ? <InferenceBadge /> : null}
         </div>
-        <div className="grid grid-cols-2 gap-1.5">
+        <div className="flex flex-col gap-1">
           {CAPABILITY_FLAGS.map(({ key, label }) => {
             const inferredHere = inferredAdvanced.flags[key]
             const userPicked = advanced[key]
@@ -819,7 +814,7 @@ function PromptEditor({ nodeId, data }: { nodeId: string; data: PromptNodeData }
           value={prompt.label}
           onChange={(event) => updatePrompt({ label: event.target.value })}
           placeholder="Label"
-          className="h-8 text-[11.5px] font-medium"
+          className="h-8 text-[10.75px] font-medium"
         />
       </FieldGroup>
       <FieldGroup label="Role">
@@ -835,7 +830,7 @@ function PromptEditor({ nodeId, data }: { nodeId: string; data: PromptNodeData }
           onChange={(event) => updatePrompt({ body: event.target.value })}
           placeholder="Prompt body…"
           rows={9}
-          className="resize-none font-mono text-[10.5px]"
+          className="resize-none font-mono text-[10px]"
         />
       </FieldGroup>
       <RemoveRow onRemove={() => removeNode(nodeId)} label="Remove prompt" />
@@ -1208,7 +1203,7 @@ function OutputEditor({ nodeId, data }: { nodeId: string; data: OutputNodeData }
           value={output.label}
           onChange={(event) => updateOutput({ label: event.target.value })}
           placeholder="Final response"
-          className="h-8 text-[11.5px] font-medium"
+          className="h-8 text-[10.75px] font-medium"
         />
       </FieldGroup>
       <FieldGroup label="Contract">
@@ -1229,7 +1224,7 @@ function OutputEditor({ nodeId, data }: { nodeId: string; data: OutputNodeData }
           onChange={(event) => updateOutput({ description: event.target.value })}
           placeholder="Describe what a successful response includes."
           rows={3}
-          className="resize-none text-[10.5px]"
+          className="resize-none text-[10px]"
         />
       </FieldGroup>
     </div>
@@ -1258,7 +1253,7 @@ function OutputSectionEditor({
           value={section.label}
           onChange={(event) => updateSection({ label: event.target.value })}
           placeholder="Section label"
-          className="h-8 text-[11.5px] font-medium"
+          className="h-8 text-[10.75px] font-medium"
         />
       </FieldGroup>
       <FieldGroup label="Section ID">
@@ -1266,7 +1261,7 @@ function OutputSectionEditor({
           value={section.id}
           onChange={(event) => updateSection({ id: event.target.value })}
           placeholder="section_id"
-          className="h-8 font-mono text-[10.5px]"
+          className="h-8 font-mono text-[10px]"
         />
       </FieldGroup>
       <FieldGroup label="Emphasis">
@@ -1287,7 +1282,7 @@ function OutputSectionEditor({
           onChange={(event) => updateSection({ description: event.target.value })}
           placeholder="What goes in this section?"
           rows={3}
-          className="resize-none text-[10.5px]"
+          className="resize-none text-[10px]"
         />
       </FieldGroup>
       <RemoveRow onRemove={() => removeNode(nodeId)} label="Remove section" />

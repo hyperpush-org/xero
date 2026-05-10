@@ -3209,7 +3209,6 @@ fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
         "debug" => RuntimeAgentIdDto::Debug,
         "crawl" => RuntimeAgentIdDto::Crawl,
         "agent_create" => RuntimeAgentIdDto::AgentCreate,
-        "test" => RuntimeAgentIdDto::Test,
         _ => RuntimeAgentIdDto::Ask,
     }
 }

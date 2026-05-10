@@ -1419,7 +1419,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         CHECK (short_label <> ''),
         CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
         CHECK (lifecycle_state IN ('draft', 'valid', 'active', 'archived', 'blocked')),
-        CHECK (base_capability_profile IN ('observe_only', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder', 'harness_test'))
+        CHECK (base_capability_profile IN ('observe_only', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder'))
     );
 
     CREATE TABLE IF NOT EXISTS agent_definition_versions (
@@ -1531,8 +1531,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
         ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
         ('crawl', 1, 'Crawl', 'Crawl', 'Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.', 'built_in', 'active', 'repository_recon', '2026-05-06T00:00:00Z'),
-        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z'),
-        ('test', 1, 'Test', 'Test', 'Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.', 'built_in', 'active', 'harness_test', '2026-05-01T00:00:00Z');
+        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
 
     INSERT OR IGNORE INTO agent_definition_versions (
         definition_id,
@@ -1547,8 +1546,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
         ('crawl', 1, '{"schema":"xero.agent_definition.v1","id":"crawl","version":1,"displayName":"Crawl","shortLabel":"Crawl","description":"Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.","taskPurpose":"Read brownfield repository context and produce a structured crawl report for durable project memory.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"repository_recon","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"crawl","toolPolicy":"repository_recon","outputContract":"crawl_report","workflowContract":"Map the brownfield repository without mutating files or app state; use manifests, instructions, workspace index, safe git metadata, and read-only discovery.","finalResponseContract":"Produce a short summary plus a valid JSON crawl report payload using schema xero.project_crawl.report.v1.","projectDataPolicy":{"required":true,"recordKinds":["project_fact","constraint","finding","verification","artifact","context_note","diagnostic","question"],"structuredSchemas":["xero.project_record.v1","xero.project_crawl.report.v1","xero.project_crawl.project_overview.v1","xero.project_crawl.tech_stack.v1","xero.project_crawl.command_map.v1","xero.project_crawl.test_map.v1","xero.project_crawl.architecture_map.v1","xero.project_crawl.hotspots.v1","xero.project_crawl.constraints.v1","xero.project_crawl.unknowns.v1","xero.project_crawl.freshness.v1"],"unstructuredScopes":["answer_note","session_summary","artifact_excerpt","troubleshooting_note"],"memoryCandidateKinds":["project_fact","decision","session_summary","troubleshooting"]}}', '{"status":"valid","source":"seed"}', '2026-05-06T00:00:00Z'),
-        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
-        ('test', 1, '{"schema":"xero.agent_definition.v1","id":"test","version":1,"displayName":"Test","shortLabel":"Test","description":"Run the dev harness through the normal owned-agent conversation, provider, tool, stream, and persistence path.","taskPurpose":"Trigger and report a deterministic internal harness validation run instead of fulfilling the user prompt as a normal task.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"harness_test","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"harness_test","toolPolicy":"harness_test","outputContract":"harness_test_report","workflowContract":"Use the built-in Xero harness runtime contract for this agent.","finalResponseContract":"Produce the built-in harness test report.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","plan","finding","verification","question","artifact","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1","xero.harness_test_report.v1"],"unstructuredScopes":["answer_note","session_summary","artifact_excerpt","troubleshooting_note"],"memoryCandidateKinds":["project_fact","decision","session_summary","troubleshooting"]}}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create"}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
 
     CREATE TABLE IF NOT EXISTS runtime_runs (
         project_id TEXT NOT NULL,
@@ -3639,66 +3637,8 @@ mod tests {
                     "active".into(),
                     "planning".into(),
                 ),
-                (
-                    "test".into(),
-                    1,
-                    "Test".into(),
-                    "Test".into(),
-                    "built_in".into(),
-                    "active".into(),
-                    "harness_test".into(),
-                ),
             ],
             "fresh project databases should seed every built-in agent definition"
-        );
-
-        let test_snapshot = connection
-            .query_row(
-                r#"
-                SELECT
-                    json_extract(snapshot_json, '$.id'),
-                    json_extract(snapshot_json, '$.displayName'),
-                    json_extract(snapshot_json, '$.scope'),
-                    json_extract(snapshot_json, '$.baseCapabilityProfile'),
-                    json_extract(snapshot_json, '$.defaultApprovalMode'),
-                    json_extract(snapshot_json, '$.promptPolicy'),
-                    json_extract(snapshot_json, '$.toolPolicy'),
-                    json_extract(snapshot_json, '$.outputContract'),
-                    json_extract(validation_report_json, '$.source')
-                FROM agent_definition_versions
-                WHERE definition_id = 'test'
-                  AND version = 1
-                "#,
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, String>(8)?,
-                    ))
-                },
-            )
-            .expect("load test agent definition version snapshot");
-
-        assert_eq!(
-            test_snapshot,
-            (
-                "test".into(),
-                "Test".into(),
-                "built_in".into(),
-                "harness_test".into(),
-                "suggest".into(),
-                "harness_test".into(),
-                "harness_test".into(),
-                "harness_test_report".into(),
-                "seed".into(),
-            )
         );
 
         let plan_snapshot = connection

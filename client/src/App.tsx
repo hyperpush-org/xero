@@ -23,6 +23,7 @@ import { ProjectLoadErrorState } from '@/components/xero/project-load-error-stat
 import { PhaseView } from '@/components/xero/phase-view'
 import { ProjectAddDialog } from '@/components/xero/project-add-dialog'
 import { ProjectRail } from '@/components/xero/project-rail'
+import { UpdateScreen } from '@/components/xero/update-screen'
 import { XeroShell, type PlatformVariant, type SurfacePreloadTarget } from '@/components/xero/shell'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import type { StatusFooterProps } from '@/components/xero/status-footer'
@@ -70,6 +71,7 @@ import {
   type AgentPaneView,
   type RefreshSource,
 } from '@/src/features/xero/use-xero-desktop-state'
+import { useForcedAppUpdate } from '@/src/features/updates/use-forced-app-update'
 import {
   clearProjectSelectionPreview,
   previewProjectSelection,
@@ -3023,6 +3025,36 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
 }
 
+function ForcedUpdateGate({ children }: { children: ReactNode }) {
+  const update = useForcedAppUpdate()
+
+  if (update.canContinue) {
+    return <>{children}</>
+  }
+
+  const blockingStatus =
+    update.status === 'checking' ||
+    update.status === 'downloading' ||
+    update.status === 'installing' ||
+    update.status === 'error'
+      ? update.status
+      : 'checking'
+
+  return (
+    <UpdateScreen
+      status={blockingStatus}
+      percent={update.progress.percent}
+      version={update.version}
+      error={update.error}
+      onRetry={() => void update.retry()}
+    />
+  )
+}
+
 export default function App() {
-  return <XeroApp />
+  return (
+    <ForcedUpdateGate>
+      <XeroApp />
+    </ForcedUpdateGate>
+  )
 }

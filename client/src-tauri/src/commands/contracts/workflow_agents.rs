@@ -664,7 +664,6 @@ pub fn output_contract_label(contract: RuntimeAgentOutputContractDto) -> &'stati
         RuntimeAgentOutputContractDto::EngineeringSummary => "Engineering Summary",
         RuntimeAgentOutputContractDto::DebugSummary => "Debug Summary",
         RuntimeAgentOutputContractDto::AgentDefinitionDraft => "Agent Definition Draft",
-        RuntimeAgentOutputContractDto::HarnessTestReport => "Harness Test Report",
     }
 }
 
@@ -687,9 +686,6 @@ pub fn output_contract_description(contract: RuntimeAgentOutputContractDto) -> &
         }
         RuntimeAgentOutputContractDto::AgentDefinitionDraft => {
             "Reviewable agent-definition draft with capabilities, safety limits, validation diagnostics, and persisted version on activation."
-        }
-        RuntimeAgentOutputContractDto::HarnessTestReport => {
-            "Deterministic Test-agent harness validation report compared against the canonical manifest."
         }
     }
 }

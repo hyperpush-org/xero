@@ -240,10 +240,7 @@ export function buildSnapshotFromGraph(
     headerDto.scope === 'global_custom' ? 'global_custom' : 'project_custom'
   )
 
-  const baseCapabilityProfile =
-    headerDto.baseCapabilityProfile === 'harness_test'
-      ? 'observe_only'
-      : headerDto.baseCapabilityProfile
+  const baseCapabilityProfile = headerDto.baseCapabilityProfile
 
   // allowedApprovalModes must always include 'suggest' (validator requirement).
   // Modes higher than 'suggest' are gated by the base profile elsewhere.

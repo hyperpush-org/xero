@@ -75,6 +75,7 @@ import {
   decodeAgentGraphNodeId,
   deriveAdvancedFromDetail,
   emptyInferredAdvanced,
+  getHandleDragRole,
   humanizeIdentifier,
   inferAdvancedFromConnections,
   lifecycleEventLabel,
@@ -97,6 +98,7 @@ import type { CanvasPaletteKind } from './canvas-palette'
 import { DropPicker } from './drop-picker'
 import {
   applyEdgeValidationClasses,
+  isEdgeAllowed,
   validateEdges,
   validateStructure,
 } from './edge-validation'
@@ -147,6 +149,7 @@ const FIT_VIEW_OPTIONS = { padding: 0.16, includeHiddenNodes: false } as const
 const FIT_VIEW_TRANSITION_MS = 420
 const CONTROL_ZOOM_TRANSITION_MS = 180
 const CANVAS_CONTROL_ICON_CLASS = 'h-[18px] w-[18px]'
+const PROPERTIES_PANEL_FOCUS_FOOTPRINT_PX = 320
 // Initial authoring can mount while the agent dock is opening; allow a couple
 // of measured-size corrections without turning every later resize into a refit.
 const CREATE_MODE_INITIAL_FIT_MAX_PASSES = 3
@@ -610,6 +613,32 @@ function nodePositionForViewportBounds(node: Node): XYPosition {
   return internals.positionAbsolute ?? internals.internals?.positionAbsolute ?? node.position
 }
 
+function nodeAbsolutePositionFromList(
+  node: Node,
+  nodesById: ReadonlyMap<string, Node>,
+  visited = new Set<string>(),
+): XYPosition {
+  const internals = node as Node & {
+    internals?: { positionAbsolute?: XYPosition }
+    positionAbsolute?: XYPosition
+  }
+  const absolute = internals.positionAbsolute ?? internals.internals?.positionAbsolute
+  if (absolute) return absolute
+
+  const parentId = node.parentId
+  if (!parentId || visited.has(node.id)) return node.position
+
+  const parent = nodesById.get(parentId)
+  if (!parent) return node.position
+
+  visited.add(node.id)
+  const parentPosition = nodeAbsolutePositionFromList(parent, nodesById, visited)
+  return {
+    x: parentPosition.x + node.position.x,
+    y: parentPosition.y + node.position.y,
+  }
+}
+
 function nodeSizeForViewportBounds(node: Node): NodeSize {
   const fallback =
     node.type === 'lane-label'
@@ -651,6 +680,22 @@ function visibleNodeBounds(nodes: readonly Node[]): NodeViewportBounds | null {
     y: minY,
     width: Math.max(1, maxX - minX),
     height: Math.max(1, maxY - minY),
+  }
+}
+
+export function selectedNodeFocusCenter(
+  node: Node,
+  nodes: readonly Node[],
+  panelFootprintPx: number,
+  focusZoom: number,
+): XYPosition {
+  const nodesById = new Map(nodes.map((entry) => [entry.id, entry]))
+  const position = nodeAbsolutePositionFromList(node, nodesById)
+  const size = nodeSizeForViewportBounds(node)
+  const screenOffset = panelFootprintPx / 2 / focusZoom
+  return {
+    x: position.x + size.width / 2 - screenOffset,
+    y: position.y + size.height / 2,
   }
 }
 
@@ -3014,16 +3059,33 @@ function AgentVisualizationInner({
   const onEditingConnectStart = useCallback<
     NonNullable<React.ComponentProps<typeof ReactFlow>['onConnectStart']>
   >((_event, params) => {
+    const root = canvasRef.current
     if (!params.nodeId) {
       connectAttemptRef.current = null
+      root?.removeAttribute('data-drag-role')
+      root?.removeAttribute('data-drag-source-kind')
       return
     }
+    const handleType = (params.handleType as 'source' | 'target') ?? 'source'
     connectAttemptRef.current = {
       sourceId: params.nodeId,
       sourceHandle: params.handleId ?? null,
-      handleType: (params.handleType as 'source' | 'target') ?? 'source',
+      handleType,
     }
-  }, [])
+    // Mark the canvas root so CSS can branch on the active drag's role and
+    // source kind. This drives the truthful highlighting: picker drags
+    // (header.tool, header.skills, etc.) suppress all target highlights;
+    // connection drags fall back to React Flow's `valid` class on
+    // legitimate target handles.
+    const sourceNode = reactFlowForDrop.getNode(params.nodeId)
+    const role = getHandleDragRole(sourceNode?.type, params.handleId, handleType)
+    root?.setAttribute('data-drag-role', role)
+    if (sourceNode?.type) {
+      root?.setAttribute('data-drag-source-kind', sourceNode.type)
+    } else {
+      root?.removeAttribute('data-drag-source-kind')
+    }
+  }, [reactFlowForDrop])
 
   const onEditingConnectEnd = useCallback<
     NonNullable<React.ComponentProps<typeof ReactFlow>['onConnectEnd']>
@@ -3031,6 +3093,9 @@ function AgentVisualizationInner({
     (event) => {
       const attempt = connectAttemptRef.current
       connectAttemptRef.current = null
+      const root = canvasRef.current
+      root?.removeAttribute('data-drag-role')
+      root?.removeAttribute('data-drag-source-kind')
       if (!attempt) return
       // React Flow calls onConnect when the drop is on a valid handle, and
       // calls onConnectEnd in BOTH cases (handle drop + empty drop). We only
@@ -3120,6 +3185,31 @@ function AgentVisualizationInner({
       }
     },
     [addOutputSectionFromDrag, addPromptFromDrag, reactFlowForDrop],
+  )
+
+  // Gate which target handles light up during a drag. React Flow adds the
+  // `valid` class only to handles where this returns true — so picker-role
+  // sources (header.tools, header.skills, etc.) keep every other handle
+  // dark, and connection-role sources only light up handles that would form
+  // a legitimate edge per ALLOWED_PAIRS.
+  const isValidEditingConnection = useCallback<
+    NonNullable<React.ComponentProps<typeof ReactFlow>['isValidConnection']>
+  >(
+    (conn) => {
+      if (!conn.source || !conn.target) return false
+      const sourceNode = reactFlowForDrop.getNode(conn.source)
+      const targetNode = reactFlowForDrop.getNode(conn.target)
+      if (!sourceNode || !targetNode) return false
+      const sourceRole = getHandleDragRole(sourceNode.type, conn.sourceHandle, 'source')
+      if (sourceRole === 'picker') return false
+      const targetRole = getHandleDragRole(targetNode.type, conn.targetHandle, 'target')
+      if (targetRole === 'picker') return false
+      return isEdgeAllowed(
+        sourceNode.type as AgentGraphNodeKind,
+        targetNode.type as AgentGraphNodeKind,
+      )
+    },
+    [reactFlowForDrop],
   )
 
   // Validation runs on the computed (layout-derived) nodes/edges in editing
@@ -3417,6 +3507,7 @@ function AgentVisualizationInner({
   const createModeFitKey = createModeFitNodeBounds
     ? `${canvasBoundsKey}:${viewportBoundsKey(createModeFitNodeBounds)}`
     : ''
+  const createModeHasSelection = editing && nodes.some((node) => node.selected)
   const initialCreateFitKeyRef = useRef<string | null>(null)
   const initialCreateFitCanvasBoundsKeyRef = useRef<string | null>(null)
   const initialCreateFitPassCountRef = useRef(0)
@@ -3472,6 +3563,9 @@ function AgentVisualizationInner({
       initialCreateFitKeyRef.current = null
       initialCreateFitCanvasBoundsKeyRef.current = null
       initialCreateFitPassCountRef.current = 0
+      return
+    }
+    if (createModeHasSelection) {
       return
     }
     const canvasBoundsChanged =
@@ -3535,6 +3629,7 @@ function AgentVisualizationInner({
     canvasBoundsKey,
     createModeFitKey,
     createModeFitNodeBounds,
+    createModeHasSelection,
     editing,
     hasDetail,
     mode,
@@ -3681,14 +3776,14 @@ function AgentVisualizationInner({
     const fire = () => {
       const target = nodesRef.current.find((node) => node.id === selectedAuthoringNodeId)
       if (!target) return
-      const width = target.measured?.width ?? target.width ?? 240
-      const height = target.measured?.height ?? target.height ?? 120
       const focusZoom = 1.05
-      const PANEL_FOOTPRINT_PX = 280
-      const screenOffset = PANEL_FOOTPRINT_PX / 2 / focusZoom
-      const centerX = target.position.x + width / 2 - screenOffset
-      const centerY = target.position.y + height / 2
-      void reactFlow.setCenter(centerX, centerY, { duration: 400, zoom: focusZoom })
+      const center = selectedNodeFocusCenter(
+        target,
+        nodesRef.current,
+        PROPERTIES_PANEL_FOCUS_FOOTPRINT_PX,
+        focusZoom,
+      )
+      void reactFlow.setCenter(center.x, center.y, { duration: 400, zoom: focusZoom })
     }
 
     let cancelled = false
@@ -3755,6 +3850,7 @@ function AgentVisualizationInner({
             onConnect={editing ? handleEditingConnect : undefined}
             onConnectStart={editing ? onEditingConnectStart : undefined}
             onConnectEnd={editing ? onEditingConnectEnd : undefined}
+            isValidConnection={editing ? isValidEditingConnection : undefined}
             nodeTypes={NODE_TYPES}
             edgeTypes={EDGE_TYPES}
             nodesDraggable={finalNodesDraggable}

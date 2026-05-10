@@ -57,7 +57,6 @@ export const agentDefinitionBaseCapabilityProfileSchema = z.enum([
   'engineering',
   'debugging',
   'agent_builder',
-  'harness_test',
 ])
 export type AgentDefinitionBaseCapabilityProfileDto = z.infer<
   typeof agentDefinitionBaseCapabilityProfileSchema
@@ -85,7 +84,6 @@ export const customAgentOutputContractSchema = z.enum([
   'engineering_summary',
   'debug_summary',
   'agent_definition_draft',
-  'harness_test_report',
 ])
 export const customAgentApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
 export const customAgentSubagentRoleSchema = z.enum([
@@ -330,7 +328,7 @@ export const customAgentConsumedArtifactSchema = z
     id: nonEmptyTextSchema,
     label: nonEmptyTextSchema,
     description: nonEmptyTextSchema,
-    sourceAgent: z.enum(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create', 'test']),
+    sourceAgent: z.enum(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create']),
     contract: customAgentOutputContractSchema,
     sections: trimmedTextArraySchema,
     required: z.boolean(),
@@ -587,7 +585,7 @@ export const canonicalCustomAgentDefinitionBaseSchema = z
     taskPurpose: z.string(),
     scope: z.enum(['global_custom', 'project_custom']),
     lifecycleState: agentDefinitionLifecycleStateSchema,
-    baseCapabilityProfile: agentDefinitionBaseCapabilityProfileSchema.exclude(['harness_test']),
+    baseCapabilityProfile: agentDefinitionBaseCapabilityProfileSchema,
     defaultApprovalMode: customAgentApprovalModeSchema,
     allowedApprovalModes: z.array(customAgentApprovalModeSchema).min(1),
     toolPolicy: z.union([
@@ -1541,7 +1539,5 @@ export function getAgentDefinitionBaseCapabilityLabel(
       return 'Debugging'
     case 'agent_builder':
       return 'Agent Builder'
-    case 'harness_test':
-      return 'Harness Test'
   }
 }

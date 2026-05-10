@@ -13,6 +13,12 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "dialog:default",
+    "process:allow-restart",
+    "updater:default",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install",
+    "updater:allow-download-and-install",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

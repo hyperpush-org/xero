@@ -2102,13 +2102,6 @@ fn agent_specific_handoff(
             "validationStatus": "available_through_agent_definition_tool",
             "followUpInformationNeeded": [],
         }),
-        RuntimeAgentIdDto::Test => json!({
-            "harnessTrigger": handoff_preview(pending_prompt, 700, redaction_count),
-            "stepOutcomes": completed_work,
-            "scratchChanges": recent_file_changes,
-            "verificationEvidence": verification_status,
-            "followUpInformationNeeded": [],
-        }),
     }
 }
 

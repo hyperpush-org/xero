@@ -282,30 +282,6 @@ const AGENT_DEFINITION_DRAFT_SECTIONS: &[OutputSectionEntry] = &[
     },
 ];
 
-const HARNESS_TEST_REPORT_SECTIONS: &[OutputSectionEntry] = &[
-    OutputSectionEntry {
-        id: "manifest_diff",
-        label: "Manifest Diff",
-        description: "Where the harness execution diverged from the canonical manifest.",
-        emphasis: AgentOutputSectionEmphasisDto::Core,
-        produced_by_tools: &[],
-    },
-    OutputSectionEntry {
-        id: "verification",
-        label: "Verification Result",
-        description: "Pass / fail per scripted step, with stop reason on failure.",
-        emphasis: AgentOutputSectionEmphasisDto::Core,
-        produced_by_tools: &["Bash"],
-    },
-    OutputSectionEntry {
-        id: "artifacts",
-        label: "Artifacts",
-        description: "Workspace heads and code-history rows the harness produced.",
-        emphasis: AgentOutputSectionEmphasisDto::Standard,
-        produced_by_tools: &[],
-    },
-];
-
 pub const fn output_sections_for(
     contract: RuntimeAgentOutputContractDto,
 ) -> &'static [OutputSectionEntry] {
@@ -316,7 +292,6 @@ pub const fn output_sections_for(
         RuntimeAgentOutputContractDto::EngineeringSummary => ENGINEERING_SUMMARY_SECTIONS,
         RuntimeAgentOutputContractDto::DebugSummary => DEBUG_SUMMARY_SECTIONS,
         RuntimeAgentOutputContractDto::AgentDefinitionDraft => AGENT_DEFINITION_DRAFT_SECTIONS,
-        RuntimeAgentOutputContractDto::HarnessTestReport => HARNESS_TEST_REPORT_SECTIONS,
     }
 }
 
@@ -355,7 +330,6 @@ mod tests {
             RuntimeAgentOutputContractDto::EngineeringSummary,
             RuntimeAgentOutputContractDto::DebugSummary,
             RuntimeAgentOutputContractDto::AgentDefinitionDraft,
-            RuntimeAgentOutputContractDto::HarnessTestReport,
         ] {
             let sections = output_sections_for(contract);
             assert!(

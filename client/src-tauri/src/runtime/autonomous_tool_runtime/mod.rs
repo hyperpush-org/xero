@@ -331,7 +331,6 @@ const TOOL_ACCESS_PROJECT_CONTEXT_WRITE_TOOLS: &[&str] = &[
 ];
 const TOOL_ACCESS_SKILL_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_SKILL];
 const TOOL_ACCESS_AGENT_DEFINITION_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_AGENT_DEFINITION];
-const TOOL_ACCESS_HARNESS_RUNNER_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_HARNESS_RUNNER];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ToolAccessGroupDefinition {
@@ -369,12 +368,6 @@ const TOOL_ACCESS_GROUP_DEFINITIONS: &[ToolAccessGroupDefinition] = &[
         description: "Always-on repository inspection, git status, tool discovery, and planning tools.",
         tools: TOOL_ACCESS_CORE_TOOLS,
         risk_class: "observe",
-    },
-    ToolAccessGroupDefinition {
-        name: "harness_runner",
-        description: "Deterministic Test-agent manifest export and report comparison.",
-        tools: TOOL_ACCESS_HARNESS_RUNNER_TOOLS,
-        risk_class: "harness_test",
     },
     ToolAccessGroupDefinition {
         name: "mutation",
@@ -1516,13 +1509,13 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
 
 pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &str) -> bool {
     if tool_name == AUTONOMOUS_TOOL_HARNESS_RUNNER {
-        return agent_id == RuntimeAgentIdDto::Test;
+        return false;
     }
     if tool_name == AUTONOMOUS_TOOL_AGENT_DEFINITION {
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
     match agent_id {
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Test => true,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
         RuntimeAgentIdDto::Plan => TOOL_ACCESS_PLANNING_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Crawl => TOOL_ACCESS_REPOSITORY_RECON_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
@@ -1562,9 +1555,6 @@ fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::AgentCreate, tool_name) {
         agents.push(RuntimeAgentIdDto::AgentCreate.as_str());
-    }
-    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Test, tool_name) {
-        agents.push(RuntimeAgentIdDto::Test.as_str());
     }
     agents
 }
@@ -1617,18 +1607,6 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &["git", "diff", "changes", "review"],
             &["scope"],
             &["Review unstaged changes before final summary."],
-            "observe",
-        ),
-        catalog_entry(
-            AUTONOMOUS_TOOL_HARNESS_RUNNER,
-            "harness_runner",
-            "Run deterministic Test-agent harness manifest checks and compare model-driven reports.",
-            &["harness", "test_agent", "manifest", "deterministic", "ci"],
-            &["action", "finalReport"],
-            &[
-                "Export the canonical Test-agent manifest before exercising tools.",
-                "Compare a drafted Harness Test Report against the machine manifest.",
-            ],
             "observe",
         ),
         catalog_entry(
