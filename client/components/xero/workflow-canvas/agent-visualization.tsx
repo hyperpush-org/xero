@@ -48,6 +48,7 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import type {
+  AgentDefinitionPreviewResponseDto,
   AgentDefinitionValidationDiagnosticDto,
   AgentDefinitionWriteResponseDto,
 } from '@/src/lib/xero-model/agent-definition'
@@ -108,6 +109,7 @@ import {
 } from './expansion-context'
 import { TriggerEdge } from './edges/trigger-edge'
 import { layoutAgentGraphByCategory, type NodeSize } from './layout'
+import { EffectiveRuntimePanel } from './effective-runtime-panel'
 import { NodeDetailsPanel } from './node-details-panel'
 import { NodePropertiesPanel } from './node-properties-panel'
 import { AgentHeaderNode } from './nodes/agent-header-node'
@@ -308,6 +310,14 @@ interface AgentVisualizationProps {
   // so the surrounding chrome can react (e.g. App.tsx auto-collapses any open
   // sidebar so the panel has the canvas to itself, then reopens it on close).
   onSelectedNodeChange?: (hasSelection: boolean) => void
+  // When provided, the canvas exposes an "Effective runtime" affordance that
+  // builds a snapshot from the current displayed (or edited) graph and runs it
+  // through the parent's preview adapter. The panel renders the result in
+  // place. When omitted, the affordance is hidden.
+  onPreviewEffectiveRuntime?: (params: {
+    snapshot: Record<string, unknown>
+    definitionId: string | null
+  }) => Promise<AgentDefinitionPreviewResponseDto>
 }
 
 interface FocusIndex {
@@ -1398,6 +1408,7 @@ function AgentVisualizationInner({
   onReadProjectUiState,
   onWriteProjectUiState,
   onSelectedNodeChange,
+  onPreviewEffectiveRuntime,
 }: AgentVisualizationProps) {
   // ============================================================
   // Editing-mode state. Always declared (rules of hooks) but only
@@ -3311,6 +3322,112 @@ function AgentVisualizationInner({
     return inferAdvancedFromConnections(editingDetail)
   }, [editing, editingDetail])
 
+  // ============================================================
+  // Effective-runtime preview state. Snapshots are built from the
+  // currently displayed graph (the same node/edge data the user sees)
+  // so view mode previews the saved active version and edit mode
+  // previews the unsaved canvas. The parent supplies the actual
+  // adapter via onPreviewEffectiveRuntime — the canvas only owns
+  // panel open/loading state and the trigger affordance.
+  // ============================================================
+  const previewEnabled = Boolean(onPreviewEffectiveRuntime)
+  const [effectiveRuntimePanelOpen, setEffectiveRuntimePanelOpen] = useState(false)
+  const [effectiveRuntimePreviewState, setEffectiveRuntimePreviewState] = useState<{
+    loading: boolean
+    errorMessage: string | null
+    preview: AgentDefinitionPreviewResponseDto | null
+  }>({ loading: false, errorMessage: null, preview: null })
+
+  const buildPreviewSnapshot = useCallback((): {
+    snapshot: Record<string, unknown>
+    definitionId: string | null
+  } | null => {
+    try {
+      const initialDefinitionId =
+        editing && editingInitial?.detail.ref.kind === 'custom'
+          ? editingInitial.detail.ref.definitionId
+          : !editing && detail?.ref.kind === 'custom'
+            ? detail.ref.definitionId
+            : null
+      const attachedSkills = editing
+        ? (editingDetail?.attachedSkills ?? [])
+        : (detail?.attachedSkills ?? [])
+      const { snapshot, definitionId } = buildSnapshotFromGraph(
+        computedNodes as unknown as AgentGraphNode[],
+        computedEdges,
+        {
+          initialDefinitionId,
+          attachedSkills,
+        },
+      )
+      return { snapshot, definitionId }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setEffectiveRuntimePreviewState({
+        loading: false,
+        errorMessage: `Could not build snapshot from canvas: ${message}`,
+        preview: null,
+      })
+      return null
+    }
+  }, [
+    computedEdges,
+    computedNodes,
+    detail,
+    editing,
+    editingDetail,
+    editingInitial,
+  ])
+
+  const refreshEffectiveRuntimePreview = useCallback(async () => {
+    if (!onPreviewEffectiveRuntime) return
+    const built = buildPreviewSnapshot()
+    if (!built) return
+    setEffectiveRuntimePreviewState((prev) => ({
+      loading: true,
+      errorMessage: null,
+      preview: prev.preview,
+    }))
+    try {
+      const preview = await onPreviewEffectiveRuntime({
+        snapshot: built.snapshot,
+        definitionId: built.definitionId,
+      })
+      setEffectiveRuntimePreviewState({ loading: false, errorMessage: null, preview })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setEffectiveRuntimePreviewState((prev) => ({
+        loading: false,
+        errorMessage: message,
+        preview: prev.preview,
+      }))
+    }
+  }, [buildPreviewSnapshot, onPreviewEffectiveRuntime])
+
+  const handleToggleEffectiveRuntimePanel = useCallback(() => {
+    setEffectiveRuntimePanelOpen((prev) => {
+      const next = !prev
+      if (next) {
+        // Auto-fetch on open if we don't already have a preview.
+        if (!effectiveRuntimePreviewState.preview) {
+          void refreshEffectiveRuntimePreview()
+        }
+      }
+      return next
+    })
+  }, [effectiveRuntimePreviewState.preview, refreshEffectiveRuntimePreview])
+
+  const handleCloseEffectiveRuntimePanel = useCallback(() => {
+    setEffectiveRuntimePanelOpen(false)
+  }, [])
+
+  const effectiveRuntimeAgentLabel = useMemo(() => {
+    if (editing) {
+      return editingDetail?.header.displayName ?? 'Unsaved canvas'
+    }
+    return detail?.header.displayName ?? 'Agent'
+  }, [detail, editing, editingDetail])
+
   const canvasModeContextValue = useMemo<CanvasModeContextValue>(
     () =>
       editing
@@ -3988,6 +4105,36 @@ function AgentVisualizationInner({
               onClose={clearAuthoringSelection}
             />
           )}
+          {previewEnabled ? (
+            <>
+              <button
+                type="button"
+                aria-label={
+                  effectiveRuntimePanelOpen
+                    ? 'Close effective runtime panel'
+                    : 'Open effective runtime panel'
+                }
+                aria-pressed={effectiveRuntimePanelOpen}
+                onClick={handleToggleEffectiveRuntimePanel}
+                title="Effective runtime"
+                className={`agent-visualization__effective-runtime-toggle pointer-events-auto absolute right-2.5 bottom-2.5 z-20 inline-flex h-7 items-center gap-1.5 rounded-md border border-border/50 bg-card/90 px-2 text-[11px] font-medium text-foreground/80 shadow-[0_4px_14px_-6px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:text-foreground ${
+                  effectiveRuntimePanelOpen ? 'border-primary/40 text-primary' : ''
+                }`}
+              >
+                <span aria-hidden="true">⌘</span>
+                <span>Effective runtime</span>
+              </button>
+              <EffectiveRuntimePanel
+                open={effectiveRuntimePanelOpen}
+                onClose={handleCloseEffectiveRuntimePanel}
+                agentLabel={effectiveRuntimeAgentLabel}
+                loading={effectiveRuntimePreviewState.loading}
+                errorMessage={effectiveRuntimePreviewState.errorMessage}
+                preview={effectiveRuntimePreviewState.preview}
+                onRefreshActive={refreshEffectiveRuntimePreview}
+              />
+            </>
+          ) : null}
         </div>
       </AgentCanvasExpansionContext.Provider>
     </CanvasModeProvider>

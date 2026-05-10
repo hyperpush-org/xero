@@ -1585,6 +1585,7 @@ mod tests {
             description: "Test descriptor.".into(),
             input_schema: json!({ "type": "object" }),
             capability_tags: Vec::new(),
+            application_metadata: Default::default(),
             effect_class,
             mutability,
             sandbox_requirement,

@@ -1,5 +1,4 @@
 use super::*;
-use rusqlite::{params, Connection};
 
 const REQUIRED_GOLDEN_SURFACES: &[&str] = &[
     "prompt_assembly",
@@ -74,9 +73,13 @@ const REQUIRED_NO_REDESCRIPTION_CONTINUITY_SURFACES: &[NoRedescriptionContinuity
     NoRedescriptionContinuitySurface::SourceCitation,
 ];
 
+#[allow(dead_code)]
 const TEST_AGENT_CI_PROJECT_ID: &str = "test-agent-ci-project";
+#[allow(dead_code)]
 const TEST_AGENT_CI_RUN_ID: &str = "test-agent-ci-run";
+#[allow(dead_code)]
 const TEST_AGENT_CI_SESSION_ID: &str = project_store::DEFAULT_AGENT_SESSION_ID;
+#[allow(dead_code)]
 const TEST_AGENT_CI_REQUIRED_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_HARNESS_RUNNER,
     AUTONOMOUS_TOOL_TOOL_SEARCH,
@@ -1118,7 +1121,9 @@ pub fn run_test_agent_ci_eval(repo_root: &Path) -> TestAgentCiEvalReport {
     TestAgentCiEvalReport {
         suite_id: "test_agent_phase_8_ci_mode_removed".into(),
         passed: true,
-        summary: "The built-in Test agent type has been removed; no Test-agent CI runtime is available.".into(),
+        summary:
+            "The built-in Test agent type has been removed; no Test-agent CI runtime is available."
+                .into(),
         required_tools: Vec::new(),
         active_tools: Vec::new(),
         scripted_tool_calls: Vec::new(),
@@ -1130,251 +1135,259 @@ pub fn run_test_agent_ci_eval(repo_root: &Path) -> TestAgentCiEvalReport {
     }
 }
 
-struct TestAgentCiRunEvidence {
-    active_tools: Vec<String>,
-    scripted_tool_calls: Vec<AgentToolCall>,
-    snapshot: AgentRunSnapshotRecord,
-    final_report: String,
-}
+#[allow(dead_code)]
+mod removed_test_agent_ci_runtime {
+    use super::*;
+    use rusqlite::{params, Connection};
 
-struct TestAgentCiFixture {
-    _tempdir: tempfile::TempDir,
-    repo_root: PathBuf,
-    project_id: String,
-    controls: RuntimeRunControlStateDto,
-    tool_runtime: AutonomousToolRuntime,
-    messages: Vec<ProviderMessage>,
-}
-
-struct TestAgentCiScriptedProvider;
-
-impl ProviderAdapter for TestAgentCiScriptedProvider {
-    fn provider_id(&self) -> &str {
-        OPENAI_CODEX_PROVIDER_ID
+    struct TestAgentCiRunEvidence {
+        active_tools: Vec<String>,
+        scripted_tool_calls: Vec<AgentToolCall>,
+        snapshot: AgentRunSnapshotRecord,
+        final_report: String,
     }
 
-    fn model_id(&self) -> &str {
-        OPENAI_CODEX_PROVIDER_ID
+    struct TestAgentCiFixture {
+        _tempdir: tempfile::TempDir,
+        repo_root: PathBuf,
+        project_id: String,
+        controls: RuntimeRunControlStateDto,
+        tool_runtime: AutonomousToolRuntime,
+        messages: Vec<ProviderMessage>,
     }
 
-    fn stream_turn(
-        &self,
-        request: &ProviderTurnRequest,
-        emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
-    ) -> CommandResult<ProviderTurnOutcome> {
-        emit(ProviderStreamEvent::ReasoningSummary(format!(
-            "CI scripted Test-agent harness turn {}",
-            request.turn_index
-        )))?;
+    struct TestAgentCiScriptedProvider;
 
-        if let Some(tool_call) = test_agent_ci_scripted_tool_call_for_turn(request.turn_index) {
-            let message = format!(
-                "CI Test-agent harness step {} dispatches `{}` through Tool Registry V2.",
-                request.turn_index + 1,
-                tool_call.tool_name
-            );
+    impl ProviderAdapter for TestAgentCiScriptedProvider {
+        fn provider_id(&self) -> &str {
+            OPENAI_CODEX_PROVIDER_ID
+        }
+
+        fn model_id(&self) -> &str {
+            OPENAI_CODEX_PROVIDER_ID
+        }
+
+        fn stream_turn(
+            &self,
+            request: &ProviderTurnRequest,
+            emit: &mut dyn FnMut(ProviderStreamEvent) -> CommandResult<()>,
+        ) -> CommandResult<ProviderTurnOutcome> {
+            emit(ProviderStreamEvent::ReasoningSummary(format!(
+                "CI scripted Test-agent harness turn {}",
+                request.turn_index
+            )))?;
+
+            if let Some(tool_call) = test_agent_ci_scripted_tool_call_for_turn(request.turn_index) {
+                let message = format!(
+                    "CI Test-agent harness step {} dispatches `{}` through Tool Registry V2.",
+                    request.turn_index + 1,
+                    tool_call.tool_name
+                );
+                emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
+                emit(ProviderStreamEvent::ToolDelta {
+                    tool_call_id: Some(tool_call.tool_call_id.clone()),
+                    tool_name: Some(tool_call.tool_name.clone()),
+                    arguments_delta: tool_call.input.to_string(),
+                })?;
+                return Ok(ProviderTurnOutcome::ToolCalls {
+                    message,
+                    reasoning_content: None,
+                    reasoning_details: None,
+                    tool_calls: vec![tool_call],
+                    usage: Some(ProviderUsage::default()),
+                });
+            }
+
+            let message = test_agent_ci_final_report();
             emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
-            emit(ProviderStreamEvent::ToolDelta {
-                tool_call_id: Some(tool_call.tool_call_id.clone()),
-                tool_name: Some(tool_call.tool_name.clone()),
-                arguments_delta: tool_call.input.to_string(),
-            })?;
-            return Ok(ProviderTurnOutcome::ToolCalls {
+            Ok(ProviderTurnOutcome::Complete {
                 message,
                 reasoning_content: None,
                 reasoning_details: None,
-                tool_calls: vec![tool_call],
                 usage: Some(ProviderUsage::default()),
-            });
+            })
+        }
+    }
+
+    fn run_test_agent_ci_eval_inner(repo_root: &Path) -> CommandResult<TestAgentCiRunEvidence> {
+        let _guard = test_agent_ci_project_state_lock().lock().map_err(|_| {
+            CommandError::system_fault(
+                "test_agent_ci_project_state_lock_failed",
+                "Xero could not lock the Test-agent CI project-state fixture.",
+            )
+        })?;
+        let fixture = create_test_agent_ci_fixture(repo_root)?;
+        let registry = test_agent_ci_registry();
+        let active_tools = registry.descriptor_names().into_iter().collect::<Vec<_>>();
+        let scripted_tool_calls = test_agent_ci_scripted_tool_calls();
+        for tool_call in &scripted_tool_calls {
+            registry.validate_call(tool_call)?;
         }
 
-        let message = test_agent_ci_final_report();
-        emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
-        Ok(ProviderTurnOutcome::Complete {
-            message,
-            reasoning_content: None,
-            reasoning_details: None,
-            usage: Some(ProviderUsage::default()),
+        let provider = TestAgentCiScriptedProvider;
+        drive_provider_loop(
+            &provider,
+            fixture.messages,
+            fixture.controls,
+            registry,
+            &fixture.tool_runtime,
+            &fixture.repo_root,
+            &fixture.project_id,
+            TEST_AGENT_CI_RUN_ID,
+            TEST_AGENT_CI_SESSION_ID,
+            None,
+            &AgentRunCancellationToken::default(),
+        )?;
+
+        let snapshot = project_store::load_agent_run(
+            &fixture.repo_root,
+            &fixture.project_id,
+            TEST_AGENT_CI_RUN_ID,
+        )?;
+        let final_report = snapshot
+            .messages
+            .iter()
+            .rev()
+            .find(|message| {
+                message.role == AgentMessageRole::Assistant
+                    && message.content.contains("# Harness Test Report")
+            })
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+
+        Ok(TestAgentCiRunEvidence {
+            active_tools,
+            scripted_tool_calls,
+            snapshot,
+            final_report,
         })
     }
-}
 
-fn run_test_agent_ci_eval_inner(repo_root: &Path) -> CommandResult<TestAgentCiRunEvidence> {
-    let _guard = test_agent_ci_project_state_lock().lock().map_err(|_| {
-        CommandError::system_fault(
-            "test_agent_ci_project_state_lock_failed",
-            "Xero could not lock the Test-agent CI project-state fixture.",
-        )
-    })?;
-    let fixture = create_test_agent_ci_fixture(repo_root)?;
-    let registry = test_agent_ci_registry();
-    let active_tools = registry.descriptor_names().into_iter().collect::<Vec<_>>();
-    let scripted_tool_calls = test_agent_ci_scripted_tool_calls();
-    for tool_call in &scripted_tool_calls {
-        registry.validate_call(tool_call)?;
+    fn test_agent_ci_project_state_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
     }
 
-    let provider = TestAgentCiScriptedProvider;
-    drive_provider_loop(
-        &provider,
-        fixture.messages,
-        fixture.controls,
-        registry,
-        &fixture.tool_runtime,
-        &fixture.repo_root,
-        &fixture.project_id,
-        TEST_AGENT_CI_RUN_ID,
-        TEST_AGENT_CI_SESSION_ID,
-        None,
-        &AgentRunCancellationToken::default(),
-    )?;
-
-    let snapshot = project_store::load_agent_run(
-        &fixture.repo_root,
-        &fixture.project_id,
-        TEST_AGENT_CI_RUN_ID,
-    )?;
-    let final_report = snapshot
-        .messages
-        .iter()
-        .rev()
-        .find(|message| {
-            message.role == AgentMessageRole::Assistant
-                && message.content.contains("# Harness Test Report")
-        })
-        .map(|message| message.content.clone())
-        .unwrap_or_default();
-
-    Ok(TestAgentCiRunEvidence {
-        active_tools,
-        scripted_tool_calls,
-        snapshot,
-        final_report,
-    })
-}
-
-fn test_agent_ci_project_state_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
-}
-
-fn create_test_agent_ci_fixture(source_repo_root: &Path) -> CommandResult<TestAgentCiFixture> {
-    let tempdir = tempfile::tempdir().map_err(|error| {
-        CommandError::system_fault(
-            "test_agent_ci_tempdir_failed",
-            format!("Xero could not create a temporary Test-agent CI fixture: {error}"),
-        )
-    })?;
-    let repo_root = tempdir.path().join("repo");
-    fs::create_dir_all(&repo_root).map_err(|error| {
-        CommandError::system_fault(
-            "test_agent_ci_fixture_repo_failed",
-            format!(
-                "Xero could not create the Test-agent CI fixture repo at {}: {error}",
-                repo_root.display()
-            ),
-        )
-    })?;
-    let source_plan = source_repo_root.join("TEST_AGENT_IMPLEMENTATION_PLAN.md");
-    let plan_text = fs::read_to_string(source_plan).unwrap_or_else(|_| {
+    fn create_test_agent_ci_fixture(source_repo_root: &Path) -> CommandResult<TestAgentCiFixture> {
+        let tempdir = tempfile::tempdir().map_err(|error| {
+            CommandError::system_fault(
+                "test_agent_ci_tempdir_failed",
+                format!("Xero could not create a temporary Test-agent CI fixture: {error}"),
+            )
+        })?;
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).map_err(|error| {
+            CommandError::system_fault(
+                "test_agent_ci_fixture_repo_failed",
+                format!(
+                    "Xero could not create the Test-agent CI fixture repo at {}: {error}",
+                    repo_root.display()
+                ),
+            )
+        })?;
+        let source_plan = source_repo_root.join("TEST_AGENT_IMPLEMENTATION_PLAN.md");
+        let plan_text = fs::read_to_string(source_plan).unwrap_or_else(|_| {
         "# Test Agent Implementation Plan\n\n## Phase 8: CI Mode\n\nCanonical Tool Test Sequence\n"
             .into()
     });
-    fs::write(
-        repo_root.join("TEST_AGENT_IMPLEMENTATION_PLAN.md"),
-        plan_text,
-    )
-    .map_err(|error| {
-        CommandError::system_fault(
-            "test_agent_ci_fixture_file_failed",
-            format!("Xero could not seed the Test-agent CI fixture file: {error}"),
+        fs::write(
+            repo_root.join("TEST_AGENT_IMPLEMENTATION_PLAN.md"),
+            plan_text,
         )
-    })?;
-
-    create_test_agent_ci_project_database(&repo_root, TEST_AGENT_CI_PROJECT_ID)?;
-
-    let controls_input = test_agent_ci_controls_input();
-    let controls = runtime_controls_from_request(Some(&controls_input));
-    let tool_runtime = AutonomousToolRuntime::new(&repo_root)?;
-    let request = OwnedAgentRunRequest {
-        repo_root: repo_root.clone(),
-        project_id: TEST_AGENT_CI_PROJECT_ID.into(),
-        agent_session_id: TEST_AGENT_CI_SESSION_ID.into(),
-        run_id: TEST_AGENT_CI_RUN_ID.into(),
-        prompt: "Run the built-in Test-agent CI harness.".into(),
-        attachments: Vec::new(),
-        controls: Some(controls_input),
-        tool_runtime: tool_runtime.clone(),
-        provider_config: AgentProviderConfig::Fake,
-        provider_preflight: None,
-    };
-    let snapshot = create_owned_agent_run(&request)?;
-    let messages = provider_messages_from_snapshot(&repo_root, &snapshot)?;
-    let tool_runtime = tool_runtime
-        .with_runtime_run_controls(controls.clone())
-        .with_agent_run_context(
-            TEST_AGENT_CI_PROJECT_ID,
-            TEST_AGENT_CI_SESSION_ID,
-            TEST_AGENT_CI_RUN_ID,
-        );
-
-    Ok(TestAgentCiFixture {
-        _tempdir: tempdir,
-        repo_root,
-        project_id: TEST_AGENT_CI_PROJECT_ID.into(),
-        controls,
-        tool_runtime,
-        messages,
-    })
-}
-
-fn create_test_agent_ci_project_database(repo_root: &Path, project_id: &str) -> CommandResult<()> {
-    crate::db::configure_project_database_paths(
-        &repo_root
-            .parent()
-            .unwrap_or(repo_root)
-            .join("app-data")
-            .join("xero.db"),
-    );
-    let database_path = crate::db::database_path_for_repo(repo_root);
-    fs::create_dir_all(database_path.parent().unwrap_or_else(|| Path::new("."))).map_err(
-        |error| {
+        .map_err(|error| {
             CommandError::system_fault(
-                "test_agent_ci_database_dir_failed",
+                "test_agent_ci_fixture_file_failed",
+                format!("Xero could not seed the Test-agent CI fixture file: {error}"),
+            )
+        })?;
+
+        create_test_agent_ci_project_database(&repo_root, TEST_AGENT_CI_PROJECT_ID)?;
+
+        let controls_input = test_agent_ci_controls_input();
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let tool_runtime = AutonomousToolRuntime::new(&repo_root)?;
+        let request = OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: TEST_AGENT_CI_PROJECT_ID.into(),
+            agent_session_id: TEST_AGENT_CI_SESSION_ID.into(),
+            run_id: TEST_AGENT_CI_RUN_ID.into(),
+            prompt: "Run the built-in Test-agent CI harness.".into(),
+            attachments: Vec::new(),
+            controls: Some(controls_input),
+            tool_runtime: tool_runtime.clone(),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        };
+        let snapshot = create_owned_agent_run(&request)?;
+        let messages = provider_messages_from_snapshot(&repo_root, &snapshot)?;
+        let tool_runtime = tool_runtime
+            .with_runtime_run_controls(controls.clone())
+            .with_agent_run_context(
+                TEST_AGENT_CI_PROJECT_ID,
+                TEST_AGENT_CI_SESSION_ID,
+                TEST_AGENT_CI_RUN_ID,
+            );
+
+        Ok(TestAgentCiFixture {
+            _tempdir: tempdir,
+            repo_root,
+            project_id: TEST_AGENT_CI_PROJECT_ID.into(),
+            controls,
+            tool_runtime,
+            messages,
+        })
+    }
+
+    fn create_test_agent_ci_project_database(
+        repo_root: &Path,
+        project_id: &str,
+    ) -> CommandResult<()> {
+        crate::db::configure_project_database_paths(
+            &repo_root
+                .parent()
+                .unwrap_or(repo_root)
+                .join("app-data")
+                .join("xero.db"),
+        );
+        let database_path = crate::db::database_path_for_repo(repo_root);
+        fs::create_dir_all(database_path.parent().unwrap_or_else(|| Path::new("."))).map_err(
+            |error| {
+                CommandError::system_fault(
+                    "test_agent_ci_database_dir_failed",
+                    format!(
+                        "Xero could not create the Test-agent CI database directory at {}: {error}",
+                        database_path.display()
+                    ),
+                )
+            },
+        )?;
+        let mut connection = Connection::open(&database_path).map_err(|error| {
+            CommandError::system_fault(
+                "test_agent_ci_database_open_failed",
                 format!(
-                    "Xero could not create the Test-agent CI database directory at {}: {error}",
+                    "Xero could not open the Test-agent CI database at {}: {error}",
                     database_path.display()
                 ),
             )
-        },
-    )?;
-    let mut connection = Connection::open(&database_path).map_err(|error| {
-        CommandError::system_fault(
-            "test_agent_ci_database_open_failed",
-            format!(
-                "Xero could not open the Test-agent CI database at {}: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
-    crate::db::configure_connection(&connection)?;
-    #[cfg(test)]
-    crate::db::register_project_database_path_for_tests(repo_root, database_path.clone());
-    crate::db::migrations::migrations()
-        .to_latest(&mut connection)
-        .map_err(|error| {
-            CommandError::system_fault(
-                "test_agent_ci_database_migration_failed",
-                format!("Xero could not migrate the Test-agent CI database: {error}"),
-            )
         })?;
-    connection
+        crate::db::configure_connection(&connection)?;
+        #[cfg(test)]
+        crate::db::register_project_database_path_for_tests(repo_root, database_path.clone());
+        crate::db::migrations::migrations()
+            .to_latest(&mut connection)
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "test_agent_ci_database_migration_failed",
+                    format!("Xero could not migrate the Test-agent CI database: {error}"),
+                )
+            })?;
+        connection
         .execute(
             "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Test Agent CI', '', '')",
             params![project_id],
         )
         .map_err(test_agent_ci_sqlite_error)?;
-    connection
+        connection
         .execute(
             r#"
             INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
@@ -1383,9 +1396,9 @@ fn create_test_agent_ci_project_database(repo_root: &Path, project_id: &str) -> 
             params![project_id, repo_root.to_string_lossy().as_ref()],
         )
         .map_err(test_agent_ci_sqlite_error)?;
-    connection
-        .execute(
-            r#"
+        connection
+            .execute(
+                r#"
             INSERT INTO agent_sessions (
                 project_id,
                 agent_session_id,
@@ -1397,82 +1410,82 @@ fn create_test_agent_ci_project_database(repo_root: &Path, project_id: &str) -> 
             )
             VALUES (?1, ?2, 'CI Harness', 'active', 1, ?3, ?3)
             "#,
-            params![project_id, TEST_AGENT_CI_SESSION_ID, "2026-05-01T00:00:00Z"],
+                params![project_id, TEST_AGENT_CI_SESSION_ID, "2026-05-01T00:00:00Z"],
+            )
+            .map_err(test_agent_ci_sqlite_error)?;
+        Ok(())
+    }
+
+    fn test_agent_ci_sqlite_error(error: rusqlite::Error) -> CommandError {
+        CommandError::system_fault(
+            "test_agent_ci_database_write_failed",
+            format!("Xero could not write the Test-agent CI fixture database: {error}"),
         )
-        .map_err(test_agent_ci_sqlite_error)?;
-    Ok(())
-}
-
-fn test_agent_ci_sqlite_error(error: rusqlite::Error) -> CommandError {
-    CommandError::system_fault(
-        "test_agent_ci_database_write_failed",
-        format!("Xero could not write the Test-agent CI fixture database: {error}"),
-    )
-}
-
-fn test_agent_ci_controls_input() -> RuntimeRunControlInputDto {
-    RuntimeRunControlInputDto {
-        runtime_agent_id: RuntimeAgentIdDto::Engineer,
-        agent_definition_id: None,
-        provider_profile_id: None,
-        model_id: OPENAI_CODEX_PROVIDER_ID.into(),
-        thinking_effort: None,
-        approval_mode: RuntimeRunApprovalModeDto::Suggest,
-        plan_mode_required: false,
     }
-}
 
-fn test_agent_ci_registry() -> ToolRegistry {
-    ToolRegistry::for_tool_names_with_options(
-        TEST_AGENT_CI_REQUIRED_TOOLS
-            .iter()
-            .map(|tool| (*tool).to_owned())
-            .collect(),
-        ToolRegistryOptions {
+    fn test_agent_ci_controls_input() -> RuntimeRunControlInputDto {
+        RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
-            ..ToolRegistryOptions::default()
-        },
-    )
-}
-
-fn test_agent_ci_scripted_tool_calls() -> Vec<AgentToolCall> {
-    (0..4)
-        .filter_map(test_agent_ci_scripted_tool_call_for_turn)
-        .collect()
-}
-
-fn test_agent_ci_scripted_tool_call_for_turn(turn_index: usize) -> Option<AgentToolCall> {
-    match turn_index {
-        0 => Some(AgentToolCall {
-            tool_call_id: "ci-harness-runner".into(),
-            tool_name: AUTONOMOUS_TOOL_HARNESS_RUNNER.into(),
-            input: json!({ "action": "manifest" }),
-        }),
-        1 => Some(AgentToolCall {
-            tool_call_id: "ci-tool-search".into(),
-            tool_name: AUTONOMOUS_TOOL_TOOL_SEARCH.into(),
-            input: json!({ "query": "harness registry discovery", "limit": 10 }),
-        }),
-        2 => Some(AgentToolCall {
-            tool_call_id: "ci-tool-access".into(),
-            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
-            input: json!({ "action": "list" }),
-        }),
-        3 => Some(AgentToolCall {
-            tool_call_id: "ci-read-plan".into(),
-            tool_name: AUTONOMOUS_TOOL_READ.into(),
-            input: json!({
-                "path": "TEST_AGENT_IMPLEMENTATION_PLAN.md",
-                "startLine": 1,
-                "lineCount": 40
-            }),
-        }),
-        _ => None,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        }
     }
-}
 
-fn test_agent_ci_final_report() -> String {
-    [
+    fn test_agent_ci_registry() -> ToolRegistry {
+        ToolRegistry::for_tool_names_with_options(
+            TEST_AGENT_CI_REQUIRED_TOOLS
+                .iter()
+                .map(|tool| (*tool).to_owned())
+                .collect(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        )
+    }
+
+    fn test_agent_ci_scripted_tool_calls() -> Vec<AgentToolCall> {
+        (0..4)
+            .filter_map(test_agent_ci_scripted_tool_call_for_turn)
+            .collect()
+    }
+
+    fn test_agent_ci_scripted_tool_call_for_turn(turn_index: usize) -> Option<AgentToolCall> {
+        match turn_index {
+            0 => Some(AgentToolCall {
+                tool_call_id: "ci-harness-runner".into(),
+                tool_name: AUTONOMOUS_TOOL_HARNESS_RUNNER.into(),
+                input: json!({ "action": "manifest" }),
+            }),
+            1 => Some(AgentToolCall {
+                tool_call_id: "ci-tool-search".into(),
+                tool_name: AUTONOMOUS_TOOL_TOOL_SEARCH.into(),
+                input: json!({ "query": "harness registry discovery", "limit": 10 }),
+            }),
+            2 => Some(AgentToolCall {
+                tool_call_id: "ci-tool-access".into(),
+                tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+                input: json!({ "action": "list" }),
+            }),
+            3 => Some(AgentToolCall {
+                tool_call_id: "ci-read-plan".into(),
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                input: json!({
+                    "path": "TEST_AGENT_IMPLEMENTATION_PLAN.md",
+                    "startLine": 1,
+                    "lineCount": 40
+                }),
+            }),
+            _ => None,
+        }
+    }
+
+    fn test_agent_ci_final_report() -> String {
+        [
         "# Harness Test Report",
         "Status: pass",
         "Counts: passed=4 failed=0 skipped=1",
@@ -1490,224 +1503,227 @@ fn test_agent_ci_final_report() -> String {
         "- none",
     ]
     .join("\n")
-}
-
-fn build_test_agent_ci_report(
-    required_tools: Vec<String>,
-    evidence: TestAgentCiRunEvidence,
-) -> TestAgentCiEvalReport {
-    let mut failures = Vec::new();
-    let active = evidence
-        .active_tools
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    for required in &required_tools {
-        if !active.contains(required.as_str()) {
-            failures.push(format!("Missing required CI harness tool `{required}`."));
-        }
     }
 
-    let persisted_tool_results = validate_test_agent_ci_tool_results(
-        &evidence.snapshot,
-        &evidence.scripted_tool_calls,
-        &mut failures,
-    );
-    let runtime_stream_events =
-        validate_test_agent_ci_runtime_events(&evidence.snapshot, &mut failures);
-    let manifest_outcomes =
-        validate_test_agent_ci_manifest(&evidence.snapshot, &evidence.final_report, &mut failures);
-    let runner_registry = ToolRegistry::for_tool_names_with_options(
-        evidence.active_tools.iter().cloned().collect(),
-        ToolRegistryOptions {
-            runtime_agent_id: RuntimeAgentIdDto::Engineer,
-            ..ToolRegistryOptions::default()
-        },
-    );
-    match harness_runner_tool_output(
-        &runner_registry,
-        &AutonomousHarnessRunnerRequest {
-            action: AutonomousHarnessRunnerAction::CompareReport,
-            final_report: Some(evidence.final_report.clone()),
-        },
-    ) {
-        Ok((_, output)) => {
-            let passed = output
-                .get("passed")
-                .and_then(JsonValue::as_bool)
-                .unwrap_or(false);
-            if !passed {
-                failures.push(format!(
-                    "Deterministic harness runner report comparison failed: {}",
-                    output
-                        .get("comparison")
-                        .map(JsonValue::to_string)
-                        .unwrap_or_else(|| "{}".into())
-                ));
+    fn build_test_agent_ci_report(
+        required_tools: Vec<String>,
+        evidence: TestAgentCiRunEvidence,
+    ) -> TestAgentCiEvalReport {
+        let mut failures = Vec::new();
+        let active = evidence
+            .active_tools
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for required in &required_tools {
+            if !active.contains(required.as_str()) {
+                failures.push(format!("Missing required CI harness tool `{required}`."));
             }
         }
-        Err(error) => failures.push(format!(
-            "Deterministic harness runner comparison errored: {}",
-            error.message
-        )),
-    }
 
-    if evidence.final_report.trim().is_empty() {
-        failures.push("Final harness report was not persisted as an assistant message.".into());
-    }
-    if evidence.snapshot.events.iter().any(|event| {
-        event.event_kind == AgentRunEventKind::ValidationCompleted
-            && event.payload_json.contains("out_of_order_tool_call")
-    }) {
-        failures.push("Harness order gate recorded an out-of-order tool call.".into());
-    }
-
-    failures.sort();
-    failures.dedup();
-    let passed = failures.is_empty();
-    let summary = if passed {
-        "Scripted Test-agent CI run traversed provider loop, Tool Registry V2 dispatch, policy persistence, runtime stream events, and final report checks.".into()
-    } else {
-        format!(
-            "{} Test-agent CI failure(s) detected in the scripted provider-loop run.",
-            failures.len()
-        )
-    };
-
-    TestAgentCiEvalReport {
-        suite_id: "test_agent_phase_8_ci_mode".into(),
-        passed,
-        summary,
-        required_tools,
-        active_tools: evidence.active_tools,
-        scripted_tool_calls: evidence
-            .scripted_tool_calls
-            .iter()
-            .map(|call| call.tool_name.clone())
-            .collect(),
-        persisted_tool_results,
-        runtime_stream_events,
-        manifest_outcomes,
-        final_report: evidence.final_report,
-        failures,
-    }
-}
-
-fn validate_test_agent_ci_tool_results(
-    snapshot: &AgentRunSnapshotRecord,
-    scripted_tool_calls: &[AgentToolCall],
-    failures: &mut Vec<String>,
-) -> Vec<String> {
-    let mut persisted_tool_results = Vec::new();
-    for scripted in scripted_tool_calls {
-        let Some(record) = snapshot
-            .tool_calls
-            .iter()
-            .find(|record| record.tool_call_id == scripted.tool_call_id)
-        else {
-            failures.push(format!(
-                "Scripted tool call `{}` was not persisted.",
-                scripted.tool_call_id
-            ));
-            continue;
-        };
-        if record.tool_name != scripted.tool_name {
-            failures.push(format!(
-                "Scripted tool call `{}` persisted as `{}` instead of `{}`.",
-                scripted.tool_call_id, record.tool_name, scripted.tool_name
-            ));
+        let persisted_tool_results = validate_test_agent_ci_tool_results(
+            &evidence.snapshot,
+            &evidence.scripted_tool_calls,
+            &mut failures,
+        );
+        let runtime_stream_events =
+            validate_test_agent_ci_runtime_events(&evidence.snapshot, &mut failures);
+        let manifest_outcomes = validate_test_agent_ci_manifest(
+            &evidence.snapshot,
+            &evidence.final_report,
+            &mut failures,
+        );
+        let runner_registry = ToolRegistry::for_tool_names_with_options(
+            evidence.active_tools.iter().cloned().collect(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+        match harness_runner_tool_output(
+            &runner_registry,
+            &AutonomousHarnessRunnerRequest {
+                action: AutonomousHarnessRunnerAction::CompareReport,
+                final_report: Some(evidence.final_report.clone()),
+            },
+        ) {
+            Ok((_, output)) => {
+                let passed = output
+                    .get("passed")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false);
+                if !passed {
+                    failures.push(format!(
+                        "Deterministic harness runner report comparison failed: {}",
+                        output
+                            .get("comparison")
+                            .map(JsonValue::to_string)
+                            .unwrap_or_else(|| "{}".into())
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!(
+                "Deterministic harness runner comparison errored: {}",
+                error.message
+            )),
         }
-        if record.state != AgentToolCallState::Succeeded {
-            failures.push(format!(
-                "Scripted tool call `{}` did not succeed; observed {:?}.",
-                scripted.tool_call_id, record.state
-            ));
+
+        if evidence.final_report.trim().is_empty() {
+            failures.push("Final harness report was not persisted as an assistant message.".into());
         }
-        if record
-            .result_json
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
-        {
-            failures.push(format!(
-                "Scripted tool call `{}` is missing persisted result JSON.",
-                scripted.tool_call_id
-            ));
+        if evidence.snapshot.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::ValidationCompleted
+                && event.payload_json.contains("out_of_order_tool_call")
+        }) {
+            failures.push("Harness order gate recorded an out-of-order tool call.".into());
+        }
+
+        failures.sort();
+        failures.dedup();
+        let passed = failures.is_empty();
+        let summary = if passed {
+            "Scripted Test-agent CI run traversed provider loop, Tool Registry V2 dispatch, policy persistence, runtime stream events, and final report checks.".into()
         } else {
-            persisted_tool_results.push(record.tool_name.clone());
-        }
-    }
-    persisted_tool_results
-}
-
-fn validate_test_agent_ci_runtime_events(
-    snapshot: &AgentRunSnapshotRecord,
-    failures: &mut Vec<String>,
-) -> Vec<String> {
-    let required = [
-        (AgentRunEventKind::RunStarted, "run_started"),
-        (AgentRunEventKind::ReasoningSummary, "reasoning_summary"),
-        (AgentRunEventKind::MessageDelta, "message_delta"),
-        (AgentRunEventKind::ToolDelta, "tool_delta"),
-        (AgentRunEventKind::ToolStarted, "tool_started"),
-        (AgentRunEventKind::ToolCompleted, "tool_completed"),
-        (AgentRunEventKind::PolicyDecision, "policy_decision"),
-        (
-            AgentRunEventKind::ToolRegistrySnapshot,
-            "tool_registry_snapshot",
-        ),
-        (AgentRunEventKind::ValidationStarted, "validation_started"),
-        (
-            AgentRunEventKind::ValidationCompleted,
-            "validation_completed",
-        ),
-        (AgentRunEventKind::StateTransition, "state_transition"),
-    ];
-    let mut observed = Vec::new();
-    for (kind, label) in required {
-        if snapshot.events.iter().any(|event| event.event_kind == kind) {
-            observed.push(label.to_owned());
-        } else {
-            failures.push(format!("Missing required runtime stream event `{label}`."));
-        }
-    }
-    if !snapshot.events.iter().any(|event| {
-        event.event_kind == AgentRunEventKind::ToolRegistrySnapshot
-            && event
-                .payload_json
-                .contains("\"executionRegistry\":\"tool_registry_v2\"")
-    }) {
-        failures.push("Tool registry snapshot did not identify Tool Registry V2.".into());
-    }
-    observed
-}
-
-fn validate_test_agent_ci_manifest(
-    snapshot: &AgentRunSnapshotRecord,
-    final_report: &str,
-    failures: &mut Vec<String>,
-) -> Vec<TestAgentCiManifestOutcome> {
-    let manifest_outcomes = test_agent_ci_manifest_outcomes(snapshot);
-    let outcome_by_item = manifest_outcomes
-        .iter()
-        .map(|outcome| {
-            (
-                (outcome.step_id.as_str(), outcome.target.as_str()),
-                outcome.status.as_str(),
+            format!(
+                "{} Test-agent CI failure(s) detected in the scripted provider-loop run.",
+                failures.len()
             )
-        })
-        .collect::<BTreeMap<_, _>>();
-    for row in parse_test_agent_ci_final_report_rows(final_report) {
-        if row.status == "skipped_with_reason"
-            && (row.skip_reason.trim().is_empty() || row.skip_reason.trim() == "none")
-        {
-            failures.push(format!(
-                "Final report skipped `{}` / `{}` without a concrete skip reason.",
-                row.step_id, row.target
-            ));
+        };
+
+        TestAgentCiEvalReport {
+            suite_id: "test_agent_phase_8_ci_mode".into(),
+            passed,
+            summary,
+            required_tools,
+            active_tools: evidence.active_tools,
+            scripted_tool_calls: evidence
+                .scripted_tool_calls
+                .iter()
+                .map(|call| call.tool_name.clone())
+                .collect(),
+            persisted_tool_results,
+            runtime_stream_events,
+            manifest_outcomes,
+            final_report: evidence.final_report,
+            failures,
         }
-        match outcome_by_item.get(&(row.step_id.as_str(), row.target.as_str())) {
+    }
+
+    fn validate_test_agent_ci_tool_results(
+        snapshot: &AgentRunSnapshotRecord,
+        scripted_tool_calls: &[AgentToolCall],
+        failures: &mut Vec<String>,
+    ) -> Vec<String> {
+        let mut persisted_tool_results = Vec::new();
+        for scripted in scripted_tool_calls {
+            let Some(record) = snapshot
+                .tool_calls
+                .iter()
+                .find(|record| record.tool_call_id == scripted.tool_call_id)
+            else {
+                failures.push(format!(
+                    "Scripted tool call `{}` was not persisted.",
+                    scripted.tool_call_id
+                ));
+                continue;
+            };
+            if record.tool_name != scripted.tool_name {
+                failures.push(format!(
+                    "Scripted tool call `{}` persisted as `{}` instead of `{}`.",
+                    scripted.tool_call_id, record.tool_name, scripted.tool_name
+                ));
+            }
+            if record.state != AgentToolCallState::Succeeded {
+                failures.push(format!(
+                    "Scripted tool call `{}` did not succeed; observed {:?}.",
+                    scripted.tool_call_id, record.state
+                ));
+            }
+            if record
+                .result_json
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                failures.push(format!(
+                    "Scripted tool call `{}` is missing persisted result JSON.",
+                    scripted.tool_call_id
+                ));
+            } else {
+                persisted_tool_results.push(record.tool_name.clone());
+            }
+        }
+        persisted_tool_results
+    }
+
+    fn validate_test_agent_ci_runtime_events(
+        snapshot: &AgentRunSnapshotRecord,
+        failures: &mut Vec<String>,
+    ) -> Vec<String> {
+        let required = [
+            (AgentRunEventKind::RunStarted, "run_started"),
+            (AgentRunEventKind::ReasoningSummary, "reasoning_summary"),
+            (AgentRunEventKind::MessageDelta, "message_delta"),
+            (AgentRunEventKind::ToolDelta, "tool_delta"),
+            (AgentRunEventKind::ToolStarted, "tool_started"),
+            (AgentRunEventKind::ToolCompleted, "tool_completed"),
+            (AgentRunEventKind::PolicyDecision, "policy_decision"),
+            (
+                AgentRunEventKind::ToolRegistrySnapshot,
+                "tool_registry_snapshot",
+            ),
+            (AgentRunEventKind::ValidationStarted, "validation_started"),
+            (
+                AgentRunEventKind::ValidationCompleted,
+                "validation_completed",
+            ),
+            (AgentRunEventKind::StateTransition, "state_transition"),
+        ];
+        let mut observed = Vec::new();
+        for (kind, label) in required {
+            if snapshot.events.iter().any(|event| event.event_kind == kind) {
+                observed.push(label.to_owned());
+            } else {
+                failures.push(format!("Missing required runtime stream event `{label}`."));
+            }
+        }
+        if !snapshot.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::ToolRegistrySnapshot
+                && event
+                    .payload_json
+                    .contains("\"executionRegistry\":\"tool_registry_v2\"")
+        }) {
+            failures.push("Tool registry snapshot did not identify Tool Registry V2.".into());
+        }
+        observed
+    }
+
+    fn validate_test_agent_ci_manifest(
+        snapshot: &AgentRunSnapshotRecord,
+        final_report: &str,
+        failures: &mut Vec<String>,
+    ) -> Vec<TestAgentCiManifestOutcome> {
+        let manifest_outcomes = test_agent_ci_manifest_outcomes(snapshot);
+        let outcome_by_item = manifest_outcomes
+            .iter()
+            .map(|outcome| {
+                (
+                    (outcome.step_id.as_str(), outcome.target.as_str()),
+                    outcome.status.as_str(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for row in parse_test_agent_ci_final_report_rows(final_report) {
+            if row.status == "skipped_with_reason"
+                && (row.skip_reason.trim().is_empty() || row.skip_reason.trim() == "none")
+            {
+                failures.push(format!(
+                    "Final report skipped `{}` / `{}` without a concrete skip reason.",
+                    row.step_id, row.target
+                ));
+            }
+            match outcome_by_item.get(&(row.step_id.as_str(), row.target.as_str())) {
             Some(status) if *status == row.status => {}
             Some(status) => failures.push(format!(
                 "Final report status for `{}` / `{}` was `{}`, but persisted manifest status was `{}`.",
@@ -1718,104 +1734,105 @@ fn validate_test_agent_ci_manifest(
                 row.step_id, row.target
             )),
         }
-    }
-    for required in [
-        ("registry_discovery", AUTONOMOUS_TOOL_TOOL_SEARCH),
-        ("registry_discovery", AUTONOMOUS_TOOL_TOOL_ACCESS),
-        ("repo_inspection", AUTONOMOUS_TOOL_READ),
-        ("browser_tools", AUTONOMOUS_TOOL_BROWSER_OBSERVE),
-        ("final_report", "final_report"),
-    ] {
-        if !outcome_by_item.contains_key(&required) {
-            failures.push(format!(
-                "Persisted manifest outcome for `{}` / `{}` was missing.",
-                required.0, required.1
-            ));
         }
-    }
-    if !snapshot.events.iter().any(|event| {
-        event.event_kind == AgentRunEventKind::ValidationCompleted
-            && event.payload_json.contains("\"outcome\":\"satisfied\"")
-    }) {
-        failures.push("Harness manifest did not persist a satisfied completion event.".into());
-    }
-    manifest_outcomes
-}
-
-fn test_agent_ci_manifest_outcomes(
-    snapshot: &AgentRunSnapshotRecord,
-) -> Vec<TestAgentCiManifestOutcome> {
-    let mut outcomes = BTreeMap::new();
-    for event in &snapshot.events {
-        if event.event_kind != AgentRunEventKind::ValidationCompleted {
-            continue;
-        }
-        let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) else {
-            continue;
-        };
-        if payload.get("kind").and_then(JsonValue::as_str) != Some("harness_test_step") {
-            continue;
-        }
-        let Some(item) = payload.get("item") else {
-            continue;
-        };
-        let Some(step_id) = item.get("stepId").and_then(JsonValue::as_str) else {
-            continue;
-        };
-        let Some(target) = item.get("target").and_then(JsonValue::as_str) else {
-            continue;
-        };
-        let status = payload
-            .get("outcome")
-            .and_then(JsonValue::as_str)
-            .or_else(|| item.get("status").and_then(JsonValue::as_str))
-            .unwrap_or("unknown");
-        outcomes.insert(
-            (step_id.to_owned(), target.to_owned()),
-            TestAgentCiManifestOutcome {
-                step_id: step_id.to_owned(),
-                target: target.to_owned(),
-                status: status.to_owned(),
-            },
-        );
-    }
-    outcomes.into_values().collect()
-}
-
-struct TestAgentCiFinalReportRow {
-    step_id: String,
-    target: String,
-    status: String,
-    skip_reason: String,
-}
-
-fn parse_test_agent_ci_final_report_rows(final_report: &str) -> Vec<TestAgentCiFinalReportRow> {
-    final_report
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if !trimmed.starts_with('|') {
-                return None;
+        for required in [
+            ("registry_discovery", AUTONOMOUS_TOOL_TOOL_SEARCH),
+            ("registry_discovery", AUTONOMOUS_TOOL_TOOL_ACCESS),
+            ("repo_inspection", AUTONOMOUS_TOOL_READ),
+            ("browser_tools", AUTONOMOUS_TOOL_BROWSER_OBSERVE),
+            ("final_report", "final_report"),
+        ] {
+            if !outcome_by_item.contains_key(&required) {
+                failures.push(format!(
+                    "Persisted manifest outcome for `{}` / `{}` was missing.",
+                    required.0, required.1
+                ));
             }
-            let cells = trimmed
-                .trim_matches('|')
-                .split('|')
-                .map(str::trim)
-                .collect::<Vec<_>>();
-            if cells.len() < 5
-                || cells[0].eq_ignore_ascii_case("step")
-                || cells[0].starts_with("---")
-            {
-                return None;
+        }
+        if !snapshot.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::ValidationCompleted
+                && event.payload_json.contains("\"outcome\":\"satisfied\"")
+        }) {
+            failures.push("Harness manifest did not persist a satisfied completion event.".into());
+        }
+        manifest_outcomes
+    }
+
+    fn test_agent_ci_manifest_outcomes(
+        snapshot: &AgentRunSnapshotRecord,
+    ) -> Vec<TestAgentCiManifestOutcome> {
+        let mut outcomes = BTreeMap::new();
+        for event in &snapshot.events {
+            if event.event_kind != AgentRunEventKind::ValidationCompleted {
+                continue;
             }
-            Some(TestAgentCiFinalReportRow {
-                step_id: cells[0].to_owned(),
-                target: cells[1].to_owned(),
-                status: cells[2].to_owned(),
-                skip_reason: cells[4].to_owned(),
+            let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) else {
+                continue;
+            };
+            if payload.get("kind").and_then(JsonValue::as_str) != Some("harness_test_step") {
+                continue;
+            }
+            let Some(item) = payload.get("item") else {
+                continue;
+            };
+            let Some(step_id) = item.get("stepId").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            let Some(target) = item.get("target").and_then(JsonValue::as_str) else {
+                continue;
+            };
+            let status = payload
+                .get("outcome")
+                .and_then(JsonValue::as_str)
+                .or_else(|| item.get("status").and_then(JsonValue::as_str))
+                .unwrap_or("unknown");
+            outcomes.insert(
+                (step_id.to_owned(), target.to_owned()),
+                TestAgentCiManifestOutcome {
+                    step_id: step_id.to_owned(),
+                    target: target.to_owned(),
+                    status: status.to_owned(),
+                },
+            );
+        }
+        outcomes.into_values().collect()
+    }
+
+    struct TestAgentCiFinalReportRow {
+        step_id: String,
+        target: String,
+        status: String,
+        skip_reason: String,
+    }
+
+    fn parse_test_agent_ci_final_report_rows(final_report: &str) -> Vec<TestAgentCiFinalReportRow> {
+        final_report
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if !trimmed.starts_with('|') {
+                    return None;
+                }
+                let cells = trimmed
+                    .trim_matches('|')
+                    .split('|')
+                    .map(str::trim)
+                    .collect::<Vec<_>>();
+                if cells.len() < 5
+                    || cells[0].eq_ignore_ascii_case("step")
+                    || cells[0].starts_with("---")
+                {
+                    return None;
+                }
+                Some(TestAgentCiFinalReportRow {
+                    step_id: cells[0].to_owned(),
+                    target: cells[1].to_owned(),
+                    status: cells[2].to_owned(),
+                    skip_reason: cells[4].to_owned(),
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 pub fn run_agent_definition_quality_eval_suite(
@@ -4232,6 +4249,7 @@ fn compile_agent_definition_eval_prompt(
             browser_control_preference: BrowserControlPreferenceDto::Default,
             runtime_agent_id: case.runtime_agent_id,
             agent_tool_policy,
+            tool_application_policy: Default::default(),
         },
     );
     let exposed_tools = registry.descriptor_names().into_iter().collect::<Vec<_>>();
@@ -5244,23 +5262,20 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_ci_eval_runs_scripted_provider_through_runtime_path() {
+    fn test_agent_ci_eval_reports_removed_runtime_as_passing_noop() {
         let root = tempfile::tempdir().expect("temp dir");
         let report = run_test_agent_ci_eval(root.path());
 
         assert!(report.passed, "{:#?}", report.failures);
-        assert!(report
-            .persisted_tool_results
-            .contains(&AUTONOMOUS_TOOL_TOOL_SEARCH.to_owned()));
-        assert!(report
-            .runtime_stream_events
-            .contains(&"tool_completed".to_owned()));
-        assert!(report.manifest_outcomes.iter().any(|outcome| {
-            outcome.step_id == "browser_tools"
-                && outcome.target == AUTONOMOUS_TOOL_BROWSER_OBSERVE
-                && outcome.status == "skipped_with_reason"
-        }));
-        assert!(report.final_report.contains("# Harness Test Report"));
+        assert_eq!(report.suite_id, "test_agent_phase_8_ci_mode_removed");
+        assert!(report.summary.contains("Test agent type has been removed"));
+        assert!(report.required_tools.is_empty());
+        assert!(report.active_tools.is_empty());
+        assert!(report.scripted_tool_calls.is_empty());
+        assert!(report.persisted_tool_results.is_empty());
+        assert!(report.runtime_stream_events.is_empty());
+        assert!(report.manifest_outcomes.is_empty());
+        assert!(report.final_report.is_empty());
     }
 
     #[test]

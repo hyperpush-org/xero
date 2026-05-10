@@ -504,7 +504,6 @@ fn csv_project_file_preview(text: &str, delimiter: u8) -> ProjectFilePreviewDto 
         .has_headers(false)
         .delimiter(delimiter)
         .from_reader(text.as_bytes());
-    let mut records = reader.records();
     let mut headers = Vec::new();
     let mut rows = Vec::new();
     let mut total_rows = 0_u32;
@@ -512,7 +511,7 @@ fn csv_project_file_preview(text: &str, delimiter: u8) -> ProjectFilePreviewDto 
     let mut truncated_rows = false;
     let mut truncated_columns = false;
 
-    while let Some(record) = records.next() {
+    for record in reader.records() {
         let Ok(record) = record else {
             break;
         };

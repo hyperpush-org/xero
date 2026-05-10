@@ -44,6 +44,8 @@ export const writableRuntimeSettingsProviderIdSchema = z.enum(['openrouter', 'op
 
 export const runtimeRunThinkingEffortSchema = z.enum(['minimal', 'low', 'medium', 'high', 'x_high'])
 export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yolo'])
+export const agentToolApplicationStyleSchema = z.enum(['conservative', 'balanced', 'declarative_first'])
+export const agentToolApplicationStyleResolutionSourceSchema = z.enum(['global_default', 'model_override'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
 export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'] as const
 export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
@@ -437,6 +439,38 @@ export const upsertRuntimeSettingsRequestSchema = z
     validateRuntimeSettingsProviderModel(payload, ctx)
   })
 
+export const agentToolingModelOverrideSchema = z
+  .object({
+    providerId: z.string().trim().min(1),
+    modelId: z.string().trim().min(1),
+    style: agentToolApplicationStyleSchema,
+    updatedAt: isoTimestampSchema,
+  })
+  .strict()
+
+export const agentToolingSettingsSchema = z
+  .object({
+    globalDefault: agentToolApplicationStyleSchema,
+    modelOverrides: z.array(agentToolingModelOverrideSchema).default([]),
+    updatedAt: isoTimestampSchema.nullable().optional(),
+  })
+  .strict()
+
+export const upsertAgentToolingModelOverrideRequestSchema = z
+  .object({
+    providerId: z.string().trim().min(1),
+    modelId: z.string().trim().min(1),
+    style: agentToolApplicationStyleSchema.nullable().optional(),
+  })
+  .strict()
+
+export const upsertAgentToolingSettingsRequestSchema = z
+  .object({
+    globalDefault: agentToolApplicationStyleSchema.nullable().optional(),
+    modelOverrides: z.array(upsertAgentToolingModelOverrideRequestSchema).default([]),
+  })
+  .strict()
+
 export const runtimeSessionSchema = z.object({
   projectId: z.string().trim().min(1),
   runtimeKind: z.string().trim().min(1),
@@ -825,6 +859,16 @@ export type RuntimeRunTransportDto = z.infer<typeof runtimeRunTransportSchema>
 export type RuntimeRunCheckpointDto = z.infer<typeof runtimeRunCheckpointSchema>
 export type RuntimeRunThinkingEffortDto = z.infer<typeof runtimeRunThinkingEffortSchema>
 export type RuntimeRunApprovalModeDto = z.infer<typeof runtimeRunApprovalModeSchema>
+export type AgentToolApplicationStyleDto = z.infer<typeof agentToolApplicationStyleSchema>
+export type AgentToolApplicationStyleResolutionSourceDto = z.infer<
+  typeof agentToolApplicationStyleResolutionSourceSchema
+>
+export type AgentToolingModelOverrideDto = z.infer<typeof agentToolingModelOverrideSchema>
+export type AgentToolingSettingsDto = z.infer<typeof agentToolingSettingsSchema>
+export type UpsertAgentToolingModelOverrideRequestDto = z.infer<
+  typeof upsertAgentToolingModelOverrideRequestSchema
+>
+export type UpsertAgentToolingSettingsRequestDto = z.infer<typeof upsertAgentToolingSettingsRequestSchema>
 export type RuntimeAgentIdDto = z.infer<typeof runtimeAgentIdSchema>
 export type RuntimeRunControlInputDto = z.infer<typeof runtimeRunControlInputSchema>
 export type RuntimeAutoCompactPreferenceDto = z.infer<typeof runtimeAutoCompactPreferenceSchema>

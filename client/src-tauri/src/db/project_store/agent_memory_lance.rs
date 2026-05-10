@@ -1648,7 +1648,7 @@ mod tests {
         row.text_hash = format!("{:064x}", index + 1);
         row.created_at = format!("2026-04-26T00:{:02}:00Z", index % 60);
         row.updated_at = row.created_at.clone();
-        row.kind = if index % 4 == 0 {
+        row.kind = if index.is_multiple_of(4) {
             AgentMemoryKind::Decision
         } else {
             AgentMemoryKind::ProjectFact

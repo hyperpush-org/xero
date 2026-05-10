@@ -54,6 +54,54 @@ impl ToolMutability {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ToolApplicationKind {
+    Granular,
+    Declarative,
+    ReadOnlyBatch,
+    MutatingBatch,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolBatchDispatchSafety {
+    NotBatch,
+    ParallelReadOnly,
+    SequentialMutating,
+    ToolOwnedAtomic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolApplicationMetadata {
+    pub family: String,
+    pub kind: ToolApplicationKind,
+    pub dispatch_safety: ToolBatchDispatchSafety,
+    /// Batch-capable mutating tools should validate every target before writing,
+    /// expose preview/dry-run behavior when possible, guard stale inputs, and
+    /// report enough diff/summary detail for audit and recovery.
+    #[serde(default)]
+    pub safety_requirements: Vec<String>,
+}
+
+impl ToolApplicationMetadata {
+    pub fn granular(family: impl Into<String>) -> Self {
+        Self {
+            family: family.into(),
+            kind: ToolApplicationKind::Granular,
+            dispatch_safety: ToolBatchDispatchSafety::NotBatch,
+            safety_requirements: Vec::new(),
+        }
+    }
+}
+
+impl Default for ToolApplicationMetadata {
+    fn default() -> Self {
+        Self::granular("general")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolSandboxRequirement {
     None,
     ReadOnly,
@@ -140,6 +188,8 @@ pub struct ToolDescriptorV2 {
     pub input_schema: JsonValue,
     #[serde(default)]
     pub capability_tags: Vec<String>,
+    #[serde(default)]
+    pub application_metadata: ToolApplicationMetadata,
     pub effect_class: ToolEffectClass,
     pub mutability: ToolMutability,
     pub sandbox_requirement: ToolSandboxRequirement,
@@ -160,6 +210,7 @@ impl ToolDescriptorV2 {
             description: description.into(),
             input_schema,
             capability_tags: Vec::new(),
+            application_metadata: ToolApplicationMetadata::default(),
             effect_class: ToolEffectClass::Observe,
             mutability: ToolMutability::ReadOnly,
             sandbox_requirement: ToolSandboxRequirement::None,
@@ -216,8 +267,112 @@ impl ToolDescriptorV2 {
                 ));
             }
         }
+        self.validate_application_metadata()?;
         Ok(())
     }
+
+    fn validate_application_metadata(&self) -> ToolRegistryResult<()> {
+        let metadata = &self.application_metadata;
+        if metadata.family.trim().is_empty() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_tool_descriptor_invalid",
+                format!(
+                    "Tool descriptor `{}` must include an application metadata family.",
+                    self.name
+                ),
+            ));
+        }
+
+        match metadata.kind {
+            ToolApplicationKind::Granular => {
+                if metadata.dispatch_safety != ToolBatchDispatchSafety::NotBatch {
+                    return Err(ToolExecutionError::invalid_input(
+                        "agent_tool_descriptor_invalid",
+                        format!(
+                            "Granular tool descriptor `{}` must use not_batch dispatch safety.",
+                            self.name
+                        ),
+                    ));
+                }
+            }
+            ToolApplicationKind::ReadOnlyBatch => {
+                if !self.mutability.is_read_only() {
+                    return Err(ToolExecutionError::invalid_input(
+                        "agent_tool_descriptor_invalid",
+                        format!(
+                            "Read-only batch tool descriptor `{}` must be read-only.",
+                            self.name
+                        ),
+                    ));
+                }
+                if metadata.dispatch_safety != ToolBatchDispatchSafety::ParallelReadOnly {
+                    return Err(ToolExecutionError::invalid_input(
+                        "agent_tool_descriptor_invalid",
+                        format!(
+                            "Read-only batch tool descriptor `{}` must use parallel_read_only dispatch safety.",
+                            self.name
+                        ),
+                    ));
+                }
+                require_safety(metadata, &self.name, &["read_only"])?;
+                require_safety(metadata, &self.name, &["bounded_results"])?;
+            }
+            ToolApplicationKind::Declarative | ToolApplicationKind::MutatingBatch => {
+                if self.mutability == ToolMutability::Mutating {
+                    if !matches!(
+                        metadata.dispatch_safety,
+                        ToolBatchDispatchSafety::SequentialMutating
+                            | ToolBatchDispatchSafety::ToolOwnedAtomic
+                    ) {
+                        return Err(ToolExecutionError::invalid_input(
+                            "agent_tool_descriptor_invalid",
+                            format!(
+                                "Mutating batch tool descriptor `{}` must use sequential_mutating or tool_owned_atomic dispatch safety.",
+                                self.name
+                            ),
+                        ));
+                    }
+                    require_safety(
+                        metadata,
+                        &self.name,
+                        &["supports_preview", "supports_dry_run"],
+                    )?;
+                    require_safety(
+                        metadata,
+                        &self.name,
+                        &[
+                            "validates_all_targets_before_writing",
+                            "validates_targets_before_writing",
+                        ],
+                    )?;
+                    require_safety(metadata, &self.name, &["reports_diff", "reports_summary"])?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn require_safety(
+    metadata: &ToolApplicationMetadata,
+    tool_name: &str,
+    accepted: &[&str],
+) -> ToolRegistryResult<()> {
+    if accepted.iter().any(|requirement| {
+        metadata
+            .safety_requirements
+            .iter()
+            .any(|item| item == requirement)
+    }) {
+        return Ok(());
+    }
+    Err(ToolExecutionError::invalid_input(
+        "agent_tool_descriptor_invalid",
+        format!(
+            "Tool descriptor `{tool_name}` is missing required application safety metadata: one of {}.",
+            accepted.join(", ")
+        ),
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,6 +435,8 @@ pub struct ToolExtensionManifest {
     pub sandbox_requirement: ToolSandboxRequirement,
     pub approval_requirement: ToolApprovalRequirement,
     #[serde(default)]
+    pub application_metadata: ToolApplicationMetadata,
+    #[serde(default)]
     pub capability_tags: Vec<String>,
     #[serde(default)]
     pub test_fixtures: Vec<ToolExtensionTestFixture>,
@@ -324,6 +481,7 @@ impl ToolExtensionManifest {
             description: self.description.clone(),
             input_schema: self.input_schema.clone(),
             capability_tags: self.capability_tags.clone(),
+            application_metadata: self.application_metadata.clone(),
             effect_class: self.permission.effect_class.clone(),
             mutability: self.mutability,
             sandbox_requirement: self.sandbox_requirement,
@@ -695,6 +853,7 @@ pub trait ToolHandler: Send + Sync {
             "sandboxRequirement": descriptor.sandbox_requirement,
             "approvalRequirement": descriptor.approval_requirement,
             "capabilityTags": descriptor.capability_tags,
+            "applicationMetadata": descriptor.application_metadata,
         })
     }
 
@@ -2449,6 +2608,7 @@ mod tests {
                 "required": ["path"]
             }),
             capability_tags: vec!["test".into()],
+            application_metadata: ToolApplicationMetadata::default(),
             effect_class: if mutability == ToolMutability::ReadOnly {
                 ToolEffectClass::FileRead
             } else {
@@ -2510,6 +2670,7 @@ mod tests {
             mutability: ToolMutability::ReadOnly,
             sandbox_requirement: ToolSandboxRequirement::Network,
             approval_requirement: ToolApprovalRequirement::Policy,
+            application_metadata: ToolApplicationMetadata::default(),
             capability_tags: vec!["extension".into(), "release_notes".into()],
             test_fixtures: vec![ToolExtensionTestFixture {
                 fixture_id: "happy_path".into(),
@@ -2545,6 +2706,42 @@ mod tests {
             }))
             .expect_err("empty tool names must be rejected");
 
+        assert_eq!(error.category, ToolErrorCategory::InvalidInput);
+    }
+
+    #[test]
+    fn register_rejects_tool_application_batch_descriptors_without_safety_metadata() {
+        let mut registry = ToolRegistryV2::new();
+        let mut search = descriptor("search_batch", ToolMutability::ReadOnly);
+        search.application_metadata = ToolApplicationMetadata {
+            family: "discovery".into(),
+            kind: ToolApplicationKind::ReadOnlyBatch,
+            dispatch_safety: ToolBatchDispatchSafety::ParallelReadOnly,
+            safety_requirements: vec!["read_only".into()],
+        };
+
+        let error = registry
+            .register(StaticToolHandler::new(search, |_context, _call| {
+                Ok(ToolHandlerOutput::new("ok", json!({})))
+            }))
+            .expect_err("read-only batches must describe bounded results");
+        assert_eq!(error.category, ToolErrorCategory::InvalidInput);
+
+        let mut patch = descriptor("patch_batch", ToolMutability::Mutating);
+        patch.application_metadata = ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: ToolApplicationKind::Declarative,
+            dispatch_safety: ToolBatchDispatchSafety::ToolOwnedAtomic,
+            safety_requirements: vec![
+                "validates_all_targets_before_writing".into(),
+                "reports_diff".into(),
+            ],
+        };
+        let error = registry
+            .register(StaticToolHandler::new(patch, |_context, _call| {
+                Ok(ToolHandlerOutput::new("ok", json!({})))
+            }))
+            .expect_err("mutating declarative tools must describe preview or dry-run safety");
         assert_eq!(error.category, ToolErrorCategory::InvalidInput);
     }
 

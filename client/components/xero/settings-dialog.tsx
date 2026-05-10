@@ -12,6 +12,7 @@ import type {
   SkillRegistryLoadStatus,
   SkillRegistryMutationStatus,
 } from "@/src/features/xero/use-xero-desktop-state"
+import type { AgentToolingSettingsAdapter } from "@/components/xero/settings-dialog/agent-tooling-section"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
 import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
 import type {
@@ -51,7 +52,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Code2, Database, Globe, Heart, Keyboard, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Code2, Database, Globe, Heart, Keyboard, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -70,6 +71,7 @@ export type SettingsSection =
   | "mcp"
   | "skills"
   | "agents"
+  | "agentTooling"
   | "plugins"
   | "browser"
   | "workspaceIndex"
@@ -86,6 +88,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "notifications",
   "mcp",
   "agents",
+  "agentTooling",
   "skills",
   "plugins",
   "browser",
@@ -102,6 +105,10 @@ const loadAccountSection = () =>
 const loadAgentsSection = () =>
   import("@/components/xero/settings-dialog/agents-section").then((module) => ({
     default: module.AgentsSection,
+  }))
+const loadAgentToolingSection = () =>
+  import("@/components/xero/settings-dialog/agent-tooling-section").then((module) => ({
+    default: module.AgentToolingSection,
   }))
 const loadBrowserSection = () =>
   import("@/components/xero/settings-dialog/browser-section").then((module) => ({
@@ -158,6 +165,7 @@ const loadWorkspaceIndexSection = () =>
 
 const LazyAccountSection = lazy(loadAccountSection)
 const LazyAgentsSection = lazy(loadAgentsSection)
+const LazyAgentToolingSection = lazy(loadAgentToolingSection)
 const LazyBrowserSection = lazy(loadBrowserSection)
 const LazyDevelopmentSection = lazy(loadDevelopmentSection)
 const LazyDictationSection = lazy(loadDictationSection)
@@ -181,6 +189,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   notifications: loadNotificationsSection,
   mcp: loadMcpSection,
   agents: loadAgentsSection,
+  agentTooling: loadAgentToolingSection,
   skills: loadSkillsSection,
   plugins: loadPluginsSection,
   browser: loadBrowserSection,
@@ -237,6 +246,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "notifications", label: "Notifications", icon: Bell },
     { id: "mcp", label: "MCP", icon: PlugZap },
     { id: "agents", label: "Agents", icon: Bot },
+    { id: "agentTooling", label: "Agent Tooling", icon: Wrench },
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
@@ -302,6 +312,7 @@ export interface SettingsDialogProps {
   onRunDoctorReport?: (request?: Partial<RunDoctorReportRequestDto>) => Promise<XeroDoctorReportDto>
   dictationAdapter?: DictationSettingsAdapter
   soulAdapter?: SoulSettingsAdapter
+  agentToolingAdapter?: AgentToolingSettingsAdapter
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -384,6 +395,7 @@ export function SettingsDialog({
   onRunDoctorReport,
   dictationAdapter,
   soulAdapter,
+  agentToolingAdapter,
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -630,6 +642,10 @@ export function SettingsDialog({
           onRegistryChanged={onAgentRegistryChanged}
         />
       )
+    }
+
+    if (renderedSection === "agentTooling") {
+      return <LazyAgentToolingSection adapter={agentToolingAdapter} />
     }
 
     if (renderedSection === "skills") {

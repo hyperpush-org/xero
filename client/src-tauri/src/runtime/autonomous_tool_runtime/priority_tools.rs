@@ -34,10 +34,10 @@ use super::{
     AutonomousTodoMode, AutonomousTodoOutput, AutonomousTodoRequest, AutonomousTodoStatus,
     AutonomousToolCatalogEntry, AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime,
     AutonomousToolSearchMatch, AutonomousToolSearchOutput, AutonomousToolSearchRequest,
-    AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_LSP,
-    AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_NOTEBOOK_EDIT, AUTONOMOUS_TOOL_POWERSHELL,
-    AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_TODO,
-    AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX, AUTONOMOUS_TOOL_CODE_INTEL, AUTONOMOUS_TOOL_COMMAND_VERIFY,
+    AUTONOMOUS_TOOL_LSP, AUTONOMOUS_TOOL_MCP, AUTONOMOUS_TOOL_NOTEBOOK_EDIT,
+    AUTONOMOUS_TOOL_POWERSHELL, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT,
+    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_SEARCH,
 };
 
 use crate::{
@@ -2197,7 +2197,7 @@ fn tool_search_score_fields(fields: ToolSearchScoreFields<'_>) -> u32 {
         }
     }
 
-    if fields.name == "command"
+    if fields.name == AUTONOMOUS_TOOL_COMMAND_VERIFY
         && query_terms.iter().any(|term| {
             matches!(
                 term.as_str(),

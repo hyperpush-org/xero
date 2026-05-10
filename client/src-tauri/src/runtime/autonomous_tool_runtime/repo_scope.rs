@@ -276,7 +276,7 @@ pub fn resolve_imported_repo_root_from_registry(
     let cache_key = repo_root_cache_key(registry_path, project_id);
     if let Some(root) = cache_key
         .as_ref()
-        .and_then(|key| cached_imported_repo_root(key))
+        .and_then(cached_imported_repo_root)
         .filter(|root| root.is_dir())
     {
         return Ok(root);

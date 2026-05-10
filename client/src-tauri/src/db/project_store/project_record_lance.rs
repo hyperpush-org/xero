@@ -1227,12 +1227,12 @@ mod tests {
         row.text_hash = format!("{:064x}", index + 1);
         row.created_at = format!("2026-05-05T16:{:02}:32Z", index % 60);
         row.updated_at = row.created_at.clone();
-        row.importance = if index % 3 == 0 {
+        row.importance = if index.is_multiple_of(3) {
             "high".into()
         } else {
             "normal".into()
         };
-        if index % 17 == 0 {
+        if index.is_multiple_of(17) {
             row.redaction_state = "blocked".into();
         }
         let embedding = crate::db::project_store::embedding_with_service(

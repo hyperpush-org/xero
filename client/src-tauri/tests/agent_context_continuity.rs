@@ -100,6 +100,7 @@ fn seed_agent_run_for_agent_with_provider(
     .expect("seed agent run");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_handoff_comparison_manifest(
     repo_root: &Path,
     project_id: &str,
@@ -203,6 +204,7 @@ fn insert_handoff_reconciliation_bundle_record(
     .expect("insert handoff bundle record");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_handoff_reconciliation_lineage(
     repo_root: &Path,
     project_id: &str,
@@ -873,11 +875,11 @@ fn phase2_retrieval_populates_embeddings_filters_logs_and_deduplicates() {
     assert_eq!(result.source_id, inserted.record_id);
     assert_eq!(
         result.metadata["embeddingModel"],
-        project_store::DEFAULT_AGENT_EMBEDDING_MODEL
+        project_store::LOCAL_HASH_AGENT_EMBEDDING_MODEL
     );
     assert_eq!(
         result.metadata["embeddingVersion"],
-        project_store::DEFAULT_AGENT_EMBEDDING_VERSION
+        project_store::LOCAL_HASH_AGENT_EMBEDDING_VERSION
     );
     assert_eq!(result.metadata["embeddingPresent"], true);
     assert!(!response
@@ -1273,19 +1275,15 @@ fn phase6_model_visible_context_tooling_permissions_and_logging() {
         AutonomousProjectContextAction::ProposeRecordCandidate,
     );
     ask_candidate.title = Some("Ask candidate".into());
-    ask_candidate.summary = Some("Ask can record durable context.".into());
-    ask_candidate.text =
-        Some("Ask records runtime-owned durable context without repo writes.".into());
-    let ask_candidate_output = ask_runtime
+    ask_candidate.summary = Some("Ask cannot record durable context.".into());
+    ask_candidate.text = Some("Ask remains read-only for durable project context.".into());
+    let ask_candidate_error = ask_runtime
         .execute(AutonomousToolRequest::ProjectContext(ask_candidate))
-        .expect("ask can record durable context candidates");
-    let ask_candidate = match ask_candidate_output.output {
-        AutonomousToolOutput::ProjectContext(output) => {
-            output.candidate_record.expect("ask candidate record")
-        }
-        other => panic!("unexpected output: {other:?}"),
-    };
-    assert_eq!(ask_candidate.visibility, "memory_candidate");
+        .expect_err("ask cannot record durable context candidates");
+    assert_eq!(
+        ask_candidate_error.code,
+        "project_context_write_forbidden_for_ask"
+    );
 
     let engineer_runtime = AutonomousToolRuntime::new(&repo_root)
         .expect("engineer runtime")

@@ -87,6 +87,20 @@ impl AgentToolDescriptor {
             }
         }
 
+        let application_metadata = tool_application_metadata_for_tool(&self.name);
+        telemetry_attributes.insert(
+            "xero.tool.application.family".into(),
+            application_metadata.family.clone(),
+        );
+        telemetry_attributes.insert(
+            "xero.tool.application.kind".into(),
+            tool_application_kind_label(application_metadata.kind).into(),
+        );
+        telemetry_attributes.insert(
+            "xero.tool.application.dispatch_safety".into(),
+            tool_batch_dispatch_safety_label(application_metadata.dispatch_safety).into(),
+        );
+
         xero_agent_core::ToolDescriptorV2 {
             name: self.name.clone(),
             description: self.description.clone(),
@@ -96,6 +110,7 @@ impl AgentToolDescriptor {
                 .and_then(|catalog| catalog.get("tags"))
                 .map(json_string_vec)
                 .unwrap_or_default(),
+            application_metadata,
             effect_class,
             mutability: core_mutability_for_tool(&self.name),
             sandbox_requirement: core_sandbox_requirement_for_tool(&self.name),
@@ -123,6 +138,7 @@ pub struct ToolRegistryOptions {
     pub browser_control_preference: BrowserControlPreferenceDto,
     pub runtime_agent_id: RuntimeAgentIdDto,
     pub agent_tool_policy: Option<AutonomousAgentToolPolicy>,
+    pub tool_application_policy: ResolvedAgentToolApplicationStyleDto,
 }
 
 impl Default for ToolRegistryOptions {
@@ -132,6 +148,7 @@ impl Default for ToolRegistryOptions {
             browser_control_preference: BrowserControlPreferenceDto::Default,
             runtime_agent_id: RuntimeAgentIdDto::Ask,
             agent_tool_policy: None,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
         }
     }
 }
@@ -147,6 +164,10 @@ pub struct ToolExposurePlan {
     pub task_classification: ToolExposureTaskClassification,
     pub provider_tool_support: String,
     pub environment_health: String,
+    #[serde(default)]
+    pub tool_application_style: AgentToolApplicationStyleDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_application_style_source: Option<AgentToolApplicationStyleResolutionSourceDto>,
     pub entries: Vec<ToolExposureEntry>,
 }
 
@@ -187,8 +208,20 @@ impl ToolExposurePlan {
             task_classification,
             provider_tool_support: "tool_schemas_supported_by_selected_provider".into(),
             environment_health: "runtime_availability_checked_by_tool_runtime".into(),
+            tool_application_style: AgentToolApplicationStyleDto::Balanced,
+            tool_application_style_source: Some(
+                AgentToolApplicationStyleResolutionSourceDto::GlobalDefault,
+            ),
             entries: Vec::new(),
         }
+    }
+
+    pub(crate) fn apply_tool_application_policy(
+        &mut self,
+        policy: &ResolvedAgentToolApplicationStyleDto,
+    ) {
+        self.tool_application_style = policy.style;
+        self.tool_application_style_source = Some(policy.source);
     }
 
     pub(crate) fn for_tool_names<I, S>(
@@ -292,7 +325,7 @@ impl ToolRegistry {
     }
 
     pub fn builtin_with_options(options: ToolRegistryOptions) -> Self {
-        let descriptors = builtin_tool_descriptors()
+        let mut descriptors = builtin_tool_descriptors()
             .into_iter()
             .filter(|descriptor| {
                 options.skill_tool_enabled || descriptor.name != AUTONOMOUS_TOOL_SKILL
@@ -306,6 +339,10 @@ impl ToolRegistry {
                 )
             })
             .collect::<Vec<_>>();
+        sort_descriptors_for_tool_application_style(
+            &mut descriptors,
+            options.tool_application_policy.style,
+        );
         let exposure_plan = ToolExposurePlan::for_tool_names(
             options.runtime_agent_id,
             "builtin_full_registry",
@@ -314,6 +351,8 @@ impl ToolRegistry {
             "builtin_full_registry",
             "Full built-in registry requested for contract export, harness setup, or explicit diagnostic use.",
         );
+        let mut exposure_plan = exposure_plan;
+        exposure_plan.apply_tool_application_policy(&options.tool_application_policy);
         Self {
             descriptors,
             dynamic_routes: BTreeMap::new(),
@@ -363,6 +402,8 @@ impl ToolRegistry {
             "explicit_tool_set",
             "Tool registry was created from an explicit tool set.",
         );
+        let mut exposure_plan = exposure_plan;
+        exposure_plan.apply_tool_application_policy(&options.tool_application_policy);
         Self::for_tool_names_with_options_and_exposure(tool_names, options, exposure_plan)
     }
 
@@ -371,7 +412,7 @@ impl ToolRegistry {
         options: ToolRegistryOptions,
         mut exposure_plan: ToolExposurePlan,
     ) -> Self {
-        let descriptors = builtin_tool_descriptors()
+        let mut descriptors = builtin_tool_descriptors()
             .into_iter()
             .filter(|descriptor| {
                 tool_names.contains(descriptor.name.as_str())
@@ -384,6 +425,10 @@ impl ToolRegistry {
                     )
             })
             .collect::<Vec<_>>();
+        sort_descriptors_for_tool_application_style(
+            &mut descriptors,
+            options.tool_application_policy.style,
+        );
         let allowed = descriptors
             .iter()
             .map(|descriptor| descriptor.name.clone())
@@ -425,6 +470,10 @@ impl ToolRegistry {
             })
             .collect::<Vec<_>>();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        sort_descriptors_for_tool_application_style(
+            &mut descriptors,
+            options.tool_application_policy.style,
+        );
         let exposure_plan = ToolExposurePlan::for_tool_names(
             options.runtime_agent_id,
             "persisted_registry_snapshot",
@@ -435,6 +484,8 @@ impl ToolRegistry {
             "persisted_registry_snapshot",
             "Active registry was reconstructed from persisted descriptors.",
         );
+        let mut exposure_plan = exposure_plan;
+        exposure_plan.apply_tool_application_policy(&options.tool_application_policy);
         Self {
             descriptors,
             dynamic_routes,
@@ -465,6 +516,7 @@ impl ToolRegistry {
     pub(crate) fn replace_exposure_plan(&mut self, mut exposure_plan: ToolExposurePlan) {
         let allowed = self.descriptor_names();
         exposure_plan.retain_tools(&allowed);
+        exposure_plan.apply_tool_application_policy(&self.options.tool_application_policy);
         self.exposure_plan = exposure_plan;
     }
 
@@ -527,6 +579,10 @@ impl ToolRegistry {
         next.descriptors.extend(dynamic_descriptors);
         next.descriptors
             .sort_by(|left, right| left.name.cmp(&right.name));
+        sort_descriptors_for_tool_application_style(
+            &mut next.descriptors,
+            next.options.tool_application_policy.style,
+        );
         next.dynamic_routes = dynamic_routes;
         next.exposure_plan = self.exposure_plan.clone();
         next.exposure_plan.add_tools(
@@ -606,6 +662,10 @@ impl ToolRegistry {
         }
 
         self.descriptors = descriptors_by_name.into_values().collect();
+        sort_descriptors_for_tool_application_style(
+            &mut self.descriptors,
+            self.options.tool_application_policy.style,
+        );
         self.dynamic_routes = dynamic_routes;
         let allowed = self.descriptor_names();
         self.exposure_plan.add_tools(
@@ -711,6 +771,192 @@ impl ToolRegistry {
 
     pub(crate) fn runtime_agent_id(&self) -> RuntimeAgentIdDto {
         self.options.runtime_agent_id
+    }
+
+    pub(crate) fn tool_application_policy(&self) -> &ResolvedAgentToolApplicationStyleDto {
+        &self.options.tool_application_policy
+    }
+}
+
+fn sort_descriptors_for_tool_application_style(
+    descriptors: &mut Vec<AgentToolDescriptor>,
+    style: AgentToolApplicationStyleDto,
+) {
+    if style == AgentToolApplicationStyleDto::Balanced {
+        return;
+    }
+
+    let mut indexed = descriptors.drain(..).enumerate().collect::<Vec<_>>();
+    indexed.sort_by_key(|(index, descriptor)| {
+        (
+            tool_application_descriptor_rank(descriptor.name.as_str(), style),
+            *index,
+        )
+    });
+    descriptors.extend(indexed.into_iter().map(|(_, descriptor)| descriptor));
+}
+
+fn tool_application_descriptor_rank(tool_name: &str, style: AgentToolApplicationStyleDto) -> u8 {
+    match style {
+        AgentToolApplicationStyleDto::DeclarativeFirst => {
+            if tool_name == AUTONOMOUS_TOOL_PATCH || is_repository_discovery_batch_tool(tool_name) {
+                0
+            } else if is_granular_repository_discovery_tool(tool_name)
+                || is_edit_family_tool(tool_name)
+            {
+                1
+            } else {
+                0
+            }
+        }
+        AgentToolApplicationStyleDto::Conservative => {
+            if tool_name == AUTONOMOUS_TOOL_PATCH || is_repository_discovery_batch_tool(tool_name) {
+                1
+            } else {
+                0
+            }
+        }
+        AgentToolApplicationStyleDto::Balanced => 0,
+    }
+}
+
+fn is_edit_family_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_EDIT
+            | AUTONOMOUS_TOOL_WRITE
+            | AUTONOMOUS_TOOL_PATCH
+            | AUTONOMOUS_TOOL_DELETE
+            | AUTONOMOUS_TOOL_RENAME
+            | AUTONOMOUS_TOOL_MKDIR
+            | AUTONOMOUS_TOOL_NOTEBOOK_EDIT
+    )
+}
+
+fn is_repository_discovery_batch_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_FIND
+            | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_WORKSPACE_INDEX
+            | AUTONOMOUS_TOOL_CODE_INTEL
+            | AUTONOMOUS_TOOL_LSP
+    )
+}
+
+fn is_granular_repository_discovery_tool(tool_name: &str) -> bool {
+    matches!(tool_name, AUTONOMOUS_TOOL_READ | AUTONOMOUS_TOOL_HASH)
+}
+
+fn tool_application_metadata_for_tool(tool_name: &str) -> xero_agent_core::ToolApplicationMetadata {
+    match tool_name {
+        AUTONOMOUS_TOOL_PATCH => xero_agent_core::ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: xero_agent_core::ToolApplicationKind::Declarative,
+            dispatch_safety: xero_agent_core::ToolBatchDispatchSafety::ToolOwnedAtomic,
+            safety_requirements: vec![
+                "supports_preview".into(),
+                "validates_all_targets_before_writing".into(),
+                "guards_expected_hashes".into(),
+                "reports_diff".into(),
+            ],
+        },
+        AUTONOMOUS_TOOL_SEARCH
+        | AUTONOMOUS_TOOL_FIND
+        | AUTONOMOUS_TOOL_LIST
+        | AUTONOMOUS_TOOL_WORKSPACE_INDEX
+        | AUTONOMOUS_TOOL_CODE_INTEL
+        | AUTONOMOUS_TOOL_LSP => xero_agent_core::ToolApplicationMetadata {
+            family: "discovery".into(),
+            kind: xero_agent_core::ToolApplicationKind::ReadOnlyBatch,
+            dispatch_safety: xero_agent_core::ToolBatchDispatchSafety::ParallelReadOnly,
+            safety_requirements: vec![
+                "read_only".into(),
+                "bounded_results".into(),
+                "bounded_scope".into(),
+                "explicit_failure_modes".into(),
+            ],
+        },
+        AUTONOMOUS_TOOL_TOOL_SEARCH => xero_agent_core::ToolApplicationMetadata {
+            family: "tool_discovery".into(),
+            kind: xero_agent_core::ToolApplicationKind::ReadOnlyBatch,
+            dispatch_safety: xero_agent_core::ToolBatchDispatchSafety::ParallelReadOnly,
+            safety_requirements: vec![
+                "read_only".into(),
+                "bounded_results".into(),
+                "catalog_only".into(),
+            ],
+        },
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET => {
+            xero_agent_core::ToolApplicationMetadata {
+                family: "context".into(),
+                kind: xero_agent_core::ToolApplicationKind::ReadOnlyBatch,
+                dispatch_safety: xero_agent_core::ToolBatchDispatchSafety::ParallelReadOnly,
+                safety_requirements: vec![
+                    "read_only".into(),
+                    "bounded_results".into(),
+                    "app_data_scope".into(),
+                ],
+            }
+        }
+        AUTONOMOUS_TOOL_READ | AUTONOMOUS_TOOL_HASH => {
+            xero_agent_core::ToolApplicationMetadata::granular("file")
+        }
+        AUTONOMOUS_TOOL_EDIT
+        | AUTONOMOUS_TOOL_WRITE
+        | AUTONOMOUS_TOOL_DELETE
+        | AUTONOMOUS_TOOL_RENAME
+        | AUTONOMOUS_TOOL_MKDIR
+        | AUTONOMOUS_TOOL_NOTEBOOK_EDIT => {
+            xero_agent_core::ToolApplicationMetadata::granular("edit")
+        }
+        AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE
+        | AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH
+        | AUTONOMOUS_TOOL_AGENT_COORDINATION
+        | AUTONOMOUS_TOOL_TODO
+        | AUTONOMOUS_TOOL_AGENT_DEFINITION => {
+            xero_agent_core::ToolApplicationMetadata::granular("runtime_state")
+        }
+        AUTONOMOUS_TOOL_COMMAND_PROBE
+        | AUTONOMOUS_TOOL_COMMAND_VERIFY
+        | AUTONOMOUS_TOOL_COMMAND_RUN
+        | AUTONOMOUS_TOOL_COMMAND_SESSION
+        | AUTONOMOUS_TOOL_COMMAND_SESSION_START
+        | AUTONOMOUS_TOOL_COMMAND_SESSION_READ
+        | AUTONOMOUS_TOOL_COMMAND_SESSION_STOP
+        | AUTONOMOUS_TOOL_COMMAND
+        | AUTONOMOUS_TOOL_POWERSHELL => {
+            xero_agent_core::ToolApplicationMetadata::granular("command")
+        }
+        AUTONOMOUS_TOOL_BROWSER
+        | AUTONOMOUS_TOOL_BROWSER_OBSERVE
+        | AUTONOMOUS_TOOL_BROWSER_CONTROL => {
+            xero_agent_core::ToolApplicationMetadata::granular("browser")
+        }
+        _ => xero_agent_core::ToolApplicationMetadata::default(),
+    }
+}
+
+fn tool_application_kind_label(kind: xero_agent_core::ToolApplicationKind) -> &'static str {
+    match kind {
+        xero_agent_core::ToolApplicationKind::Granular => "granular",
+        xero_agent_core::ToolApplicationKind::Declarative => "declarative",
+        xero_agent_core::ToolApplicationKind::ReadOnlyBatch => "read_only_batch",
+        xero_agent_core::ToolApplicationKind::MutatingBatch => "mutating_batch",
+    }
+}
+
+fn tool_batch_dispatch_safety_label(
+    dispatch_safety: xero_agent_core::ToolBatchDispatchSafety,
+) -> &'static str {
+    match dispatch_safety {
+        xero_agent_core::ToolBatchDispatchSafety::NotBatch => "not_batch",
+        xero_agent_core::ToolBatchDispatchSafety::ParallelReadOnly => "parallel_read_only",
+        xero_agent_core::ToolBatchDispatchSafety::SequentialMutating => "sequential_mutating",
+        xero_agent_core::ToolBatchDispatchSafety::ToolOwnedAtomic => "tool_owned_atomic",
     }
 }
 
@@ -2041,7 +2287,7 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_exposes_harness_surface_without_agent_definition_mutation() {
+    fn engineer_registry_excludes_removed_test_harness_and_agent_definition_mutation() {
         let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
             skill_tool_enabled: true,
@@ -2051,7 +2297,6 @@ mod tests {
 
         for expected in [
             AUTONOMOUS_TOOL_TOOL_SEARCH,
-            AUTONOMOUS_TOOL_HARNESS_RUNNER,
             AUTONOMOUS_TOOL_TOOL_ACCESS,
             AUTONOMOUS_TOOL_GIT_STATUS,
             AUTONOMOUS_TOOL_GIT_DIFF,
@@ -2087,9 +2332,13 @@ mod tests {
         ] {
             assert!(
                 names.contains(expected),
-                "Test harness registry should expose `{expected}` when active"
+                "Engineer registry should expose `{expected}`"
             );
         }
+        assert!(
+            !names.contains(AUTONOMOUS_TOOL_HARNESS_RUNNER),
+            "harness_runner is reserved for the removed Test agent"
+        );
         assert_eq!(
             names.contains(AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED),
             cfg!(target_os = "macos"),
@@ -2107,7 +2356,7 @@ mod tests {
         );
         assert!(
             !names.contains(AUTONOMOUS_TOOL_AGENT_DEFINITION),
-            "Test must not inherit Agent Create's definition-registry mutation tool"
+            "Engineer must not inherit Agent Create's definition-registry mutation tool"
         );
 
         let agent_create_registry = ToolRegistry::for_tool_names_with_options(
@@ -2171,5 +2420,130 @@ mod tests {
             patch.sandbox_requirement,
             xero_agent_core::ToolSandboxRequirement::WorkspaceWrite
         );
+    }
+
+    #[test]
+    fn tool_application_style_orders_discovery_and_edit_families() {
+        let registry_for_style = |style| {
+            ToolRegistry::for_tool_names_with_options(
+                BTreeSet::from([
+                    AUTONOMOUS_TOOL_READ.to_string(),
+                    AUTONOMOUS_TOOL_SEARCH.to_string(),
+                    AUTONOMOUS_TOOL_CODE_INTEL.to_string(),
+                    AUTONOMOUS_TOOL_EDIT.to_string(),
+                    AUTONOMOUS_TOOL_PATCH.to_string(),
+                ]),
+                ToolRegistryOptions {
+                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    tool_application_policy: ResolvedAgentToolApplicationStyleDto {
+                        style,
+                        ..ResolvedAgentToolApplicationStyleDto::default()
+                    },
+                    ..ToolRegistryOptions::default()
+                },
+            )
+        };
+        let index = |registry: &ToolRegistry, tool_name: &str| {
+            registry
+                .descriptors()
+                .iter()
+                .position(|descriptor| descriptor.name == tool_name)
+                .unwrap_or_else(|| panic!("missing descriptor {tool_name}"))
+        };
+
+        let balanced = registry_for_style(AgentToolApplicationStyleDto::Balanced);
+        assert!(index(&balanced, AUTONOMOUS_TOOL_READ) < index(&balanced, AUTONOMOUS_TOOL_SEARCH));
+        assert!(index(&balanced, AUTONOMOUS_TOOL_EDIT) < index(&balanced, AUTONOMOUS_TOOL_PATCH));
+
+        let conservative = registry_for_style(AgentToolApplicationStyleDto::Conservative);
+        assert!(
+            index(&conservative, AUTONOMOUS_TOOL_READ)
+                < index(&conservative, AUTONOMOUS_TOOL_SEARCH)
+        );
+        assert!(
+            index(&conservative, AUTONOMOUS_TOOL_EDIT)
+                < index(&conservative, AUTONOMOUS_TOOL_PATCH)
+        );
+
+        let declarative = registry_for_style(AgentToolApplicationStyleDto::DeclarativeFirst);
+        assert!(
+            index(&declarative, AUTONOMOUS_TOOL_SEARCH) < index(&declarative, AUTONOMOUS_TOOL_READ)
+        );
+        assert!(
+            index(&declarative, AUTONOMOUS_TOOL_CODE_INTEL)
+                < index(&declarative, AUTONOMOUS_TOOL_READ)
+        );
+        assert!(
+            index(&declarative, AUTONOMOUS_TOOL_PATCH) < index(&declarative, AUTONOMOUS_TOOL_EDIT)
+        );
+    }
+
+    #[test]
+    fn descriptors_v2_mark_discovery_tools_as_bounded_read_only_batches() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_SEARCH.to_string(),
+                AUTONOMOUS_TOOL_FIND.to_string(),
+                AUTONOMOUS_TOOL_WORKSPACE_INDEX.to_string(),
+                AUTONOMOUS_TOOL_CODE_INTEL.to_string(),
+                AUTONOMOUS_TOOL_LSP.to_string(),
+                AUTONOMOUS_TOOL_PATCH.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let descriptors = registry.descriptors_v2();
+        let descriptor = |name: &str| {
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.name == name)
+                .unwrap_or_else(|| panic!("missing descriptor {name}"))
+        };
+
+        for name in [
+            AUTONOMOUS_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_FIND,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            AUTONOMOUS_TOOL_LSP,
+        ] {
+            let descriptor = descriptor(name);
+            assert_eq!(descriptor.application_metadata.family, "discovery");
+            assert_eq!(
+                descriptor.application_metadata.kind,
+                xero_agent_core::ToolApplicationKind::ReadOnlyBatch
+            );
+            assert_eq!(
+                descriptor.application_metadata.dispatch_safety,
+                xero_agent_core::ToolBatchDispatchSafety::ParallelReadOnly
+            );
+            assert_eq!(
+                descriptor.mutability,
+                xero_agent_core::ToolMutability::ReadOnly
+            );
+            assert!(descriptor
+                .application_metadata
+                .safety_requirements
+                .iter()
+                .any(|requirement| requirement == "bounded_results"));
+            assert!(descriptor
+                .application_metadata
+                .safety_requirements
+                .iter()
+                .any(|requirement| requirement == "explicit_failure_modes"));
+        }
+
+        let patch = descriptor(AUTONOMOUS_TOOL_PATCH);
+        assert_eq!(
+            patch.application_metadata.kind,
+            xero_agent_core::ToolApplicationKind::Declarative
+        );
+        assert!(patch
+            .application_metadata
+            .safety_requirements
+            .iter()
+            .any(|requirement| requirement == "supports_preview"));
     }
 }

@@ -792,6 +792,7 @@ fn load_owned_agent_replay_events(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stream_live_owned_agent_events(
     subscription: AgentEventSubscription,
     channel: Channel<serde_json::Value>,

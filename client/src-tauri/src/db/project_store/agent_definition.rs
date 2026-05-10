@@ -1176,9 +1176,7 @@ fn activation_tool_policy_failures(snapshot: &JsonValue, base_profile: &str) -> 
         failures.push("defaultApprovalMode must be suggest, auto_edit, or yolo".to_string());
     }
     let allowed_modes = activation_string_array(snapshot.get("allowedApprovalModes"));
-    if allowed_modes.is_empty() {
-        failures.push("allowedApprovalModes must include suggest".to_string());
-    } else if !allowed_modes.iter().any(|mode| mode == "suggest") {
+    if !allowed_modes.iter().any(|mode| mode == "suggest") {
         failures.push("allowedApprovalModes must include suggest".to_string());
     }
     if matches!(
@@ -1750,6 +1748,7 @@ fn parse_runtime_approval_mode(value: &str) -> Option<RuntimeRunApprovalModeDto>
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record_agent_definition_custom_audit_event(
     repo_root: &Path,
     action_kind: &str,
@@ -2507,5 +2506,4 @@ mod tests {
             assert!(error.message.contains(lifecycle_state));
         }
     }
-
 }

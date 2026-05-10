@@ -17,10 +17,19 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(SOUL_SETTINGS_SQL),
             M::up(USER_ADDED_ENVIRONMENT_TOOLS_SQL),
             M::up(PROVIDER_PREFLIGHT_RESULTS_SQL),
+            M::up(AGENT_TOOLING_SETTINGS_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const AGENT_TOOLING_SETTINGS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS agent_tooling_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
+"#;
 
 const PROVIDER_PREFLIGHT_RESULTS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS provider_preflight_results (

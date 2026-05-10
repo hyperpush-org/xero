@@ -17,14 +17,15 @@ use crate::{
     registry::read_registry,
     runtime::{
         subscribe_agent_events, AgentAutoCompactPreference, AgentEventSubscription,
-        AutonomousToolRuntime, ContinueOwnedAgentRunRequest, DesktopAgentCoreRuntime,
-        DesktopRunDriveMode, OwnedAgentRunRequest,
+        AgentProviderConfig, AutonomousToolRuntime, ContinueOwnedAgentRunRequest,
+        DesktopAgentCoreRuntime, DesktopRunDriveMode, OwnedAgentRunRequest,
     },
     state::DesktopState,
 };
 
 use super::runtime_support::{
-    generate_runtime_run_id, resolve_owned_agent_provider_config, resolve_project_root,
+    agent_provider_config_identity, generate_runtime_run_id, resolve_owned_agent_provider_config,
+    resolve_project_root,
 };
 
 #[tauri::command]
@@ -38,10 +39,10 @@ pub fn start_agent_task<R: Runtime + 'static>(
     validate_non_empty(&request.prompt, "prompt")?;
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let tool_runtime =
-        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
     let provider_config =
         resolve_owned_agent_provider_config(&app, state.inner(), request.controls.as_ref())?;
+    let tool_runtime =
+        tool_runtime_for_provider(&app, state.inner(), &request.project_id, &provider_config)?;
     let owned_request = OwnedAgentRunRequest {
         repo_root,
         project_id: request.project_id,
@@ -74,8 +75,9 @@ pub fn send_agent_message<R: Runtime + 'static>(
         ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
     ensure_agent_run_not_active(state.inner(), &request.run_id)?;
-    let tool_runtime = AutonomousToolRuntime::for_project(&app, state.inner(), &project_id)?;
     let provider_config = resolve_owned_agent_provider_config(&app, state.inner(), None)?;
+    let tool_runtime =
+        tool_runtime_for_provider(&app, state.inner(), &project_id, &provider_config)?;
     let continuation = ContinueOwnedAgentRunRequest {
         repo_root,
         project_id: project_id.clone(),
@@ -129,8 +131,9 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         ..
     } = locate_agent_run(&app, state.inner(), &request.run_id)?;
     ensure_agent_run_not_active(state.inner(), &request.run_id)?;
-    let tool_runtime = AutonomousToolRuntime::for_project(&app, state.inner(), &project_id)?;
     let provider_config = resolve_owned_agent_provider_config(&app, state.inner(), None)?;
+    let tool_runtime =
+        tool_runtime_for_provider(&app, state.inner(), &project_id, &provider_config)?;
     let continuation = ContinueOwnedAgentRunRequest {
         repo_root,
         project_id: project_id.clone(),
@@ -148,6 +151,23 @@ pub fn resume_agent_run<R: Runtime + 'static>(
     let prepared = runtime.continue_run(continuation, DesktopRunDriveMode::Background)?;
     let snapshot = prepared.snapshot.clone();
     Ok(agent_run_dto(snapshot))
+}
+
+fn tool_runtime_for_provider<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+    provider_config: &AgentProviderConfig,
+) -> CommandResult<AutonomousToolRuntime> {
+    let (provider_id, model_id) = agent_provider_config_identity(provider_config);
+    let policy = super::agent_tooling_settings::resolve_agent_tool_application_style(
+        app,
+        state,
+        &provider_id,
+        &model_id,
+    )?;
+    Ok(AutonomousToolRuntime::for_project(app, state, project_id)?
+        .with_tool_application_policy(policy))
 }
 
 #[tauri::command]

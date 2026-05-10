@@ -2084,6 +2084,7 @@ fn authoring_policy_controls() -> Vec<AgentAuthoringPolicyControlDto> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn policy_control(
     id: &str,
     kind: AgentAuthoringPolicyControlKindDto,
@@ -2242,6 +2243,7 @@ fn authoring_templates() -> Vec<AgentAuthoringTemplateDto> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn authoring_template(
     id: &str,
     label: &str,
@@ -2473,6 +2475,7 @@ fn authoring_creation_flows() -> Vec<AgentAuthoringCreationFlowDto> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn creation_flow(
     id: &str,
     label: &str,
@@ -2514,7 +2517,7 @@ fn authoring_profile_availability(
             .filter(|(_, runtime_agent_id)| {
                 tool_allowed_for_runtime_agent(*runtime_agent_id, &tool.name)
             })
-            .map(|(profile, _)| profile.clone())
+            .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
         availability.extend(availability_for_subject(
             "tool",
@@ -2533,7 +2536,7 @@ fn authoring_profile_availability(
                     .iter()
                     .any(|entry| entry.table == db_table.table)
             })
-            .map(|(profile, _)| profile.clone())
+            .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
         availability.extend(availability_for_subject(
             "db_touchpoint",
@@ -2559,7 +2562,7 @@ fn authoring_profile_availability(
                             && entry.contract == artifact.contract
                     })
             })
-            .map(|(profile, _)| profile.clone())
+            .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
         availability.extend(availability_for_subject(
             "upstream_artifact",
@@ -2575,7 +2578,7 @@ fn authoring_profile_availability(
             .filter(|(_, runtime_agent_id)| {
                 runtime_agent_descriptor(*runtime_agent_id).output_contract == contract
             })
-            .map(|(profile, _)| profile.clone())
+            .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
         availability.extend(availability_for_subject(
             "output_contract",
@@ -2600,7 +2603,7 @@ fn authoring_profile_availability(
                         && tool_allowed_for_runtime_agent(*runtime_agent_id, &tool.name)
                 })
             })
-            .map(|(profile, _)| profile.clone())
+            .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
         availability.extend(availability_for_subject(
             "capability_control",
@@ -2644,7 +2647,7 @@ fn availability_for_subject(
                 } else if let Some(required) = allowed_profiles.first() {
                     (
                         AgentAuthoringAvailabilityStatusDto::RequiresProfileChange,
-                        Some(required.clone()),
+                        Some(*required),
                     )
                 } else {
                     (AgentAuthoringAvailabilityStatusDto::Unavailable, None)
@@ -2652,7 +2655,7 @@ fn availability_for_subject(
             AgentAuthoringProfileAvailabilityDto {
                 subject_kind: subject_kind.to_string(),
                 subject_id: subject_id.to_string(),
-                base_capability_profile: profile.clone(),
+                base_capability_profile: *profile,
                 status,
                 reason: availability_reason(subject_kind, status, required_profile.as_ref()),
                 required_profile,
@@ -3058,13 +3061,10 @@ fn infer_authoring_graph_source(snapshot: &JsonValue) -> &'static str {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if prompt_sources
-        .iter()
-        .any(|source| *source == "agent_builder")
-    {
+    if prompt_sources.contains(&"agent_builder") {
         return "agent_builder";
     }
-    if prompt_sources.iter().any(|source| *source == "template") {
+    if prompt_sources.contains(&"template") {
         return "template";
     }
     "saved_definition"

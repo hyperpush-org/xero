@@ -17,7 +17,10 @@ import type {
   AgentDetailStatus,
   AgentListStatus,
 } from '@/src/features/xero/use-workflow-agent-inspector'
-import type { AgentDefinitionWriteResponseDto } from '@/src/lib/xero-model/agent-definition'
+import type {
+  AgentDefinitionPreviewResponseDto,
+  AgentDefinitionWriteResponseDto,
+} from '@/src/lib/xero-model/agent-definition'
 import type {
   AgentAuthoringCatalogDto,
   AgentAuthoringAttachableSkillDto,
@@ -65,6 +68,10 @@ interface PhaseViewProps {
   onReadProjectUiState?: (key: string) => Promise<unknown | null>
   onWriteProjectUiState?: (key: string, value: unknown | null) => Promise<void>
   onSelectedNodeChange?: (hasSelection: boolean) => void
+  onPreviewEffectiveRuntime?: (params: {
+    snapshot: Record<string, unknown>
+    definitionId: string | null
+  }) => Promise<AgentDefinitionPreviewResponseDto>
 }
 
 const AUTHORING_TITLE_BY_MODE: Record<CanvasMode, string> = {
@@ -100,6 +107,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     onReadProjectUiState,
     onWriteProjectUiState,
     onSelectedNodeChange,
+    onPreviewEffectiveRuntime,
     projectId = null,
   } = props
 
@@ -214,6 +222,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
           onReadProjectUiState={onReadProjectUiState}
           onWriteProjectUiState={onWriteProjectUiState}
           onSelectedNodeChange={onSelectedNodeChange}
+          onPreviewEffectiveRuntime={onPreviewEffectiveRuntime}
         />
       ) : (
         <AgentVisualization
@@ -225,6 +234,11 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
           onReadProjectUiState={onReadProjectUiState}
           onWriteProjectUiState={onWriteProjectUiState}
           onSelectedNodeChange={onSelectedNodeChange}
+          onPreviewEffectiveRuntime={
+            selectedAgent && selectedAgent.ref.kind === 'custom'
+              ? onPreviewEffectiveRuntime
+              : undefined
+          }
         />
       )}
 

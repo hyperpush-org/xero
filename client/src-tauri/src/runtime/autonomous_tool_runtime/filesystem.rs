@@ -917,6 +917,7 @@ impl AutonomousToolRuntime {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn find_scope(
         &self,
         scope: &Path,

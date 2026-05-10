@@ -410,12 +410,13 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                 .iter()
                 .any(|group| group.name == "browser_observe"));
             assert!(output.available_groups.iter().any(|group| {
-                group.name == "command_readonly" && group.tools == vec!["command"]
+                group.name == "command_readonly"
+                    && group.tools == vec!["command_probe", "command_verify"]
             }));
             assert!(output
                 .available_groups
                 .iter()
-                .any(|group| { group.name == "mcp_list" && group.tools == vec!["mcp"] }));
+                .any(|group| { group.name == "mcp_list" && group.tools == vec!["mcp_list"] }));
             assert!(output
                 .available_tool_packs
                 .iter()
@@ -441,7 +442,11 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                     "web_search_only".into(),
                     "command_session".into(),
                 ],
-                tools: vec!["command".into(), "solana_alt".into(), "missing_tool".into()],
+                tools: vec![
+                    "command_run".into(),
+                    "solana_alt".into(),
+                    "missing_tool".into(),
+                ],
                 reason: Some("Need to drive app use and run setup.".into()),
             },
         ))
@@ -455,10 +460,8 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
             #[cfg(not(target_os = "macos"))]
             assert!(output.denied_tools.contains(&"macos".into()));
             assert!(output.granted_tools.contains(&"web_search".into()));
-            assert!(output
-                .granted_tools
-                .contains(&"command_session_start".into()));
-            assert!(output.granted_tools.contains(&"command".into()));
+            assert!(output.granted_tools.contains(&"command_session".into()));
+            assert!(output.granted_tools.contains(&"command_run".into()));
             assert!(output.denied_tools.contains(&"emulator".into()));
             assert!(output.denied_tools.contains(&"solana_alt".into()));
             assert!(output.denied_tools.contains(&"missing_tool".into()));
@@ -520,7 +523,7 @@ fn ask_tool_access_filters_and_denies_non_observe_tools() {
                     "mutation".into(),
                     "browser_control".into(),
                 ],
-                tools: vec!["read".into(), "command".into(), "subagent".into()],
+                tools: vec!["read".into(), "command_run".into(), "subagent".into()],
                 reason: Some("Try to escape Ask observe-only mode.".into()),
             },
         ))
@@ -528,9 +531,9 @@ fn ask_tool_access_filters_and_denies_non_observe_tools() {
     match request.output {
         AutonomousToolOutput::ToolAccess(output) => {
             assert!(output.granted_tools.contains(&"read".into()));
-            assert!(!output.granted_tools.contains(&"command".into()));
+            assert!(!output.granted_tools.contains(&"command_run".into()));
             assert!(!output.granted_tools.contains(&"subagent".into()));
-            assert!(output.denied_tools.contains(&"command".into()));
+            assert!(output.denied_tools.contains(&"command_run".into()));
             assert!(output.denied_tools.contains(&"mutation".into()));
             assert!(output.denied_tools.contains(&"browser_control".into()));
             assert!(output.denied_tools.contains(&"subagent".into()));
@@ -934,7 +937,7 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
         AutonomousToolOutput::ToolSearch(output) => {
             assert_eq!(
                 output.matches.first().map(|item| item.tool_name.as_str()),
-                Some("command")
+                Some("command_verify")
             );
             assert!(output.matches[0]
                 .activation_groups
@@ -1327,7 +1330,7 @@ fn subagent_runtime_tracks_lifecycle_and_delegated_budgets() {
             prompt: None,
             model_id: None,
             write_set: Vec::new(),
-            decision: None,
+            decision: Some("Closed after reviewing the planner output.".into()),
             timeout_ms: None,
             max_tool_calls: None,
             max_tokens: None,
@@ -1380,7 +1383,8 @@ fn subagent_role_policies_are_least_privilege_and_parent_bounded() {
     assert!(researcher_policy.allows_tool("read"));
     assert!(researcher_policy.allows_tool("code_intel"));
     assert!(!researcher_policy.allows_tool("write"));
-    assert!(!researcher_policy.allows_tool("command"));
+    assert!(!researcher_policy.allows_tool("command_probe"));
+    assert!(!researcher_policy.allows_tool("command_run"));
     assert!(!researcher_policy.allows_tool("subagent"));
 
     let parent_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
@@ -1396,7 +1400,8 @@ fn subagent_role_policies_are_least_privilege_and_parent_bounded() {
     );
     assert!(engineer_policy.allows_tool("read"));
     assert!(!engineer_policy.allows_tool("write"));
-    assert!(!engineer_policy.allows_tool("command"));
+    assert!(!engineer_policy.allows_tool("command_probe"));
+    assert!(!engineer_policy.allows_tool("command_run"));
 }
 
 #[test]
@@ -1409,7 +1414,8 @@ fn custom_agent_policy_can_enable_and_disable_domain_tool_packs() {
         }
     }))
     .expect("browser policy");
-    assert!(browser_policy.allows_tool("browser"));
+    assert!(browser_policy.allows_tool("browser_observe"));
+    assert!(browser_policy.allows_tool("browser_control"));
     assert!(!browser_policy.allows_tool("emulator"));
     assert!(!browser_policy.allows_tool("solana_simulate"));
 
@@ -1421,7 +1427,8 @@ fn custom_agent_policy_can_enable_and_disable_domain_tool_packs() {
             }
         }))
         .expect("browser policy without opt in");
-    assert!(!browser_without_opt_in.allows_tool("browser"));
+    assert!(browser_without_opt_in.allows_tool("browser_observe"));
+    assert!(!browser_without_opt_in.allows_tool("browser_control"));
 
     let solana_policy = AutonomousAgentToolPolicy::from_definition_snapshot(&serde_json::json!({
         "toolPolicy": {

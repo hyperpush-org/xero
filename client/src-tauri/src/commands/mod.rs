@@ -4,6 +4,7 @@ pub mod agent_reports;
 pub mod agent_session;
 pub mod agent_session_title;
 pub mod agent_task;
+pub mod agent_tooling_settings;
 pub mod backend_jobs;
 pub mod browser;
 pub mod cancel_autonomous_run;
@@ -103,6 +104,11 @@ pub use agent_session_title::auto_name_agent_session;
 pub use agent_task::{
     cancel_agent_run, export_agent_trace, get_agent_run, list_agent_runs, resume_agent_run,
     send_agent_message, start_agent_task, subscribe_agent_stream,
+};
+pub use agent_tooling_settings::{
+    agent_tooling_settings, agent_tooling_update_settings, AgentToolingModelOverrideDto,
+    AgentToolingSettingsDto, UpsertAgentToolingModelOverrideRequestDto,
+    UpsertAgentToolingSettingsRequestDto,
 };
 pub use browser::{
     browser_back, browser_click, browser_control_settings, browser_control_update_settings,

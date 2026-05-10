@@ -372,15 +372,13 @@ pub fn load_project_performance_budgets(
     let budgets = PROJECT_PERFORMANCE_BUDGETS
         .iter()
         .map(|(operation, budget_ms, measurement_source, enforcement)| {
-            let status = if *operation == "retrieval_latency"
-                && storage.retrieval_health_status != "healthy"
-            {
-                "at_risk"
-            } else if *operation == "startup_diagnostics"
-                && storage
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.severity == "error")
+            let status = if (*operation == "retrieval_latency"
+                && storage.retrieval_health_status != "healthy")
+                || (*operation == "startup_diagnostics"
+                    && storage
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.severity == "error"))
             {
                 "at_risk"
             } else {

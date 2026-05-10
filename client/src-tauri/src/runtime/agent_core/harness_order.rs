@@ -1342,12 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn order_gate_attaches_only_to_test_agent_controls() {
-        assert!(
-            HarnessTestOrderGate::for_controls(&controls_for_agent(RuntimeAgentIdDto::Engineer))
-                .is_some()
-        );
-
+    fn order_gate_stays_disabled_after_test_agent_removal() {
         for runtime_agent_id in [
             RuntimeAgentIdDto::Ask,
             RuntimeAgentIdDto::Engineer,
@@ -1380,7 +1375,6 @@ mod tests {
         assert_eq!(
             targets,
             vec![
-                AUTONOMOUS_TOOL_HARNESS_RUNNER,
                 AUTONOMOUS_TOOL_TOOL_SEARCH,
                 AUTONOMOUS_TOOL_TOOL_ACCESS,
                 AUTONOMOUS_TOOL_GIT_STATUS,
@@ -1432,7 +1426,6 @@ mod tests {
         assert_eq!(
             step_ids,
             vec![
-                "deterministic_runner",
                 "registry_discovery",
                 "repo_inspection",
                 "planning_runtime_state",
@@ -1460,15 +1453,12 @@ mod tests {
         assert!(target_index(AUTONOMOUS_TOOL_MCP_LIST) < target_index(dynamic_mcp));
         assert!(target_index(dynamic_mcp) < target_index(AUTONOMOUS_TOOL_SKILL));
 
-        let runner = items
-            .iter()
-            .find(|item| {
-                item.step_id == "deterministic_runner"
-                    && item.target == AUTONOMOUS_TOOL_HARNESS_RUNNER
-            })
-            .expect("harness runner item");
-        assert_eq!(runner.safe_input, r#"{"action":"manifest"}"#);
-        assert_eq!(runner.effect_class, "observe");
+        assert!(
+            items
+                .iter()
+                .all(|item| item.target != AUTONOMOUS_TOOL_HARNESS_RUNNER),
+            "harness_runner should not appear without the removed Test agent"
+        );
 
         for item in &items {
             assert_eq!(
@@ -1531,7 +1521,6 @@ mod tests {
         let report = r#"# Harness Test Report
 | Step | Target | Status | Evidence | Skip reason |
 | --- | --- | --- | --- | --- |
-| deterministic_runner | harness_runner | passed | persisted manifest | none |
 | registry_discovery | tool_search | passed | persisted search | none |
 | registry_discovery | tool_access | passed | persisted access | none |
 "#;

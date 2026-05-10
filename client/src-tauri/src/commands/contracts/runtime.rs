@@ -94,6 +94,67 @@ pub enum RuntimeRunApprovalModeDto {
     Yolo,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolApplicationStyleDto {
+    Conservative,
+    #[default]
+    Balanced,
+    DeclarativeFirst,
+}
+
+impl AgentToolApplicationStyleDto {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Conservative => "conservative",
+            Self::Balanced => "balanced",
+            Self::DeclarativeFirst => "declarative_first",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolApplicationStyleResolutionSourceDto {
+    GlobalDefault,
+    ModelOverride,
+}
+
+impl AgentToolApplicationStyleResolutionSourceDto {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GlobalDefault => "global_default",
+            Self::ModelOverride => "model_override",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvedAgentToolApplicationStyleDto {
+    pub provider_id: String,
+    pub model_id: String,
+    pub style: AgentToolApplicationStyleDto,
+    pub source: AgentToolApplicationStyleResolutionSourceDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_updated_at: Option<String>,
+}
+
+impl Default for ResolvedAgentToolApplicationStyleDto {
+    fn default() -> Self {
+        Self {
+            provider_id: String::new(),
+            model_id: String::new(),
+            style: AgentToolApplicationStyleDto::Balanced,
+            source: AgentToolApplicationStyleResolutionSourceDto::GlobalDefault,
+            global_updated_at: None,
+            override_updated_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeAgentIdDto {
@@ -251,7 +312,10 @@ pub fn ensure_runtime_agent_available(agent_id: RuntimeAgentIdDto) -> Result<(),
 
     Err(CommandError::user_fixable(
         "runtime_agent_unavailable",
-        format!("Xero cannot start the {} agent because it is not available.", agent_id.label()),
+        format!(
+            "Xero cannot start the {} agent because it is not available.",
+            agent_id.label()
+        ),
     ))
 }
 
@@ -1090,15 +1154,7 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "ask",
-                "plan",
-                "engineer",
-                "debug",
-                "crawl",
-                "agent_create",
-                "test"
-            ]
+            vec!["ask", "plan", "engineer", "debug", "crawl", "agent_create"]
         );
 
         let plan = descriptors
@@ -1193,7 +1249,6 @@ mod tests {
             &RuntimeAgentIdDto::AgentCreate,
             &RuntimeRunApprovalModeDto::AutoEdit
         ));
-
     }
 
     #[test]

@@ -82,6 +82,7 @@ pub fn create_owned_agent_run(
             browser_control_preference: request.tool_runtime.browser_control_preference(),
             runtime_agent_id: controls.active.runtime_agent_id,
             agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
         },
     );
     let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
@@ -93,12 +94,13 @@ pub fn create_owned_agent_run(
     )?;
     let attached_skill_contexts =
         attached_skill_contexts_from_resolution_snapshot(&attached_skill_snapshot);
-    let system_prompt = assemble_system_prompt_for_session_with_attached(
+    let system_prompt = assemble_system_prompt_for_session_with_attached_and_policy(
         &request.repo_root,
         Some(&request.project_id),
         Some(&request.agent_session_id),
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
+        request.tool_runtime.tool_application_policy(),
         tool_registry.descriptors(),
         Some(&definition_selection.snapshot),
         Some(request.tool_runtime.soul_settings()),
@@ -164,6 +166,16 @@ pub fn create_owned_agent_run(
             }),
         )?;
     }
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        AgentRunEventKind::StateTransition,
+        json!({
+            "kind": "tool_application_style_resolution",
+            "toolApplicationPolicy": request.tool_runtime.tool_application_policy(),
+        }),
+    )?;
 
     append_message(
         &request.repo_root,
@@ -743,6 +755,7 @@ pub fn prepare_owned_agent_continuation_for_drive(
             browser_control_preference: request.tool_runtime.browser_control_preference(),
             runtime_agent_id: controls.active.runtime_agent_id,
             agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
         });
         let replay_tool_runtime = request
             .tool_runtime
@@ -1222,12 +1235,13 @@ fn estimate_continuation_context_tokens(
         &snapshot.run.project_id,
         &snapshot.run.run_id,
     )?;
-    let system_prompt = assemble_system_prompt_for_session_with_attached(
+    let system_prompt = assemble_system_prompt_for_session_with_attached_and_policy(
         &request.repo_root,
         Some(&snapshot.run.project_id),
         Some(&snapshot.run.agent_session_id),
         controls.active.runtime_agent_id,
         tool_runtime.browser_control_preference(),
+        tool_runtime.tool_application_policy(),
         tool_registry.descriptors(),
         Some(&definition_snapshot),
         Some(tool_runtime.soul_settings()),
@@ -1651,6 +1665,7 @@ fn create_or_load_handoff_target_run(
             browser_control_preference: request.tool_runtime.browser_control_preference(),
             runtime_agent_id: controls.active.runtime_agent_id,
             agent_tool_policy,
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
         },
     );
     let attached_skill_snapshot = resolve_attached_skill_snapshot_for_run(
@@ -1662,12 +1677,13 @@ fn create_or_load_handoff_target_run(
     )?;
     let attached_skill_contexts =
         attached_skill_contexts_from_resolution_snapshot(&attached_skill_snapshot);
-    let system_prompt = assemble_system_prompt_for_session_with_attached(
+    let system_prompt = assemble_system_prompt_for_session_with_attached_and_policy(
         &request.repo_root,
         Some(&request.project_id),
         Some(&source_snapshot.run.agent_session_id),
         controls.active.runtime_agent_id,
         request.tool_runtime.browser_control_preference(),
+        request.tool_runtime.tool_application_policy(),
         tool_registry.descriptors(),
         Some(&definition_snapshot),
         Some(request.tool_runtime.soul_settings()),

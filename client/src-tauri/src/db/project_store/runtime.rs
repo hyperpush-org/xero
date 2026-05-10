@@ -980,7 +980,7 @@ fn read_runtime_attached_skill_snapshot_with_connection(
                 serde_json::from_str::<XeroAttachedSkillResolutionSnapshot>(&snapshot_json)
                     .map_err(|error| {
                         map_runtime_run_decode_error(
-                            &database_path,
+                            database_path,
                             format!(
                                 "Attached-skill snapshot for run `{run_id}` is not valid: {error}"
                             ),
@@ -988,7 +988,7 @@ fn read_runtime_attached_skill_snapshot_with_connection(
                     })?;
             if snapshot.project_id != project_id || snapshot.run_id != run_id {
                 return Err(map_runtime_run_decode_error(
-                    &database_path,
+                    database_path,
                     format!(
                         "Attached-skill snapshot identity is `{}`/`{}` but `{project_id}`/`{run_id}` was requested.",
                         snapshot.project_id, snapshot.run_id
@@ -1000,7 +1000,7 @@ fn read_runtime_attached_skill_snapshot_with_connection(
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
         Err(other) => Err(map_runtime_run_write_error(
             "runtime_attached_skill_snapshot_query_failed",
-            &database_path,
+            database_path,
             other,
             "Xero could not read the attached-skill context snapshot.",
         )),

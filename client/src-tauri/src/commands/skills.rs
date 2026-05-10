@@ -1002,7 +1002,7 @@ fn resolve_skills_sh_skill(
         runtime_config.default_source_root = key.root.clone();
         runtime_config.limits.default_discover_result_limit = ONLINE_SKILL_DISCOVER_LIMIT;
         runtime_config.limits.max_discover_result_limit = ONLINE_SKILL_DISCOVER_LIMIT;
-        let runtime = AutonomousSkillRuntime::new(runtime_config, cache_dir.to_path_buf());
+        let runtime = AutonomousSkillRuntime::new(runtime_config, cache_dir);
 
         if !discovered_cache.contains_key(key) {
             let discovered = match runtime.discover(AutonomousSkillDiscoverRequest {

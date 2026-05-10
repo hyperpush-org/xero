@@ -15,7 +15,7 @@ pub(crate) struct ProviderContextPackage {
     pub compilation: PromptCompilation,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProviderContextPackageInput<'a> {
     pub repo_root: &'a Path,
     pub project_id: &'a str,
@@ -29,6 +29,7 @@ pub(crate) struct ProviderContextPackageInput<'a> {
     pub model_id: &'a str,
     pub turn_index: usize,
     pub browser_control_preference: BrowserControlPreferenceDto,
+    pub tool_application_policy: ResolvedAgentToolApplicationStyleDto,
     pub soul_settings: Option<&'a SoulSettingsDto>,
     pub tools: &'a [AgentToolDescriptor],
     pub tool_exposure_plan: Option<&'a ToolExposurePlan>,
@@ -78,6 +79,7 @@ pub(crate) fn assemble_provider_context_package(
         input.tools,
     )
     .with_soul_settings(input.soul_settings)
+    .with_tool_application_policy(input.tool_application_policy.clone())
     .with_agent_definition_snapshot(input.agent_definition_snapshot)
     .with_owned_process_summary(input.owned_process_summary)
     .with_active_coordination_summary(active_coordination_summary.as_deref())
@@ -309,6 +311,10 @@ pub(crate) fn assemble_provider_context_package(
     manifest_fields.insert("providerId".into(), json!(input.provider_id));
     manifest_fields.insert("modelId".into(), json!(input.model_id));
     manifest_fields.insert("turnIndex".into(), json!(input.turn_index));
+    manifest_fields.insert(
+        "toolApplicationPolicy".into(),
+        json!(input.tool_application_policy),
+    );
     manifest_fields.insert("contextHash".into(), json!(context_hash.clone()));
     manifest_fields.insert("budgetTokens".into(), json!(budget_tokens));
     manifest_fields.insert(
@@ -499,8 +505,7 @@ impl FirstTurnContextPolicy {
             .map(|limit| {
                 u32::try_from(limit)
                     .unwrap_or(MAX_FIRST_TURN_RETRIEVAL_LIMIT)
-                    .max(1)
-                    .min(MAX_FIRST_TURN_RETRIEVAL_LIMIT)
+                    .clamp(1, MAX_FIRST_TURN_RETRIEVAL_LIMIT)
             })
             .unwrap_or(DEFAULT_RETRIEVAL_LIMIT);
         let search_scope =
@@ -2461,6 +2466,7 @@ mod tests {
                 model_id: OPENAI_CODEX_PROVIDER_ID,
                 turn_index: 0,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
+                tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
                 soul_settings: None,
                 tools: &[],
                 tool_exposure_plan: None,
@@ -2530,6 +2536,7 @@ mod tests {
             model_id: OPENAI_CODEX_PROVIDER_ID,
             turn_index: 0,
             browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             soul_settings: None,
             tools: &[],
             tool_exposure_plan: None,
@@ -2538,7 +2545,7 @@ mod tests {
             provider_preflight: None,
         };
 
-        let first = assemble_provider_context_package(input, Vec::new(), Vec::new())
+        let first = assemble_provider_context_package(input.clone(), Vec::new(), Vec::new())
             .expect("first package");
         let second = assemble_provider_context_package(input, Vec::new(), Vec::new())
             .expect("second package");
@@ -2773,6 +2780,7 @@ mod tests {
             model_id: OPENAI_CODEX_PROVIDER_ID,
             turn_index: 0,
             browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             soul_settings: None,
             tools: &[],
             tool_exposure_plan: None,
@@ -2906,6 +2914,7 @@ mod tests {
             model_id: OPENAI_CODEX_PROVIDER_ID,
             turn_index: 0,
             browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             soul_settings: None,
             tools: &[],
             tool_exposure_plan: None,
@@ -3009,6 +3018,7 @@ mod tests {
             model_id: OPENAI_CODEX_PROVIDER_ID,
             turn_index: 0,
             browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             soul_settings: None,
             tools: &[],
             tool_exposure_plan: None,
@@ -3065,6 +3075,7 @@ mod tests {
                 model_id: OPENAI_CODEX_PROVIDER_ID,
                 turn_index: 0,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
+                tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
                 soul_settings: None,
                 tools: &[],
                 tool_exposure_plan: None,
@@ -3120,6 +3131,7 @@ mod tests {
                 model_id: OPENAI_CODEX_PROVIDER_ID,
                 turn_index: 1,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
+                tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
                 soul_settings: None,
                 tools: &[],
                 tool_exposure_plan: None,
@@ -3257,6 +3269,7 @@ mod tests {
                 model_id: OPENAI_CODEX_PROVIDER_ID,
                 turn_index: 0,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
+                tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
                 soul_settings: None,
                 tools: &tools,
                 tool_exposure_plan: None,
@@ -3388,6 +3401,7 @@ mod tests {
                 model_id: OPENAI_CODEX_PROVIDER_ID,
                 turn_index: 0,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
+                tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
                 soul_settings: None,
                 tools: &tools,
                 tool_exposure_plan: None,
@@ -3519,6 +3533,7 @@ mod tests {
                 model_id: OPENAI_CODEX_PROVIDER_ID,
                 turn_index: 0,
                 browser_control_preference: BrowserControlPreferenceDto::Default,
+                tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
                 soul_settings: None,
                 tools: &tools,
                 tool_exposure_plan: None,

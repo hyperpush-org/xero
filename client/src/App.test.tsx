@@ -1862,6 +1862,9 @@ function createAdapter(options?: {
     updateAgentDefinition: async () => {
       throw new Error('updateAgentDefinition not stubbed in test adapter')
     },
+    previewAgentDefinition: async () => {
+      throw new Error('previewAgentDefinition not stubbed in test adapter')
+    },
     listWorkflowAgents: async () => ({ agents: [] }),
     getWorkflowAgentDetail: async () => {
       throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
@@ -3032,7 +3035,7 @@ describe('XeroApp current UI', () => {
     )
   })
 
-  it('lazy-mounts the workflows sidebar and preserves its local search state while hidden', async () => {
+  it('lazy-mounts the library sidebar and preserves its local agent search state while hidden', async () => {
     const { adapter } = createAdapter()
 
     render(<XeroApp adapter={adapter} />)
@@ -3046,8 +3049,9 @@ describe('XeroApp current UI', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 
     const workflowsPanel = await screen.findByLabelText('Library')
-    fireEvent.click(within(workflowsPanel).getByRole('button', { name: 'Search workflows' }))
-    fireEvent.change(within(workflowsPanel).getByRole('searchbox', { name: 'Search workflows' }), {
+    fireEvent.click(within(workflowsPanel).getByRole('tab', { name: 'Agents' }))
+    fireEvent.click(within(workflowsPanel).getByRole('button', { name: 'Search agents' }))
+    fireEvent.change(within(workflowsPanel).getByRole('searchbox', { name: 'Search agents' }), {
       target: { value: 'review' },
     })
 
@@ -3060,7 +3064,7 @@ describe('XeroApp current UI', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Open workflows' })[0])
 
-    expect(await screen.findByRole('searchbox', { name: 'Search workflows' })).toHaveValue('review')
+    expect(await screen.findByRole('searchbox', { name: 'Search agents' })).toHaveValue('review')
   })
 
   it('renders live git footer data from desktop state while leaving mock-only fields untouched', async () => {

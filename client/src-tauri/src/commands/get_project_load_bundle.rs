@@ -42,16 +42,16 @@ pub async fn get_project_load_bundle<R: Runtime + 'static>(
         },
     )
     .await
-    .or_else(|error| {
+    .map_err(|error| {
         if error.code == "backend_job_stale_result" || error.code == "backend_job_cancelled" {
-            Err(CommandError::retryable(
+            CommandError::retryable(
                 "project_load_bundle_superseded",
                 format!(
                     "Xero skipped stale project load work for `{job_project_id}` because a newer project selection replaced it."
                 ),
-            ))
+            )
         } else {
-            Err(error)
+            error
         }
     })
 }

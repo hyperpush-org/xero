@@ -104,6 +104,7 @@ pub(crate) struct PromptCompiler<'a> {
     agent_session_id: Option<&'a str>,
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
+    tool_application_policy: ResolvedAgentToolApplicationStyleDto,
     tools: &'a [AgentToolDescriptor],
     agent_definition_snapshot: Option<JsonValue>,
     soul_settings: Option<SoulSettingsDto>,
@@ -132,6 +133,7 @@ impl<'a> PromptCompiler<'a> {
             agent_session_id,
             runtime_agent_id,
             browser_control_preference,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             tools,
             agent_definition_snapshot: None,
             soul_settings: None,
@@ -206,6 +208,14 @@ impl<'a> PromptCompiler<'a> {
         self
     }
 
+    pub(crate) fn with_tool_application_policy(
+        mut self,
+        policy: ResolvedAgentToolApplicationStyleDto,
+    ) -> Self {
+        self.tool_application_policy = policy;
+        self
+    }
+
     pub(crate) fn compile(&self) -> CommandResult<PromptCompilation> {
         let mut candidates = Vec::new();
         if let Some(settings) = self.soul_settings.as_ref() {
@@ -252,6 +262,7 @@ impl<'a> PromptCompiler<'a> {
             tool_policy_fragment(
                 self.runtime_agent_id,
                 self.browser_control_preference,
+                &self.tool_application_policy,
                 self.tools,
             ),
             PromptFragmentBudgetPolicy::AlwaysInclude,
@@ -363,12 +374,13 @@ impl<'a> PromptCompiler<'a> {
     clippy::too_many_arguments,
     reason = "System prompt assembly is a narrow compatibility wrapper over the prompt compiler boundary."
 )]
-pub(crate) fn assemble_system_prompt_for_session_with_attached(
+pub(crate) fn assemble_system_prompt_for_session_with_attached_and_policy(
     repo_root: &Path,
     project_id: Option<&str>,
     agent_session_id: Option<&str>,
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
+    tool_application_policy: &ResolvedAgentToolApplicationStyleDto,
     tools: &[AgentToolDescriptor],
     agent_definition_snapshot: Option<&JsonValue>,
     soul_settings: Option<&SoulSettingsDto>,
@@ -381,6 +393,7 @@ pub(crate) fn assemble_system_prompt_for_session_with_attached(
         agent_session_id,
         runtime_agent_id,
         browser_control_preference,
+        tool_application_policy,
         tools,
         agent_definition_snapshot,
         soul_settings,
@@ -419,6 +432,7 @@ pub(crate) fn compile_system_prompt_for_session(
         agent_session_id,
         runtime_agent_id,
         browser_control_preference,
+        &ResolvedAgentToolApplicationStyleDto::default(),
         tools,
         agent_definition_snapshot,
         soul_settings,
@@ -438,6 +452,7 @@ pub(crate) fn compile_system_prompt_for_session_with_attached(
     agent_session_id: Option<&str>,
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
+    tool_application_policy: &ResolvedAgentToolApplicationStyleDto,
     tools: &[AgentToolDescriptor],
     agent_definition_snapshot: Option<&JsonValue>,
     soul_settings: Option<&SoulSettingsDto>,
@@ -454,6 +469,7 @@ pub(crate) fn compile_system_prompt_for_session_with_attached(
         tools,
     )
     .with_soul_settings(soul_settings)
+    .with_tool_application_policy(tool_application_policy.clone())
     .with_agent_definition_snapshot(agent_definition_snapshot)
     .with_owned_process_summary(owned_process_summary)
     .with_attached_skill_contexts(attached_skill_contexts)
@@ -1067,6 +1083,7 @@ fn blank_as_none(value: &str) -> Option<&str> {
 fn tool_policy_fragment(
     runtime_agent_id: RuntimeAgentIdDto,
     browser_control_preference: BrowserControlPreferenceDto,
+    tool_application_policy: &ResolvedAgentToolApplicationStyleDto,
     tools: &[AgentToolDescriptor],
 ) -> String {
     let tool_names = tools
@@ -1076,6 +1093,8 @@ fn tool_policy_fragment(
         .join(", ");
     let browser_control_guidance =
         browser_control_prompt_section(browser_control_preference, tools);
+    let tool_application_guidance =
+        tool_application_prompt_section(runtime_agent_id, tool_application_policy, tools);
     match runtime_agent_id {
         RuntimeAgentIdDto::Ask => format!(
             "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
@@ -1084,10 +1103,10 @@ fn tool_policy_fragment(
             "Available planning tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Engineer => format!(
-            "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
+            "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Debug => format!(
-            "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` with `mode=debug_evidence` for symptom, reproduction, hypothesis, experiment, root_cause, fix, and verification ledger entries. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{browser_control_guidance}"
+            "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` with `mode=debug_evidence` for symptom, reproduction, hypothesis, experiment, root_cause, fix, and verification ledger entries. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Crawl => format!(
             "Available repository reconnaissance tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, code intelligence, environment context, and system diagnostics only for local repository mapping. `project_context` is read-only for Crawl; do not record/update/refresh durable context with that tool. `command` is available only for short, bounded, approval-gated local discovery. `tool_search` and `tool_access` are filtered to Crawl-safe reconnaissance capabilities; do not ask for mutation, browser-control, MCP, skill, subagent, device, network, or external-service tools.{browser_control_guidance}"
@@ -1096,6 +1115,99 @@ fn tool_policy_fragment(
             "Available agent-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition registry actions. `agent_definition` is the only persistence tool Agent Create may use, and save/update/archive/clone require explicit operator approval. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
     }
+}
+
+fn tool_application_prompt_section(
+    runtime_agent_id: RuntimeAgentIdDto,
+    policy: &ResolvedAgentToolApplicationStyleDto,
+    tools: &[AgentToolDescriptor],
+) -> String {
+    if !matches!(
+        runtime_agent_id,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug
+    ) {
+        return String::new();
+    }
+    let has_edit_tool = tools
+        .iter()
+        .any(|tool| is_granular_edit_application_tool(tool.name.as_str()));
+    let has_patch_tool = tools.iter().any(|tool| tool.name == AUTONOMOUS_TOOL_PATCH);
+    let has_discovery_batch_tool = tools
+        .iter()
+        .any(|tool| is_repository_discovery_batch_tool(tool.name.as_str()));
+    let has_granular_discovery_tool = tools
+        .iter()
+        .any(|tool| is_granular_repository_discovery_tool(tool.name.as_str()));
+    if !has_edit_tool && !has_patch_tool && !has_discovery_batch_tool {
+        return String::new();
+    }
+
+    let style_line = format!(
+        "\n\nActive tool application style: `{}` (source: `{}`). ",
+        policy.style.as_str(),
+        policy.source.as_str()
+    );
+    let mut guidance = Vec::new();
+    if has_edit_tool || has_patch_tool {
+        guidance.push(match policy.style {
+            AgentToolApplicationStyleDto::Conservative => {
+                "Prefer narrow granular read/edit/write operations for edit-family mutations; request `patch` only when a validated batch is clearly safer."
+            }
+            AgentToolApplicationStyleDto::Balanced => {
+                "Choose granular edits or `patch` based on the task shape, observation confidence, and blast radius."
+            }
+            AgentToolApplicationStyleDto::DeclarativeFirst => {
+                "For edit-family mutations, prefer `patch` to describe the whole change across affected files when it can validate every target; use granular tools for narrow or recovery edits."
+            }
+        });
+    }
+    if has_discovery_batch_tool {
+        guidance.push(match policy.style {
+            AgentToolApplicationStyleDto::Conservative => {
+                if has_granular_discovery_tool {
+                    "For repository discovery, start with targeted `read`, `search`, or `find` scopes and keep symbol/diagnostic batches narrow with `path` and `limit`."
+                } else {
+                    "For repository discovery, keep read-only batch calls narrow with explicit `path`, query, and `limit` values."
+                }
+            }
+            AgentToolApplicationStyleDto::Balanced => {
+                "For repository discovery, choose targeted `read` calls or bounded `search`, `find`, `workspace_index`, `code_intel`, or `lsp` batches based on task breadth."
+            }
+            AgentToolApplicationStyleDto::DeclarativeFirst => {
+                "For repository discovery, prefer bounded batch tools such as `search`, `find`, `workspace_index`, `code_intel`, or `lsp` before individual `read`s when one result set can answer the question."
+            }
+        });
+    }
+    format!("{style_line}{}", guidance.join(" "))
+}
+
+fn is_granular_edit_application_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_EDIT
+            | AUTONOMOUS_TOOL_WRITE
+            | AUTONOMOUS_TOOL_DELETE
+            | AUTONOMOUS_TOOL_RENAME
+            | AUTONOMOUS_TOOL_MKDIR
+            | AUTONOMOUS_TOOL_NOTEBOOK_EDIT
+    )
+}
+
+fn is_repository_discovery_batch_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_FIND
+            | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_TOOL_SEARCH
+            | AUTONOMOUS_TOOL_WORKSPACE_INDEX
+            | AUTONOMOUS_TOOL_CODE_INTEL
+            | AUTONOMOUS_TOOL_LSP
+    )
+}
+
+fn is_granular_repository_discovery_tool(tool_name: &str) -> bool {
+    matches!(tool_name, AUTONOMOUS_TOOL_READ | AUTONOMOUS_TOOL_HASH)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1856,6 +1968,7 @@ pub(crate) fn plan_tool_exposure_for_prompt(
             reason_codes: task_classification.reason_codes,
         },
     );
+    plan.apply_tool_application_policy(&options.tool_application_policy);
 
     add_startup_surface(&mut plan, options);
     if options.runtime_agent_id == RuntimeAgentIdDto::AgentCreate {
@@ -1929,9 +2042,9 @@ pub(crate) fn plan_tool_exposure_for_prompt(
             "scaffold",
         ],
     ) {
-        add_tool_group_with_reason(
+        add_mutation_tools_for_style(
             &mut plan,
-            "mutation",
+            options,
             "planner_classification",
             "code_change_intent",
             "Task text indicates repository file creation or mutation.",
@@ -2283,9 +2396,9 @@ pub(crate) fn plan_tool_exposure_for_prompt(
             "code-intelligence",
         ],
     ) {
-        add_tool_group_with_reason(
+        add_discovery_tools_for_style(
             &mut plan,
-            "intelligence",
+            options,
             "planner_classification",
             "code_intelligence_intent",
             "Task text asks for code symbols or diagnostics.",
@@ -2425,6 +2538,96 @@ fn add_tool_group_with_reason(
 ) {
     if let Some(tools) = tool_access_group_tools(group) {
         plan.add_tools(tools.iter().copied(), source, reason_code, detail);
+    }
+}
+
+fn add_mutation_tools_for_style(
+    plan: &mut ToolExposurePlan,
+    options: &ToolRegistryOptions,
+    source: &str,
+    reason_code: &str,
+    detail: &str,
+) {
+    match options.tool_application_policy.style {
+        AgentToolApplicationStyleDto::Balanced => {
+            add_tool_group_with_reason(plan, "mutation", source, reason_code, detail);
+        }
+        AgentToolApplicationStyleDto::DeclarativeFirst => {
+            add_tool_group_with_reason(plan, "mutation", source, reason_code, detail);
+            plan.add_tool(
+                AUTONOMOUS_TOOL_PATCH,
+                "tool_application_style",
+                "declarative_edit_preferred",
+                "Declarative-first style prefers whole-change patch operations for edit-family mutations when available.",
+            );
+        }
+        AgentToolApplicationStyleDto::Conservative => {
+            plan.add_tools(
+                [
+                    AUTONOMOUS_TOOL_EDIT,
+                    AUTONOMOUS_TOOL_WRITE,
+                    AUTONOMOUS_TOOL_DELETE,
+                    AUTONOMOUS_TOOL_RENAME,
+                    AUTONOMOUS_TOOL_MKDIR,
+                ],
+                source,
+                reason_code,
+                detail,
+            );
+            plan.add_tools(
+                [
+                    AUTONOMOUS_TOOL_EDIT,
+                    AUTONOMOUS_TOOL_WRITE,
+                    AUTONOMOUS_TOOL_DELETE,
+                    AUTONOMOUS_TOOL_RENAME,
+                    AUTONOMOUS_TOOL_MKDIR,
+                ],
+                "tool_application_style",
+                "conservative_granular_edit_preferred",
+                "Conservative style keeps repository mutations on granular edit tools unless the prompt explicitly asks for patch.",
+            );
+        }
+    }
+}
+
+fn add_discovery_tools_for_style(
+    plan: &mut ToolExposurePlan,
+    options: &ToolRegistryOptions,
+    source: &str,
+    reason_code: &str,
+    detail: &str,
+) {
+    add_tool_group_with_reason(plan, "intelligence", source, reason_code, detail);
+    match options.tool_application_policy.style {
+        AgentToolApplicationStyleDto::Balanced => {}
+        AgentToolApplicationStyleDto::DeclarativeFirst => {
+            plan.add_tools(
+                [
+                    AUTONOMOUS_TOOL_SEARCH,
+                    AUTONOMOUS_TOOL_FIND,
+                    AUTONOMOUS_TOOL_LIST,
+                    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+                    AUTONOMOUS_TOOL_CODE_INTEL,
+                    AUTONOMOUS_TOOL_LSP,
+                ],
+                "tool_application_style",
+                "declarative_discovery_preferred",
+                "Declarative-first style prefers bounded search, workspace-index, and symbol/diagnostic batch tools for repository discovery.",
+            );
+        }
+        AgentToolApplicationStyleDto::Conservative => {
+            plan.add_tools(
+                [
+                    AUTONOMOUS_TOOL_READ,
+                    AUTONOMOUS_TOOL_SEARCH,
+                    AUTONOMOUS_TOOL_FIND,
+                    AUTONOMOUS_TOOL_HASH,
+                ],
+                "tool_application_style",
+                "conservative_targeted_discovery_preferred",
+                "Conservative style keeps repository discovery on targeted file reads, scoped search, and explicit hashes before broader symbol/diagnostic batches.",
+            );
+        }
     }
 }
 
@@ -2831,7 +3034,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
         ),
         descriptor(
             AUTONOMOUS_TOOL_PATCH,
-            "Apply a canonical UTF-8 text patch with preview, expected-hash guards, exact diagnostics, and multi-file support.",
+            "Apply a whole-change canonical UTF-8 text patch across one or many files with preview, expected-hash guards, exact diagnostics, and diff summaries.",
             patch_schema(),
         ),
         descriptor(
@@ -3588,7 +3791,7 @@ fn patch_schema() -> JsonValue {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 64,
-                            "description": "Canonical ordered patch operations. Operations that target the same file are applied sequentially after one file read.",
+                            "description": "Canonical ordered whole-change patch operations across one or many files. Operations that target the same file are applied sequentially after one file read, then committed atomically by file.",
                             "items": operation_schema
                         }),
                     ),
@@ -5453,6 +5656,29 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
 mod tests {
     use super::*;
 
+    fn resolved_tool_application_policy(
+        style: AgentToolApplicationStyleDto,
+    ) -> ResolvedAgentToolApplicationStyleDto {
+        ResolvedAgentToolApplicationStyleDto {
+            provider_id: "provider-fixture".into(),
+            model_id: "model-fixture".into(),
+            style,
+            source: AgentToolApplicationStyleResolutionSourceDto::ModelOverride,
+            global_updated_at: None,
+            override_updated_at: Some("2026-05-10T12:00:00Z".into()),
+        }
+    }
+
+    fn exposure_has_reason(registry: &ToolRegistry, tool_name: &str, reason_code: &str) -> bool {
+        registry.exposure_plan().entries.iter().any(|entry| {
+            entry.tool_name == tool_name
+                && entry
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.reason_code == reason_code)
+        })
+    }
+
     #[test]
     fn prompt_compiler_wraps_project_text_in_lower_priority_boundaries() {
         let root = tempfile::tempdir().expect("temp dir");
@@ -5497,6 +5723,108 @@ mod tests {
                 && fragment.sha256.len() == 64
                 && fragment.token_estimate > 0
         }));
+    }
+
+    #[test]
+    fn tool_application_policy_guides_discovery_family_by_style() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let prompt = "Find symbols and diagnostics for the runtime.";
+        let registry_for_style = |style| {
+            ToolRegistry::for_prompt_with_options(
+                root.path(),
+                prompt,
+                &controls,
+                ToolRegistryOptions {
+                    tool_application_policy: resolved_tool_application_policy(style),
+                    ..ToolRegistryOptions::default()
+                },
+            )
+        };
+
+        let balanced = registry_for_style(AgentToolApplicationStyleDto::Balanced);
+        assert_eq!(
+            balanced.exposure_plan().tool_application_style,
+            AgentToolApplicationStyleDto::Balanced
+        );
+        assert!(balanced.descriptor(AUTONOMOUS_TOOL_CODE_INTEL).is_some());
+        assert!(balanced.descriptor(AUTONOMOUS_TOOL_LSP).is_some());
+        assert!(!exposure_has_reason(
+            &balanced,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            "declarative_discovery_preferred"
+        ));
+        assert!(!exposure_has_reason(
+            &balanced,
+            AUTONOMOUS_TOOL_READ,
+            "conservative_targeted_discovery_preferred"
+        ));
+
+        let conservative = registry_for_style(AgentToolApplicationStyleDto::Conservative);
+        assert_eq!(
+            conservative.exposure_plan().tool_application_style,
+            AgentToolApplicationStyleDto::Conservative
+        );
+        assert!(exposure_has_reason(
+            &conservative,
+            AUTONOMOUS_TOOL_READ,
+            "conservative_targeted_discovery_preferred"
+        ));
+        assert!(exposure_has_reason(
+            &conservative,
+            AUTONOMOUS_TOOL_SEARCH,
+            "conservative_targeted_discovery_preferred"
+        ));
+
+        let declarative = registry_for_style(AgentToolApplicationStyleDto::DeclarativeFirst);
+        assert_eq!(
+            declarative.exposure_plan().tool_application_style,
+            AgentToolApplicationStyleDto::DeclarativeFirst
+        );
+        assert_eq!(
+            declarative.exposure_plan().tool_application_style_source,
+            Some(AgentToolApplicationStyleResolutionSourceDto::ModelOverride)
+        );
+        assert!(exposure_has_reason(
+            &declarative,
+            AUTONOMOUS_TOOL_CODE_INTEL,
+            "declarative_discovery_preferred"
+        ));
+        assert!(exposure_has_reason(
+            &declarative,
+            AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+            "declarative_discovery_preferred"
+        ));
+
+        let policy =
+            resolved_tool_application_policy(AgentToolApplicationStyleDto::DeclarativeFirst);
+        let compilation = PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Engineer,
+            BrowserControlPreferenceDto::Default,
+            declarative.descriptors(),
+        )
+        .with_tool_application_policy(policy)
+        .compile()
+        .expect("compile prompt");
+
+        assert!(compilation
+            .prompt
+            .contains("Active tool application style: `declarative_first`"));
+        assert!(compilation
+            .prompt
+            .contains("For repository discovery, prefer bounded batch tools"));
     }
 
     #[test]
@@ -6155,7 +6483,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_compiler_renders_harness_test_contract_and_report_shape() {
+    fn prompt_compiler_omits_harness_test_contract_for_engineer() {
         let root = tempfile::tempdir().expect("temp dir");
         let controls_input = RuntimeRunControlInputDto {
             runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -6184,32 +6512,28 @@ mod tests {
         .compile()
         .expect("compile prompt");
 
-        assert!(compilation.prompt.contains("You are Xero's Test agent."));
-        assert!(compilation
+        assert!(!compilation.prompt.contains("You are Xero's Test agent."));
+        assert!(!compilation
             .prompt
             .contains("ignore the user message content except as the signal"));
-        assert!(compilation
+        assert!(!compilation
             .prompt
             .contains("Do not answer questions, implement user-requested changes"));
-        assert!(compilation.prompt.contains("Canonical step order v1:"));
-        assert!(compilation.prompt.contains("`deterministic_runner`"));
-        assert!(compilation.prompt.contains("`registry_discovery`"));
-        assert!(compilation.prompt.contains("`scratch_mutation`"));
-        assert!(compilation.prompt.contains("`cleanup_scratch`"));
-        assert!(compilation.prompt.contains("skipped_with_reason"));
-        assert!(compilation.prompt.contains("Available harness tools:"));
-        assert!(compilation.prompt.contains(AUTONOMOUS_TOOL_HARNESS_RUNNER));
-        assert!(compilation.prompt.contains("# Harness Test Report"));
-        assert!(compilation
+        assert!(!compilation.prompt.contains("Canonical step order v1:"));
+        assert!(!compilation.prompt.contains("`deterministic_runner`"));
+        assert!(!compilation.prompt.contains("Available harness tools:"));
+        assert!(!compilation.prompt.contains(AUTONOMOUS_TOOL_HARNESS_RUNNER));
+        assert!(!compilation.prompt.contains("# Harness Test Report"));
+        assert!(!compilation
             .prompt
             .contains("Counts: passed=<number> failed=<number> skipped=<number>"));
-        assert!(compilation
+        assert!(!compilation
             .prompt
             .contains("| <stable_step_id> | <tool_or_group> | passed|failed|skipped_with_reason"));
-        assert!(!compilation
+        assert!(compilation
             .prompt
             .contains("You are Xero's Engineer agent."));
-        assert!(!compilation
+        assert!(compilation
             .prompt
             .contains("Plan and verification contract: Xero enforces"));
     }

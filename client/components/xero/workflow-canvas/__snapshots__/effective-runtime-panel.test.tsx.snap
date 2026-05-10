@@ -1,0 +1,300 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`EffectiveRuntimePanel > renders the overview, prompt fragments, allowed tools, and denied capabilities 1`] = `
+<div>
+  <aside
+    aria-label="Effective runtime preview"
+    class="agent-effective-runtime-panel pointer-events-auto absolute right-4 top-14 z-30 flex max-h-[calc(100%-4.5rem)] w-[420px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[12px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
+    role="dialog"
+  >
+    <header
+      class="flex items-center gap-2 border-b border-border/50 px-3 py-2"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-shield-check h-3.5 w-3.5 text-muted-foreground"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+        />
+        <path
+          d="m9 12 2 2 4-4"
+        />
+      </svg>
+      <p
+        class="min-w-0 flex-1 truncate text-[12px] font-semibold leading-none text-foreground"
+        title="Effective runtime · Helper"
+      >
+        Effective runtime
+      </p>
+      <button
+        aria-label="Close effective runtime panel"
+        class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,box-shadow,opacity,transform] motion-fast active:scale-[0.96] disabled:pointer-events-none disabled:scale-100 disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:bg-accent dark:hover:bg-accent/50 size-5 shrink-0 text-muted-foreground hover:text-foreground"
+        data-slot="button"
+        type="button"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x h-3 w-3"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
+    </header>
+    <div
+      class="flex items-center gap-1.5 border-b border-border/40 px-3 py-1.5"
+    >
+      <span
+        class="inline-flex items-center justify-center rounded-md border py-0.5 w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-hidden border-transparent bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90 h-5 px-1.5 text-[10px] font-medium"
+        data-slot="badge"
+      >
+        Saved version
+      </span>
+      <span
+        class="truncate text-[11px] text-muted-foreground"
+      >
+        Helper
+      </span>
+      <div
+        class="ml-auto"
+      >
+        <button
+          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-[color,background-color,border-color,box-shadow,opacity,transform] motion-fast active:scale-[0.96] disabled:pointer-events-none disabled:scale-100 disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50 rounded-md gap-1.5 has-[>svg]:px-2.5 h-6 px-2 text-[11px]"
+          data-slot="button"
+          disabled=""
+          type="button"
+        >
+          Refresh
+        </button>
+      </div>
+    </div>
+    <div
+      class="relative min-h-0 flex-1"
+      data-slot="scroll-area"
+      dir="ltr"
+      style="position: relative; --radix-scroll-area-corner-width: 0px; --radix-scroll-area-corner-height: 0px;"
+    >
+      <style>
+        [data-radix-scroll-area-viewport]{scrollbar-width:none;-ms-overflow-style:none;-webkit-overflow-scrolling:touch;}[data-radix-scroll-area-viewport]::-webkit-scrollbar{display:none}
+      </style>
+      <div
+        class="focus-visible:ring-ring/50 size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:outline-1"
+        data-radix-scroll-area-viewport=""
+        data-slot="scroll-area-viewport"
+        style="overflow-x: hidden; overflow-y: scroll;"
+      >
+        <div
+          style="min-width: 100%; display: table;"
+        >
+          <div
+            class="px-3 py-3"
+          >
+            <div
+              class="flex flex-col gap-3"
+              data-orientation="horizontal"
+              data-slot="tabs"
+              dir="ltr"
+            >
+              <div
+                aria-orientation="horizontal"
+                class="bg-muted text-muted-foreground items-center justify-center rounded-lg grid h-8 w-full grid-cols-5 p-0.5"
+                data-orientation="horizontal"
+                data-slot="tabs-list"
+                role="tablist"
+                style="outline: none;"
+                tabindex="0"
+              >
+                <button
+                  aria-controls="radix-_r_0_-content-overview"
+                  aria-selected="false"
+                  class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 h-7 text-[11px]"
+                  data-orientation="horizontal"
+                  data-radix-collection-item=""
+                  data-slot="tabs-trigger"
+                  data-state="inactive"
+                  id="radix-_r_0_-trigger-overview"
+                  role="tab"
+                  tabindex="-1"
+                  type="button"
+                >
+                  Overview
+                </button>
+                <button
+                  aria-controls="radix-_r_0_-content-prompt"
+                  aria-selected="false"
+                  class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 h-7 text-[11px]"
+                  data-orientation="horizontal"
+                  data-radix-collection-item=""
+                  data-slot="tabs-trigger"
+                  data-state="inactive"
+                  id="radix-_r_0_-trigger-prompt"
+                  role="tab"
+                  tabindex="-1"
+                  type="button"
+                >
+                  Prompt
+                </button>
+                <button
+                  aria-controls="radix-_r_0_-content-tools"
+                  aria-selected="false"
+                  class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 h-7 text-[11px]"
+                  data-orientation="horizontal"
+                  data-radix-collection-item=""
+                  data-slot="tabs-trigger"
+                  data-state="inactive"
+                  id="radix-_r_0_-trigger-tools"
+                  role="tab"
+                  tabindex="-1"
+                  type="button"
+                >
+                  Tools
+                </button>
+                <button
+                  aria-controls="radix-_r_0_-content-workflow"
+                  aria-selected="false"
+                  class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 h-7 text-[11px]"
+                  data-orientation="horizontal"
+                  data-radix-collection-item=""
+                  data-slot="tabs-trigger"
+                  data-state="inactive"
+                  id="radix-_r_0_-trigger-workflow"
+                  role="tab"
+                  tabindex="-1"
+                  type="button"
+                >
+                  Workflow
+                </button>
+                <button
+                  aria-controls="radix-_r_0_-content-diagnostics"
+                  aria-selected="true"
+                  class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 text-foreground dark:text-muted-foreground inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 py-1 font-medium whitespace-nowrap transition-[color,box-shadow] focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-sm [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 h-7 text-[11px]"
+                  data-orientation="horizontal"
+                  data-radix-collection-item=""
+                  data-slot="tabs-trigger"
+                  data-state="active"
+                  id="radix-_r_0_-trigger-diagnostics"
+                  role="tab"
+                  tabindex="0"
+                  type="button"
+                >
+                  Diagnostics
+                </button>
+              </div>
+              <div
+                aria-labelledby="radix-_r_0_-trigger-overview"
+                class="flex-1 outline-none space-y-3"
+                data-orientation="horizontal"
+                data-slot="tabs-content"
+                data-state="inactive"
+                hidden=""
+                id="radix-_r_0_-content-overview"
+                role="tabpanel"
+                style=""
+                tabindex="0"
+              />
+              <div
+                aria-labelledby="radix-_r_0_-trigger-prompt"
+                class="flex-1 outline-none space-y-3"
+                data-orientation="horizontal"
+                data-slot="tabs-content"
+                data-state="inactive"
+                hidden=""
+                id="radix-_r_0_-content-prompt"
+                role="tabpanel"
+                tabindex="0"
+              />
+              <div
+                aria-labelledby="radix-_r_0_-trigger-tools"
+                class="flex-1 outline-none space-y-3"
+                data-orientation="horizontal"
+                data-slot="tabs-content"
+                data-state="inactive"
+                hidden=""
+                id="radix-_r_0_-content-tools"
+                role="tabpanel"
+                tabindex="0"
+              />
+              <div
+                aria-labelledby="radix-_r_0_-trigger-workflow"
+                class="flex-1 outline-none space-y-3"
+                data-orientation="horizontal"
+                data-slot="tabs-content"
+                data-state="inactive"
+                hidden=""
+                id="radix-_r_0_-content-workflow"
+                role="tabpanel"
+                tabindex="0"
+              />
+              <div
+                aria-labelledby="radix-_r_0_-trigger-diagnostics"
+                class="flex-1 outline-none space-y-3"
+                data-orientation="horizontal"
+                data-slot="tabs-content"
+                data-state="active"
+                id="radix-_r_0_-content-diagnostics"
+                role="tabpanel"
+                tabindex="0"
+              >
+                <div
+                  class="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-emerald-600 dark:text-emerald-400"
+                >
+                  <svg
+                    aria-hidden="true"
+                    class="lucide lucide-circle-check h-3.5 w-3.5"
+                    fill="none"
+                    height="24"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    viewBox="0 0 24 24"
+                    width="24"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                    />
+                    <path
+                      d="m9 12 2 2 4-4"
+                    />
+                  </svg>
+                  <span
+                    class="text-[11.5px] font-medium"
+                  >
+                    No diagnostics — runtime is consistent.
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+`;

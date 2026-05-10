@@ -185,11 +185,11 @@ impl DefaultAgentEmbeddingService {
     fn from_environment() -> Self {
         #[cfg(test)]
         {
-            return Self {
+            Self {
                 primary: None,
                 fallback: LocalHashEmbeddingService,
                 unavailable_reason: None,
-            };
+            }
         }
         #[cfg(not(test))]
         match AgentEmbeddingProviderConfig::from_environment() {

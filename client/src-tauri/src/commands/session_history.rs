@@ -2404,6 +2404,7 @@ fn compile_prompt_context_for_snapshot(
                 browser_control_preference: BrowserControlPreferenceDto::Default,
                 runtime_agent_id: controls.active.runtime_agent_id,
                 agent_tool_policy: None,
+                tool_application_policy: Default::default(),
             },
         )
         .into_descriptors()
@@ -2427,6 +2428,7 @@ fn compile_prompt_context_for_snapshot(
         Some(agent_session_id),
         controls.active.runtime_agent_id,
         BrowserControlPreferenceDto::Default,
+        &crate::commands::ResolvedAgentToolApplicationStyleDto::default(),
         descriptors.as_slice(),
         None,
         None,

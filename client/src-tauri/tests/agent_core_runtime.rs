@@ -494,6 +494,7 @@ fn tool_group_timeout_interrupts_hung_read_only_handler() {
                         "additionalProperties": false
                     }),
                     capability_tags: vec!["fixture".into()],
+                    application_metadata: Default::default(),
                     effect_class: xero_agent_core::ToolEffectClass::FileRead,
                     mutability: ToolMutability::ReadOnly,
                     sandbox_requirement: xero_agent_core::ToolSandboxRequirement::None,
@@ -1982,9 +1983,17 @@ fn owned_agent_priority_one_tools_dispatch_and_persist_journal() {
 
     assert_eq!(
         snapshot.run.status,
-        db::project_store::AgentRunStatus::Completed,
+        db::project_store::AgentRunStatus::Paused,
         "last error: {:?}",
         snapshot.run.last_error
+    );
+    assert_eq!(
+        snapshot
+            .run
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("agent_subagent_resolution_required")
     );
     let tool_names = snapshot
         .tool_calls

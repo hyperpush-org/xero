@@ -703,9 +703,7 @@ fn command_benchmark_terminal_bench(
             (snapshot, Some(error))
         }
     };
-    let run_error_cli = run_error
-        .as_ref()
-        .map(|error| benchmark_runtime_error_to_cli(error));
+    let run_error_cli = run_error.as_ref().map(benchmark_runtime_error_to_cli);
     let artifacts = write_benchmark_trial_artifacts(
         &config,
         &store,
@@ -4231,6 +4229,7 @@ fn runtime_event_kind_wire(kind: &RuntimeEventKind) -> &'static str {
         RuntimeEventKind::RunPaused => "run_paused",
         RuntimeEventKind::RunCompleted => "run_completed",
         RuntimeEventKind::RunFailed => "run_failed",
+        RuntimeEventKind::SubagentLifecycle => "subagent_lifecycle",
     }
 }
 
@@ -4264,6 +4263,7 @@ fn parse_runtime_event_kind(value: &str) -> RuntimeEventKind {
         "run_paused" => RuntimeEventKind::RunPaused,
         "run_completed" => RuntimeEventKind::RunCompleted,
         "run_failed" => RuntimeEventKind::RunFailed,
+        "subagent_lifecycle" => RuntimeEventKind::SubagentLifecycle,
         _ => RuntimeEventKind::RunFailed,
     }
 }
@@ -5991,6 +5991,7 @@ fn external_agent_sandbox_metadata(
         description: "Launch an explicitly approved external agent subprocess and capture its output as an auditable Xero run.".into(),
         input_schema: json!({ "type": "object" }),
         capability_tags: vec!["external_agent".into(), "subprocess".into()],
+        application_metadata: Default::default(),
         effect_class: ToolEffectClass::CommandExecution,
         mutability: ToolMutability::Mutating,
         sandbox_requirement: ToolSandboxRequirement::FullLocal,

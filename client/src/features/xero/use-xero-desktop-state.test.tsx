@@ -1012,6 +1012,9 @@ function createMockAdapter(options?: {
   const updateAgentDefinition = vi.fn(async () => {
     throw new Error('updateAgentDefinition not stubbed in test adapter')
   })
+  const previewAgentDefinition = vi.fn(async () => {
+    throw new Error('previewAgentDefinition not stubbed in test adapter')
+  })
   const listWorkflowAgents = vi.fn(async () => ({ agents: [] }))
   const getWorkflowAgentDetail = vi.fn(async () => {
     throw new Error('getWorkflowAgentDetail not stubbed in test adapter')
@@ -2114,6 +2117,7 @@ function createMockAdapter(options?: {
     getAgentDefinitionVersion,
     saveAgentDefinition,
     updateAgentDefinition,
+    previewAgentDefinition,
     listWorkflowAgents,
     getWorkflowAgentDetail,
     getAgentAuthoringCatalog,

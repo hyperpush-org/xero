@@ -19,6 +19,7 @@ import {
   type StartAutonomousRunRequestDto,
 } from '@/src/lib/xero-model/autonomous'
 import {
+  agentDefinitionPreviewResponseSchema,
   agentDefinitionSummarySchema,
   agentDefinitionVersionSummarySchema,
   agentDefinitionWriteResponseSchema,
@@ -26,8 +27,10 @@ import {
   getAgentDefinitionVersionRequestSchema,
   listAgentDefinitionsRequestSchema,
   listAgentDefinitionsResponseSchema,
+  previewAgentDefinitionRequestSchema,
   saveAgentDefinitionRequestSchema,
   updateAgentDefinitionRequestSchema,
+  type AgentDefinitionPreviewResponseDto,
   type AgentDefinitionSummaryDto,
   type AgentDefinitionVersionSummaryDto,
   type AgentDefinitionWriteResponseDto,
@@ -35,6 +38,7 @@ import {
   type GetAgentDefinitionVersionRequestDto,
   type ListAgentDefinitionsRequestDto,
   type ListAgentDefinitionsResponseDto,
+  type PreviewAgentDefinitionRequestDto,
   type SaveAgentDefinitionRequestDto,
   type UpdateAgentDefinitionRequestDto,
 } from '@/src/lib/xero-model/agent-definition'
@@ -268,6 +272,8 @@ import {
   runtimeSessionSchema,
   providerAuthSessionSchema,
   runtimeUpdatedPayloadSchema,
+  agentToolingSettingsSchema,
+  upsertAgentToolingSettingsRequestSchema,
   archiveAgentSessionRequestSchema,
   autoNameAgentSessionRequestSchema,
   createAgentSessionRequestSchema,
@@ -285,6 +291,7 @@ import {
   updateRuntimeRunControlsRequestSchema,
   updateAgentSessionRequestSchema,
   type AgentSessionDto,
+  type AgentToolingSettingsDto,
   type ArchiveAgentSessionRequestDto,
   type AutoNameAgentSessionRequestDto,
   type CreateAgentSessionRequestDto,
@@ -304,6 +311,7 @@ import {
   type StartRuntimeRunRequestDto,
   type StartRuntimeSessionRequestDto,
   type StopRuntimeRunRequestDto,
+  type UpsertAgentToolingSettingsRequestDto,
   type UpdateAgentSessionRequestDto,
   type UpdateRuntimeRunControlsRequestDto,
 } from '@/src/lib/xero-model/runtime'
@@ -494,6 +502,7 @@ const COMMANDS = {
   getAgentDefinitionVersion: 'get_agent_definition_version',
   saveAgentDefinition: 'save_agent_definition',
   updateAgentDefinition: 'update_agent_definition',
+  previewAgentDefinition: 'preview_agent_definition',
   listWorkflowAgents: 'list_workflow_agents',
   getWorkflowAgentDetail: 'get_workflow_agent_detail',
   getWorkflowAgentGraphProjection: 'get_workflow_agent_graph_projection',
@@ -587,6 +596,8 @@ const COMMANDS = {
   browserControlUpdateSettings: 'browser_control_update_settings',
   soulSettings: 'soul_settings',
   soulUpdateSettings: 'soul_update_settings',
+  agentToolingSettings: 'agent_tooling_settings',
+  agentToolingUpdateSettings: 'agent_tooling_update_settings',
   browserShow: 'browser_show',
   browserResize: 'browser_resize',
   browserHide: 'browser_hide',
@@ -846,6 +857,9 @@ export interface XeroDesktopAdapter {
   updateAgentDefinition(
     request: UpdateAgentDefinitionRequestDto,
   ): Promise<AgentDefinitionWriteResponseDto>
+  previewAgentDefinition(
+    request: PreviewAgentDefinitionRequestDto,
+  ): Promise<AgentDefinitionPreviewResponseDto>
   listWorkflowAgents(
     request: ListWorkflowAgentsRequestDto,
   ): Promise<ListWorkflowAgentsResponseDto>
@@ -1040,6 +1054,10 @@ export interface XeroDesktopAdapter {
   ): Promise<BrowserControlSettingsDto>
   soulSettings?(): Promise<SoulSettingsDto>
   soulUpdateSettings?(request: UpsertSoulSettingsRequestDto): Promise<SoulSettingsDto>
+  agentToolingSettings?(): Promise<AgentToolingSettingsDto>
+  agentToolingUpdateSettings?(
+    request: UpsertAgentToolingSettingsRequestDto,
+  ): Promise<AgentToolingSettingsDto>
   browserEval(js: string, options?: { timeoutMs?: number }): Promise<unknown>
   browserCurrentUrl(): Promise<string | null>
   browserScreenshot(): Promise<string>
@@ -2120,6 +2138,21 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  previewAgentDefinition(request) {
+    const parsed = previewAgentDefinitionRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.previewAgentDefinition,
+      agentDefinitionPreviewResponseSchema,
+      {
+        request: {
+          projectId: parsed.projectId,
+          definitionId: parsed.definitionId ?? null,
+          definition: parsed.definition,
+        },
+      },
+    )
+  },
+
   listWorkflowAgents(request) {
     const parsed = listWorkflowAgentsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.listWorkflowAgents, listWorkflowAgentsResponseSchema, {
@@ -2902,6 +2935,17 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   soulUpdateSettings(request) {
     const parsedRequest = upsertSoulSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.soulUpdateSettings, soulSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  agentToolingSettings() {
+    return invokeTyped(COMMANDS.agentToolingSettings, agentToolingSettingsSchema)
+  },
+
+  agentToolingUpdateSettings(request) {
+    const parsedRequest = upsertAgentToolingSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.agentToolingUpdateSettings, agentToolingSettingsSchema, {
       request: parsedRequest,
     })
   },

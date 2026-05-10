@@ -1993,6 +1993,27 @@ export function XeroApp({ adapter }: XeroAppProps) {
     void workflowAgentInspector.refreshAgents()
   }, [refreshCustomAgentDefinitions, workflowAgentInspector])
 
+  const handlePreviewEffectiveRuntime = useCallback(
+    async ({
+      snapshot,
+      definitionId,
+    }: {
+      snapshot: Record<string, unknown>
+      definitionId: string | null
+    }) => {
+      if (!activeProjectId) {
+        throw new Error('Select a project before previewing an agent definition.')
+      }
+      const definition = canonicalCustomAgentDefinitionSchema.parse(snapshot)
+      return resolvedAdapter.previewAgentDefinition({
+        projectId: activeProjectId,
+        definitionId,
+        definition,
+      })
+    },
+    [activeProjectId, resolvedAdapter],
+  )
+
   const handleReadProjectUiState = useCallback(
     async (key: string): Promise<unknown | null> => {
       if (!activeProjectId || !resolvedAdapter.readProjectUiState) return null
@@ -2458,6 +2479,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
                   resolvedAdapter.writeProjectUiState ? handleWriteProjectUiState : undefined
                 }
                 onSelectedNodeChange={handlePhaseSelectedNodeChange}
+                onPreviewEffectiveRuntime={
+                  activeProjectId ? handlePreviewEffectiveRuntime : undefined
+                }
               />
             </LazyActivityPane>
           ) : null}
@@ -2958,6 +2982,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onRunDoctorReport={(request) => runDoctorReport(request)}
                 dictationAdapter={resolvedAdapter}
                 soulAdapter={resolvedAdapter}
+                agentToolingAdapter={resolvedAdapter}
                 onUpsertNotificationRoute={(request) =>
                   upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
                 }

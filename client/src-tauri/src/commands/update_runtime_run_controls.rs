@@ -17,6 +17,7 @@ use crate::{
 };
 
 use super::agent_task::auto_compact_preference;
+use super::agent_tooling_settings::resolve_agent_tool_application_style;
 use super::runtime_support::{
     agent_provider_config_identity, apply_owned_runtime_run_pending_controls_with_status,
     bind_owned_runtime_run_to_agent_handoff, emit_runtime_run_updated_if_changed,
@@ -278,7 +279,10 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
         &model_id,
         &attachments,
     )?;
-    let tool_runtime = AutonomousToolRuntime::for_project(app, state, &snapshot.run.project_id)?;
+    let tool_application_policy =
+        resolve_agent_tool_application_style(app, state, &provider_id, &model_id)?;
+    let tool_runtime = AutonomousToolRuntime::for_project(app, state, &snapshot.run.project_id)?
+        .with_tool_application_policy(tool_application_policy);
     match project_store::load_agent_run(repo_root, &snapshot.run.project_id, &snapshot.run.run_id) {
         Ok(agent_snapshot) => {
             let answer_pending_actions = agent_snapshot

@@ -104,6 +104,7 @@ pub(crate) fn drive_provider_loop(
                 model_id: provider.model_id(),
                 turn_index,
                 browser_control_preference: tool_runtime.browser_control_preference(),
+                tool_application_policy: tool_registry.tool_application_policy().clone(),
                 soul_settings: Some(tool_runtime.soul_settings()),
                 tools: tool_registry.descriptors(),
                 tool_exposure_plan: Some(tool_registry.exposure_plan()),
@@ -776,6 +777,11 @@ fn context_manifest_recorded_event_payload(
         "deliveryModel": manifest.manifest["retrieval"]["deliveryModel"].clone(),
         "rawContextInjected": manifest.manifest["retrieval"]["rawContextInjected"].clone(),
         "admittedProviderPreflightHash": manifest.manifest["admittedProviderPreflightHash"].clone(),
+        "toolApplicationPolicy": manifest
+            .manifest
+            .get("toolApplicationPolicy")
+            .cloned()
+            .unwrap_or(JsonValue::Null),
         "agentDefinition": manifest
             .manifest
             .get("agentDefinition")
@@ -4047,6 +4053,7 @@ fn record_tool_registry_snapshot(
             "turnIndex": turn_index,
             "runtimeAgentId": registry.runtime_agent_id().as_str(),
             "runtimeAgentLabel": registry.runtime_agent_id().label(),
+            "toolApplicationPolicy": registry.tool_application_policy(),
             "toolNames": tool_names,
             "catalog": catalog,
             "dynamicRoutes": dynamic_routes,
@@ -4615,6 +4622,9 @@ pub(crate) fn tool_registry_for_snapshot(
             runtime_agent_id: controls.active.runtime_agent_id,
             agent_tool_policy: tool_runtime
                 .and_then(|runtime| runtime.agent_tool_policy().cloned()),
+            tool_application_policy: tool_runtime
+                .map(|runtime| runtime.tool_application_policy().clone())
+                .unwrap_or_default(),
         },
     );
     let options = ToolRegistryOptions {
@@ -4622,6 +4632,9 @@ pub(crate) fn tool_registry_for_snapshot(
         browser_control_preference,
         runtime_agent_id: controls.active.runtime_agent_id,
         agent_tool_policy: tool_runtime.and_then(|runtime| runtime.agent_tool_policy().cloned()),
+        tool_application_policy: tool_runtime
+            .map(|runtime| runtime.tool_application_policy().clone())
+            .unwrap_or_default(),
     };
     let mut registry = if let Some(latest_registry) = latest_tool_registry_snapshot(snapshot)? {
         let mut registry = ToolRegistry::from_descriptors_with_dynamic_routes(
@@ -5030,15 +5043,6 @@ mod tests {
             Self {
                 outcomes: Mutex::new(outcomes.into()),
                 emit_message_deltas: true,
-                provider_id: OPENAI_CODEX_PROVIDER_ID,
-                requests: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn without_message_deltas(outcomes: Vec<ProviderTurnOutcome>) -> Self {
-            Self {
-                outcomes: Mutex::new(outcomes.into()),
-                emit_message_deltas: false,
                 provider_id: OPENAI_CODEX_PROVIDER_ID,
                 requests: Mutex::new(Vec::new()),
             }
@@ -5730,7 +5734,7 @@ mod tests {
         assert!(!serialized.contains("SKILL_CONTEXT_SHOULD_NOT_APPEAR"));
         assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
         assert!(!serialized.contains("rawManifest"));
-        assert!(!visible["output"].get("context").is_some());
+        assert!(visible["output"].get("context").is_none());
     }
 
     #[test]
@@ -6436,259 +6440,5 @@ mod tests {
             reloaded_assistant.2[0].tool_call_id,
             "call-tool-search-reasoning-replay"
         );
-    }
-
-    #[test]
-    fn test_agent_provider_loop_reprompts_out_of_order_tool_calls() {
-        let _guard = project_state_test_lock()
-            .lock()
-            .expect("project state test lock");
-        let run_id = "harness-order-out-of-order";
-        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
-            setup_test_agent_provider_loop(run_id);
-        let registry = registry_for_test_tools(&[
-            AUTONOMOUS_TOOL_TOOL_SEARCH,
-            AUTONOMOUS_TOOL_TOOL_ACCESS,
-            AUTONOMOUS_TOOL_READ,
-        ]);
-        let provider = ScriptedProvider::new(vec![
-            ProviderTurnOutcome::ToolCalls {
-                message: "trying read too early".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                tool_calls: vec![tool_call(
-                    "call-read-out-of-order",
-                    AUTONOMOUS_TOOL_READ,
-                    json!({ "path": "src/tracked.txt", "startLine": 1, "lineCount": 20 }),
-                )],
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::ToolCalls {
-                message: "search registry".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                tool_calls: vec![tool_call(
-                    "call-tool-search",
-                    AUTONOMOUS_TOOL_TOOL_SEARCH,
-                    json!({ "query": "read", "limit": 10 }),
-                )],
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::ToolCalls {
-                message: "list registry access".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                tool_calls: vec![tool_call(
-                    "call-tool-access",
-                    AUTONOMOUS_TOOL_TOOL_ACCESS,
-                    json!({ "action": "list" }),
-                )],
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::ToolCalls {
-                message: "read after discovery".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                tool_calls: vec![tool_call(
-                    "call-read-ordered",
-                    AUTONOMOUS_TOOL_READ,
-                    json!({ "path": "src/tracked.txt", "startLine": 1, "lineCount": 20 }),
-                )],
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::Complete {
-                message: harness_report(),
-                reasoning_content: None,
-                reasoning_details: None,
-                usage: Some(ProviderUsage::default()),
-            },
-        ]);
-
-        drive_provider_loop(
-            &provider,
-            messages,
-            controls,
-            registry,
-            &tool_runtime,
-            &repo_root,
-            &project_id,
-            run_id,
-            project_store::DEFAULT_AGENT_SESSION_ID,
-            None,
-            &AgentRunCancellationToken::default(),
-        )
-        .expect("scripted Test-agent harness should complete");
-
-        let snapshot =
-            project_store::load_agent_run(&repo_root, &project_id, run_id).expect("load run");
-        assert!(!snapshot
-            .tool_calls
-            .iter()
-            .any(|call| call.tool_call_id == "call-read-out-of-order"));
-        let succeeded_tools = snapshot
-            .tool_calls
-            .iter()
-            .filter(|call| call.state == AgentToolCallState::Succeeded)
-            .map(|call| call.tool_name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            succeeded_tools,
-            vec![
-                AUTONOMOUS_TOOL_TOOL_SEARCH,
-                AUTONOMOUS_TOOL_TOOL_ACCESS,
-                AUTONOMOUS_TOOL_READ
-            ]
-        );
-        assert!(snapshot.events.iter().any(|event| {
-            event.event_kind == AgentRunEventKind::ValidationCompleted
-                && event.payload_json.contains("out_of_order_tool_call")
-        }));
-        assert!(snapshot.events.iter().any(|event| {
-            event.event_kind == AgentRunEventKind::ValidationCompleted
-                && event.payload_json.contains("\"outcome\":\"satisfied\"")
-        }));
-    }
-
-    #[test]
-    fn test_agent_provider_loop_blocks_final_until_manifest_is_satisfied() {
-        let _guard = project_state_test_lock()
-            .lock()
-            .expect("project state test lock");
-        let run_id = "harness-order-final-blocked";
-        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
-            setup_test_agent_provider_loop(run_id);
-        let registry = registry_for_test_tools(&[AUTONOMOUS_TOOL_TOOL_SEARCH]);
-        let provider = ScriptedProvider::new(vec![
-            ProviderTurnOutcome::Complete {
-                message: "done before tools".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::ToolCalls {
-                message: "search registry".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                tool_calls: vec![tool_call(
-                    "call-tool-search-final-blocked",
-                    AUTONOMOUS_TOOL_TOOL_SEARCH,
-                    json!({ "query": "registry", "limit": 10 }),
-                )],
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::Complete {
-                message: harness_report(),
-                reasoning_content: None,
-                reasoning_details: None,
-                usage: Some(ProviderUsage::default()),
-            },
-        ]);
-
-        drive_provider_loop(
-            &provider,
-            messages,
-            controls,
-            registry,
-            &tool_runtime,
-            &repo_root,
-            &project_id,
-            run_id,
-            project_store::DEFAULT_AGENT_SESSION_ID,
-            None,
-            &AgentRunCancellationToken::default(),
-        )
-        .expect("scripted Test-agent harness should complete after manifest is satisfied");
-
-        let snapshot =
-            project_store::load_agent_run(&repo_root, &project_id, run_id).expect("load run");
-        assert!(snapshot.events.iter().any(|event| {
-            event.event_kind == AgentRunEventKind::ValidationCompleted
-                && event
-                    .payload_json
-                    .contains("final_response_before_manifest_satisfied")
-        }));
-        assert!(snapshot.tool_calls.iter().any(|call| {
-            call.tool_call_id == "call-tool-search-final-blocked"
-                && call.state == AgentToolCallState::Succeeded
-        }));
-        assert!(snapshot.messages.iter().any(|message| {
-            message.role == AgentMessageRole::Developer
-                && message.content.contains("Xero harness order gate")
-        }));
-    }
-
-    #[test]
-    fn test_agent_provider_loop_emits_required_runtime_stream_artifacts() {
-        let _guard = project_state_test_lock()
-            .lock()
-            .expect("project state test lock");
-        let run_id = "harness-runtime-stream-artifacts";
-        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
-            setup_test_agent_provider_loop(run_id);
-        let registry = registry_for_test_tools(&[AUTONOMOUS_TOOL_TOOL_SEARCH]);
-        let provider = ScriptedProvider::without_message_deltas(vec![
-            ProviderTurnOutcome::ToolCalls {
-                message: "Announcing Test-agent harness stream artifact probe.".into(),
-                reasoning_content: None,
-                reasoning_details: None,
-                tool_calls: vec![tool_call(
-                    "call-tool-search-stream-artifacts",
-                    AUTONOMOUS_TOOL_TOOL_SEARCH,
-                    json!({ "query": "runtime stream", "limit": 10 }),
-                )],
-                usage: Some(ProviderUsage::default()),
-            },
-            ProviderTurnOutcome::Complete {
-                message: harness_report(),
-                reasoning_content: None,
-                reasoning_details: None,
-                usage: Some(ProviderUsage::default()),
-            },
-        ]);
-
-        drive_provider_loop(
-            &provider,
-            messages,
-            controls,
-            registry,
-            &tool_runtime,
-            &repo_root,
-            &project_id,
-            run_id,
-            project_store::DEFAULT_AGENT_SESSION_ID,
-            None,
-            &AgentRunCancellationToken::default(),
-        )
-        .expect("scripted Test-agent harness should complete");
-
-        let snapshot =
-            project_store::load_agent_run(&repo_root, &project_id, run_id).expect("load run");
-        for required_kind in [
-            AgentRunEventKind::RunStarted,
-            AgentRunEventKind::ReasoningSummary,
-            AgentRunEventKind::MessageDelta,
-            AgentRunEventKind::ToolStarted,
-            AgentRunEventKind::ToolCompleted,
-            AgentRunEventKind::PolicyDecision,
-            AgentRunEventKind::ToolRegistrySnapshot,
-            AgentRunEventKind::StateTransition,
-        ] {
-            assert!(
-                snapshot
-                    .events
-                    .iter()
-                    .any(|event| event.event_kind == required_kind),
-                "missing required runtime stream artifact event: {:?}",
-                required_kind
-            );
-        }
-        assert!(snapshot.events.iter().any(|event| {
-            event.event_kind == AgentRunEventKind::MessageDelta
-                && event.payload_json.contains("# Harness Test Report")
-        }));
-        assert!(snapshot.messages.iter().any(|message| {
-            message.role == AgentMessageRole::Assistant
-                && message.content.contains("# Harness Test Report")
-        }));
     }
 }

@@ -277,11 +277,11 @@ pub(crate) fn read_agent_sessions_with_connection(
                     ),
                 )
             })?,
-            &database_path,
+            database_path,
         )?;
         session.lineage = read_agent_session_lineage_for_child(
-            &connection,
-            &database_path,
+            connection,
+            database_path,
             &session.project_id,
             &session.agent_session_id,
         )?;

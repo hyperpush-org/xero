@@ -20,7 +20,7 @@ pub mod git {
     pub mod status;
 }
 
-pub fn configure_builder_with_state<R: tauri::Runtime>(
+pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
     builder: tauri::Builder<R>,
     desktop_state: state::DesktopState,
 ) -> tauri::Builder<R> {
@@ -198,7 +198,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(updater_plugin())
         .invoke_handler(tauri::generate_handler![
             commands::import_repository::import_repository,
             commands::create_repository::create_repository,
@@ -369,6 +369,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
             commands::dictation::speech_dictation_cancel,
             commands::soul_settings::soul_settings,
             commands::soul_settings::soul_update_settings,
+            commands::agent_tooling_settings::agent_tooling_settings,
+            commands::agent_tooling_settings::agent_tooling_update_settings,
             commands::browser::browser_show,
             commands::browser::browser_resize,
             commands::browser::browser_hide,
@@ -513,7 +515,18 @@ pub fn configure_builder_with_state<R: tauri::Runtime>(
         ])
 }
 
-pub fn configure_builder<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+fn updater_plugin<R: tauri::Runtime + 'static>(
+) -> tauri::plugin::TauriPlugin<R, tauri_plugin_updater::Config> {
+    if std::any::TypeId::of::<R>() == std::any::TypeId::of::<tauri::test::MockRuntime>() {
+        return tauri::plugin::Builder::<R, tauri_plugin_updater::Config>::new("updater").build();
+    }
+
+    tauri_plugin_updater::Builder::new().build()
+}
+
+pub fn configure_builder<R: tauri::Runtime + 'static>(
+    builder: tauri::Builder<R>,
+) -> tauri::Builder<R> {
     configure_builder_with_state(builder, state::DesktopState::default())
 }
 

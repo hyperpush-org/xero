@@ -42,6 +42,7 @@ pub(crate) fn append_message(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn append_provider_assistant_message(
     repo_root: &Path,
     project_id: &str,

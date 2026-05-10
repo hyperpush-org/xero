@@ -557,6 +557,7 @@ impl AutonomousToolRuntime {
         Ok(attached_skill_resolution_success(snapshot))
     }
 
+    #[allow(clippy::result_large_err)]
     fn resolve_attached_skill_entry(
         &self,
         skill_tool: &super::AutonomousSkillToolRuntime,

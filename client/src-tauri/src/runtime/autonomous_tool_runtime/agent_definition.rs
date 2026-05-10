@@ -863,6 +863,7 @@ impl AutonomousToolRuntime {
             browser_control_preference: self.browser_control_preference(),
             runtime_agent_id,
             agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: self.tool_application_policy().clone(),
         });
         let registry_tool_names = tool_registry
             .descriptors()

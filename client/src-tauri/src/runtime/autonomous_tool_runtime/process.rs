@@ -1076,6 +1076,7 @@ impl AutonomousToolRuntime {
                 .into(),
             input_schema: json!({ "type": "object" }),
             capability_tags: vec!["subprocess".into(), "workspace".into()],
+            application_metadata: Default::default(),
             effect_class: ToolEffectClass::CommandExecution,
             mutability: ToolMutability::Mutating,
             sandbox_requirement: ToolSandboxRequirement::FullLocal,

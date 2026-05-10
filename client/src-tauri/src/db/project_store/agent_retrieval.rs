@@ -1814,6 +1814,7 @@ fn validate_backfill_job(record: &NewAgentEmbeddingBackfillJobRecord) -> Result<
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retrieval_diagnostic(
     base: Option<JsonValue>,
     mut freshness: FreshnessRefreshSummary,

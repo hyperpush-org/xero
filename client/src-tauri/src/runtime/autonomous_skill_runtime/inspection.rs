@@ -500,18 +500,6 @@ pub(crate) fn skill_matches_query(skill_id: &str, query: &str) -> bool {
         .all(|term| haystack.contains(&term))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::skill_matches_query;
-
-    #[test]
-    fn wildcard_skill_query_matches_all_skill_ids() {
-        assert!(skill_matches_query("find-skills", "*"));
-        assert!(skill_matches_query("find-skills", "__all__"));
-        assert!(skill_matches_query("find-skills", "__ALL__"));
-    }
-}
-
 fn parse_frontmatter_bool(value: &str) -> CommandResult<bool> {
     match value.trim() {
         "true" => Ok(true),
@@ -576,4 +564,16 @@ fn strip_wrapping_quotes(value: &str) -> String {
 
 fn command_error_to_cache_contract(error: CommandError) -> AutonomousSkillCacheError {
     AutonomousSkillCacheError::Contract(error.message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skill_matches_query;
+
+    #[test]
+    fn wildcard_skill_query_matches_all_skill_ids() {
+        assert!(skill_matches_query("find-skills", "*"));
+        assert!(skill_matches_query("find-skills", "__all__"));
+        assert!(skill_matches_query("find-skills", "__ALL__"));
+    }
 }

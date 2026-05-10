@@ -17,7 +17,8 @@ use crate::{
         refresh_provider_auth_session, StoredOpenAiCodexSession,
     },
     commands::{
-        default_runtime_agent_id, ensure_runtime_agent_available,
+        agent_tooling_settings::resolve_agent_tool_application_style, default_runtime_agent_id,
+        ensure_runtime_agent_available,
         get_runtime_settings::runtime_settings_snapshot_for_provider_profile,
         provider_credentials::load_provider_credentials_view, CommandError, CommandResult,
         RuntimeRunActiveControlSnapshotDto, RuntimeRunCheckpointDto, RuntimeRunCheckpointKindDto,
@@ -437,8 +438,23 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
             return Ok(());
         }
     };
+    let (provider_id, model_id) = agent_provider_config_identity(&provider_config);
+    let tool_application_policy =
+        match resolve_agent_tool_application_style(app, state, &provider_id, &model_id) {
+            Ok(policy) => policy,
+            Err(error) => {
+                let _ = emit_owned_runtime_failure(
+                    app,
+                    &task.repo_root,
+                    &runtime_snapshot,
+                    &error,
+                    "Tool application style resolution failed.",
+                );
+                return Ok(());
+            }
+        };
     let tool_runtime = match AutonomousToolRuntime::for_project(app, state, &task.project_id) {
-        Ok(runtime) => runtime,
+        Ok(runtime) => runtime.with_tool_application_policy(tool_application_policy),
         Err(error) => {
             let _ = emit_owned_runtime_failure(
                 app,

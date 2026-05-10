@@ -174,6 +174,7 @@ fn seed_project_record(
     .expect("seed project record");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn seed_project_record_with_contract(
     repo_root: &Path,
     project_id: &str,

@@ -50,8 +50,8 @@ use crate::{
     commands::{
         browser::load_browser_control_settings, default_soul_settings, load_soul_settings,
         BranchSummaryDto, BrowserControlPreferenceDto, CommandError, CommandResult,
-        RepositoryDiffScope, RepositoryStatusEntryDto, RuntimeAgentIdDto,
-        RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, SoulSettingsDto,
+        RepositoryDiffScope, RepositoryStatusEntryDto, ResolvedAgentToolApplicationStyleDto,
+        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, SoulSettingsDto,
     },
     db::project_store,
     runtime::redaction::find_prohibited_persistence_content,
@@ -2453,6 +2453,7 @@ pub struct AutonomousToolRuntime {
     pub(super) agent_workflow_policy: Option<AutonomousAgentWorkflowPolicy>,
     pub(super) agent_workflow_state: Arc<Mutex<AutonomousAgentWorkflowRuntimeState>>,
     pub(super) agent_run_context: Option<AutonomousAgentRunContext>,
+    pub(super) tool_application_policy: ResolvedAgentToolApplicationStyleDto,
     pub(super) browser_control_preference: BrowserControlPreferenceDto,
     pub(super) soul_settings: SoulSettingsDto,
     pub(super) browser_executor: Option<Arc<dyn BrowserExecutor>>,
@@ -2484,6 +2485,7 @@ impl std::fmt::Debug for AutonomousToolRuntime {
             .field("agent_tool_policy", &self.agent_tool_policy)
             .field("agent_workflow_policy", &self.agent_workflow_policy)
             .field("agent_run_context", &self.agent_run_context)
+            .field("tool_application_policy", &self.tool_application_policy)
             .field(
                 "browser_control_preference",
                 &self.browser_control_preference,
@@ -2627,6 +2629,7 @@ impl AutonomousToolRuntime {
                 AutonomousAgentWorkflowRuntimeState::default(),
             )),
             agent_run_context: None,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
             browser_control_preference: BrowserControlPreferenceDto::Default,
             soul_settings: default_soul_settings(),
             browser_executor: None,
@@ -2669,6 +2672,18 @@ impl AutonomousToolRuntime {
 
     pub fn browser_control_preference(&self) -> BrowserControlPreferenceDto {
         self.browser_control_preference
+    }
+
+    pub fn with_tool_application_policy(
+        mut self,
+        policy: ResolvedAgentToolApplicationStyleDto,
+    ) -> Self {
+        self.tool_application_policy = policy;
+        self
+    }
+
+    pub fn tool_application_policy(&self) -> &ResolvedAgentToolApplicationStyleDto {
+        &self.tool_application_policy
     }
 
     pub fn with_soul_settings(mut self, settings: SoulSettingsDto) -> Self {
