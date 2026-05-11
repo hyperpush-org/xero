@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Check, FolderGit2, FolderOpen, Loader2 } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -26,7 +27,21 @@ export function ProjectStep({
   errorMessage,
   onImportProject,
 }: ProjectStepProps) {
-  const isBusy = isImporting || isProjectLoading
+  // `isProjectLoading` is a global state that flips true any time any project
+  // loads — including ambient loads triggered when the user opens onboarding
+  // via the dev settings button with existing projects. Only treat the global
+  // load as "Importing…" once the user has started an import from this step;
+  // otherwise the step shows a permanent spinner that the user never triggered.
+  const [importStartedLocally, setImportStartedLocally] = useState(false)
+  useEffect(() => {
+    if (isImporting) {
+      setImportStartedLocally(true)
+    } else if (!isProjectLoading) {
+      setImportStartedLocally(false)
+    }
+  }, [isImporting, isProjectLoading])
+
+  const isBusy = isImporting || (importStartedLocally && isProjectLoading)
 
   // Only show the project card once the full load is complete.
   //

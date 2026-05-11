@@ -1,7 +1,7 @@
-// Shared helpers for preflight orchestrators (`dev-preflight.mjs`,
-// `start-preflight.mjs`). Each helper is idempotent: running it on a
-// fully-prepped machine should be fast and quiet. Logger callbacks are
-// passed in so callers can tag output with their own context.
+// Shared helpers for preflight orchestrators (`dev-preflight.mjs`). Each
+// helper is idempotent: running it on a fully-prepped machine should be
+// fast and quiet. Logger callbacks are passed in so callers can tag output
+// with their own context.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'

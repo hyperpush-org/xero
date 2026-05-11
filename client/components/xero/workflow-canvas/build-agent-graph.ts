@@ -273,14 +273,7 @@ export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
 export const AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS = {
   consumed: AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
   skills: 0.68,
-} as const
-
-// Bottom edge of the header carries two source handles (output, workflow).
-// React Flow defaults both to 50% along the edge, so we stagger them by
-// horizontal position so each remains grabbable independently.
-export const AGENT_GRAPH_HEADER_BOTTOM_HANDLE_RATIOS = {
-  output: 0.35,
-  workflow: 0.7,
+  workflow: 0.92,
 } as const
 
 export const AGENT_GRAPH_TRIGGER_HANDLES = {
@@ -583,17 +576,9 @@ const ARROW_MARKER = {
   height: 14,
 } as const
 
-const TRIGGER_ARROW_MARKER = {
-  type: MarkerType.Arrow,
-  width: 16,
-  height: 16,
-} as const
+const TRIGGER_ARROW_MARKER = ARROW_MARKER
 
-const CONSUME_ARROW_MARKER = {
-  type: MarkerType.Arrow,
-  width: 16,
-  height: 16,
-} as const
+const CONSUME_ARROW_MARKER = ARROW_MARKER
 
 interface OrderedTouchpoint {
   detail: AgentDbTouchpointDetailDto

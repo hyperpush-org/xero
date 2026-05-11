@@ -565,7 +565,7 @@ export async function loadProjectState({
   const bundleLoader = source === 'selection' ? undefined : adapter.getProjectLoadBundle
   if (bundleLoader) {
     try {
-      return await loadProjectStateFromBundle({
+      const result = await loadProjectStateFromBundle({
         adapter,
         projectId,
         source,
@@ -580,6 +580,10 @@ export async function loadProjectState({
         includeNotificationRoutes: shouldRefreshRoutes,
         cachedRepositoryStatus,
       })
+      if (refs.latestLoadRequestRef.current === requestId) {
+        setters.setIsProjectLoading(false)
+      }
+      return result
     } catch (error) {
       if (
         refs.latestLoadRequestRef.current !== requestId ||

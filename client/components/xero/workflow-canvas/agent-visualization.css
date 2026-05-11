@@ -276,6 +276,15 @@
   transition: opacity 120ms ease;
 }
 
+/* During focus, the edge-wrapper opacity transition fires on 100+ edges
+   simultaneously. The compositor handles each edge as its own layer; the
+   sheer count saturates GPU work and hover feels sluggish. Snap dim/restore
+   on edge wrappers — the highlighted active edge's stroke still animates
+   via .react-flow__edge-path (line above), preserving the focus pop. */
+.agent-visualization.is-focusing .react-flow__edge {
+  transition: none;
+}
+
 /* Per-category edge colour. Each category uses a desaturated, opaque tint so
    the four edge bundles read as distinct families without appearing bright.
    Ownership edges (header → child) sit at lower opacity than functional
@@ -430,36 +439,20 @@
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
 }
 
-/* Stage → tool edges share the amber palette of the stage card so the user
-   can see at a glance which tools each phase admits. Hidden by default with
-   `display: none` so React/React Flow's per-frame edge work, paint, and
-   focus-mode style recalculation all skip them entirely — opacity-only
-   hiding leaves them in the paint tree and tanks frame rate when there are
-   60+ of them. The .is-active rule below switches them on when the user
-   hovers a related node. */
-.agent-visualization .react-flow__edge.agent-edge-stage-tool {
-  display: none;
+/* Stage → tool admittance lines are rendered by `<StageToolFanOverlay />`
+   as a single SVG path drawn imperatively on stage hover. One element +
+   one paint operation regardless of how many tools a stage admits, which
+   is what made the previous approach (one React-Flow edge per
+   admittance, 20–30 paths flipping into the paint tree on hover) feel
+   laggy. The stroke is non-scaling so the line stays 1px at every zoom. */
+.agent-visualization .agent-stage-tool-fan-overlay {
+  z-index: 0;
 }
-.agent-visualization .react-flow__edge.agent-edge-stage-tool .react-flow__edge-path {
+.agent-visualization .agent-stage-tool-fan-overlay path {
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
   stroke-width: 1;
   stroke-dasharray: 4 3;
-}
-.agent-visualization .react-flow__edge.agent-edge-stage-tool .react-flow__arrowhead polyline,
-.agent-visualization .react-flow__edge.agent-edge-stage-tool .react-flow__arrowhead polygon {
-  fill: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
-  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
-}
-.agent-visualization .react-flow__edge.agent-edge-stage-tool.is-active {
-  display: initial;
   opacity: 0.7;
-}
-/* Override the global .is-active rule that bumps non-trigger edges to
-   stroke-width 2.25 — stage-tool edges should stay thin even when active. */
-.agent-visualization
-  .react-flow__edge.agent-edge-stage-tool.is-active
-  .react-flow__edge-path {
-  stroke-width: 1;
 }
 
 /* Agent header → start-phase entry edge. Same amber family but a touch
@@ -503,6 +496,10 @@
 .agent-visualization.is-focusing .react-flow__edges * {
   pointer-events: none !important;
 }
+/* Snap-dim non-active edges during focus. Combined with `transition: none`
+   on `.react-flow__edge` above, this keeps 100+ edge opacity changes off
+   the compositor queue. Label hide stays animated (80ms) because only the
+   focused cluster's labels move — a handful at most. */
 .agent-visualization.is-focusing .react-flow__edge:not(.is-active) {
   opacity: 0;
 }
@@ -531,15 +528,16 @@
 .agent-visualization.is-focusing
   .react-flow__node:not(.is-focused):not(.react-flow__node-lane-label):not(.react-flow__node-tool-group-frame):not(.react-flow__node-stage-group-frame) {
   opacity: 0.3;
-  transition:
-    transform var(--agent-layout-duration) var(--agent-layout-ease),
-    opacity 160ms ease;
+  /* Snap-dim (no opacity transition) so hovering a node doesn't fire 100+
+     simultaneous opacity tweens. The focused cluster still pops because
+     dimming is instant; on dense agents this is the difference between
+     buttery and laggy. The layout-reflow transform transition stays — it
+     fires only when a node actually moves, not on every hover. */
+  transition: transform var(--agent-layout-duration) var(--agent-layout-ease);
 }
 .agent-visualization .react-flow__node.is-focused {
   opacity: 1;
-  transition:
-    transform var(--agent-layout-duration) var(--agent-layout-ease),
-    opacity 160ms ease;
+  transition: transform var(--agent-layout-duration) var(--agent-layout-ease);
 }
 
 .agent-visualization.is-focusing
@@ -578,14 +576,22 @@
 }
 
 .agent-visualization .react-flow__handle {
-  border: 1.5px solid var(--background);
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
   pointer-events: none;
-  /* View mode: hide the handle dots entirely — they're only meaningful when
-     the user can drag from them, which only happens in editing mode. The
-     `.is-editing` rule below bumps opacity back to 1. */
+  /* View mode: collapse the handle to a 0×0 point at the node boundary.
+     React Flow uses each handle's getBoundingClientRect to compute edge
+     endpoints (top of rect for Position.Top, bottom for Position.Bottom).
+     A 16×16 handle centered on the node edge via translate(-50%, -50%)
+     extends 8px past the boundary, so edges visibly stop short of the
+     card. Zeroing width/height (and min-width/height, which base.css
+     defaults to 5px) anchors the edge endpoint exactly to the node edge.
+     The `.is-editing` rule below restores 18×18 so the dots are grabbable
+     when authoring. */
+  width: 0;
+  height: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 999px;
   opacity: 0;
 }
 
@@ -618,8 +624,11 @@
   transform-origin: center center;
   scale: 1;
   /* Thin background-colored hairline so the dot reads as a solid colored
-     pill instead of a small splat inside a thick black ring. */
-  border-width: 1.5px;
+     pill instead of a small splat inside a thick black ring. The default
+     `.react-flow__handle` rule zeroes the border in view mode so edges
+     anchor exactly to the node boundary; restore it here for the
+     visible-dot affordance. */
+  border: 1.5px solid var(--background);
   box-shadow: none;
   transition:
     scale 120ms ease,

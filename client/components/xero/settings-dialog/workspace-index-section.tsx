@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
-  AlertTriangle,
   Database,
   FileSearch,
   Loader2,
@@ -19,6 +18,14 @@ import type {
   WorkspaceQueryResponseDto,
 } from "@/src/lib/xero-model/project"
 import { SectionHeader } from "./section-header"
+import {
+  EmptyPanel,
+  ErrorBanner,
+  InlineCounts,
+  Pill,
+  SubHeading,
+  type Tone,
+} from "./_shared"
 
 interface WorkspaceIndexSectionProps {
   projectId: string | null
@@ -26,7 +33,6 @@ interface WorkspaceIndexSectionProps {
 }
 
 type LoadState = "idle" | "loading" | "ready" | "error"
-type Tone = "good" | "info" | "warn" | "bad" | "neutral"
 
 const QUERY_MODES: Array<{ value: WorkspaceQueryModeDto; label: string }> = [
   { value: "semantic", label: "Semantic" },
@@ -34,33 +40,6 @@ const QUERY_MODES: Array<{ value: WorkspaceQueryModeDto; label: string }> = [
   { value: "related_tests", label: "Tests" },
   { value: "impact", label: "Impact" },
 ]
-
-const TONE_CLASS: Record<Tone, string> = {
-  good: "border-success/30 bg-success/[0.08] text-success",
-  info: "border-info/30 bg-info/[0.08] text-info",
-  warn: "border-warning/30 bg-warning/[0.08] text-warning",
-  bad: "border-destructive/40 bg-destructive/[0.08] text-destructive",
-  neutral: "border-border bg-secondary/60 text-foreground/70",
-}
-
-function Pill({
-  tone,
-  children,
-}: {
-  tone: Tone
-  children: React.ReactNode
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-[18px] items-center gap-1 rounded-full border px-1.5 text-[10.5px] font-medium",
-        TONE_CLASS[tone],
-      )}
-    >
-      {children}
-    </span>
-  )
-}
 
 function indexStateTone(state: string | undefined): Tone {
   switch (state) {
@@ -75,6 +54,12 @@ function indexStateTone(state: string | undefined): Tone {
     default:
       return "neutral"
   }
+}
+
+function coverageTone(coverage: number): Tone {
+  if (coverage >= 95) return "good"
+  if (coverage >= 50) return "info"
+  return "warn"
 }
 
 export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceIndexSectionProps) {
@@ -223,57 +208,74 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
         }
       />
 
-      <section className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-        <CountTile label="Indexed" value={String(status?.indexedFiles ?? 0)} tone="info" />
-        <CountTile label="Total files" value={String(status?.totalFiles ?? 0)} tone="neutral" />
-        <CountTile label="Symbols" value={String(status?.symbolCount ?? 0)} tone="neutral" />
-        <CountTile label="Coverage" value={`${coverage}%`} tone={coverage >= 95 ? "good" : coverage >= 50 ? "info" : "warn"} />
-      </section>
-
-      <section className="flex flex-col gap-3 rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="text-[12.5px] font-semibold text-foreground">Index health</span>
-            <Pill tone={stateTone}>{stateLabel.replace(/_/g, " ")}</Pill>
-          </div>
-          <span className="text-[11px] text-muted-foreground">{completedAt}</span>
-        </div>
-        <Progress value={coverage} className="h-1.5" />
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-[11.5px] text-muted-foreground">
-            {status
-              ? `${status.indexedFiles} of ${status.totalFiles} files indexed`
-              : "Status not loaded"}
-          </span>
-          <div className="flex items-center gap-1.5">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 gap-1.5 text-[11.5px]"
-              onClick={() => void runIndex(true)}
-              disabled={isIndexing}
-              aria-label="Rebuild index"
-            >
-              <RefreshCw className="h-3 w-3" />
-              Rebuild
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-destructive"
-              onClick={() => void resetIndex()}
-              disabled={isIndexing}
-              aria-label="Reset index"
-            >
-              <RotateCcw className="h-3 w-3" />
-              Reset
-            </Button>
+      <section className="rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3">
+        <div className="flex items-start gap-2.5">
+          <Database className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-[12.5px] font-semibold text-foreground">Index health</p>
+              <Pill tone={stateTone}>{stateLabel.replace(/_/g, " ")}</Pill>
+              <span className="ml-auto text-[11px] text-muted-foreground">{completedAt}</span>
+            </div>
+            <div className="mt-2 flex items-center gap-2.5">
+              <Progress value={coverage} className="h-1.5 flex-1" />
+              <span className="shrink-0 text-[11.5px] font-medium tabular-nums text-foreground">
+                {coverage}%
+              </span>
+            </div>
+            <InlineCounts
+              className="mt-2.5"
+              items={[
+                {
+                  label: "Indexed",
+                  value: status?.indexedFiles ?? 0,
+                  tone: "info",
+                },
+                {
+                  label: "Total",
+                  value: status?.totalFiles ?? 0,
+                },
+                {
+                  label: "Symbols",
+                  value: status?.symbolCount ?? 0,
+                },
+                {
+                  label: "Coverage",
+                  value: `${coverage}%`,
+                  tone: coverageTone(coverage),
+                },
+              ]}
+            />
+            <div className="mt-3 flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 text-[11.5px]"
+                onClick={() => void runIndex(true)}
+                disabled={isIndexing}
+                aria-label="Rebuild index"
+              >
+                <RefreshCw className="h-3 w-3" />
+                Rebuild
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-destructive"
+                onClick={() => void resetIndex()}
+                disabled={isIndexing}
+                aria-label="Reset index"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Reset
+              </Button>
+            </div>
           </div>
         </div>
       </section>
 
       <section className="flex flex-col gap-2.5">
-        <h4 className="text-[12.5px] font-semibold text-foreground">Query</h4>
+        <SubHeading>Query</SubHeading>
         <div className="flex gap-1 rounded-md border border-border/60 bg-secondary/30 p-1">
           {QUERY_MODES.map((item) => (
             <button
@@ -318,24 +320,11 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
         </div>
       </section>
 
-      {error ? (
-        <p
-          role="alert"
-          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12px] text-destructive"
-        >
-          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-          <span>{error}</span>
-        </p>
-      ) : null}
+      {error ? <ErrorBanner message={error} /> : null}
 
       {queryResponse ? (
         <section className="flex flex-col gap-2.5">
-          <h4 className="text-[12.5px] font-semibold text-foreground">
-            Results
-            <span className="ml-1.5 font-normal text-muted-foreground">
-              {queryResponse.results.length}
-            </span>
-          </h4>
+          <SubHeading count={queryResponse.results.length}>Results</SubHeading>
           {queryResponse.results.length === 0 ? (
             <EmptyPanel
               icon={<FileSearch className="h-4 w-4 text-muted-foreground/70" />}
@@ -389,47 +378,6 @@ function ResultRow({ result }: ResultRowProps) {
             {[...result.diffs.slice(0, 2), ...result.failures.slice(0, 1)].join(" · ")}
           </p>
         ) : null}
-      </div>
-    </div>
-  )
-}
-
-function CountTile({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: string
-  tone: Tone
-}) {
-  return (
-    <div className={cn("flex flex-col gap-0.5 rounded-md border px-3 py-2", TONE_CLASS[tone])}>
-      <span className="truncate text-[18px] font-semibold leading-none text-foreground">
-        {value}
-      </span>
-      <span className="text-[10.5px] uppercase tracking-[0.12em] text-current/80">{label}</span>
-    </div>
-  )
-}
-
-function EmptyPanel({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode
-  title: string
-  body: string
-}) {
-  return (
-    <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-secondary/10 px-6 text-center">
-      <div className="max-w-sm">
-        <div className="mx-auto flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-secondary/40">
-          {icon}
-        </div>
-        <p className="mt-3 text-[12.5px] font-medium text-foreground">{title}</p>
-        <p className="mt-1 text-[11.5px] leading-[1.55] text-muted-foreground">{body}</p>
       </div>
     </div>
   )

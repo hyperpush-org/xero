@@ -66,30 +66,56 @@ export function Workflow() {
         <ol className="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 lg:gap-5">
           {stages.map((s, i) => (
             <li key={s.n} className="relative flex">
-              <article className="relative flex w-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card">
-                <header className="flex items-center justify-between border-b border-border/60 bg-secondary/20 px-4 py-2.5">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-primary/15 text-primary">
+              <article className="relative flex w-full flex-col overflow-hidden rounded-2xl border border-border/60 bg-card/60 backdrop-blur-sm">
+                {/* top accent line */}
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-primary/60 to-transparent opacity-50"
+                />
+
+                <header className="relative flex items-start justify-between px-4 pt-4 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-inset ring-primary/20">
                       {s.icon}
                     </span>
-                    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-primary">
-                      {s.n} · {s.label}
-                    </span>
+                    <div className="flex flex-col leading-tight">
+                      <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/70">
+                        Stage
+                      </span>
+                      <span className="font-mono text-[11px] uppercase tracking-[0.2em] font-medium text-primary">
+                        {s.label}
+                      </span>
+                    </div>
                   </div>
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/60">
-                    stage
+                  <span
+                    aria-hidden
+                    className="font-mono text-[28px] font-light leading-none tabular-nums text-primary/25"
+                  >
+                    {s.n}
                   </span>
                 </header>
 
-                <div className="flex h-48 items-center justify-center bg-gradient-to-b from-transparent to-secondary/[0.08] p-4">
+                <div className="relative flex h-48 items-center justify-center overflow-hidden px-4">
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_55%,var(--primary)_0%,transparent_60%)] opacity-[0.04]"
+                  />
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-border/60 to-transparent"
+                  />
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-8 bottom-0 h-px bg-gradient-to-r from-transparent via-border/60 to-transparent"
+                  />
                   {s.visual}
                 </div>
 
-                <footer className="border-t border-border/60 px-4 py-4">
-                  <h3 className="text-base font-medium tracking-tight">
+                <footer className="relative px-4 py-4">
+                  <h3 className="text-[15px] font-medium tracking-tight text-foreground/95">
                     {s.title}
                   </h3>
-                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                     {s.caption}
                   </p>
                 </footer>
@@ -98,7 +124,7 @@ export function Workflow() {
               {i < stages.length - 1 && (
                 <span
                   aria-hidden
-                  className="pointer-events-none absolute right-[-14px] top-[80px] z-10 hidden h-7 w-7 items-center justify-center rounded-full border border-primary/40 bg-background text-primary shadow-[0_0_0_4px_var(--background)] lg:flex"
+                  className="pointer-events-none absolute right-[-12px] top-1/2 z-10 hidden h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-primary/30 bg-background/95 text-primary/80 ring-4 ring-background backdrop-blur lg:flex"
                 >
                   <ChevronRight className="h-3.5 w-3.5" />
                 </span>
@@ -383,7 +409,7 @@ function TrajectoryVisual() {
 
       {/* Labels */}
       <g fontFamily="var(--font-mono)" fontSize="8" fill="var(--muted-foreground)" letterSpacing="1.5" opacity="0.75">
-        <text x="16" y="148">branch</text>
+        <text x="16" y="120">branch</text>
         <text x="200" y="22" textAnchor="end" fill="var(--primary)" fontWeight="600">prod</text>
       </g>
 

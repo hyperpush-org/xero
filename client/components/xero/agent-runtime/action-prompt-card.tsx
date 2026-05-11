@@ -106,11 +106,11 @@ export function ActionPromptCard({
           ) : null}
         </div>
         {resolved ? (
-          <span className="inline-flex items-center gap-1 rounded-sm bg-muted/40 px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
+          <span className="agent-prompt-status-pop inline-flex items-center gap-1 rounded-sm bg-muted/40 px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
             <CheckCircle2 className="h-3 w-3" /> Resolved
           </span>
         ) : isPendingForThis ? (
-          <span className="inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-medium text-primary">
+          <span className="agent-prompt-status-pop inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10.5px] font-medium text-primary">
             <Loader2 className="h-3 w-3 animate-spin" /> Sending…
           </span>
         ) : null}

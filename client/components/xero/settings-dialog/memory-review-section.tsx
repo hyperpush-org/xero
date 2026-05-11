@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import {
   AlertTriangle,
   Brain,
@@ -13,7 +13,6 @@ import {
   X,
 } from "lucide-react"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -37,6 +36,7 @@ import type {
 } from "@/src/lib/xero-model/session-context"
 
 import { SectionHeader } from "./section-header"
+import { EmptyPanel, ErrorBanner, Pill, SubHeading, type Tone } from "./_shared"
 
 type MemoryReviewItem = AgentMemoryReviewQueueItemDto
 
@@ -69,10 +69,10 @@ const INITIAL_QUEUE_STATE: QueueState = {
   response: null,
 }
 
-const REVIEW_STATE_TONE: Record<MemoryReviewItem["reviewState"], "outline" | "default" | "secondary" | "destructive"> = {
-  candidate: "default",
-  approved: "secondary",
-  rejected: "destructive",
+const REVIEW_STATE_TONE: Record<MemoryReviewItem["reviewState"], Tone> = {
+  candidate: "info",
+  approved: "good",
+  rejected: "bad",
 }
 
 export function MemoryReviewSection({
@@ -211,11 +211,16 @@ export function MemoryReviewSection({
     <Button
       size="sm"
       variant="outline"
+      className="h-8 gap-1.5 text-[12px]"
       onClick={() => void loadQueue()}
       disabled={isBusy || !projectId || !adapter}
       aria-label="Refresh memory review queue"
     >
-      {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+      {isBusy ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <RefreshCw className="h-3.5 w-3.5" />
+      )}
       Refresh
     </Button>
   )
@@ -227,7 +232,11 @@ export function MemoryReviewSection({
           title="Memory Review"
           description="Approve, edit, or reject memory candidates extracted from agent sessions."
         />
-        <ProjectBoundEmpty title="Select a project" body="Memory review is scoped to the active project." />
+        <EmptyPanel
+          icon={<Brain className="h-4 w-4 text-muted-foreground/70" />}
+          title="Select a project"
+          body="Memory review is scoped to the active project."
+        />
       </div>
     )
   }
@@ -237,10 +246,13 @@ export function MemoryReviewSection({
       <div className="flex flex-col gap-7">
         <SectionHeader
           title="Memory Review"
-          description={projectLabel ? `Memory candidates for ${projectLabel}.` : "Memory candidates for the active project."}
+          description={
+            projectLabel ? `Memory candidates for ${projectLabel}.` : "Memory candidates for the active project."
+          }
           actions={headerActions}
         />
-        <ProjectBoundEmpty
+        <EmptyPanel
+          icon={<Brain className="h-4 w-4 text-muted-foreground/70" />}
           title="Memory review unavailable"
           body="The desktop adapter did not provide memory review commands. Restart Xero or upgrade to enable this surface."
         />
@@ -261,38 +273,35 @@ export function MemoryReviewSection({
       />
 
       {counts ? (
-        <section className="grid grid-cols-2 gap-2.5 sm:grid-cols-5" data-testid="memory-review-counts">
-          <CountTile label="Candidates" value={counts.candidate} tone="info" />
-          <CountTile label="Approved" value={counts.approved} tone="good" />
-          <CountTile label="Retrievable" value={counts.retrievableApproved} tone="good" />
-          <CountTile label="Disabled" value={counts.disabled} tone="neutral" />
-          <CountTile label="Rejected" value={counts.rejected} tone="warn" />
-        </section>
+        <div
+          data-testid="memory-review-counts"
+          className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[11.5px]"
+        >
+          <CountPair label="Candidates" value={counts.candidate} tone="info" />
+          <CountPair label="Approved" value={counts.approved} tone="good" />
+          <CountPair label="Retrievable" value={counts.retrievableApproved} tone="good" />
+          <CountPair label="Disabled" value={counts.disabled} />
+          <CountPair label="Rejected" value={counts.rejected} tone="warn" />
+        </div>
       ) : null}
 
-      {queueState.errorMessage ? (
-        <p
-          role="alert"
-          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive"
-        >
-          {queueState.errorMessage}
-        </p>
-      ) : null}
+      {queueState.errorMessage ? <ErrorBanner message={queueState.errorMessage} /> : null}
 
       {queueState.status === "loading" && items.length === 0 ? (
         <div
           aria-busy="true"
           aria-label="Loading memory review queue"
-          className="flex min-h-[160px] flex-col gap-3"
+          className="flex min-h-[160px] flex-col gap-2"
         >
-          <div className="h-12 rounded-md bg-secondary/40" />
-          <div className="h-12 rounded-md bg-secondary/30" />
-          <div className="h-12 rounded-md bg-secondary/20" />
+          <div className="h-14 rounded-md bg-secondary/40" />
+          <div className="h-14 rounded-md bg-secondary/30" />
+          <div className="h-14 rounded-md bg-secondary/20" />
         </div>
       ) : null}
 
       {queueState.status === "ready" && items.length === 0 ? (
-        <ProjectBoundEmpty
+        <EmptyPanel
+          icon={<Brain className="h-4 w-4 text-muted-foreground/70" />}
           title="No memory to review"
           body="Memory candidates appear here when agent sessions complete, pause, fail, or hand off."
         />
@@ -300,18 +309,21 @@ export function MemoryReviewSection({
 
       {items.length > 0 ? (
         <section className="flex flex-col gap-2.5" data-testid="memory-review-items">
-          {items.map((item) => (
-            <MemoryReviewRow
-              key={item.memoryId}
-              item={item}
-              pendingKind={pendingAction?.memoryId === item.memoryId ? pendingAction.kind : null}
-              onApprove={() => void handleApprove(item)}
-              onReject={() => void handleReject(item)}
-              onDisable={() => void handleDisable(item)}
-              onDelete={() => void handleDelete(item)}
-              onEdit={() => openEditor(item)}
-            />
-          ))}
+          <SubHeading count={items.length}>Candidates</SubHeading>
+          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+            {items.map((item) => (
+              <MemoryReviewRow
+                key={item.memoryId}
+                item={item}
+                pendingKind={pendingAction?.memoryId === item.memoryId ? pendingAction.kind : null}
+                onApprove={() => void handleApprove(item)}
+                onReject={() => void handleReject(item)}
+                onDisable={() => void handleDisable(item)}
+                onDelete={() => void handleDelete(item)}
+                onEdit={() => openEditor(item)}
+              />
+            ))}
+          </div>
         </section>
       ) : null}
 
@@ -340,11 +352,27 @@ export function MemoryReviewSection({
             </p>
           ) : null}
           <DialogFooter>
-            <Button variant="ghost" onClick={closeEditor} disabled={pendingAction?.kind === "edit"}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              onClick={closeEditor}
+              disabled={pendingAction?.kind === "edit"}
+            >
+              <X className="h-3.5 w-3.5" />
               Cancel
             </Button>
-            <Button onClick={() => void submitCorrection()} disabled={pendingAction?.kind === "edit"}>
-              {pendingAction?.kind === "edit" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 text-[12px]"
+              onClick={() => void submitCorrection()}
+              disabled={pendingAction?.kind === "edit"}
+            >
+              {pendingAction?.kind === "edit" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="h-3.5 w-3.5" />
+              )}
               Save correction
             </Button>
           </DialogFooter>
@@ -379,204 +407,205 @@ function MemoryReviewRow({
   const ariaBusy = pendingKind !== null
 
   return (
-    <article
+    <div
       data-testid="memory-review-item"
       data-memory-id={item.memoryId}
       aria-busy={ariaBusy}
       className={cn(
-        "rounded-lg border border-border/60 bg-card/30 p-3 transition-colors",
-        redacted && "border-warning/40 bg-warning/[0.04]",
+        "flex flex-col gap-2 px-3.5 py-3",
+        redacted && "bg-warning/[0.04]",
       )}
     >
-      <header className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline" className="capitalize">{item.scope}</Badge>
-        <Badge variant="outline" className="capitalize">{item.kind.replace(/_/g, " ")}</Badge>
-        <Badge variant={REVIEW_STATE_TONE[item.reviewState]} className="capitalize">
-          {item.reviewState}
-        </Badge>
-        {!item.enabled ? <Badge variant="outline">Disabled</Badge> : null}
-        {redacted ? (
-          <Badge
-            variant="outline"
-            className="border-warning/40 bg-warning/[0.08] text-warning"
-            data-testid="redaction-badge"
-          >
-            <ShieldAlert className="mr-1 h-3 w-3" />
-            Redacted
-          </Badge>
-        ) : null}
-        {item.confidence != null ? (
-          <Badge variant="outline">{item.confidence}% confidence</Badge>
-        ) : null}
-        <span className="ml-auto text-[11px] text-muted-foreground">
-          Updated {formatTimestamp(item.updatedAt)}
-        </span>
-      </header>
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-secondary/40 text-muted-foreground">
+          <Brain className="h-3.5 w-3.5" aria-hidden="true" />
+        </div>
 
-      <div className="mt-2">
-        {redacted ? (
-          <p
-            data-testid="memory-redacted-notice"
-            className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2 text-[12.5px] leading-[1.5] text-warning"
-          >
-            <EyeOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>
-              Xero hid this memory's preview because it contains secret-shaped content. Edit it to a sanitized form before
-              approving.
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <Pill tone="neutral">{item.scope}</Pill>
+            <Pill tone="neutral">{item.kind.replace(/_/g, " ")}</Pill>
+            <Pill tone={REVIEW_STATE_TONE[item.reviewState]}>{item.reviewState}</Pill>
+            {!item.enabled ? <Pill tone="neutral">Disabled</Pill> : null}
+            {redacted ? (
+              <Pill tone="warn" className="gap-1">
+                <span data-testid="redaction-badge" className="inline-flex items-center gap-1">
+                  <ShieldAlert className="h-2.5 w-2.5" />
+                  Redacted
+                </span>
+              </Pill>
+            ) : null}
+            {item.confidence != null ? (
+              <Pill tone="neutral">{item.confidence}%</Pill>
+            ) : null}
+            <span className="ml-auto text-[11px] text-muted-foreground">
+              {formatTimestamp(item.updatedAt)}
             </span>
-          </p>
-        ) : (
-          <p
-            data-testid="memory-preview"
-            className="whitespace-pre-wrap rounded-md bg-secondary/30 px-3 py-2 text-[12.5px] leading-[1.55] text-foreground"
-          >
-            {item.textPreview}
-          </p>
-        )}
+          </div>
+
+          {redacted ? (
+            <p
+              data-testid="memory-redacted-notice"
+              className="mt-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2 text-[12px] leading-[1.5] text-warning"
+            >
+              <EyeOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Xero hid this memory's preview because it contains secret-shaped content. Edit it to a sanitized form before
+                approving.
+              </span>
+            </p>
+          ) : (
+            <p
+              data-testid="memory-preview"
+              className="mt-2 whitespace-pre-wrap text-[12.5px] leading-[1.55] text-foreground"
+            >
+              {item.textPreview}
+            </p>
+          )}
+
+          <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground sm:grid-cols-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground/60">Freshness</span>
+              <span className="capitalize text-foreground/80">
+                {item.freshness.state.replace(/_/g, " ")}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground/60">Retrieval</span>
+              <span className="text-foreground/80">
+                {item.retrieval.eligible ? "Eligible" : reasonLabel(item.retrieval.reason)}
+              </span>
+            </div>
+            {freshnessReason ? (
+              <div className="col-span-full flex items-start gap-1.5">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" />
+                <span>{freshnessReason}</span>
+              </div>
+            ) : null}
+            {factKeyRedacted ? (
+              <div className="col-span-full">
+                Fact key redacted in this preview.
+              </div>
+            ) : null}
+            {item.provenance.diagnostic ? (
+              <div className="col-span-full">
+                <span className="text-muted-foreground/60">Diagnostic </span>
+                <span className="text-foreground/80">{item.provenance.diagnostic.message}</span>
+              </div>
+            ) : null}
+          </dl>
+        </div>
       </div>
 
-      <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 text-[11.5px] text-muted-foreground sm:grid-cols-2">
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-foreground/80">Freshness</span>
-          <span className="capitalize">{item.freshness.state.replace(/_/g, " ")}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="font-medium text-foreground/80">Retrieval</span>
-          <span>
-            {item.retrieval.eligible ? "Eligible" : reasonLabel(item.retrieval.reason)}
-          </span>
-        </div>
-        {freshnessReason ? (
-          <div className="col-span-full flex items-start gap-1.5">
-            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" />
-            <span>{freshnessReason}</span>
-          </div>
-        ) : null}
-        {factKeyRedacted ? (
-          <div className="col-span-full text-[11px] text-muted-foreground">
-            Fact key redacted in this preview.
-          </div>
-        ) : null}
-        {item.provenance.diagnostic ? (
-          <div className="col-span-full">
-            <span className="font-medium text-foreground/80">Diagnostic</span>{" "}
-            <span>{item.provenance.diagnostic.message}</span>
-          </div>
-        ) : null}
-      </dl>
-
-      <footer className="mt-3 flex flex-wrap gap-1.5">
+      <div className="ml-9 flex flex-wrap items-center gap-1.5">
         <Button
           size="sm"
           variant="default"
+          className="h-7 gap-1.5 text-[11.5px]"
           onClick={onApprove}
           disabled={ariaBusy || !item.availableActions.canApprove}
           aria-label="Approve memory"
         >
           {pendingKind === "approve" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <Check className="h-4 w-4" />
+            <Check className="h-3 w-3" />
           )}
           Approve
         </Button>
         <Button
           size="sm"
           variant="outline"
+          className="h-7 gap-1.5 text-[11.5px]"
           onClick={onReject}
           disabled={ariaBusy || !item.availableActions.canReject}
           aria-label="Reject memory"
         >
           {pendingKind === "reject" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <X className="h-4 w-4" />
+            <X className="h-3 w-3" />
           )}
           Reject
         </Button>
         <Button
           size="sm"
           variant="outline"
+          className="h-7 gap-1.5 text-[11.5px]"
           onClick={onDisable}
           disabled={ariaBusy || !item.availableActions.canDisable}
           aria-label="Disable memory"
         >
           {pendingKind === "disable" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <PowerOff className="h-4 w-4" />
+            <PowerOff className="h-3 w-3" />
           )}
           Disable
         </Button>
         <Button
           size="sm"
           variant="outline"
+          className="h-7 gap-1.5 text-[11.5px]"
           onClick={onEdit}
           disabled={ariaBusy || !item.availableActions.canEditByCorrection}
           aria-label="Edit memory"
         >
           {pendingKind === "edit" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <Pencil className="h-4 w-4" />
+            <Pencil className="h-3 w-3" />
           )}
           Edit
         </Button>
         <Button
           size="sm"
           variant="ghost"
+          className="ml-auto h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-destructive"
           onClick={onDelete}
           disabled={ariaBusy || !item.availableActions.canDelete}
           aria-label="Delete memory"
-          className="text-destructive hover:text-destructive"
         >
           {pendingKind === "delete" ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <Trash2 className="h-4 w-4" />
+            <Trash2 className="h-3 w-3" />
           )}
           Delete
         </Button>
-      </footer>
-    </article>
-  )
-}
-
-interface CountTileProps {
-  label: string
-  value: number
-  tone: "good" | "info" | "warn" | "neutral"
-}
-
-const TILE_TONE: Record<CountTileProps["tone"], string> = {
-  good: "border-success/30 bg-success/[0.06] text-success",
-  info: "border-info/30 bg-info/[0.06] text-info",
-  warn: "border-warning/30 bg-warning/[0.06] text-warning",
-  neutral: "border-border/60 bg-card/30 text-foreground/80",
-}
-
-function CountTile({ label, value, tone }: CountTileProps) {
-  return (
-    <div
-      className={cn(
-        "flex flex-col gap-0.5 rounded-md border px-3 py-2 text-[12px]",
-        TILE_TONE[tone],
-      )}
-    >
-      <span className="text-[11px] uppercase tracking-[0.12em] text-current/70">{label}</span>
-      <span className="text-[15px] font-semibold tabular-nums text-current">{value}</span>
+      </div>
     </div>
   )
 }
 
-function ProjectBoundEmpty({ title, body }: { title: string; body: string }) {
+const COUNT_TONE: Record<Tone, string> = {
+  good: "text-success",
+  info: "text-info",
+  warn: "text-warning",
+  bad: "text-destructive",
+  neutral: "text-foreground",
+}
+
+function CountPair({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string
+  value: number
+  tone?: Tone
+}) {
   return (
-    <div className="flex min-h-[180px] items-center justify-center rounded-lg border border-border/60 bg-card/30 text-center">
-      <div className="max-w-sm px-6">
-        <Brain className="mx-auto h-4 w-4 text-muted-foreground/70" />
-        <p className="mt-3 text-[13px] font-medium text-foreground">{title}</p>
-        <p className="mt-1.5 text-[12px] leading-[1.55] text-muted-foreground">{body}</p>
-      </div>
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "text-[13px] font-semibold tabular-nums leading-none",
+          COUNT_TONE[tone],
+        )}
+      >
+        {value}
+      </span>
     </div>
   )
 }

@@ -95,6 +95,11 @@ import {
   type AgentHeaderAdvancedFields,
 } from './build-agent-graph'
 import { AddStageChip } from './add-stage-chip'
+import {
+  StageToolFanOverlay,
+  type StageToolFanEntry,
+  type StageToolFanOverlayRef,
+} from './stage-tool-fan-overlay'
 import { buildSnapshotFromGraph } from './build-snapshot'
 import {
   CanvasModeProvider,
@@ -366,6 +371,14 @@ interface AppliedFocus {
   nodeElements: HTMLElement[]
   edgeElements: SVGElement[]
   edgeLabelElements: HTMLElement[]
+}
+
+interface FocusDomCache {
+  nodes: Map<string, HTMLElement>
+  edges: Map<string, SVGElement>
+  // Trigger edges can render multiple label spans (rare, but the original
+  // bulk-lookup path handled it). Keep an array per id.
+  labels: Map<string, HTMLElement[]>
 }
 
 interface DotViewportElement extends HTMLElement {
@@ -963,6 +976,27 @@ function applyExpandedNodeClass(
   })
 }
 
+// Patches the agent-header node's data.advanced from the editing panel's
+// state, leaving every other node's identity untouched. Hoisted out of
+// baseGraph so editingAdvanced no longer forces the full graph (layout,
+// edges, focus index) to rebuild on every keystroke.
+function applyEditingAdvanced(
+  nodes: AgentGraphNode[],
+  editing: boolean,
+  editingAdvanced: AgentHeaderAdvancedFields,
+): AgentGraphNode[] {
+  if (!editing) return nodes
+  return nodes.map((node) => {
+    if (node.type !== 'agent-header') return node
+    const existing = (node.data as { advanced?: AgentHeaderAdvancedFields }).advanced
+    if (existing === editingAdvanced) return node
+    return {
+      ...node,
+      data: { ...node.data, advanced: editingAdvanced },
+    } as unknown as AgentGraphNode
+  })
+}
+
 function nodeHandle(
   type: 'source' | 'target',
   position: Position,
@@ -1032,6 +1066,14 @@ function knownHandlesForNode(node: AgentGraphNode, width: number, height: number
           { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db) },
         ),
         nodeHandle('source', Position.Bottom, width, height, AGENT_GRAPH_HEADER_HANDLES.output),
+        nodeHandle(
+          'source',
+          Position.Left,
+          width,
+          height,
+          AGENT_GRAPH_HEADER_HANDLES.workflow,
+          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow) },
+        ),
         nodeHandle(
           'target',
           Position.Left,
@@ -1292,56 +1334,73 @@ function cssString(value: string): string {
     .replace(/\r/g, '\\d ')}"`
 }
 
-function getFocusedDomElements(root: HTMLElement, target: FocusTarget): AppliedFocus {
+// Looks up the focused DOM elements via a per-id Map cache. Cache entries are
+// validated with isConnected so a stale reference (e.g. after a React-Flow
+// node remount) falls through to querySelector and refreshes itself. Removing
+// the bulk-lookup querySelectorAll path was the main goal here — on large
+// agents it was scanning 200+ DOM elements per hover even though typical
+// focus clusters are 5–40 elements.
+function getFocusedDomElements(
+  root: HTMLElement,
+  target: FocusTarget,
+  cache: FocusDomCache,
+): AppliedFocus {
   const nodeElements: HTMLElement[] = []
   const edgeElements: SVGElement[] = []
   const edgeLabelElements: HTMLElement[] = []
-  const targetSize = target.nodeIds.length + target.edgeIds.length
-
-  if (targetSize > FOCUS_BULK_DOM_LOOKUP_THRESHOLD) {
-    const nodeIds = new Set(target.nodeIds)
-    const edgeIds = new Set(target.edgeIds)
-    const hasTriggerEdge = target.edgeIds.some((id) =>
-      id.startsWith(TRIGGER_EDGE_ID_PREFIX),
-    )
-    root.querySelectorAll<HTMLElement>('.react-flow__node[data-id]').forEach((nodeElement) => {
-      const id = nodeElement.getAttribute('data-id')
-      if (id && nodeIds.has(id)) nodeElements.push(nodeElement)
-    })
-    root.querySelectorAll<SVGElement>('.react-flow__edge[data-id]').forEach((edgeElement) => {
-      const id = edgeElement.getAttribute('data-id')
-      if (id && edgeIds.has(id)) edgeElements.push(edgeElement)
-    })
-    if (hasTriggerEdge) {
-      root
-        .querySelectorAll<HTMLElement>('.agent-edge-trigger-label[data-edge-id]')
-        .forEach((labelElement) => {
-          const id = labelElement.getAttribute('data-edge-id')
-          if (id && edgeIds.has(id)) edgeLabelElements.push(labelElement)
-        })
-    }
-
-    return { nodeElements, edgeElements, edgeLabelElements }
-  }
 
   for (const focusedNodeId of target.nodeIds) {
+    const cached = cache.nodes.get(focusedNodeId)
+    if (cached && cached.isConnected) {
+      nodeElements.push(cached)
+      continue
+    }
     const nodeElement = root.querySelector<HTMLElement>(
       `.react-flow__node[data-id=${cssString(focusedNodeId)}]`,
     )
-    if (nodeElement) nodeElements.push(nodeElement)
+    if (nodeElement) {
+      cache.nodes.set(focusedNodeId, nodeElement)
+      nodeElements.push(nodeElement)
+    } else if (cached) {
+      cache.nodes.delete(focusedNodeId)
+    }
   }
 
   for (const focusedEdgeId of target.edgeIds) {
-    const edgeElement = root.querySelector<SVGElement>(
-      `.react-flow__edge[data-id=${cssString(focusedEdgeId)}]`,
-    )
-    if (edgeElement) edgeElements.push(edgeElement)
+    const cachedEdge = cache.edges.get(focusedEdgeId)
+    if (cachedEdge && cachedEdge.isConnected) {
+      edgeElements.push(cachedEdge)
+    } else {
+      const edgeElement = root.querySelector<SVGElement>(
+        `.react-flow__edge[data-id=${cssString(focusedEdgeId)}]`,
+      )
+      if (edgeElement) {
+        cache.edges.set(focusedEdgeId, edgeElement)
+        edgeElements.push(edgeElement)
+      } else if (cachedEdge) {
+        cache.edges.delete(focusedEdgeId)
+      }
+    }
+
     if (!focusedEdgeId.startsWith(TRIGGER_EDGE_ID_PREFIX)) continue
+    const cachedLabels = cache.labels.get(focusedEdgeId)
+    const labelsAlive =
+      cachedLabels && cachedLabels.length > 0 && cachedLabels.every((el) => el.isConnected)
+    if (labelsAlive) {
+      for (const el of cachedLabels!) edgeLabelElements.push(el)
+      continue
+    }
+    const fresh: HTMLElement[] = []
     root
       .querySelectorAll<HTMLElement>(
         `.agent-edge-trigger-label[data-edge-id=${cssString(focusedEdgeId)}]`,
       )
-      .forEach((labelElement) => edgeLabelElements.push(labelElement))
+      .forEach((labelElement) => {
+        fresh.push(labelElement)
+        edgeLabelElements.push(labelElement)
+      })
+    if (fresh.length > 0) cache.labels.set(focusedEdgeId, fresh)
+    else if (cachedLabels) cache.labels.delete(focusedEdgeId)
   }
 
   return { nodeElements, edgeElements, edgeLabelElements }
@@ -1583,29 +1642,12 @@ function AgentVisualizationInner({
 
   const baseGraph = useMemo(() => {
     if (!renderedDetail) return EMPTY_AGENT_GRAPH
-    const graph =
-      !editing && renderedDetail.graphProjection
-        ? agentGraphFromProjection(renderedDetail.graphProjection)
-        : buildAgentGraph(renderedDetail)
-    if (!editing) return graph
-    // Editing mode merges the current advanced-panel state into the header
-    // node's data so the agent-header card renders with the user's typed
-    // workflow contract / examples / capability flags. Cast through unknown
-    // because the node union is too narrow for a structural spread.
-    return {
-      nodes: graph.nodes.map((node) => {
-        if (node.type !== 'agent-header') return node
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            advanced: editingAdvanced,
-          },
-        } as unknown as AgentGraphNode
-      }),
-      edges: graph.edges,
-    }
-  }, [editing, editingAdvanced, renderedDetail])
+    return !editing && renderedDetail.graphProjection
+      ? agentGraphFromProjection(renderedDetail.graphProjection)
+      : buildAgentGraph(renderedDetail)
+    // editingAdvanced is injected later in computedNodes via applyEditingAdvanced
+    // so typing in the advanced panel doesn't rebuild the entire graph.
+  }, [editing, renderedDetail])
   const canvasRef = useRef<HTMLDivElement | null>(null)
   const [canvasBounds, setCanvasBounds] = useState<{ width: number; height: number } | null>(null)
   const canvasBoundsKey = canvasBounds ? `${canvasBounds.width}x${canvasBounds.height}` : ''
@@ -1970,7 +2012,8 @@ function AgentVisualizationInner({
     // key for an unsaved create) so we plug in the in-memory map here instead.
     const stored = editing ? editingPositionOverrides : getStoredPositions()
     const positioned = applyStoredPositions(placed, stored)
-    const classed = applyExpandedNodeClass(positioned, expandedIds)
+    const advanced = applyEditingAdvanced(positioned, editing, editingAdvanced)
+    const classed = applyExpandedNodeClass(advanced, expandedIds)
     return applyKnownNodeDimensions(
       classed,
       sizes,
@@ -1980,6 +2023,7 @@ function AgentVisualizationInner({
     ) as Node[]
   }, [
     editing,
+    editingAdvanced,
     editingPositionOverrides,
     expandedIds,
     getStoredPositions,
@@ -1987,13 +2031,36 @@ function AgentVisualizationInner({
     storedPositionsNonce,
   ])
 
+  // Split stage→tool edges out of the React-Flow edges array. They're
+  // visualised by StageToolFanOverlay as a single SVG path drawn on demand
+  // during stage hover; keeping them in React-Flow would force 20+ smoothstep
+  // paths to mount and toggle display per stage hover, which was the dominant
+  // cause of laggy stage interaction.
   const graphEdges = useMemo(
     () =>
-      (baseGraph.edges as Edge[]).map((edge) =>
-        edge.interactionWidth === 0 ? edge : { ...edge, interactionWidth: 0 },
-      ),
-    [baseGraph],
+      (baseGraph.edges as Edge[])
+        .filter((edge) => {
+          const data = edge.data as { category?: string } | undefined
+          return data?.category !== 'stage-tool'
+        })
+        .map((edge) =>
+          edge.interactionWidth === 0 ? edge : { ...edge, interactionWidth: 0 },
+        ),
+    [baseGraph.edges],
   )
+
+  const stageToolFanEntries = useMemo<ReadonlyArray<StageToolFanEntry>>(() => {
+    const grouped = new Map<string, string[]>()
+    for (const edge of baseGraph.edges) {
+      const data = edge.data as { category?: string } | undefined
+      if (data?.category !== 'stage-tool') continue
+      const targets = grouped.get(edge.source) ?? []
+      targets.push(edge.target)
+      grouped.set(edge.source, targets)
+    }
+    return Array.from(grouped, ([stageId, targets]) => ({ stageId, targets }))
+  }, [baseGraph.edges])
+  const stageToolFanRef = useRef<StageToolFanOverlayRef | null>(null)
   const computedEdges = graphEdges
   const canvasInteractingRef = useRef(false)
 
@@ -2016,14 +2083,47 @@ function AgentVisualizationInner({
     },
     [updateNodeInternals],
   )
-  const focusIndex = useMemo(
-    () => buildFocusIndex(computedNodes, graphEdges),
-    [computedNodes, graphEdges],
-  )
+  // Cache focus index by topology signature (ids/types/parents/sources/targets).
+  // Position drags and header advanced-panel edits change array identity but
+  // not topology — reusing the index preserves focusTargetCacheRef so hover
+  // dispatch stays O(1) across re-renders.
+  //
+  // The focus index is built from `baseGraph.edges` (all edges), NOT from
+  // `graphEdges` (which has stage-tool stripped out for the SVG overlay
+  // approach). Hovering a stage still needs the tool-highlighting effect
+  // via stage-tool relationships, so the focus traversal must see them.
+  // DOM lookups for the stripped edge ids return null and are skipped
+  // gracefully in getFocusedDomElements.
+  const focusEdges = baseGraph.edges as Edge[]
+  const focusIndexRef = useRef<{ key: string; index: FocusIndex } | null>(null)
+  const focusIndex = useMemo(() => {
+    let key = ''
+    for (const node of computedNodes) {
+      key += `${node.id}|${node.type ?? ''}|${(node as Node).parentId ?? ''},`
+    }
+    key += '::'
+    for (const edge of focusEdges) {
+      key += `${edge.id}|${edge.source}|${edge.target},`
+    }
+    const cached = focusIndexRef.current
+    if (cached && cached.key === key) return cached.index
+    const index = buildFocusIndex(computedNodes, focusEdges)
+    focusIndexRef.current = { key, index }
+    return index
+  }, [computedNodes, focusEdges])
   const focusTargetCacheRef = useRef<{
     index: FocusIndex | null
     targets: Map<string, FocusTarget>
   }>({ index: null, targets: new Map() })
+  // Clear the DOM-element cache whenever the topology shifts. Stale entries
+  // would self-evict via isConnected, but flushing on layout change avoids
+  // letting the maps grow with detached refs over many edits.
+  useEffect(() => {
+    const cache = focusDomCacheRef.current
+    cache.nodes.clear()
+    cache.edges.clear()
+    cache.labels.clear()
+  }, [focusIndex])
   const getFocusTarget = useCallback(
     (nodeId: string): FocusTarget | null => {
       const cache = focusTargetCacheRef.current
@@ -2052,6 +2152,18 @@ function AgentVisualizationInner({
     nodeInternalsRefreshKeyRef.current = refreshKey
     refreshNodeInternals(refreshIds)
   }, [nodes, refreshNodeInternals])
+
+  // Handles collapse to 0×0 in view mode (so edge endpoints land on the node
+  // boundary) and expand to 18×18 in editing mode (so the dots are grabbable).
+  // The size flip is pure CSS — no node element resize — so React Flow's
+  // ResizeObserver won't refire. Force a remeasure so cached handleBounds
+  // matches the current size; otherwise the connection drag's hit-testing
+  // and edge endpoints stay stale across the toggle.
+  useEffect(() => {
+    const ids = refreshableNodeIds(nodesRef.current)
+    if (ids.length === 0) return
+    refreshNodeInternals(ids)
+  }, [editing, refreshNodeInternals])
 
   useEffect(
     () => () => {
@@ -2132,6 +2244,14 @@ function AgentVisualizationInner({
   const nodeIdByElementRef = useRef<WeakMap<Element, string | null>>(new WeakMap())
   const appliedFocusRef = useRef<AppliedFocus | null>(null)
   const interactionSettleTimerRef = useRef<number | null>(null)
+  // DOM-element cache for focus lookups. Maps node/edge/label id → element.
+  // Replaces per-hover querySelectorAll scans; falls back to querySelector on
+  // miss and self-evicts entries whose element is no longer connected.
+  const focusDomCacheRef = useRef<FocusDomCache>({
+    nodes: new Map(),
+    edges: new Map(),
+    labels: new Map(),
+  })
 
   const resolveNodeIdFromElement = useCallback((element: Element | null): string | null => {
     if (!element) return null
@@ -2192,6 +2312,7 @@ function AgentVisualizationInner({
   const removeAppliedFocus = useCallback(() => {
     const root = canvasRef.current
     const applied = appliedFocusRef.current
+    stageToolFanRef.current?.showStage(null)
     if (!root) return
     root.classList.remove('is-focusing')
     if (!applied) return
@@ -2205,6 +2326,51 @@ function AgentVisualizationInner({
       edgeLabelElement.classList.remove('is-active')
     }
     appliedFocusRef.current = null
+  }, [])
+
+  // Diff-based focus class application. Hovering between two nodes that share
+  // most of their focus cluster (e.g. two tools in the same frame) used to
+  // clear and re-add classes on every element AND toggle `.is-focusing` off
+  // and on the root — triggering two full style-invalidation cascades across
+  // the entire canvas DOM per hover-change. This patch keeps `.is-focusing`
+  // on the root the whole time focus is active and only touches the symmetric
+  // difference of focused/active elements between old and new clusters.
+  const diffAppliedFocus = useCallback((next: AppliedFocus) => {
+    const root = canvasRef.current
+    if (!root) return
+    const prev = appliedFocusRef.current
+    if (!prev) {
+      for (const el of next.nodeElements) el.classList.add('is-focused')
+      for (const el of next.edgeElements) el.classList.add('is-active')
+      for (const el of next.edgeLabelElements) el.classList.add('is-active')
+      appliedFocusRef.current = next
+      return
+    }
+    const prevNodes = new Set(prev.nodeElements)
+    const nextNodes = new Set(next.nodeElements)
+    for (const el of prev.nodeElements) {
+      if (!nextNodes.has(el)) el.classList.remove('is-focused')
+    }
+    for (const el of next.nodeElements) {
+      if (!prevNodes.has(el)) el.classList.add('is-focused')
+    }
+    const prevEdges = new Set(prev.edgeElements)
+    const nextEdges = new Set(next.edgeElements)
+    for (const el of prev.edgeElements) {
+      if (!nextEdges.has(el)) el.classList.remove('is-active')
+    }
+    for (const el of next.edgeElements) {
+      if (!prevEdges.has(el)) el.classList.add('is-active')
+    }
+    const prevLabels = new Set(prev.edgeLabelElements)
+    const nextLabels = new Set(next.edgeLabelElements)
+    for (const el of prev.edgeLabelElements) {
+      if (!nextLabels.has(el)) el.classList.remove('is-active')
+    }
+    for (const el of next.edgeLabelElements) {
+      if (!prevLabels.has(el)) el.classList.add('is-active')
+    }
+    appliedFocusRef.current = next
   }, [])
 
   const clearFocus = useCallback(() => {
@@ -2230,27 +2396,35 @@ function AgentVisualizationInner({
     (nodeId: string | null, options: { force?: boolean } = {}) => {
       if (!options.force && hoveredNodeIdRef.current === nodeId) return
       hoveredNodeIdRef.current = nodeId
-      removeAppliedFocus()
 
       const root = canvasRef.current
-      if (!root || !nodeId) return
+      if (!root || !nodeId) {
+        removeAppliedFocus()
+        stageToolFanRef.current?.showStage(null)
+        return
+      }
       const target = getFocusTarget(nodeId)
-      if (!target) return
+      if (!target) {
+        removeAppliedFocus()
+        stageToolFanRef.current?.showStage(null)
+        return
+      }
 
-      root.classList.add('is-focusing')
-      const applied = getFocusedDomElements(root, target)
-      for (const nodeElement of applied.nodeElements) {
-        nodeElement.classList.add('is-focused')
+      // Keep `.is-focusing` on the root across hover-to-new-cluster transitions
+      // so the browser only does the global style-invalidation cascade once per
+      // focus session — not twice (off + on) per hover.
+      if (!root.classList.contains('is-focusing')) {
+        root.classList.add('is-focusing')
       }
-      for (const edgeElement of applied.edgeElements) {
-        edgeElement.classList.add('is-active')
-      }
-      for (const edgeLabelElement of applied.edgeLabelElements) {
-        edgeLabelElement.classList.add('is-active')
-      }
-      appliedFocusRef.current = applied
+      const applied = getFocusedDomElements(root, target, focusDomCacheRef.current)
+      diffAppliedFocus(applied)
+
+      // Stage→tool fan lines are drawn outside React-Flow as a single SVG
+      // path. Pass `nodeId` through unconditionally; the overlay returns
+      // early if the id isn't a stage. Pure DOM mutation, no React renders.
+      stageToolFanRef.current?.showStage(nodeId)
     },
-    [getFocusTarget, removeAppliedFocus],
+    [diffAppliedFocus, getFocusTarget, removeAppliedFocus],
   )
 
   const markCanvasInteracting = useCallback(() => {
@@ -4387,6 +4561,7 @@ function AgentVisualizationInner({
             deleteKeyCode={editing ? ['Delete', 'Backspace'] : null}
           >
             <WorkflowCanvasDots />
+            <StageToolFanOverlay ref={stageToolFanRef} entries={stageToolFanEntries} />
             {showEmptyState ? (
               <div
                 key={emptyStateEntryKey}

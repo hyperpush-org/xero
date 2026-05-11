@@ -22,7 +22,6 @@ import {
 import { getRuntimeRunApprovalModeLabel } from '@/src/lib/xero-model/runtime'
 
 import {
-  AGENT_GRAPH_HEADER_BOTTOM_HANDLE_RATIOS,
   AGENT_GRAPH_HEADER_HANDLES,
   AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS,
   AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS,
@@ -68,14 +67,13 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         id={AGENT_GRAPH_HEADER_HANDLES.output}
         type="source"
         position={Position.Bottom}
-        style={{ left: `${AGENT_GRAPH_HEADER_BOTTOM_HANDLE_RATIOS.output * 100}%` }}
         className="!bg-foreground"
       />
       <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.workflow}
         type="source"
-        position={Position.Bottom}
-        style={{ left: `${AGENT_GRAPH_HEADER_BOTTOM_HANDLE_RATIOS.workflow * 100}%` }}
+        position={Position.Left}
+        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow * 100}%` }}
         className="!bg-amber-500"
       />
       <Handle

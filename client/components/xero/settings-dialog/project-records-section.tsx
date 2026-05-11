@@ -39,6 +39,14 @@ import type {
 } from "@/src/lib/xero-model/project-records"
 
 import { SectionHeader } from "./section-header"
+import {
+  EmptyPanel,
+  ErrorBanner,
+  InlineCounts,
+  Pill,
+  SubHeading,
+  type Tone,
+} from "./_shared"
 
 export interface ProjectRecordsAdapter {
   listRecords: (
@@ -59,7 +67,6 @@ interface ProjectRecordsSectionProps {
 }
 
 type LoadStatus = "idle" | "loading" | "ready" | "error"
-type Tone = "good" | "info" | "warn" | "bad" | "neutral"
 
 interface SupersedeDialogState {
   open: boolean
@@ -73,14 +80,6 @@ const INITIAL_SUPERSEDE_DIALOG: SupersedeDialogState = {
   superseded: null,
   supersedingId: "",
   error: null,
-}
-
-const TONE_CLASS: Record<Tone, string> = {
-  good: "border-success/30 bg-success/[0.08] text-success",
-  info: "border-info/30 bg-info/[0.08] text-info",
-  warn: "border-warning/30 bg-warning/[0.08] text-warning",
-  bad: "border-destructive/40 bg-destructive/[0.08] text-destructive",
-  neutral: "border-border bg-secondary/60 text-foreground/70",
 }
 
 const FRESHNESS_TONE: Record<string, Tone> = {
@@ -103,28 +102,6 @@ const RECORD_KIND_ICON: Record<string, React.ComponentType<{ className?: string 
   plan: ListChecks,
   fact: Sparkles,
   diagnostic: Wrench,
-}
-
-function Pill({
-  tone,
-  children,
-  className,
-}: {
-  tone: Tone
-  children: React.ReactNode
-  className?: string
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-[18px] items-center gap-1 rounded-full border px-1.5 text-[10.5px] font-medium",
-        TONE_CLASS[tone],
-        className,
-      )}
-    >
-      {children}
-    </span>
-  )
 }
 
 export function ProjectRecordsSection({
@@ -284,27 +261,24 @@ export function ProjectRecordsSection({
       />
 
       {records.length > 0 ? (
-        <section className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-          <CountTile label="Total" value={counts.total} tone="neutral" />
-          <CountTile label="Current" value={counts.current} tone="good" />
-          <CountTile label="Stale" value={counts.stale} tone="warn" />
-          <CountTile
-            label="Superseded"
-            value={counts.superseded}
-            tone={counts.superseded > 0 ? "info" : "neutral"}
-          />
-        </section>
+        <InlineCounts
+          items={[
+            { label: "Total", value: counts.total },
+            { label: "Current", value: counts.current, tone: "good" },
+            { label: "Stale", value: counts.stale, tone: counts.stale > 0 ? "warn" : "neutral" },
+            {
+              label: "Superseded",
+              value: counts.superseded,
+              tone: counts.superseded > 0 ? "info" : "neutral",
+            },
+            ...(counts.blocked > 0
+              ? [{ label: "Blocked", value: counts.blocked, tone: "bad" as Tone }]
+              : []),
+          ]}
+        />
       ) : null}
 
-      {errorMessage ? (
-        <p
-          role="alert"
-          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12px] text-destructive"
-        >
-          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-          <span>{errorMessage}</span>
-        </p>
-      ) : null}
+      {errorMessage ? <ErrorBanner message={errorMessage} /> : null}
 
       {isLoading && records.length === 0 ? (
         <div
@@ -328,10 +302,7 @@ export function ProjectRecordsSection({
 
       {records.length > 0 ? (
         <section className="flex flex-col gap-2.5">
-          <h4 className="text-[12.5px] font-semibold text-foreground">
-            Records
-            <span className="ml-1.5 font-normal text-muted-foreground">{records.length}</span>
-          </h4>
+          <SubHeading count={records.length}>Records</SubHeading>
           <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
             {records.map((record) => {
               const successor = record.supersededById
@@ -672,42 +643,6 @@ function ChainRow({ direction, label, recordId, title }: ChainRowProps) {
       <Pill tone="neutral">{label}</Pill>
       <span className="truncate font-mono">{recordId}</span>
       {title ? <span className="truncate text-foreground/80">· {title}</span> : null}
-    </div>
-  )
-}
-
-function CountTile({ label, value, tone }: { label: string; value: number; tone: Tone }) {
-  return (
-    <div
-      className={cn(
-        "flex flex-col gap-0.5 rounded-md border px-3 py-2",
-        TONE_CLASS[tone],
-      )}
-    >
-      <span className="text-[20px] font-semibold leading-none text-foreground">{value}</span>
-      <span className="text-[10.5px] uppercase tracking-[0.12em] text-current/80">{label}</span>
-    </div>
-  )
-}
-
-function EmptyPanel({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode
-  title: string
-  body: string
-}) {
-  return (
-    <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-secondary/10 px-6 text-center">
-      <div className="max-w-sm">
-        <div className="mx-auto flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-secondary/40">
-          {icon}
-        </div>
-        <p className="mt-3 text-[12.5px] font-medium text-foreground">{title}</p>
-        <p className="mt-1 text-[11.5px] leading-[1.55] text-muted-foreground">{body}</p>
-      </div>
     </div>
   )
 }

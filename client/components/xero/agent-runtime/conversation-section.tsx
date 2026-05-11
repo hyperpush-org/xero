@@ -722,7 +722,11 @@ function CopyTextButton({
             className,
           )}
         >
-          <Icon aria-hidden="true" />
+          <Icon
+            key={copied ? 'copied' : 'idle'}
+            aria-hidden="true"
+            className={copied ? 'agent-copy-icon-pop' : undefined}
+          />
         </Button>
       </TooltipTrigger>
       <TooltipContent side="top">{copied ? 'Copied' : tooltip}</TooltipContent>
@@ -1009,8 +1013,14 @@ function HandoffNoticeRow({ onOpen }: { onOpen?: () => void }) {
         continues below.
       </span>
       {onOpen ? (
-        <span className="ml-2 shrink-0 text-[11px] font-medium text-foreground/80">
-          See what carried over →
+        <span className="ml-2 inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-foreground/80">
+          See what carried over
+          <span
+            aria-hidden="true"
+            className="inline-block transition-transform duration-200 ease-out group-hover/handoff:translate-x-0.5 group-focus-visible/handoff:translate-x-0.5"
+          >
+            →
+          </span>
         </span>
       ) : null}
     </>
@@ -1021,7 +1031,7 @@ function HandoffNoticeRow({ onOpen }: { onOpen?: () => void }) {
         type="button"
         aria-label="Run continued in a fresh session — view handoff context"
         onClick={onOpen}
-        className="flex w-full items-center gap-2.5 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="agent-handoff-notice group/handoff flex w-full items-center gap-2.5 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground hover:bg-muted/40 hover:text-foreground hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {description}
       </button>
@@ -2285,6 +2295,7 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
               'bg-primary/10 text-foreground',
               'ring-1 ring-inset ring-primary/15',
               'whitespace-pre-wrap break-words text-[14px] leading-relaxed select-text',
+              'agent-user-bubble-enter',
             )}
           >
             {text}
@@ -2592,7 +2603,7 @@ function HandoffFooterNotice({ onOpen }: { onOpen?: () => void }) {
         type="button"
         onClick={onOpen}
         aria-label={`${title} — view handoff context`}
-        className="flex w-full items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="agent-handoff-notice group flex w-full items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground hover:bg-muted/45 hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <Info className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -2600,8 +2611,14 @@ function HandoffFooterNotice({ onOpen }: { onOpen?: () => void }) {
           <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
             {message}
           </p>
-          <p className="mt-1 text-[11px] font-medium text-foreground/80">
-            See what carried over →
+          <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-foreground/80">
+            See what carried over
+            <span
+              aria-hidden="true"
+              className="inline-block transition-transform duration-200 ease-out group-hover:translate-x-0.5 group-focus-visible:translate-x-0.5"
+            >
+              →
+            </span>
           </p>
         </div>
       </button>
@@ -2670,7 +2687,7 @@ function NoticeRow({ tone, title, message, code }: NoticeRowProps) {
 
 function FailureCard({ message, code }: { message: string; code: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-destructive">
+    <div className="agent-failure-shake flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/8 px-3 py-2 text-destructive">
       <XCircle className="mt-[2px] h-3.5 w-3.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="m-0 text-[13px] font-medium">Agent run failed</p>

@@ -593,6 +593,42 @@ const BUILTIN_AGENT_WORKFLOW_STRUCTURE_INSERT_SQL: &str = r#"
       AND current_version < 2;
 "#;
 
+const LEGACY_BUILTIN_AGENT_DEFINITION_BACKFILL_SQL: &str = r#"
+    INSERT OR IGNORE INTO agent_definitions (
+        definition_id,
+        current_version,
+        display_name,
+        short_label,
+        description,
+        scope,
+        lifecycle_state,
+        base_capability_profile,
+        updated_at
+    )
+    VALUES
+        ('ask', 1, 'Ask', 'Ask', 'Answer questions about the project without mutating files, app state, processes, or external services.', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
+        ('plan', 1, 'Plan', 'Plan', 'Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.', 'built_in', 'active', 'planning', '2026-05-06T00:00:00Z'),
+        ('engineer', 1, 'Engineer', 'Build', 'Implement repository changes with the existing software-building toolset and safety gates.', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
+        ('debug', 1, 'Debug', 'Debug', 'Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
+        ('crawl', 1, 'Crawl', 'Crawl', 'Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.', 'built_in', 'active', 'repository_recon', '2026-05-06T00:00:00Z'),
+        ('agent_create', 1, 'Agent Create', 'Create', 'Interview the user and draft high-quality custom agent definitions.', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
+
+    INSERT OR IGNORE INTO agent_definition_versions (
+        definition_id,
+        version,
+        snapshot_json,
+        validation_report_json,
+        created_at
+    )
+    VALUES
+        ('ask', 1, '{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('plan', 1, '{"schema":"xero.agent_definition.v1","id":"plan","version":1,"displayName":"Plan","shortLabel":"Plan","description":"Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.","taskPurpose":"Interview the user, inspect project context when useful, draft a reproducible Plan Pack, and prepare Engineer handoff.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"planning","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"plan","toolPolicy":"planning","outputContract":"plan_pack","workflowContract":"Guide a user from vague task intent to an accepted xero.plan_pack.v1 without repository mutation.","finalResponseContract":"Produce the canonical Plan Pack summary and deterministic Engineer handoff prompt after acceptance.","projectDataPolicy":{"required":true,"recordKinds":["agent_handoff","project_fact","decision","constraint","plan","question","context_note","diagnostic"],"structuredSchemas":["xero.project_record.v1","xero.plan_pack.v1"],"unstructuredScopes":["answer_note","session_summary","troubleshooting_note"],"memoryCandidateKinds":["project_fact","user_preference","decision","session_summary","troubleshooting"]},"attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-06T00:00:00Z'),
+        ('engineer', 1, '{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('debug', 1, '{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z'),
+        ('crawl', 1, '{"schema":"xero.agent_definition.v1","id":"crawl","version":1,"displayName":"Crawl","shortLabel":"Crawl","description":"Map an existing repository, identify stack, tests, commands, architecture, hot spots, and durable project facts without editing files.","taskPurpose":"Read brownfield repository context and produce a structured crawl report for durable project memory.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"repository_recon","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest"],"promptPolicy":"crawl","toolPolicy":"repository_recon","outputContract":"crawl_report","workflowContract":"Map the brownfield repository without mutating files or app state; use manifests, instructions, workspace index, safe git metadata, and read-only discovery.","finalResponseContract":"Produce a short summary plus a valid JSON crawl report payload using schema xero.project_crawl.report.v1.","projectDataPolicy":{"required":true,"recordKinds":["project_fact","constraint","finding","verification","artifact","context_note","diagnostic","question"],"structuredSchemas":["xero.project_record.v1","xero.project_crawl.report.v1","xero.project_crawl.project_overview.v1","xero.project_crawl.tech_stack.v1","xero.project_crawl.command_map.v1","xero.project_crawl.test_map.v1","xero.project_crawl.architecture_map.v1","xero.project_crawl.hotspots.v1","xero.project_crawl.constraints.v1","xero.project_crawl.unknowns.v1","xero.project_crawl.freshness.v1"],"unstructuredScopes":["answer_note","session_summary","artifact_excerpt","troubleshooting_note"],"memoryCandidateKinds":["project_fact","decision","session_summary","troubleshooting"]},"attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-06T00:00:00Z'),
+        ('agent_create', 1, '{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create","attachedSkills":[]}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+"#;
+
 fn migrate_builtin_agent_workflow_structure(
     transaction: &Transaction<'_>,
 ) -> rusqlite_migration::HookResult {
@@ -601,9 +637,74 @@ fn migrate_builtin_agent_workflow_structure(
     {
         return Ok(());
     }
+    rebuild_agent_definitions_constraints_if_legacy(transaction)?;
+    transaction.execute_batch(LEGACY_BUILTIN_AGENT_DEFINITION_BACKFILL_SQL)?;
     transaction.execute_batch(BUILTIN_AGENT_WORKFLOW_STRUCTURE_INSERT_SQL)?;
     Ok(())
 }
+
+// Older project DBs were created before the agent_definitions CHECK constraints
+// learned about the `planning` / `repository_recon` capability profiles and the
+// `valid` / `blocked` lifecycle states. Inserting the new baseline `plan` and
+// `crawl` definitions into those legacy tables fails with a CHECK constraint
+// violation, which blocks every subsequent runtime-session initialization.
+//
+// We can't ALTER-TABLE-rebuild the parent: `agent_definitions` is referenced
+// by FKs from `agent_definition_versions`, `agent_runs`, `agent_usage`,
+// `agent_context_manifests`, and `agent_retrieval_queries`, and DROP TABLE
+// on the legacy parent triggers an implicit DELETE whose FK check cannot be
+// deferred from inside the migration transaction. Instead, surgically rewrite
+// the table's CREATE statement in `sqlite_master` via `writable_schema`, then
+// bump `schema_version` so the rest of this transaction sees the new
+// constraint set. Existing rows are untouched and remain valid under the
+// widened CHECK.
+fn rebuild_agent_definitions_constraints_if_legacy(
+    transaction: &Transaction<'_>,
+) -> rusqlite::Result<()> {
+    let table_sql = transaction.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_definitions'",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    if table_sql.contains("'planning'") && table_sql.contains("'repository_recon'") {
+        return Ok(());
+    }
+
+    let current_schema_version: i64 =
+        transaction.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+    let next_schema_version = current_schema_version + 1;
+
+    transaction.execute_batch(&format!(
+        r#"
+        PRAGMA writable_schema = ON;
+        UPDATE sqlite_master
+        SET sql = '{new_table_sql}'
+        WHERE type = 'table' AND name = 'agent_definitions';
+        PRAGMA writable_schema = OFF;
+        PRAGMA schema_version = {next_schema_version};
+        "#,
+        new_table_sql = WIDENED_AGENT_DEFINITIONS_TABLE_SQL.replace('\'', "''"),
+    ))
+}
+
+const WIDENED_AGENT_DEFINITIONS_TABLE_SQL: &str = r#"CREATE TABLE agent_definitions (
+    definition_id TEXT PRIMARY KEY,
+    current_version INTEGER NOT NULL CHECK (current_version > 0),
+    display_name TEXT NOT NULL,
+    short_label TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL,
+    lifecycle_state TEXT NOT NULL,
+    base_capability_profile TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL,
+    CHECK (definition_id <> ''),
+    CHECK (display_name <> ''),
+    CHECK (short_label <> ''),
+    CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
+    CHECK (lifecycle_state IN ('draft', 'valid', 'active', 'archived', 'blocked')),
+    CHECK (base_capability_profile IN ('observe_only', 'planning', 'repository_recon', 'engineering', 'debugging', 'agent_builder'))
+)"#;
 
 const MIGRATION_005_AGENT_PLAN_PACKS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS agent_plan_sessions (
@@ -4525,5 +4626,103 @@ mod tests {
         migrations()
             .to_latest(&mut connection)
             .expect("second migration is a no-op");
+    }
+
+    #[test]
+    fn builtin_agent_workflow_structure_backfills_missing_baseline_definitions() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("apply pragmas");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE agent_definitions (
+                    definition_id TEXT PRIMARY KEY,
+                    current_version INTEGER NOT NULL CHECK (current_version > 0),
+                    display_name TEXT NOT NULL,
+                    short_label TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL,
+                    lifecycle_state TEXT NOT NULL,
+                    base_capability_profile TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL,
+                    CHECK (scope IN ('built_in', 'global_custom', 'project_custom')),
+                    CHECK (lifecycle_state IN ('draft', 'active', 'archived')),
+                    CHECK (base_capability_profile IN ('observe_only', 'engineering', 'debugging', 'agent_builder'))
+                );
+
+                CREATE TABLE agent_definition_versions (
+                    definition_id TEXT NOT NULL,
+                    version INTEGER NOT NULL CHECK (version > 0),
+                    snapshot_json TEXT NOT NULL,
+                    validation_report_json TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (definition_id, version),
+                    FOREIGN KEY (definition_id) REFERENCES agent_definitions(definition_id)
+                );
+
+                INSERT INTO agent_definitions
+                    (definition_id, current_version, display_name, short_label, scope, lifecycle_state, base_capability_profile, updated_at)
+                VALUES
+                    ('ask', 1, 'Ask', 'Ask', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z'),
+                    ('engineer', 1, 'Engineer', 'Build', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z'),
+                    ('debug', 1, 'Debug', 'Debug', 'built_in', 'active', 'debugging', '2026-05-01T00:00:00Z'),
+                    ('agent_create', 1, 'Agent Create', 'Create', 'built_in', 'active', 'agent_builder', '2026-05-01T00:00:00Z');
+
+                INSERT INTO agent_definition_versions
+                    (definition_id, version, snapshot_json, validation_report_json, created_at)
+                VALUES
+                    ('ask', 1, '{"id":"ask"}', '{"status":"valid"}', '2026-05-01T00:00:00Z'),
+                    ('engineer', 1, '{"id":"engineer"}', '{"status":"valid"}', '2026-05-01T00:00:00Z'),
+                    ('debug', 1, '{"id":"debug"}', '{"status":"valid"}', '2026-05-01T00:00:00Z'),
+                    ('agent_create', 1, '{"id":"agent_create"}', '{"status":"valid"}', '2026-05-01T00:00:00Z');
+                "#,
+            )
+            .expect("seed legacy agent_definitions without plan/crawl");
+
+        let transaction = connection.transaction().expect("start transaction");
+        migrate_builtin_agent_workflow_structure(&transaction)
+            .expect("hook backfills missing baseline rows before inserting v2");
+        transaction.commit().expect("commit hook transaction");
+
+        let definitions = collect_strings(
+            &connection,
+            "SELECT definition_id FROM agent_definitions ORDER BY definition_id",
+        );
+        assert_eq!(
+            definitions,
+            vec![
+                "agent_create".to_string(),
+                "ask".to_string(),
+                "crawl".to_string(),
+                "debug".to_string(),
+                "engineer".to_string(),
+                "plan".to_string(),
+            ],
+            "hook should backfill missing plan and crawl baseline rows"
+        );
+
+        let plan_v2: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM agent_definition_versions WHERE definition_id = 'plan' AND version = 2",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count plan v2 rows");
+        assert_eq!(plan_v2, 1, "hook should insert version 2 for plan");
+
+        let table_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_definitions'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read agent_definitions sql");
+        assert!(
+            table_sql.contains("'planning'") && table_sql.contains("'repository_recon'"),
+            "hook should widen the base_capability_profile CHECK constraint: {table_sql}"
+        );
     }
 }

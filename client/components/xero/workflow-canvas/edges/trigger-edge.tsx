@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -31,20 +31,14 @@ const EDGE_COLLISION_MARGIN = 180
 // label that overlaps a node migrates along the *curve* until clear. Bias
 // slightly toward the source ("shift to the left a bit") because trigger
 // edges typically pass through their target's neighbourhood and the
-// overlap is usually with a sibling card just outside the target.
-const SAMPLE_T_VALUES = [
-  0.5,
-  0.42,
-  0.58,
-  0.34,
-  0.66,
-  0.26,
-  0.74,
-  0.2,
-  0.8,
-  0.14,
-  0.86,
-]
+// overlap is usually with a sibling card just outside the target. Kept
+// to 7 samples — the outer ±0.86/0.14 positions rarely win in practice
+// and their removal halves the per-edge collision search.
+const SAMPLE_T_VALUES = [0.5, 0.42, 0.58, 0.34, 0.66, 0.26, 0.74]
+
+// Label-margin padding (in screen pixels post-zoom) that defines how far
+// off-canvas a label needs to drift before we stop painting it.
+const VIEWPORT_HIDE_MARGIN = 24
 
 // React Flow's default curvature for getBezierPath is 0.25. We replicate
 // the same control-point math here so sampled positions match the rendered
@@ -59,6 +53,34 @@ const EXCLUDED_TYPES = new Set(['lane-label', 'tool-group-frame'])
 
 function selectNodeLookup(state: ReactFlowState) {
   return state.nodeLookup
+}
+
+interface ViewportRect {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+// Build the world-space rect that's currently visible on screen plus a
+// padding margin so labels half-off-screen still paint correctly. Used
+// to skip both collision search and label paint when the edge sits well
+// outside the visible canvas.
+function selectVisibleWorldRect(state: ReactFlowState): ViewportRect {
+  const [tx, ty, zoom] = state.transform
+  const safeZoom = zoom || 1
+  const screenW = state.width
+  const screenH = state.height
+  const marginWorld = VIEWPORT_HIDE_MARGIN / safeZoom
+  const minX = -tx / safeZoom - marginWorld
+  const minY = -ty / safeZoom - marginWorld
+  const maxX = minX + screenW / safeZoom + marginWorld * 2
+  const maxY = minY + screenH / safeZoom + marginWorld * 2
+  return { minX, minY, maxX, maxY }
+}
+
+function visibleRectsEqual(a: ViewportRect, b: ViewportRect): boolean {
+  return a.minX === b.minX && a.minY === b.minY && a.maxX === b.maxX && a.maxY === b.maxY
 }
 
 function labelOverlapsRect(
@@ -226,14 +248,41 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
     style,
   })
 
+  // Custom equality on visible-rect: rect values are derived numbers, so
+  // useStore would emit on every transform change otherwise. We only care
+  // when the *world coords* of the viewport rect actually shift.
+  const visibleRect = useStore(selectVisibleWorldRect, visibleRectsEqual)
+
+  // Edge's world-space bounding box plus collision margin (this is the
+  // region the label could ever land in). If it doesn't intersect the
+  // viewport rect, skip collision search and hide the label paint.
+  const edgeMinX = Math.min(sourceX, targetX) - EDGE_COLLISION_MARGIN
+  const edgeMaxX = Math.max(sourceX, targetX) + EDGE_COLLISION_MARGIN
+  const edgeMinY = Math.min(sourceY, targetY) - EDGE_COLLISION_MARGIN
+  const edgeMaxY = Math.max(sourceY, targetY) + EDGE_COLLISION_MARGIN
+
+  const labelOnScreen =
+    edgeMaxX >= visibleRect.minX &&
+    edgeMinX <= visibleRect.maxX &&
+    edgeMaxY >= visibleRect.minY &&
+    edgeMinY <= visibleRect.maxY
+
+  // Only subscribe to nodeLookup updates when the label could actually be
+  // visible — keeps off-screen labels from re-running collision search on
+  // every node measurement during initial settling.
   const nodeLookup = useStore(selectNodeLookup)
 
-  // Walk SAMPLE_T_VALUES along the actual bezier curve until we find a
-  // position whose label rect doesn't overlap any blocking node. Sampling
-  // the curve (not the linear chord) keeps the label visually anchored on
-  // the rendered edge path no matter how far we shift it.
+  // Per-instance cache: when endpoint positions are unchanged and the
+  // store fires only because *another* edge's nodes moved, return the
+  // previous label position instead of re-running the loop.
+  const labelCacheRef = useRef<{ sig: string; pos: { x: number; y: number } } | null>(null)
+
   const labelPos = useMemo(() => {
-    if (!label) return { x: midX, y: midY }
+    if (!labelOnScreen) return { x: midX, y: midY }
+
+    const sig = `${sourceX}|${sourceY}|${targetX}|${targetY}|${nodeLookup.size}`
+    const cached = labelCacheRef.current
+    if (cached && cached.sig === sig) return cached.pos
 
     const [c1x, c1y] = getBezierControl(
       sourcePosition,
@@ -262,10 +311,6 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
       candidateXs.push(px)
       candidateYs.push(py)
     }
-    const minX = Math.min(sourceX, targetX) - EDGE_COLLISION_MARGIN
-    const maxX = Math.max(sourceX, targetX) + EDGE_COLLISION_MARGIN
-    const minY = Math.min(sourceY, targetY) - EDGE_COLLISION_MARGIN
-    const maxY = Math.max(sourceY, targetY) + EDGE_COLLISION_MARGIN
 
     let blockedMask = 0
     const allBlockedMask = (1 << SAMPLE_T_VALUES.length) - 1
@@ -278,7 +323,7 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
       if (!w || !h) continue
       const x = node.internals.positionAbsolute.x
       const y = node.internals.positionAbsolute.y
-      if (x > maxX || x + w < minX || y > maxY || y + h < minY) continue
+      if (x > edgeMaxX || x + w < edgeMinX || y > edgeMaxY || y + h < edgeMinY) continue
       for (let index = 0; index < SAMPLE_T_VALUES.length; index++) {
         const bit = 1 << index
         if ((blockedMask & bit) !== 0) continue
@@ -287,17 +332,17 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
       }
     }
 
+    let result = { x: midX, y: midY }
     for (let index = 0; index < SAMPLE_T_VALUES.length; index++) {
       if ((blockedMask & (1 << index)) === 0) {
-        return { x: candidateXs[index], y: candidateYs[index] }
+        result = { x: candidateXs[index], y: candidateYs[index] }
+        break
       }
     }
-
-    // Every sample overlapped something — fall back to the bezier midpoint
-    // so the label still renders rather than disappearing.
-    return { x: midX, y: midY }
+    labelCacheRef.current = { sig, pos: result }
+    return result
   }, [
-    label,
+    labelOnScreen,
     midX,
     midY,
     sourceX,
@@ -309,6 +354,10 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
     targetPosition,
     target,
     nodeLookup,
+    edgeMinX,
+    edgeMaxX,
+    edgeMinY,
+    edgeMaxY,
   ])
 
   return (
@@ -326,6 +375,7 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
           className="agent-edge-trigger-label"
           style={{
             transform: `translate(-50%, -50%) translate(${labelPos.x}px, ${labelPos.y}px)`,
+            visibility: labelOnScreen ? undefined : 'hidden',
           }}
         >
           {label}

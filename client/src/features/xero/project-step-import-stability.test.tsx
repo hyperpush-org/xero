@@ -54,8 +54,19 @@ describe('ProjectStep import stability', () => {
     expect(screen.queryByText('Imported')).not.toBeInTheDocument()
   })
 
-  it('does not render project card while isProjectLoading is true, even when project data is present', () => {
-    render(
+  it('does not render project card mid-import: isImporting flips false before isProjectLoading does', () => {
+    const { rerender } = render(
+      <ProjectStep
+        project={null}
+        isImporting={true}
+        isProjectLoading={false}
+        errorMessage={null}
+        onImportProject={() => {}}
+      />,
+    )
+    // Mid-import: isImporting flips false while isProjectLoading is still true
+    // and project data has arrived. Should still be busy (no card yet).
+    rerender(
       <ProjectStep
         project={PROJECT}
         isImporting={false}
@@ -67,6 +78,24 @@ describe('ProjectStep import stability', () => {
     expect(screen.getByText('Importing repository…')).toBeInTheDocument()
     expect(screen.queryByText('my-app')).not.toBeInTheDocument()
     expect(screen.queryByText('Imported')).not.toBeInTheDocument()
+  })
+
+  // Regression: opening onboarding via dev settings while ambient project
+  // loading is happening (e.g. user has existing projects loading) must NOT
+  // pin the step into "Importing repository…" — the user never started an
+  // import here.
+  it('ignores ambient isProjectLoading when no import was started in this step', () => {
+    render(
+      <ProjectStep
+        project={null}
+        isImporting={false}
+        isProjectLoading={true}
+        errorMessage={null}
+        onImportProject={() => {}}
+      />,
+    )
+    expect(screen.getByText('Choose a folder')).toBeInTheDocument()
+    expect(screen.queryByText('Importing repository…')).not.toBeInTheDocument()
   })
 
   it('shows project card only after both isImporting and isProjectLoading are false', () => {

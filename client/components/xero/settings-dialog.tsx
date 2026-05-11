@@ -812,8 +812,8 @@ export function SettingsDialog({
         </DialogDescription>
 
         <div className="flex min-h-0 flex-1">
-          <nav className="flex w-64 shrink-0 flex-col gap-4 border-r border-border/70 bg-sidebar py-4">
-            <div className="px-2.5">
+          <nav className="flex w-64 shrink-0 flex-col border-r border-border/70 bg-sidebar">
+            <div className="shrink-0 px-2.5 pt-4">
               <button
                 type="button"
                 onClick={() => onOpenChange(false)}
@@ -824,7 +824,7 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <div className="flex flex-col gap-3.5">
+            <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto scrollbar-thin py-4">
               {NAV_GROUPS.map((group) => (
                 <div key={group.id} className="flex flex-col">
                   <span className="px-4 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">

@@ -1525,6 +1525,195 @@
       0 0 0 1px hsl(var(--primary) / 0.55),
       0 0 14px hsl(var(--primary) / 0.28);
   }
+
+  /* User message bubble entrance — combines a soft fade with a small inward
+   * drift from the right and a micro scale, so the right-aligned bubble lands
+   * with a tactile beat. Stacks under the parent turn's `agent-turn-soft-enter`
+   * which handles the row-level opacity/translate. */
+  .agent-user-bubble-enter {
+    animation: agent-user-bubble-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    transform-origin: 100% 50%;
+    will-change: transform, opacity;
+  }
+
+  @keyframes agent-user-bubble-enter {
+    from {
+      opacity: 0;
+      transform: translate3d(6px, 0, 0) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+  }
+
+  /* Copy button — pops the success check in with a small overshoot when the
+   * copy succeeds, then settles. Pair with `key={copied}` on the icon so the
+   * animation only fires on the false→true transition. */
+  .agent-copy-icon-pop {
+    animation: agent-copy-icon-pop 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    will-change: transform, opacity;
+  }
+
+  @keyframes agent-copy-icon-pop {
+    0% {
+      opacity: 0;
+      transform: scale(0.55) rotate(-12deg);
+    }
+    55% {
+      opacity: 1;
+      transform: scale(1.18) rotate(0deg);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1) rotate(0deg);
+    }
+  }
+
+  /* One-shot horizontal shake when a hard failure renders. Three quick beats
+   * within ~360ms, then settles. Subtle (±4px) — meant to register the failure
+   * without being visually loud. */
+  .agent-failure-shake {
+    animation: agent-failure-shake 380ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+    will-change: transform;
+  }
+
+  @keyframes agent-failure-shake {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0);
+    }
+    15% {
+      transform: translate3d(-4px, 0, 0);
+    }
+    30% {
+      transform: translate3d(3px, 0, 0);
+    }
+    45% {
+      transform: translate3d(-2px, 0, 0);
+    }
+    60% {
+      transform: translate3d(1px, 0, 0);
+    }
+    75% {
+      transform: translate3d(-1px, 0, 0);
+    }
+  }
+
+  /* Staggered entrance for empty-session-state suggestions. Slightly longer
+   * delay-per-child than the generic agent-stagger-child so the empty state
+   * reads as a deliberate intro rather than a list flush. */
+  .agent-empty-stagger {
+    animation: agent-turn-soft-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(min(var(--stagger-index, 0), 10) * 55ms + 60ms);
+    will-change: transform, opacity;
+  }
+
+  /* Composer dock — soft, focus-within glow that grows from the underlying
+   * border color. The transition is on box-shadow only so layout stays stable;
+   * the receive-keystrokes wash makes the prompt area feel responsive without
+   * a hard color flip. */
+  .agent-composer-glow {
+    transition:
+      border-color 200ms cubic-bezier(0.4, 0, 0.2, 1),
+      box-shadow 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .agent-composer-glow:focus-within {
+    box-shadow:
+      0 0 0 3px color-mix(in oklab, var(--primary) 16%, transparent),
+      0 8px 24px -12px color-mix(in oklab, var(--primary) 28%, transparent);
+  }
+
+  /* Send button — micro lift on hover when the button is interactive. The
+   * arrow nudges up 1px and brightens slightly so the affordance reads as
+   * "actionable" rather than just a flat icon. Disabled state stays flat. */
+  .agent-send-button:not(:disabled):hover [data-send-icon],
+  .agent-send-button:not(:disabled):focus-visible [data-send-icon] {
+    transform: translate3d(0, -1px, 0);
+  }
+
+  .agent-send-button:not(:disabled):active [data-send-icon] {
+    transform: translate3d(0, 0, 0) scale(0.92);
+  }
+
+  [data-send-icon] {
+    transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+
+  /* Action-prompt "Resolved" / "Sending…" tags — small badge pop that lands
+   * the status chip when the card finalizes. Subtle so it doesn't dominate
+   * the row but still feels like a confirmation. */
+  .agent-prompt-status-pop {
+    animation: agent-prompt-status-pop 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    will-change: transform, opacity;
+  }
+
+  @keyframes agent-prompt-status-pop {
+    0% {
+      opacity: 0;
+      transform: scale(0.7);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.08);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  /* Handoff notice button hover — gentle lift + tightened shadow so the
+   * "continued in a fresh session" affordance reads as clickable. */
+  .agent-handoff-notice {
+    transition:
+      background-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+      border-color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+      transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .agent-handoff-notice:hover,
+  .agent-handoff-notice:focus-visible {
+    transform: translate3d(0, -1px, 0);
+    box-shadow: 0 4px 14px -8px color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+
+  .agent-handoff-notice:active {
+    transform: translate3d(0, 0, 0);
+    box-shadow: none;
+    transition-duration: 80ms;
+  }
+
+  /* Suggestion row hover — caret slides into view on the right to signal the
+   * row is actionable, and the icon shifts an imperceptible 1px forward to
+   * pair with the foreground/40 → primary color shift. */
+  .agent-suggestion-row [data-suggestion-icon] {
+    transition:
+      color 180ms cubic-bezier(0.4, 0, 0.2, 1),
+      transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .agent-suggestion-row:hover [data-suggestion-icon],
+  .agent-suggestion-row:focus-visible [data-suggestion-icon] {
+    transform: translate3d(1px, 0, 0);
+  }
+
+  .agent-suggestion-row [data-suggestion-caret] {
+    transition:
+      opacity 180ms cubic-bezier(0.4, 0, 0.2, 1),
+      transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity: 0;
+    transform: translate3d(-4px, 0, 0);
+  }
+
+  .agent-suggestion-row:hover [data-suggestion-caret],
+  .agent-suggestion-row:focus-visible [data-suggestion-caret] {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -38,6 +38,14 @@ import type {
 } from "@/src/lib/xero-model/project-state"
 
 import { SectionHeader } from "./section-header"
+import {
+  EmptyPanel,
+  ErrorBanner,
+  InlineCounts,
+  Pill,
+  SubHeading,
+  SuccessBanner,
+} from "./_shared"
 
 export interface ProjectStateAdapter {
   listBackups: (request: ListProjectStateBackupsRequestDto) => Promise<ListProjectStateBackupsResponseDto>
@@ -54,7 +62,6 @@ interface ProjectStateSectionProps {
 
 type LoadStatus = "idle" | "loading" | "ready" | "error"
 type ActionKind = "create" | "restore" | "repair"
-type Tone = "good" | "info" | "warn" | "bad" | "neutral"
 
 interface ListState {
   status: LoadStatus
@@ -66,36 +73,6 @@ const INITIAL_LIST_STATE: ListState = {
   status: "idle",
   errorMessage: null,
   response: null,
-}
-
-const TONE_CLASS: Record<Tone, string> = {
-  good: "border-success/30 bg-success/[0.08] text-success",
-  info: "border-info/30 bg-info/[0.08] text-info",
-  warn: "border-warning/30 bg-warning/[0.08] text-warning",
-  bad: "border-destructive/40 bg-destructive/[0.08] text-destructive",
-  neutral: "border-border bg-secondary/60 text-foreground/70",
-}
-
-function Pill({
-  tone,
-  children,
-  className,
-}: {
-  tone: Tone
-  children: React.ReactNode
-  className?: string
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-[18px] items-center gap-1 rounded-full border px-1.5 text-[10.5px] font-medium",
-        TONE_CLASS[tone],
-        className,
-      )}
-    >
-      {children}
-    </span>
-  )
 }
 
 export function ProjectStateSection({ projectId, projectLabel, adapter }: ProjectStateSectionProps) {
@@ -304,47 +281,31 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
       />
 
       {userBackups.length > 0 ? (
-        <section className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-          <CountTile label="Backups" value={String(userBackups.length)} tone="info" />
-          <CountTile label="Total size" value={formatByteCount(totalBytes)} tone="neutral" />
-          <CountTile
-            label="Latest"
-            value={latestBackup?.createdAt ? formatRelative(latestBackup.createdAt) : "—"}
-            tone={latestBackup ? "good" : "neutral"}
-          />
-        </section>
+        <InlineCounts
+          items={[
+            { label: "Backups", value: userBackups.length, tone: "info" },
+            { label: "Total size", value: formatByteCount(totalBytes) },
+            {
+              label: "Latest",
+              value: latestBackup?.createdAt ? formatRelative(latestBackup.createdAt) : "—",
+              tone: latestBackup ? "good" : "neutral",
+            },
+          ]}
+        />
       ) : null}
 
       {actionMessage ? (
-        <p
-          role="status"
-          data-testid="project-state-action-message"
-          className="flex items-start gap-2 rounded-md border border-success/30 bg-success/[0.06] px-3 py-2 text-[12px] text-success"
-        >
-          <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
-          <span>{actionMessage}</span>
-        </p>
+        <SuccessBanner message={actionMessage} testId="project-state-action-message" />
       ) : null}
 
-      {listState.errorMessage ? (
-        <p
-          role="alert"
-          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12px] text-destructive"
-        >
-          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-          <span>{listState.errorMessage}</span>
-        </p>
-      ) : null}
+      {listState.errorMessage ? <ErrorBanner message={listState.errorMessage} /> : null}
 
       {repairReport ? <RepairReport report={repairReport} /> : null}
 
       <section className="flex flex-col gap-2.5" data-testid="project-state-backups">
-        <h4 className="text-[12.5px] font-semibold text-foreground">
+        <SubHeading count={userBackups.length > 0 ? userBackups.length : undefined}>
           Backups
-          {userBackups.length > 0 ? (
-            <span className="ml-1.5 font-normal text-muted-foreground">{userBackups.length}</span>
-          ) : null}
-        </h4>
+        </SubHeading>
 
         {isLoading && backups.length === 0 ? (
           <div
@@ -596,47 +557,6 @@ function DescPair({ label, value }: { label: string; value: string }) {
     <div className="flex items-center gap-1.5">
       <dt className="font-medium text-foreground/80">{label}</dt>
       <dd className="capitalize">{value.replace(/_/g, " ")}</dd>
-    </div>
-  )
-}
-
-function CountTile({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: string
-  tone: Tone
-}) {
-  return (
-    <div className={cn("flex flex-col gap-0.5 rounded-md border px-3 py-2", TONE_CLASS[tone])}>
-      <span className="truncate text-[15px] font-semibold leading-tight text-foreground">
-        {value}
-      </span>
-      <span className="text-[10.5px] uppercase tracking-[0.12em] text-current/80">{label}</span>
-    </div>
-  )
-}
-
-function EmptyPanel({
-  icon,
-  title,
-  body,
-}: {
-  icon: React.ReactNode
-  title: string
-  body: string
-}) {
-  return (
-    <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-secondary/10 px-6 text-center">
-      <div className="max-w-sm">
-        <div className="mx-auto flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-secondary/40">
-          {icon}
-        </div>
-        <p className="mt-3 text-[12.5px] font-medium text-foreground">{title}</p>
-        <p className="mt-1 text-[11.5px] leading-[1.55] text-muted-foreground">{body}</p>
-      </div>
     </div>
   )
 }
