@@ -75,7 +75,7 @@ const tiers: PricingTier[] = [
     price: "$50",
     period: "/ month",
     icon: Rocket,
-    description: "Pro plus a managed Solana stack — RPC, indexer, forks, deploy guardrails.",
+    description: "Pro plus a managed Solana stack: RPC, indexer, forks, deploy guardrails.",
     cta: "Coming Soon",
     ctaHref: waitlistHref,
     highlight: false,
@@ -105,8 +105,8 @@ export function Pricing() {
             Free today. Paid when it ships.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            The desktop app is free. Cloud and Solana plans are in development —
-            waitlist for now, real checkout when they're ready.
+            The desktop app is free. Cloud and Solana plans are in development.
+            Waitlist for now, real checkout when they're ready.
           </p>
         </div>
 
@@ -232,7 +232,7 @@ export function Pricing() {
 
         <div className="mx-auto mt-5 max-w-6xl rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 text-center text-xs leading-5 text-muted-foreground">
           Model usage runs on your own provider accounts. Pro and Solana Pro
-          aren't live yet — the waitlist is the only real button until they
+          aren't live yet, so the waitlist is the only real button until they
           are.
         </div>
 

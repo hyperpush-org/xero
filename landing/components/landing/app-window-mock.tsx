@@ -232,7 +232,7 @@ export function AppWindowMock() {
               <span className="text-primary">xero</span>?
             </h2>
             <p className="mt-3 max-w-md text-center text-[13px] leading-relaxed text-muted-foreground">
-              Just ask — I can read your code, suggest changes, or run a task
+              Just ask. I can read your code, suggest changes, or run a task
               for you. Everything we do will show up right here.
             </p>
 

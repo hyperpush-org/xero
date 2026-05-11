@@ -132,7 +132,7 @@ function AgentBlueprintVisual() {
         {/* Title block */}
         <g fontFamily="var(--font-mono)" fontSize="9" fill="var(--muted-foreground)" letterSpacing="2">
           <rect x="28" y="28" width="170" height="26" fill="color-mix(in oklab, var(--primary) 6%, transparent)" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.5" />
-          <text x="38" y="45" fill="var(--primary)">AGENT — solana-ops</text>
+          <text x="38" y="45" fill="var(--primary)">AGENT · solana-ops</text>
           <rect x="402" y="28" width="170" height="26" fill="color-mix(in oklab, var(--primary) 6%, transparent)" stroke="color-mix(in oklab, var(--border) 80%, transparent)" strokeWidth="0.5" />
           <text x="412" y="45">REV · 0.4 · project</text>
         </g>

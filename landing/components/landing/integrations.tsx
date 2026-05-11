@@ -34,7 +34,7 @@ export function Integrations() {
               },
               {
                 title: "Approve from anywhere",
-                copy: "Phone, laptop, watch — wherever Discord or Telegram already lives.",
+                copy: "Phone, laptop, watch, wherever Discord or Telegram already lives.",
               },
               {
                 title: "Per-tool rules",

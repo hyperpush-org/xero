@@ -24,7 +24,7 @@ export function Hero() {
             className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur hover:border-border hover:bg-secondary/70 hover:text-foreground"
           >
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-            Beta — custom agents, composable workflows, mobile approvals
+            Beta: custom agents, composable workflows, mobile approvals
             <ArrowRight className="h-3 w-3" />
           </Link>
 
@@ -34,7 +34,7 @@ export function Hero() {
           </h1>
 
           <p className="mx-auto mt-6 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Custom agents and visual workflows that ship whole projects —
+            Custom agents and visual workflows that ship whole projects,
             pinging your phone only when a real call needs you.
           </p>
 

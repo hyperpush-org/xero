@@ -48,7 +48,7 @@ const rows: Row[] = [
     icon: <SolanaGlyph className="h-3.5 w-3.5" />,
     title: "A Solana workbench, wired in.",
     description:
-      "Localnet to mainnet, funded personas, deploys, and tx inspection — built into Xero and driveable by your agents.",
+      "Localnet to mainnet, funded personas, deploys, and tx inspection, all built into Xero and driveable by your agents.",
     bullets: [
       "Localnet · devnet · mainnet, one switch",
       "Funded personas with scenario replays",
