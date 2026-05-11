@@ -102,13 +102,13 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
   },
   {
     id: "cloud",
-    title: "Cloud plans (when they ship)",
+    title: "Solana bundle (when it ships)",
     body: (
       <>
         <p>
-          Pro and Solana Pro will be opt-in cloud plans. When they ship we&apos;ll publish a
-          dedicated processing addendum covering hosted runs, sync, and run history. Until then,
-          there is no Xero cloud holding your data.
+          The Solana bundle is an opt-in subscription for managed RPC, indexer, and webhook
+          infrastructure. When it ships we&apos;ll publish a dedicated processing addendum covering
+          the third-party providers involved. Until then, there is no Xero cloud holding your data.
         </p>
       </>
     ),

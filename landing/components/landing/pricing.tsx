@@ -1,6 +1,6 @@
 import Link from "next/link"
 import type { ElementType } from "react"
-import { Check, Cloud, Laptop, Rocket } from "lucide-react"
+import { Check, Laptop, Rocket } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -25,7 +25,7 @@ type PricingTier = {
   features: string[]
 }
 
-const waitlistHref = mailto("Xero paid plan waitlist")
+const waitlistHref = mailto("Xero Solana bundle waitlist")
 
 const tiers: PricingTier[] = [
   {
@@ -33,7 +33,7 @@ const tiers: PricingTier[] = [
     price: "$0",
     period: "forever",
     icon: Laptop,
-    description: "The desktop app. Build your own agents, bring your own keys, run as much as your machine handles.",
+    description: "The full desktop app. Every feature, every model provider, no trial timer. Bring your own keys and run as much as your machine handles.",
     cta: "Coming soon",
     ctaHref: "#download",
     highlight: true,
@@ -51,43 +51,24 @@ const tiers: PricingTier[] = [
     ],
   },
   {
-    name: "Pro",
-    price: "$20",
-    period: "/ month",
-    icon: Cloud,
-    description: "Cloud runtime, sync, and background runs. Same keys you already use.",
-    cta: "Coming Soon",
-    ctaHref: waitlistHref,
-    highlight: false,
-    badge: "Coming soon",
-    comingSoon: true,
-    features: [
-      "Everything in Free",
-      "Sessions keep running while your laptop sleeps",
-      "Sync state across devices",
-      "Hosted run history and replay",
-      "Priority support",
-      "No model markup, your provider accounts",
-    ],
-  },
-  {
-    name: "Solana Pro",
+    name: "Solana Bundle",
     price: "$50",
     period: "/ month",
     icon: Rocket,
-    description: "Pro plus a managed Solana stack: RPC, indexer, forks, deploy guardrails.",
-    cta: "Coming Soon",
+    description: "Optional. One subscription for the Solana infrastructure a builder usually pays four or five vendors for.",
+    cta: "Join waitlist",
     ctaHref: waitlistHref,
     highlight: false,
     badge: "Coming soon",
     comingSoon: true,
     features: [
-      "Everything in Pro",
-      "Managed RPC, indexer, and webhook credentials",
+      "Premium RPC with elevated rate limits",
+      "Indexer and webhook credentials, no vendor sprawl",
       "Hosted forks and reusable snapshots",
       "Tx simulation, fee tuning, ALT and IDL helpers",
-      "Deploy guardrails, Squads proposals, verified builds",
+      "Squads proposals, verified builds, deploy guardrails",
       "Program monitoring: drift, logs, cost alerts",
+      "Replaces $200+/mo of stitched-together Solana tools",
     ],
   },
 ]
@@ -102,16 +83,17 @@ export function Pricing() {
             Pricing
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Free today. Paid when it ships.
+            Free forever. Solana, optional.
           </h2>
           <p className="mt-4 text-pretty text-muted-foreground">
-            The desktop app is free. Cloud and Solana plans are in development.
-            Waitlist for now, real checkout when they're ready.
+            The app is free for everyone — no trial, no paywalled features, no
+            seat counts. The Solana bundle is the one optional add-on, for teams
+            that want their RPC, indexer, and deploy infra in a single subscription.
           </p>
         </div>
 
         {/* Cards */}
-        <div className="mt-14 mx-auto grid max-w-6xl grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="mt-14 mx-auto grid max-w-5xl grid-cols-1 gap-4 md:grid-cols-2">
           {tiers.map((t) => {
             const Icon = t.icon
             return (
@@ -230,10 +212,9 @@ export function Pricing() {
           })}
         </div>
 
-        <div className="mx-auto mt-5 max-w-6xl rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 text-center text-xs leading-5 text-muted-foreground">
-          Model usage runs on your own provider accounts. Pro and Solana Pro
-          aren't live yet, so the waitlist is the only real button until they
-          are.
+        <div className="mx-auto mt-5 max-w-5xl rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 text-center text-xs leading-5 text-muted-foreground">
+          Model usage runs on your own provider accounts. The Solana bundle
+          isn't live yet, so the waitlist is the only real button until it is.
         </div>
 
         <p className="mt-8 text-center text-xs text-muted-foreground/60">

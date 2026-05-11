@@ -1,8 +1,13 @@
-import { Check, Cloud, Github, KeyRound, Route, Server, Sparkles, Webhook } from "lucide-react"
+import { Check, Github, Webhook } from "lucide-react"
 import {
   AnthropicIcon,
+  AWSIcon,
+  AzureIcon,
+  GoogleCloudIcon,
   GoogleIcon,
+  OllamaIcon,
   OpenAIIcon,
+  OpenRouterIcon,
 } from "@/components/landing/brand-icons"
 
 type Provider = {
@@ -34,8 +39,8 @@ const providers: Provider[] = [
   {
     name: "OpenRouter",
     plan: "One key, hundreds of models",
-    icon: <Route className="h-4 w-4" />,
-    badgeClass: "border border-border bg-secondary text-foreground",
+    icon: <OpenRouterIcon className="h-4 w-4" />,
+    badgeClass: "bg-foreground text-background",
   },
   {
     name: "GitHub Models",
@@ -46,26 +51,26 @@ const providers: Provider[] = [
   {
     name: "Ollama",
     plan: "Local models, no network",
-    icon: <Server className="h-4 w-4" />,
-    badgeClass: "border border-primary/30 bg-primary/15 text-primary",
+    icon: <OllamaIcon className="h-5 w-5" />,
+    badgeClass: "bg-foreground text-background",
   },
   {
     name: "Azure OpenAI",
     plan: "Enterprise deployments",
-    icon: <Cloud className="h-4 w-4" />,
+    icon: <AzureIcon className="h-4 w-4" />,
     badgeClass: "bg-[#0078d4] text-white",
   },
   {
     name: "AWS Bedrock",
     plan: "Anthropic, Meta, and more",
-    icon: <Cloud className="h-4 w-4" />,
-    badgeClass: "bg-[#ff9900] text-white",
+    icon: <AWSIcon className="h-5 w-5" />,
+    badgeClass: "bg-[#232f3e] text-[#ff9900]",
   },
   {
     name: "Google Vertex AI",
     plan: "Gemini and partners on GCP",
-    icon: <GoogleIcon className="h-4 w-4" />,
-    badgeClass: "bg-[#1a73e8] text-white",
+    icon: <GoogleCloudIcon className="h-4 w-4" />,
+    badgeClass: "bg-[#4285f4] text-white",
   },
   {
     name: "OpenAI-compatible",

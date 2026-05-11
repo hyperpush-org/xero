@@ -133,9 +133,9 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     title: "9. Changes",
     body: (
       <p>
-        We may update these terms as the product grows — for example when Pro and Solana Pro plans
-        ship. Material changes will be announced on this page with a new last-updated date. Keep
-        using Xero after a change and you&apos;re agreeing to the updated terms.
+        We may update these terms as the product grows — for example when the optional Solana
+        bundle ships. Material changes will be announced on this page with a new last-updated date.
+        Keep using Xero after a change and you&apos;re agreeing to the updated terms.
       </p>
     ),
   },
