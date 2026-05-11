@@ -31,8 +31,22 @@ export const StageNode = memo(function StageNode({
 
   return (
     <>
-      <Handle type="target" position={Position.Left} className={STAGE_HANDLE_CLASS} />
-      <Handle type="source" position={Position.Right} className={STAGE_HANDLE_CLASS} />
+      {/* Both handles on the left edge so stage→stage edges between
+          vertically-stacked cards bow out cleanly on one side instead of
+          spiralling around the card. React Flow needs unique ids when two
+          handles share an axis. */}
+      <Handle
+        id="in"
+        type="target"
+        position={Position.Left}
+        className={STAGE_HANDLE_CLASS}
+      />
+      <Handle
+        id="out"
+        type="source"
+        position={Position.Left}
+        className={STAGE_HANDLE_CLASS}
+      />
       <div
         className="agent-card overflow-hidden text-card-foreground"
         style={{ width: 260 }}

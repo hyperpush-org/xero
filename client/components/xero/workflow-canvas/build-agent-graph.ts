@@ -1190,6 +1190,7 @@ function emitStageNodesAndEdges(
       edges.push({
         id: `e:stage-tool:${phase.id}->${toolName}`,
         source: sourceNodeId,
+        sourceHandle: 'out',
         target: toolNodeIdValue,
         targetHandle: AGENT_GRAPH_TRIGGER_HANDLES.target,
         type: 'default',
@@ -1214,7 +1215,9 @@ function emitStageNodesAndEdges(
       edges.push({
         id: stageBranchEdgeId(phase.id, branch.targetPhaseId, branchIndex),
         source: sourceNodeId,
+        sourceHandle: 'out',
         target: targetNodeId,
+        targetHandle: 'in',
         type: 'phase-branch',
         data: {
           category: STAGE_BRANCH_DATA_CATEGORY,
@@ -1238,7 +1241,9 @@ function emitStageNodesAndEdges(
         edges.push({
           id: stageBranchEdgeId(phase.id, next.id, 0),
           source: sourceNodeId,
+          sourceHandle: 'out',
           target: stageNodeId(next.id),
+          targetHandle: 'in',
           type: 'phase-branch',
           data: {
             category: STAGE_BRANCH_DATA_CATEGORY,
