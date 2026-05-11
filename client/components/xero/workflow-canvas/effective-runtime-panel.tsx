@@ -361,21 +361,22 @@ function PromptSection({
 }: {
   prompt: AgentEffectiveRuntimePreviewDto['prompt']
 }) {
-  const utilization = prompt.promptBudgetTokens
-    ? Math.min(100, Math.round((prompt.estimatedPromptTokens / prompt.promptBudgetTokens) * 100))
-    : 0
+  const budget = prompt.promptBudgetTokens
+  const utilization = budget
+    ? Math.min(100, Math.round((prompt.estimatedPromptTokens / budget) * 100))
+    : null
+  const tokensLabel = budget
+    ? `${prompt.estimatedPromptTokens.toLocaleString()} / ${budget.toLocaleString()}`
+    : `${prompt.estimatedPromptTokens.toLocaleString()} / —`
 
   return (
     <>
       <Section label="Compiled prompt">
         <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
           <Meta label="Fragments" value={String(prompt.fragmentCount)} />
-          <Meta
-            label="Tokens"
-            value={`${prompt.estimatedPromptTokens.toLocaleString()} / ${prompt.promptBudgetTokens.toLocaleString()}`}
-          />
+          <Meta label="Tokens" value={tokensLabel} />
           <Meta label="Compiler" value={prompt.compiler} />
-          <Meta label="Utilization" value={`${utilization}%`} />
+          <Meta label="Utilization" value={utilization === null ? '—' : `${utilization}%`} />
         </dl>
         <p className="mt-2 truncate font-mono text-[10px] text-muted-foreground">
           sha256: {prompt.promptSha256}

@@ -662,11 +662,11 @@ mod tests {
             ),
             (
                 "agent_create:base".to_string(),
-                "c59a1cf26315db2550137c08c9b0e1258bab7db15426175958a26b28d2a2e6f0",
+                "885d2007ec85d4128f8367f793d70c9654a8f1241d59550d27dc86fec6009996",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "02d926538bbccb6a6d72a5845f2a946016fa97d80c024b9e9338f2c054dc07d6",
+                "93b13c9fedfd683a35f6ce37c4ef01fef6e0c225e395fab82c87d6e8b2723f0e",
             ),
         ];
 
@@ -716,7 +716,7 @@ mod tests {
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "41f3998d3286f7b525b958098a3cd40665c2049b366427e7b35f321944d40870",
+                "ab51cda758dab0a43452b2ae48e3817638467bfe5cf390bee9acef9087084a1e",
             ),
             (
                 "engineer:custom_observe_only".to_string(),
@@ -728,7 +728,7 @@ mod tests {
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "41f3998d3286f7b525b958098a3cd40665c2049b366427e7b35f321944d40870",
+                "ab51cda758dab0a43452b2ae48e3817638467bfe5cf390bee9acef9087084a1e",
             ),
         ];
 

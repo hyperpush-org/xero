@@ -107,6 +107,8 @@ export function backendRequestKey(command: string, args?: Record<string, unknown
         readString(request, 'profileId'),
         readBoolean(request, 'forceRefresh'),
       )
+    case 'list_project_context_records':
+      return listProjectContextRecordsRequestKey(readString(request, 'projectId'))
     default:
       throw new Error(`No explicit backend request key builder for ${command}.`)
   }
@@ -173,6 +175,10 @@ export function workspaceExplainRequestKey(request: object): string {
 
 export function providerModelCatalogRequestKey(profileId: string, forceRefresh = false): string {
   return joinRequestKey('get_provider_model_catalog', profileId, forceRefresh)
+}
+
+export function listProjectContextRecordsRequestKey(projectId: string): string {
+  return joinRequestKey('list_project_context_records', projectId)
 }
 
 function commandRequest(args?: Record<string, unknown>): Record<string, unknown> {

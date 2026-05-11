@@ -13,6 +13,7 @@ import type {
 
 import {
   AGENT_DEFINITION_SCHEMA,
+  AGENT_DEFINITION_SCHEMA_VERSION,
   canonicalCustomAgentDefinitionSchema,
 } from '@/src/lib/xero-model/agent-definition'
 
@@ -49,6 +50,10 @@ function detail(): WorkflowAgentDetailDto {
       deniedToolPacks: ['external_network'],
       allowedToolGroups: ['core'],
       deniedToolGroups: ['browser_control'],
+      allowedMcpServers: [],
+      deniedMcpServers: [],
+      allowedDynamicTools: [],
+      deniedDynamicTools: [],
       allowedEffectClasses: ['observe'],
       externalServiceAllowed: false,
       browserControlAllowed: false,
@@ -176,6 +181,10 @@ function broadDetail(): WorkflowAgentDetailDto {
       deniedToolPacks: ['production_deploy'],
       allowedToolGroups: tools.map(([, group]) => group),
       deniedToolGroups: ['dangerous'],
+      allowedMcpServers: [],
+      deniedMcpServers: [],
+      allowedDynamicTools: [],
+      deniedDynamicTools: [],
       allowedEffectClasses: tools.map(([, , effect]) => effect),
       externalServiceAllowed: true,
       browserControlAllowed: true,
@@ -302,6 +311,12 @@ function detailFromSnapshot(
       availabilityStatus: 'available',
       availabilityReason: 'Skill source is enabled, trusted, and pinned for attachment.',
     })),
+    workflowStructure: snapshot.workflowStructure
+      ? {
+          startPhaseId: snapshot.workflowStructure.startPhaseId,
+          phases: snapshot.workflowStructure.phases.map((phase) => ({ ...phase })),
+        }
+      : undefined,
   }
 }
 
@@ -316,6 +331,10 @@ function completeToolPolicyDetails(
     deniedToolPacks: policy.deniedToolPacks ?? [],
     allowedToolGroups: policy.allowedToolGroups ?? [],
     deniedToolGroups: policy.deniedToolGroups ?? [],
+    allowedMcpServers: policy.allowedMcpServers ?? [],
+    deniedMcpServers: policy.deniedMcpServers ?? [],
+    allowedDynamicTools: policy.allowedDynamicTools ?? [],
+    deniedDynamicTools: policy.deniedDynamicTools ?? [],
     allowedEffectClasses: policy.allowedEffectClasses ?? [],
     externalServiceAllowed: policy.externalServiceAllowed ?? false,
     browserControlAllowed: policy.browserControlAllowed ?? false,
@@ -347,6 +366,7 @@ function stableProjection(snapshot: CanonicalCustomAgentDefinitionDto) {
     dbTouchpoints: snapshot.dbTouchpoints,
     consumes: snapshot.consumes,
     attachedSkills: snapshot.attachedSkills,
+    workflowStructure: snapshot.workflowStructure,
   }
 }
 
@@ -381,7 +401,7 @@ describe('buildSnapshotFromGraph', () => {
     })
 
     expect(snapshot.schema).toBe(AGENT_DEFINITION_SCHEMA)
-    expect(snapshot.schemaVersion).toBe(2)
+    expect(snapshot.schemaVersion).toBe(AGENT_DEFINITION_SCHEMA_VERSION)
     expect(snapshot.attachedSkills).toEqual([])
     expect(snapshot.tools).toMatchObject([{ name: 'read', group: 'core' }])
     expect(snapshot.output).toMatchObject({
@@ -481,6 +501,123 @@ describe('buildSnapshotFromGraph', () => {
         required: true,
       },
     ])
+  })
+
+  it('omits workflowStructure when no phases are authored', () => {
+    const graph = buildAgentGraph(detail())
+    const { snapshot } = buildSnapshotFromGraph(graph.nodes, graph.edges, {
+      initialDefinitionId: 'release_notes_helper',
+    })
+    expect((snapshot as Record<string, unknown>).workflowStructure).toBeUndefined()
+  })
+
+  it('round-trips an authored workflow state machine through the canvas snapshot', () => {
+    const source = detail()
+    source.workflowStructure = {
+      startPhaseId: 'gather',
+      phases: [
+        {
+          id: 'gather',
+          title: 'Gather',
+          description: 'Pull approved release records.',
+          allowedTools: ['read'],
+          requiredChecks: [{ kind: 'tool_succeeded', toolName: 'read' }],
+          branches: [{ targetPhaseId: 'draft', condition: { kind: 'always' } }],
+        },
+        {
+          id: 'draft',
+          title: 'Draft',
+          description: 'Compose the release notes.',
+        },
+      ],
+    }
+
+    const snapshot = parsedSnapshot(source, 'release_notes_helper')
+
+    expect(snapshot.workflowStructure).toEqual({
+      startPhaseId: 'gather',
+      phases: [
+        {
+          id: 'gather',
+          title: 'Gather',
+          description: 'Pull approved release records.',
+          allowedTools: ['read'],
+          requiredChecks: [{ kind: 'tool_succeeded', toolName: 'read' }],
+          branches: [{ targetPhaseId: 'draft', condition: { kind: 'always' } }],
+        },
+        {
+          id: 'draft',
+          title: 'Draft',
+          description: 'Compose the release notes.',
+        },
+      ],
+    })
+  })
+
+  it('keeps workflow phases stable across save and reload', () => {
+    const source = detail()
+    source.workflowStructure = {
+      startPhaseId: 'gather',
+      phases: [
+        {
+          id: 'gather',
+          title: 'Gather',
+          description: 'Pull approved release records.',
+          allowedTools: ['read'],
+          branches: [{ targetPhaseId: 'draft', condition: { kind: 'always' } }],
+        },
+        {
+          id: 'draft',
+          title: 'Draft',
+          description: 'Compose the release notes.',
+        },
+      ],
+    }
+    expectStableSaveReloadRoundTrip(source, 'release_notes_helper')
+  })
+
+  it('lets canvas-drawn phase-branch edges override authored branches', () => {
+    const source = detail()
+    source.workflowStructure = {
+      startPhaseId: 'gather',
+      phases: [
+        { id: 'gather', title: 'Gather', branches: [] },
+        { id: 'draft', title: 'Draft', branches: [] },
+      ],
+    }
+    const graph = buildAgentGraph(source)
+    const edges = [
+      ...graph.edges,
+      {
+        id: 'e:phase-branch:gather->draft:0',
+        source: 'workflow-phase:gather',
+        target: 'workflow-phase:draft',
+        type: 'phase-branch' as const,
+        data: {
+          category: 'phase-branch',
+          sourcePhaseId: 'gather',
+          targetPhaseId: 'draft',
+          branchIndex: 0,
+          condition: { kind: 'tool_succeeded' as const, toolName: 'read' },
+        },
+      },
+    ]
+
+    const snapshot = canonicalCustomAgentDefinitionSchema.parse(
+      buildSnapshotFromGraph(graph.nodes, edges, {
+        initialDefinitionId: 'release_notes_helper',
+      }).snapshot,
+    )
+
+    expect(snapshot.workflowStructure?.phases[0]).toMatchObject({
+      id: 'gather',
+      branches: [
+        {
+          targetPhaseId: 'draft',
+          condition: { kind: 'tool_succeeded', toolName: 'read' },
+        },
+      ],
+    })
   })
 
   it('serializes attached skills from skills nodes', () => {

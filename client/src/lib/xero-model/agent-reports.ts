@@ -47,9 +47,21 @@ export const getAgentKnowledgeInspectionRequestSchema = z
 export const getAgentHandoffContextSummaryRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
-    handoffId: z.string().trim().min(1),
+    handoffId: z.string().trim().min(1).nullable().optional(),
+    targetRunId: z.string().trim().min(1).nullable().optional(),
+    sourceRunId: z.string().trim().min(1).nullable().optional(),
   })
   .strict()
+  .superRefine((request, ctx) => {
+    if (!request.handoffId && !request.targetRunId && !request.sourceRunId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['handoffId'],
+        message:
+          'Provide handoffId, targetRunId, or sourceRunId to look up a handoff context summary.',
+      })
+    }
+  })
 
 export const getAgentSupportDiagnosticsBundleRequestSchema = z
   .object({

@@ -3533,7 +3533,7 @@ fn builtin_definition_snapshot(
 fn custom_observe_only_definition_snapshot() -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "id": "release_notes_helper",
         "version": 1,
         "displayName": "Release Notes Helper",
@@ -3649,7 +3649,7 @@ fn custom_observe_only_definition_snapshot() -> JsonValue {
 fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "id": "implementation_surgeon",
         "version": version,
         "displayName": "Implementation Surgeon",
@@ -3763,7 +3763,7 @@ fn custom_engineering_definition_snapshot(version: u32, marker: &str) -> JsonVal
 fn custom_debugging_definition_snapshot() -> JsonValue {
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "id": "root_cause_analyst",
         "version": 1,
         "displayName": "Root Cause Analyst",
@@ -5143,8 +5143,8 @@ mod tests {
             let snapshot = case.snapshot.as_ref().expect("custom fixture snapshot");
             assert_eq!(
                 snapshot["schemaVersion"],
-                json!(2),
-                "custom eval fixture `{}` must use the canonical schema v2 contract",
+                json!(3),
+                "custom eval fixture `{}` must use the canonical schema v3 contract",
                 case.id
             );
             assert!(

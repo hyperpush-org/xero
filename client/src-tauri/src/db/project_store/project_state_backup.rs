@@ -62,6 +62,21 @@ pub struct ProjectStateRepairDiagnostic {
     pub severity: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectStateBackupListing {
+    pub backups: Vec<ProjectStateBackupListingEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectStateBackupListingEntry {
+    pub backup_id: String,
+    pub created_at: Option<String>,
+    pub file_count: Option<usize>,
+    pub byte_count: Option<u64>,
+    pub manifest_present: bool,
+    pub pre_restore: bool,
+}
+
 pub fn create_project_state_backup(
     repo_root: &Path,
     backup_id: &str,
@@ -349,6 +364,83 @@ pub fn repair_project_state(
         agent_memory_health_status: agent_memory_health.status,
         diagnostics,
     })
+}
+
+pub fn list_project_state_backups(
+    repo_root: &Path,
+) -> Result<ProjectStateBackupListing, CommandError> {
+    let backups_root = project_app_data_dir_for_repo(repo_root).join("backups");
+    if !backups_root.exists() {
+        return Ok(ProjectStateBackupListing {
+            backups: Vec::new(),
+        });
+    }
+
+    let mut entries = Vec::new();
+    let read = fs::read_dir(&backups_root).map_err(|error| {
+        CommandError::retryable(
+            "project_state_backup_list_failed",
+            format!(
+                "Xero could not list project-state backups in {}: {error}",
+                backups_root.display()
+            ),
+        )
+    })?;
+    for entry in read {
+        let entry = entry.map_err(|error| {
+            CommandError::retryable(
+                "project_state_backup_list_entry_failed",
+                format!(
+                    "Xero could not read a backup entry in {}: {error}",
+                    backups_root.display()
+                ),
+            )
+        })?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let backup_id = match entry.file_name().to_str() {
+            Some(name) if !name.is_empty() => name.to_string(),
+            _ => continue,
+        };
+
+        let manifest_path = path.join("manifest.json");
+        let mut created_at: Option<String> = None;
+        let mut file_count: Option<usize> = None;
+        let mut byte_count: Option<u64> = None;
+        let manifest_present = manifest_path.exists();
+        if manifest_present {
+            if let Ok(text) = fs::read_to_string(&manifest_path) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    created_at = value
+                        .get("createdAt")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    file_count = value.get("fileCount").and_then(|v| v.as_u64()).map(|v| v as usize);
+                    byte_count = value.get("byteCount").and_then(|v| v.as_u64());
+                }
+            }
+        }
+
+        entries.push(ProjectStateBackupListingEntry {
+            pre_restore: backup_id.starts_with("pre-restore-"),
+            backup_id,
+            created_at,
+            file_count,
+            byte_count,
+            manifest_present,
+        });
+    }
+
+    entries.sort_by(|a, b| match (&b.created_at, &a.created_at) {
+        (Some(left), Some(right)) => left.cmp(right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.backup_id.cmp(&a.backup_id),
+    });
+
+    Ok(ProjectStateBackupListing { backups: entries })
 }
 
 fn snapshot_project_state_files(
@@ -686,7 +778,7 @@ mod tests {
                 "id": definition_id,
                 "version": 1,
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 2,
+                "schemaVersion": 3,
                 "scope": "project_custom",
                 "lifecycleState": "active",
                 "baseCapabilityProfile": "observe_only",

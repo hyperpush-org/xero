@@ -213,6 +213,10 @@ export const agentToolPolicyDetailsSchema = z
     deniedToolPacks: z.array(z.string().trim().min(1)),
     allowedToolGroups: z.array(z.string().trim().min(1)),
     deniedToolGroups: z.array(z.string().trim().min(1)),
+    allowedMcpServers: z.array(z.string().trim().min(1)).default([]),
+    deniedMcpServers: z.array(z.string().trim().min(1)).default([]),
+    allowedDynamicTools: z.array(z.string().trim().min(1)).default([]),
+    deniedDynamicTools: z.array(z.string().trim().min(1)).default([]),
     allowedEffectClasses: z.array(agentToolEffectClassSchema),
     externalServiceAllowed: z.boolean(),
     browserControlAllowed: z.boolean(),
@@ -254,6 +258,30 @@ export const agentToolPolicyDetailsSchema = z
       ['allowedToolGroups'],
       details.allowedToolGroups,
       'Tool-policy allowed tool groups must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['allowedMcpServers'],
+      details.allowedMcpServers,
+      'Tool-policy allowed MCP servers must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['deniedMcpServers'],
+      details.deniedMcpServers,
+      'Tool-policy denied MCP servers must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['allowedDynamicTools'],
+      details.allowedDynamicTools,
+      'Tool-policy allowed dynamic tools must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['deniedDynamicTools'],
+      details.deniedDynamicTools,
+      'Tool-policy denied dynamic tools must be unique.',
     )
     addDuplicateStringIssues(
       ctx,
@@ -690,6 +718,7 @@ export const workflowAgentDetailSchema = z
     output: agentOutputContractSchema,
     consumes: z.array(agentConsumedArtifactSchema),
     attachedSkills: z.array(agentAttachedSkillSchema),
+    workflowStructure: customAgentWorkflowStructureSchema.nullable().optional(),
     authoringGraph: agentAuthoringGraphSchema.nullable().optional(),
     graphProjection: workflowAgentGraphProjectionSchema.nullable().optional(),
   })

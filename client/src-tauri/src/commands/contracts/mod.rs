@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod autonomous;
 pub mod code_history;
+pub mod developer_tool_harness;
 pub mod dictation;
 pub mod error;
 pub mod mcp;

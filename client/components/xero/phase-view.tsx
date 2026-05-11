@@ -25,8 +25,11 @@ import type {
   AgentAuthoringCatalogDto,
   AgentAuthoringAttachableSkillDto,
   AgentAuthoringSkillSearchResultDto,
+  AgentRefDto,
+  AgentToolPackCatalogDto,
   SearchAgentAuthoringSkillsResponseDto,
   WorkflowAgentDetailDto,
+  WorkflowAgentSummaryDto,
 } from '@/src/lib/xero-model/workflow-agents'
 
 interface PhaseViewProps {
@@ -40,6 +43,10 @@ interface PhaseViewProps {
   onToggleWorkflows?: () => void
   workflowsOpen?: boolean
   onCreateAgent?: () => void
+  onCreateAgentFromTemplate?: (ref: AgentRefDto) => void
+  templates?: WorkflowAgentSummaryDto[]
+  templatesLoading?: boolean
+  templatesError?: Error | null
   agentDetail?: WorkflowAgentDetailDto | null
   agentDetailStatus?: AgentDetailStatus | AgentListStatus
   agentDetailError?: Error | null
@@ -50,6 +57,7 @@ interface PhaseViewProps {
     initialDetail: WorkflowAgentDetailDto | null
   } | null
   authoringCatalog?: AgentAuthoringCatalogDto | null
+  toolPackCatalog?: AgentToolPackCatalogDto | null
   onSearchAttachableSkills?: (params: {
     query: string
     offset: number
@@ -92,6 +100,10 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     active = true,
     workflowsOpen = false,
     onCreateAgent,
+    onCreateAgentFromTemplate,
+    templates = [],
+    templatesLoading = false,
+    templatesError = null,
     agentDetail = null,
     agentDetailStatus = 'idle',
     agentDetailError = null,
@@ -99,6 +111,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     onReloadAgentDetail,
     authoringSession = null,
     authoringCatalog = null,
+    toolPackCatalog = null,
     onSearchAttachableSkills,
     onResolveAttachableSkill,
     onAuthoringSubmit,
@@ -139,6 +152,10 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
   const emptyCanvasState = (
     <WorkflowCanvasEmptyState
       onCreateAgent={onCreateAgent}
+      onCreateAgentFromTemplate={onCreateAgentFromTemplate}
+      templates={templates}
+      templatesLoading={templatesLoading}
+      templatesError={templatesError}
       onBrowseWorkflows={
         onToggleWorkflows && !workflowsOpen ? onToggleWorkflows : undefined
       }
@@ -213,6 +230,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
           mode={authoringSession.mode}
           initialDetail={authoringSession.initialDetail}
           authoringCatalog={authoringCatalog}
+          toolPackCatalog={toolPackCatalog}
           onSearchAttachableSkills={onSearchAttachableSkills}
           onResolveAttachableSkill={onResolveAttachableSkill}
           onSubmit={onAuthoringSubmit}

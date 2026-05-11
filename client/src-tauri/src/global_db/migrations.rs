@@ -18,10 +18,24 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(USER_ADDED_ENVIRONMENT_TOOLS_SQL),
             M::up(PROVIDER_PREFLIGHT_RESULTS_SQL),
             M::up(AGENT_TOOLING_SETTINGS_SQL),
+            M::up(DEVELOPER_TOOL_SEQUENCES_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const DEVELOPER_TOOL_SEQUENCES_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS developer_tool_sequences (
+        id TEXT PRIMARY KEY CHECK (id <> ''),
+        name TEXT NOT NULL CHECK (name <> ''),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_developer_tool_sequences_name
+        ON developer_tool_sequences(name);
+"#;
 
 const AGENT_TOOLING_SETTINGS_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS agent_tooling_settings (

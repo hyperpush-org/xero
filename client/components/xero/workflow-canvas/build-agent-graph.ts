@@ -17,6 +17,11 @@ import type {
   WorkflowAgentGraphProjectionDto,
   WorkflowAgentDetailDto,
 } from '@/src/lib/xero-model/workflow-agents'
+import type {
+  CustomAgentWorkflowBranchConditionDto,
+  CustomAgentWorkflowGateDto,
+  CustomAgentWorkflowPhaseDto,
+} from '@/src/lib/xero-model/agent-definition'
 
 export type AgentGraphNodeKind =
   | 'agent-header'
@@ -27,6 +32,8 @@ export type AgentGraphNodeKind =
   | 'agent-output'
   | 'output-section'
   | 'consumed-artifact'
+  | 'stage'
+  | 'stage-group-frame'
 
 export interface AgentHeaderSummaryCounts {
   prompts: number
@@ -54,6 +61,16 @@ export interface AgentHeaderAdvancedFields {
   deniedToolPacks: string[]
   allowedToolGroups: string[]
   deniedToolGroups: string[]
+  allowedMcpServers: string[]
+  deniedMcpServers: string[]
+  allowedDynamicTools: string[]
+  deniedDynamicTools: string[]
+  // Subagent role allow / deny. Edited from the granular policy editor in
+  // the header properties panel; the snapshot emitter only ships them when
+  // `subagentAllowed` is true (the validator requires allowedSubagentRoles
+  // to be non-empty in that case).
+  allowedSubagentRoles: string[]
+  deniedSubagentRoles: string[]
   externalServiceAllowed: boolean
   browserControlAllowed: boolean
   skillRuntimeAllowed: boolean
@@ -106,6 +123,17 @@ export interface SkillNodeData extends Record<string, unknown> {
   skill: AgentAttachedSkillDto
 }
 
+// Stage node — a single node in the authored in-agent state machine.
+// Each stage declares an id, title, the tool names admitted while it is
+// active, and required-check gates the runtime must observe before advancing.
+// Branches are modeled as `phase-branch` edges between two stage nodes,
+// not on the node data, so the canvas can show the same wiring the runtime
+// evaluates without duplicating state.
+export interface StageNodeData extends Record<string, unknown> {
+  phase: CustomAgentWorkflowPhaseDto
+  isStart: boolean
+}
+
 export interface LaneLabelNodeData extends Record<string, unknown> {
   label: string
   count: number
@@ -118,6 +146,10 @@ export interface ToolGroupFrameNodeData extends Record<string, unknown> {
   sourceGroups: string[]
 }
 
+export interface StageGroupFrameNodeData extends Record<string, unknown> {
+  count: number
+}
+
 export type AgentHeaderFlowNode = Node<AgentHeaderNodeData, 'agent-header'>
 export type PromptFlowNode = Node<PromptNodeData, 'prompt'>
 export type SkillFlowNode = Node<SkillNodeData, 'skills'>
@@ -126,12 +158,14 @@ export type DbTableFlowNode = Node<DbTableNodeData, 'db-table'>
 export type OutputFlowNode = Node<OutputNodeData, 'agent-output'>
 export type OutputSectionFlowNode = Node<OutputSectionNodeData, 'output-section'>
 export type ConsumedArtifactFlowNode = Node<ConsumedArtifactNodeData, 'consumed-artifact'>
+export type StageFlowNode = Node<StageNodeData, 'stage'>
 export type LaneLabelFlowNode = Node<LaneLabelNodeData, 'lane-label'>
 export type ToolGroupFrameFlowNode = Node<ToolGroupFrameNodeData, 'tool-group-frame'>
+export type StageGroupFrameFlowNode = Node<StageGroupFrameNodeData, 'stage-group-frame'>
 
 // Union of node data shapes that authoring may mutate. Layout chrome
-// (lane-label, tool-group-frame) is intentionally excluded — those nodes are
-// computed from the user-facing nodes by the layout pass.
+// (lane-label, tool-group-frame, stage-group-frame) is intentionally excluded
+// — those nodes are computed from the user-facing nodes by the layout pass.
 export type AgentGraphNodeData =
   | AgentHeaderNodeData
   | PromptNodeData
@@ -141,6 +175,7 @@ export type AgentGraphNodeData =
   | OutputNodeData
   | OutputSectionNodeData
   | ConsumedArtifactNodeData
+  | StageNodeData
 
 export type AgentGraphNode =
   | AgentHeaderFlowNode
@@ -151,8 +186,10 @@ export type AgentGraphNode =
   | OutputFlowNode
   | OutputSectionFlowNode
   | ConsumedArtifactFlowNode
+  | StageFlowNode
   | LaneLabelFlowNode
   | ToolGroupFrameFlowNode
+  | StageGroupFrameFlowNode
 
 export type AgentGraphEdge = Edge
 
@@ -225,6 +262,7 @@ const HEADER_SOURCE_HANDLE = {
   db: 'db',
   output: 'output',
   consumed: 'consumed',
+  workflow: 'workflow',
 } as const
 
 export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
@@ -235,6 +273,14 @@ export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
 export const AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS = {
   consumed: AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
   skills: 0.68,
+} as const
+
+// Bottom edge of the header carries two source handles (output, workflow).
+// React Flow defaults both to 50% along the edge, so we stagger them by
+// horizontal position so each remains grabbable independently.
+export const AGENT_GRAPH_HEADER_BOTTOM_HANDLE_RATIOS = {
+  output: 0.35,
+  workflow: 0.7,
 } as const
 
 export const AGENT_GRAPH_TRIGGER_HANDLES = {
@@ -257,6 +303,32 @@ export function skillNodeId(skill: Pick<AgentAttachedSkillDto, 'id'>): string {
 export function toolGroupFrameNodeId(groupKey: string): string {
   return `tool-group-frame:${groupKey}`
 }
+
+// DOM-level id prefix for stage nodes is intentionally kept as
+// `workflow-phase:` to preserve compatibility with any in-flight or persisted
+// canvas state authored before the rename. The decoder below detects the
+// same prefix.
+export function stageNodeId(phaseId: string): string {
+  return `workflow-phase:${phaseId}`
+}
+
+// There is exactly one stage frame per agent (stages always live as a single
+// column), so a constant id is enough; no per-bucket variant needed like
+// tool-group-frame:CORE / tool-group-frame:SOLANA.
+export const STAGE_GROUP_FRAME_NODE_ID = 'stage-group-frame:stages'
+
+export function stageBranchEdgeId(
+  sourcePhaseId: string,
+  targetPhaseId: string,
+  branchIndex: number,
+): string {
+  return `e:phase-branch:${sourcePhaseId}->${targetPhaseId}:${branchIndex}`
+}
+
+// Stable string key for a stage-branch edge's data category. Used by the
+// snapshot builder to thread the original `branches[branchIndex].condition`
+// object stored on a phase-branch edge back to the right authored entry.
+export const STAGE_BRANCH_DATA_CATEGORY = 'phase-branch'
 
 // Identifiers that don't title-case cleanly (acronyms, brand names) get a
 // hand-written display label. Looked up before the generic split-and-capitalize
@@ -1012,6 +1084,14 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
     }
   }
 
+  // 9. Stages (optional). When the authored definition declares an in-agent
+  // state machine, lay each stage out as its own node and emit one
+  // phase-branch edge per authored branch. The runtime gates tool exposure
+  // per-stage via the same data, so the canvas mirrors what executes.
+  // Emit stage edges before computing tool direct-connection handles so
+  // stage→tool edges count toward the tool's target handle visibility.
+  emitStageNodesAndEdges(nodes, edges, detail.workflowStructure ?? null, toolIdsByName)
+
   const toolNodeIds = new Set(toolIdsByName.values())
   const directConnectionHandlesByToolId = new Map<
     string,
@@ -1028,7 +1108,8 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
   }
 
   for (const edge of edges) {
-    if ((edge.data as { category?: string } | undefined)?.category !== 'trigger') continue
+    const category = (edge.data as { category?: string } | undefined)?.category
+    if (category !== 'trigger' && category !== 'stage-tool') continue
     if (toolNodeIds.has(edge.source)) {
       noteToolConnectionHandle(edge.source, 'source')
     }
@@ -1047,6 +1128,209 @@ export function buildAgentGraph(detail: WorkflowAgentDetailDto): AgentGraph {
   }
 
   return { nodes, edges }
+}
+
+function emitStageNodesAndEdges(
+  nodes: AgentGraphNode[],
+  edges: AgentGraphEdge[],
+  workflow: CustomAgentWorkflowStructureLike | null,
+  toolIdsByName: Map<string, string>,
+): void {
+  if (!workflow) return
+  const phases = workflow.phases ?? []
+  if (phases.length === 0) return
+  const startPhaseId = workflow.startPhaseId ?? phases[0]?.id ?? null
+  const phaseIdSet = new Set(phases.map((phase) => phase.id))
+
+  // Wrap every stage in a dashed group frame, just like tools live inside a
+  // tool-group-frame. The agent header connects to the frame rather than to
+  // an individual stage so the workflow entry reads as a single bundle.
+  nodes.push({
+    id: STAGE_GROUP_FRAME_NODE_ID,
+    type: 'stage-group-frame',
+    position: { x: 0, y: 0 },
+    data: { count: phases.length },
+    // Same pointer-events strategy as tool-group-frame: only the drag
+    // handle area catches events so the stage cards inside stay clickable.
+    style: { pointerEvents: 'none' },
+  })
+
+  for (const phase of phases) {
+    const id = stageNodeId(phase.id)
+    nodes.push({
+      id,
+      type: 'stage',
+      position: { x: 0, y: 0 },
+      parentId: STAGE_GROUP_FRAME_NODE_ID,
+      // Layout writes child positions relative to their parent frame; React
+      // Flow requires `extent: 'parent'` to anchor the relative coordinates
+      // to the frame's bounds.
+      extent: 'parent',
+      // Stages no longer drag individually — the user moves the whole
+      // column by grabbing the frame, which carries every stage with it.
+      draggable: false,
+      style: { pointerEvents: 'all' },
+      data: {
+        phase: clonePhase(phase),
+        isStart: phase.id === startPhaseId,
+      },
+    })
+  }
+
+  // Stage → tool edges. Each stage admits a specific tool set at runtime;
+  // surface that policy as edges on the canvas instead of hiding it in the
+  // stage card's badge list.
+  for (const phase of phases) {
+    const allowed = phase.allowedTools ?? []
+    if (allowed.length === 0) continue
+    const sourceNodeId = stageNodeId(phase.id)
+    for (const toolName of allowed) {
+      const toolNodeIdValue = toolIdsByName.get(toolName)
+      if (!toolNodeIdValue) continue
+      edges.push({
+        id: `e:stage-tool:${phase.id}->${toolName}`,
+        source: sourceNodeId,
+        target: toolNodeIdValue,
+        targetHandle: AGENT_GRAPH_TRIGGER_HANDLES.target,
+        type: 'default',
+        data: {
+          category: 'stage-tool',
+          sourcePhaseId: phase.id,
+          toolName,
+        },
+        className: 'agent-edge agent-edge-stage-tool',
+        markerEnd: ARROW_MARKER,
+      })
+    }
+  }
+
+  phases.forEach((phase, phaseIndex) => {
+    const sourceNodeId = stageNodeId(phase.id)
+    const branches = phase.branches ?? []
+    let emittedAny = false
+    branches.forEach((branch, branchIndex) => {
+      if (!phaseIdSet.has(branch.targetPhaseId)) return
+      const targetNodeId = stageNodeId(branch.targetPhaseId)
+      edges.push({
+        id: stageBranchEdgeId(phase.id, branch.targetPhaseId, branchIndex),
+        source: sourceNodeId,
+        target: targetNodeId,
+        type: 'phase-branch',
+        data: {
+          category: STAGE_BRANCH_DATA_CATEGORY,
+          sourcePhaseId: phase.id,
+          targetPhaseId: branch.targetPhaseId,
+          branchIndex,
+          condition: branch.condition,
+          label: branch.label,
+        },
+        className: 'agent-edge agent-edge-phase-branch',
+        markerEnd: ARROW_MARKER,
+      })
+      emittedAny = true
+    })
+    // Mirror runtime fall-through: when a phase has no declared branches,
+    // advance_state moves to the next sequential phase once its
+    // requiredChecks pass. Show the same edge on the canvas.
+    if (!emittedAny) {
+      const next = phases[phaseIndex + 1]
+      if (next) {
+        edges.push({
+          id: stageBranchEdgeId(phase.id, next.id, 0),
+          source: sourceNodeId,
+          target: stageNodeId(next.id),
+          type: 'phase-branch',
+          data: {
+            category: STAGE_BRANCH_DATA_CATEGORY,
+            sourcePhaseId: phase.id,
+            targetPhaseId: next.id,
+            branchIndex: 0,
+            implicit: true,
+            condition: { kind: 'always' },
+          },
+          className: 'agent-edge agent-edge-phase-branch',
+          markerEnd: ARROW_MARKER,
+        })
+      }
+    }
+  })
+
+  if (startPhaseId && phaseIdSet.has(startPhaseId)) {
+    // Single edge from the agent header to the STAGES frame, not to a
+    // specific stage card. The runtime still routes the actual entry
+    // through startPhaseId — the canvas just bundles every stage under one
+    // frame and connects to that, matching how tools work.
+    edges.push({
+      id: `e:${HEADER_NODE_ID}->${STAGE_GROUP_FRAME_NODE_ID}`,
+      source: HEADER_NODE_ID,
+      sourceHandle: HEADER_SOURCE_HANDLE.workflow,
+      target: STAGE_GROUP_FRAME_NODE_ID,
+      targetHandle: 'workflow',
+      type: 'smoothstep',
+      data: {
+        category: 'workflow-entry',
+        targetPhaseId: startPhaseId,
+        targetFrame: STAGE_GROUP_FRAME_NODE_ID,
+      },
+      className: 'agent-edge agent-edge-workflow',
+      markerEnd: ARROW_MARKER,
+    })
+  }
+}
+
+// Loose structural mirror of CustomAgentWorkflowStructureDto so callers can
+// hand either the schema-parsed object or a hand-built mock to the builder.
+// The schema enforces the precise field shapes; here we only need read access.
+interface CustomAgentWorkflowStructureLike {
+  startPhaseId?: string | null
+  phases: CustomAgentWorkflowPhaseDto[]
+}
+
+function clonePhase(phase: CustomAgentWorkflowPhaseDto): CustomAgentWorkflowPhaseDto {
+  return {
+    id: phase.id,
+    title: phase.title,
+    description: phase.description,
+    allowedTools: phase.allowedTools ? [...phase.allowedTools] : undefined,
+    requiredChecks: phase.requiredChecks?.map(cloneRequiredCheck),
+    retryLimit: phase.retryLimit,
+    branches: phase.branches?.map((branch) => ({
+      targetPhaseId: branch.targetPhaseId,
+      condition: cloneCondition(branch.condition),
+      label: branch.label,
+    })),
+  }
+}
+
+function cloneRequiredCheck(
+  check: CustomAgentWorkflowGateDto,
+): CustomAgentWorkflowGateDto {
+  if (check.kind === 'todo_completed') {
+    return { kind: 'todo_completed', todoId: check.todoId, description: check.description }
+  }
+  return {
+    kind: 'tool_succeeded',
+    toolName: check.toolName,
+    minCount: check.minCount,
+    description: check.description,
+  }
+}
+
+function cloneCondition(
+  condition: CustomAgentWorkflowBranchConditionDto,
+): CustomAgentWorkflowBranchConditionDto {
+  switch (condition.kind) {
+    case 'always':
+      return { kind: 'always' }
+    case 'todo_completed':
+      return { kind: 'todo_completed', todoId: condition.todoId }
+    case 'tool_succeeded':
+      return {
+        kind: 'tool_succeeded',
+        toolName: condition.toolName,
+        minCount: condition.minCount,
+      }
+  }
 }
 
 // Default advanced fields for a fresh detail. Mirrors the validator's minimum
@@ -1074,6 +1358,12 @@ function defaultAdvancedFor(detail: WorkflowAgentDetailDto): AgentHeaderAdvanced
     deniedToolPacks: [],
     allowedToolGroups: [],
     deniedToolGroups: [],
+    allowedMcpServers: [],
+    deniedMcpServers: [],
+    allowedDynamicTools: [],
+    deniedDynamicTools: [],
+    allowedSubagentRoles: [],
+    deniedSubagentRoles: [],
     externalServiceAllowed: false,
     browserControlAllowed: false,
     skillRuntimeAllowed: false,
@@ -1097,6 +1387,12 @@ export function deriveAdvancedFromDetail(
     base.deniedToolPacks = [...policy.deniedToolPacks]
     base.allowedToolGroups = [...policy.allowedToolGroups]
     base.deniedToolGroups = [...policy.deniedToolGroups]
+    base.allowedMcpServers = [...policy.allowedMcpServers]
+    base.deniedMcpServers = [...policy.deniedMcpServers]
+    base.allowedDynamicTools = [...policy.allowedDynamicTools]
+    base.deniedDynamicTools = [...policy.deniedDynamicTools]
+    base.allowedSubagentRoles = [...policy.allowedSubagentRoles]
+    base.deniedSubagentRoles = [...policy.deniedSubagentRoles]
     base.externalServiceAllowed = policy.externalServiceAllowed
     base.browserControlAllowed = policy.browserControlAllowed
     base.skillRuntimeAllowed = policy.skillRuntimeAllowed
@@ -1258,6 +1554,10 @@ export const HANDLE_DRAG_ROLES: Readonly<Record<string, HandleDragRole>> = {
   [`agent-header::${HEADER_SOURCE_HANDLE.tool}::source`]: 'picker',
   [`agent-header::${HEADER_SOURCE_HANDLE.db}::source`]: 'picker',
   [`agent-header::${HEADER_SOURCE_HANDLE.output}::source`]: 'picker',
+  // header.workflow drops onto empty canvas to auto-create a stage. Dragging
+  // it onto a node has no meaningful target — every node kind that could
+  // accept it (stage) is created by the drop itself.
+  [`agent-header::${HEADER_SOURCE_HANDLE.workflow}::source`]: 'picker',
   // header.consumed is a target-type handle; pane drop opens the
   // consumed-artifact picker, no handle target carries semantics.
   [`agent-header::${HEADER_SOURCE_HANDLE.consumed}::target`]: 'picker',
@@ -1291,6 +1591,7 @@ export function decodeAgentGraphNodeId(
   | { kind: 'db'; touchpoint: 'read' | 'write' | 'encouraged'; table: string }
   | { kind: 'output-section'; sectionId: string }
   | { kind: 'consumed-artifact'; artifactId: string }
+  | { kind: 'stage'; phaseId: string }
   | { kind: 'tool-group-frame'; groupKey: string }
   | { kind: 'lane-label' }
   | { kind: 'unknown' } {
@@ -1323,6 +1624,9 @@ export function decodeAgentGraphNodeId(
   }
   if (id.startsWith('consumed:')) {
     return { kind: 'consumed-artifact', artifactId: id.slice('consumed:'.length) }
+  }
+  if (id.startsWith('workflow-phase:')) {
+    return { kind: 'stage', phaseId: id.slice('workflow-phase:'.length) }
   }
   if (id.startsWith('tool-group-frame:')) {
     return { kind: 'tool-group-frame', groupKey: id.slice('tool-group-frame:'.length) }

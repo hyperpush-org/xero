@@ -23,6 +23,7 @@ use crate::{
     auth::now_timestamp,
     commands::{CommandError, CommandResult, RuntimeAgentIdDto},
     db::project_store,
+    mcp::load_mcp_registry_from_path,
     runtime::{
         agent_core::{PromptCompiler, PromptFragment, ToolRegistry, ToolRegistryOptions},
         redaction::find_prohibited_persistence_content,
@@ -30,10 +31,12 @@ use crate::{
     },
 };
 
+mod validators;
+
 pub const AUTONOMOUS_TOOL_AGENT_DEFINITION: &str = "agent_definition";
 
 const AGENT_DEFINITION_SCHEMA: &str = "xero.agent_definition.v1";
-const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 2;
+const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 3;
 const AGENT_ATTACHABLE_SKILL_CATALOG_CONTRACT_VERSION: u32 = 1;
 const AGENT_EFFECTIVE_RUNTIME_PREVIEW_SCHEMA: &str = "xero.agent_effective_runtime_preview.v1";
 const AGENT_EFFECTIVE_RUNTIME_PREVIEW_SCHEMA_VERSION: u64 = 1;
@@ -119,6 +122,12 @@ pub struct AutonomousAgentDefinitionOutput {
     pub effective_runtime_preview: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachable_skill_catalog: Option<AutonomousAgentAttachableSkillCatalog>,
+    /// Structured pre-save review payload (xero.agent_definition_pre_save_review.v1).
+    /// Populated when an approval-gated write (Save/Update) is requested without
+    /// operator approval, so the UI can show the operator exactly what will change
+    /// before they confirm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_review: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -301,6 +310,7 @@ impl AutonomousToolRuntime {
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -338,6 +348,7 @@ impl AutonomousToolRuntime {
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -370,6 +381,7 @@ impl AutonomousToolRuntime {
             validation_report: Some(validation_report),
             effective_runtime_preview: Some(effective_runtime_preview),
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -407,11 +419,19 @@ impl AutonomousToolRuntime {
             ));
         }
         if !operator_approved {
+            let review = project_store::build_agent_definition_pre_save_review(
+                &summary.definition_id,
+                None,
+                1,
+                &snapshot,
+                &now_timestamp(),
+            );
             return Ok(approval_required_output(
                 request.action,
                 summary,
                 validation_report,
                 "Saving this agent definition requires explicit operator approval.",
+                Some(review),
             ));
         }
 
@@ -447,6 +467,7 @@ impl AutonomousToolRuntime {
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -477,11 +498,24 @@ impl AutonomousToolRuntime {
         }
         ensure_custom_definition_summary(&summary)?;
         if !operator_approved {
+            let prior = project_store::load_agent_definition_version(
+                &self.repo_root,
+                &definition_id,
+                existing.current_version,
+            )?;
+            let review = project_store::build_agent_definition_pre_save_review(
+                &definition_id,
+                prior.as_ref(),
+                next_version,
+                &snapshot,
+                &now_timestamp(),
+            );
             return Ok(approval_required_output(
                 request.action,
                 summary,
                 validation_report,
                 "Updating this agent definition requires explicit operator approval.",
+                Some(review),
             ));
         }
 
@@ -531,6 +565,7 @@ impl AutonomousToolRuntime {
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -555,6 +590,7 @@ impl AutonomousToolRuntime {
                 validation_report: None,
                 effective_runtime_preview: None,
                 attachable_skill_catalog: None,
+                approval_review: None,
             });
         }
         let archived = project_store::archive_agent_definition(
@@ -576,6 +612,7 @@ impl AutonomousToolRuntime {
             validation_report: None,
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -635,11 +672,19 @@ impl AutonomousToolRuntime {
             ));
         }
         if !operator_approved {
+            let review = project_store::build_agent_definition_pre_save_review(
+                &summary.definition_id,
+                None,
+                1,
+                &snapshot,
+                &now_timestamp(),
+            );
             return Ok(approval_required_output(
                 request.action,
                 summary,
                 validation_report,
                 "Cloning this agent definition requires explicit operator approval.",
+                Some(review),
             ));
         }
 
@@ -692,6 +737,7 @@ impl AutonomousToolRuntime {
             validation_report: Some(validation_report),
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -714,6 +760,7 @@ impl AutonomousToolRuntime {
             validation_report: None,
             effective_runtime_preview: None,
             attachable_skill_catalog: None,
+            approval_review: None,
         })
     }
 
@@ -739,6 +786,7 @@ impl AutonomousToolRuntime {
             validation_report: None,
             effective_runtime_preview: None,
             attachable_skill_catalog: Some(catalog),
+            approval_review: None,
         })
     }
 
@@ -845,7 +893,11 @@ impl AutonomousToolRuntime {
         &self,
         snapshot: &JsonValue,
     ) -> AutonomousAgentDefinitionValidationReport {
-        validate_definition_snapshot_with_registry(snapshot, Some(&self.repo_root))
+        validate_definition_snapshot_with_registry(
+            snapshot,
+            Some(&self.repo_root),
+            self.mcp_registry_path.as_deref(),
+        )
     }
 
     fn effective_runtime_preview(
@@ -938,16 +990,18 @@ impl AutonomousToolRuntime {
             "effectiveToolAccess": effective_tool_access,
             "capabilityPermissionExplanations": capability_permission_explanations(snapshot),
             "policies": {
-                "toolPolicy": snapshot.get("toolPolicy").cloned().unwrap_or(JsonValue::Null),
-                "outputContract": snapshot.get("outputContract").or_else(|| snapshot.get("output")).cloned().unwrap_or(JsonValue::Null),
-                "contextPolicy": snapshot.get("projectDataPolicy").cloned().unwrap_or(JsonValue::Null),
-                "memoryPolicy": snapshot.get("memoryCandidatePolicy").cloned().unwrap_or(JsonValue::Null),
-                "retrievalPolicy": snapshot.get("retrievalDefaults").cloned().unwrap_or(JsonValue::Null),
-                "handoffPolicy": snapshot.get("handoffPolicy").cloned().unwrap_or(JsonValue::Null),
+                "toolPolicy": policy_pass_through_string_or_object(snapshot.get("toolPolicy")),
+                "outputContract": policy_pass_through_string_or_object(
+                    snapshot.get("outputContract").or_else(|| snapshot.get("output")),
+                ),
+                "contextPolicy": policy_pass_through_object(snapshot.get("projectDataPolicy")),
+                "memoryPolicy": policy_pass_through_object(snapshot.get("memoryCandidatePolicy")),
+                "retrievalPolicy": policy_pass_through_object(snapshot.get("retrievalDefaults")),
+                "handoffPolicy": policy_pass_through_object(snapshot.get("handoffPolicy")),
                 "attachedSkills": snapshot.get("attachedSkills").cloned().unwrap_or_else(|| JsonValue::Array(Vec::new())),
-                "workflowContract": snapshot.get("workflowContract").cloned().unwrap_or(JsonValue::Null),
-                "workflowStructure": snapshot.get("workflowStructure").cloned().unwrap_or(JsonValue::Null),
-                "finalResponseContract": snapshot.get("finalResponseContract").cloned().unwrap_or(JsonValue::Null)
+                "workflowContract": policy_pass_through_non_empty_string(snapshot.get("workflowContract")),
+                "workflowStructure": policy_pass_through_object(snapshot.get("workflowStructure")),
+                "finalResponseContract": policy_pass_through_non_empty_string(snapshot.get("finalResponseContract"))
             },
             "riskyCapabilityPrompts": risky_capability_prompts(snapshot),
             "runtimeConsistency": {
@@ -961,17 +1015,67 @@ impl AutonomousToolRuntime {
 }
 
 fn prompt_fragment_preview_json(fragment: &PromptFragment) -> JsonValue {
+    // Preview consumers reject empty strings in `content`/`provenance`/
+    // `inclusionReason`. Prompt fragments produced by the compiler can
+    // legitimately omit body or inclusion text (header-only fragments,
+    // synthesized boundaries) — substitute a placeholder so the panel
+    // surfaces them instead of failing schema parse.
+    let provenance = non_empty_or(&fragment.provenance, "runtime");
+    let inclusion_reason = non_empty_or(&fragment.inclusion_reason, "compiled by PromptCompiler");
+    let content = non_empty_or(&fragment.body, "(fragment compiled with empty body)");
     json!({
         "id": fragment.id.clone(),
         "priority": fragment.priority,
         "title": fragment.title.clone(),
-        "provenance": fragment.provenance.clone(),
+        "provenance": provenance,
         "budgetPolicy": fragment.budget_policy.as_str(),
-        "inclusionReason": fragment.inclusion_reason.clone(),
-        "content": fragment.body.clone(),
+        "inclusionReason": inclusion_reason,
+        "content": content,
         "sha256": fragment.sha256.clone(),
         "tokenEstimate": fragment.token_estimate
     })
+}
+
+fn non_empty_or(value: &str, fallback: &'static str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn policy_pass_through_non_empty_string(value: Option<&JsonValue>) -> JsonValue {
+    // The TS preview policies schema expects either a non-empty string or
+    // null. Snapshots authored on the canvas often carry empty strings
+    // before the user fills the field — normalize those to null so strict
+    // parse succeeds.
+    match value {
+        Some(JsonValue::String(text)) if text.trim().is_empty() => JsonValue::Null,
+        Some(other) => other.clone(),
+        None => JsonValue::Null,
+    }
+}
+
+fn policy_pass_through_object(value: Option<&JsonValue>) -> JsonValue {
+    // Policies fields like contextPolicy/memoryPolicy accept object | null.
+    // Anything that's not a JSON object collapses to null so we don't ship a
+    // shape the consumer cannot parse.
+    match value {
+        Some(JsonValue::Object(map)) => JsonValue::Object(map.clone()),
+        _ => JsonValue::Null,
+    }
+}
+
+fn policy_pass_through_string_or_object(value: Option<&JsonValue>) -> JsonValue {
+    // toolPolicy and outputContract accept object | non-empty string | null.
+    match value {
+        Some(JsonValue::Object(map)) => JsonValue::Object(map.clone()),
+        Some(JsonValue::String(text)) if !text.trim().is_empty() => {
+            JsonValue::String(text.clone())
+        }
+        _ => JsonValue::Null,
+    }
 }
 
 fn attached_skill_injection_preview(
@@ -1859,6 +1963,9 @@ fn normalize_definition_snapshot(
         "schemaVersion".into(),
         json!(AGENT_DEFINITION_SCHEMA_VERSION),
     );
+    if let Some(extends) = object.get("extends").cloned() {
+        snapshot.insert("extends".into(), extends);
+    }
     snapshot.insert("id".into(), JsonValue::String(definition_id));
     snapshot.insert("version".into(), json!(version));
     snapshot.insert("displayName".into(), JsonValue::String(display_name));
@@ -1977,107 +2084,15 @@ fn normalize_definition_snapshot(
 
 #[cfg(test)]
 fn validate_definition_snapshot(snapshot: &JsonValue) -> AutonomousAgentDefinitionValidationReport {
-    validate_definition_snapshot_with_registry(snapshot, None)
+    validate_definition_snapshot_with_registry(snapshot, None, None)
 }
 
 fn validate_definition_snapshot_with_registry(
     snapshot: &JsonValue,
     repo_root: Option<&std::path::Path>,
+    mcp_registry_path: Option<&std::path::Path>,
 ) -> AutonomousAgentDefinitionValidationReport {
-    let mut diagnostics = Vec::new();
-    let object = snapshot.as_object();
-    validate_schema_metadata(snapshot, &mut diagnostics);
-    validate_text_field(object, "id", MAX_DEFINITION_ID_CHARS, &mut diagnostics);
-    validate_text_field(
-        object,
-        "displayName",
-        MAX_DISPLAY_NAME_CHARS,
-        &mut diagnostics,
-    );
-    validate_text_field(
-        object,
-        "shortLabel",
-        MAX_SHORT_LABEL_CHARS,
-        &mut diagnostics,
-    );
-    validate_text_field(
-        object,
-        "description",
-        MAX_DESCRIPTION_CHARS,
-        &mut diagnostics,
-    );
-    validate_text_field(
-        object,
-        "taskPurpose",
-        MAX_DESCRIPTION_CHARS,
-        &mut diagnostics,
-    );
-
-    let scope = snapshot_text(snapshot, "scope").unwrap_or_default();
-    if !["global_custom", "project_custom"].contains(&scope.as_str()) {
-        diagnostics.push(diagnostic(
-            "agent_definition_scope_invalid",
-            "Custom agent definitions saved by Agent Create must be global_custom or project_custom.",
-            "scope",
-        ));
-    }
-    let lifecycle_state = snapshot_text(snapshot, "lifecycleState").unwrap_or_default();
-    if !["draft", "valid", "active", "archived", "blocked"].contains(&lifecycle_state.as_str()) {
-        diagnostics.push(diagnostic(
-            "agent_definition_lifecycle_invalid",
-            "Lifecycle state must be draft, valid, active, archived, or blocked.",
-            "lifecycleState",
-        ));
-    }
-    let base_profile = snapshot_text(snapshot, "baseCapabilityProfile").unwrap_or_default();
-    if ![
-        "observe_only",
-        "planning",
-        "repository_recon",
-        "engineering",
-        "debugging",
-        "agent_builder",
-    ]
-    .contains(&base_profile.as_str())
-    {
-        diagnostics.push(diagnostic(
-            "agent_definition_base_profile_invalid",
-            "Base capability profile must be observe_only, planning, repository_recon, engineering, debugging, or agent_builder.",
-            "baseCapabilityProfile",
-        ));
-    }
-
-    validate_approval_modes(snapshot, &base_profile, &mut diagnostics);
-    validate_tool_policy(snapshot.get("toolPolicy"), &base_profile, &mut diagnostics);
-    validate_required_contract_text(snapshot, "workflowContract", &mut diagnostics);
-    validate_workflow_structure(snapshot.get("workflowStructure"), &mut diagnostics);
-    validate_required_contract_text(snapshot, "finalResponseContract", &mut diagnostics);
-    validate_examples(
-        snapshot.get("examplePrompts"),
-        "examplePrompts",
-        &mut diagnostics,
-    );
-    validate_examples(
-        snapshot.get("refusalEscalationCases"),
-        "refusalEscalationCases",
-        &mut diagnostics,
-    );
-    validate_policy_kinds(snapshot.get("projectDataPolicy"), &mut diagnostics);
-    validate_memory_policy(snapshot.get("memoryCandidatePolicy"), &mut diagnostics);
-    validate_handoff_policy(snapshot.get("handoffPolicy"), &mut diagnostics);
-    validate_canonical_graph_fields(snapshot, &mut diagnostics);
-    validate_attached_skills(snapshot.get("attachedSkills"), repo_root, &mut diagnostics);
-    validate_instruction_hierarchy(snapshot, &mut diagnostics);
-
-    let status = if diagnostics.is_empty() {
-        AutonomousAgentDefinitionValidationStatus::Valid
-    } else {
-        AutonomousAgentDefinitionValidationStatus::Invalid
-    };
-    AutonomousAgentDefinitionValidationReport {
-        status,
-        diagnostics,
-    }
+    validators::validate_definition_snapshot_with_registry(snapshot, repo_root, mcp_registry_path)
 }
 
 fn validate_schema_metadata(
@@ -2137,19 +2152,6 @@ fn validate_text_field(
             field,
         ));
     }
-}
-
-fn validate_canonical_graph_fields(
-    snapshot: &JsonValue,
-    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
-) {
-    validate_array_field(snapshot, "prompts", diagnostics);
-    validate_array_field(snapshot, "attachedSkills", diagnostics);
-    validate_array_field(snapshot, "tools", diagnostics);
-    validate_array_field(snapshot, "consumes", diagnostics);
-    validate_prompt_intent(snapshot, diagnostics);
-    validate_output_field(snapshot.get("output"), diagnostics);
-    validate_db_touchpoints_field(snapshot.get("dbTouchpoints"), diagnostics);
 }
 
 fn validate_attached_skills(
@@ -2829,6 +2831,7 @@ fn validate_approval_modes(
 fn validate_tool_policy(
     value: Option<&JsonValue>,
     base_profile: &str,
+    mcp_registry_path: Option<&std::path::Path>,
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
 ) {
     let Some(value) = value else {
@@ -2976,6 +2979,95 @@ fn validate_tool_policy(
         }
     }
     validate_subagent_role_policy(object, diagnostics);
+    validate_mcp_dynamic_tool_policy(object, mcp_registry_path, diagnostics);
+}
+
+fn validate_mcp_dynamic_tool_policy(
+    object: &JsonMap<String, JsonValue>,
+    mcp_registry_path: Option<&std::path::Path>,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    let allowed_servers = string_array(object.get("allowedMcpServers"));
+    let denied_servers = string_array(object.get("deniedMcpServers"));
+    for server_id in allowed_servers
+        .iter()
+        .filter(|server_id| denied_servers.contains(server_id))
+    {
+        diagnostics.push(diagnostic(
+            "agent_definition_mcp_server_policy_conflict",
+            format!("MCP server `{server_id}` is both allowed and denied."),
+            "toolPolicy.allowedMcpServers",
+        ));
+    }
+
+    if let Some(registry_path) = mcp_registry_path {
+        match load_mcp_registry_from_path(registry_path) {
+            Ok(registry) => {
+                let known_servers = registry
+                    .servers
+                    .iter()
+                    .map(|server| server.id.as_str())
+                    .collect::<BTreeSet<_>>();
+                for (field, server_id) in allowed_servers
+                    .iter()
+                    .map(|server_id| ("allowedMcpServers", server_id))
+                    .chain(
+                        denied_servers
+                            .iter()
+                            .map(|server_id| ("deniedMcpServers", server_id)),
+                    )
+                {
+                    if !known_servers.contains(server_id.as_str()) {
+                        diagnostics.push(diagnostic(
+                            "agent_definition_mcp_server_unknown",
+                            format!("MCP server `{server_id}` is not configured in Xero."),
+                            format!("toolPolicy.{field}"),
+                        ));
+                    }
+                }
+            }
+            Err(error) => diagnostics.push(diagnostic_with_reason(
+                "agent_definition_mcp_registry_unavailable",
+                format!(
+                    "Xero could not validate MCP server policy: {}",
+                    error.message
+                ),
+                "toolPolicy.allowedMcpServers",
+                "retry_validation",
+            )),
+        }
+    }
+
+    let allowed_dynamic_tools = string_array(object.get("allowedDynamicTools"));
+    let denied_dynamic_tools = string_array(object.get("deniedDynamicTools"));
+    for tool_name in allowed_dynamic_tools
+        .iter()
+        .filter(|tool_name| denied_dynamic_tools.contains(tool_name))
+    {
+        diagnostics.push(diagnostic(
+            "agent_definition_dynamic_tool_policy_conflict",
+            format!("Dynamic tool `{tool_name}` is both allowed and denied."),
+            "toolPolicy.allowedDynamicTools",
+        ));
+    }
+
+    for (field, tool_name) in allowed_dynamic_tools
+        .iter()
+        .map(|tool_name| ("allowedDynamicTools", tool_name))
+        .chain(
+            denied_dynamic_tools
+                .iter()
+                .map(|tool_name| ("deniedDynamicTools", tool_name)),
+        )
+    {
+        if !tool_name.starts_with(super::AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX) {
+            diagnostics.push(diagnostic(
+                "agent_definition_dynamic_tool_name_invalid",
+                format!("Dynamic tool `{tool_name}` must use the MCP dynamic-tool prefix."),
+                format!("toolPolicy.{field}"),
+            ));
+        }
+    }
 }
 
 fn validate_subagent_role_policy(
@@ -3659,6 +3751,7 @@ fn invalid_output(
         validation_report: Some(validation_report),
         effective_runtime_preview: None,
         attachable_skill_catalog: None,
+        approval_review: None,
     }
 }
 
@@ -3667,6 +3760,7 @@ fn approval_required_output(
     summary: AutonomousAgentDefinitionSummary,
     validation_report: AutonomousAgentDefinitionValidationReport,
     message: &'static str,
+    approval_review: Option<JsonValue>,
 ) -> AutonomousAgentDefinitionOutput {
     AutonomousAgentDefinitionOutput {
         action,
@@ -3678,6 +3772,7 @@ fn approval_required_output(
         validation_report: Some(validation_report),
         effective_runtime_preview: None,
         attachable_skill_catalog: None,
+        approval_review,
     }
 }
 
@@ -4154,10 +4249,15 @@ mod tests {
     use std::{fs, path::Path};
 
     use rusqlite::{params, Connection};
+    use tempfile::TempDir;
 
     use crate::{
         commands::{RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto},
         db::{configure_connection, database_path_for_repo, migrations::migrations},
+        mcp::{
+            default_mcp_registry, persist_mcp_registry, McpConnectionState, McpConnectionStatus,
+            McpServerRecord, McpTransport,
+        },
         runtime::{
             agent_core::runtime_controls_from_request, AutonomousToolRequest, ToolRegistry,
             ToolRegistryOptions, FAKE_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID,
@@ -4391,6 +4491,125 @@ mod tests {
             "includeSupportingAssets": false,
             "required": true
         })
+    }
+
+    #[test]
+    fn unapproved_save_returns_pre_save_review_for_initial_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-c1-initial-review");
+        let runtime = agent_create_runtime(&repo_root);
+        let request = AutonomousAgentDefinitionRequest {
+            action: AutonomousAgentDefinitionAction::Save,
+            definition_id: None,
+            source_definition_id: None,
+            include_archived: false,
+            definition: Some(valid_observe_only_definition()),
+        };
+
+        let unapproved = runtime
+            .agent_definition(request)
+            .expect("unapproved save response");
+        let AutonomousToolOutput::AgentDefinition(output) = unapproved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(!output.applied);
+        assert!(output.approval_required);
+        let review = output
+            .approval_review
+            .as_ref()
+            .expect("approval review payload populated for unapproved save");
+        assert_eq!(
+            review["schema"],
+            json!("xero.agent_definition_pre_save_review.v1")
+        );
+        assert_eq!(review["definitionId"], json!("release_notes_helper"));
+        assert_eq!(review["isInitialVersion"], json!(true));
+        assert_eq!(review["fromVersion"], JsonValue::Null);
+        assert_eq!(review["fromCreatedAt"], JsonValue::Null);
+        assert_eq!(review["toVersion"], json!(1));
+        assert_eq!(review["changed"], json!(true));
+        let changed_sections = review["changedSections"]
+            .as_array()
+            .expect("changed sections array")
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        for expected in ["identity", "prompts", "toolPolicy", "outputContract"] {
+            assert!(
+                changed_sections.contains(&expected),
+                "initial-version review must report `{expected}` as changed"
+            );
+        }
+    }
+
+    #[test]
+    fn unapproved_update_with_unchanged_snapshot_reports_zero_delta_review() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-c1-zero-delta-review");
+        let runtime = agent_create_runtime(&repo_root);
+        let save_request = AutonomousAgentDefinitionRequest {
+            action: AutonomousAgentDefinitionAction::Save,
+            definition_id: None,
+            source_definition_id: None,
+            include_archived: false,
+            definition: Some(valid_observe_only_definition()),
+        };
+        let saved = runtime
+            .agent_definition_with_operator_approval(save_request)
+            .expect("seed definition v1");
+        let AutonomousToolOutput::AgentDefinition(saved_output) = saved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(saved_output.applied);
+
+        let update_request = AutonomousAgentDefinitionRequest {
+            action: AutonomousAgentDefinitionAction::Update,
+            definition_id: Some("release_notes_helper".into()),
+            source_definition_id: None,
+            include_archived: false,
+            definition: Some(valid_observe_only_definition()),
+        };
+        let unapproved = runtime
+            .agent_definition(update_request)
+            .expect("unapproved update response");
+        let AutonomousToolOutput::AgentDefinition(output) = unapproved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(!output.applied, "unapproved update must not persist");
+        assert!(output.approval_required, "update must gate on approval");
+        let review = output
+            .approval_review
+            .as_ref()
+            .expect("update review payload populated");
+        assert_eq!(review["isInitialVersion"], json!(false));
+        assert_eq!(review["fromVersion"], json!(1));
+        assert_eq!(review["toVersion"], json!(2));
+        assert_eq!(
+            review["changed"],
+            json!(false),
+            "no-change update must report a zero-delta review"
+        );
+        assert_eq!(
+            review["changedSections"]
+                .as_array()
+                .expect("changed sections array")
+                .len(),
+            0,
+            "zero-delta review must list no changed sections"
+        );
+
+        // The zero-delta detection must not have written a new version.
+        let after_active = project_store::load_agent_definition(&repo_root, "release_notes_helper")
+            .expect("load definition after dry-run")
+            .expect("definition still present");
+        assert_eq!(
+            after_active.current_version, 1,
+            "dry-run update must not advance the active version"
+        );
     }
 
     #[test]
@@ -5481,6 +5700,59 @@ mod tests {
                 .expect("load definition")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn validation_reports_unknown_mcp_server_policy_ids() {
+        let root = TempDir::new().expect("temp dir");
+        let registry_path = root.path().join("xero.db");
+        let mut registry = default_mcp_registry();
+        registry.servers = vec![McpServerRecord {
+            id: "docs".into(),
+            name: "Docs".into(),
+            transport: McpTransport::Http {
+                url: "https://example.com/mcp".into(),
+            },
+            env: Vec::new(),
+            cwd: None,
+            connection: McpConnectionState {
+                status: McpConnectionStatus::Connected,
+                diagnostic: None,
+                last_checked_at: None,
+                last_healthy_at: None,
+            },
+            updated_at: "2026-05-10T00:00:00Z".into(),
+        }];
+        persist_mcp_registry(&registry_path, &registry).expect("persist mcp registry");
+
+        let mut definition = valid_observe_only_definition();
+        definition["baseCapabilityProfile"] = json!("engineering");
+        definition["toolPolicy"] = json!({
+            "allowedEffectClasses": ["external_service"],
+            "allowedToolGroups": [],
+            "allowedToolPacks": [],
+            "allowedTools": ["mcp_list"],
+            "deniedTools": [],
+            "deniedToolPacks": [],
+            "externalServiceAllowed": true,
+            "allowedMcpServers": ["docs", "missing"],
+            "deniedMcpServers": [],
+            "allowedDynamicTools": [],
+            "deniedDynamicTools": [],
+            "browserControlAllowed": false,
+            "skillRuntimeAllowed": false,
+            "subagentAllowed": false,
+            "commandAllowed": false,
+            "destructiveWriteAllowed": false
+        });
+
+        let report =
+            validate_definition_snapshot_with_registry(&definition, None, Some(&registry_path));
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_mcp_server_unknown"
+                && diagnostic.path == "toolPolicy.allowedMcpServers"
+        }));
     }
 
     #[test]

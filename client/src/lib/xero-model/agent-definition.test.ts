@@ -415,6 +415,17 @@ describe('agent definition contracts', () => {
     ).toThrow(/retrieval record kinds/)
   })
 
+  it('accepts v3 built-in overlay references', () => {
+    const parsed = canonicalCustomAgentDefinitionSchema.parse({
+      ...canonicalDefinition,
+      extends: 'engineer@1',
+      baseCapabilityProfile: 'engineering',
+    })
+
+    expect(parsed.schemaVersion).toBe(AGENT_DEFINITION_SCHEMA_VERSION)
+    expect(parsed.extends).toBe('engineer@1')
+  })
+
   it('rejects missing and future custom-agent schema versions', () => {
     const missing = { ...canonicalDefinition }
     delete (missing as { schemaVersion?: number }).schemaVersion

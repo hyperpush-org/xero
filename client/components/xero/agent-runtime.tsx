@@ -47,6 +47,10 @@ import type {
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/xero-model'
 import type { SessionContextSnapshotDto } from '@/src/lib/xero-model/session-context'
+import type {
+  AgentHandoffContextSummaryDto,
+  AgentKnowledgeInspectionDto,
+} from '@/src/lib/xero-model/agent-reports'
 import {
   getRuntimeAgentDescriptorsForProjectOrigin,
   getRuntimeAgentLabel,
@@ -96,6 +100,14 @@ import {
   getToolSummaryContext,
   hasUsableRuntimeRunId,
 } from './agent-runtime/runtime-stream-helpers'
+import {
+  KnowledgeInspectionPanel,
+  type KnowledgeInspectionStatus,
+} from './agent-runtime/knowledge-inspection-panel'
+import {
+  HandoffContextDialog,
+  type HandoffContextDialogStatus,
+} from './agent-runtime/handoff-context-dialog'
 import { SetupEmptyState } from './agent-runtime/setup-empty-state'
 import { useAgentRuntimeController } from './agent-runtime/use-agent-runtime-controller'
 import type { SpeechDictationAdapter } from './agent-runtime/use-speech-dictation'
@@ -110,6 +122,8 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
       | 'getSessionTranscript'
       | 'stageAgentAttachment'
       | 'discardAgentAttachment'
+      | 'getAgentKnowledgeInspection'
+      | 'getAgentHandoffContextSummary'
     >
   >
 
@@ -1699,6 +1713,100 @@ export const AgentRuntime = memo(function AgentRuntime({
   const hasSelectedAgentSession = Boolean(selectedAgentSessionId?.trim())
   const [codeUndoStates, setCodeUndoStates] = useState<Record<string, CodeUndoUiState>>({})
   const [returnSessionToHereStates, setReturnSessionToHereStates] = useState<Record<string, CodeUndoUiState>>({})
+  const [knowledgeInspectionOpen, setKnowledgeInspectionOpen] = useState(false)
+  const [knowledgeInspectionStatus, setKnowledgeInspectionStatus] =
+    useState<KnowledgeInspectionStatus>('idle')
+  const [knowledgeInspectionError, setKnowledgeInspectionError] = useState<string | null>(null)
+  const [knowledgeInspection, setKnowledgeInspection] =
+    useState<AgentKnowledgeInspectionDto | null>(null)
+  const getAgentKnowledgeInspectionFn = desktopAdapter?.getAgentKnowledgeInspection
+  const knowledgeInspectionProjectId = agent.project.id
+  const knowledgeInspectionSessionId = selectedAgentSessionId
+  const knowledgeInspectionRunId = renderableRuntimeRun?.runId ?? null
+  const refreshKnowledgeInspection = useCallback(async () => {
+    if (!getAgentKnowledgeInspectionFn) return
+    setKnowledgeInspectionStatus('loading')
+    setKnowledgeInspectionError(null)
+    try {
+      const result = await getAgentKnowledgeInspectionFn({
+        projectId: knowledgeInspectionProjectId,
+        agentSessionId: knowledgeInspectionSessionId,
+        runId: knowledgeInspectionRunId,
+      })
+      setKnowledgeInspection(result)
+      setKnowledgeInspectionStatus('ready')
+    } catch (error) {
+      setKnowledgeInspectionStatus('error')
+      setKnowledgeInspectionError(
+        error instanceof Error ? error.message : 'Failed to load knowledge inspection.',
+      )
+    }
+  }, [
+    getAgentKnowledgeInspectionFn,
+    knowledgeInspectionProjectId,
+    knowledgeInspectionRunId,
+    knowledgeInspectionSessionId,
+  ])
+  const handleOpenKnowledgeInspection = useCallback(() => {
+    setKnowledgeInspectionOpen(true)
+    void refreshKnowledgeInspection()
+  }, [refreshKnowledgeInspection])
+
+  const [handoffSummaryOpen, setHandoffSummaryOpen] = useState(false)
+  const [handoffSummaryStatus, setHandoffSummaryStatus] =
+    useState<HandoffContextDialogStatus>('idle')
+  const [handoffSummaryError, setHandoffSummaryError] = useState<string | null>(null)
+  const [handoffSummary, setHandoffSummary] =
+    useState<AgentHandoffContextSummaryDto | null>(null)
+  const [handoffSummaryRequest, setHandoffSummaryRequest] = useState<{
+    sourceRunId: string | null
+    targetRunId: string | null
+  } | null>(null)
+  const getAgentHandoffContextSummaryFn = desktopAdapter?.getAgentHandoffContextSummary
+  const handoffSummaryProjectId = agent.project.id
+  const fetchHandoffSummary = useCallback(
+    async (request: { sourceRunId: string | null; targetRunId: string | null }) => {
+      if (!getAgentHandoffContextSummaryFn) return
+      setHandoffSummaryStatus('loading')
+      setHandoffSummaryError(null)
+      try {
+        const result = await getAgentHandoffContextSummaryFn({
+          projectId: handoffSummaryProjectId,
+          targetRunId: request.targetRunId ?? null,
+          sourceRunId: request.targetRunId ? null : request.sourceRunId ?? null,
+        })
+        setHandoffSummary(result)
+        setHandoffSummaryStatus('ready')
+      } catch (error) {
+        setHandoffSummaryStatus('error')
+        setHandoffSummaryError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to load handoff context summary.',
+        )
+      }
+    },
+    [getAgentHandoffContextSummaryFn, handoffSummaryProjectId],
+  )
+  const handleOpenHandoffSummary = useCallback(
+    (request: { sourceRunId?: string | null; targetRunId?: string | null }) => {
+      const normalized = {
+        sourceRunId: request.sourceRunId ?? null,
+        targetRunId: request.targetRunId ?? null,
+      }
+      setHandoffSummaryRequest(normalized)
+      setHandoffSummaryOpen(true)
+      setHandoffSummary(null)
+      void fetchHandoffSummary(normalized)
+    },
+    [fetchHandoffSummary],
+  )
+  const refreshHandoffSummary = useCallback(() => {
+    if (!handoffSummaryRequest) return
+    void fetchHandoffSummary(handoffSummaryRequest)
+  }, [fetchHandoffSummary, handoffSummaryRequest])
+  const footerHandoffSourceRunId =
+    renderableRuntimeRun?.runId ?? runtimeStream?.runId ?? null
 
   const selectedProviderId =
     agent.selectedModel?.providerId ?? agent.selectedProviderId ?? runtimeSession?.providerId ?? 'openai_codex'
@@ -2712,6 +2820,13 @@ export const AgentRuntime = memo(function AgentRuntime({
                     onReturnSessionToHere={
                       desktopAdapter?.returnSessionToHere ? handleReturnSessionToHere : undefined
                     }
+                    onOpenKnowledgeInspection={
+                      getAgentKnowledgeInspectionFn ? handleOpenKnowledgeInspection : undefined
+                    }
+                    onOpenHandoffSummary={
+                      getAgentHandoffContextSummaryFn ? handleOpenHandoffSummary : undefined
+                    }
+                    footerHandoffSourceRunId={footerHandoffSourceRunId}
                   />
                 </ActionPromptDispatchProvider>
                 {controller.composerRuntimeAgentId === 'agent_create' ? (
@@ -2796,6 +2911,22 @@ export const AgentRuntime = memo(function AgentRuntime({
         />
         </div>
       </div>
+      <KnowledgeInspectionPanel
+        open={knowledgeInspectionOpen}
+        onOpenChange={setKnowledgeInspectionOpen}
+        status={knowledgeInspectionStatus}
+        errorMessage={knowledgeInspectionError}
+        inspection={knowledgeInspection}
+        onRefresh={() => void refreshKnowledgeInspection()}
+      />
+      <HandoffContextDialog
+        open={handoffSummaryOpen}
+        onOpenChange={setHandoffSummaryOpen}
+        status={handoffSummaryStatus}
+        errorMessage={handoffSummaryError}
+        summary={handoffSummary}
+        onRefresh={refreshHandoffSummary}
+      />
     </AgentPaneDropOverlay>
   )
 })

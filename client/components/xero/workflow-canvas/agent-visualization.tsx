@@ -40,6 +40,7 @@ import {
   Magnet,
   Maximize,
   RotateCcw,
+  ShieldCheck,
   Unlock,
   ZoomIn,
   ZoomOut,
@@ -48,15 +49,18 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import type {
+  AgentDefinitionPreSaveReviewDto,
   AgentDefinitionPreviewResponseDto,
   AgentDefinitionValidationDiagnosticDto,
   AgentDefinitionWriteResponseDto,
+  CustomAgentWorkflowPhaseDto,
 } from '@/src/lib/xero-model/agent-definition'
 import {
   agentRefKey,
   type AgentAuthoringCatalogDto,
   type AgentAuthoringAttachableSkillDto,
   type AgentAuthoringSkillSearchResultDto,
+  type AgentToolPackCatalogDto,
   type SearchAgentAuthoringSkillsResponseDto,
   type AgentTriggerRefDto,
   type WorkflowAgentDetailDto,
@@ -82,6 +86,7 @@ import {
   lifecycleEventLabel,
   promptNodeId,
   skillNodeId,
+  stageNodeId,
   toolNodeId,
   type AgentGraph,
   type AgentGraphEdge,
@@ -89,6 +94,7 @@ import {
   type AgentGraphNodeKind,
   type AgentHeaderAdvancedFields,
 } from './build-agent-graph'
+import { AddStageChip } from './add-stage-chip'
 import { buildSnapshotFromGraph } from './build-snapshot'
 import {
   CanvasModeProvider,
@@ -107,6 +113,8 @@ import {
   AgentCanvasExpansionContext,
   type AgentCanvasExpansionContextValue,
 } from './expansion-context'
+import { AgentApprovalReviewDialog } from './agent-approval-review-dialog'
+import { PhaseBranchEdge } from './edges/phase-branch-edge'
 import { TriggerEdge } from './edges/trigger-edge'
 import { layoutAgentGraphByCategory, type NodeSize } from './layout'
 import { EffectiveRuntimePanel } from './effective-runtime-panel'
@@ -122,6 +130,8 @@ import { PromptNode } from './nodes/prompt-node'
 import { SkillNode } from './nodes/skill-node'
 import { ToolGroupFrameNode } from './nodes/tool-group-frame-node'
 import { ToolNode } from './nodes/tool-node'
+import { StageNode } from './nodes/stage-node'
+import { StageGroupFrameNode } from './nodes/stage-group-frame-node'
 
 import './agent-visualization.css'
 
@@ -134,6 +144,8 @@ const NODE_TYPES = {
   'agent-output': OutputNode,
   'output-section': OutputSectionNode,
   'consumed-artifact': ConsumedArtifactNode,
+  stage: StageNode,
+  'stage-group-frame': StageGroupFrameNode,
   'lane-label': LaneLabelNode,
   'tool-group-frame': ToolGroupFrameNode,
 } as unknown as NodeTypes
@@ -141,9 +153,11 @@ const NODE_TYPES = {
 // Custom edge types. Trigger edges render their labels via the
 // `EdgeLabelRenderer` portal so the labels sit above the node layer instead
 // of inside the edges SVG, where they'd dim/clip behind any card the edge
-// happens to cross.
+// happens to cross. Phase-branch edges use the same portal pattern to
+// keep the conditional label readable when one branch overlaps another.
 const EDGE_TYPES = {
   trigger: TriggerEdge,
+  'phase-branch': PhaseBranchEdge,
 } as unknown as EdgeTypes
 
 const REACT_FLOW_PRO_OPTIONS = { hideAttribution: true } as const
@@ -184,6 +198,7 @@ const NODE_SIZE_BY_TYPE: Record<string, NodeSize> = {
   'agent-output': { width: 300, height: 110 },
   'output-section': { width: 200, height: 32 },
   'consumed-artifact': { width: 260, height: 104 },
+  stage: { width: 260, height: 132 },
 }
 
 // Fallback extra height for an expanded card body, used only when React Flow
@@ -250,6 +265,7 @@ type LaneDragCategory =
   | 'agent-output'
   | 'output-section'
   | 'consumed-artifact'
+  | 'stage'
 
 const LANE_NODE_PREFIX = 'lane:'
 
@@ -288,6 +304,10 @@ interface AgentVisualizationProps {
   // editing palette. When null the canvas falls back to empty pickers so the
   // UI degrades gracefully if the catalog hasn't loaded yet.
   authoringCatalog?: AgentAuthoringCatalogDto | null
+  // Tool-pack manifest catalog used by the granular policy editor. Optional
+  // because the catalog command is host-side and may not be wired in every
+  // adapter (the editor degrades gracefully — pack picker hides when null).
+  toolPackCatalog?: AgentToolPackCatalogDto | null
   onSearchAttachableSkills?: (params: {
     query: string
     offset: number
@@ -300,6 +320,10 @@ interface AgentVisualizationProps {
     snapshot: Record<string, unknown>
     mode: CanvasMode
     definitionId?: string
+    /** When true, the runtime returns a pre-save approval review without
+     *  persisting. The canvas uses this to show the operator what will change
+     *  before they confirm the actual write. */
+    dryRun?: boolean
   }) => Promise<AgentDefinitionWriteResponseDto>
   onSaved?: (response: AgentDefinitionWriteResponseDto) => void
   onCancel?: () => void
@@ -766,6 +790,7 @@ function laneCategoryFromNodeId(nodeId: string): LaneDragCategory | null {
     case 'agent-output':
     case 'output-section':
     case 'consumed-artifact':
+    case 'stage':
       return category
     default:
       return null
@@ -827,6 +852,11 @@ function nodeMovesWithLane(node: Node, category: LaneDragCategory): boolean {
       return node.type === 'output-section'
     case 'consumed-artifact':
       return node.type === 'consumed-artifact'
+    case 'stage':
+      // Frame carries every stage card via React Flow's parent/extent
+      // relationship — moving the frame moves the cards visually while
+      // preserving each card's relative coordinates inside the frame.
+      return node.type === 'stage-group-frame'
   }
 }
 
@@ -1389,6 +1419,19 @@ function WorkflowCanvasDots() {
   return <div ref={ref} className="agent-visualization__dots" aria-hidden="true" />
 }
 
+// Validator codes that the granular policy editor knows how to surface.
+// Everything else falls out to the global diagnostic banner so we don't
+// crowd the per-control inline hints with unrelated errors.
+const TOOL_POLICY_DIAGNOSTIC_PREFIXES = [
+  'agent_definition_tool_',
+  'agent_definition_effect_class_',
+  'agent_definition_subagent_role_',
+] as const
+
+function isToolPolicyDiagnosticCode(code: string): boolean {
+  return TOOL_POLICY_DIAGNOSTIC_PREFIXES.some((prefix) => code.startsWith(prefix))
+}
+
 function AgentVisualizationInner({
   active = true,
   projectId = null,
@@ -1399,6 +1442,7 @@ function AgentVisualizationInner({
   mode,
   initialDetail = null,
   authoringCatalog = null,
+  toolPackCatalog = null,
   onSearchAttachableSkills,
   onResolveAttachableSkill,
   onSubmit,
@@ -1450,6 +1494,12 @@ function AgentVisualizationInner({
             deniedToolPacks: [],
             allowedToolGroups: [],
             deniedToolGroups: [],
+            allowedMcpServers: [],
+            deniedMcpServers: [],
+            allowedDynamicTools: [],
+            deniedDynamicTools: [],
+            allowedSubagentRoles: [],
+            deniedSubagentRoles: [],
             externalServiceAllowed: false,
             browserControlAllowed: false,
             skillRuntimeAllowed: false,
@@ -1463,6 +1513,16 @@ function AgentVisualizationInner({
     readonly AgentDefinitionValidationDiagnosticDto[]
   >([])
   const [editingErrorMessage, setEditingErrorMessage] = useState<string | null>(null)
+  // Two-phase save flow: dry-run produces a pre-save approval review, the
+  // operator confirms, then the same snapshot is sent again with dryRun=false
+  // to actually persist.
+  const [pendingApproval, setPendingApproval] = useState<{
+    review: AgentDefinitionPreSaveReviewDto
+    snapshot: Record<string, unknown>
+    definitionId: string | null | undefined
+    submitMode: CanvasMode
+  } | null>(null)
+  const [approvalErrorMessage, setApprovalErrorMessage] = useState<string | null>(null)
   // User-driven position overrides for nodes the layout placed automatically.
   // We persist these in memory only — the agent definition itself doesn't
   // care about layout positions, and there's no stable storage key for an
@@ -1472,6 +1532,15 @@ function AgentVisualizationInner({
   const [editingPositionOverrides, setEditingPositionOverrides] = useState<
     Record<string, { x: number; y: number }>
   >({})
+  // First stage created in this editing session. Tracked so the canvas can
+  // auto-select the new stage node and pop the properties panel open with
+  // the explainer expanded — the user just reached for an unfamiliar
+  // feature and the panel is where they'll learn what to configure.
+  // Cleared after the node mounts so subsequent stage adds don't steal
+  // selection from whatever the user is editing.
+  const [pendingStageAutoSelectId, setPendingStageAutoSelectId] = useState<
+    string | null
+  >(null)
 
   useEffect(() => {
     if (!editingInitial) return
@@ -2029,6 +2098,25 @@ function AgentVisualizationInner({
     })
   }, [computedNodes, setNodes])
 
+  // First-stage auto-open: once the new stage node has been built into the
+  // node list, mark it selected (clearing any prior selection) so the
+  // properties panel pops open on the new node. Cleared after the first
+  // matching pass so subsequent stage adds don't fight the user.
+  useEffect(() => {
+    if (!pendingStageAutoSelectId) return
+    const targetNodeId = stageNodeId(pendingStageAutoSelectId)
+    if (!nodes.some((node) => node.id === targetNodeId)) return
+    setNodes((current) =>
+      current.map((node) => {
+        if (node.id === targetNodeId) {
+          return node.selected ? node : { ...node, selected: true }
+        }
+        return node.selected ? { ...node, selected: false } : node
+      }),
+    )
+    setPendingStageAutoSelectId(null)
+  }, [nodes, pendingStageAutoSelectId, setNodes])
+
   // Hover focus is intentionally DOM-only. The previous React-state version
   // rebuilt every node and edge object on hover, forcing React Flow to
   // reconcile the whole graph and recalculate SVG paths during pointer moves.
@@ -2511,6 +2599,38 @@ function AgentVisualizationInner({
         )
         return { ...current, output: { ...current.output, sections } }
       }
+      // stage → stage: add (or keep) a branch entry from the source stage
+      // to the target. Default condition is `always`; the user refines it
+      // in the properties panel. Duplicate branches to the same target are
+      // coalesced — the runtime sees a single canonical edge per (source,
+      // target, condition kind+key).
+      if (source.kind === 'stage' && target.kind === 'stage') {
+        const phases = current.workflowStructure?.phases ?? []
+        if (phases.length === 0) return current
+        if (!phases.some((phase) => phase.id === target.phaseId)) return current
+        const nextPhases = phases.map((phase) => {
+          if (phase.id !== source.phaseId) return phase
+          const existing = phase.branches ?? []
+          if (existing.some((branch) => branch.targetPhaseId === target.phaseId)) {
+            return phase
+          }
+          return {
+            ...phase,
+            branches: [
+              ...existing,
+              { targetPhaseId: target.phaseId, condition: { kind: 'always' as const } },
+            ],
+          }
+        })
+        return {
+          ...current,
+          workflowStructure: {
+            ...(current.workflowStructure ?? {}),
+            startPhaseId: current.workflowStructure?.startPhaseId,
+            phases: nextPhases,
+          },
+        }
+      }
       // tool → db-table | section → db-table | consumed → db-table
       if (target.kind === 'db' && (source.kind === 'tool' || source.kind === 'output-section' || source.kind === 'consumed-artifact')) {
         const trigger: AgentTriggerRefDto =
@@ -2680,6 +2800,46 @@ function AgentVisualizationInner({
             })
             return { ...current, consumes }
           }
+          case 'stage': {
+            if (!current.workflowStructure) return current
+            const targetPhaseId = decoded.phaseId
+            const previousStartPhaseId = current.workflowStructure.startPhaseId
+            const phases = current.workflowStructure.phases.map((phase) => {
+              if (phase.id !== targetPhaseId) return phase
+              const prev = {
+                phase,
+                isStart: phase.id === previousStartPhaseId,
+              }
+              const next = updater(prev as never) as typeof prev
+              return next.phase
+            })
+            // Updating a phase's isStart flag flips the structure-level
+            // startPhaseId; reading the next isStart from the same updater
+            // run keeps both halves coherent without a second pass.
+            let nextStart = previousStartPhaseId
+            for (const phase of current.workflowStructure.phases) {
+              if (phase.id !== targetPhaseId) continue
+              const prev = {
+                phase,
+                isStart: phase.id === previousStartPhaseId,
+              }
+              const next = updater(prev as never) as typeof prev
+              if (next.isStart && next.phase.id) {
+                nextStart = next.phase.id
+              } else if (!next.isStart && previousStartPhaseId === targetPhaseId) {
+                nextStart = undefined
+              }
+              break
+            }
+            return {
+              ...current,
+              workflowStructure: {
+                ...(current.workflowStructure ?? {}),
+                startPhaseId: nextStart,
+                phases,
+              },
+            }
+          }
           default:
             return current
         }
@@ -2793,6 +2953,41 @@ function AgentVisualizationInner({
               reads: current.dbTouchpoints.reads.map(stripArtifact),
               writes: current.dbTouchpoints.writes.map(stripArtifact),
               encouraged: current.dbTouchpoints.encouraged.map(stripArtifact),
+            },
+          }
+        }
+        case 'stage': {
+          const removedId = decoded.phaseId
+          if (!current.workflowStructure) return current
+          // Drop the removed phase plus any branch entries that targeted it.
+          // If the removed phase was the start phase, pick the next surviving
+          // phase as the new start so the runtime always has a valid entry.
+          const remaining = current.workflowStructure.phases.filter(
+            (phase) => phase.id !== removedId,
+          )
+          const cleanedPhases = remaining.map((phase) => ({
+            ...phase,
+            branches: phase.branches?.filter(
+              (branch) => branch.targetPhaseId !== removedId,
+            ),
+          }))
+          if (cleanedPhases.length === 0) {
+            // Removing the last phase clears workflowStructure entirely so
+            // the snapshot drops back to the no-workflow shape.
+            const next = { ...current }
+            delete next.workflowStructure
+            return next
+          }
+          const nextStart =
+            current.workflowStructure.startPhaseId === removedId
+              ? cleanedPhases[0]?.id
+              : current.workflowStructure.startPhaseId
+          return {
+            ...current,
+            workflowStructure: {
+              ...(current.workflowStructure ?? {}),
+              startPhaseId: nextStart,
+              phases: cleanedPhases,
             },
           }
         }
@@ -2940,6 +3135,73 @@ function AgentVisualizationInner({
       }
     })
   }, [])
+
+  // Append a stage to the authored state machine. The first added stage
+  // becomes the start stage by default so the runtime has a valid entry
+  // point. Later stages default to non-start; users can flip `isStart`
+  // from the properties panel.
+  const addStageFromDrag = useCallback(() => {
+    setEditingDetail((current) => {
+      if (!current) return current
+      const existingPhases = current.workflowStructure?.phases ?? []
+      const id = uniqueEntityId(
+        `phase_${existingPhases.length + 1}`,
+        existingPhases.map((phase) => ({ id: phase.id })),
+      )
+      const index = existingPhases.length
+      const nextPhase = {
+        id,
+        title: `Phase ${index + 1}`,
+        description: '',
+        allowedTools: [],
+        requiredChecks: [],
+        branches: [],
+      }
+      const startPhaseId = current.workflowStructure?.startPhaseId
+        ?? (index === 0 ? id : undefined)
+      // Auto-select the first stage on creation so the panel can introduce
+      // the feature. Subsequent stages keep the user on whatever they were
+      // editing before.
+      if (index === 0) setPendingStageAutoSelectId(id)
+      return {
+        ...current,
+        workflowStructure: {
+          startPhaseId,
+          phases: [...existingPhases, nextPhase],
+        },
+      }
+    })
+  }, [])
+
+  // Apply a stage preset from the empty-state chip. Replaces the (empty)
+  // workflowStructure entirely with the resolved preset and selects the
+  // start stage so the panel opens against it. Refuses to overwrite an
+  // existing structure — the chip only mounts when phases.length === 0,
+  // but the guard keeps a stale callback invocation from blowing away
+  // user-authored stages.
+  const applyStagePresetFromChip = useCallback(
+    (resolved: {
+      startPhaseId: string
+      phases: ReadonlyArray<CustomAgentWorkflowPhaseDto>
+    }) => {
+      setEditingDetail((current) => {
+        if (!current) return current
+        const existing = current.workflowStructure?.phases ?? []
+        if (existing.length > 0) return current
+        const phases = resolved.phases.map((phase) => ({ ...phase }))
+        if (phases.length === 0) return current
+        setPendingStageAutoSelectId(resolved.startPhaseId || phases[0].id)
+        return {
+          ...current,
+          workflowStructure: {
+            startPhaseId: resolved.startPhaseId || phases[0].id,
+            phases,
+          },
+        }
+      })
+    },
+    [],
+  )
 
   // Tool category drags add every tool in the chosen category. The layout's
   // tool-group-frame logic then groups them visually, matching view mode.
@@ -3186,6 +3448,10 @@ function AgentVisualizationInner({
           })
           return
         }
+        if (attempt.sourceHandle === AGENT_GRAPH_HEADER_HANDLES.workflow) {
+          addStageFromDrag()
+          return
+        }
         // header.output drag has no node to add — output already exists.
         return
       }
@@ -3195,7 +3461,7 @@ function AgentVisualizationInner({
         return
       }
     },
-    [addOutputSectionFromDrag, addPromptFromDrag, reactFlowForDrop],
+    [addOutputSectionFromDrag, addPromptFromDrag, addStageFromDrag, reactFlowForDrop],
   )
 
   // Gate which target handles light up during a drag. React Flow adds the
@@ -3275,6 +3541,7 @@ function AgentVisualizationInner({
     setEditingSaving(true)
     setEditingErrorMessage(null)
     setEditingServerDiagnostics([])
+    setApprovalErrorMessage(null)
     try {
       const initialDefinitionId =
         mode === 'edit' && editingInitial?.detail.ref.kind === 'custom'
@@ -3288,17 +3555,39 @@ function AgentVisualizationInner({
           attachedSkills: editingDetail?.attachedSkills ?? [],
         },
       )
-      const response = await onSubmit({
+      const submitMode = mode ?? 'create'
+      const dryRunResponse = await onSubmit({
         snapshot,
-        mode: mode ?? 'create',
+        mode: submitMode,
         definitionId,
+        dryRun: true,
       })
-      if (!response.applied) {
-        setEditingServerDiagnostics(response.validation.diagnostics)
-        setEditingErrorMessage(response.message || 'Agent definition failed validation.')
+      if (!dryRunResponse.approvalRequired) {
+        if (!dryRunResponse.applied) {
+          setEditingServerDiagnostics(dryRunResponse.validation.diagnostics)
+          setEditingErrorMessage(
+            dryRunResponse.message || 'Agent definition failed validation.',
+          )
+          return
+        }
+        // Should not happen with dryRun=true, but if a host pre-applies the
+        // write, propagate it to the parent so we don't lose the result.
+        onSaved?.(dryRunResponse)
         return
       }
-      onSaved?.(response)
+      if (!dryRunResponse.approvalReview) {
+        setEditingErrorMessage(
+          dryRunResponse.message ||
+            'Xero asked for operator approval but did not return a review payload.',
+        )
+        return
+      }
+      setPendingApproval({
+        review: dryRunResponse.approvalReview,
+        snapshot,
+        definitionId,
+        submitMode,
+      })
     } catch (error) {
       setEditingErrorMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -3316,6 +3605,41 @@ function AgentVisualizationInner({
     onSaved,
     onSubmit,
   ])
+
+  const handleApprovalConfirm = useCallback(async () => {
+    if (!onSubmit || !pendingApproval || editingSaving) return
+    setEditingSaving(true)
+    setApprovalErrorMessage(null)
+    try {
+      const response = await onSubmit({
+        snapshot: pendingApproval.snapshot,
+        mode: pendingApproval.submitMode,
+        definitionId: pendingApproval.definitionId ?? undefined,
+        dryRun: false,
+      })
+      if (!response.applied) {
+        setEditingServerDiagnostics(response.validation.diagnostics)
+        setApprovalErrorMessage(
+          response.message || 'Agent definition failed validation on save.',
+        )
+        return
+      }
+      setPendingApproval(null)
+      onSaved?.(response)
+    } catch (error) {
+      setApprovalErrorMessage(
+        error instanceof Error ? error.message : String(error),
+      )
+    } finally {
+      setEditingSaving(false)
+    }
+  }, [editingSaving, onSaved, onSubmit, pendingApproval])
+
+  const handleApprovalCancel = useCallback(() => {
+    if (editingSaving) return
+    setPendingApproval(null)
+    setApprovalErrorMessage(null)
+  }, [editingSaving])
 
   const editingInferredAdvanced = useMemo(() => {
     if (!editing || !editingDetail) return emptyInferredAdvanced()
@@ -3404,6 +3728,46 @@ function AgentVisualizationInner({
     }
   }, [buildPreviewSnapshot, onPreviewEffectiveRuntime])
 
+  // Debounced auto-refresh of the effective-runtime preview while editing.
+  // This is what powers the granular policy editor's inline diagnostics
+  // and effective-tool surface — instead of re-implementing tool-policy
+  // resolution in TypeScript, we ship the canvas's current snapshot to the
+  // existing preview command and consume its diagnostics. Runs only in
+  // editing mode and only when the host provided a preview adapter.
+  useEffect(() => {
+    if (!editing) return
+    if (!previewEnabled) return
+    if (!editingDetail) return
+    const handle = window.setTimeout(() => {
+      void refreshEffectiveRuntimePreview()
+    }, 400)
+    return () => window.clearTimeout(handle)
+  }, [editing, previewEnabled, editingDetail, refreshEffectiveRuntimePreview])
+
+  // Tool-policy-related diagnostics, sourced first from the latest preview
+  // (the authoritative resolver) and falling back to whatever the server
+  // returned at last save. Surfaced to the properties panel via the
+  // CanvasModeContext so the granular policy editor can render them
+  // inline next to the offending control.
+  const policyDiagnostics = useMemo<AgentDefinitionValidationDiagnosticDto[]>(() => {
+    const fromPreview = effectiveRuntimePreviewState.preview?.validation?.diagnostics ?? []
+    const fromServer = editingServerDiagnostics
+    const merged: AgentDefinitionValidationDiagnosticDto[] = []
+    const seen = new Set<string>()
+    const consider = (entry: AgentDefinitionValidationDiagnosticDto) => {
+      if (!isToolPolicyDiagnosticCode(entry.code)) return
+      const key = `${entry.code}::${entry.path}::${entry.deniedTool ?? ''}::${
+        entry.deniedEffectClass ?? ''
+      }`
+      if (seen.has(key)) return
+      seen.add(key)
+      merged.push(entry)
+    }
+    fromPreview.forEach(consider)
+    fromServer.forEach(consider)
+    return merged
+  }, [effectiveRuntimePreviewState.preview, editingServerDiagnostics])
+
   const handleToggleEffectiveRuntimePanel = useCallback(() => {
     setEffectiveRuntimePanelOpen((prev) => {
       const next = !prev
@@ -3428,6 +3792,16 @@ function AgentVisualizationInner({
     return detail?.header.displayName ?? 'Agent'
   }, [detail, editing, editingDetail])
 
+  const editingStageList = useMemo<ReadonlyArray<{ id: string; title: string }>>(() => {
+    const phases = editingDetail?.workflowStructure?.phases ?? []
+    return phases.map((phase) => ({ id: phase.id, title: phase.title }))
+  }, [editingDetail?.workflowStructure?.phases])
+
+  const editingAgentToolNames = useMemo<ReadonlyArray<string>>(() => {
+    const tools = editingDetail?.tools ?? []
+    return tools.map((tool) => tool.name)
+  }, [editingDetail?.tools])
+
   const canvasModeContextValue = useMemo<CanvasModeContextValue>(
     () =>
       editing
@@ -3438,7 +3812,12 @@ function AgentVisualizationInner({
             removeNode: removeEditingNode,
             removeToolGroup: removeEditingToolGroup,
             authoringCatalog: authoringCatalog ?? null,
+            toolPackCatalog: toolPackCatalog ?? null,
             inferredAdvanced: editingInferredAdvanced,
+            policyDiagnostics,
+            policyDiagnosticsLoading: effectiveRuntimePreviewState.loading,
+            stageList: editingStageList,
+            agentToolNames: editingAgentToolNames,
           }
         : {
             editing: false,
@@ -3447,16 +3826,26 @@ function AgentVisualizationInner({
             removeNode: () => {},
             removeToolGroup: () => {},
             authoringCatalog: null,
+            toolPackCatalog: null,
             inferredAdvanced: emptyInferredAdvanced(),
+            policyDiagnostics: [],
+            policyDiagnosticsLoading: false,
+            stageList: [],
+            agentToolNames: [],
           },
     [
       authoringCatalog,
+      toolPackCatalog,
       editing,
       editingInferredAdvanced,
       mode,
+      policyDiagnostics,
+      effectiveRuntimePreviewState.loading,
       removeEditingNode,
       removeEditingToolGroup,
       updateEditingNodeData,
+      editingStageList,
+      editingAgentToolNames,
     ],
   )
 
@@ -4085,6 +4474,7 @@ function AgentVisualizationInner({
               screenX={dropPicker.screenX}
               screenY={dropPicker.screenY}
               catalog={authoringCatalog}
+              currentProfile={editingDetail?.header.baseCapabilityProfile ?? null}
               onSelectSkill={addSkillFromDrag}
               onSearchSkills={onSearchAttachableSkills}
               onResolveSkill={onResolveAttachableSkill}
@@ -4092,6 +4482,13 @@ function AgentVisualizationInner({
               onSelectDbTable={addDbTableFromDrag}
               onSelectConsumedArtifact={addConsumedArtifactFromDrag}
               onClose={closeDropPicker}
+            />
+          ) : null}
+          {editing && editingStageList.length === 0 && editingDetail ? (
+            <AddStageChip
+              agentTools={editingDetail.tools}
+              onAddBlankStage={addStageFromDrag}
+              onApplyPreset={applyStagePresetFromChip}
             />
           ) : null}
           {editing ? (
@@ -4117,12 +4514,14 @@ function AgentVisualizationInner({
                 aria-pressed={effectiveRuntimePanelOpen}
                 onClick={handleToggleEffectiveRuntimePanel}
                 title="Effective runtime"
-                className={`agent-visualization__effective-runtime-toggle pointer-events-auto absolute right-2.5 bottom-2.5 z-20 inline-flex h-7 items-center gap-1.5 rounded-md border border-border/50 bg-card/90 px-2 text-[11px] font-medium text-foreground/80 shadow-[0_4px_14px_-6px_rgba(0,0,0,0.45)] backdrop-blur-md transition-colors hover:text-foreground ${
-                  effectiveRuntimePanelOpen ? 'border-primary/40 text-primary' : ''
+                onPointerDown={(event) => event.stopPropagation()}
+                className={`agent-visualization__effective-runtime-toggle pointer-events-auto absolute right-[5.25rem] top-2.5 z-20 inline-flex size-[30px] items-center justify-center rounded-md bg-transparent transition-colors ${
+                  effectiveRuntimePanelOpen
+                    ? 'text-primary hover:text-primary'
+                    : 'text-foreground/70 hover:text-foreground'
                 }`}
               >
-                <span aria-hidden="true">⌘</span>
-                <span>Effective runtime</span>
+                <ShieldCheck className="size-3.5" aria-hidden="true" />
               </button>
               <EffectiveRuntimePanel
                 open={effectiveRuntimePanelOpen}
@@ -4135,6 +4534,16 @@ function AgentVisualizationInner({
               />
             </>
           ) : null}
+          <AgentApprovalReviewDialog
+            open={pendingApproval !== null}
+            review={pendingApproval?.review ?? null}
+            busy={editingSaving}
+            errorMessage={approvalErrorMessage}
+            onApprove={() => {
+              void handleApprovalConfirm()
+            }}
+            onCancel={handleApprovalCancel}
+          />
         </div>
       </AgentCanvasExpansionContext.Provider>
     </CanvasModeProvider>
@@ -4210,6 +4619,11 @@ function defaultLanePosition(
       return { x: 380, y: 480 + index * 80 }
     case 'consumed-artifact':
       return { x: -780, y: index * 130 }
+    case 'stage':
+      // Stages stack below the output band so a state machine reads
+      // left-to-right under the rest of the agent. Index spacing matches
+      // the stage node's measured height plus a comfortable gutter.
+      return { x: -200 + index * 320, y: 780 }
   }
 }
 
@@ -4369,6 +4783,22 @@ function makeEditingNode(
             sections: [],
             required: false,
           },
+        },
+      }
+    case 'stage':
+      return {
+        ...base,
+        type: 'stage',
+        data: {
+          phase: {
+            id: `phase_${counter}`,
+            title: `Phase ${counter}`,
+            description: '',
+            allowedTools: [],
+            requiredChecks: [],
+            branches: [],
+          },
+          isStart: counter === 1,
         },
       }
   }

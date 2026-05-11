@@ -35,6 +35,38 @@ pub struct RepairProjectStateRequestDto {
     pub project_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListProjectStateBackupsRequestDto {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStateBackupListingEntryDto {
+    pub backup_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_count: Option<u64>,
+    pub manifest_present: bool,
+    pub pre_restore: bool,
+    pub backup_location: String,
+    pub manifest_location: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListProjectStateBackupsResponseDto {
+    pub schema: String,
+    pub project_id: String,
+    pub storage_scope: String,
+    pub backups: Vec<ProjectStateBackupListingEntryDto>,
+    pub ui_deferred: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReadProjectUiStateRequestDto {
@@ -279,6 +311,38 @@ pub fn restore_project_state_backup<R: Runtime>(
             .unwrap_or("pre-restore-backup")
             .to_string(),
         storage_scope: "os_app_data".into(),
+        ui_deferred: true,
+    })
+}
+
+#[tauri::command]
+pub fn list_project_state_backups<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ListProjectStateBackupsRequestDto,
+) -> CommandResult<ListProjectStateBackupsResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let listing = project_store::list_project_state_backups(&repo_root)?;
+    let backups = listing
+        .backups
+        .into_iter()
+        .map(|entry| ProjectStateBackupListingEntryDto {
+            backup_location: format!("app-data/backups/{}", entry.backup_id),
+            manifest_location: format!("app-data/backups/{}/manifest.json", entry.backup_id),
+            backup_id: entry.backup_id,
+            created_at: entry.created_at,
+            file_count: entry.file_count,
+            byte_count: entry.byte_count,
+            manifest_present: entry.manifest_present,
+            pre_restore: entry.pre_restore,
+        })
+        .collect();
+    Ok(ListProjectStateBackupsResponseDto {
+        schema: "xero.project_state_backup_list_command.v1".into(),
+        project_id: request.project_id,
+        storage_scope: "os_app_data".into(),
+        backups,
         ui_deferred: true,
     })
 }

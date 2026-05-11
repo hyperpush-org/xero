@@ -8,6 +8,7 @@ import {
   type ConsumedArtifactFlowNode,
   type DbTableFlowNode,
   type PromptFlowNode,
+  type StageFlowNode,
   type ToolFlowNode,
 } from './build-agent-graph'
 
@@ -38,13 +39,24 @@ const ALLOWED_PAIRS: ReadonlyArray<readonly [AgentGraphNodeKind, AgentGraphNodeK
   ['consumed-artifact', 'db-table'],
   // Consumed artifacts feed into the agent header
   ['consumed-artifact', 'agent-header'],
+  // The agent header enters the workflow at the start phase.
+  ['agent-header', 'stage'],
+  // Stage branches go stage → stage. Both directions need to be listed so a
+  // branch back to an earlier stage (retry / loop) is allowed.
+  ['stage', 'stage'],
+  // Each stage admits a specific tool set; surface that as edges on the canvas.
+  ['stage', 'tool'],
 ]
 
 // Layout-chrome node kinds. buildAgentGraph emits these (lane labels and
 // per-tool-group frames with header-→-frame edges) purely for visual
 // scaffolding; they don't represent user-mutable relationships and shouldn't
 // be subjected to the structural pair check above.
-const LAYOUT_CHROME_KINDS = new Set<string>(['lane-label', 'tool-group-frame'])
+const LAYOUT_CHROME_KINDS = new Set<string>([
+  'lane-label',
+  'tool-group-frame',
+  'stage-group-frame',
+])
 
 const ALLOWED_LOOKUP = new Set(
   ALLOWED_PAIRS.map(([source, target]) => `${source}->${target}`),
@@ -130,6 +142,7 @@ const KIND_LABELS: Record<AgentGraphNodeKind, string> = {
   'agent-output': 'output',
   'output-section': 'output section',
   'consumed-artifact': 'consumed artifact',
+  stage: 'stage',
 }
 
 function humanKind(kind: AgentGraphNodeKind): string {
@@ -281,6 +294,43 @@ export function validateStructure({ nodes }: ValidateStructureInput): Structural
       })
     }
   })
+
+  // Stages (optional — graphs without stages skip these checks). We only
+  // validate canvas-authored shape here; the snapshot builder defers the
+  // heavier per-stage content checks to the backend validator so a single
+  // diagnostic codebase remains authoritative.
+  const stages = nodes.filter(
+    (node): node is StageFlowNode => node.type === 'stage',
+  )
+  if (stages.length > 0) {
+    const seenIds = new Set<string>()
+    stages.forEach((node, index) => {
+      const id = node.data.phase.id?.trim()
+      const title = node.data.phase.title?.trim()
+      if (!id) {
+        diagnostics.push({
+          code: 'stage_id_required',
+          message: `Stage #${index + 1} needs an id.`,
+          path: `workflowStructure.phases[${index}].id`,
+        })
+      } else if (seenIds.has(id)) {
+        diagnostics.push({
+          code: 'stage_id_duplicate',
+          message: `Stage id "${id}" is used by more than one stage.`,
+          path: `workflowStructure.phases[${index}].id`,
+        })
+      } else {
+        seenIds.add(id)
+      }
+      if (!title) {
+        diagnostics.push({
+          code: 'stage_title_required',
+          message: `Stage "${id || `#${index + 1}`}" needs a title.`,
+          path: `workflowStructure.phases[${index}].title`,
+        })
+      }
+    })
+  }
 
   return diagnostics
 }

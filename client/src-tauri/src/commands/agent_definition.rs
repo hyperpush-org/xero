@@ -109,7 +109,11 @@ pub fn save_agent_definition<R: Runtime>(
         include_archived: false,
         definition: Some(request.definition),
     };
-    let result = runtime.agent_definition_with_operator_approval(runtime_request)?;
+    let result = if request.dry_run {
+        runtime.agent_definition(runtime_request)?
+    } else {
+        runtime.agent_definition_with_operator_approval(runtime_request)?
+    };
     let output = unwrap_agent_definition_output(result.output)?;
     write_response_from_output(&repo_root, output)
 }
@@ -131,7 +135,11 @@ pub fn update_agent_definition<R: Runtime>(
         include_archived: false,
         definition: Some(request.definition),
     };
-    let result = runtime.agent_definition_with_operator_approval(runtime_request)?;
+    let result = if request.dry_run {
+        runtime.agent_definition(runtime_request)?
+    } else {
+        runtime.agent_definition_with_operator_approval(runtime_request)?
+    };
     let output = unwrap_agent_definition_output(result.output)?;
     write_response_from_output(&repo_root, output)
 }
@@ -216,6 +224,8 @@ fn write_response_from_output(
         message: output.message,
         summary,
         validation,
+        approval_required: output.approval_required,
+        approval_review: output.approval_review,
     })
 }
 

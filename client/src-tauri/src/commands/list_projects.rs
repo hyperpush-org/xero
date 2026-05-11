@@ -3,7 +3,7 @@ use std::{collections::HashSet, path::Path};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    commands::{CommandResult, ListProjectsResponseDto},
+    commands::{CommandResult, ListProjectsResponseDto, HARNESS_FIXTURE_PROJECT_ID},
     db, registry,
     state::DesktopState,
 };
@@ -21,6 +21,11 @@ pub(crate) fn load_projects_from_registry(
     let mut pruned_stale_roots = false;
 
     for record in registry_projects {
+        if record.project.id == HARNESS_FIXTURE_PROJECT_ID {
+            live_root_records.push(record.registry.clone());
+            continue;
+        }
+
         if !Path::new(&record.registry.root_path).is_dir() {
             pruned_stale_roots = true;
             continue;

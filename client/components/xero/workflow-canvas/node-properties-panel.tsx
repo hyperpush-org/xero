@@ -1,13 +1,20 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Bot,
+  ChevronDown,
+  ChevronRight,
   Database,
   FileText,
+  Flag,
+  GitBranch,
   GitMerge,
+  Info,
   Layers,
+  ListChecks,
   Lock,
+  Plus,
   RefreshCcw,
   Sparkles,
   Target,
@@ -42,6 +49,11 @@ import {
   agentDefinitionScopeSchema,
   getAgentDefinitionBaseCapabilityLabel,
   type AgentDefinitionBaseCapabilityProfileDto,
+  type AgentDefinitionValidationDiagnosticDto,
+  type CustomAgentWorkflowBranchConditionDto,
+  type CustomAgentWorkflowBranchDto,
+  type CustomAgentWorkflowGateDto,
+  type CustomAgentWorkflowPhaseDto,
 } from '@/src/lib/xero-model/agent-definition'
 import {
   getRuntimeRunApprovalModeLabel,
@@ -53,6 +65,8 @@ import type {
   AgentDbTouchpointKindDto,
   AgentOutputSectionEmphasisDto,
   AgentPromptRoleDto,
+  AgentToolEffectClassDto,
+  AgentToolPackManifestDto,
   RuntimeAgentOutputContractDto,
 } from '@/src/lib/xero-model/workflow-agents'
 
@@ -67,6 +81,7 @@ import type {
   OutputSectionNodeData,
   PromptNodeData,
   SkillNodeData,
+  StageNodeData,
   ToolNodeData,
 } from './build-agent-graph'
 import { humanizeIdentifier, humanizeToolGroupKey } from './build-agent-graph'
@@ -106,6 +121,41 @@ const OUTPUT_CONTRACTS: RuntimeAgentOutputContractDto[] = [
 ]
 const EMPHASIS_OPTIONS: AgentOutputSectionEmphasisDto[] = ['core', 'standard', 'optional']
 const TOUCHPOINT_OPTIONS: AgentDbTouchpointKindDto[] = ['read', 'write', 'encouraged']
+
+// Effect classes the granular policy editor exposes for opt-in. Order
+// matches the AgentToolEffectClassDto enum so the column reads stably as
+// the user scans down. Each effect class lines up with a validator code
+// (`agent_definition_effect_class_*`).
+const EFFECT_CLASS_OPTIONS: { value: AgentToolEffectClassDto; label: string }[] = [
+  { value: 'observe', label: 'Observe' },
+  { value: 'runtime_state', label: 'Runtime state' },
+  { value: 'write', label: 'Write' },
+  { value: 'destructive_write', label: 'Destructive write' },
+  { value: 'command', label: 'Command' },
+  { value: 'process_control', label: 'Process control' },
+  { value: 'browser_control', label: 'Browser control' },
+  { value: 'device_control', label: 'Device control' },
+  { value: 'external_service', label: 'External service' },
+  { value: 'skill_runtime', label: 'Skill runtime' },
+  { value: 'agent_delegation', label: 'Agent delegation' },
+]
+
+// Subagent roles a definition may dispatch when `subagentAllowed` is on.
+// Sourced from `customAgentSubagentRoleSchema` — kept inline so the
+// component can iterate without depending on the schema enum at runtime.
+const SUBAGENT_ROLE_OPTIONS = [
+  'engineer',
+  'debugger',
+  'planner',
+  'researcher',
+  'reviewer',
+  'agent_builder',
+  'browser',
+  'emulator',
+  'solana',
+  'database',
+] as const
+type SubagentRoleOption = (typeof SUBAGENT_ROLE_OPTIONS)[number]
 
 type CapabilityFlagKey = keyof AgentInferredAdvanced['flags']
 
@@ -188,6 +238,8 @@ function renderEditor(node: AgentGraphNode): React.ReactNode {
       return (
         <ConsumedArtifactEditor nodeId={node.id} data={node.data as ConsumedArtifactNodeData} />
       )
+    case 'stage':
+      return <StageEditor nodeId={node.id} data={node.data as StageNodeData} />
     default:
       return null
   }
@@ -272,6 +324,15 @@ export function panelMetaForNode(node: AgentGraphNode): PanelMeta {
         subtitle: 'Consumed artifact',
         Icon: GitMerge,
         iconWrap: 'bg-teal-500/15 text-teal-500 ring-1 ring-teal-500/30',
+      }
+    }
+    case 'stage': {
+      const data = node.data as StageNodeData
+      return {
+        title: data.phase.title || humanizeIdentifier(data.phase.id),
+        subtitle: 'Stage',
+        Icon: GitBranch,
+        iconWrap: 'bg-amber-500/15 text-amber-500 ring-1 ring-amber-500/30',
       }
     }
     default:
@@ -465,7 +526,14 @@ function InferenceBadge() {
 }
 
 function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeaderNodeData }) {
-  const { updateNodeData, inferredAdvanced } = useCanvasMode()
+  const {
+    updateNodeData,
+    inferredAdvanced,
+    authoringCatalog,
+    toolPackCatalog,
+    policyDiagnostics,
+    policyDiagnosticsLoading,
+  } = useCanvasMode()
   const { header, advanced } = data
 
   const updateHeader = (next: Partial<AgentHeaderNodeData['header']>) =>
@@ -793,7 +861,529 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
           })}
         </div>
       </div>
+
+      <Separator className="opacity-60" />
+
+      <GranularPolicyEditor
+        advanced={advanced}
+        updateAdvanced={updateAdvanced}
+        authoringCatalog={authoringCatalog}
+        toolPackCatalog={toolPackCatalog}
+        inferredEffectClasses={inferredAdvanced.effectClasses}
+        subagentInferred={inferredAdvanced.flags.subagentAllowed}
+        diagnostics={policyDiagnostics}
+        diagnosticsLoading={policyDiagnosticsLoading}
+      />
     </div>
+  )
+}
+
+interface GranularPolicyEditorProps {
+  advanced: AgentHeaderAdvancedFields
+  updateAdvanced: (next: Partial<AgentHeaderAdvancedFields>) => void
+  authoringCatalog: ReturnType<typeof useCanvasMode>['authoringCatalog']
+  toolPackCatalog: ReturnType<typeof useCanvasMode>['toolPackCatalog']
+  inferredEffectClasses: readonly string[]
+  subagentInferred: boolean
+  diagnostics: readonly AgentDefinitionValidationDiagnosticDto[]
+  diagnosticsLoading: boolean
+}
+
+function GranularPolicyEditor({
+  advanced,
+  updateAdvanced,
+  authoringCatalog,
+  toolPackCatalog,
+  inferredEffectClasses,
+  subagentInferred,
+  diagnostics,
+  diagnosticsLoading,
+}: GranularPolicyEditorProps) {
+  const inferredEffectClassSet = useMemo(
+    () => new Set(inferredEffectClasses),
+    [inferredEffectClasses],
+  )
+
+  const toolOptions = useMemo<CatalogPickerOption<string>[]>(() => {
+    if (!authoringCatalog) return []
+    return authoringCatalog.tools.map((entry) => ({
+      value: entry.name,
+      label: humanizeIdentifier(entry.name),
+      description: entry.description,
+      meta: entry.effectClass,
+      group: entry.group,
+      keywords: [entry.name, entry.group, entry.riskClass, ...entry.tags],
+    }))
+  }, [authoringCatalog])
+
+  const packManifestsById = useMemo(() => {
+    const map = new Map<string, AgentToolPackManifestDto>()
+    for (const manifest of toolPackCatalog?.toolPacks ?? []) {
+      map.set(manifest.packId, manifest)
+    }
+    return map
+  }, [toolPackCatalog])
+
+  const packOptions = useMemo<CatalogPickerOption<string>[]>(() => {
+    if (!toolPackCatalog) return []
+    return toolPackCatalog.toolPacks.map((manifest) => ({
+      value: manifest.packId,
+      label: manifest.label,
+      description: manifest.summary,
+      meta: `${manifest.tools.length} tool${manifest.tools.length === 1 ? '' : 's'}`,
+      group: manifest.policyProfile,
+      keywords: [
+        manifest.packId,
+        manifest.policyProfile,
+        ...manifest.capabilities,
+        ...manifest.tools,
+      ],
+    }))
+  }, [toolPackCatalog])
+
+  const diagnosticsByPathPrefix = useMemo(() => {
+    const grouped: Record<string, AgentDefinitionValidationDiagnosticDto[]> = {
+      'toolPolicy.allowedEffectClasses': [],
+      'toolPolicy.deniedTools': [],
+      'toolPolicy.allowedTools': [],
+      'toolPolicy.allowedToolPacks': [],
+      'toolPolicy.deniedToolPacks': [],
+      'toolPolicy.allowedSubagentRoles': [],
+      'toolPolicy.deniedSubagentRoles': [],
+    }
+    for (const diagnostic of diagnostics) {
+      const path = diagnostic.path
+      for (const prefix of Object.keys(grouped)) {
+        if (path === prefix || path.startsWith(`${prefix}.`)) {
+          grouped[prefix].push(diagnostic)
+        }
+      }
+    }
+    return grouped
+  }, [diagnostics])
+
+  const addEntry = (
+    field:
+      | 'allowedEffectClasses'
+      | 'deniedTools'
+      | 'allowedToolPacks'
+      | 'deniedToolPacks'
+      | 'allowedSubagentRoles'
+      | 'deniedSubagentRoles',
+    value: string,
+  ) => {
+    const current = advanced[field]
+    if (current.includes(value)) return
+    updateAdvanced({ [field]: [...current, value] } as Partial<AgentHeaderAdvancedFields>)
+  }
+
+  const removeEntry = (
+    field:
+      | 'allowedEffectClasses'
+      | 'deniedTools'
+      | 'allowedToolPacks'
+      | 'deniedToolPacks'
+      | 'allowedSubagentRoles'
+      | 'deniedSubagentRoles',
+    value: string,
+  ) => {
+    updateAdvanced({
+      [field]: advanced[field].filter((entry) => entry !== value),
+    } as Partial<AgentHeaderAdvancedFields>)
+  }
+
+  const allowedEffectClassSelectable = EFFECT_CLASS_OPTIONS.filter(
+    (option) =>
+      !inferredEffectClassSet.has(option.value) &&
+      !advanced.allowedEffectClasses.includes(option.value),
+  )
+
+  // Expanded set of tools granted by every currently-allowed tool pack —
+  // surfaced as a read-only chip list so the user can see what a pack
+  // grants without leaving the panel. This is purely informative; runtime
+  // resolution still happens server-side via previewAgentDefinition.
+  const packGrantedTools = useMemo(() => {
+    const tools = new Set<string>()
+    for (const packId of advanced.allowedToolPacks) {
+      const manifest = packManifestsById.get(packId)
+      if (!manifest) continue
+      for (const tool of manifest.tools) tools.add(tool)
+    }
+    return Array.from(tools).sort((a, b) => a.localeCompare(b))
+  }, [advanced.allowedToolPacks, packManifestsById])
+
+  // Tool packs that the user listed in both the allow- and deny-set. This
+  // is a structural conflict we can detect entirely on the client; the
+  // validator would also flag it, but rendering the warning immediately
+  // makes the picker self-explaining.
+  const conflictingPackIds = useMemo(
+    () => advanced.allowedToolPacks.filter((id) => advanced.deniedToolPacks.includes(id)),
+    [advanced.allowedToolPacks, advanced.deniedToolPacks],
+  )
+  const conflictingRoles = useMemo(
+    () => advanced.allowedSubagentRoles.filter((role) => advanced.deniedSubagentRoles.includes(role)),
+    [advanced.allowedSubagentRoles, advanced.deniedSubagentRoles],
+  )
+
+  const subagentEffective = subagentInferred || advanced.subagentAllowed
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between">
+          <SectionHeading
+            label="Tool policy"
+            hint={diagnosticsLoading ? 'Previewing…' : undefined}
+          />
+        </div>
+        <p className="-mt-1 text-[9.5px] leading-snug text-muted-foreground/75">
+          Narrow the runtime's effective tool access. Canvas tools and inferred
+          effect classes always stay allowed; everything below is on top.
+        </p>
+      </div>
+
+      <PolicyChipList
+        label="Effect classes"
+        hint="Allow extra"
+        entries={advanced.allowedEffectClasses}
+        inferred={inferredEffectClasses}
+        formatLabel={(value) =>
+          EFFECT_CLASS_OPTIONS.find((option) => option.value === value)?.label ??
+          humanizeIdentifier(value)
+        }
+        onRemove={(value) => removeEntry('allowedEffectClasses', value)}
+        emptyMessage="No extra effect classes — only those inferred from canvas tools."
+        diagnostics={diagnosticsByPathPrefix['toolPolicy.allowedEffectClasses']}
+      >
+        {allowedEffectClassSelectable.length > 0 ? (
+          <CatalogPicker
+            value={null}
+            placeholder="Add effect class…"
+            searchPlaceholder="Search effect classes"
+            emptyMessage="All effect classes already covered."
+            options={allowedEffectClassSelectable.map((option) => ({
+              value: option.value,
+              label: option.label,
+              keywords: [option.value],
+            }))}
+            onChange={(value) => addEntry('allowedEffectClasses', value)}
+          />
+        ) : null}
+      </PolicyChipList>
+
+      <PolicyChipList
+        label="Tool packs (allow)"
+        entries={advanced.allowedToolPacks}
+        formatLabel={(value) => packManifestsById.get(value)?.label ?? value}
+        onRemove={(value) => removeEntry('allowedToolPacks', value)}
+        emptyMessage={
+          toolPackCatalog
+            ? 'No tool packs requested.'
+            : 'Tool-pack catalog unavailable — pack picker hidden.'
+        }
+        diagnostics={diagnosticsByPathPrefix['toolPolicy.allowedToolPacks']}
+      >
+        {toolPackCatalog ? (
+          <CatalogPicker
+            value={null}
+            placeholder="Add tool pack…"
+            searchPlaceholder="Search tool packs"
+            emptyMessage="No tool packs available."
+            options={packOptions.filter(
+              (option) => !advanced.allowedToolPacks.includes(option.value),
+            )}
+            onChange={(value) => addEntry('allowedToolPacks', value)}
+          />
+        ) : null}
+        {packGrantedTools.length > 0 ? (
+          <div className="rounded-md border border-border/50 bg-background/40 p-2">
+            <p className="mb-1 text-[9px] uppercase tracking-wider text-muted-foreground/70">
+              Pack grants {packGrantedTools.length} tool
+              {packGrantedTools.length === 1 ? '' : 's'}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {packGrantedTools.map((tool) => (
+                <Badge
+                  key={tool}
+                  variant="outline"
+                  className="font-mono text-[9px] font-normal"
+                  title={tool}
+                >
+                  {humanizeIdentifier(tool)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {conflictingPackIds.length > 0 ? (
+          <PolicyDiagnosticRow
+            severity="warn"
+            message={`Pack${conflictingPackIds.length === 1 ? '' : 's'} listed as both allowed and denied: ${conflictingPackIds
+              .map((id) => packManifestsById.get(id)?.label ?? id)
+              .join(', ')}.`}
+            hint="Remove from one side — runtime treats denial as authoritative."
+          />
+        ) : null}
+      </PolicyChipList>
+
+      <PolicyChipList
+        label="Tool packs (deny)"
+        entries={advanced.deniedToolPacks}
+        formatLabel={(value) => packManifestsById.get(value)?.label ?? value}
+        onRemove={(value) => removeEntry('deniedToolPacks', value)}
+        emptyMessage="No tool-pack denials."
+        diagnostics={diagnosticsByPathPrefix['toolPolicy.deniedToolPacks']}
+      >
+        {toolPackCatalog ? (
+          <CatalogPicker
+            value={null}
+            placeholder="Deny tool pack…"
+            searchPlaceholder="Search tool packs"
+            emptyMessage="No tool packs available."
+            options={packOptions.filter(
+              (option) => !advanced.deniedToolPacks.includes(option.value),
+            )}
+            onChange={(value) => addEntry('deniedToolPacks', value)}
+          />
+        ) : null}
+      </PolicyChipList>
+
+      <PolicyChipList
+        label="Tools (deny)"
+        entries={advanced.deniedTools}
+        formatLabel={(value) => humanizeIdentifier(value)}
+        onRemove={(value) => removeEntry('deniedTools', value)}
+        emptyMessage="No per-tool denials."
+        diagnostics={[
+          ...diagnosticsByPathPrefix['toolPolicy.deniedTools'],
+          ...diagnosticsByPathPrefix['toolPolicy.allowedTools'],
+        ]}
+      >
+        {toolOptions.length > 0 ? (
+          <CatalogPicker
+            value={null}
+            placeholder="Deny tool…"
+            searchPlaceholder="Search tools"
+            emptyMessage="No matching tools."
+            options={toolOptions.filter(
+              (option) => !advanced.deniedTools.includes(option.value),
+            )}
+            onChange={(value) => addEntry('deniedTools', value)}
+          />
+        ) : null}
+      </PolicyChipList>
+
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between">
+          <SectionHeading
+            label="Subagent roles"
+            hint={subagentEffective ? undefined : 'Enable subagent delegation first'}
+          />
+        </div>
+        <p className="-mt-1 text-[9.5px] leading-snug text-muted-foreground/75">
+          When subagent delegation is on, the runtime can only spawn the
+          listed roles. Denied roles override allowed ones.
+        </p>
+        <PolicyChipList
+          label="Allowed"
+          entries={advanced.allowedSubagentRoles}
+          formatLabel={(value) => humanizeIdentifier(value)}
+          onRemove={(value) => removeEntry('allowedSubagentRoles', value)}
+          emptyMessage={
+            subagentEffective
+              ? 'Add at least one allowed role — required when subagent delegation is on.'
+              : 'No subagent roles requested.'
+          }
+          diagnostics={diagnosticsByPathPrefix['toolPolicy.allowedSubagentRoles']}
+        >
+          <SubagentRolePicker
+            disabledRoles={[
+              ...advanced.allowedSubagentRoles,
+              ...advanced.deniedSubagentRoles,
+            ]}
+            placeholder="Allow role…"
+            onPick={(role) => addEntry('allowedSubagentRoles', role)}
+          />
+        </PolicyChipList>
+        <PolicyChipList
+          label="Denied"
+          entries={advanced.deniedSubagentRoles}
+          formatLabel={(value) => humanizeIdentifier(value)}
+          onRemove={(value) => removeEntry('deniedSubagentRoles', value)}
+          emptyMessage="No subagent role denials."
+          diagnostics={diagnosticsByPathPrefix['toolPolicy.deniedSubagentRoles']}
+        >
+          <SubagentRolePicker
+            disabledRoles={[
+              ...advanced.allowedSubagentRoles,
+              ...advanced.deniedSubagentRoles,
+            ]}
+            placeholder="Deny role…"
+            onPick={(role) => addEntry('deniedSubagentRoles', role)}
+          />
+        </PolicyChipList>
+        {conflictingRoles.length > 0 ? (
+          <PolicyDiagnosticRow
+            severity="warn"
+            message={`Role${conflictingRoles.length === 1 ? '' : 's'} listed as both allowed and denied: ${conflictingRoles
+              .map((role) => humanizeIdentifier(role))
+              .join(', ')}.`}
+            hint="Validator will reject save until cleared."
+          />
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+interface PolicyChipListProps {
+  label: string
+  hint?: string
+  entries: readonly string[]
+  inferred?: readonly string[]
+  formatLabel: (value: string) => string
+  onRemove: (value: string) => void
+  emptyMessage: string
+  diagnostics: readonly AgentDefinitionValidationDiagnosticDto[]
+  children?: React.ReactNode
+}
+
+function PolicyChipList({
+  label,
+  hint,
+  entries,
+  inferred,
+  formatLabel,
+  onRemove,
+  emptyMessage,
+  diagnostics,
+  children,
+}: PolicyChipListProps) {
+  const inferredEntries = inferred ?? []
+  const isEmpty = entries.length === 0 && inferredEntries.length === 0
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between">
+        <Label className="text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/85">
+          {label}
+        </Label>
+        {hint ? (
+          <span className="text-[8.5px] font-normal lowercase tracking-wide text-muted-foreground/60">
+            {hint}
+          </span>
+        ) : null}
+      </div>
+      {isEmpty ? (
+        <p className="text-[9.5px] leading-snug text-muted-foreground/70">{emptyMessage}</p>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {inferredEntries.map((value) => (
+            <Badge
+              key={`inferred-${value}`}
+              variant="secondary"
+              className="gap-1 font-mono text-[9.5px] font-normal"
+            >
+              <Sparkles className="h-2.5 w-2.5" aria-hidden />
+              {formatLabel(value)}
+            </Badge>
+          ))}
+          {entries.map((value) => (
+            <Badge
+              key={value}
+              variant="outline"
+              className="group gap-1 font-mono text-[9.5px] font-normal"
+            >
+              {formatLabel(value)}
+              <button
+                type="button"
+                aria-label={`Remove ${formatLabel(value)}`}
+                className="rounded-sm text-muted-foreground/70 transition-colors hover:bg-destructive/15 hover:text-destructive"
+                onClick={() => onRemove(value)}
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      {children}
+      {diagnostics.length > 0 ? (
+        <div className="flex flex-col gap-1">
+          {diagnostics.map((diagnostic, index) => (
+            <PolicyDiagnosticRow
+              key={`${diagnostic.code}-${index}`}
+              severity="error"
+              message={diagnostic.message}
+              hint={diagnostic.repairHint ?? diagnostic.reason ?? undefined}
+              code={diagnostic.code}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function PolicyDiagnosticRow({
+  severity,
+  message,
+  hint,
+  code,
+}: {
+  severity: 'error' | 'warn'
+  message: string
+  hint?: string
+  code?: string
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-md border px-2 py-1.5 text-[9.5px] leading-snug',
+        severity === 'error'
+          ? 'border-destructive/45 bg-destructive/10 text-destructive'
+          : 'border-amber-500/45 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+      )}
+    >
+      <p className="font-medium">{message}</p>
+      {hint ? (
+        <p className="mt-0.5 text-[9px] opacity-80">{hint}</p>
+      ) : null}
+      {code ? (
+        <p className="mt-0.5 font-mono text-[8.5px] opacity-60">{code}</p>
+      ) : null}
+    </div>
+  )
+}
+
+function SubagentRolePicker({
+  disabledRoles,
+  placeholder,
+  onPick,
+}: {
+  disabledRoles: readonly string[]
+  placeholder: string
+  onPick: (role: SubagentRoleOption) => void
+}) {
+  const disabledSet = useMemo(() => new Set(disabledRoles), [disabledRoles])
+  const options = useMemo<CatalogPickerOption<string>[]>(
+    () =>
+      SUBAGENT_ROLE_OPTIONS.filter((role) => !disabledSet.has(role)).map((role) => ({
+        value: role,
+        label: humanizeIdentifier(role),
+        keywords: [role],
+      })),
+    [disabledSet],
+  )
+  if (options.length === 0) return null
+  return (
+    <CatalogPicker
+      value={null}
+      placeholder={placeholder}
+      searchPlaceholder="Search roles"
+      emptyMessage="No remaining roles."
+      options={options}
+      onChange={(value) => onPick(value as SubagentRoleOption)}
+    />
   )
 }
 
@@ -1390,6 +1980,577 @@ function ConsumedArtifactEditor({
         />
       </FieldGroup>
       <RemoveRow onRemove={() => removeNode(nodeId)} label="Remove artifact" />
+    </div>
+  )
+}
+
+type StageEditorContext = {
+  phase: CustomAgentWorkflowPhaseDto
+  isStart: boolean
+}
+
+function StageEditor({ nodeId, data }: { nodeId: string; data: StageNodeData }) {
+  const {
+    updateNodeData,
+    removeNode,
+    authoringCatalog,
+    stageList,
+    agentToolNames,
+    policyDiagnostics,
+  } = useCanvasMode()
+  const { phase, isStart } = data
+  // Default the explainer open when this is the agent's first stage — the
+  // user just reached for an unfamiliar feature and the panel is the first
+  // place they'll look for "what does this do." Once they add a second
+  // stage they've clearly understood the concept, so the explainer
+  // collapses by default for every later stage.
+  const [explainerOpen, setExplainerOpen] = useState(() => stageList.length <= 1)
+
+  const updatePhase = (next: Partial<CustomAgentWorkflowPhaseDto>) =>
+    updateNodeData(nodeId, (current) => {
+      const cur = current as unknown as StageEditorContext
+      return {
+        ...cur,
+        phase: { ...cur.phase, ...next },
+      } as unknown as StageNodeData
+    })
+
+  const setIsStart = (next: boolean) =>
+    updateNodeData(nodeId, (current) => {
+      const cur = current as unknown as StageEditorContext
+      return { ...cur, isStart: next } as unknown as StageNodeData
+    })
+
+  // Allowed-tools picker. Prefer the agent's wired tools — those are what the
+  // runtime will actually have available. Fall back to the full authoring
+  // catalog when the canvas has no tool nodes yet, so users can still pick.
+  const allowedToolOptions = useMemo<CatalogPickerOption<string>[]>(() => {
+    const catalogByName = new Map<string, { description?: string; group?: string }>()
+    if (authoringCatalog) {
+      for (const tool of authoringCatalog.tools) {
+        catalogByName.set(tool.name, { description: tool.description, group: tool.group })
+      }
+    }
+    const allowedSet = new Set(phase.allowedTools ?? [])
+    const universe = agentToolNames.length > 0
+      ? agentToolNames
+      : (authoringCatalog?.tools ?? []).map((tool) => tool.name)
+    return universe
+      .filter((name) => !allowedSet.has(name))
+      .map((name) => {
+        const meta = catalogByName.get(name)
+        return {
+          value: name,
+          label: humanizeIdentifier(name),
+          description: meta?.description,
+          group: meta?.group ?? 'tools',
+          keywords: [name],
+        }
+      })
+  }, [authoringCatalog, agentToolNames, phase.allowedTools])
+
+  const addAllowedTool = (toolName: string) => {
+    const existing = phase.allowedTools ?? []
+    if (existing.includes(toolName)) return
+    updatePhase({ allowedTools: [...existing, toolName] })
+  }
+  const removeAllowedTool = (toolName: string) => {
+    const next = (phase.allowedTools ?? []).filter((name) => name !== toolName)
+    updatePhase({ allowedTools: next.length > 0 ? next : undefined })
+  }
+
+  // Required-gate (`requiredChecks`) edits.
+  const addGate = (kind: CustomAgentWorkflowGateDto['kind']) => {
+    const next: CustomAgentWorkflowGateDto =
+      kind === 'todo_completed'
+        ? { kind: 'todo_completed', todoId: '' }
+        : { kind: 'tool_succeeded', toolName: '' }
+    updatePhase({ requiredChecks: [...(phase.requiredChecks ?? []), next] })
+  }
+  const updateGate = (index: number, patch: Partial<CustomAgentWorkflowGateDto>) => {
+    const current = phase.requiredChecks ?? []
+    const next = current.map((check, i) => {
+      if (i !== index) return check
+      // Type-narrow per kind so the partial only applies to compatible fields.
+      if (check.kind === 'todo_completed') {
+        return { ...check, ...(patch as Partial<typeof check>) }
+      }
+      return { ...check, ...(patch as Partial<typeof check>) }
+    })
+    updatePhase({ requiredChecks: next })
+  }
+  const removeGate = (index: number) => {
+    const next = (phase.requiredChecks ?? []).filter((_, i) => i !== index)
+    updatePhase({ requiredChecks: next.length > 0 ? next : undefined })
+  }
+
+  // Retry-limit. Empty input clears the field so the runtime falls back to
+  // the global default; a numeric value is clamped to non-negative integers.
+  const handleRetryLimitChange = (raw: string) => {
+    const trimmed = raw.trim()
+    if (trimmed === '') {
+      updatePhase({ retryLimit: undefined })
+      return
+    }
+    const parsed = Number.parseInt(trimmed, 10)
+    if (Number.isNaN(parsed) || parsed < 0) return
+    updatePhase({ retryLimit: parsed })
+  }
+
+  // Exits — branches authored on the source stage. The exit target dropdown
+  // lists every OTHER stage so the user can't accidentally wire a self-loop.
+  const otherStages = useMemo(
+    () => stageList.filter((entry) => entry.id !== phase.id),
+    [stageList, phase.id],
+  )
+  const addExit = (targetPhaseId: string) => {
+    const existing = phase.branches ?? []
+    if (existing.some((branch) => branch.targetPhaseId === targetPhaseId)) return
+    const branch: CustomAgentWorkflowBranchDto = {
+      targetPhaseId,
+      condition: { kind: 'always' },
+    }
+    updatePhase({ branches: [...existing, branch] })
+  }
+  const updateExit = (index: number, patch: Partial<CustomAgentWorkflowBranchDto>) => {
+    const next = (phase.branches ?? []).map((branch, i) =>
+      i === index ? { ...branch, ...patch } : branch,
+    )
+    updatePhase({ branches: next })
+  }
+  const updateExitCondition = (
+    index: number,
+    condition: CustomAgentWorkflowBranchConditionDto,
+  ) => updateExit(index, { condition })
+  const removeExit = (index: number) => {
+    const next = (phase.branches ?? []).filter((_, i) => i !== index)
+    updatePhase({ branches: next.length > 0 ? next : undefined })
+  }
+
+  // Inline diagnostics — filter to issues whose path targets this stage's
+  // index in workflowStructure.phases. Without an index match (e.g. when the
+  // stage isn't yet visible in the snapshot) we fall back to issues that name
+  // the phase id explicitly in the message.
+  const phaseIndex = stageList.findIndex((entry) => entry.id === phase.id)
+  const stageDiagnostics = useMemo(() => {
+    return policyDiagnostics.filter((diag) => {
+      if (!diag.path) return false
+      if (phaseIndex >= 0 && diag.path.startsWith(`workflowStructure.phases[${phaseIndex}]`)) {
+        return true
+      }
+      return (
+        diag.path.startsWith('workflowStructure.startPhaseId') &&
+        (diag.message.includes(phase.id) || diag.reason?.includes(phase.id))
+      )
+    })
+  }, [policyDiagnostics, phaseIndex, phase.id])
+
+  const allowedToolsHint =
+    (phase.allowedTools?.length ?? 0) === 0
+      ? 'Empty — every tool the agent has is allowed.'
+      : `${phase.allowedTools?.length} tool${phase.allowedTools?.length === 1 ? '' : 's'} allowed.`
+
+  return (
+    <div className="space-y-4">
+      <button
+        type="button"
+        onClick={() => setExplainerOpen((open) => !open)}
+        className="flex w-full items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-left text-[10px] leading-snug text-foreground/85 transition-colors hover:bg-amber-500/10"
+      >
+        <Info className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" aria-hidden />
+        <span className="flex-1">
+          <span className="font-semibold">What is a stage?</span>{' '}
+          {explainerOpen ? (
+            <span className="text-muted-foreground">
+              Stages let one agent change its rules part-way through a run. Each stage decides
+              which tools the agent can call, and the agent can only leave a stage once your
+              gates are satisfied. Use this to force a "research before edit" or
+              "plan before execute" flow.
+            </span>
+          ) : (
+            <span className="text-muted-foreground">Click to learn how stages work.</span>
+          )}
+        </span>
+        {explainerOpen ? (
+          <ChevronDown className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/70" />
+        ) : (
+          <ChevronRight className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/70" />
+        )}
+      </button>
+
+      <div className="space-y-2.5">
+        <SectionHeading label="Identity" />
+        <FieldGroup label="Title">
+          <Input
+            value={phase.title}
+            onChange={(event) => updatePhase({ title: event.target.value })}
+            placeholder={humanizeIdentifier(phase.id)}
+            maxLength={80}
+            className="h-8 text-[10.75px] font-semibold"
+          />
+        </FieldGroup>
+        <FieldGroup label="Description">
+          <Textarea
+            value={phase.description ?? ''}
+            onChange={(event) =>
+              updatePhase({
+                description: event.target.value === '' ? undefined : event.target.value,
+              })
+            }
+            placeholder="What is the agent doing during this stage?"
+            rows={2}
+            className="resize-none text-[10px]"
+          />
+        </FieldGroup>
+        <FieldGroup label="Stage ID" hint="locked">
+          <div className="flex items-center gap-1.5 rounded-md border border-border/55 bg-background/40 px-2 py-1.5 text-[10px]">
+            <Lock className="h-2.5 w-2.5 text-muted-foreground/70" aria-hidden />
+            <span className="truncate font-mono text-[10px] text-foreground/85">{phase.id}</span>
+          </div>
+        </FieldGroup>
+      </div>
+
+      <Separator className="opacity-60" />
+
+      <div className="space-y-2.5">
+        <SectionHeading icon={Wrench} label="Allowed tools" hint={allowedToolsHint} />
+        {(phase.allowedTools?.length ?? 0) > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {(phase.allowedTools ?? []).map((toolName) => (
+              <Badge
+                key={toolName}
+                variant="outline"
+                className="group gap-1 font-mono text-[9.5px] font-normal"
+              >
+                {humanizeIdentifier(toolName)}
+                <button
+                  type="button"
+                  aria-label={`Remove ${humanizeIdentifier(toolName)}`}
+                  className="rounded-sm text-muted-foreground/70 transition-colors hover:bg-destructive/15 hover:text-destructive"
+                  onClick={() => removeAllowedTool(toolName)}
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[9.5px] leading-snug text-muted-foreground/70">
+            Add tools to restrict what the agent may call while this stage is active. Leave
+            empty to allow every tool the agent has.
+          </p>
+        )}
+        {allowedToolOptions.length > 0 ? (
+          <CatalogPicker
+            value={null}
+            onChange={addAllowedTool}
+            options={allowedToolOptions}
+            placeholder="Allow another tool…"
+            searchPlaceholder="Search tools…"
+            emptyMessage="No more tools to allow."
+            loading={!authoringCatalog && agentToolNames.length === 0}
+            loadingMessage="Loading tool catalog…"
+          />
+        ) : null}
+      </div>
+
+      <Separator className="opacity-60" />
+
+      <div className="space-y-2.5">
+        <SectionHeading
+          icon={ListChecks}
+          label="Required gates"
+          hint="must pass before exit"
+        />
+        <p className="text-[9.5px] leading-snug text-muted-foreground/70">
+          The agent cannot leave this stage until every gate listed here passes.
+        </p>
+        {(phase.requiredChecks ?? []).map((check, index) => (
+          <div
+            key={`${check.kind}:${index}`}
+            className="space-y-1.5 rounded-md border border-border/55 bg-background/40 px-2 py-2"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <Badge
+                variant="outline"
+                className="h-5 px-1.5 text-[9px] font-medium uppercase tracking-wide"
+              >
+                {check.kind === 'todo_completed' ? 'todo' : 'tool succeeded'}
+              </Badge>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => removeGate(index)}
+                className="size-5 text-muted-foreground hover:text-destructive"
+                aria-label="Remove gate"
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
+            </div>
+            {check.kind === 'todo_completed' ? (
+              <Input
+                value={check.todoId}
+                onChange={(event) => updateGate(index, { todoId: event.target.value })}
+                placeholder="todo_id"
+                className="h-7 font-mono text-[10px]"
+                aria-label="Todo id"
+              />
+            ) : (
+              <div className="grid grid-cols-[1fr_64px] gap-1.5">
+                <Input
+                  value={check.toolName}
+                  onChange={(event) => updateGate(index, { toolName: event.target.value })}
+                  placeholder="tool_name"
+                  className="h-7 font-mono text-[10px]"
+                  aria-label="Tool name"
+                />
+                <Input
+                  value={check.minCount === undefined ? '' : String(check.minCount)}
+                  onChange={(event) => {
+                    const trimmed = event.target.value.trim()
+                    if (trimmed === '') {
+                      updateGate(index, { minCount: undefined })
+                      return
+                    }
+                    const parsed = Number.parseInt(trimmed, 10)
+                    if (Number.isNaN(parsed) || parsed < 1) return
+                    updateGate(index, { minCount: parsed })
+                  }}
+                  placeholder="× 1"
+                  className="h-7 text-center font-mono text-[10px]"
+                  aria-label="Minimum count"
+                />
+              </div>
+            )}
+          </div>
+        ))}
+        <div className="flex gap-1">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => addGate('todo_completed')}
+            className="h-7 flex-1 gap-1 text-[10px]"
+          >
+            <Plus className="h-3 w-3" />
+            Todo
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => addGate('tool_succeeded')}
+            className="h-7 flex-1 gap-1 text-[10px]"
+          >
+            <Plus className="h-3 w-3" />
+            Tool
+          </Button>
+        </div>
+      </div>
+
+      <Separator className="opacity-60" />
+
+      <div className="space-y-2.5">
+        <SectionHeading icon={RefreshCcw} label="Retry limit" hint="optional" />
+        <FieldGroup>
+          <Input
+            type="number"
+            min={0}
+            value={phase.retryLimit === undefined ? '' : String(phase.retryLimit)}
+            onChange={(event) => handleRetryLimitChange(event.target.value)}
+            placeholder="Default"
+            className="h-8 text-[10.75px]"
+            aria-label="Retry limit"
+          />
+        </FieldGroup>
+        <p className="text-[9.5px] leading-snug text-muted-foreground/70">
+          How many tool failures in this stage before the run aborts. Leave empty for the
+          runtime default.
+        </p>
+      </div>
+
+      <Separator className="opacity-60" />
+
+      <div className="space-y-2.5">
+        <SectionHeading icon={GitBranch} label="Exits" hint="branches" />
+        <p className="text-[9.5px] leading-snug text-muted-foreground/70">
+          When an exit's condition is met the agent moves to that stage on its next tool call.
+        </p>
+        {(phase.branches ?? []).map((branch, index) => {
+          const targetTitle =
+            stageList.find((entry) => entry.id === branch.targetPhaseId)?.title ??
+            branch.targetPhaseId
+          return (
+            <div
+              key={`${branch.targetPhaseId}:${index}`}
+              className="space-y-1.5 rounded-md border border-border/55 bg-background/40 px-2 py-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-[10px] font-semibold text-foreground/90">
+                  → {targetTitle}
+                </span>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  onClick={() => removeExit(index)}
+                  className="size-5 text-muted-foreground hover:text-destructive"
+                  aria-label="Remove exit"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+              <FieldGroup label="When">
+                <PanelSelect
+                  value={branch.condition.kind}
+                  onChange={(kind) => {
+                    if (kind === 'always') {
+                      updateExitCondition(index, { kind: 'always' })
+                    } else if (kind === 'todo_completed') {
+                      updateExitCondition(index, { kind: 'todo_completed', todoId: '' })
+                    } else if (kind === 'tool_succeeded') {
+                      updateExitCondition(index, { kind: 'tool_succeeded', toolName: '' })
+                    }
+                  }}
+                  options={[
+                    { value: 'always', label: 'Always' },
+                    { value: 'todo_completed', label: 'Todo completed' },
+                    { value: 'tool_succeeded', label: 'Tool succeeded' },
+                  ]}
+                  ariaLabel="Exit condition kind"
+                />
+              </FieldGroup>
+              {branch.condition.kind === 'todo_completed' ? (
+                <Input
+                  value={branch.condition.todoId}
+                  onChange={(event) =>
+                    updateExitCondition(index, {
+                      kind: 'todo_completed',
+                      todoId: event.target.value,
+                    })
+                  }
+                  placeholder="todo_id"
+                  className="h-7 font-mono text-[10px]"
+                  aria-label="Exit todo id"
+                />
+              ) : null}
+              {branch.condition.kind === 'tool_succeeded' ? (
+                <div className="grid grid-cols-[1fr_64px] gap-1.5">
+                  <Input
+                    value={branch.condition.toolName}
+                    onChange={(event) =>
+                      updateExitCondition(index, {
+                        kind: 'tool_succeeded',
+                        toolName: event.target.value,
+                        minCount: branch.condition.kind === 'tool_succeeded'
+                          ? branch.condition.minCount
+                          : undefined,
+                      })
+                    }
+                    placeholder="tool_name"
+                    className="h-7 font-mono text-[10px]"
+                    aria-label="Exit tool name"
+                  />
+                  <Input
+                    value={
+                      branch.condition.kind === 'tool_succeeded' &&
+                      branch.condition.minCount !== undefined
+                        ? String(branch.condition.minCount)
+                        : ''
+                    }
+                    onChange={(event) => {
+                      const trimmed = event.target.value.trim()
+                      const condition = branch.condition
+                      if (condition.kind !== 'tool_succeeded') return
+                      if (trimmed === '') {
+                        updateExitCondition(index, {
+                          kind: 'tool_succeeded',
+                          toolName: condition.toolName,
+                        })
+                        return
+                      }
+                      const parsed = Number.parseInt(trimmed, 10)
+                      if (Number.isNaN(parsed) || parsed < 1) return
+                      updateExitCondition(index, {
+                        kind: 'tool_succeeded',
+                        toolName: condition.toolName,
+                        minCount: parsed,
+                      })
+                    }}
+                    placeholder="× 1"
+                    className="h-7 text-center font-mono text-[10px]"
+                    aria-label="Exit minimum count"
+                  />
+                </div>
+              ) : null}
+            </div>
+          )
+        })}
+        {otherStages.length > 0 ? (
+          <CatalogPicker
+            value={null}
+            onChange={addExit}
+            options={otherStages
+              .filter(
+                (entry) =>
+                  !(phase.branches ?? []).some(
+                    (branch) => branch.targetPhaseId === entry.id,
+                  ),
+              )
+              .map((entry) => ({
+                value: entry.id,
+                label: entry.title || humanizeIdentifier(entry.id),
+                description: entry.id,
+                keywords: [entry.id, entry.title],
+              }))}
+            placeholder="Add exit to another stage…"
+            searchPlaceholder="Search stages…"
+            emptyMessage="No more stages to exit to."
+          />
+        ) : (
+          <p className="text-[9.5px] leading-snug text-muted-foreground/70">
+            Add more stages on the canvas to create exits.
+          </p>
+        )}
+      </div>
+
+      <Separator className="opacity-60" />
+
+      <div className="space-y-2.5">
+        <SectionHeading icon={Flag} label="Start stage" />
+        <CheckboxToggle
+          checked={isStart}
+          onChange={(next) => setIsStart(next)}
+          label="Mark as start"
+        />
+        <p className="text-[9.5px] leading-snug text-muted-foreground/70">
+          The runtime begins each run in the start stage. Marking another stage as start clears
+          this one automatically.
+        </p>
+      </div>
+
+      {stageDiagnostics.length > 0 ? (
+        <>
+          <Separator className="opacity-60" />
+          <div className="space-y-1.5">
+            <SectionHeading label="Validation" hint={`${stageDiagnostics.length}`} />
+            <div className="flex flex-col gap-1">
+              {stageDiagnostics.map((diagnostic, index) => (
+                <PolicyDiagnosticRow
+                  key={`${diagnostic.code}-${index}`}
+                  severity="error"
+                  message={diagnostic.message}
+                  hint={diagnostic.repairHint ?? diagnostic.reason ?? undefined}
+                  code={diagnostic.code}
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      <RemoveRow onRemove={() => removeNode(nodeId)} label="Remove stage" />
     </div>
   )
 }

@@ -14,6 +14,9 @@ import type {
 } from "@/src/features/xero/use-xero-desktop-state"
 import type { AgentToolingSettingsAdapter } from "@/components/xero/settings-dialog/agent-tooling-section"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
+import type { MemoryReviewAdapter } from "@/components/xero/settings-dialog/memory-review-section"
+import type { ProjectRecordsAdapter } from "@/components/xero/settings-dialog/project-records-section"
+import type { ProjectStateAdapter } from "@/components/xero/settings-dialog/project-state-section"
 import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
 import type {
   EnvironmentDiscoveryStatusDto,
@@ -52,7 +55,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Code2, Database, Globe, Heart, Keyboard, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Brain, Code2, Database, FileText, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -72,9 +75,12 @@ export type SettingsSection =
   | "skills"
   | "agents"
   | "agentTooling"
+  | "memory"
   | "plugins"
   | "browser"
   | "workspaceIndex"
+  | "projectRecords"
+  | "projectState"
   | "themes"
   | "shortcuts"
   | "development"
@@ -89,10 +95,13 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "mcp",
   "agents",
   "agentTooling",
+  "memory",
   "skills",
   "plugins",
   "browser",
   "workspaceIndex",
+  "projectRecords",
+  "projectState",
   "themes",
   "shortcuts",
   "development",
@@ -130,6 +139,10 @@ const loadMcpSection = () =>
   import("@/components/xero/settings-dialog/mcp-section").then((module) => ({
     default: module.McpSection,
   }))
+const loadMemoryReviewSection = () =>
+  import("@/components/xero/settings-dialog/memory-review-section").then((module) => ({
+    default: module.MemoryReviewSection,
+  }))
 const loadNotificationsSection = () =>
   import("@/components/xero/settings-dialog/notifications-section").then((module) => ({
     default: module.NotificationsSection,
@@ -162,6 +175,14 @@ const loadWorkspaceIndexSection = () =>
   import("@/components/xero/settings-dialog/workspace-index-section").then((module) => ({
     default: module.WorkspaceIndexSection,
   }))
+const loadProjectRecordsSection = () =>
+  import("@/components/xero/settings-dialog/project-records-section").then((module) => ({
+    default: module.ProjectRecordsSection,
+  }))
+const loadProjectStateSection = () =>
+  import("@/components/xero/settings-dialog/project-state-section").then((module) => ({
+    default: module.ProjectStateSection,
+  }))
 
 const LazyAccountSection = lazy(loadAccountSection)
 const LazyAgentsSection = lazy(loadAgentsSection)
@@ -171,6 +192,7 @@ const LazyDevelopmentSection = lazy(loadDevelopmentSection)
 const LazyDictationSection = lazy(loadDictationSection)
 const LazyDiagnosticsSection = lazy(loadDiagnosticsSection)
 const LazyMcpSection = lazy(loadMcpSection)
+const LazyMemoryReviewSection = lazy(loadMemoryReviewSection)
 const LazyNotificationsSection = lazy(loadNotificationsSection)
 const LazyProvidersSection = lazy(loadProvidersSection)
 const LazyPluginsSection = lazy(loadPluginsSection)
@@ -179,6 +201,8 @@ const LazySkillsSection = lazy(loadSkillsSection)
 const LazySoulSection = lazy(loadSoulSection)
 const LazyThemesSection = lazy(loadThemesSection)
 const LazyWorkspaceIndexSection = lazy(loadWorkspaceIndexSection)
+const LazyProjectRecordsSection = lazy(loadProjectRecordsSection)
+const LazyProjectStateSection = lazy(loadProjectStateSection)
 
 const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> = {
   account: loadAccountSection,
@@ -190,10 +214,13 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   mcp: loadMcpSection,
   agents: loadAgentsSection,
   agentTooling: loadAgentToolingSection,
+  memory: loadMemoryReviewSection,
   skills: loadSkillsSection,
   plugins: loadPluginsSection,
   browser: loadBrowserSection,
   workspaceIndex: loadWorkspaceIndexSection,
+  projectRecords: loadProjectRecordsSection,
+  projectState: loadProjectStateSection,
   themes: loadThemesSection,
   shortcuts: loadShortcutsSection,
   development: loadDevelopmentSection,
@@ -247,10 +274,13 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "mcp", label: "MCP", icon: PlugZap },
     { id: "agents", label: "Agents", icon: Bot },
     { id: "agentTooling", label: "Agent Tooling", icon: Wrench },
+    { id: "memory", label: "Memory", icon: Brain },
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
     { id: "workspaceIndex", label: "Workspace Index", icon: Database },
+    { id: "projectRecords", label: "Project Records", icon: FileText },
+    { id: "projectState", label: "Project State", icon: HardDrive },
   ],
 }
 
@@ -313,6 +343,9 @@ export interface SettingsDialogProps {
   dictationAdapter?: DictationSettingsAdapter
   soulAdapter?: SoulSettingsAdapter
   agentToolingAdapter?: AgentToolingSettingsAdapter
+  memoryReviewAdapter?: MemoryReviewAdapter | null
+  projectRecordsAdapter?: ProjectRecordsAdapter | null
+  projectStateAdapter?: ProjectStateAdapter | null
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -365,6 +398,12 @@ export interface SettingsDialogProps {
     definitionId: string
     version: number
   }) => Promise<import("@/src/lib/xero-model/agent-definition").AgentDefinitionVersionSummaryDto | null>
+  onGetAgentDefinitionVersionDiff?: (request: {
+    projectId: string
+    definitionId: string
+    fromVersion: number
+    toVersion: number
+  }) => Promise<import("@/src/lib/xero-model/agent-definition").AgentDefinitionVersionDiffDto>
   onAgentRegistryChanged?: () => void
 }
 
@@ -396,6 +435,9 @@ export function SettingsDialog({
   dictationAdapter,
   soulAdapter,
   agentToolingAdapter,
+  memoryReviewAdapter = null,
+  projectRecordsAdapter = null,
+  projectStateAdapter = null,
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -438,6 +480,7 @@ export function SettingsDialog({
   onListAgentDefinitions,
   onArchiveAgentDefinition,
   onGetAgentDefinitionVersion,
+  onGetAgentDefinitionVersionDiff,
   onAgentRegistryChanged,
 }: SettingsDialogProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection)
@@ -639,6 +682,7 @@ export function SettingsDialog({
           onListAgentDefinitions={onListAgentDefinitions}
           onArchiveAgentDefinition={onArchiveAgentDefinition}
           onGetAgentDefinitionVersion={onGetAgentDefinitionVersion}
+          onGetAgentDefinitionVersionDiff={onGetAgentDefinitionVersionDiff}
           onRegistryChanged={onAgentRegistryChanged}
         />
       )
@@ -646,6 +690,18 @@ export function SettingsDialog({
 
     if (renderedSection === "agentTooling") {
       return <LazyAgentToolingSection adapter={agentToolingAdapter} />
+    }
+
+    if (renderedSection === "memory") {
+      const sessionId = agent?.project.selectedAgentSessionId
+      return (
+        <LazyMemoryReviewSection
+          projectId={agent?.project.id ?? null}
+          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+          agentSessionId={sessionId && sessionId.length > 0 ? sessionId : null}
+          adapter={memoryReviewAdapter}
+        />
+      )
     }
 
     if (renderedSection === "skills") {
@@ -699,6 +755,26 @@ export function SettingsDialog({
         <LazyWorkspaceIndexSection
           projectId={agent?.project.id ?? null}
           projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+        />
+      )
+    }
+
+    if (renderedSection === "projectRecords") {
+      return (
+        <LazyProjectRecordsSection
+          projectId={agent?.project.id ?? null}
+          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+          adapter={projectRecordsAdapter}
+        />
+      )
+    }
+
+    if (renderedSection === "projectState") {
+      return (
+        <LazyProjectStateSection
+          projectId={agent?.project.id ?? null}
+          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+          adapter={projectStateAdapter}
         />
       )
     }

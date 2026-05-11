@@ -8,5 +8,6 @@ export const CANVAS_PALETTE_KINDS = [
   'output-section',
   'db-table',
   'consumed-artifact',
+  'stage',
 ] as const
 export type CanvasPaletteKind = (typeof CANVAS_PALETTE_KINDS)[number]

@@ -4,6 +4,10 @@ import {
   AGENT_DEFINITION_SCHEMA,
   AGENT_DEFINITION_SCHEMA_VERSION,
   type CustomAgentAttachedSkillDto,
+  type CustomAgentWorkflowBranchConditionDto,
+  type CustomAgentWorkflowBranchDto,
+  type CustomAgentWorkflowGateDto,
+  type CustomAgentWorkflowPhaseDto,
 } from '@/src/lib/xero-model/agent-definition'
 
 import type {
@@ -17,8 +21,10 @@ import type {
   OutputSectionFlowNode,
   PromptFlowNode,
   SkillFlowNode,
+  StageFlowNode,
   ToolFlowNode,
 } from './build-agent-graph'
+import { STAGE_BRANCH_DATA_CATEGORY } from './build-agent-graph'
 
 const MIN_EXAMPLES = 3
 const MIN_ESCALATIONS = 3
@@ -102,6 +108,10 @@ function isDbTable(node: AgentGraphNode): node is DbTableFlowNode {
 
 function isConsumed(node: AgentGraphNode): node is ConsumedArtifactFlowNode {
   return node.type === 'consumed-artifact'
+}
+
+function isStage(node: AgentGraphNode): node is StageFlowNode {
+  return node.type === 'stage'
 }
 
 export interface BuildSnapshotOptions {
@@ -218,6 +228,11 @@ export function buildSnapshotFromGraph(
     }
   })
 
+  // workflowStructure is optional. Only emit it when the canvas has at least
+  // one phase node, so definitions without an authored state machine keep the
+  // same shape they had before phases existed.
+  const workflowStructure = buildWorkflowStructure(nodes, edges)
+
   const headerDto = header.data.header
   const advanced = header.data.advanced
   const description = headerDto.description.trim()
@@ -260,7 +275,7 @@ export function buildSnapshotFromGraph(
   // needs to run. Inference comes from the snapshot's own tools and DB
   // writes — the same data the runtime will see — so there is no drift
   // between "what the canvas shows" and "what the saved policy declares".
-  const inferred = inferFromSnapshotPieces(tools, dbWrites)
+  const inferred = inferFromSnapshotPieces(tools)
   const toolPolicy = buildToolPolicy(advanced, allowedTools, inferred)
 
   // Examples / escalations: prefer caller-supplied; otherwise use the user's
@@ -332,7 +347,167 @@ export function buildSnapshotFromGraph(
     consumes,
   }
 
+  if (workflowStructure) {
+    snapshot.workflowStructure = workflowStructure
+  }
+
   return { snapshot, definitionId }
+}
+
+interface PhaseBranchEdgeData {
+  category?: string
+  sourcePhaseId?: string
+  targetPhaseId?: string
+  branchIndex?: number
+  condition?: CustomAgentWorkflowBranchConditionDto
+  label?: string
+  // Set on edges synthesized by buildAgentGraph to visualize the runtime's
+  // sequential fall-through advance. These mirror what would happen anyway
+  // and must not be persisted as authored branches.
+  implicit?: boolean
+}
+
+/**
+ * Collect stage nodes + phase-branch edges into the workflowStructure object
+ * the backend validator accepts. Branches authored directly on phase data
+ * are preserved; edges drawn between stage nodes on the canvas overlay
+ * those, so dragging a connection produces the right branch entry. Returns
+ * undefined when no stages exist so the snapshot stays unchanged for
+ * definitions without an authored state machine.
+ */
+function buildWorkflowStructure(
+  nodes: readonly AgentGraphNode[],
+  edges: readonly Edge[],
+): { startPhaseId?: string; phases: CustomAgentWorkflowPhaseDto[] } | undefined {
+  const phaseNodes = nodes.filter(isStage)
+  if (phaseNodes.length === 0) return undefined
+
+  const phaseIdSet = new Set<string>()
+  for (const node of phaseNodes) {
+    const id = node.data.phase.id.trim()
+    if (id) phaseIdSet.add(id)
+  }
+
+  // Group canvas-authored phase-branch edges by their source phase. Each
+  // edge becomes one branch entry on its source phase. Stable order: the
+  // edges array is iterated in graph order, ties broken by branchIndex when
+  // the original detail's branches survived through the round-trip.
+  const canvasBranchesBySource = new Map<string, CustomAgentWorkflowBranchDto[]>()
+  for (const edge of edges) {
+    const data = edge.data as PhaseBranchEdgeData | undefined
+    if (data?.category !== STAGE_BRANCH_DATA_CATEGORY) continue
+    // Skip edges synthesized to visualize the runtime's sequential
+    // fall-through. They are derived, not authored, so persisting them as
+    // explicit branches would change semantics on the next load.
+    if (data.implicit === true) continue
+    const sourcePhaseId = data.sourcePhaseId?.trim() ?? phaseIdFromNodeId(edge.source)
+    const targetPhaseId = data.targetPhaseId?.trim() ?? phaseIdFromNodeId(edge.target)
+    if (!sourcePhaseId || !targetPhaseId) continue
+    if (!phaseIdSet.has(sourcePhaseId) || !phaseIdSet.has(targetPhaseId)) continue
+    const list = canvasBranchesBySource.get(sourcePhaseId) ?? []
+    const branch: CustomAgentWorkflowBranchDto = {
+      targetPhaseId,
+      condition: data.condition ? cloneCondition(data.condition) : { kind: 'always' },
+    }
+    if (data.label !== undefined) branch.label = data.label
+    list.push(branch)
+    canvasBranchesBySource.set(sourcePhaseId, list)
+  }
+
+  const phases: CustomAgentWorkflowPhaseDto[] = phaseNodes.map((node, index) => {
+    const dto = node.data.phase
+    const id = dto.id.trim() || `phase-${index + 1}`
+    const title = dto.title.trim() || `Phase ${index + 1}`
+    const allowedTools = dto.allowedTools && dto.allowedTools.length > 0
+      ? Array.from(new Set(dto.allowedTools.map((tool) => tool.trim()).filter(Boolean)))
+      : undefined
+    const requiredChecks = dto.requiredChecks
+      ?.map(cloneCheck)
+      .filter((check): check is CustomAgentWorkflowGateDto => check !== null)
+    const canvasBranches = canvasBranchesBySource.get(id)
+    // Canvas-drawn edges are the source of truth — they represent the user's
+    // current authoring intent. Fall back to the phase's authored branches
+    // when no edges target this phase id, so an existing workflow that's
+    // viewed without being edited round-trips cleanly.
+    const branches = canvasBranches && canvasBranches.length > 0
+      ? canvasBranches
+      : dto.branches?.map(cloneAuthoredBranch)
+    const phase: CustomAgentWorkflowPhaseDto = { id, title }
+    if (dto.description !== undefined) phase.description = dto.description
+    if (allowedTools !== undefined) phase.allowedTools = allowedTools
+    if (requiredChecks && requiredChecks.length > 0) phase.requiredChecks = requiredChecks
+    if (dto.retryLimit !== undefined) phase.retryLimit = dto.retryLimit
+    if (branches && branches.length > 0) phase.branches = branches
+    return phase
+  })
+
+  const explicitStartPhaseId = phaseNodes.find((node) => node.data.isStart)?.data.phase.id.trim()
+  const startPhaseId =
+    explicitStartPhaseId && phaseIdSet.has(explicitStartPhaseId)
+      ? explicitStartPhaseId
+      : undefined
+
+  const structure: { startPhaseId?: string; phases: CustomAgentWorkflowPhaseDto[] } = {
+    phases,
+  }
+  if (startPhaseId) {
+    structure.startPhaseId = startPhaseId
+  }
+  return structure
+}
+
+function phaseIdFromNodeId(nodeId: string): string | undefined {
+  if (!nodeId.startsWith('workflow-phase:')) return undefined
+  const value = nodeId.slice('workflow-phase:'.length).trim()
+  return value.length > 0 ? value : undefined
+}
+
+function cloneCheck(check: CustomAgentWorkflowGateDto): CustomAgentWorkflowGateDto | null {
+  if (check.kind === 'todo_completed') {
+    if (!check.todoId?.trim()) return null
+    const result: CustomAgentWorkflowGateDto = {
+      kind: 'todo_completed',
+      todoId: check.todoId,
+    }
+    if (check.description !== undefined) result.description = check.description
+    return result
+  }
+  if (!check.toolName?.trim()) return null
+  const result: CustomAgentWorkflowGateDto = {
+    kind: 'tool_succeeded',
+    toolName: check.toolName,
+  }
+  if (check.minCount !== undefined) result.minCount = check.minCount
+  if (check.description !== undefined) result.description = check.description
+  return result
+}
+
+function cloneAuthoredBranch(branch: CustomAgentWorkflowBranchDto): CustomAgentWorkflowBranchDto {
+  const result: CustomAgentWorkflowBranchDto = {
+    targetPhaseId: branch.targetPhaseId,
+    condition: cloneCondition(branch.condition),
+  }
+  if (branch.label !== undefined) result.label = branch.label
+  return result
+}
+
+function cloneCondition(
+  condition: CustomAgentWorkflowBranchConditionDto,
+): CustomAgentWorkflowBranchConditionDto {
+  switch (condition.kind) {
+    case 'always':
+      return { kind: 'always' }
+    case 'todo_completed':
+      return { kind: 'todo_completed', todoId: condition.todoId }
+    case 'tool_succeeded': {
+      const result: CustomAgentWorkflowBranchConditionDto = {
+        kind: 'tool_succeeded',
+        toolName: condition.toolName,
+      }
+      if (condition.minCount !== undefined) result.minCount = condition.minCount
+      return result
+    }
+  }
 }
 
 function buildToolPolicy(
@@ -354,6 +529,10 @@ function buildToolPolicy(
     deniedTools: [...advanced.deniedTools],
     allowedToolPacks: [...advanced.allowedToolPacks],
     deniedToolPacks: [...advanced.deniedToolPacks],
+    allowedMcpServers: [...advanced.allowedMcpServers],
+    deniedMcpServers: [...advanced.deniedMcpServers],
+    allowedDynamicTools: [...advanced.allowedDynamicTools],
+    deniedDynamicTools: [...advanced.deniedDynamicTools],
     allowedToolGroups,
     deniedToolGroups: [...advanced.deniedToolGroups],
     allowedEffectClasses,
@@ -369,7 +548,17 @@ function buildToolPolicy(
   }
   if (advanced.subagentAllowed || inferred.flags.subagentAllowed) {
     policy.subagentAllowed = true
-    policy.allowedSubagentRoles = ['engineer']
+    // The validator requires allowedSubagentRoles to be non-empty when
+    // subagent delegation is on. Honour the user's picks from the granular
+    // policy editor; fall back to ['engineer'] only if nothing was picked
+    // (preserves the prior implicit default so legacy snapshots round-trip).
+    policy.allowedSubagentRoles =
+      advanced.allowedSubagentRoles.length > 0
+        ? [...advanced.allowedSubagentRoles]
+        : ['engineer']
+    if (advanced.deniedSubagentRoles.length > 0) {
+      policy.deniedSubagentRoles = [...advanced.deniedSubagentRoles]
+    }
   }
   if (advanced.commandAllowed || inferred.flags.commandAllowed) {
     policy.commandAllowed = true
@@ -382,10 +571,9 @@ function buildToolPolicy(
 
 // Lightweight re-derivation of inferAdvancedFromConnections that operates on
 // the already-mapped snapshot pieces. Avoids reconstructing a full detail DTO
-// just to walk its tools and dbWrites.
+// just to walk its tools.
 function inferFromSnapshotPieces(
   tools: readonly { name: string; group: string; effectClass: string }[],
-  dbWrites: readonly { table: string }[],
 ): AgentInferredAdvanced {
   const groupReasons: Record<string, string[]> = {}
   const effectClasses = new Set<string>()
@@ -441,9 +629,11 @@ function inferFromSnapshotPieces(
         break
     }
   }
-  for (const entry of dbWrites) {
-    noteFlag('destructiveWriteAllowed', `db:${entry.table}`)
-  }
+  // Note: do NOT infer `destructiveWriteAllowed` from db writes. The runtime
+  // classifies DB writes as runtime_state — `destructive_write` is reserved
+  // for repository-file destructive ops (Delete). Inferring it from dbWrites
+  // made the planning profile reject duplicates of built-ins like Plan that
+  // legitimately persist agent_runs / agent_messages.
   return {
     effectClasses: Array.from(effectClasses).sort((a, b) => a.localeCompare(b)),
     toolGroups: Object.keys(groupReasons).sort((a, b) => a.localeCompare(b)),

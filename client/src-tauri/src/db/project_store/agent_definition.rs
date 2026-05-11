@@ -17,7 +17,7 @@ pub const BUILTIN_AGENT_DEFINITION_VERSION: u32 = 1;
 const AGENT_ACTIVATION_PREFLIGHT_SCHEMA: &str = "xero.custom_agent_activation_preflight.v1";
 const AGENT_ACTIVATION_PREFLIGHT_SCHEMA_VERSION: u64 = 1;
 const AGENT_DEFINITION_SCHEMA: &str = "xero.agent_definition.v1";
-const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 2;
+const AGENT_DEFINITION_SCHEMA_VERSION: u64 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDefinitionRecord {
@@ -54,6 +54,12 @@ pub struct AgentDefinitionRunSelection {
     pub snapshot: JsonValue,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentDefinitionExtendsSpec {
+    pub base_definition_id: String,
+    pub base_version: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAgentDefinitionRecord {
     pub definition_id: String,
@@ -76,6 +82,50 @@ pub fn default_agent_definition_id_for_runtime_agent(agent_id: RuntimeAgentIdDto
 
 pub fn default_agent_definition_version_for_runtime_agent(_agent_id: RuntimeAgentIdDto) -> u32 {
     BUILTIN_AGENT_DEFINITION_VERSION
+}
+
+pub fn parse_agent_definition_extends_spec(
+    extends: &str,
+) -> Result<AgentDefinitionExtendsSpec, String> {
+    let extends = extends.trim();
+    let Some((definition_id, version)) = extends.split_once('@') else {
+        return Err("extends must use the built-in reference form `<agent_id>@<version>`.".into());
+    };
+    let definition_id = definition_id.trim();
+    let version = version.trim();
+    if definition_id.is_empty() || version.is_empty() || version.contains('@') {
+        return Err("extends must use the built-in reference form `<agent_id>@<version>`.".into());
+    }
+    let base_version = version
+        .parse::<u32>()
+        .ok()
+        .filter(|version| *version > 0)
+        .ok_or_else(|| "extends version must be a positive integer.".to_string())?;
+    Ok(AgentDefinitionExtendsSpec {
+        base_definition_id: definition_id.to_string(),
+        base_version,
+    })
+}
+
+fn agent_definition_extends_spec(
+    snapshot: &JsonValue,
+) -> Result<Option<AgentDefinitionExtendsSpec>, CommandError> {
+    let Some(extends) = snapshot.get("extends") else {
+        return Ok(None);
+    };
+    let extends = extends
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_definition_extends_invalid",
+                "extends must be a non-empty built-in reference like engineer@1.",
+            )
+        })?;
+    parse_agent_definition_extends_spec(extends)
+        .map(Some)
+        .map_err(|message| CommandError::user_fixable("agent_definition_extends_invalid", message))
 }
 
 pub fn insert_agent_definition(
@@ -313,6 +363,28 @@ pub fn load_agent_definition_version(
         .and_then(|row| row.transpose())
 }
 
+pub fn load_effective_agent_definition_version_snapshot(
+    repo_root: &Path,
+    definition_id: &str,
+    version: u32,
+) -> Result<JsonValue, CommandError> {
+    let version_record = load_agent_definition_version(repo_root, definition_id, version)?
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_definition_version_missing",
+                format!(
+                    "Xero could not load pinned agent definition `{definition_id}` version {version}."
+                ),
+            )
+        })?;
+    resolve_effective_agent_definition_snapshot(
+        repo_root,
+        definition_id,
+        version,
+        version_record.snapshot,
+    )
+}
+
 pub fn load_agent_definition_version_diff(
     repo_root: &Path,
     definition_id: &str,
@@ -346,18 +418,93 @@ pub fn load_agent_definition_version_diff(
             )
         },
     )?;
-    Ok(agent_definition_version_diff(&from, &to))
+    Ok(build_agent_definition_diff_payload(
+        &from.definition_id,
+        from.version,
+        &from.created_at,
+        &from.snapshot,
+        to.version,
+        &to.created_at,
+        &to.snapshot,
+    ))
 }
 
-fn agent_definition_version_diff(
-    from: &AgentDefinitionVersionRecord,
-    to: &AgentDefinitionVersionRecord,
+/// Build the structured pre-save approval review payload for the operator
+/// confirmation prompt. When `prior` is `None` (initial save) the payload
+/// reports every populated section as added against an empty snapshot. The
+/// payload uses its own schema id so consumers can distinguish it from a
+/// saved-version diff.
+pub fn build_agent_definition_pre_save_review(
+    definition_id: &str,
+    prior: Option<&AgentDefinitionVersionRecord>,
+    next_version: u32,
+    next_snapshot: &JsonValue,
+    next_created_at: &str,
 ) -> JsonValue {
-    let sections = [
+    let empty_snapshot = JsonValue::Object(JsonMap::new());
+    let (from_version, from_created_at, from_snapshot) = match prior {
+        Some(record) => (
+            Some(record.version),
+            Some(record.created_at.as_str()),
+            &record.snapshot,
+        ),
+        None => (None, None, &empty_snapshot),
+    };
+    let sections = diff_sections(from_snapshot, next_snapshot);
+    let changed_sections = sections
+        .iter()
+        .filter(|section| section["changed"].as_bool() == Some(true))
+        .filter_map(|section| section["section"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    json!({
+        "schema": "xero.agent_definition_pre_save_review.v1",
+        "definitionId": definition_id,
+        "isInitialVersion": prior.is_none(),
+        "fromVersion": from_version,
+        "toVersion": next_version,
+        "fromCreatedAt": from_created_at,
+        "toCreatedAt": next_created_at,
+        "changed": !changed_sections.is_empty(),
+        "changedSections": changed_sections,
+        "sections": sections,
+    })
+}
+
+fn build_agent_definition_diff_payload(
+    definition_id: &str,
+    from_version: u32,
+    from_created_at: &str,
+    from_snapshot: &JsonValue,
+    to_version: u32,
+    to_created_at: &str,
+    to_snapshot: &JsonValue,
+) -> JsonValue {
+    let sections = diff_sections(from_snapshot, to_snapshot);
+    let changed_sections = sections
+        .iter()
+        .filter(|section| section["changed"].as_bool() == Some(true))
+        .filter_map(|section| section["section"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+
+    json!({
+        "schema": "xero.agent_definition_version_diff.v1",
+        "definitionId": definition_id,
+        "fromVersion": from_version,
+        "toVersion": to_version,
+        "fromCreatedAt": from_created_at,
+        "toCreatedAt": to_created_at,
+        "changed": !changed_sections.is_empty(),
+        "changedSections": changed_sections,
+        "sections": sections,
+    })
+}
+
+fn diff_sections(from_snapshot: &JsonValue, to_snapshot: &JsonValue) -> [JsonValue; 12] {
+    [
         diff_section(
             "identity",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &[
                 "id",
                 "displayName",
@@ -371,8 +518,8 @@ fn agent_definition_version_diff(
         ),
         diff_section(
             "prompts",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &[
                 "promptPolicy",
                 "prompts",
@@ -385,82 +532,65 @@ fn agent_definition_version_diff(
         ),
         diff_section(
             "attachedSkills",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["attachedSkills"],
         ),
         diff_section(
             "toolPolicy",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["toolPolicy", "tools"],
         ),
         diff_section(
             "memoryPolicy",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["memoryPolicy"],
         ),
         diff_section(
             "retrievalPolicy",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["retrievalDefaults"],
         ),
         diff_section(
             "handoffPolicy",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["handoffPolicy"],
         ),
         diff_section(
             "outputContract",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["outputContract", "output"],
         ),
         diff_section(
             "databaseAccess",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["dbTouchpoints"],
         ),
         diff_section(
             "consumedArtifacts",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["consumes"],
         ),
         diff_section(
             "workflowStructure",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["workflowStructure"],
         ),
         diff_section(
             "safetyLimits",
-            &from.snapshot,
-            &to.snapshot,
+            from_snapshot,
+            to_snapshot,
             &["safetyLimits", "capabilityFlags"],
         ),
-    ];
-    let changed_sections = sections
-        .iter()
-        .filter(|section| section["changed"].as_bool() == Some(true))
-        .filter_map(|section| section["section"].as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-
-    json!({
-        "schema": "xero.agent_definition_version_diff.v1",
-        "definitionId": from.definition_id,
-        "fromVersion": from.version,
-        "toVersion": to.version,
-        "fromCreatedAt": from.created_at,
-        "toCreatedAt": to.created_at,
-        "changed": !changed_sections.is_empty(),
-        "changedSections": changed_sections,
-        "sections": sections,
-    })
+    ]
 }
 
 pub fn load_agent_activation_preflight(
@@ -690,6 +820,122 @@ pub fn archive_agent_definition(
     })
 }
 
+fn resolve_effective_agent_definition_snapshot(
+    repo_root: &Path,
+    overlay_definition_id: &str,
+    overlay_version: u32,
+    overlay_snapshot: JsonValue,
+) -> Result<JsonValue, CommandError> {
+    let Some(extends) = agent_definition_extends_spec(&overlay_snapshot)? else {
+        return Ok(overlay_snapshot);
+    };
+    if extends.base_definition_id == overlay_definition_id {
+        return Err(CommandError::user_fixable(
+            "agent_definition_extends_cycle",
+            "A custom agent definition cannot extend itself.",
+        ));
+    }
+    let base_definition = load_agent_definition(repo_root, &extends.base_definition_id)?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_definition_extends_not_found",
+                format!(
+                    "Xero could not find built-in agent definition `{}` for overlay `{overlay_definition_id}`.",
+                    extends.base_definition_id
+                ),
+            )
+        })?;
+    if base_definition.scope != "built_in" {
+        return Err(CommandError::user_fixable(
+            "agent_definition_extends_not_builtin",
+            format!(
+                "Agent definition `{overlay_definition_id}` extends `{}`, but overlays may only extend built-in agents.",
+                base_definition.definition_id
+            ),
+        ));
+    }
+    if base_definition.lifecycle_state != "active" {
+        return Err(CommandError::user_fixable(
+            "agent_definition_extends_inactive",
+            format!(
+                "Agent definition `{overlay_definition_id}` extends built-in `{}`, which is `{}`.",
+                base_definition.definition_id, base_definition.lifecycle_state
+            ),
+        ));
+    }
+    let base_version =
+        load_agent_definition_version(repo_root, &extends.base_definition_id, extends.base_version)?
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "agent_definition_extends_version_not_found",
+                    format!(
+                        "Xero could not find built-in agent definition `{}` version {} for overlay `{overlay_definition_id}`.",
+                        extends.base_definition_id, extends.base_version
+                    ),
+                )
+            })?;
+    Ok(merge_builtin_overlay_snapshot(
+        &base_definition,
+        &base_version,
+        &overlay_snapshot,
+        overlay_definition_id,
+        overlay_version,
+    ))
+}
+
+fn merge_builtin_overlay_snapshot(
+    base_definition: &AgentDefinitionRecord,
+    base_version: &AgentDefinitionVersionRecord,
+    overlay_snapshot: &JsonValue,
+    overlay_definition_id: &str,
+    overlay_version: u32,
+) -> JsonValue {
+    let mut merged = base_version
+        .snapshot
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(overlay) = overlay_snapshot.as_object() {
+        for (key, value) in overlay {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    for field in ["prompts", "attachedSkills", "consumes"] {
+        let combined = combined_json_array(
+            base_version.snapshot.get(field),
+            overlay_snapshot.get(field),
+        );
+        if !combined.is_empty() {
+            merged.insert(field.into(), JsonValue::Array(combined));
+        }
+    }
+    merged.insert(
+        "baseCapabilityProfile".into(),
+        JsonValue::String(base_definition.base_capability_profile.clone()),
+    );
+    merged.insert("id".into(), JsonValue::String(overlay_definition_id.into()));
+    merged.insert("version".into(), json!(overlay_version));
+    merged.insert(
+        "extendsResolved".into(),
+        json!({
+            "baseDefinitionId": &base_definition.definition_id,
+            "baseVersion": base_version.version,
+            "overlayDefinitionId": overlay_definition_id,
+            "overlayVersion": overlay_version
+        }),
+    );
+    JsonValue::Object(merged)
+}
+
+fn combined_json_array(base: Option<&JsonValue>, overlay: Option<&JsonValue>) -> Vec<JsonValue> {
+    base.and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+        .chain(overlay.and_then(JsonValue::as_array).into_iter().flatten())
+        .cloned()
+        .collect()
+}
+
 pub fn resolve_agent_definition_for_run(
     repo_root: &Path,
     requested_definition_id: Option<&str>,
@@ -746,21 +992,29 @@ pub fn resolve_agent_definition_for_run(
         validate_custom_agent_activation_consistency(&definition, &version)?;
         validate_custom_agent_activation_runtime_contract(&definition, &version)?;
     }
-    let runtime_agent_id =
-        runtime_agent_id_for_base_capability_profile(&definition.base_capability_profile);
-    let default_approval_mode =
-        definition_default_approval_mode(&version.snapshot, runtime_agent_id);
-    let allowed_approval_modes =
-        definition_allowed_approval_modes(&version.snapshot, runtime_agent_id);
+    let snapshot = resolve_effective_agent_definition_snapshot(
+        repo_root,
+        &definition.definition_id,
+        definition.current_version,
+        version.snapshot,
+    )?;
+    let base_capability_profile = snapshot
+        .get("baseCapabilityProfile")
+        .and_then(JsonValue::as_str)
+        .unwrap_or(&definition.base_capability_profile)
+        .to_string();
+    let runtime_agent_id = runtime_agent_id_for_base_capability_profile(&base_capability_profile);
+    let default_approval_mode = definition_default_approval_mode(&snapshot, runtime_agent_id);
+    let allowed_approval_modes = definition_allowed_approval_modes(&snapshot, runtime_agent_id);
     Ok(AgentDefinitionRunSelection {
         runtime_agent_id,
         definition_id: definition.definition_id,
         version: definition.current_version,
         display_name: definition.display_name,
-        base_capability_profile: definition.base_capability_profile,
+        base_capability_profile,
         default_approval_mode,
         allowed_approval_modes,
-        snapshot: version.snapshot,
+        snapshot,
     })
 }
 
@@ -2080,6 +2334,38 @@ mod tests {
         }
     }
 
+    fn engineer_overlay_definition(version: u32, now: &str) -> NewAgentDefinitionRecord {
+        let mut definition = custom_definition(version, now);
+        definition.definition_id = "engineer_release_notes".into();
+        definition.display_name = "Engineer Release Notes".into();
+        definition.short_label = "RelNotes".into();
+        definition.description =
+            "Draft release notes with Engineer's built-in prompt contract.".into();
+        definition.base_capability_profile = "engineering".into();
+        definition.snapshot["id"] = json!("engineer_release_notes");
+        definition.snapshot["displayName"] = json!("Engineer Release Notes");
+        definition.snapshot["shortLabel"] = json!("RelNotes");
+        definition.snapshot["description"] =
+            json!("Draft release notes with Engineer's built-in prompt contract.");
+        definition.snapshot["baseCapabilityProfile"] = json!("engineering");
+        definition.snapshot["extends"] = json!("engineer@1");
+        definition.snapshot["toolPolicy"] = json!({
+            "allowedEffectClasses": ["observe"],
+            "allowedToolGroups": [],
+            "allowedToolPacks": [],
+            "allowedTools": ["read", "project_context_search"],
+            "deniedTools": ["write", "command_run"],
+            "deniedToolPacks": [],
+            "externalServiceAllowed": false,
+            "browserControlAllowed": false,
+            "skillRuntimeAllowed": false,
+            "subagentAllowed": false,
+            "commandAllowed": false,
+            "destructiveWriteAllowed": false
+        });
+        definition
+    }
+
     #[test]
     fn custom_definition_selection_pins_run_version_across_reload() {
         let tempdir = tempfile::tempdir().expect("temp dir");
@@ -2381,6 +2667,65 @@ mod tests {
         assert!(error
             .message
             .contains("does not have a valid custom-agent validation report"));
+    }
+
+    #[test]
+    fn c3_builtin_overlay_resolution_pins_base_and_overlay_versions() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-engineer-overlay");
+        let definition = engineer_overlay_definition(1, "2026-05-01T12:01:00Z");
+
+        insert_agent_definition(&repo_root, &definition).expect("insert engineer overlay");
+        let selection = resolve_agent_definition_for_run(
+            &repo_root,
+            Some("engineer_release_notes"),
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect("resolve engineer overlay");
+
+        assert_eq!(selection.definition_id, "engineer_release_notes");
+        assert_eq!(selection.version, 1);
+        assert_eq!(selection.runtime_agent_id, RuntimeAgentIdDto::Engineer);
+        assert_eq!(selection.base_capability_profile, "engineering");
+        assert_eq!(
+            selection.snapshot["extendsResolved"],
+            json!({
+                "baseDefinitionId": "engineer",
+                "baseVersion": 1,
+                "overlayDefinitionId": "engineer_release_notes",
+                "overlayVersion": 1
+            })
+        );
+        assert_eq!(
+            selection.snapshot["toolPolicy"]["allowedEffectClasses"],
+            json!(["observe"])
+        );
+        assert_eq!(
+            selection.snapshot["toolPolicy"]["deniedTools"],
+            json!(["write", "command_run"])
+        );
+    }
+
+    #[test]
+    fn c3_builtin_overlay_rejects_missing_base_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-engineer-overlay-missing-base");
+        let mut definition = engineer_overlay_definition(1, "2026-05-01T12:01:00Z");
+        definition.snapshot["extends"] = json!("engineer@99");
+
+        insert_agent_definition(&repo_root, &definition).expect("insert engineer overlay");
+        let error = resolve_agent_definition_for_run(
+            &repo_root,
+            Some("engineer_release_notes"),
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect_err("missing base version blocks overlay activation");
+
+        assert_eq!(error.code, "agent_definition_extends_version_not_found");
     }
 
     #[test]

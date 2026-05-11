@@ -642,7 +642,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
               pressed={searchOpen}
               size="sm"
             >
-              <Search className="h-3.5 w-3.5" />
+              <Search className="size-3" />
             </Toggle>
           ) : null}
           {archiveSupported ? (
@@ -657,7 +657,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
               pressed={archivedVisible}
               size="sm"
             >
-              <Archive className="h-3.5 w-3.5" />
+              <Archive className="size-3" />
             </Toggle>
           ) : null}
           <button
@@ -671,9 +671,9 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
             type="button"
           >
             {isCreating ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="size-3 animate-spin" />
             ) : (
-              <Plus className="h-3.5 w-3.5" />
+              <Plus className="size-3" />
             )}
           </button>
           {showOverlay && onPin ? (
@@ -686,7 +686,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
               onClick={onPin}
               type="button"
             >
-              <PanelLeftOpen className="h-3.5 w-3.5" />
+              <PanelLeftOpen className="size-3" />
             </button>
           ) : !showOverlay && onCollapse ? (
             <button
@@ -698,7 +698,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
               onClick={onCollapse}
               type="button"
             >
-              <PanelLeftClose className="h-3.5 w-3.5" />
+              <PanelLeftClose className="size-3" />
             </button>
           ) : null}
         </div>

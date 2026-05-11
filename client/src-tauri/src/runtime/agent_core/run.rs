@@ -3602,7 +3602,7 @@ mod tests {
                 base_capability_profile: profile.into(),
                 snapshot: json!({
                     "schema": "xero.agent_definition.v1",
-                    "schemaVersion": 2,
+                    "schemaVersion": 3,
                     "id": definition_id,
                     "version": 1,
                     "displayName": display_name,

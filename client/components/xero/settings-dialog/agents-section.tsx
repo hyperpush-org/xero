@@ -20,12 +20,14 @@ import {
   type AgentDefinitionBaseCapabilityProfileDto,
   type AgentDefinitionLifecycleStateDto,
   type AgentDefinitionSummaryDto,
+  type AgentDefinitionVersionDiffDto,
   type AgentDefinitionVersionSummaryDto,
 } from "@/src/lib/xero-model/agent-definition"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 import { SectionHeader } from "./section-header"
+import { VersionDiffSection } from "./version-diff-section"
 
 interface AgentsSectionProps {
   projectId: string | null
@@ -43,6 +45,12 @@ interface AgentsSectionProps {
     definitionId: string
     version: number
   }) => Promise<AgentDefinitionVersionSummaryDto | null>
+  onGetAgentDefinitionVersionDiff?: (request: {
+    projectId: string
+    definitionId: string
+    fromVersion: number
+    toVersion: number
+  }) => Promise<AgentDefinitionVersionDiffDto>
   onRegistryChanged?: () => void
 }
 
@@ -125,6 +133,7 @@ export function AgentsSection({
   onListAgentDefinitions,
   onArchiveAgentDefinition,
   onGetAgentDefinitionVersion,
+  onGetAgentDefinitionVersionDiff,
   onRegistryChanged,
 }: AgentsSectionProps) {
   const [state, setState] = useState<DefinitionsState>(INITIAL_STATE)
@@ -137,6 +146,11 @@ export function AgentsSection({
     versions: AgentDefinitionVersionSummaryDto[]
     status: "loading" | "ready" | "error"
     errorMessage: string | null
+    fromVersion: number | null
+    toVersion: number | null
+    diffStatus: "idle" | "loading" | "ready" | "error"
+    diffError: string | null
+    diff: AgentDefinitionVersionDiffDto | null
   } | null>(null)
 
   useEffect(() => {
@@ -208,6 +222,11 @@ export function AgentsSection({
         versions: [],
         status: "loading",
         errorMessage: null,
+        fromVersion: null,
+        toVersion: null,
+        diffStatus: "idle",
+        diffError: null,
+        diff: null,
       })
       try {
         const versions: AgentDefinitionVersionSummaryDto[] = []
@@ -221,11 +240,18 @@ export function AgentsSection({
             versions.push(record)
           }
         }
+        const initialTo = versions[0]?.version ?? null
+        const initialFrom = versions[1]?.version ?? null
         setVersionPanel({
           definitionId: definition.definitionId,
           versions,
           status: "ready",
           errorMessage: null,
+          fromVersion: initialFrom,
+          toVersion: initialTo,
+          diffStatus: "idle",
+          diffError: null,
+          diff: null,
         })
       } catch (error) {
         setVersionPanel({
@@ -236,11 +262,99 @@ export function AgentsSection({
             error instanceof Error && error.message.trim().length > 0
               ? error.message
               : "Xero could not load this agent's version history.",
+          fromVersion: null,
+          toVersion: null,
+          diffStatus: "idle",
+          diffError: null,
+          diff: null,
         })
       }
     },
     [onGetAgentDefinitionVersion, projectId],
   )
+
+  const loadVersionDiff = useCallback(
+    async (definitionId: string, fromVersion: number, toVersion: number) => {
+      if (!projectId || !onGetAgentDefinitionVersionDiff) return
+      if (fromVersion === toVersion) {
+        setVersionPanel((current) =>
+          current
+            ? {
+                ...current,
+                fromVersion,
+                toVersion,
+                diffStatus: "error",
+                diffError: "Pick two distinct versions to compare.",
+                diff: null,
+              }
+            : current,
+        )
+        return
+      }
+      setVersionPanel((current) =>
+        current
+          ? {
+              ...current,
+              fromVersion,
+              toVersion,
+              diffStatus: "loading",
+              diffError: null,
+              diff: null,
+            }
+          : current,
+      )
+      try {
+        const diff = await onGetAgentDefinitionVersionDiff({
+          projectId,
+          definitionId,
+          fromVersion,
+          toVersion,
+        })
+        setVersionPanel((current) => {
+          if (!current || current.definitionId !== definitionId) return current
+          if (current.fromVersion !== fromVersion || current.toVersion !== toVersion) {
+            return current
+          }
+          return {
+            ...current,
+            diffStatus: "ready",
+            diffError: null,
+            diff,
+          }
+        })
+      } catch (error) {
+        setVersionPanel((current) => {
+          if (!current || current.definitionId !== definitionId) return current
+          if (current.fromVersion !== fromVersion || current.toVersion !== toVersion) {
+            return current
+          }
+          return {
+            ...current,
+            diffStatus: "error",
+            diffError:
+              error instanceof Error && error.message.trim().length > 0
+                ? error.message
+                : "Xero could not load the version diff.",
+            diff: null,
+          }
+        })
+      }
+    },
+    [onGetAgentDefinitionVersionDiff, projectId],
+  )
+
+  useEffect(() => {
+    if (!versionPanel) return
+    if (versionPanel.status !== "ready") return
+    if (versionPanel.diffStatus !== "idle") return
+    if (versionPanel.fromVersion === null || versionPanel.toVersion === null) return
+    if (!onGetAgentDefinitionVersionDiff) return
+    void loadVersionDiff(
+      versionPanel.definitionId,
+      versionPanel.fromVersion,
+      versionPanel.toVersion,
+    )
+  }, [versionPanel, loadVersionDiff, onGetAgentDefinitionVersionDiff])
 
   const groups = useMemo(() => {
     const builtIns: AgentDefinitionSummaryDto[] = []
@@ -371,7 +485,16 @@ export function AgentsSection({
       )}
 
       {versionPanel ? (
-        <VersionHistoryPanel panel={versionPanel} onClose={() => setVersionPanel(null)} />
+        <VersionHistoryPanel
+          panel={versionPanel}
+          onClose={() => setVersionPanel(null)}
+          onCompare={
+            onGetAgentDefinitionVersionDiff
+              ? (fromVersion, toVersion) =>
+                  void loadVersionDiff(versionPanel.definitionId, fromVersion, toVersion)
+              : undefined
+          }
+        />
       ) : null}
     </div>
   )
@@ -521,11 +644,21 @@ interface VersionHistoryPanelProps {
     versions: AgentDefinitionVersionSummaryDto[]
     status: "loading" | "ready" | "error"
     errorMessage: string | null
+    fromVersion: number | null
+    toVersion: number | null
+    diffStatus: "idle" | "loading" | "ready" | "error"
+    diffError: string | null
+    diff: AgentDefinitionVersionDiffDto | null
   }
   onClose: () => void
+  onCompare?: (fromVersion: number, toVersion: number) => void
 }
 
-function VersionHistoryPanel({ panel, onClose }: VersionHistoryPanelProps) {
+function VersionHistoryPanel({ panel, onClose, onCompare }: VersionHistoryPanelProps) {
+  const versionOptions = panel.versions.map((version) => version.version)
+  const canCompare =
+    Boolean(onCompare) && versionOptions.length >= 2
+
   return (
     <section className="overflow-hidden rounded-md border border-border/60 bg-secondary/10">
       <header className="flex items-center justify-between gap-3 border-b border-border/40 px-3.5 py-2.5">
@@ -549,7 +682,7 @@ function VersionHistoryPanel({ panel, onClose }: VersionHistoryPanelProps) {
         </Button>
       </header>
 
-      <div className="px-3.5 py-2.5">
+      <div className="flex flex-col gap-3 px-3.5 py-2.5">
         {panel.status === "loading" ? (
           <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -564,41 +697,153 @@ function VersionHistoryPanel({ panel, onClose }: VersionHistoryPanelProps) {
             No version snapshots are available.
           </p>
         ) : (
-          <ul className="flex flex-col gap-1.5">
-            {panel.versions.map((version) => {
-              const validationTone: Tone =
-                version.validationStatus === "valid"
-                  ? "good"
-                  : version.validationStatus === "invalid"
-                    ? "bad"
-                    : "neutral"
-              return (
-                <li
-                  key={`${version.definitionId}-${version.version}`}
-                  className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/40 px-3 py-2"
-                >
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="font-medium text-foreground">
-                      Version {version.version}
-                    </span>
-                    <Pill tone={validationTone}>{version.validationStatus ?? "unknown"}</Pill>
-                    {version.validationDiagnosticCount > 0 ? (
-                      <span className="text-[11px] text-muted-foreground">
-                        {version.validationDiagnosticCount} diagnostic
-                        {version.validationDiagnosticCount === 1 ? "" : "s"}
+          <>
+            <ul className="flex flex-col gap-1.5">
+              {panel.versions.map((version) => {
+                const validationTone: Tone =
+                  version.validationStatus === "valid"
+                    ? "good"
+                    : version.validationStatus === "invalid"
+                      ? "bad"
+                      : "neutral"
+                return (
+                  <li
+                    key={`${version.definitionId}-${version.version}`}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/40 px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2 text-[12px]">
+                      <span className="font-medium text-foreground">
+                        Version {version.version}
                       </span>
-                    ) : null}
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    {formatTimestamp(version.createdAt)}
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
+                      <Pill tone={validationTone}>{version.validationStatus ?? "unknown"}</Pill>
+                      {version.validationDiagnosticCount > 0 ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          {version.validationDiagnosticCount} diagnostic
+                          {version.validationDiagnosticCount === 1 ? "" : "s"}
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="text-[11px] text-muted-foreground">
+                      {formatTimestamp(version.createdAt)}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+
+            {canCompare ? (
+              <DiffControls
+                versions={versionOptions}
+                fromVersion={panel.fromVersion}
+                toVersion={panel.toVersion}
+                diffStatus={panel.diffStatus}
+                onCompare={onCompare!}
+              />
+            ) : null}
+
+            {canCompare ? (
+              <VersionDiffSection
+                status={panel.diffStatus}
+                errorMessage={panel.diffError}
+                diff={panel.diff}
+                fromVersion={panel.fromVersion}
+                toVersion={panel.toVersion}
+              />
+            ) : null}
+          </>
         )}
       </div>
     </section>
+  )
+}
+
+interface DiffControlsProps {
+  versions: number[]
+  fromVersion: number | null
+  toVersion: number | null
+  diffStatus: "idle" | "loading" | "ready" | "error"
+  onCompare: (fromVersion: number, toVersion: number) => void
+}
+
+function DiffControls({
+  versions,
+  fromVersion,
+  toVersion,
+  diffStatus,
+  onCompare,
+}: DiffControlsProps) {
+  const distinct = fromVersion !== null && toVersion !== null && fromVersion !== toVersion
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-muted-foreground">
+      <span>Compare</span>
+      <VersionPicker
+        label="From version"
+        versions={versions}
+        value={fromVersion}
+        onChange={(next) => {
+          if (toVersion !== null) {
+            onCompare(next, toVersion)
+          }
+        }}
+      />
+      <span>to</span>
+      <VersionPicker
+        label="To version"
+        versions={versions}
+        value={toVersion}
+        onChange={(next) => {
+          if (fromVersion !== null) {
+            onCompare(fromVersion, next)
+          }
+        }}
+      />
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 gap-1.5 text-[11.5px]"
+        disabled={!distinct || diffStatus === "loading"}
+        onClick={() => {
+          if (fromVersion !== null && toVersion !== null) {
+            onCompare(fromVersion, toVersion)
+          }
+        }}
+      >
+        {diffStatus === "loading" ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : null}
+        Compare
+      </Button>
+    </div>
+  )
+}
+
+interface VersionPickerProps {
+  label: string
+  versions: number[]
+  value: number | null
+  onChange: (version: number) => void
+}
+
+function VersionPicker({ label, versions, value, onChange }: VersionPickerProps) {
+  return (
+    <select
+      aria-label={label}
+      value={value ?? ""}
+      onChange={(event) => {
+        const next = Number.parseInt(event.target.value, 10)
+        if (Number.isFinite(next)) {
+          onChange(next)
+        }
+      }}
+      className="h-7 rounded-md border border-border/60 bg-background px-2 text-[11.5px] text-foreground"
+    >
+      {value === null ? <option value="">—</option> : null}
+      {versions.map((version) => (
+        <option key={version} value={version}>
+          v{version}
+        </option>
+      ))}
+    </select>
   )
 }
 

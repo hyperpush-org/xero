@@ -49,6 +49,7 @@ import type {
   AgentAuthoringCatalogDto,
   AgentAuthoringAttachableSkillDto,
   AgentAuthoringSkillSearchResultDto,
+  AgentToolPackCatalogDto,
   SearchAgentAuthoringSkillsResponseDto,
   AgentRefDto,
   WorkflowAgentDetailDto,
@@ -1033,6 +1034,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [agentAuthoringLoading, setAgentAuthoringLoading] = useState(false)
   const [agentAuthoringCatalog, setAgentAuthoringCatalog] =
     useState<AgentAuthoringCatalogDto | null>(null)
+  const [agentToolPackCatalog, setAgentToolPackCatalog] =
+    useState<AgentToolPackCatalogDto | null>(null)
   const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
     useState<EnvironmentDiscoveryStatusDto | null>(null)
   const [environmentProfileSummary, setEnvironmentProfileSummary] =
@@ -1490,6 +1493,46 @@ export function XeroApp({ adapter }: XeroAppProps) {
     () => getVcsCommitMessageModel(agentView, agentComposerControls),
     [agentComposerControls, agentView],
   )
+  const memoryReviewAdapter = useMemo(() => {
+    if (
+      !resolvedAdapter.getSessionMemoryReviewQueue ||
+      !resolvedAdapter.updateSessionMemory ||
+      !resolvedAdapter.correctSessionMemory ||
+      !resolvedAdapter.deleteSessionMemory
+    ) {
+      return null
+    }
+    return {
+      getQueue: resolvedAdapter.getSessionMemoryReviewQueue.bind(resolvedAdapter),
+      updateMemory: resolvedAdapter.updateSessionMemory.bind(resolvedAdapter),
+      correctMemory: resolvedAdapter.correctSessionMemory.bind(resolvedAdapter),
+      deleteMemory: resolvedAdapter.deleteSessionMemory.bind(resolvedAdapter),
+    }
+  }, [resolvedAdapter])
+  const projectRecordsAdapter = useMemo(
+    () => ({
+      listRecords: resolvedAdapter.listProjectContextRecords.bind(resolvedAdapter),
+      deleteRecord: resolvedAdapter.deleteProjectContextRecord.bind(resolvedAdapter),
+      supersedeRecord: resolvedAdapter.supersedeProjectContextRecord.bind(resolvedAdapter),
+    }),
+    [resolvedAdapter],
+  )
+  const projectStateAdapter = useMemo(() => {
+    if (
+      !resolvedAdapter.listProjectStateBackups ||
+      !resolvedAdapter.createProjectStateBackup ||
+      !resolvedAdapter.restoreProjectStateBackup ||
+      !resolvedAdapter.repairProjectState
+    ) {
+      return null
+    }
+    return {
+      listBackups: resolvedAdapter.listProjectStateBackups.bind(resolvedAdapter),
+      createBackup: resolvedAdapter.createProjectStateBackup.bind(resolvedAdapter),
+      restoreBackup: resolvedAdapter.restoreProjectStateBackup.bind(resolvedAdapter),
+      repairProjectState: resolvedAdapter.repairProjectState.bind(resolvedAdapter),
+    }
+  }, [resolvedAdapter])
   const workflowAgentCreateActive =
     activeView === 'phases' && agentAuthoringSession?.mode === 'create'
   const pendingAgentDockRuntimeAgentId: RuntimeAgentIdDto | null =
@@ -1856,6 +1899,30 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
   }, [agentAuthoringSession, activeProjectId, agentAuthoringCatalog, resolvedAdapter])
 
+  // Lazy-load the tool-pack catalog the same way. The granular policy editor
+  // in the canvas properties panel consumes it for the pack picker and to
+  // expand `allowedToolPacks` entries into the tools they grant.
+  useEffect(() => {
+    if (!agentAuthoringSession) return
+    if (!activeProjectId) return
+    if (agentToolPackCatalog) return
+    if (!resolvedAdapter.getAgentToolPackCatalog) return
+    let cancelled = false
+    void resolvedAdapter
+      .getAgentToolPackCatalog({ projectId: activeProjectId })
+      .then((catalog) => {
+        if (cancelled) return
+        setAgentToolPackCatalog(catalog)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        console.error('Failed to load agent tool-pack catalog', error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [agentAuthoringSession, activeProjectId, agentToolPackCatalog, resolvedAdapter])
+
   const handleSearchAttachableSkills = useCallback(
     async (params: {
       query: string
@@ -1955,6 +2022,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
     [activeProjectId, resolvedAdapter],
   )
 
+  const handleCreateAgentFromTemplate = useCallback(
+    (ref: AgentRefDto) => {
+      void handleStartAgentAuthoringFromRef('duplicate', ref)
+    },
+    [handleStartAgentAuthoringFromRef],
+  )
+
   const handleCloseAgentAuthoring = useCallback(() => {
     setAgentAuthoringSession(null)
   }, [])
@@ -1964,10 +2038,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
       snapshot,
       mode,
       definitionId,
+      dryRun,
     }: {
       snapshot: Record<string, unknown>
       mode: 'create' | 'edit' | 'duplicate'
       definitionId?: string
+      dryRun?: boolean
     }) => {
       if (!activeProjectId) {
         throw new Error('Select a project before saving an agent definition.')
@@ -1978,11 +2054,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
           projectId: activeProjectId,
           definitionId,
           definition,
+          dryRun: dryRun ?? false,
         })
       }
       return resolvedAdapter.saveAgentDefinition({
         projectId: activeProjectId,
         definition,
+        dryRun: dryRun ?? false,
       })
     },
     [activeProjectId, resolvedAdapter],
@@ -2457,6 +2535,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onToggleWorkflows={toggleWorkflows}
                 workflowsOpen={workflowsOpen}
                 onCreateAgent={handleCreateAgent}
+                onCreateAgentFromTemplate={handleCreateAgentFromTemplate}
+                templates={workflowAgentInspector.agents}
+                templatesLoading={workflowAgentInspector.agentsStatus === 'loading'}
+                templatesError={workflowAgentInspector.agentsError}
                 agentDetail={workflowAgentInspector.detail}
                 agentDetailStatus={workflowAgentInspector.detailStatus}
                 agentDetailError={workflowAgentInspector.detailError}
@@ -2464,6 +2546,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onReloadAgentDetail={workflowAgentInspector.reloadDetail}
                 authoringSession={agentAuthoringSession}
                 authoringCatalog={agentAuthoringCatalog}
+                toolPackCatalog={agentToolPackCatalog}
                 onSearchAttachableSkills={handleSearchAttachableSkills}
                 onResolveAttachableSkill={handleResolveAttachableSkill}
                 onAuthoringSubmit={handleAgentAuthoringSubmit}
@@ -2983,6 +3066,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 dictationAdapter={resolvedAdapter}
                 soulAdapter={resolvedAdapter}
                 agentToolingAdapter={resolvedAdapter}
+                memoryReviewAdapter={memoryReviewAdapter}
+                projectRecordsAdapter={projectRecordsAdapter}
+                projectStateAdapter={projectStateAdapter}
                 onUpsertNotificationRoute={(request) =>
                   upsertNotificationRoute({ ...request, updatedAt: new Date().toISOString() })
                 }
@@ -3031,6 +3117,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onListAgentDefinitions={(request) => resolvedAdapter.listAgentDefinitions(request)}
                 onArchiveAgentDefinition={(request) => resolvedAdapter.archiveAgentDefinition(request)}
                 onGetAgentDefinitionVersion={(request) => resolvedAdapter.getAgentDefinitionVersion(request)}
+                onGetAgentDefinitionVersionDiff={(request) => resolvedAdapter.getAgentDefinitionVersionDiff(request)}
                 onAgentRegistryChanged={refreshCustomAgentDefinitions}
               />
             </Suspense>

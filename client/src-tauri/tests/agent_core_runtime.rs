@@ -43,12 +43,15 @@ use xero_desktop_lib::{
         continue_owned_agent_run, create_owned_agent_run, drive_owned_agent_run,
         export_harness_contract, run_owned_agent_task, AgentAutoCompactPreference,
         AgentProviderConfig, AgentRunCancellationToken, AgentRunSupervisor, AgentToolCall,
-        AutonomousCommandRequest, AutonomousCommandSessionOperation,
-        AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
-        AutonomousToolOutput, AutonomousToolRuntime, ContinueOwnedAgentRunRequest,
-        DesktopAgentCoreRuntime, DesktopCompactSessionRequest, DesktopForkSessionRequest,
-        DesktopRejectActionRequest, DesktopRunDriveMode, DesktopStartRunRequest,
-        OpenAiCompatibleProviderConfig, OwnedAgentRunRequest, ToolRegistry, ToolRegistryOptions,
+        AutonomousAgentToolPolicy, AutonomousAgentWorkflowPolicy, AutonomousCommandRequest,
+        AutonomousCommandSessionOperation, AutonomousCommandSessionStartRequest,
+        AutonomousCommandSessionStopRequest, AutonomousEditRequest, AutonomousReadRequest,
+        AutonomousTodoAction, AutonomousTodoRequest, AutonomousTodoStatus, AutonomousToolOutput,
+        AutonomousToolRequest, AutonomousToolRuntime, AutonomousWriteRequest,
+        ContinueOwnedAgentRunRequest, DesktopAgentCoreRuntime, DesktopCompactSessionRequest,
+        DesktopForkSessionRequest, DesktopRejectActionRequest, DesktopRunDriveMode,
+        DesktopStartRunRequest, OpenAiCompatibleProviderConfig, OwnedAgentRunRequest, ToolRegistry,
+        ToolRegistryOptions, AUTONOMOUS_TOOL_MCP_LIST,
     },
     state::DesktopState,
 };
@@ -1509,6 +1512,44 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         })
         .expect_err("unknown tools should be rejected");
     assert_eq!(unknown.code, "agent_tool_call_unknown");
+}
+
+#[test]
+fn custom_tool_policy_denies_mcp_server_outside_allowlist() {
+    let policy = AutonomousAgentToolPolicy::from_definition_snapshot(&json!({
+        "toolPolicy": {
+            "allowedTools": [AUTONOMOUS_TOOL_MCP_LIST],
+            "deniedTools": [],
+            "allowedEffectClasses": ["external_service"],
+            "externalServiceAllowed": true,
+            "allowedMcpServers": ["docs"],
+            "deniedMcpServers": [],
+            "allowedDynamicTools": [],
+            "deniedDynamicTools": []
+        }
+    }))
+    .expect("policy from definition");
+    let registry = ToolRegistry::for_tool_names_with_options(
+        BTreeSet::from([AUTONOMOUS_TOOL_MCP_LIST.to_string()]),
+        ToolRegistryOptions {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_tool_policy: Some(policy),
+            ..ToolRegistryOptions::default()
+        },
+    );
+
+    let denied = registry
+        .decode_call(&AgentToolCall {
+            tool_call_id: "call-mcp-list".into(),
+            tool_name: AUTONOMOUS_TOOL_MCP_LIST.into(),
+            input: json!({
+                "action": "list_tools",
+                "serverId": "github"
+            }),
+        })
+        .expect_err("MCP server outside allowlist should be denied");
+
+    assert_eq!(denied.code, "agent_tool_mcp_policy_denied");
 }
 
 #[test]
@@ -4878,4 +4919,267 @@ fn cancel_agent_run_flips_background_task_cancellation_token() {
         event.event_kind == db::project_store::AgentRunEventKind::RunFailed
             && event.payload_json.contains("agent_run_cancelled")
     }));
+}
+
+fn load_seeded_definition_snapshot(
+    repo_root: &Path,
+    definition_id: &str,
+    version: u32,
+) -> serde_json::Value {
+    db::project_store::load_effective_agent_definition_version_snapshot(
+        repo_root,
+        definition_id,
+        version,
+    )
+    .unwrap_or_else(|err| panic!("load {definition_id} v{version} snapshot: {err}"))
+}
+
+fn phase_ids_in_snapshot(snapshot: &serde_json::Value) -> Vec<String> {
+    snapshot
+        .get("workflowStructure")
+        .and_then(|value| value.get("phases"))
+        .and_then(|value| value.as_array())
+        .map(|phases| {
+            phases
+                .iter()
+                .filter_map(|phase| {
+                    phase
+                        .get("id")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn built_in_agents_seed_workflow_structure_v2() {
+    let root = TempDir::new().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (_, repo_root) = seed_project(&root, &app);
+
+    let definitions = db::project_store::list_agent_definitions(&repo_root, true)
+        .expect("list seeded agent definitions");
+    let by_id: std::collections::BTreeMap<_, _> = definitions
+        .into_iter()
+        .map(|record| (record.definition_id.clone(), record))
+        .collect();
+
+    for (definition_id, expected_phases) in [
+        ("engineer", vec!["survey", "plan", "implement", "verify"]),
+        ("debug", vec!["reproduce", "hypothesize", "fix", "verify"]),
+        ("plan", vec!["discover", "draft", "accept"]),
+        ("agent_create", vec!["interview", "draft"]),
+    ] {
+        let record = by_id
+            .get(definition_id)
+            .unwrap_or_else(|| panic!("missing built-in `{definition_id}` after migration"));
+        assert_eq!(
+            record.current_version, 2,
+            "expected `{definition_id}` to be bumped to v2 by the workflowStructure migration"
+        );
+
+        let snapshot = load_seeded_definition_snapshot(&repo_root, definition_id, 2);
+        let actual_phases = phase_ids_in_snapshot(&snapshot);
+        assert_eq!(
+            actual_phases, expected_phases,
+            "`{definition_id}` v2 snapshot phase ids do not match the AGENT_STAGES_PLAN spec"
+        );
+
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot);
+        assert!(
+            policy.is_some(),
+            "`{definition_id}` v2 snapshot must parse into AutonomousAgentWorkflowPolicy"
+        );
+    }
+
+    for (definition_id, expected_version) in [("ask", 1u32), ("crawl", 1u32)] {
+        let record = by_id
+            .get(definition_id)
+            .unwrap_or_else(|| panic!("missing built-in `{definition_id}`"));
+        assert_eq!(
+            record.current_version, expected_version,
+            "`{definition_id}` must remain at v{expected_version} (no workflowStructure planned)"
+        );
+    }
+}
+
+#[test]
+fn engineer_workflow_blocks_write_before_survey_reads() {
+    let root = TempDir::new().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (_, repo_root) = seed_project(&root, &app);
+
+    let snapshot = load_seeded_definition_snapshot(&repo_root, "engineer", 2);
+    let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot)
+        .expect("engineer v2 workflow policy");
+
+    let tempdir = TempDir::new().expect("workflow tempdir");
+    let runtime = AutonomousToolRuntime::new(tempdir.path())
+        .expect("autonomous tool runtime")
+        .with_agent_workflow_policy(Some(policy));
+
+    std::fs::write(tempdir.path().join("a.txt"), "alpha\n").expect("seed file a");
+    std::fs::write(tempdir.path().join("b.txt"), "beta\n").expect("seed file b");
+
+    let denied = runtime
+        .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
+            path: "premature.txt".into(),
+            content: "no\n".into(),
+        }))
+        .expect_err("write must be denied while engineer is in `survey`");
+    assert_eq!(denied.code, "policy_denied");
+    assert!(
+        denied.message.to_lowercase().contains("survey")
+            || denied.message.contains("required gates"),
+        "denial should mention the survey phase / gates, got: {}",
+        denied.message,
+    );
+
+    for path in ["a.txt", "b.txt"] {
+        runtime
+            .execute(AutonomousToolRequest::Read(AutonomousReadRequest {
+                path: path.into(),
+                system_path: false,
+                mode: None,
+                start_line: None,
+                line_count: None,
+                byte_offset: None,
+                byte_count: None,
+                include_line_hashes: false,
+            }))
+            .unwrap_or_else(|err| panic!("read {path}: {err:?}"));
+    }
+
+    let still_denied = runtime
+        .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
+            path: "still_no.txt".into(),
+            content: "no\n".into(),
+        }))
+        .expect_err("write must still be denied before the implementation_plan todo closes");
+    assert_eq!(still_denied.code, "policy_denied");
+
+    runtime
+        .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+            action: AutonomousTodoAction::Upsert,
+            id: Some("implementation_plan".into()),
+            title: Some("Implementation plan".into()),
+            notes: None,
+            status: Some(AutonomousTodoStatus::Completed),
+            mode: None,
+            debug_stage: None,
+            evidence: Some("Plan recorded in todo gate.".into()),
+            phase_id: Some("plan".into()),
+            phase_title: Some("Plan".into()),
+            slice_id: None,
+            handoff_note: None,
+        }))
+        .expect("close implementation_plan todo");
+
+    runtime
+        .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
+            path: "implemented.txt".into(),
+            content: "ok\n".into(),
+        }))
+        .expect("write allowed in `implement` after gates pass");
+}
+
+#[test]
+fn debug_workflow_blocks_edit_before_hypothesis_todo() {
+    let root = TempDir::new().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (_, repo_root) = seed_project(&root, &app);
+
+    let snapshot = load_seeded_definition_snapshot(&repo_root, "debug", 2);
+    let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot)
+        .expect("debug v2 workflow policy");
+
+    let tempdir = TempDir::new().expect("workflow tempdir");
+    let runtime = AutonomousToolRuntime::new(tempdir.path())
+        .expect("autonomous tool runtime")
+        .with_agent_workflow_policy(Some(policy));
+
+    std::fs::write(tempdir.path().join("repro.txt"), "first\nsecond\n").expect("seed repro file");
+
+    let denied = runtime
+        .execute(AutonomousToolRequest::Edit(AutonomousEditRequest {
+            path: "repro.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "first\n".into(),
+            replacement: "patched\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+        }))
+        .expect_err("edit must be denied in `reproduce` phase");
+    assert_eq!(denied.code, "policy_denied");
+    assert!(
+        denied.message.to_lowercase().contains("reproduce")
+            || denied.message.contains("required gates"),
+        "denial should mention the reproduce phase / gates, got: {}",
+        denied.message,
+    );
+
+    runtime
+        .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+            action: AutonomousTodoAction::Upsert,
+            id: Some("reproduction_steps".into()),
+            title: Some("Reproduction steps".into()),
+            notes: None,
+            status: Some(AutonomousTodoStatus::Completed),
+            mode: None,
+            debug_stage: None,
+            evidence: Some("Captured steps.".into()),
+            phase_id: Some("reproduce".into()),
+            phase_title: Some("Reproduce".into()),
+            slice_id: None,
+            handoff_note: None,
+        }))
+        .expect("close reproduction_steps todo");
+
+    let still_denied = runtime
+        .execute(AutonomousToolRequest::Edit(AutonomousEditRequest {
+            path: "repro.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "first\n".into(),
+            replacement: "patched\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+        }))
+        .expect_err("edit must still be denied before hypothesis todo closes");
+    assert_eq!(still_denied.code, "policy_denied");
+
+    runtime
+        .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+            action: AutonomousTodoAction::Upsert,
+            id: Some("hypothesis".into()),
+            title: Some("Hypothesis".into()),
+            notes: None,
+            status: Some(AutonomousTodoStatus::Completed),
+            mode: None,
+            debug_stage: None,
+            evidence: Some("Hypothesis captured.".into()),
+            phase_id: Some("hypothesize".into()),
+            phase_title: Some("Hypothesize".into()),
+            slice_id: None,
+            handoff_note: None,
+        }))
+        .expect("close hypothesis todo");
+
+    runtime
+        .execute(AutonomousToolRequest::Edit(AutonomousEditRequest {
+            path: "repro.txt".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "first\n".into(),
+            replacement: "patched\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+        }))
+        .expect("edit allowed in `fix` after both reproduce and hypothesize todos close");
 }

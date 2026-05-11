@@ -408,7 +408,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
         },
         RuntimeAgentIdDto::Plan => RuntimeAgentDescriptorDto {
             id: agent_id,
-            version: 1,
+            version: 2,
             label: "Plan".into(),
             short_label: "Plan".into(),
             description: "Turn ambiguous work into an accepted, durable implementation plan without mutating repository files.".into(),
@@ -427,7 +427,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
         },
         RuntimeAgentIdDto::Engineer => RuntimeAgentDescriptorDto {
             id: agent_id,
-            version: 1,
+            version: 2,
             label: "Engineer".into(),
             short_label: "Build".into(),
             description: "Implement repository changes with the existing software-building toolset and safety gates.".into(),
@@ -446,7 +446,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
         },
         RuntimeAgentIdDto::Debug => RuntimeAgentDescriptorDto {
             id: agent_id,
-            version: 1,
+            version: 2,
             label: "Debug".into(),
             short_label: "Debug".into(),
             description: "Investigate failures with structured evidence, hypotheses, fixes, verification, and durable debugging memory.".into(),
@@ -484,7 +484,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
         },
         RuntimeAgentIdDto::AgentCreate => RuntimeAgentDescriptorDto {
             id: agent_id,
-            version: 1,
+            version: 2,
             label: "Agent Create".into(),
             short_label: "Create".into(),
             description: "Interview the user, validate custom agent definitions, and save approved definitions without mutating repositories.".into(),

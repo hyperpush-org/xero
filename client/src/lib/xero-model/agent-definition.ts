@@ -10,7 +10,7 @@ import {
 } from './skills'
 
 export const AGENT_DEFINITION_SCHEMA = 'xero.agent_definition.v1'
-export const AGENT_DEFINITION_SCHEMA_VERSION = 2
+export const AGENT_DEFINITION_SCHEMA_VERSION = 3
 const jsonObjectSchema = z.record(z.string(), z.unknown())
 
 const addDuplicateStringIssues = (
@@ -135,6 +135,10 @@ export const customAgentToolPolicySchema = z
     deniedToolPacks: trimmedTextArraySchema.optional(),
     allowedToolGroups: trimmedTextArraySchema.optional(),
     deniedToolGroups: trimmedTextArraySchema.optional(),
+    allowedMcpServers: trimmedTextArraySchema.optional(),
+    deniedMcpServers: trimmedTextArraySchema.optional(),
+    allowedDynamicTools: trimmedTextArraySchema.optional(),
+    deniedDynamicTools: trimmedTextArraySchema.optional(),
     allowedEffectClasses: z.array(customAgentToolEffectClassSchema).optional(),
     externalServiceAllowed: z.boolean().optional(),
     browserControlAllowed: z.boolean().optional(),
@@ -176,6 +180,30 @@ export const customAgentToolPolicySchema = z
       ['allowedToolGroups'],
       policy.allowedToolGroups ?? [],
       'Custom agent allowed tool groups must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['allowedMcpServers'],
+      policy.allowedMcpServers ?? [],
+      'Custom agent allowed MCP servers must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['deniedMcpServers'],
+      policy.deniedMcpServers ?? [],
+      'Custom agent denied MCP servers must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['allowedDynamicTools'],
+      policy.allowedDynamicTools ?? [],
+      'Custom agent allowed dynamic tools must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['deniedDynamicTools'],
+      policy.deniedDynamicTools ?? [],
+      'Custom agent denied dynamic tools must be unique.',
     )
     addDuplicateStringIssues(
       ctx,
@@ -577,6 +605,7 @@ export const canonicalCustomAgentDefinitionBaseSchema = z
   .object({
     schema: z.literal(AGENT_DEFINITION_SCHEMA),
     schemaVersion: z.literal(AGENT_DEFINITION_SCHEMA_VERSION),
+    extends: nonEmptyTextSchema.optional(),
     id: nonEmptyTextSchema,
     version: z.number().int().positive().optional(),
     displayName: nonEmptyTextSchema,
@@ -843,6 +872,7 @@ export const saveAgentDefinitionRequestSchema = z
     projectId: z.string().trim().min(1),
     definition: canonicalCustomAgentDefinitionSchema,
     definitionId: z.string().trim().min(1).nullable().optional(),
+    dryRun: z.boolean().optional(),
   })
   .strict()
   .superRefine((request, ctx) => {
@@ -863,6 +893,7 @@ export const updateAgentDefinitionRequestSchema = z
     projectId: z.string().trim().min(1),
     definitionId: z.string().trim().min(1),
     definition: canonicalCustomAgentDefinitionSchema,
+    dryRun: z.boolean().optional(),
   })
   .strict()
   .superRefine((request, ctx) => {
@@ -917,7 +948,9 @@ export const agentPreviewPromptSchema = z
     compiler: z.literal('PromptCompiler'),
     selectionMode: z.literal('capability_ceiling_without_task_prompt'),
     promptSha256: z.string().trim().regex(/^[a-f0-9]{64}$/),
-    promptBudgetTokens: z.number().int().positive(),
+    // Preview compilation has no provider/model attached, so the prompt
+    // budget is unknown. Allow null and surface that as "—" in the UI.
+    promptBudgetTokens: z.number().int().positive().nullable(),
     estimatedPromptTokens: z.number().int().nonnegative(),
     fragmentCount: z.number().int().nonnegative(),
     fragmentIds: z.array(z.string().trim().min(1)),
@@ -1429,14 +1462,124 @@ export type AgentDefinitionValidationReportDto = z.infer<
   typeof agentDefinitionValidationReportSchema
 >
 
+export const agentDefinitionPreSaveReviewSchema = z
+  .object({
+    schema: z.literal('xero.agent_definition_pre_save_review.v1'),
+    definitionId: z.string().trim().min(1),
+    isInitialVersion: z.boolean(),
+    fromVersion: z.number().int().nonnegative().nullable(),
+    toVersion: z.number().int().positive(),
+    fromCreatedAt: isoTimestampSchema.nullable(),
+    toCreatedAt: isoTimestampSchema,
+    changed: z.boolean(),
+    changedSections: z.array(z.string().trim().min(1)),
+    sections: z.array(agentDefinitionVersionDiffSectionSchema),
+  })
+  .strict()
+  .superRefine((review, ctx) => {
+    if (review.isInitialVersion) {
+      if (review.fromVersion !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['fromVersion'],
+          message: 'Initial-version reviews must report a null fromVersion.',
+        })
+      }
+      if (review.fromCreatedAt !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['fromCreatedAt'],
+          message: 'Initial-version reviews must report a null fromCreatedAt.',
+        })
+      }
+    } else {
+      if (review.fromVersion === null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['fromVersion'],
+          message: 'Update reviews must include the prior version number.',
+        })
+      }
+      if (review.fromCreatedAt === null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['fromCreatedAt'],
+          message: 'Update reviews must include the prior createdAt timestamp.',
+        })
+      }
+      if (review.fromVersion !== null && review.fromVersion >= review.toVersion) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['toVersion'],
+          message: 'Pre-save review toVersion must exceed the prior version.',
+        })
+      }
+    }
+    addDuplicateStringIssues(
+      ctx,
+      ['changedSections'],
+      review.changedSections,
+      'Pre-save review changedSections must be unique.',
+    )
+    addDuplicateStringIssues(
+      ctx,
+      ['sections'],
+      review.sections.map((section) => section.section),
+      'Pre-save review sections must be unique.',
+    )
+    const changedSections = review.sections
+      .filter((section) => section.changed)
+      .map((section) => section.section)
+    if (review.changed !== (changedSections.length > 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['changed'],
+        message: 'Pre-save review changed flag must match changed sections.',
+      })
+    }
+    const declared = [...review.changedSections].sort()
+    const computed = [...changedSections].sort()
+    if (
+      declared.length !== computed.length ||
+      declared.some((section, index) => section !== computed[index])
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['changedSections'],
+        message: 'Pre-save review changedSections must match changed section entries.',
+      })
+    }
+  })
+export type AgentDefinitionPreSaveReviewDto = z.infer<
+  typeof agentDefinitionPreSaveReviewSchema
+>
+
 export const agentDefinitionWriteResponseSchema = z
   .object({
     applied: z.boolean(),
     message: z.string(),
     summary: agentDefinitionSummarySchema.nullable().optional(),
     validation: agentDefinitionValidationReportSchema,
+    approvalRequired: z.boolean().optional(),
+    approvalReview: agentDefinitionPreSaveReviewSchema.nullable().optional(),
   })
   .strict()
+  .superRefine((response, ctx) => {
+    if (response.applied && response.approvalRequired) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['approvalRequired'],
+        message: 'Applied writes cannot also require approval.',
+      })
+    }
+    if (response.approvalRequired && response.approvalReview == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['approvalReview'],
+        message: 'Approval-required writes must include a pre-save review payload.',
+      })
+    }
+  })
 export type AgentDefinitionWriteResponseDto = z.infer<
   typeof agentDefinitionWriteResponseSchema
 >

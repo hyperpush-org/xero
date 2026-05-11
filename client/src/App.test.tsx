@@ -1851,11 +1851,39 @@ function createAdapter(options?: {
       updatedAt: null,
       diagnostics: [],
     }),
+    listProjectContextRecords: async ({ projectId }) => ({
+      schema: 'xero.project_context_record_list_command.v1' as const,
+      projectId,
+      records: [],
+      uiDeferred: true,
+    }),
+    deleteProjectContextRecord: async ({ projectId, recordId }) => ({
+      schema: 'xero.project_context_record_delete_command.v1' as const,
+      projectId,
+      recordId,
+      retrievalRemoved: true,
+      uiDeferred: true,
+    }),
+    supersedeProjectContextRecord: async ({
+      projectId,
+      supersededRecordId,
+      supersedingRecordId,
+    }) => ({
+      schema: 'xero.project_context_record_supersede_command.v1' as const,
+      projectId,
+      supersededRecordId,
+      supersedingRecordId,
+      retrievalChanged: true,
+      uiDeferred: true,
+    }),
     listAgentDefinitions: async () => ({ definitions: [] }),
     archiveAgentDefinition: async () => {
       throw new Error('archiveAgentDefinition not stubbed in test adapter')
     },
     getAgentDefinitionVersion: async () => null,
+    getAgentDefinitionVersionDiff: async () => {
+      throw new Error('getAgentDefinitionVersionDiff not stubbed in test adapter')
+    },
     saveAgentDefinition: async () => {
       throw new Error('saveAgentDefinition not stubbed in test adapter')
     },
@@ -2876,6 +2904,11 @@ describe('XeroApp current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
+
+    // The "Create agent" affordance now opens a dialog so the user can pick
+    // between starting blank and copying a template. The blank path should
+    // land on the authoring canvas.
+    fireEvent.click(await screen.findByRole('button', { name: /New agent/ }))
 
     expect(await screen.findByLabelText('Agent authoring canvas')).toBeVisible()
     const dock = await screen.findByLabelText('Agent dock')

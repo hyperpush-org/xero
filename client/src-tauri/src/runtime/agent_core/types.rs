@@ -468,7 +468,27 @@ impl ToolRegistry {
                     options.agent_tool_policy.as_ref(),
                 )
             })
+            .filter(|descriptor| {
+                options
+                    .agent_tool_policy
+                    .as_ref()
+                    .map(|policy| {
+                        dynamic_routes
+                            .get(&descriptor.name)
+                            .map(|route| policy.allows_dynamic_tool_route(&descriptor.name, route))
+                            .unwrap_or(true)
+                    })
+                    .unwrap_or(true)
+            })
             .collect::<Vec<_>>();
+        let allowed_dynamic_names = descriptors
+            .iter()
+            .map(|descriptor| descriptor.name.clone())
+            .collect::<BTreeSet<_>>();
+        let dynamic_routes = dynamic_routes
+            .into_iter()
+            .filter(|(tool_name, _)| allowed_dynamic_names.contains(tool_name))
+            .collect();
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         sort_descriptors_for_tool_application_style(
             &mut descriptors,
@@ -648,15 +668,23 @@ impl ToolRegistry {
                     .unwrap_or(true)
             {
                 if let Some(dynamic) = tool_runtime.dynamic_tool_descriptor(tool_name)? {
-                    descriptors_by_name.insert(
-                        dynamic.name.clone(),
-                        AgentToolDescriptor {
-                            name: dynamic.name.clone(),
-                            description: dynamic.description,
-                            input_schema: dynamic.input_schema,
-                        },
-                    );
-                    dynamic_routes.insert(dynamic.name, dynamic.route);
+                    if self
+                        .options
+                        .agent_tool_policy
+                        .as_ref()
+                        .map(|policy| policy.allows_dynamic_tool_descriptor(&dynamic))
+                        .unwrap_or(true)
+                    {
+                        descriptors_by_name.insert(
+                            dynamic.name.clone(),
+                            AgentToolDescriptor {
+                                name: dynamic.name.clone(),
+                                description: dynamic.description,
+                                input_schema: dynamic.input_schema,
+                            },
+                        );
+                        dynamic_routes.insert(dynamic.name, dynamic.route);
+                    }
                 }
             }
         }
@@ -731,6 +759,15 @@ impl ToolRegistry {
         validate_call_for_runtime_agent(self.options.runtime_agent_id, tool_call)?;
 
         if let Some(route) = self.dynamic_routes.get(&tool_call.tool_name) {
+            if !self
+                .options
+                .agent_tool_policy
+                .as_ref()
+                .map(|policy| policy.allows_dynamic_tool_route(&tool_call.tool_name, route))
+                .unwrap_or(true)
+            {
+                return Err(agent_tool_mcp_policy_denied(&tool_call.tool_name));
+            }
             return match route {
                 AutonomousDynamicToolRoute::McpTool {
                     server_id,
@@ -747,22 +784,42 @@ impl ToolRegistry {
         }
 
         if let Some(request) = decode_action_level_tool_call(tool_call) {
-            return request;
+            let request = request?;
+            self.enforce_tool_policy_for_request(&tool_call.tool_name, &request)?;
+            return Ok(request);
         }
 
         let request_value = json!({
             "tool": tool_call.tool_name,
             "input": tool_call.input,
         });
-        serde_json::from_value::<AutonomousToolRequest>(request_value).map_err(|error| {
-            CommandError::user_fixable(
-                "agent_tool_call_invalid",
-                format!(
-                    "Xero could not decode owned-agent tool call `{}` for `{}`: {error}",
-                    tool_call.tool_call_id, tool_call.tool_name
-                ),
-            )
-        })
+        let request =
+            serde_json::from_value::<AutonomousToolRequest>(request_value).map_err(|error| {
+                CommandError::user_fixable(
+                    "agent_tool_call_invalid",
+                    format!(
+                        "Xero could not decode owned-agent tool call `{}` for `{}`: {error}",
+                        tool_call.tool_call_id, tool_call.tool_name
+                    ),
+                )
+            })?;
+        self.enforce_tool_policy_for_request(&tool_call.tool_name, &request)?;
+        Ok(request)
+    }
+
+    fn enforce_tool_policy_for_request(
+        &self,
+        tool_name: &str,
+        request: &AutonomousToolRequest,
+    ) -> CommandResult<()> {
+        if let (Some(policy), AutonomousToolRequest::Mcp(request)) =
+            (self.options.agent_tool_policy.as_ref(), request)
+        {
+            if !policy.allows_mcp_request(request) {
+                return Err(agent_tool_mcp_policy_denied(tool_name));
+            }
+        }
+        Ok(())
     }
 
     pub fn validate_call(&self, tool_call: &AgentToolCall) -> CommandResult<()> {
@@ -1329,6 +1386,13 @@ fn agent_tool_boundary_violation(
             "The {} agent cannot use tool `{tool_name}` because it is outside that agent's authority.",
             runtime_agent_id.label()
         ),
+    )
+}
+
+fn agent_tool_mcp_policy_denied(tool_name: &str) -> CommandError {
+    CommandError::user_fixable(
+        "agent_tool_mcp_policy_denied",
+        format!("Custom agent policy denied MCP access for tool `{tool_name}`."),
     )
 }
 

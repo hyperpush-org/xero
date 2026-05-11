@@ -59,6 +59,17 @@ describe('agent report command contracts', () => {
       }).limit,
     ).toBe(25)
     expect(getAgentHandoffContextSummaryRequestSchema.parse({ projectId, handoffId }).handoffId).toBe(handoffId)
+    expect(
+      getAgentHandoffContextSummaryRequestSchema.parse({ projectId, targetRunId: 'run-target' })
+        .targetRunId,
+    ).toBe('run-target')
+    expect(
+      getAgentHandoffContextSummaryRequestSchema.parse({ projectId, sourceRunId: 'run-source' })
+        .sourceRunId,
+    ).toBe('run-source')
+    expect(() => getAgentHandoffContextSummaryRequestSchema.parse({ projectId })).toThrow(
+      /handoffId, targetRunId, or sourceRunId/i,
+    )
     expect(getAgentSupportDiagnosticsBundleRequestSchema.parse({ projectId, runId }).runId).toBe(runId)
     expect(
       getCapabilityPermissionExplanationRequestSchema.parse({

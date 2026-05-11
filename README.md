@@ -72,9 +72,11 @@ It combines:
 
 Main shell views:
 
-- **Workflow**
+- **Workflow** — the agent-canvas surface, where you author and inspect agents.
 - **Agent**
 - **Editor**
+
+Inside an agent canvas you can add **Stages**: gated phases that the agent moves through during a single run. Each stage decides which tools the agent may call, and the agent can only leave a stage once the gates you configure pass. Stages restrict *one* agent over time; the future "Workflow" pipeline (composing multiple agents end-to-end) is reserved but not yet implemented — don't conflate the two.
 
 Sidebar tools:
 

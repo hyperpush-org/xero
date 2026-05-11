@@ -21,9 +21,11 @@ import {
 import {
   agentDefinitionPreviewResponseSchema,
   agentDefinitionSummarySchema,
+  agentDefinitionVersionDiffSchema,
   agentDefinitionVersionSummarySchema,
   agentDefinitionWriteResponseSchema,
   archiveAgentDefinitionRequestSchema,
+  getAgentDefinitionVersionDiffRequestSchema,
   getAgentDefinitionVersionRequestSchema,
   listAgentDefinitionsRequestSchema,
   listAgentDefinitionsResponseSchema,
@@ -32,9 +34,11 @@ import {
   updateAgentDefinitionRequestSchema,
   type AgentDefinitionPreviewResponseDto,
   type AgentDefinitionSummaryDto,
+  type AgentDefinitionVersionDiffDto,
   type AgentDefinitionVersionSummaryDto,
   type AgentDefinitionWriteResponseDto,
   type ArchiveAgentDefinitionRequestDto,
+  type GetAgentDefinitionVersionDiffRequestDto,
   type GetAgentDefinitionVersionRequestDto,
   type ListAgentDefinitionsRequestDto,
   type ListAgentDefinitionsResponseDto,
@@ -43,8 +47,20 @@ import {
   type UpdateAgentDefinitionRequestDto,
 } from '@/src/lib/xero-model/agent-definition'
 import {
+  agentHandoffContextSummarySchema,
+  agentKnowledgeInspectionSchema,
+  getAgentHandoffContextSummaryRequestSchema,
+  getAgentKnowledgeInspectionRequestSchema,
+  type AgentHandoffContextSummaryDto,
+  type AgentKnowledgeInspectionDto,
+  type GetAgentHandoffContextSummaryRequestDto,
+  type GetAgentKnowledgeInspectionRequestDto,
+} from '@/src/lib/xero-model/agent-reports'
+import {
   agentAuthoringCatalogSchema,
+  agentToolPackCatalogSchema,
   getAgentAuthoringCatalogRequestSchema,
+  getAgentToolPackCatalogRequestSchema,
   getWorkflowAgentDetailRequestSchema,
   getWorkflowAgentGraphProjectionRequestSchema,
   listWorkflowAgentsRequestSchema,
@@ -57,7 +73,9 @@ import {
   workflowAgentDetailSchema,
   type AgentAuthoringAttachableSkillDto,
   type AgentAuthoringCatalogDto,
+  type AgentToolPackCatalogDto,
   type GetAgentAuthoringCatalogRequestDto,
+  type GetAgentToolPackCatalogRequestDto,
   type GetWorkflowAgentDetailRequestDto,
   type GetWorkflowAgentGraphProjectionRequestDto,
   type ListWorkflowAgentsRequestDto,
@@ -386,11 +404,15 @@ import {
   compactSessionHistoryResponseSchema,
   agentSessionBranchResponseSchema,
   branchAgentSessionRequestSchema,
+  correctSessionMemoryRequestSchema,
+  correctSessionMemoryResponseSchema,
   deleteSessionMemoryRequestSchema,
   extractSessionMemoryCandidatesRequestSchema,
   extractSessionMemoryCandidatesResponseSchema,
   exportSessionTranscriptRequestSchema,
   getSessionContextSnapshotRequestSchema,
+  getSessionMemoryReviewQueueRequestSchema,
+  getSessionMemoryReviewQueueResponseSchema,
   getSessionTranscriptRequestSchema,
   listSessionMemoriesRequestSchema,
   listSessionMemoriesResponseSchema,
@@ -407,10 +429,14 @@ import {
   type BranchAgentSessionRequestDto,
   type CompactSessionHistoryRequestDto,
   type CompactSessionHistoryResponseDto,
+  type CorrectSessionMemoryRequestDto,
+  type CorrectSessionMemoryResponseDto,
   type DeleteSessionMemoryRequestDto,
   type ExtractSessionMemoryCandidatesRequestDto,
   type ExtractSessionMemoryCandidatesResponseDto,
   type GetSessionContextSnapshotRequestDto,
+  type GetSessionMemoryReviewQueueRequestDto,
+  type GetSessionMemoryReviewQueueResponseDto,
   type GetSessionTranscriptRequestDto,
   type ListSessionMemoriesRequestDto,
   type ListSessionMemoriesResponseDto,
@@ -434,11 +460,43 @@ import {
   type ProjectSnapshotResponseDto,
 } from '@/src/lib/xero-model'
 import {
+  deleteProjectContextRecordRequestSchema,
+  deleteProjectContextRecordResponseSchema,
+  listProjectContextRecordsRequestSchema,
+  listProjectContextRecordsResponseSchema,
+  supersedeProjectContextRecordRequestSchema,
+  supersedeProjectContextRecordResponseSchema,
+  type DeleteProjectContextRecordRequestDto,
+  type DeleteProjectContextRecordResponseDto,
+  type ListProjectContextRecordsRequestDto,
+  type ListProjectContextRecordsResponseDto,
+  type SupersedeProjectContextRecordRequestDto,
+  type SupersedeProjectContextRecordResponseDto,
+} from '@/src/lib/xero-model/project-records'
+import {
   agentUsageUpdatedPayloadSchema,
   projectUsageSummarySchema,
   type AgentUsageUpdatedPayloadDto,
   type ProjectUsageSummaryDto,
 } from '@/src/lib/xero-model/usage'
+import {
+  createProjectStateBackupRequestSchema,
+  listProjectStateBackupsRequestSchema,
+  listProjectStateBackupsResponseSchema,
+  projectStateBackupResponseSchema,
+  projectStateRepairResponseSchema,
+  projectStateRestoreResponseSchema,
+  repairProjectStateRequestSchema,
+  restoreProjectStateBackupRequestSchema,
+  type CreateProjectStateBackupRequestDto,
+  type ListProjectStateBackupsRequestDto,
+  type ListProjectStateBackupsResponseDto,
+  type ProjectStateBackupResponseDto,
+  type ProjectStateRepairResponseDto,
+  type ProjectStateRestoreResponseDto,
+  type RepairProjectStateRequestDto,
+  type RestoreProjectStateBackupRequestDto,
+} from '@/src/lib/xero-model/project-state'
 import {
   environmentDiscoveryStatusSchema,
   environmentProbeReportSchema,
@@ -465,6 +523,10 @@ const COMMANDS = {
   writeAppUiState: 'write_app_ui_state',
   readProjectUiState: 'read_project_ui_state',
   writeProjectUiState: 'write_project_ui_state',
+  createProjectStateBackup: 'create_project_state_backup',
+  listProjectStateBackups: 'list_project_state_backups',
+  restoreProjectStateBackup: 'restore_project_state_backup',
+  repairProjectState: 'repair_project_state',
   getProjectLoadBundle: 'get_project_load_bundle',
   getProjectSnapshot: 'get_project_snapshot',
   getProjectUsageSummary: 'get_project_usage_summary',
@@ -496,17 +558,24 @@ const COMMANDS = {
   workspaceQuery: 'workspace_query',
   workspaceExplain: 'workspace_explain',
   workspaceReset: 'workspace_reset',
+  listProjectContextRecords: 'list_project_context_records',
+  deleteProjectContextRecord: 'delete_project_context_record',
+  supersedeProjectContextRecord: 'supersede_project_context_record',
   createAgentSession: 'create_agent_session',
   listAgentDefinitions: 'list_agent_definitions',
   archiveAgentDefinition: 'archive_agent_definition',
   getAgentDefinitionVersion: 'get_agent_definition_version',
+  getAgentDefinitionVersionDiff: 'get_agent_definition_version_diff',
   saveAgentDefinition: 'save_agent_definition',
   updateAgentDefinition: 'update_agent_definition',
   previewAgentDefinition: 'preview_agent_definition',
+  getAgentKnowledgeInspection: 'get_agent_knowledge_inspection',
+  getAgentHandoffContextSummary: 'get_agent_handoff_context_summary',
   listWorkflowAgents: 'list_workflow_agents',
   getWorkflowAgentDetail: 'get_workflow_agent_detail',
   getWorkflowAgentGraphProjection: 'get_workflow_agent_graph_projection',
   getAgentAuthoringCatalog: 'get_agent_authoring_catalog',
+  getAgentToolPackCatalog: 'get_agent_tool_pack_catalog',
   searchAgentAuthoringSkills: 'search_agent_authoring_skills',
   resolveAgentAuthoringSkill: 'resolve_agent_authoring_skill',
   listAgentSessions: 'list_agent_sessions',
@@ -535,7 +604,9 @@ const COMMANDS = {
   rewindAgentSession: 'rewind_agent_session',
   listSessionMemories: 'list_session_memories',
   extractSessionMemoryCandidates: 'extract_session_memory_candidates',
+  getSessionMemoryReviewQueue: 'get_session_memory_review_queue',
   updateSessionMemory: 'update_session_memory',
+  correctSessionMemory: 'correct_session_memory',
   deleteSessionMemory: 'delete_session_memory',
   getRuntimeRun: 'get_runtime_run',
   getRuntimeSession: 'get_runtime_session',
@@ -806,6 +877,16 @@ export interface XeroDesktopAdapter {
   writeAppUiState?(request: WriteAppUiStateRequestDto): Promise<AppUiStateResponseDto>
   readProjectUiState?(request: ReadProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
   writeProjectUiState?(request: WriteProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
+  listProjectStateBackups?(
+    request: ListProjectStateBackupsRequestDto,
+  ): Promise<ListProjectStateBackupsResponseDto>
+  createProjectStateBackup?(
+    request: CreateProjectStateBackupRequestDto,
+  ): Promise<ProjectStateBackupResponseDto>
+  restoreProjectStateBackup?(
+    request: RestoreProjectStateBackupRequestDto,
+  ): Promise<ProjectStateRestoreResponseDto>
+  repairProjectState?(request: RepairProjectStateRequestDto): Promise<ProjectStateRepairResponseDto>
   getProjectSnapshot(projectId: string): Promise<ProjectSnapshotResponseDto>
   getProjectLoadBundle?(
     request: ProjectLoadBundleRequestDto,
@@ -841,6 +922,15 @@ export interface XeroDesktopAdapter {
   workspaceQuery(request: WorkspaceQueryRequestDto): Promise<WorkspaceQueryResponseDto>
   workspaceExplain(request: WorkspaceExplainRequestDto): Promise<WorkspaceExplainResponseDto>
   workspaceReset(projectId: string): Promise<WorkspaceIndexStatusDto>
+  listProjectContextRecords(
+    request: ListProjectContextRecordsRequestDto,
+  ): Promise<ListProjectContextRecordsResponseDto>
+  deleteProjectContextRecord(
+    request: DeleteProjectContextRecordRequestDto,
+  ): Promise<DeleteProjectContextRecordResponseDto>
+  supersedeProjectContextRecord(
+    request: SupersedeProjectContextRecordRequestDto,
+  ): Promise<SupersedeProjectContextRecordResponseDto>
   createAgentSession(request: CreateAgentSessionRequestDto): Promise<AgentSessionDto>
   listAgentDefinitions(
     request: ListAgentDefinitionsRequestDto,
@@ -851,6 +941,9 @@ export interface XeroDesktopAdapter {
   getAgentDefinitionVersion(
     request: GetAgentDefinitionVersionRequestDto,
   ): Promise<AgentDefinitionVersionSummaryDto | null>
+  getAgentDefinitionVersionDiff(
+    request: GetAgentDefinitionVersionDiffRequestDto,
+  ): Promise<AgentDefinitionVersionDiffDto>
   saveAgentDefinition(
     request: SaveAgentDefinitionRequestDto,
   ): Promise<AgentDefinitionWriteResponseDto>
@@ -860,6 +953,12 @@ export interface XeroDesktopAdapter {
   previewAgentDefinition(
     request: PreviewAgentDefinitionRequestDto,
   ): Promise<AgentDefinitionPreviewResponseDto>
+  getAgentKnowledgeInspection?(
+    request: GetAgentKnowledgeInspectionRequestDto,
+  ): Promise<AgentKnowledgeInspectionDto>
+  getAgentHandoffContextSummary?(
+    request: GetAgentHandoffContextSummaryRequestDto,
+  ): Promise<AgentHandoffContextSummaryDto>
   listWorkflowAgents(
     request: ListWorkflowAgentsRequestDto,
   ): Promise<ListWorkflowAgentsResponseDto>
@@ -872,6 +971,9 @@ export interface XeroDesktopAdapter {
   getAgentAuthoringCatalog(
     request: GetAgentAuthoringCatalogRequestDto,
   ): Promise<AgentAuthoringCatalogDto>
+  getAgentToolPackCatalog?(
+    request: GetAgentToolPackCatalogRequestDto,
+  ): Promise<AgentToolPackCatalogDto>
   searchAgentAuthoringSkills?(
     request: SearchAgentAuthoringSkillsRequestDto,
   ): Promise<SearchAgentAuthoringSkillsResponseDto>
@@ -928,7 +1030,13 @@ export interface XeroDesktopAdapter {
   extractSessionMemoryCandidates?(
     request: ExtractSessionMemoryCandidatesRequestDto,
   ): Promise<ExtractSessionMemoryCandidatesResponseDto>
+  getSessionMemoryReviewQueue?(
+    request: GetSessionMemoryReviewQueueRequestDto,
+  ): Promise<GetSessionMemoryReviewQueueResponseDto>
   updateSessionMemory?(request: UpdateSessionMemoryRequestDto): Promise<SessionMemoryRecordDto>
+  correctSessionMemory?(
+    request: CorrectSessionMemoryRequestDto,
+  ): Promise<CorrectSessionMemoryResponseDto>
   deleteSessionMemory?(request: DeleteSessionMemoryRequestDto): Promise<void>
   getRuntimeRun(projectId: string, agentSessionId: string): Promise<RuntimeRunDto | null>
   getRuntimeSession(projectId: string): Promise<RuntimeSessionDto>
@@ -1162,6 +1270,24 @@ function ensureDesktopRuntime(context: string): void {
   }
 }
 
+function formatZodIssueSummary(error: ZodError): string {
+  // Pull the first few issues into the message so consumers (the panel,
+  // logs, the error toast) can see *what* failed without having to dig
+  // into the cause. The full list still lives on the cause for debugging.
+  const issues = error.issues.slice(0, 3)
+  if (issues.length === 0) return ''
+  const summary = issues
+    .map((issue) => {
+      const path = issue.path.length > 0 ? issue.path.join('.') : '(root)'
+      return `${path}: ${issue.message}`
+    })
+    .join(' | ')
+  const more = error.issues.length > issues.length
+    ? ` (+${error.issues.length - issues.length} more)`
+    : ''
+  return ` ${summary}${more}`
+}
+
 function normalizeError(error: unknown, context: string): XeroDesktopError {
   const commandError = commandErrorSchema.safeParse(error)
   if (commandError.success) {
@@ -1178,7 +1304,9 @@ function normalizeError(error: unknown, context: string): XeroDesktopError {
     return new XeroDesktopError({
       code: 'adapter_contract_mismatch',
       errorClass: 'adapter_contract_mismatch',
-      message: `${context} returned an unexpected payload shape.`,
+      message: `${context} returned an unexpected payload shape.${formatZodIssueSummary(
+        error,
+      )}`,
       cause: error,
     })
   }
@@ -1882,6 +2010,34 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  listProjectStateBackups(request) {
+    const parsed = listProjectStateBackupsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.listProjectStateBackups, listProjectStateBackupsResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  createProjectStateBackup(request) {
+    const parsed = createProjectStateBackupRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.createProjectStateBackup, projectStateBackupResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  restoreProjectStateBackup(request) {
+    const parsed = restoreProjectStateBackupRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.restoreProjectStateBackup, projectStateRestoreResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  repairProjectState(request) {
+    const parsed = repairProjectStateRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.repairProjectState, projectStateRepairResponseSchema, {
+      request: parsed,
+    })
+  },
+
   getProjectSnapshot(projectId) {
     return invokeTyped(COMMANDS.getProjectSnapshot, projectSnapshotResponseSchema, {
       request: { projectId },
@@ -2078,6 +2234,33 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  listProjectContextRecords(request) {
+    const parsed = listProjectContextRecordsRequestSchema.parse(request)
+    return invokeTypedDeduped(
+      COMMANDS.listProjectContextRecords,
+      listProjectContextRecordsResponseSchema,
+      { request: parsed },
+    )
+  },
+
+  deleteProjectContextRecord(request) {
+    const parsed = deleteProjectContextRecordRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.deleteProjectContextRecord,
+      deleteProjectContextRecordResponseSchema,
+      { request: parsed },
+    )
+  },
+
+  supersedeProjectContextRecord(request) {
+    const parsed = supersedeProjectContextRecordRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.supersedeProjectContextRecord,
+      supersedeProjectContextRecordResponseSchema,
+      { request: parsed },
+    )
+  },
+
   createAgentSession(request) {
     const parsed = createAgentSessionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.createAgentSession, agentSessionSchema, {
@@ -2116,6 +2299,15 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     )
   },
 
+  getAgentDefinitionVersionDiff(request) {
+    const parsed = getAgentDefinitionVersionDiffRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.getAgentDefinitionVersionDiff,
+      agentDefinitionVersionDiffSchema,
+      { request: parsed },
+    )
+  },
+
   saveAgentDefinition(request) {
     const parsed = saveAgentDefinitionRequestSchema.parse(request)
     return invokeTyped(COMMANDS.saveAgentDefinition, agentDefinitionWriteResponseSchema, {
@@ -2123,6 +2315,7 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
         projectId: parsed.projectId,
         definition: parsed.definition,
         definitionId: parsed.definitionId ?? null,
+        dryRun: parsed.dryRun ?? false,
       },
     })
   },
@@ -2134,6 +2327,7 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
         projectId: parsed.projectId,
         definitionId: parsed.definitionId,
         definition: parsed.definition,
+        dryRun: parsed.dryRun ?? false,
       },
     })
   },
@@ -2148,6 +2342,38 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
           projectId: parsed.projectId,
           definitionId: parsed.definitionId ?? null,
           definition: parsed.definition,
+        },
+      },
+    )
+  },
+
+  getAgentKnowledgeInspection(request) {
+    const parsed = getAgentKnowledgeInspectionRequestSchema.parse(request)
+    return invokeTypedDeduped(
+      COMMANDS.getAgentKnowledgeInspection,
+      agentKnowledgeInspectionSchema,
+      {
+        request: {
+          projectId: parsed.projectId,
+          agentSessionId: parsed.agentSessionId ?? null,
+          runId: parsed.runId ?? null,
+          limit: parsed.limit ?? null,
+        },
+      },
+    )
+  },
+
+  getAgentHandoffContextSummary(request) {
+    const parsed = getAgentHandoffContextSummaryRequestSchema.parse(request)
+    return invokeTypedDeduped(
+      COMMANDS.getAgentHandoffContextSummary,
+      agentHandoffContextSummarySchema,
+      {
+        request: {
+          projectId: parsed.projectId,
+          handoffId: parsed.handoffId ?? null,
+          targetRunId: parsed.targetRunId ?? null,
+          sourceRunId: parsed.sourceRunId ?? null,
         },
       },
     )
@@ -2184,6 +2410,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   getAgentAuthoringCatalog(request) {
     const parsed = getAgentAuthoringCatalogRequestSchema.parse(request)
     return invokeTyped(COMMANDS.getAgentAuthoringCatalog, agentAuthoringCatalogSchema, {
+      request: parsed,
+    })
+  },
+
+  getAgentToolPackCatalog(request) {
+    const parsed = getAgentToolPackCatalogRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.getAgentToolPackCatalog, agentToolPackCatalogSchema, {
       request: parsed,
     })
   },
@@ -2412,11 +2645,29 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
+  getSessionMemoryReviewQueue(request) {
+    const parsed = getSessionMemoryReviewQueueRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.getSessionMemoryReviewQueue,
+      getSessionMemoryReviewQueueResponseSchema,
+      { request: parsed },
+    )
+  },
+
   updateSessionMemory(request) {
     const parsed = updateSessionMemoryRequestSchema.parse(request)
     return invokeTyped(COMMANDS.updateSessionMemory, sessionMemoryRecordSchema, {
       request: parsed,
     })
+  },
+
+  correctSessionMemory(request) {
+    const parsed = correctSessionMemoryRequestSchema.parse(request)
+    return invokeTyped(
+      COMMANDS.correctSessionMemory,
+      correctSessionMemoryResponseSchema,
+      { request: parsed },
+    )
   },
 
   async deleteSessionMemory(request) {

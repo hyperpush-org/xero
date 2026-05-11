@@ -1006,6 +1006,9 @@ function createMockAdapter(options?: {
     throw new Error('archiveAgentDefinition not stubbed in test adapter')
   })
   const getAgentDefinitionVersion = vi.fn(async () => null)
+  const getAgentDefinitionVersionDiff = vi.fn(async () => {
+    throw new Error('getAgentDefinitionVersionDiff not stubbed in test adapter')
+  })
   const saveAgentDefinition = vi.fn(async () => {
     throw new Error('saveAgentDefinition not stubbed in test adapter')
   })
@@ -2111,10 +2114,46 @@ function createMockAdapter(options?: {
     workspaceQuery,
     workspaceExplain,
     workspaceReset,
+    listProjectContextRecords: async ({ projectId }: { projectId: string }) => ({
+      schema: 'xero.project_context_record_list_command.v1' as const,
+      projectId,
+      records: [],
+      uiDeferred: true as const,
+    }),
+    deleteProjectContextRecord: async ({
+      projectId,
+      recordId,
+    }: {
+      projectId: string
+      recordId: string
+    }) => ({
+      schema: 'xero.project_context_record_delete_command.v1' as const,
+      projectId,
+      recordId,
+      retrievalRemoved: true as const,
+      uiDeferred: true as const,
+    }),
+    supersedeProjectContextRecord: async ({
+      projectId,
+      supersededRecordId,
+      supersedingRecordId,
+    }: {
+      projectId: string
+      supersededRecordId: string
+      supersedingRecordId: string
+    }) => ({
+      schema: 'xero.project_context_record_supersede_command.v1' as const,
+      projectId,
+      supersededRecordId,
+      supersedingRecordId,
+      retrievalChanged: true as const,
+      uiDeferred: true as const,
+    }),
     createAgentSession,
     listAgentDefinitions,
     archiveAgentDefinition,
     getAgentDefinitionVersion,
+    getAgentDefinitionVersionDiff,
     saveAgentDefinition,
     updateAgentDefinition,
     previewAgentDefinition,

@@ -8,8 +8,9 @@ use xero_agent_core::domain_tool_pack_manifest;
 use crate::{commands::CommandError, db::database_path_for_repo};
 
 use super::{
-    get_agent_handoff_lineage_by_handoff_id, list_agent_context_manifests_for_run,
-    list_agent_handoff_lineage_by_status, list_approved_agent_memories, list_project_records,
+    get_agent_handoff_lineage_by_handoff_id, get_agent_handoff_lineage_by_target_run,
+    list_agent_context_manifests_for_run, list_agent_handoff_lineage_by_status,
+    list_agent_handoff_lineage_for_source, list_approved_agent_memories, list_project_records,
     load_agent_definition_version, load_agent_run, open_runtime_database,
     project_record_kind_sql_value, read_project_row, validate_non_empty_text,
     AgentHandoffLineageRecord, AgentHandoffLineageStatus, AgentMemoryKind, AgentMemoryRecord,
@@ -1178,6 +1179,62 @@ pub fn load_agent_handoff_context_summary(
     Ok(handoff_context_summary_json(&lineage))
 }
 
+pub fn load_agent_handoff_context_summary_by_target_run(
+    repo_root: &Path,
+    project_id: &str,
+    target_run_id: &str,
+) -> Result<JsonValue, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_handoff_context_summary_project_required",
+    )?;
+    validate_non_empty_text(
+        target_run_id,
+        "targetRunId",
+        "agent_handoff_context_summary_target_run_required",
+    )?;
+    let lineage = get_agent_handoff_lineage_by_target_run(repo_root, project_id, target_run_id)?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_handoff_context_summary_not_found",
+                format!(
+                    "Xero could not find a handoff for target run `{target_run_id}` in project `{project_id}`."
+                ),
+            )
+        })?;
+    Ok(handoff_context_summary_json(&lineage))
+}
+
+pub fn load_agent_handoff_context_summary_by_source_run(
+    repo_root: &Path,
+    project_id: &str,
+    source_run_id: &str,
+) -> Result<JsonValue, CommandError> {
+    validate_non_empty_text(
+        project_id,
+        "projectId",
+        "agent_handoff_context_summary_project_required",
+    )?;
+    validate_non_empty_text(
+        source_run_id,
+        "sourceRunId",
+        "agent_handoff_context_summary_source_run_required",
+    )?;
+    let lineage = list_agent_handoff_lineage_for_source(repo_root, project_id, source_run_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_handoff_context_summary_not_found",
+                format!(
+                    "Xero could not find a handoff for source run `{source_run_id}` in project `{project_id}`."
+                ),
+            )
+        })?;
+    Ok(handoff_context_summary_json(&lineage))
+}
+
 fn knowledge_project_record_visible(record: &ProjectRecordRecord) -> bool {
     record.visibility == ProjectRecordVisibility::Retrieval
         && record.redaction_state != ProjectRecordRedactionState::Blocked
@@ -1961,7 +2018,7 @@ mod tests {
             base_capability_profile: "observe_only".into(),
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 2,
+                "schemaVersion": 3,
                 "id": definition_id,
                 "version": version,
                 "displayName": "Project Researcher",

@@ -1389,6 +1389,12 @@ impl AutonomousToolRuntime {
         let servers = registry
             .servers
             .iter()
+            .filter(|server| {
+                self.agent_tool_policy
+                    .as_ref()
+                    .map(|policy| policy.allows_mcp_server(&server.id))
+                    .unwrap_or(true)
+            })
             .map(mcp_server_summary)
             .collect::<Vec<_>>();
 
@@ -1412,6 +1418,17 @@ impl AutonomousToolRuntime {
             | AutonomousMcpAction::ReadResource
             | AutonomousMcpAction::GetPrompt => {
                 let server_id = required_trimmed(request.server_id.as_deref(), "serverId")?;
+                if !self
+                    .agent_tool_policy
+                    .as_ref()
+                    .map(|policy| policy.allows_mcp_server(&server_id))
+                    .unwrap_or(true)
+                {
+                    return Err(CommandError::user_fixable(
+                        "autonomous_tool_mcp_server_policy_denied",
+                        format!("Custom agent policy does not allow MCP server `{server_id}`."),
+                    ));
+                }
                 let server = connected_mcp_server(&registry.servers, &server_id)?;
                 let timeout = normalize_mcp_timeout(request.timeout_ms)?;
                 let (method, params, capability_name) = mcp_method_and_params(&request)?;
@@ -1620,6 +1637,12 @@ impl AutonomousToolRuntime {
             .servers
             .iter()
             .filter(|server| server.connection.status == McpConnectionStatus::Connected)
+            .filter(|server| {
+                self.agent_tool_policy
+                    .as_ref()
+                    .map(|policy| policy.allows_mcp_server(&server.id))
+                    .unwrap_or(true)
+            })
         {
             capabilities.extend(list_mcp_catalog_capabilities(server));
         }

@@ -148,6 +148,14 @@ pub struct AgentToolPolicyDetailsDto {
     #[serde(default)]
     pub denied_tool_groups: Vec<String>,
     #[serde(default)]
+    pub allowed_mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub denied_mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub allowed_dynamic_tools: Vec<String>,
+    #[serde(default)]
+    pub denied_dynamic_tools: Vec<String>,
+    #[serde(default)]
     pub allowed_effect_classes: Vec<AgentToolEffectClassDto>,
     #[serde(default)]
     pub external_service_allowed: bool,
@@ -317,6 +325,8 @@ pub struct WorkflowAgentDetailDto {
     pub output: AgentOutputContractDto,
     pub consumes: Vec<AgentConsumedArtifactDto>,
     pub attached_skills: Vec<AgentAttachedSkillDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_structure: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authoring_graph: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

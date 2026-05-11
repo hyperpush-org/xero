@@ -37,7 +37,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
+import { ToolHarness } from "./development-section/tool-harness"
 import {
   developerReadStorageTableRequestSchema,
   developerStorageOverviewSchema,
@@ -94,7 +96,35 @@ export function DevelopmentSection({
         overriding={overriding}
       />
 
-      <StorageInspector />
+      <Tabs defaultValue="storage" className="flex flex-col gap-3">
+        <TabsList className="self-start">
+          <TabsTrigger value="storage">Storage</TabsTrigger>
+          <TabsTrigger value="tool-harness">Tool harness</TabsTrigger>
+          <TabsTrigger value="onboarding">Onboarding</TabsTrigger>
+        </TabsList>
+        <TabsContent value="storage" className="m-0">
+          <StorageInspector />
+        </TabsContent>
+        <TabsContent value="tool-harness" className="m-0">
+          <ToolHarness />
+        </TabsContent>
+        <TabsContent value="onboarding" className="m-0">
+          <section className="flex flex-col gap-3">
+            <h4 className="text-[12.5px] font-semibold text-foreground">Tools</h4>
+            <ul className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30">
+              <ToolRow
+                icon={Sparkles}
+                title="Onboarding flow"
+                body="Reopen the first-run setup flow to test provider setup, project import, and notification routing."
+                actionLabel="Start onboarding"
+                actionIcon={PlayCircle}
+                onAction={onStartOnboarding}
+                disabled={!onStartOnboarding}
+              />
+            </ul>
+          </section>
+        </TabsContent>
+      </Tabs>
 
       <section className="flex flex-col gap-3">
         <h4 className="text-[12.5px] font-semibold text-foreground">
@@ -126,22 +156,6 @@ export function DevelopmentSection({
         </div>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <h4 className="text-[12.5px] font-semibold text-foreground">
-          Tools
-        </h4>
-        <ul className="flex flex-col divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-card/30">
-          <ToolRow
-            icon={Sparkles}
-            title="Onboarding flow"
-            body="Reopen the first-run setup flow to test provider setup, project import, and notification routing."
-            actionLabel="Start onboarding"
-            actionIcon={PlayCircle}
-            onAction={onStartOnboarding}
-            disabled={!onStartOnboarding}
-          />
-        </ul>
-      </section>
     </div>
   )
 }

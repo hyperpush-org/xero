@@ -2422,7 +2422,7 @@ mod tests {
     ) -> JsonValue {
         json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "id": id,
             "version": 1,
             "scope": "project_custom",
@@ -2720,7 +2720,7 @@ mod tests {
         }];
         let snapshot = json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "id": "db-scribe",
             "version": 4,
             "scope": "project_custom",
@@ -2860,7 +2860,7 @@ mod tests {
         .expect("seed accepted plan pack");
         let snapshot = json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "id": "handoff-engineer",
             "version": 3,
             "scope": "project_custom",
@@ -2961,7 +2961,7 @@ mod tests {
         seed_run(&repo_root, &project_id);
         let snapshot = json!({
             "schema": "xero.agent_definition.v1",
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "id": "secret-scribe",
             "version": 1,
             "scope": "project_custom",

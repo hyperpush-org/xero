@@ -415,6 +415,83 @@
   opacity: 0.78;
 }
 
+/* Workflow-phase branch edges — amber so they read as state-machine wiring
+   rather than data flow. Labels render via EdgeLabelRenderer like trigger
+   edges, so the conditional ("always", "todo: id", "tool: name") sits on
+   top of any card the branch happens to cross. */
+.agent-visualization .react-flow__edge.agent-edge-phase-branch .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
+  stroke-width: 1.25;
+  opacity: 0.55;
+}
+.agent-visualization .react-flow__edge.agent-edge-phase-branch .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-phase-branch .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
+}
+
+/* Stage → tool edges share the amber palette of the stage card so the user
+   can see at a glance which tools each phase admits. Hidden by default with
+   `display: none` so React/React Flow's per-frame edge work, paint, and
+   focus-mode style recalculation all skip them entirely — opacity-only
+   hiding leaves them in the paint tree and tanks frame rate when there are
+   60+ of them. The .is-active rule below switches them on when the user
+   hovers a related node. */
+.agent-visualization .react-flow__edge.agent-edge-stage-tool {
+  display: none;
+}
+.agent-visualization .react-flow__edge.agent-edge-stage-tool .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.agent-visualization .react-flow__edge.agent-edge-stage-tool .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-stage-tool .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
+}
+.agent-visualization .react-flow__edge.agent-edge-stage-tool.is-active {
+  display: initial;
+  opacity: 0.7;
+}
+/* Override the global .is-active rule that bumps non-trigger edges to
+   stroke-width 2.25 — stage-tool edges should stay thin even when active. */
+.agent-visualization
+  .react-flow__edge.agent-edge-stage-tool.is-active
+  .react-flow__edge-path {
+  stroke-width: 1;
+}
+
+/* Agent header → start-phase entry edge. Same amber family but a touch
+   stronger so it reads as the workflow entrypoint. */
+.agent-visualization .react-flow__edge.agent-edge-workflow .react-flow__edge-path {
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 75%, var(--foreground));
+  stroke-width: 1.25;
+  opacity: 0.7;
+}
+.agent-visualization .react-flow__edge.agent-edge-workflow .react-flow__arrowhead polyline,
+.agent-visualization .react-flow__edge.agent-edge-workflow .react-flow__arrowhead polygon {
+  fill: color-mix(in oklab, var(--color-amber-500, #f59e0b) 75%, var(--foreground));
+  stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 75%, var(--foreground));
+}
+.agent-visualization .agent-edge-phase-branch-label {
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--background) 96%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--color-amber-500, #f59e0b) 35%, var(--background));
+  color: color-mix(in oklab, var(--color-amber-500, #f59e0b) 80%, var(--foreground));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transform-origin: 0 0;
+}
+
 /* Focus mode — when the user hovers a node we light up its directly-related
    trigger edges and drop everything unrelated. The node itself also dims, so
    the related cluster pops out of the canvas at a glance.
@@ -452,7 +529,7 @@
   stroke-width: 2.25;
 }
 .agent-visualization.is-focusing
-  .react-flow__node:not(.is-focused):not(.react-flow__node-lane-label):not(.react-flow__node-tool-group-frame) {
+  .react-flow__node:not(.is-focused):not(.react-flow__node-lane-label):not(.react-flow__node-tool-group-frame):not(.react-flow__node-stage-group-frame) {
   opacity: 0.3;
   transition:
     transform var(--agent-layout-duration) var(--agent-layout-ease),
@@ -506,7 +583,10 @@
   height: 16px;
   border-radius: 999px;
   pointer-events: none;
-  opacity: 0.85;
+  /* View mode: hide the handle dots entirely — they're only meaningful when
+     the user can drag from them, which only happens in editing mode. The
+     `.is-editing` rule below bumps opacity back to 1. */
+  opacity: 0;
 }
 
 .agent-visualization .react-flow__handle-left {
@@ -523,10 +603,6 @@
 
 .agent-visualization .react-flow__handle-bottom {
   clip-path: inset(50% 0 0 0);
-}
-
-.agent-visualization .react-flow__node.is-focused .react-flow__handle {
-  opacity: 1;
 }
 
 /* Editing mode: handles must accept pointer events so the user can drag a
@@ -652,6 +728,9 @@
 .agent-visualization .agent-graph-lane-label--consume .agent-graph-lane-label__bar {
   background: color-mix(in oklab, #14b8a6 78%, var(--foreground));
 }
+.agent-visualization .agent-graph-lane-label--stage .agent-graph-lane-label__bar {
+  background: color-mix(in oklab, var(--color-amber-500, #f59e0b) 72%, var(--background));
+}
 
 .agent-visualization .agent-graph-lane-label__text {
   flex: 1;
@@ -678,19 +757,45 @@
    tools. The visible label is the drag handle; the frame itself deliberately
    does not add a full-size hit surface, because tool cards inside the frame
    must keep first claim on hover and expand clicks. */
-.agent-visualization .react-flow__node.react-flow__node-tool-group-frame {
+.agent-visualization .react-flow__node.react-flow__node-tool-group-frame,
+.agent-visualization .react-flow__node.react-flow__node-stage-group-frame {
   z-index: 0 !important;
   cursor: default;
   pointer-events: none;
 }
 
-.agent-visualization .react-flow__node.react-flow__node-tool-group-frame.dragging {
+.agent-visualization .react-flow__node.react-flow__node-tool-group-frame.dragging,
+.agent-visualization .react-flow__node.react-flow__node-stage-group-frame.dragging {
   cursor: grabbing;
 }
 
-.agent-visualization .react-flow__node.react-flow__node-tool {
+.agent-visualization .react-flow__node.react-flow__node-tool,
+.agent-visualization .react-flow__node.react-flow__node-stage {
   z-index: 1 !important;
   pointer-events: auto;
+}
+
+/* Stage group frame mirrors the tool-group-frame chrome but uses the amber
+   palette of the stage cards so the cluster reads as the stages family. */
+.agent-visualization .agent-stage-group-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed
+    color-mix(in oklab, var(--color-amber-500, #f59e0b) 32%, var(--background));
+  border-radius: 10px;
+  background: color-mix(
+    in oklab,
+    var(--color-amber-500, #f59e0b) 3%,
+    transparent
+  );
+  box-sizing: border-box;
+  pointer-events: none;
+  transition:
+    width var(--agent-layout-duration) var(--agent-layout-ease),
+    height var(--agent-layout-duration) var(--agent-layout-ease),
+    border-color 160ms ease,
+    background 160ms ease;
 }
 
 .agent-visualization .agent-tool-group-frame {

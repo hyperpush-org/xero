@@ -4,10 +4,13 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     auth::now_timestamp,
-    commands::{runtime_support::resolve_project_root, validate_non_empty, CommandResult},
+    commands::{
+        runtime_support::resolve_project_root, validate_non_empty, CommandError, CommandResult,
+    },
     db::project_store::{
         capability_permission_explanation, load_agent_database_touchpoint_explanation,
-        load_agent_handoff_context_summary, load_agent_knowledge_inspection,
+        load_agent_handoff_context_summary, load_agent_handoff_context_summary_by_source_run,
+        load_agent_handoff_context_summary_by_target_run, load_agent_knowledge_inspection,
         load_agent_run_start_explanation, load_project_support_diagnostics_bundle,
     },
     state::DesktopState,
@@ -36,7 +39,12 @@ pub struct GetAgentKnowledgeInspectionRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GetAgentHandoffContextSummaryRequestDto {
     pub project_id: String,
-    pub handoff_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,9 +141,30 @@ pub fn get_agent_handoff_context_summary<R: Runtime>(
     request: GetAgentHandoffContextSummaryRequestDto,
 ) -> CommandResult<JsonValue> {
     validate_non_empty(&request.project_id, "projectId")?;
-    validate_non_empty(&request.handoff_id, "handoffId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    load_agent_handoff_context_summary(&repo_root, &request.project_id, &request.handoff_id)
+    if let Some(handoff_id) = request.handoff_id.as_deref() {
+        validate_non_empty(handoff_id, "handoffId")?;
+        return load_agent_handoff_context_summary(&repo_root, &request.project_id, handoff_id);
+    }
+    if let Some(target_run_id) = request.target_run_id.as_deref() {
+        validate_non_empty(target_run_id, "targetRunId")?;
+        return load_agent_handoff_context_summary_by_target_run(
+            &repo_root,
+            &request.project_id,
+            target_run_id,
+        );
+    }
+    if let Some(source_run_id) = request.source_run_id.as_deref() {
+        validate_non_empty(source_run_id, "sourceRunId")?;
+        return load_agent_handoff_context_summary_by_source_run(
+            &repo_root,
+            &request.project_id,
+            source_run_id,
+        );
+    }
+    Err(CommandError::invalid_request(
+        "agent_handoff_context_summary_identifier_required",
+    ))
 }
 
 #[tauri::command]

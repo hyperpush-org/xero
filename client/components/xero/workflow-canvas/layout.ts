@@ -95,6 +95,8 @@ export function layoutAgentGraphByCategory(
     | 'agent-output'
     | 'output-section'
     | 'consumed-artifact'
+    | 'stage'
+    | 'stage-group-frame'
 
   const CATEGORY_LABELS: Record<CategoryKey, string> = {
     prompt: 'Prompts',
@@ -104,6 +106,8 @@ export function layoutAgentGraphByCategory(
     'agent-output': 'Output',
     'output-section': 'Output Sections',
     'consumed-artifact': 'Consumes',
+    stage: 'Stages',
+    'stage-group-frame': 'Stages',
   }
 
   let header: AgentGraphNode | null = null
@@ -115,6 +119,8 @@ export function layoutAgentGraphByCategory(
     'agent-output': [],
     'output-section': [],
     'consumed-artifact': [],
+    stage: [],
+    'stage-group-frame': [],
   }
   // Tool category frames + per-frame children. Frames are emitted by
   // build-agent-graph (one per tool.group); tools carry parentId pointing at
@@ -151,6 +157,10 @@ export function layoutAgentGraphByCategory(
       grouped['output-section'].push(node)
     } else if (node.type === 'consumed-artifact') {
       grouped['consumed-artifact'].push(node)
+    } else if (node.type === 'stage') {
+      grouped.stage.push(node)
+    } else if (node.type === 'stage-group-frame') {
+      grouped['stage-group-frame'].push(node)
     }
   }
 
@@ -641,27 +651,29 @@ export function layoutAgentGraphByCategory(
   // 6. Consumed artifacts — column on the left of the header, centred on the
   // header centre line.
   const consumed = grouped['consumed-artifact']
+  let consumedColWidth = 0
+  let consumedColLeftX = headerX
   if (consumed.length > 0) {
-    let colWidth = 0
     let totalHeight = 0
     for (const a of consumed) {
       const s = sizes.get(a.id) ?? { width: 260, height: 96 }
-      colWidth = Math.max(colWidth, s.width)
+      consumedColWidth = Math.max(consumedColWidth, s.width)
       totalHeight += s.height
     }
     totalHeight += Math.max(0, consumed.length - 1) * ROW_GAP
 
     const xRight = headerX - HORIZ_GAP
-    const xLeft = xRight - colWidth
+    const xLeft = xRight - consumedColWidth
+    consumedColLeftX = xLeft
     const blockTopY = headerCenterY - totalHeight / 2
 
     let y = blockTopY
     for (const a of consumed) {
-      const s = sizes.get(a.id) ?? { width: colWidth, height: 96 }
+      const s = sizes.get(a.id) ?? { width: consumedColWidth, height: 96 }
       placedById.set(a.id, {
         ...a,
         position: {
-          x: xLeft + (colWidth - s.width) / 2,
+          x: xLeft + (consumedColWidth - s.width) / 2,
           y,
         } as XYPosition,
       })
@@ -679,7 +691,78 @@ export function layoutAgentGraphByCategory(
       draggable: true,
       dragHandle: '.agent-graph-lane-label',
       data: { label: CATEGORY_LABELS['consumed-artifact'], count: consumed.length },
-      width: colWidth,
+      width: consumedColWidth,
+    } as AgentGraphNode)
+  }
+
+  // 7. Stages — vertical column on the far left, wrapped in a dashed
+  // stage-group-frame (mirrors how tools sit inside tool-group-frame). Sits
+  // to the left of the consumed-artifact column (or directly left of the
+  // header when there are no consumes). Optional: graphs without stages
+  // skip this block entirely.
+  const stages = grouped.stage
+  if (stages.length > 0) {
+    const STAGE_FRAME_PAD_X = 12
+    const STAGE_FRAME_PAD_TOP = 12
+    const STAGE_FRAME_PAD_BOTTOM = 12
+
+    let stageColWidth = 0
+    let stageTotalHeight = 0
+    for (const stage of stages) {
+      const size = sizes.get(stage.id) ?? { width: 260, height: 132 }
+      stageColWidth = Math.max(stageColWidth, size.width)
+      stageTotalHeight += size.height
+    }
+    stageTotalHeight += Math.max(0, stages.length - 1) * ROW_GAP
+
+    const frameWidth = stageColWidth + STAGE_FRAME_PAD_X * 2
+    const frameHeight = stageTotalHeight + STAGE_FRAME_PAD_TOP + STAGE_FRAME_PAD_BOTTOM
+
+    const frameRightX = consumed.length > 0
+      ? consumedColLeftX - HORIZ_GAP
+      : headerX - HORIZ_GAP
+    const frameLeftX = frameRightX - frameWidth
+    const frameTopY = headerCenterY - frameHeight / 2
+
+    const stageFrame = grouped['stage-group-frame'][0]
+    if (stageFrame) {
+      placedById.set(stageFrame.id, {
+        ...stageFrame,
+        position: { x: frameLeftX, y: frameTopY } as XYPosition,
+        width: frameWidth,
+        height: frameHeight,
+      })
+    }
+
+    // Stage positions are relative to the frame (extent: 'parent').
+    let y = STAGE_FRAME_PAD_TOP
+    for (const stage of stages) {
+      const size = sizes.get(stage.id) ?? { width: stageColWidth, height: 132 }
+      placedById.set(stage.id, {
+        ...stage,
+        position: {
+          x: STAGE_FRAME_PAD_X + (stageColWidth - size.width) / 2,
+          y,
+        } as XYPosition,
+      })
+      y += size.height + ROW_GAP
+    }
+
+    laneLabelNodes.push({
+      id: 'lane:stage',
+      type: 'lane-label',
+      position: {
+        x: frameLeftX,
+        y: frameTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
+      } as XYPosition,
+      selectable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
+      data: {
+        label: CATEGORY_LABELS.stage,
+        count: stages.length,
+      },
+      width: frameWidth,
     } as AgentGraphNode)
   }
 

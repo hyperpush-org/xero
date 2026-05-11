@@ -665,6 +665,12 @@ pub struct SaveAgentDefinitionRequestDto {
     pub definition: JsonValue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition_id: Option<String>,
+    /// When true, the runtime returns a pre-save approval review payload
+    /// (xero.agent_definition_pre_save_review.v1) instead of persisting. Used
+    /// by the canvas Save flow to show the operator what would change before
+    /// they approve the write.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -673,6 +679,10 @@ pub struct UpdateAgentDefinitionRequestDto {
     pub project_id: String,
     pub definition_id: String,
     pub definition: JsonValue,
+    /// When true, the runtime returns a pre-save approval review payload
+    /// instead of persisting. See SaveAgentDefinitionRequestDto::dry_run.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -724,6 +734,14 @@ pub struct AgentDefinitionWriteResponseDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<AgentDefinitionSummaryDto>,
     pub validation: AgentDefinitionValidationReportDto,
+    /// True when the runtime gated the write behind operator approval and the
+    /// caller must re-issue with dry_run=false to actually persist.
+    #[serde(default)]
+    pub approval_required: bool,
+    /// Structured pre-save review (xero.agent_definition_pre_save_review.v1)
+    /// when approval_required is true; null when the call applied directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_review: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

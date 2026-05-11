@@ -665,6 +665,10 @@ pub struct AutonomousAgentToolPolicy {
     denied_tools: BTreeSet<String>,
     allowed_tool_packs: BTreeSet<String>,
     denied_tool_packs: BTreeSet<String>,
+    allowed_mcp_servers: BTreeSet<String>,
+    denied_mcp_servers: BTreeSet<String>,
+    allowed_dynamic_tools: BTreeSet<String>,
+    denied_dynamic_tools: BTreeSet<String>,
     external_service_allowed: bool,
     browser_control_allowed: bool,
     skill_runtime_allowed: bool,
@@ -745,6 +749,10 @@ impl AutonomousAgentToolPolicy {
             denied_tools,
             allowed_tool_packs,
             denied_tool_packs,
+            allowed_mcp_servers: string_set_from_json(object.get("allowedMcpServers")),
+            denied_mcp_servers: string_set_from_json(object.get("deniedMcpServers")),
+            allowed_dynamic_tools: string_set_from_json(object.get("allowedDynamicTools")),
+            denied_dynamic_tools: string_set_from_json(object.get("deniedDynamicTools")),
             external_service_allowed: json_bool(object.get("externalServiceAllowed")),
             browser_control_allowed: json_bool(object.get("browserControlAllowed")),
             skill_runtime_allowed: json_bool(object.get("skillRuntimeAllowed")),
@@ -774,6 +782,10 @@ impl AutonomousAgentToolPolicy {
                 denied_tools: BTreeSet::new(),
                 allowed_tool_packs: BTreeSet::new(),
                 denied_tool_packs: BTreeSet::new(),
+                allowed_mcp_servers: BTreeSet::new(),
+                denied_mcp_servers: BTreeSet::new(),
+                allowed_dynamic_tools: BTreeSet::new(),
+                denied_dynamic_tools: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -792,6 +804,10 @@ impl AutonomousAgentToolPolicy {
                 denied_tools: BTreeSet::new(),
                 allowed_tool_packs: BTreeSet::new(),
                 denied_tool_packs: BTreeSet::new(),
+                allowed_mcp_servers: BTreeSet::new(),
+                denied_mcp_servers: BTreeSet::new(),
+                allowed_dynamic_tools: BTreeSet::new(),
+                denied_dynamic_tools: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -810,6 +826,10 @@ impl AutonomousAgentToolPolicy {
                 denied_tools: BTreeSet::new(),
                 allowed_tool_packs: BTreeSet::new(),
                 denied_tool_packs: BTreeSet::new(),
+                allowed_mcp_servers: BTreeSet::new(),
+                denied_mcp_servers: BTreeSet::new(),
+                allowed_dynamic_tools: BTreeSet::new(),
+                denied_dynamic_tools: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -828,6 +848,10 @@ impl AutonomousAgentToolPolicy {
                 denied_tools: BTreeSet::new(),
                 allowed_tool_packs: BTreeSet::new(),
                 denied_tool_packs: BTreeSet::new(),
+                allowed_mcp_servers: BTreeSet::new(),
+                denied_mcp_servers: BTreeSet::new(),
+                allowed_dynamic_tools: BTreeSet::new(),
+                denied_dynamic_tools: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -843,6 +867,10 @@ impl AutonomousAgentToolPolicy {
                 denied_tools: BTreeSet::new(),
                 allowed_tool_packs: BTreeSet::new(),
                 denied_tool_packs: BTreeSet::new(),
+                allowed_mcp_servers: BTreeSet::new(),
+                denied_mcp_servers: BTreeSet::new(),
+                allowed_dynamic_tools: BTreeSet::new(),
+                denied_dynamic_tools: BTreeSet::new(),
                 external_service_allowed: false,
                 browser_control_allowed: false,
                 skill_runtime_allowed: false,
@@ -974,6 +1002,10 @@ impl AutonomousAgentToolPolicy {
             denied_tools: BTreeSet::new(),
             allowed_tool_packs: BTreeSet::new(),
             denied_tool_packs: BTreeSet::new(),
+            allowed_mcp_servers: BTreeSet::new(),
+            denied_mcp_servers: BTreeSet::new(),
+            allowed_dynamic_tools: BTreeSet::new(),
+            denied_dynamic_tools: BTreeSet::new(),
             external_service_allowed: opt_ins.external_service_allowed,
             browser_control_allowed: opt_ins.browser_control_allowed,
             skill_runtime_allowed: opt_ins.skill_runtime_allowed,
@@ -992,6 +1024,10 @@ impl AutonomousAgentToolPolicy {
             denied_tools: BTreeSet::new(),
             allowed_tool_packs: BTreeSet::new(),
             denied_tool_packs: BTreeSet::new(),
+            allowed_mcp_servers: BTreeSet::new(),
+            denied_mcp_servers: BTreeSet::new(),
+            allowed_dynamic_tools: BTreeSet::new(),
+            denied_dynamic_tools: BTreeSet::new(),
             external_service_allowed: false,
             browser_control_allowed: false,
             skill_runtime_allowed: false,
@@ -1031,6 +1067,11 @@ impl AutonomousAgentToolPolicy {
         if self.denied_tools.contains(tool_name) {
             return false;
         }
+        if tool_name.starts_with(AUTONOMOUS_DYNAMIC_MCP_TOOL_PREFIX)
+            && !self.allows_dynamic_tool_name(tool_name)
+        {
+            return false;
+        }
         if self.allowed_tools.contains(tool_name) {
             return self.risky_effect_opted_in(tool_effect_class(tool_name));
         }
@@ -1051,6 +1092,55 @@ impl AutonomousAgentToolPolicy {
             AutonomousToolEffectClass::DestructiveWrite => self.destructive_write_allowed,
             _ => true,
         }
+    }
+
+    pub fn allows_mcp_server(&self, server_id: &str) -> bool {
+        let server_id = server_id.trim();
+        if server_id.is_empty() {
+            return true;
+        }
+        if self.denied_mcp_servers.contains(server_id) {
+            return false;
+        }
+        self.allowed_mcp_servers.is_empty() || self.allowed_mcp_servers.contains(server_id)
+    }
+
+    pub fn allows_mcp_request(&self, request: &AutonomousMcpRequest) -> bool {
+        request
+            .server_id
+            .as_deref()
+            .map(|server_id| self.allows_mcp_server(server_id))
+            .unwrap_or(true)
+    }
+
+    pub fn allows_dynamic_tool_descriptor(
+        &self,
+        descriptor: &AutonomousDynamicToolDescriptor,
+    ) -> bool {
+        self.allows_dynamic_tool_name(&descriptor.name)
+            && self.allows_mcp_server(&descriptor.server_id)
+    }
+
+    pub fn allows_dynamic_tool_route(
+        &self,
+        tool_name: &str,
+        route: &AutonomousDynamicToolRoute,
+    ) -> bool {
+        if !self.allows_dynamic_tool_name(tool_name) {
+            return false;
+        }
+        match route {
+            AutonomousDynamicToolRoute::McpTool { server_id, .. } => {
+                self.allows_mcp_server(server_id)
+            }
+        }
+    }
+
+    fn allows_dynamic_tool_name(&self, tool_name: &str) -> bool {
+        if self.denied_dynamic_tools.contains(tool_name) {
+            return false;
+        }
+        self.allowed_dynamic_tools.is_empty() || self.allowed_dynamic_tools.contains(tool_name)
     }
 
     pub fn allows_subagent_role(&self, role: AutonomousSubagentRole) -> bool {
@@ -1536,7 +1626,7 @@ pub fn tool_allowed_for_runtime_agent_with_policy(
             .unwrap_or(true)
 }
 
-fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
+pub fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     let mut agents = Vec::new();
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Ask, tool_name) {
         agents.push(RuntimeAgentIdDto::Ask.as_str());

@@ -11,6 +11,7 @@ pub mod cancel_autonomous_run;
 pub mod code_rollback;
 pub mod complete_oauth_callback;
 pub mod create_repository;
+pub mod developer_tool_harness;
 pub mod development_storage;
 pub mod dictation;
 pub mod dock_icon;
@@ -127,6 +128,11 @@ pub use cancel_autonomous_run::cancel_autonomous_run;
 pub use code_rollback::{apply_selective_undo, apply_session_rollback};
 pub use complete_oauth_callback::complete_oauth_callback;
 pub use create_repository::create_repository;
+pub use developer_tool_harness::{
+    developer_tool_catalog, developer_tool_dry_run, developer_tool_harness_project,
+    developer_tool_model_run, developer_tool_sequence_delete, developer_tool_sequence_list,
+    developer_tool_sequence_upsert, developer_tool_synthetic_run, HARNESS_FIXTURE_PROJECT_ID,
+};
 pub use development_storage::{developer_storage_overview, developer_storage_read_table};
 pub use dictation::{
     speech_dictation_cancel, speech_dictation_settings, speech_dictation_start,
@@ -179,18 +185,22 @@ pub use project_files::{
     open_project_file_external, read_project_file, rename_project_entry, write_project_file,
 };
 pub use project_records::{
-    delete_project_context_record, supersede_project_context_record,
-    DeleteProjectContextRecordRequestDto, DeleteProjectContextRecordResponseDto,
+    delete_project_context_record, list_project_context_records,
+    supersede_project_context_record, DeleteProjectContextRecordRequestDto,
+    DeleteProjectContextRecordResponseDto, ListProjectContextRecordsRequestDto,
+    ListProjectContextRecordsResponseDto, ProjectContextRecordSummaryDto,
     SupersedeProjectContextRecordRequestDto, SupersedeProjectContextRecordResponseDto,
 };
 pub use project_state::{
-    create_project_state_backup, read_app_ui_state, read_project_ui_state, repair_project_state,
-    restore_project_state_backup, write_app_ui_state, write_project_ui_state,
-    AppUiStateResponseDto, CreateProjectStateBackupRequestDto, ProjectStateBackupResponseDto,
-    ProjectStateRepairDiagnosticDto, ProjectStateRepairResponseDto, ProjectStateRestoreResponseDto,
-    ProjectUiStateResponseDto, ReadAppUiStateRequestDto, ReadProjectUiStateRequestDto,
-    RepairProjectStateRequestDto, RestoreProjectStateBackupRequestDto, WriteAppUiStateRequestDto,
-    WriteProjectUiStateRequestDto,
+    create_project_state_backup, list_project_state_backups, read_app_ui_state,
+    read_project_ui_state, repair_project_state, restore_project_state_backup,
+    write_app_ui_state, write_project_ui_state, AppUiStateResponseDto,
+    CreateProjectStateBackupRequestDto, ListProjectStateBackupsRequestDto,
+    ListProjectStateBackupsResponseDto, ProjectStateBackupListingEntryDto,
+    ProjectStateBackupResponseDto, ProjectStateRepairDiagnosticDto, ProjectStateRepairResponseDto,
+    ProjectStateRestoreResponseDto, ProjectUiStateResponseDto, ReadAppUiStateRequestDto,
+    ReadProjectUiStateRequestDto, RepairProjectStateRequestDto,
+    RestoreProjectStateBackupRequestDto, WriteAppUiStateRequestDto, WriteProjectUiStateRequestDto,
 };
 pub use provider_credentials::{
     delete_provider_credential, list_provider_credentials, upsert_provider_credential,
@@ -266,9 +276,9 @@ pub use workspace_index::{
 
 pub use crate::environment::service::EnvironmentDiscoveryStatus;
 pub use contracts::{
-    agent::*, autonomous::*, code_history::*, dictation::*, error::*, mcp::*, notifications::*,
-    runtime::*, session_context::*, skills::*, surface::*, usage::*, workflow::*,
-    workflow_agents::*,
+    agent::*, autonomous::*, code_history::*, developer_tool_harness::*, dictation::*, error::*,
+    mcp::*, notifications::*, runtime::*, session_context::*, skills::*, surface::*, usage::*,
+    workflow::*, workflow_agents::*,
 };
 
 pub(crate) use contracts::{

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react'
-import { Database, GitMerge, Loader2, Sparkles, Wrench } from 'lucide-react'
+import { AlertTriangle, Database, GitMerge, Loader2, Sparkles, Wrench } from 'lucide-react'
 
 import {
   Command,
@@ -12,9 +12,15 @@ import {
   CommandList,
 } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
+import {
+  getAgentDefinitionBaseCapabilityLabel,
+  type AgentDefinitionBaseCapabilityProfileDto,
+} from '@/src/lib/xero-model/agent-definition'
 import type {
   AgentAuthoringCatalogDto,
   AgentAuthoringAttachableSkillDto,
+  AgentAuthoringConstraintExplanationDto,
+  AgentAuthoringProfileAvailabilityDto,
   AgentAuthoringSkillSearchResultDto,
   AgentAuthoringDbTableDto,
   SearchAgentAuthoringSkillsResponseDto,
@@ -32,6 +38,10 @@ interface DropPickerProps {
   screenX: number
   screenY: number
   catalog: AgentAuthoringCatalogDto | null
+  // Active base capability profile from the agent header. Used to grey out
+  // catalog entries the runtime would refuse to expose. Null disables the
+  // filter (preview/read-only contexts).
+  currentProfile?: AgentDefinitionBaseCapabilityProfileDto | null
   onSelectToolCategory?: (categoryId: string) => void
   onSelectSkill?: (skill: AgentAuthoringAttachableSkillDto) => void
   onSearchSkills?: (params: {
@@ -45,6 +55,133 @@ interface DropPickerProps {
   onSelectDbTable?: (tableName: string) => void
   onSelectConsumedArtifact?: (key: string) => void
   onClose: () => void
+}
+
+interface AvailabilityEntry {
+  status: AgentAuthoringProfileAvailabilityDto['status']
+  reason: string
+  requiredProfile: AgentDefinitionBaseCapabilityProfileDto | null
+  // Constraint explanation, when one exists, gives the user-facing
+  // "why and how to fix" text emitted by the catalog.
+  resolution: string | null
+}
+
+interface AvailabilityIndex {
+  forSubject(
+    subjectKind: string,
+    subjectId: string,
+  ): AvailabilityEntry | null
+}
+
+function buildAvailabilityIndex(
+  catalog: AgentAuthoringCatalogDto | null,
+  currentProfile: AgentDefinitionBaseCapabilityProfileDto | null | undefined,
+): AvailabilityIndex {
+  if (!catalog || !currentProfile) {
+    return { forSubject: () => null }
+  }
+  const availabilityByKey = new Map<string, AgentAuthoringProfileAvailabilityDto>()
+  for (const entry of catalog.profileAvailability ?? []) {
+    if (entry.baseCapabilityProfile !== currentProfile) continue
+    availabilityByKey.set(`${entry.subjectKind}:${entry.subjectId}`, entry)
+  }
+  const explanationByKey = new Map<string, AgentAuthoringConstraintExplanationDto>()
+  for (const explanation of catalog.constraintExplanations ?? []) {
+    if (explanation.baseCapabilityProfile !== currentProfile) continue
+    explanationByKey.set(
+      `${explanation.subjectKind}:${explanation.subjectId}`,
+      explanation,
+    )
+  }
+  return {
+    forSubject(subjectKind, subjectId) {
+      const key = `${subjectKind}:${subjectId}`
+      const availability = availabilityByKey.get(key)
+      if (!availability) return null
+      const explanation = explanationByKey.get(key)
+      return {
+        status: availability.status,
+        reason: availability.reason,
+        requiredProfile: availability.requiredProfile ?? null,
+        resolution: explanation?.resolution ?? null,
+      }
+    },
+  }
+}
+
+interface CategoryAvailability {
+  status: 'available' | 'partial' | 'requires_profile_change' | 'unavailable'
+  availableCount: number
+  totalCount: number
+  // The profile the user would need to switch to in order to unlock the
+  // largest number of currently-blocked tools. Only set when at least one
+  // tool is profile-gated.
+  recommendedProfile: AgentDefinitionBaseCapabilityProfileDto | null
+}
+
+function categoryAvailabilityFor(
+  category: AgentAuthoringToolCategoryDto,
+  index: AvailabilityIndex,
+): CategoryAvailability | null {
+  if (category.tools.length === 0) return null
+  let availableCount = 0
+  let unavailableCount = 0
+  const requiredProfileVotes = new Map<AgentDefinitionBaseCapabilityProfileDto, number>()
+  let sawAny = false
+  for (const tool of category.tools) {
+    const entry = index.forSubject('tool', tool.name)
+    if (!entry) continue
+    sawAny = true
+    if (entry.status === 'available') {
+      availableCount += 1
+    } else if (entry.status === 'requires_profile_change') {
+      if (entry.requiredProfile) {
+        requiredProfileVotes.set(
+          entry.requiredProfile,
+          (requiredProfileVotes.get(entry.requiredProfile) ?? 0) + 1,
+        )
+      }
+    } else {
+      unavailableCount += 1
+    }
+  }
+  if (!sawAny) return null
+  let recommendedProfile: AgentDefinitionBaseCapabilityProfileDto | null = null
+  let topVotes = 0
+  for (const [profile, votes] of requiredProfileVotes) {
+    if (votes > topVotes) {
+      topVotes = votes
+      recommendedProfile = profile
+    }
+  }
+  let status: CategoryAvailability['status']
+  if (availableCount === category.tools.length) {
+    status = 'available'
+  } else if (availableCount > 0) {
+    status = 'partial'
+  } else if (recommendedProfile) {
+    status = 'requires_profile_change'
+  } else {
+    status = 'unavailable'
+  }
+  return {
+    status,
+    availableCount,
+    totalCount: category.tools.length,
+    recommendedProfile,
+  }
+}
+
+function profileLabel(profile: AgentDefinitionBaseCapabilityProfileDto): string {
+  return getAgentDefinitionBaseCapabilityLabel(profile)
+}
+
+function badgeLabel(entry: AvailabilityEntry): string | null {
+  if (entry.status === 'available') return null
+  if (entry.status === 'requires_profile_change' && entry.requiredProfile) {
+    return `Requires ${profileLabel(entry.requiredProfile)}`
+  }
+  return 'Not available'
 }
 
 const SKILL_PAGE_SIZE = 10
@@ -80,6 +217,7 @@ export function DropPicker({
   screenX,
   screenY,
   catalog,
+  currentProfile,
   onSelectToolCategory,
   onSelectSkill,
   onSearchSkills,
@@ -88,6 +226,11 @@ export function DropPicker({
   onSelectConsumedArtifact,
   onClose,
 }: DropPickerProps) {
+  const availabilityIndex = useMemo(
+    () => buildAvailabilityIndex(catalog, currentProfile ?? null),
+    [catalog, currentProfile],
+  )
+  const profileLabelText = currentProfile ? profileLabel(currentProfile) : null
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [search, setSearch] = useState('')
   const [onlineSkills, setOnlineSkills] = useState<readonly AgentAuthoringSkillSearchResultDto[]>([])
@@ -275,16 +418,22 @@ export function DropPicker({
           ) : kind === 'tool-category' ? (
             <ToolCategoryItems
               categories={catalog?.toolCategories ?? []}
+              availability={availabilityIndex}
+              profileLabelText={profileLabelText}
               onSelect={(id) => onSelectToolCategory?.(id)}
             />
           ) : kind === 'db-table' ? (
             <DbTableItems
               tables={catalog?.dbTables ?? []}
+              availability={availabilityIndex}
+              profileLabelText={profileLabelText}
               onSelect={(name) => onSelectDbTable?.(name)}
             />
           ) : (
             <ConsumedArtifactItems
               artifacts={catalog?.upstreamArtifacts ?? []}
+              availability={availabilityIndex}
+              profileLabelText={profileLabelText}
               onSelect={(key) => onSelectConsumedArtifact?.(key)}
             />
           )}
@@ -458,9 +607,13 @@ function SkillItems({
 
 function ToolCategoryItems({
   categories,
+  availability,
+  profileLabelText,
   onSelect,
 }: {
   categories: readonly AgentAuthoringToolCategoryDto[]
+  availability: AvailabilityIndex
+  profileLabelText: string | null
   onSelect: (id: string) => void
 }) {
   if (categories.length === 0) {
@@ -472,11 +625,23 @@ function ToolCategoryItems({
         const valueText = `${category.id} ${category.label} ${category.description} ${category.tools
           .map((tool) => tool.name)
           .join(' ')}`.toLowerCase()
+        const summary = categoryAvailabilityFor(category, availability)
+        const blocked =
+          summary != null &&
+          (summary.status === 'unavailable' ||
+            summary.status === 'requires_profile_change')
+        const partial = summary?.status === 'partial'
         return (
           <CommandItem
             key={category.id}
             value={`${category.id} ${valueText}`}
-            onSelect={() => onSelect(category.id)}
+            disabled={blocked}
+            onSelect={() => {
+              if (blocked) return
+              onSelect(category.id)
+            }}
+            data-testid={`drop-picker-category-${category.id}`}
+            data-availability={summary?.status ?? 'available'}
             className="flex flex-col items-start gap-0.5 px-2 py-1.5"
           >
             <div className="flex w-full items-center gap-2">
@@ -491,6 +656,14 @@ function ToolCategoryItems({
                 {category.description}
               </span>
             ) : null}
+            {summary && summary.status !== 'available' ? (
+              <CategoryAvailabilityBadge
+                summary={summary}
+                profileLabelText={profileLabelText}
+                blocked={blocked}
+                partial={partial}
+              />
+            ) : null}
           </CommandItem>
         )
       })}
@@ -498,11 +671,48 @@ function ToolCategoryItems({
   )
 }
 
+function CategoryAvailabilityBadge({
+  summary,
+  profileLabelText,
+  blocked,
+  partial,
+}: {
+  summary: CategoryAvailability
+  profileLabelText: string | null
+  blocked: boolean
+  partial: boolean
+}) {
+  const profileText = profileLabelText ?? 'this profile'
+  let label: string
+  if (blocked && summary.recommendedProfile) {
+    label = `Requires ${profileLabel(summary.recommendedProfile)} profile`
+  } else if (blocked) {
+    label = `Not available on ${profileText}`
+  } else if (partial) {
+    label = `${summary.availableCount} of ${summary.totalCount} tools available on ${profileText}`
+  } else {
+    label = `Limited on ${profileText}`
+  }
+  return (
+    <span
+      role="note"
+      className="ml-5 mt-0.5 inline-flex items-center gap-1 text-[10px] text-amber-500"
+    >
+      <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+      <span className="leading-snug line-clamp-2">{label}</span>
+    </span>
+  )
+}
+
 function DbTableItems({
   tables,
+  availability,
+  profileLabelText,
   onSelect,
 }: {
   tables: readonly AgentAuthoringDbTableDto[]
+  availability: AvailabilityIndex
+  profileLabelText: string | null
   onSelect: (table: string) => void
 }) {
   if (tables.length === 0) {
@@ -512,11 +722,21 @@ function DbTableItems({
     <CommandGroup heading="Tables">
       {tables.map((table) => {
         const valueText = `${table.table} ${table.purpose} ${table.columns.join(' ')}`.toLowerCase()
+        const entry = availability.forSubject('db_touchpoint', table.table)
+        const blocked =
+          entry != null &&
+          (entry.status === 'unavailable' || entry.status === 'requires_profile_change')
         return (
           <CommandItem
             key={table.table}
             value={`${table.table} ${valueText}`}
-            onSelect={() => onSelect(table.table)}
+            disabled={blocked}
+            onSelect={() => {
+              if (blocked) return
+              onSelect(table.table)
+            }}
+            data-testid={`drop-picker-db-${table.table}`}
+            data-availability={entry?.status ?? 'available'}
             className="flex flex-col items-start gap-0.5 px-2 py-1.5"
           >
             <div className="flex w-full items-center gap-2">
@@ -530,6 +750,9 @@ function DbTableItems({
                 {table.purpose}
               </span>
             ) : null}
+            {entry && entry.status !== 'available' ? (
+              <SubjectAvailabilityBadge entry={entry} profileLabelText={profileLabelText} />
+            ) : null}
           </CommandItem>
         )
       })}
@@ -537,11 +760,38 @@ function DbTableItems({
   )
 }
 
+function SubjectAvailabilityBadge({
+  entry,
+  profileLabelText,
+}: {
+  entry: AvailabilityEntry
+  profileLabelText: string | null
+}) {
+  const label = badgeLabel(entry) ?? 'Not available'
+  const explanation =
+    entry.resolution ??
+    (profileLabelText ? `${entry.reason} (profile: ${profileLabelText})` : entry.reason)
+  return (
+    <span
+      role="note"
+      title={explanation}
+      className="ml-5 mt-0.5 inline-flex items-center gap-1 text-[10px] text-amber-500"
+    >
+      <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+      <span className="leading-snug line-clamp-2">{label}</span>
+    </span>
+  )
+}
+
 function ConsumedArtifactItems({
   artifacts,
+  availability,
+  profileLabelText,
   onSelect,
 }: {
   artifacts: readonly AgentAuthoringUpstreamArtifactDto[]
+  availability: AvailabilityIndex
+  profileLabelText: string | null
   onSelect: (key: string) => void
 }) {
   if (artifacts.length === 0) {
@@ -551,13 +801,24 @@ function ConsumedArtifactItems({
     <CommandGroup heading="Upstream agents">
       {artifacts.map((artifact) => {
         const key = `${artifact.sourceAgent}::${artifact.contract}`
+        const subjectId = `${artifact.sourceAgent}:${artifact.contract}`
+        const entry = availability.forSubject('upstream_artifact', subjectId)
+        const blocked =
+          entry != null &&
+          (entry.status === 'unavailable' || entry.status === 'requires_profile_change')
         const valueText =
           `${artifact.sourceAgent} ${artifact.sourceAgentLabel} ${artifact.contract} ${artifact.label} ${artifact.description}`.toLowerCase()
         return (
           <CommandItem
             key={key}
             value={`${key} ${valueText}`}
-            onSelect={() => onSelect(key)}
+            disabled={blocked}
+            onSelect={() => {
+              if (blocked) return
+              onSelect(key)
+            }}
+            data-testid={`drop-picker-upstream-${artifact.sourceAgent}-${artifact.contract}`}
+            data-availability={entry?.status ?? 'available'}
             className="flex flex-col items-start gap-0.5 px-2 py-1.5"
           >
             <div className="flex w-full items-center gap-2">
@@ -570,6 +831,9 @@ function ConsumedArtifactItems({
               <span className="ml-5 text-[10px] text-muted-foreground/85 leading-snug line-clamp-2">
                 {artifact.description}
               </span>
+            ) : null}
+            {entry && entry.status !== 'available' ? (
+              <SubjectAvailabilityBadge entry={entry} profileLabelText={profileLabelText} />
             ) : null}
           </CommandItem>
         )

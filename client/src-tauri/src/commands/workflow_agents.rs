@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
 
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
-        available_builtin_runtime_agent_descriptors, runtime_agent_descriptor, validate_non_empty,
         AgentAttachedSkillAvailabilityStatusDto, AgentAttachedSkillDto,
         AgentAuthoringAttachableSkillDto, AgentAuthoringAvailabilityStatusDto,
         AgentAuthoringCatalogDiagnosticDto, AgentAuthoringCatalogDto,
@@ -33,19 +33,20 @@ use crate::{
         SkillSourceScopeDto, SkillSourceStateDto, SkillTrustStateDto, WorkflowAgentDetailDto,
         WorkflowAgentGraphEdgeDto, WorkflowAgentGraphGroupDto, WorkflowAgentGraphMarkerDto,
         WorkflowAgentGraphNodeDto, WorkflowAgentGraphPositionDto, WorkflowAgentGraphProjectionDto,
-        WorkflowAgentSummaryDto,
+        WorkflowAgentSummaryDto, available_builtin_runtime_agent_descriptors,
+        runtime_agent_descriptor, validate_non_empty,
     },
     db::project_store,
     runtime::{
         agent_core::{
+            ConsumedArtifactEntry, DbTouchpointEntry, OutputSectionEntry, TriggerRef,
             base_policy_fragment, consumed_artifacts_for, db_touchpoints_for_runtime_agent,
-            output_sections_for, ConsumedArtifactEntry, DbTouchpointEntry, OutputSectionEntry,
-            TriggerRef,
+            output_sections_for,
         },
         autonomous_tool_runtime::{
+            AutonomousToolCatalogEntry, AutonomousToolEffectClass, AutonomousToolRuntime,
             deferred_tool_catalog, tool_access_group_descriptors, tool_allowed_for_runtime_agent,
-            tool_effect_class, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
-            AutonomousToolRuntime,
+            tool_effect_class,
         },
     },
     state::DesktopState,
@@ -125,7 +126,7 @@ fn workflow_agent_detail_for_request<R: Runtime>(
         AgentRefDto::BuiltIn {
             runtime_agent_id,
             version,
-        } => Ok(builtin_detail(runtime_agent_id, version)),
+        } => Ok(builtin_detail(&repo_root, runtime_agent_id, version)),
         AgentRefDto::Custom {
             definition_id,
             version,
@@ -1137,6 +1138,7 @@ const GRAPH_HEADER_HANDLE_TOOL: &str = "tools";
 const GRAPH_HEADER_HANDLE_DB: &str = "db";
 const GRAPH_HEADER_HANDLE_OUTPUT: &str = "output";
 const GRAPH_HEADER_HANDLE_CONSUMED: &str = "consumed";
+const GRAPH_HEADER_HANDLE_WORKFLOW: &str = "workflow";
 const GRAPH_TRIGGER_SOURCE_HANDLE: &str = "trigger-source";
 const GRAPH_TRIGGER_TARGET_HANDLE: &str = "trigger-target";
 const MAX_GRAPH_TOOLS_PER_COLUMN: usize = 6;
@@ -1450,10 +1452,22 @@ fn workflow_agent_graph_projection_for_detail(
         }
     }
 
+    // Emit stage nodes + edges before computing tool direct-connection
+    // handles so stage→tool edges count toward the tool's target handle
+    // visibility. Without this, the tool node renders without a target
+    // handle and React Flow has nothing to anchor the edge to.
+    emit_stage_nodes_and_edges(
+        &mut nodes,
+        &mut edges,
+        detail.workflow_structure.as_ref(),
+        &tool_ids_by_name,
+    );
+
     let tool_node_ids: HashSet<String> = tool_ids_by_name.values().cloned().collect();
     let mut direct_connection_handles_by_tool_id: HashMap<String, (bool, bool)> = HashMap::new();
     for edge in &edges {
-        if edge.data.get("category").and_then(JsonValue::as_str) != Some("trigger") {
+        let category = edge.data.get("category").and_then(JsonValue::as_str);
+        if !matches!(category, Some("trigger") | Some("stage-tool")) {
             continue;
         }
         if tool_node_ids.contains(&edge.source) {
@@ -1494,6 +1508,229 @@ fn workflow_agent_graph_projection_for_detail(
         nodes,
         edges,
         groups,
+    }
+}
+
+fn stage_node_id(phase_id: &str) -> String {
+    format!("workflow-phase:{phase_id}")
+}
+
+const STAGE_GROUP_FRAME_NODE_ID: &str = "stage-group-frame:stages";
+
+fn stage_branch_edge_id(
+    source_phase_id: &str,
+    target_phase_id: &str,
+    branch_index: usize,
+) -> String {
+    format!("e:phase-branch:{source_phase_id}->{target_phase_id}:{branch_index}")
+}
+
+fn emit_stage_nodes_and_edges(
+    nodes: &mut Vec<WorkflowAgentGraphNodeDto>,
+    edges: &mut Vec<WorkflowAgentGraphEdgeDto>,
+    workflow: Option<&JsonValue>,
+    tool_ids_by_name: &HashMap<String, String>,
+) {
+    let Some(workflow) = workflow else {
+        return;
+    };
+    let Some(workflow_object) = workflow.as_object() else {
+        return;
+    };
+    let Some(phases) = workflow_object.get("phases").and_then(JsonValue::as_array) else {
+        return;
+    };
+    if phases.is_empty() {
+        return;
+    }
+    let phase_id_set: HashSet<String> = phases
+        .iter()
+        .filter_map(|phase| {
+            phase
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+        })
+        .collect();
+    let start_phase_id = workflow_object
+        .get("startPhaseId")
+        .and_then(JsonValue::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            phases
+                .first()
+                .and_then(|phase| phase.get("id"))
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+        });
+
+    // Wrap every stage in a dashed group frame (mirrors how tools live
+    // inside tool-group-frame). The agent header connects to the frame
+    // rather than to an individual stage card.
+    let mut frame_node = graph_node(
+        STAGE_GROUP_FRAME_NODE_ID,
+        "stage-group-frame",
+        json!({ "count": phases.len() }),
+    );
+    frame_node.style = Some(json!({ "pointerEvents": "none" }));
+    nodes.push(frame_node);
+
+    for phase in phases {
+        let Some(phase_id) = phase.get("id").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let id = stage_node_id(phase_id);
+        let is_start = start_phase_id
+            .as_deref()
+            .is_some_and(|start| start == phase_id);
+        let mut node = graph_node(
+            &id,
+            "stage",
+            json!({
+                "phase": phase,
+                "isStart": is_start,
+            }),
+        );
+        node.parent_id = Some(STAGE_GROUP_FRAME_NODE_ID.into());
+        node.extent = Some("parent".into());
+        node.draggable = Some(false);
+        node.style = Some(json!({ "pointerEvents": "all" }));
+        nodes.push(node);
+    }
+
+    // Stage → tool edges. Mirrors the runtime per-phase tool gate: each stage
+    // shows the exact set of tools it admits, so the canvas presents the
+    // policy directly instead of hiding it in a badge list on the stage card.
+    for phase in phases {
+        let Some(phase_id) = phase.get("id").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let Some(allowed) = phase.get("allowedTools").and_then(JsonValue::as_array) else {
+            continue;
+        };
+        let source_node_id = stage_node_id(phase_id);
+        for tool_name in allowed.iter().filter_map(JsonValue::as_str) {
+            let Some(tool_node_id) = tool_ids_by_name.get(tool_name) else {
+                continue;
+            };
+            edges.push(graph_edge(
+                format!("e:stage-tool:{phase_id}->{tool_name}"),
+                &source_node_id,
+                tool_node_id,
+                "default",
+                None,
+                Some(GRAPH_TRIGGER_TARGET_HANDLE),
+                json!({
+                    "category": "stage-tool",
+                    "sourcePhaseId": phase_id,
+                    "toolName": tool_name,
+                }),
+                "agent-edge agent-edge-stage-tool",
+                Some(WorkflowAgentGraphMarkerDto::Arrow),
+            ));
+        }
+    }
+
+    if let Some(start) = start_phase_id.as_deref() {
+        if phase_id_set.contains(start) {
+            // Connect the agent header to the STAGES frame as a single edge
+            // (mirrors how tools connect at the group-frame level). The
+            // runtime still uses the start-phase id for actual entry; the
+            // canvas just doesn't draw N edges to every stage card.
+            edges.push(graph_edge(
+                format!("e:{GRAPH_HEADER_NODE_ID}->{STAGE_GROUP_FRAME_NODE_ID}"),
+                GRAPH_HEADER_NODE_ID,
+                STAGE_GROUP_FRAME_NODE_ID,
+                "smoothstep",
+                Some(GRAPH_HEADER_HANDLE_WORKFLOW),
+                Some("workflow"),
+                json!({
+                    "category": "workflow-entry",
+                    "targetPhaseId": start,
+                    "targetFrame": STAGE_GROUP_FRAME_NODE_ID,
+                }),
+                "agent-edge agent-edge-workflow",
+                Some(WorkflowAgentGraphMarkerDto::ArrowClosed),
+            ));
+        }
+    }
+
+    for (phase_index, phase) in phases.iter().enumerate() {
+        let Some(phase_id) = phase.get("id").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let source_node_id = stage_node_id(phase_id);
+        let branches = phase
+            .get("branches")
+            .and_then(JsonValue::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut emitted_any = false;
+        for (branch_index, branch) in branches.iter().enumerate() {
+            let Some(target_phase_id) = branch.get("targetPhaseId").and_then(JsonValue::as_str)
+            else {
+                continue;
+            };
+            if !phase_id_set.contains(target_phase_id) {
+                continue;
+            }
+            let target_node_id = stage_node_id(target_phase_id);
+            let mut data = json!({
+                "category": "phase-branch",
+                "sourcePhaseId": phase_id,
+                "targetPhaseId": target_phase_id,
+                "branchIndex": branch_index,
+            });
+            if let Some(object) = data.as_object_mut() {
+                if let Some(condition) = branch.get("condition") {
+                    object.insert("condition".into(), condition.clone());
+                }
+                if let Some(label) = branch.get("label") {
+                    object.insert("label".into(), label.clone());
+                }
+            }
+            edges.push(graph_edge(
+                stage_branch_edge_id(phase_id, target_phase_id, branch_index),
+                &source_node_id,
+                &target_node_id,
+                "phase-branch",
+                None,
+                None,
+                data,
+                "agent-edge agent-edge-phase-branch",
+                Some(WorkflowAgentGraphMarkerDto::Arrow),
+            ));
+            emitted_any = true;
+        }
+        // Mirror the runtime fall-through: when a phase has no declared
+        // branches, advance_state advances to the next sequential phase once
+        // its requiredChecks pass. Draw the same edge so the canvas shows the
+        // workflow order instead of disconnected stage cards.
+        if !emitted_any {
+            if let Some(next_phase) = phases.get(phase_index + 1) {
+                if let Some(next_phase_id) = next_phase.get("id").and_then(JsonValue::as_str) {
+                    let target_node_id = stage_node_id(next_phase_id);
+                    edges.push(graph_edge(
+                        stage_branch_edge_id(phase_id, next_phase_id, 0),
+                        &source_node_id,
+                        &target_node_id,
+                        "phase-branch",
+                        None,
+                        None,
+                        json!({
+                            "category": "phase-branch",
+                            "sourcePhaseId": phase_id,
+                            "targetPhaseId": next_phase_id,
+                            "branchIndex": 0,
+                            "implicit": true,
+                            "condition": {"kind": "always"},
+                        }),
+                        "agent-edge agent-edge-phase-branch",
+                        Some(WorkflowAgentGraphMarkerDto::Arrow),
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -1565,6 +1802,10 @@ fn advanced_fields_for_detail(detail: &WorkflowAgentDetailDto) -> JsonValue {
         "deniedToolPacks": [],
         "allowedToolGroups": [],
         "deniedToolGroups": [],
+        "allowedMcpServers": [],
+        "deniedMcpServers": [],
+        "allowedDynamicTools": [],
+        "deniedDynamicTools": [],
         "externalServiceAllowed": false,
         "browserControlAllowed": false,
         "skillRuntimeAllowed": false,
@@ -1580,6 +1821,10 @@ fn advanced_fields_for_detail(detail: &WorkflowAgentDetailDto) -> JsonValue {
         advanced["deniedToolPacks"] = json_value(&policy.denied_tool_packs);
         advanced["allowedToolGroups"] = json_value(&policy.allowed_tool_groups);
         advanced["deniedToolGroups"] = json_value(&policy.denied_tool_groups);
+        advanced["allowedMcpServers"] = json_value(&policy.allowed_mcp_servers);
+        advanced["deniedMcpServers"] = json_value(&policy.denied_mcp_servers);
+        advanced["allowedDynamicTools"] = json_value(&policy.allowed_dynamic_tools);
+        advanced["deniedDynamicTools"] = json_value(&policy.denied_dynamic_tools);
         advanced["externalServiceAllowed"] = json!(policy.external_service_allowed);
         advanced["browserControlAllowed"] = json!(policy.browser_control_allowed);
         advanced["skillRuntimeAllowed"] = json!(policy.skill_runtime_allowed);
@@ -2289,7 +2534,7 @@ fn template_definition(
     let contract = output_contract_id(output_contract);
     json!({
         "schema": "xero.agent_definition.v1",
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "id": format!("{id}_agent"),
         "displayName": label,
         "shortLabel": label.split_whitespace().next().unwrap_or(label),
@@ -2850,7 +3095,11 @@ fn custom_summary(record: project_store::AgentDefinitionRecord) -> WorkflowAgent
     }
 }
 
-fn builtin_detail(runtime_agent_id: RuntimeAgentIdDto, version: u32) -> WorkflowAgentDetailDto {
+fn builtin_detail(
+    repo_root: &Path,
+    runtime_agent_id: RuntimeAgentIdDto,
+    version: u32,
+) -> WorkflowAgentDetailDto {
     let descriptor = runtime_agent_descriptor(runtime_agent_id);
     let prompts = vec![system_prompt_for_runtime_agent(
         runtime_agent_id,
@@ -2860,6 +3109,13 @@ fn builtin_detail(runtime_agent_id: RuntimeAgentIdDto, version: u32) -> Workflow
     let touchpoints = db_touchpoints_dto(runtime_agent_id);
     let output = output_contract_dto(descriptor.output_contract);
     let consumes = consumed_artifacts_dto(runtime_agent_id);
+
+    let workflow_structure =
+        project_store::load_agent_definition_version(repo_root, runtime_agent_id.as_str(), version)
+            .ok()
+            .flatten()
+            .and_then(|record| record.snapshot.get("workflowStructure").cloned())
+            .filter(|value| !value.is_null());
 
     WorkflowAgentDetailDto {
         r#ref: AgentRefDto::BuiltIn {
@@ -2891,6 +3147,7 @@ fn builtin_detail(runtime_agent_id: RuntimeAgentIdDto, version: u32) -> Workflow
         output,
         consumes,
         attached_skills: Vec::new(),
+        workflow_structure,
         authoring_graph: None,
         graph_projection: None,
     }
@@ -2978,6 +3235,10 @@ fn custom_detail(
         output,
         consumes,
         attached_skills,
+        workflow_structure: snapshot
+            .get("workflowStructure")
+            .filter(|value| !value.is_null())
+            .cloned(),
         authoring_graph: Some(authoring_graph_from_snapshot(&record, &version)),
         graph_projection: None,
     }
@@ -3251,6 +3512,10 @@ fn tool_policy_details_from_snapshot(snapshot: &JsonValue) -> Option<AgentToolPo
         denied_tool_packs: string_array_from_object(object, "deniedToolPacks"),
         allowed_tool_groups: string_array_from_object(object, "allowedToolGroups"),
         denied_tool_groups: string_array_from_object(object, "deniedToolGroups"),
+        allowed_mcp_servers: string_array_from_object(object, "allowedMcpServers"),
+        denied_mcp_servers: string_array_from_object(object, "deniedMcpServers"),
+        allowed_dynamic_tools: string_array_from_object(object, "allowedDynamicTools"),
+        denied_dynamic_tools: string_array_from_object(object, "deniedDynamicTools"),
         allowed_effect_classes: string_array_from_object(object, "allowedEffectClasses")
             .into_iter()
             .filter_map(|value| effect_class_from_str(&value))
@@ -3645,18 +3910,23 @@ mod tests {
 
     #[test]
     fn graph_projection_groups_tools_and_emits_react_flow_edges() {
-        let detail = builtin_detail(RuntimeAgentIdDto::Engineer, 1);
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let detail = builtin_detail(tempdir.path(), RuntimeAgentIdDto::Engineer, 2);
         let projection = workflow_agent_graph_projection_for_detail(&detail);
 
         assert_eq!(projection.schema, WORKFLOW_AGENT_GRAPH_PROJECTION_SCHEMA);
-        assert!(projection
-            .nodes
-            .iter()
-            .any(|node| node.id == GRAPH_HEADER_NODE_ID && node.node_type == "agent-header"));
-        assert!(projection
-            .nodes
-            .iter()
-            .any(|node| node.id == GRAPH_OUTPUT_NODE_ID && node.node_type == "agent-output"));
+        assert!(
+            projection
+                .nodes
+                .iter()
+                .any(|node| node.id == GRAPH_HEADER_NODE_ID && node.node_type == "agent-header")
+        );
+        assert!(
+            projection
+                .nodes
+                .iter()
+                .any(|node| node.id == GRAPH_OUTPUT_NODE_ID && node.node_type == "agent-output")
+        );
         assert_eq!(
             projection
                 .nodes
@@ -3665,15 +3935,206 @@ mod tests {
                 .count(),
             detail.tools.len()
         );
-        assert!(projection
-            .nodes
-            .iter()
-            .any(|node| node.node_type == "tool-group-frame"));
+        assert!(
+            projection
+                .nodes
+                .iter()
+                .any(|node| node.node_type == "tool-group-frame")
+        );
         assert!(projection.edges.iter().any(|edge| {
             edge.source == GRAPH_HEADER_NODE_ID
                 && edge.target == GRAPH_OUTPUT_NODE_ID
                 && edge.marker == Some(WorkflowAgentGraphMarkerDto::ArrowClosed)
         }));
+    }
+
+    #[test]
+    fn graph_projection_emits_stage_nodes_when_workflow_structure_is_present() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut detail = builtin_detail(tempdir.path(), RuntimeAgentIdDto::Engineer, 2);
+        detail.workflow_structure = Some(json!({
+            "startPhaseId": "survey",
+            "phases": [
+                {
+                    "id": "survey",
+                    "title": "Survey",
+                    "allowedTools": ["read"],
+                    "branches": [
+                        {"targetPhaseId": "plan", "condition": {"kind": "always"}}
+                    ]
+                },
+                {
+                    "id": "plan",
+                    "title": "Plan",
+                    "allowedTools": ["read", "todo"]
+                }
+            ]
+        }));
+        let projection = workflow_agent_graph_projection_for_detail(&detail);
+
+        let stage_ids: Vec<&str> = projection
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == "stage")
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(
+            stage_ids,
+            vec!["workflow-phase:survey", "workflow-phase:plan"],
+            "every workflow phase should appear as a stage node in the projection",
+        );
+
+        let survey_node = projection
+            .nodes
+            .iter()
+            .find(|node| node.id == "workflow-phase:survey")
+            .expect("survey node");
+        assert_eq!(survey_node.data.get("isStart"), Some(&json!(true)));
+
+        let plan_node = projection
+            .nodes
+            .iter()
+            .find(|node| node.id == "workflow-phase:plan")
+            .expect("plan node");
+        assert_eq!(plan_node.data.get("isStart"), Some(&json!(false)));
+
+        assert!(
+            projection.edges.iter().any(|edge| {
+                edge.edge_type == "phase-branch"
+                    && edge.source == "workflow-phase:survey"
+                    && edge.target == "workflow-phase:plan"
+            }),
+            "phase-branch edges should connect declared branches",
+        );
+        assert!(
+            projection.edges.iter().any(|edge| {
+                edge.source == GRAPH_HEADER_NODE_ID
+                    && edge.target == STAGE_GROUP_FRAME_NODE_ID
+                    && edge.source_handle.as_deref() == Some(GRAPH_HEADER_HANDLE_WORKFLOW)
+                    && edge
+                        .data
+                        .get("targetPhaseId")
+                        .and_then(JsonValue::as_str)
+                        == Some("survey")
+            }),
+            "the agent header should connect to the stage frame and record the start phase in edge data",
+        );
+        assert!(
+            projection
+                .nodes
+                .iter()
+                .any(|node| node.id == STAGE_GROUP_FRAME_NODE_ID
+                    && node.node_type == "stage-group-frame"),
+            "the projection should emit a stage-group-frame node",
+        );
+        let parented_stage_ids: Vec<&str> = projection
+            .nodes
+            .iter()
+            .filter(|node| node.node_type == "stage")
+            .filter(|node| node.parent_id.as_deref() == Some(STAGE_GROUP_FRAME_NODE_ID))
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(
+            parented_stage_ids,
+            vec!["workflow-phase:survey", "workflow-phase:plan"],
+            "every stage node should be parented under the stage frame",
+        );
+    }
+
+    #[test]
+    fn graph_projection_emits_stage_tool_edges_to_each_allowed_tool() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut detail = builtin_detail(tempdir.path(), RuntimeAgentIdDto::Engineer, 2);
+        let tool_names: Vec<String> = detail
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .take(3)
+            .collect();
+        assert!(
+            tool_names.len() >= 2,
+            "Engineer should expose multiple tools for this test"
+        );
+        detail.workflow_structure = Some(json!({
+            "startPhaseId": "survey",
+            "phases": [
+                {"id": "survey", "title": "Survey", "allowedTools": tool_names},
+            ]
+        }));
+        let projection = workflow_agent_graph_projection_for_detail(&detail);
+
+        let stage_tool_edges: Vec<&str> = projection
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.data.get("category").and_then(JsonValue::as_str) == Some("stage-tool")
+            })
+            .map(|edge| edge.target.as_str())
+            .collect();
+        assert!(
+            !stage_tool_edges.is_empty(),
+            "stage with allowedTools should emit stage-tool edges, got none. \
+             allowedTools={:?}, edges={:?}",
+            detail
+                .workflow_structure
+                .as_ref()
+                .and_then(|w| w.get("phases"))
+                .and_then(|p| p.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|p| p.get("allowedTools")),
+            projection
+                .edges
+                .iter()
+                .map(|edge| (edge.source.clone(), edge.target.clone()))
+                .collect::<Vec<_>>(),
+        );
+        let target_tool_ids: HashSet<&str> = stage_tool_edges.iter().copied().collect();
+        assert_eq!(
+            target_tool_ids.len(),
+            stage_tool_edges.len(),
+            "stage-tool edges should target distinct tool nodes"
+        );
+    }
+
+    #[test]
+    fn graph_projection_emits_implicit_fall_through_edges_for_sequential_phases() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut detail = builtin_detail(tempdir.path(), RuntimeAgentIdDto::Engineer, 2);
+        // No `branches` declared — the runtime falls through to the next
+        // sequential phase. The canvas should mirror that as visible edges.
+        detail.workflow_structure = Some(json!({
+            "startPhaseId": "survey",
+            "phases": [
+                {"id": "survey", "title": "Survey"},
+                {"id": "plan", "title": "Plan"},
+                {"id": "implement", "title": "Implement"},
+                {"id": "verify", "title": "Verify"},
+            ]
+        }));
+        let projection = workflow_agent_graph_projection_for_detail(&detail);
+
+        let phase_branch_edges: Vec<(&str, &str)> = projection
+            .edges
+            .iter()
+            .filter(|edge| edge.edge_type == "phase-branch")
+            .map(|edge| (edge.source.as_str(), edge.target.as_str()))
+            .collect();
+        assert_eq!(
+            phase_branch_edges,
+            vec![
+                ("workflow-phase:survey", "workflow-phase:plan"),
+                ("workflow-phase:plan", "workflow-phase:implement"),
+                ("workflow-phase:implement", "workflow-phase:verify"),
+            ],
+            "phases without explicit branches should fall through to the next sequential phase",
+        );
+        for edge in projection
+            .edges
+            .iter()
+            .filter(|edge| edge.edge_type == "phase-branch")
+        {
+            assert_eq!(edge.data.get("implicit"), Some(&json!(true)));
+        }
     }
 
     #[test]
@@ -3831,7 +4292,7 @@ mod tests {
             validation_report: None,
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 2,
+                "schemaVersion": 3,
                 "id": "rust_helper",
                 "version": 1,
                 "displayName": "Rust Helper",
@@ -3933,7 +4394,7 @@ mod tests {
             validation_report: None,
             snapshot: json!({
                 "schema": "xero.agent_definition.v1",
-                "schemaVersion": 2,
+                "schemaVersion": 3,
                 "id": "agent_builder_generated",
                 "version": 1,
                 "displayName": "Agent Builder Generated",
@@ -4136,12 +4597,14 @@ mod tests {
             context_kinds.kind,
             AgentAuthoringPolicyControlKindDto::Context
         );
-        assert!(context_kinds
-            .default_value
-            .as_array()
-            .expect("record kinds")
-            .iter()
-            .any(|kind| kind == "project_fact"));
+        assert!(
+            context_kinds
+                .default_value
+                .as_array()
+                .expect("record kinds")
+                .iter()
+                .any(|kind| kind == "project_fact")
+        );
     }
 
     #[test]
@@ -4170,18 +4633,20 @@ mod tests {
                 template.definition["schema"],
                 json!("xero.agent_definition.v1")
             );
-            assert_eq!(template.definition["schemaVersion"], json!(2));
+            assert_eq!(template.definition["schemaVersion"], json!(3));
             assert_eq!(
                 template.definition["baseCapabilityProfile"],
                 json!(base_capability_profile_id(
                     &template.base_capability_profile
                 ))
             );
-            assert!(template.definition["prompts"]
-                .as_array()
-                .expect("template prompts")
-                .iter()
-                .any(|prompt| prompt["source"] == json!("template")));
+            assert!(
+                template.definition["prompts"]
+                    .as_array()
+                    .expect("template prompts")
+                    .iter()
+                    .any(|prompt| prompt["source"] == json!("template"))
+            );
             assert!(template.definition["tools"].as_array().is_some());
             assert!(template.definition["attachedSkills"].as_array().is_some());
             assert!(template.definition["output"].is_object());
@@ -4368,14 +4833,18 @@ mod tests {
             .iter()
             .map(|pack| pack.pack_id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
-        assert!(catalog
-            .health_reports
-            .iter()
-            .all(|report| manifest_ids.contains(report.pack_id.as_str())));
-        assert!(catalog
-            .available_pack_ids
-            .iter()
-            .all(|pack_id| manifest_ids.contains(pack_id.as_str())));
+        assert!(
+            catalog
+                .health_reports
+                .iter()
+                .all(|report| manifest_ids.contains(report.pack_id.as_str()))
+        );
+        assert!(
+            catalog
+                .available_pack_ids
+                .iter()
+                .all(|pack_id| manifest_ids.contains(pack_id.as_str()))
+        );
     }
 
     #[test]
@@ -4495,8 +4964,10 @@ mod tests {
             })
             .expect("unavailable constraint explanation");
         assert!(unavailable.message.contains("no current runtime profile"));
-        assert!(unavailable
-            .resolution
-            .contains("install/enable a runtime capability"));
+        assert!(
+            unavailable
+                .resolution
+                .contains("install/enable a runtime capability")
+        );
     }
 }

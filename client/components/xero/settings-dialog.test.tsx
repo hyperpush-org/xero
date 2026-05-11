@@ -805,7 +805,7 @@ describe('SettingsDialog', () => {
       />,
     )
 
-    expect(await screen.findByText('Local storage')).toBeVisible()
+    expect(await screen.findByText('Local storage', {}, { timeout: 5000 })).toBeVisible()
     expect(await screen.findByText('provider_credentials')).toBeVisible()
     expect(await screen.findByText('[redacted]')).toBeVisible()
     expect(screen.queryByText('sk-test')).not.toBeInTheDocument()

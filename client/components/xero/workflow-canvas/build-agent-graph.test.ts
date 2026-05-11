@@ -277,6 +277,10 @@ describe('buildAgentGraph', () => {
       subagentAllowed: false,
       allowedSubagentRoles: [],
       deniedSubagentRoles: [],
+      allowedMcpServers: [],
+      deniedMcpServers: [],
+      allowedDynamicTools: [],
+      deniedDynamicTools: [],
       commandAllowed: true,
       destructiveWriteAllowed: false,
     }

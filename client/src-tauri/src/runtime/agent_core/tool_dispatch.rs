@@ -80,6 +80,119 @@ pub(crate) fn dispatch_tool_call_with_write_approval(
     })
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ToolDryRunReport {
+    pub(crate) tool_call_id: String,
+    pub(crate) tool_name: String,
+    pub(crate) decoded: bool,
+    pub(crate) policy_decision: AutonomousSafetyPolicyDecision,
+    pub(crate) sandbox_decision: serde_json::Value,
+    pub(crate) sandbox_denied: bool,
+}
+
+pub(crate) fn dry_run_tool_call(
+    tool_registry: &ToolRegistry,
+    tool_runtime: &AutonomousToolRuntime,
+    repo_root: &Path,
+    project_id: &str,
+    tool_call: AgentToolCall,
+    operator_approved: bool,
+) -> CommandResult<ToolDryRunReport> {
+    let _ = project_id;
+    let descriptor = tool_registry
+        .descriptor(&tool_call.tool_name)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_tool_call_unknown",
+                format!(
+                    "The owned-agent model requested unregistered tool `{}`.",
+                    tool_call.tool_name
+                ),
+            )
+        })?;
+    let descriptor_v2 = descriptor.to_core_descriptor_v2(true);
+    let request = match tool_registry.decode_call(&tool_call) {
+        Ok(request) => request,
+        Err(error) => {
+            // Synthesize a deny decision so callers can see the validation failure
+            // without needing a separate error path.
+            return Ok(ToolDryRunReport {
+                tool_call_id: tool_call.tool_call_id,
+                tool_name: tool_call.tool_name,
+                decoded: false,
+                policy_decision: AutonomousSafetyPolicyDecision {
+                    action: AutonomousSafetyPolicyAction::Deny,
+                    code: error.code,
+                    explanation: error.message,
+                    tool_name: descriptor_v2.name.clone(),
+                    risk_class: "invalid_tool_call".into(),
+                    approval_mode: None,
+                    project_trust: "imported_project".into(),
+                    network_intent: "unknown".into(),
+                    credential_sensitivity: "unknown".into(),
+                    os_target: None,
+                    prior_observation_required: false,
+                    approval_grant: None,
+                },
+                sandbox_decision: serde_json::json!({ "skipped": "policy_failed_to_decode" }),
+                sandbox_denied: false,
+            });
+        }
+    };
+    let input_sha256 = sha256_json(&tool_call.input)?;
+    let policy_decision = tool_runtime.evaluate_safety_policy(
+        &descriptor_v2.name,
+        &tool_call.input,
+        &request,
+        operator_approved,
+        &input_sha256,
+    )?;
+
+    let sandbox = ProductionToolSandbox::new(repo_root, tool_runtime);
+    let context = ToolExecutionContext {
+        project_id: project_id.into(),
+        run_id: "developer-tool-harness-dry-run".into(),
+        turn_index: 0,
+        context_epoch: "developer-tool-harness".into(),
+        telemetry_attributes: BTreeMap::from([
+            ("xero.dispatch.path".into(), "developer_tool_dry_run".into()),
+            ("xero.dispatch.registry".into(), "tool_registry_v2".into()),
+        ]),
+    };
+    let call_input = ToolCallInput {
+        tool_call_id: tool_call.tool_call_id.clone(),
+        tool_name: tool_call.tool_name.clone(),
+        input: tool_call.input.clone(),
+    };
+    let sandbox_result = sandbox.evaluate(&descriptor_v2, &call_input, &context);
+    let (sandbox_decision, sandbox_denied) = match sandbox_result {
+        Ok(metadata) => (
+            serde_json::json!({
+                "outcome": "allow",
+                "metadata": metadata,
+            }),
+            false,
+        ),
+        Err(denied) => (
+            serde_json::json!({
+                "outcome": "deny",
+                "error": denied.error,
+                "metadata": denied.metadata,
+            }),
+            true,
+        ),
+    };
+
+    Ok(ToolDryRunReport {
+        tool_call_id: tool_call.tool_call_id,
+        tool_name: tool_call.tool_name,
+        decoded: true,
+        policy_decision,
+        sandbox_decision,
+        sandbox_denied,
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Tool dispatch is the handoff between provider-turn identity, persistence, and the runtime adapter."

@@ -242,6 +242,26 @@ interface ConversationSectionProps {
   returnSessionToHereStates?: Record<string, CodeUndoUiState>
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+  /**
+   * When provided, the conversation surfaces a "What this agent can see right now"
+   * affordance that opens the knowledge-inspection panel for the active run.
+   */
+  onOpenKnowledgeInspection?: () => void
+  /**
+   * When provided, the inline same-session handoff notice rows and the footer
+   * handoff completion notice become clickable and open the handoff context
+   * summary dialog.
+   */
+  onOpenHandoffSummary?: (request: {
+    sourceRunId?: string | null
+    targetRunId?: string | null
+  }) => void
+  /**
+   * Source run id for the footer "Run continued in a fresh session" notice.
+   * The footer notice only appears while the pane is still subscribed to the
+   * source run's stream (before the rebind), so this is the source run id.
+   */
+  footerHandoffSourceRunId?: string | null
 }
 
 export function getCodeUndoStateKey({
@@ -312,6 +332,9 @@ export const ConversationSection = memo(function ConversationSection({
   returnSessionToHereStates = {},
   onUndoChangeGroup,
   onReturnSessionToHere,
+  onOpenKnowledgeInspection,
+  onOpenHandoffSummary,
+  footerHandoffSourceRunId = null,
 }: ConversationSectionProps) {
   const runFailureCode = runtimeRun?.lastError?.code ?? runtimeRun?.lastErrorCode ?? null
   const runFailureMessage =
@@ -370,6 +393,7 @@ export const ConversationSection = memo(function ConversationSection({
                 returnSessionToHereStates={returnSessionToHereStates}
                 onUndoChangeGroup={onUndoChangeGroup}
                 onReturnSessionToHere={onReturnSessionToHere}
+                onOpenHandoffSummary={onOpenHandoffSummary}
               />
             ))}
           </ol>
@@ -378,8 +402,29 @@ export const ConversationSection = memo(function ConversationSection({
         {showAnyNotice ? (
           <ul aria-label="Agent run notices" className="mt-2 flex flex-col gap-2">
             {showHandoffNotice ? (
-              <li className="rounded-sm border border-border/40 bg-muted/15 px-2 py-1 text-[12px] text-muted-foreground">
-                ⤳ handed off to a fresh same-type session
+              <li>
+                {onOpenHandoffSummary ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenHandoffSummary({
+                        sourceRunId: footerHandoffSourceRunId,
+                        targetRunId: null,
+                      })
+                    }
+                    aria-label="Run continued in a fresh session — view handoff context"
+                    className="flex w-full items-center justify-between gap-2 rounded-sm border border-border/40 bg-muted/15 px-2 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span>⤳ handed off to a fresh same-type session</span>
+                    <span className="shrink-0 text-[10.5px] font-medium text-foreground/80">
+                      See what carried over →
+                    </span>
+                  </button>
+                ) : (
+                  <div className="rounded-sm border border-border/40 bg-muted/15 px-2 py-1 text-[12px] text-muted-foreground">
+                    ⤳ handed off to a fresh same-type session
+                  </div>
+                )}
               </li>
             ) : null}
             {showRunFailure ? (
@@ -400,7 +445,10 @@ export const ConversationSection = memo(function ConversationSection({
           </ul>
         ) : null}
         {showAnyTurn ? (
-          <div className="mt-2 flex justify-end">
+          <div className="mt-2 flex items-center justify-end gap-1.5">
+            {onOpenKnowledgeInspection ? (
+              <KnowledgeInspectionTrigger onOpen={onOpenKnowledgeInspection} variant="dense" />
+            ) : null}
             <CopyTextButton
               getText={getCopyableConversationText}
               label="Copy visible conversation"
@@ -434,6 +482,7 @@ export const ConversationSection = memo(function ConversationSection({
                 returnSessionToHereStates={returnSessionToHereStates}
                 onUndoChangeGroup={onUndoChangeGroup}
                 onReturnSessionToHere={onReturnSessionToHere}
+                onOpenHandoffSummary={onOpenHandoffSummary}
               />
             )
           })}
@@ -448,11 +497,16 @@ export const ConversationSection = memo(function ConversationSection({
         <ul aria-label="Agent run notices" className="flex flex-col gap-2.5">
           {showHandoffNotice ? (
             <NoticeListItem>
-              <NoticeRow
-                tone="info"
-                title="Run continued in a fresh session"
-                message="Xero handed this conversation off to a new same-type run because the context budget was full. Your task, prior decisions, and important context carried over — keep replying as normal."
-                code={null}
+              <HandoffFooterNotice
+                onOpen={
+                  onOpenHandoffSummary
+                    ? () =>
+                        onOpenHandoffSummary({
+                          sourceRunId: footerHandoffSourceRunId,
+                          targetRunId: null,
+                        })
+                    : undefined
+                }
               />
             </NoticeListItem>
           ) : null}
@@ -490,7 +544,10 @@ export const ConversationSection = memo(function ConversationSection({
       ) : null}
 
       {showAnyTurn ? (
-        <div className="flex justify-end pt-1">
+        <div className="flex items-center justify-end gap-1.5 pt-1">
+          {onOpenKnowledgeInspection ? (
+            <KnowledgeInspectionTrigger onOpen={onOpenKnowledgeInspection} variant="default" />
+          ) : null}
           <CopyTextButton
             getText={getCopyableConversationText}
             label="Copy visible conversation"
@@ -506,6 +563,31 @@ export const ConversationSection = memo(function ConversationSection({
     </section>
   )
 })
+
+function KnowledgeInspectionTrigger({
+  onOpen,
+  variant,
+}: {
+  onOpen: () => void
+  variant: 'default' | 'dense'
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="See what this agent can see right now"
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        variant === 'dense'
+          ? 'h-6 px-2 text-[10.5px]'
+          : 'h-5 px-1.5 text-[10.5px] opacity-60 hover:opacity-100',
+      )}
+    >
+      <Brain className="h-3 w-3" aria-hidden="true" />
+      <span>What this agent can see</span>
+    </button>
+  )
+}
 
 function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
   return turns
@@ -700,6 +782,10 @@ interface ConversationTurnItemProps {
   returnSessionToHereStates: Record<string, CodeUndoUiState>
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+  onOpenHandoffSummary?: (request: {
+    sourceRunId?: string | null
+    targetRunId?: string | null
+  }) => void
 }
 
 // Custom keyframes (see globals.css `.agent-turn-soft-enter`) give each new
@@ -720,6 +806,7 @@ function ConversationTurnItem({
   returnSessionToHereStates,
   onUndoChangeGroup,
   onReturnSessionToHere,
+  onOpenHandoffSummary,
 }: ConversationTurnItemProps) {
   return (
     <li className={TURN_ENTRY_CLASS}>
@@ -734,6 +821,7 @@ function ConversationTurnItem({
         returnSessionToHereStates={returnSessionToHereStates}
         onUndoChangeGroup={onUndoChangeGroup}
         onReturnSessionToHere={onReturnSessionToHere}
+        onOpenHandoffSummary={onOpenHandoffSummary}
       />
     </li>
   )
@@ -750,6 +838,10 @@ interface ConversationTurnRowProps {
   returnSessionToHereStates: Record<string, CodeUndoUiState>
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+  onOpenHandoffSummary?: (request: {
+    sourceRunId?: string | null
+    targetRunId?: string | null
+  }) => void
 }
 
 function ConversationTurnRow({
@@ -763,6 +855,7 @@ function ConversationTurnRow({
   returnSessionToHereStates,
   onUndoChangeGroup,
   onReturnSessionToHere,
+  onOpenHandoffSummary,
 }: ConversationTurnRowProps) {
   if (turn.kind === 'message') {
     return turn.role === 'user' ? (
@@ -865,7 +958,16 @@ function ConversationTurnRow({
   }
 
   if (turn.kind === 'handoff_notice') {
-    return <HandoffNoticeRow />
+    const handler = onOpenHandoffSummary
+    return (
+      <HandoffNoticeRow
+        onOpen={
+          handler
+            ? () => handler({ sourceRunId: turn.sourceRunId, targetRunId: turn.targetRunId })
+            : undefined
+        }
+      />
+    )
   }
 
   if (turn.kind === 'subagent_group') {
@@ -879,6 +981,7 @@ function ConversationTurnRow({
         returnSessionToHereStates={returnSessionToHereStates}
         onUndoChangeGroup={onUndoChangeGroup}
         onReturnSessionToHere={onReturnSessionToHere}
+        onOpenHandoffSummary={onOpenHandoffSummary}
       />
     )
   }
@@ -896,17 +999,41 @@ function ConversationTurnRow({
   )
 }
 
-function HandoffNoticeRow() {
+function HandoffNoticeRow({ onOpen }: { onOpen?: () => void }) {
+  const description = (
+    <>
+      <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" aria-hidden />
+      <span className="min-w-0 flex-1 text-left">
+        Run continued in a fresh session — context budget filled, so Xero handed this conversation
+        off to a new same-type run. Earlier turns above are from the previous run; the conversation
+        continues below.
+      </span>
+      {onOpen ? (
+        <span className="ml-2 shrink-0 text-[11px] font-medium text-foreground/80">
+          See what carried over →
+        </span>
+      ) : null}
+    </>
+  )
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        aria-label="Run continued in a fresh session — view handoff context"
+        onClick={onOpen}
+        className="flex w-full items-center gap-2.5 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {description}
+      </button>
+    )
+  }
   return (
     <div
       role="note"
       aria-label="Run continued in a fresh session"
       className="flex items-center gap-2.5 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground"
     >
-      <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" aria-hidden />
-      <span className="min-w-0">
-        Run continued in a fresh session — context budget filled, so Xero handed this conversation off to a new same-type run. Earlier turns above are from the previous run; the conversation continues below.
-      </span>
+      {description}
     </div>
   )
 }
@@ -1756,6 +1883,10 @@ interface SubagentGroupCardProps {
   returnSessionToHereStates: Record<string, CodeUndoUiState>
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+  onOpenHandoffSummary?: (request: {
+    sourceRunId?: string | null
+    targetRunId?: string | null
+  }) => void
 }
 
 function SubagentGroupCard({
@@ -1767,6 +1898,7 @@ function SubagentGroupCard({
   returnSessionToHereStates,
   onUndoChangeGroup,
   onReturnSessionToHere,
+  onOpenHandoffSummary,
 }: SubagentGroupCardProps) {
   const isTerminal = SUBAGENT_TERMINAL_STATUSES.has(turn.status)
   const isActive = SUBAGENT_ACTIVE_STATUSES.has(turn.status)
@@ -1892,6 +2024,7 @@ function SubagentGroupCard({
                     returnSessionToHereStates={returnSessionToHereStates}
                     onUndoChangeGroup={onUndoChangeGroup}
                     onReturnSessionToHere={onReturnSessionToHere}
+                    onOpenHandoffSummary={onOpenHandoffSummary}
                   />
                 </li>
               ))}
@@ -2449,6 +2582,36 @@ function AgentActivityIndicator() {
 // Run / stream notice (rendered inline at the foot of the conversation).
 // ---------------------------------------------------------------------------
 
+function HandoffFooterNotice({ onOpen }: { onOpen?: () => void }) {
+  const title = 'Run continued in a fresh session'
+  const message =
+    'Xero handed this conversation off to a new same-type run because the context budget was full. Your task, prior decisions, and important context carried over — keep replying as normal.'
+  if (onOpen) {
+    return (
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`${title} — view handoff context`}
+        className="flex w-full items-start gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-left text-foreground transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Info className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary/80" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="m-0 text-[13px] font-medium">{title}</p>
+          <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed">
+            {message}
+          </p>
+          <p className="mt-1 text-[11px] font-medium text-foreground/80">
+            See what carried over →
+          </p>
+        </div>
+      </button>
+    )
+  }
+  return (
+    <NoticeRow tone="info" title={title} message={message} code={null} />
+  )
+}
+
 interface NoticeRowProps {
   tone: 'info' | 'warning' | 'destructive'
   title: string
@@ -2651,6 +2814,10 @@ interface DenseTurnItemProps {
   returnSessionToHereStates: Record<string, CodeUndoUiState>
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
+  onOpenHandoffSummary?: (request: {
+    sourceRunId?: string | null
+    targetRunId?: string | null
+  }) => void
 }
 
 function DenseTurnItem({
@@ -2659,6 +2826,7 @@ function DenseTurnItem({
   returnSessionToHereStates,
   onUndoChangeGroup,
   onReturnSessionToHere,
+  onOpenHandoffSummary,
 }: DenseTurnItemProps) {
   if (turn.kind === 'message') {
     return (
@@ -2763,6 +2931,26 @@ function DenseTurnItem({
   }
 
   if (turn.kind === 'handoff_notice') {
+    const handler = onOpenHandoffSummary
+    if (handler) {
+      return (
+        <li>
+          <button
+            type="button"
+            onClick={() =>
+              handler({ sourceRunId: turn.sourceRunId, targetRunId: turn.targetRunId })
+            }
+            aria-label="Run continued in a fresh session — view handoff context"
+            className="flex w-full items-start gap-1.5 px-1 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span className="shrink-0 select-none">⤳</span>
+            <span className="min-w-0 flex-1 truncate" title="Run continued in a fresh session">
+              handed off to a fresh same-type session
+            </span>
+          </button>
+        </li>
+      )
+    }
     return (
       <li className="flex items-start gap-1.5 px-1 text-muted-foreground">
         <span className="shrink-0 select-none">⤳</span>
