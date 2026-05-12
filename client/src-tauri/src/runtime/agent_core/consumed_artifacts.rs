@@ -53,7 +53,8 @@ pub const fn consumed_artifacts_for(id: RuntimeAgentIdDto) -> &'static [Consumed
         RuntimeAgentIdDto::Ask
         | RuntimeAgentIdDto::Plan
         | RuntimeAgentIdDto::Crawl
-        | RuntimeAgentIdDto::AgentCreate => &[],
+        | RuntimeAgentIdDto::AgentCreate
+        | RuntimeAgentIdDto::Generalist => &[],
     }
 }
 

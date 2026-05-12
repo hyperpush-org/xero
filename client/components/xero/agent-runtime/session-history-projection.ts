@@ -1,5 +1,6 @@
 import type {
   RunTranscriptSummaryDto,
+  RuntimeAgentIdDto,
   SessionTranscriptDto,
   SessionTranscriptItemDto,
 } from '@/src/lib/xero-model'
@@ -76,7 +77,12 @@ export function buildHistoricalConversationTurns(
     previousRunId = item.runId
     lastSequence = item.sequence
 
-    turns.push(toMessageTurn(item))
+    const messageTurn = toMessageTurn(item)
+    const routingTurn = extractRoutingSuggestion(messageTurn)
+    turns.push(messageTurn)
+    if (routingTurn) {
+      turns.push(routingTurn)
+    }
   }
 
   // Trailing handoff_notice: covers the case where the final emitted item
@@ -125,5 +131,33 @@ function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn
     role: item.actor === 'user' ? 'user' : 'assistant',
     sequence: item.sequence,
     text: item.text ?? '',
+  }
+}
+
+const ROUTING_MARKER_REGEX = /<xero-routing-suggestion\s+([^/>]*?)\/>/i
+
+function extractRoutingSuggestion(
+  messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
+): Extract<ConversationTurn, { kind: 'routing_suggestion' }> | null {
+  if (messageTurn.role !== 'assistant') return null
+  const match = messageTurn.text.match(ROUTING_MARKER_REGEX)
+  if (!match) return null
+  const attrs = match[1]
+  const target = /target\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.toLowerCase().trim()
+  if (target !== 'plan' && target !== 'engineer' && target !== 'debug') {
+    return null
+  }
+  const reason = /reason\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? ''
+  const summary = /summary\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? ''
+  messageTurn.text = messageTurn.text.replace(match[0], '').replace(/\n{3,}/g, '\n\n').trim()
+  return {
+    id: `routing_suggestion:${messageTurn.id}`,
+    kind: 'routing_suggestion',
+    sequence: messageTurn.sequence + 0.5,
+    targetAgentId: target as RuntimeAgentIdDto,
+    reason,
+    summary,
+    isResolved: true,
+    acceptedTarget: null,
   }
 }

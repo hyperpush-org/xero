@@ -202,21 +202,6 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
       </Button>
       <Button
         size="sm"
-        variant="outline"
-        className="h-8 gap-1.5 text-[12px]"
-        onClick={() => void handleRepair()}
-        disabled={pendingAction !== null || !projectId || !adapter}
-        aria-label="Repair project state"
-      >
-        {pendingAction === "repair" ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <Wrench className="h-3.5 w-3.5" />
-        )}
-        Repair
-      </Button>
-      <Button
-        size="sm"
         className="h-8 gap-1.5 text-[12px]"
         onClick={() => void handleCreate()}
         disabled={pendingAction !== null || !projectId || !adapter}
@@ -232,6 +217,30 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
     </div>
   )
 
+  const repairFooter = (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 px-1 pt-3 text-[11.5px] text-muted-foreground">
+      <span className="inline-flex items-center gap-1.5">
+        <Wrench className="h-3.5 w-3.5 text-muted-foreground/70" aria-hidden />
+        Project state looks corrupted?
+      </span>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-foreground"
+        onClick={() => void handleRepair()}
+        disabled={pendingAction !== null || !projectId || !adapter}
+        aria-label="Repair project state"
+      >
+        {pendingAction === "repair" ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <Wrench className="h-3 w-3" />
+        )}
+        Run repair
+      </Button>
+    </div>
+  )
+
   if (!projectId) {
     return (
       <div className="flex flex-col gap-7">
@@ -240,7 +249,7 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
           description="Back up, restore, and repair the per-project SQLite + Lance store."
         />
         <EmptyPanel
-          icon={<Database className="h-4 w-4 text-muted-foreground/70" />}
+          icon={<Database className="h-5 w-5 text-muted-foreground/70" />}
           title="Select a project"
           body="Project-state backups are scoped to the active project."
         />
@@ -260,7 +269,7 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
           }
         />
         <EmptyPanel
-          icon={<Database className="h-4 w-4 text-muted-foreground/70" />}
+          icon={<Database className="h-5 w-5 text-muted-foreground/70" />}
           title="Project state controls unavailable"
           body="The desktop adapter did not provide project-state commands. Restart Xero or upgrade to enable this surface."
         />
@@ -303,9 +312,9 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
       {repairReport ? <RepairReport report={repairReport} /> : null}
 
       <section className="flex flex-col gap-2.5" data-testid="project-state-backups">
-        <SubHeading count={userBackups.length > 0 ? userBackups.length : undefined}>
-          Backups
-        </SubHeading>
+        {userBackups.length > 0 ? (
+          <SubHeading count={userBackups.length}>Backups</SubHeading>
+        ) : null}
 
         {isLoading && backups.length === 0 ? (
           <div
@@ -319,11 +328,30 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
         ) : null}
 
         {listState.status === "ready" && userBackups.length === 0 ? (
-          <EmptyPanel
-            icon={<HardDriveDownload className="h-4 w-4 text-muted-foreground/70" />}
-            title="No backups yet"
-            body="Use Create backup to snapshot the current SQLite + Lance state before risky changes."
-          />
+          <div className="flex flex-col items-center gap-4 rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+            <div className="flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60">
+              <HardDriveDownload className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="flex max-w-sm flex-col gap-1">
+              <p className="text-[14px] font-semibold tracking-tight text-foreground">No backups yet</p>
+              <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+                Take a snapshot of your project state so you can roll back if a workflow or migration goes sideways.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              className="h-9 gap-1.5 text-[12.5px]"
+              onClick={() => void handleCreate()}
+              disabled={pendingAction !== null}
+            >
+              {pendingAction === "create" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <HardDriveDownload className="h-3.5 w-3.5" />
+              )}
+              Create first backup
+            </Button>
+          </div>
         ) : null}
 
         {userBackups.length > 0 ? (
@@ -360,6 +388,8 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
           </details>
         ) : null}
       </section>
+
+      {repairFooter}
 
       <AlertDialog
         open={restoreTarget !== null}

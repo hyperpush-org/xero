@@ -98,6 +98,7 @@ impl RuntimeStreamProjection {
         }
     }
 
+    #[cfg(test)]
     fn apply_item(&mut self, item: RuntimeStreamItemDto) -> RuntimeStreamPatchDto {
         let patch_item = self.apply_item_to_projection(item);
         self.patch_for_item(patch_item)
@@ -799,8 +800,7 @@ fn project_owned_agent_replay_events(
         }
     }
 
-    let patch_item =
-        last_deliverable_item.or_else(|| after_sequence.and_then(|_| last_projected_item));
+    let patch_item = last_deliverable_item.or_else(|| after_sequence.and(last_projected_item));
     let patch = patch_item.map(|item| projection.patch_for_item(item));
 
     OwnedAgentReplayProjectionResult {

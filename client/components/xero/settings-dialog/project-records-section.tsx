@@ -10,6 +10,7 @@ import {
   Loader2,
   Pin,
   RefreshCw,
+  Search,
   ShieldAlert,
   Sparkles,
   Trash2,
@@ -44,7 +45,6 @@ import {
   ErrorBanner,
   InlineCounts,
   Pill,
-  SubHeading,
   type Tone,
 } from "./_shared"
 
@@ -117,6 +117,7 @@ export function ProjectRecordsSection({
   const [supersedeDialog, setSupersedeDialog] = useState<SupersedeDialogState>(
     INITIAL_SUPERSEDE_DIALOG,
   )
+  const [query, setQuery] = useState("")
 
   const recordsById = useMemo(() => {
     const map = new Map<string, ProjectContextRecordSummaryDto>()
@@ -142,6 +143,18 @@ export function ProjectRecordsSection({
     }
     return { total: records.length, current, stale, superseded, blocked }
   }, [records])
+
+  const filteredRecords = useMemo(() => {
+    const trimmed = query.trim().toLowerCase()
+    if (!trimmed) return records
+    return records.filter((record) => {
+      if (record.title.toLowerCase().includes(trimmed)) return true
+      if (record.summary?.toLowerCase().includes(trimmed)) return true
+      if (record.recordKind.toLowerCase().includes(trimmed)) return true
+      if (record.recordId.toLowerCase().includes(trimmed)) return true
+      return false
+    })
+  }, [query, records])
 
   const loadRecords = useCallback(async () => {
     if (!projectId || !adapter) return
@@ -224,7 +237,7 @@ export function ProjectRecordsSection({
           description="Delete or supersede stale workspace records."
         />
         <EmptyPanel
-          icon={<FileText className="h-4 w-4 text-muted-foreground/70" />}
+          icon={<FileText className="h-5 w-5 text-muted-foreground/70" />}
           title="Select a project"
           body="Project records are stored per-project in Xero app data."
         />
@@ -265,12 +278,12 @@ export function ProjectRecordsSection({
           items={[
             { label: "Total", value: counts.total },
             { label: "Current", value: counts.current, tone: "good" },
-            { label: "Stale", value: counts.stale, tone: counts.stale > 0 ? "warn" : "neutral" },
-            {
-              label: "Superseded",
-              value: counts.superseded,
-              tone: counts.superseded > 0 ? "info" : "neutral",
-            },
+            ...(counts.stale > 0
+              ? [{ label: "Stale", value: counts.stale, tone: "warn" as Tone }]
+              : []),
+            ...(counts.superseded > 0
+              ? [{ label: "Superseded", value: counts.superseded, tone: "info" as Tone }]
+              : []),
             ...(counts.blocked > 0
               ? [{ label: "Blocked", value: counts.blocked, tone: "bad" as Tone }]
               : []),
@@ -294,7 +307,7 @@ export function ProjectRecordsSection({
 
       {status === "ready" && records.length === 0 ? (
         <EmptyPanel
-          icon={<FileText className="h-4 w-4 text-muted-foreground/70" />}
+          icon={<FileText className="h-5 w-5 text-muted-foreground/70" />}
           title="No project records"
           body="Agent runs will populate this list as they produce findings, plans, and decisions."
         />
@@ -302,39 +315,64 @@ export function ProjectRecordsSection({
 
       {records.length > 0 ? (
         <section className="flex flex-col gap-2.5">
-          <SubHeading count={records.length}>Records</SubHeading>
-          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
-            {records.map((record) => {
-              const successor = record.supersededById
-                ? (recordsById.get(record.supersededById) ?? null)
-                : null
-              const predecessor = record.supersedesId
-                ? (recordsById.get(record.supersedesId) ?? null)
-                : null
-              const isSuperseded = record.supersededById !== null
-              const pending = pendingRecordId === record.recordId
-              return (
-                <ProjectRecordRow
-                  key={record.recordId}
-                  record={record}
-                  predecessor={predecessor}
-                  successor={successor}
-                  isSuperseded={isSuperseded}
-                  pending={pending}
-                  canMutate={Boolean(adapter)}
-                  onSupersede={() =>
-                    setSupersedeDialog({
-                      open: true,
-                      superseded: record,
-                      supersedingId: "",
-                      error: null,
-                    })
-                  }
-                  onDelete={() => setDeleteTarget(record)}
-                />
-              )
-            })}
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Filter by title, summary, kind, or record id"
+              className="h-8 pl-8 text-[12.5px]"
+              aria-label="Filter records"
+            />
+            {query ? (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear filter"
+                className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
           </div>
+          {filteredRecords.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-6 text-center text-[12.5px] text-muted-foreground">
+              No records match <span className="font-mono text-foreground">"{query}"</span>.
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+              {filteredRecords.map((record) => {
+                const successor = record.supersededById
+                  ? (recordsById.get(record.supersededById) ?? null)
+                  : null
+                const predecessor = record.supersedesId
+                  ? (recordsById.get(record.supersedesId) ?? null)
+                  : null
+                const isSuperseded = record.supersededById !== null
+                const pending = pendingRecordId === record.recordId
+                return (
+                  <ProjectRecordRow
+                    key={record.recordId}
+                    record={record}
+                    predecessor={predecessor}
+                    successor={successor}
+                    isSuperseded={isSuperseded}
+                    pending={pending}
+                    canMutate={Boolean(adapter)}
+                    onSupersede={() =>
+                      setSupersedeDialog({
+                        open: true,
+                        superseded: record,
+                        supersedingId: "",
+                        error: null,
+                      })
+                    }
+                    onDelete={() => setDeleteTarget(record)}
+                  />
+                )
+              })}
+            </div>
+          )}
         </section>
       ) : null}
 
@@ -550,8 +588,10 @@ function ProjectRecordRow({
               Content withheld — redacted record.
             </p>
           ) : null}
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground/80">
-            <span className="font-mono">{record.recordId}</span>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground/70">
+            <span title={formatAbsoluteTime(record.createdAt)} className="tabular-nums">
+              {formatRelativeTime(record.createdAt)}
+            </span>
             {record.relatedPaths.length > 0 ? (
               <>
                 <span aria-hidden>·</span>
@@ -563,6 +603,20 @@ function ProjectRecordRow({
                 </span>
               </>
             ) : null}
+            <button
+              type="button"
+              title={`Copy ${record.recordId}`}
+              aria-label={`Copy record id ${record.recordId}`}
+              onClick={(event) => {
+                event.stopPropagation()
+                if (typeof navigator !== "undefined" && navigator.clipboard) {
+                  void navigator.clipboard.writeText(record.recordId)
+                }
+              }}
+              className="ml-auto inline-flex max-w-[180px] items-center gap-1 truncate rounded font-mono text-[10.5px] text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+            >
+              {record.recordId}
+            </button>
           </div>
         </div>
 
@@ -645,6 +699,30 @@ function ChainRow({ direction, label, recordId, title }: ChainRowProps) {
       {title ? <span className="truncate text-foreground/80">· {title}</span> : null}
     </div>
   )
+}
+
+function formatRelativeTime(value: string): string {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return value
+  const diffMs = Date.now() - parsed
+  const diffSec = Math.round(diffMs / 1000)
+  if (diffSec < 45) return "just now"
+  const diffMin = Math.round(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.round(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  const diffDay = Math.round(diffHr / 24)
+  if (diffDay < 30) return `${diffDay}d ago`
+  const diffMo = Math.round(diffDay / 30)
+  if (diffMo < 12) return `${diffMo}mo ago`
+  const diffYr = Math.round(diffMo / 12)
+  return `${diffYr}y ago`
+}
+
+function formatAbsoluteTime(value: string): string {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return value
+  return new Date(parsed).toLocaleString()
 }
 
 function toErrorMessage(error: unknown, fallback: string): string {

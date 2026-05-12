@@ -71,20 +71,14 @@ export function EmptySessionState({
   if (variant === 'dense') {
     return (
       <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">
-        <div className="relative flex w-full max-w-[260px] flex-col items-stretch px-3 py-4">
-          <h2
-            className="agent-empty-stagger text-center text-[13px] font-semibold tracking-tight text-foreground"
-            style={{ ['--stagger-index' as string]: 0 }}
-          >
+        <div className="agent-empty-fade-in relative flex w-full max-w-[260px] flex-col items-stretch px-3 py-4">
+          <h2 className="text-center text-[13px] font-semibold tracking-tight text-foreground">
             {isAgentCreate ? 'Shape this new agent' : <span className="text-primary">{projectLabel}</span>}
           </h2>
           {onSelectSuggestion || showWorkflowCanvasAction ? (
             <ul className="mt-3 flex w-full flex-col divide-y divide-border/40 overflow-hidden rounded-md border border-border/60 bg-card/30">
               {showWorkflowCanvasAction ? (
-                <li
-                  className="agent-empty-stagger"
-                  style={{ ['--stagger-index' as string]: 1 }}
-                >
+                <li>
                   <button
                     className={cn(
                       'agent-suggestion-row group flex w-full items-center gap-2 bg-primary/10 px-2 py-1.5 text-left transition-colors',
@@ -106,12 +100,8 @@ export function EmptySessionState({
                 </li>
               ) : null}
               {onSelectSuggestion
-                ? suggestions.map((suggestion, index) => (
-                    <li
-                      key={suggestion.label}
-                      className="agent-empty-stagger"
-                      style={{ ['--stagger-index' as string]: index + (showWorkflowCanvasAction ? 2 : 1) }}
-                    >
+                ? suggestions.map((suggestion) => (
+                    <li key={suggestion.label}>
                       <button
                         className={cn(
                           'agent-suggestion-row group flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors',
@@ -145,27 +135,16 @@ export function EmptySessionState({
 
   return (
     <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">
-      <div className="relative flex w-full max-w-xl flex-col items-center px-8 py-12 text-center">
-        <div
-          className="agent-empty-stagger"
-          style={{ ['--stagger-index' as string]: 0 }}
-        >
-          <BrandGlyph context={context} />
-        </div>
+      <div className="agent-empty-fade-in relative flex w-full max-w-xl flex-col items-center px-8 py-12 text-center">
+        <BrandGlyph context={context} />
 
         {greeting ? (
-          <p
-            className="agent-empty-stagger mt-5 text-[12px] font-medium uppercase tracking-[0.18em] text-muted-foreground/80"
-            style={{ ['--stagger-index' as string]: 1 }}
-          >
+          <p className="mt-5 text-[12px] font-medium uppercase tracking-[0.18em] text-muted-foreground/80">
             {greeting}
           </p>
         ) : null}
 
-        <h2
-          className="agent-empty-stagger mt-3 text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]"
-          style={{ ['--stagger-index' as string]: 2 }}
-        >
+        <h2 className="mt-3 text-2xl font-semibold tracking-tight text-foreground sm:text-[26px]">
           {isAgentCreate ? (
             'Shape this new agent'
           ) : (
@@ -174,10 +153,7 @@ export function EmptySessionState({
             </>
           )}
         </h2>
-        <p
-          className="agent-empty-stagger mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground"
-          style={{ ['--stagger-index' as string]: 3 }}
-        >
+        <p className="mt-3 max-w-md text-[13px] leading-relaxed text-muted-foreground">
           {isAgentCreate
             ? agentCreateCanvasIncluded
               ? 'The canvas is already included. Describe the role, boundaries, and workflow to draft the agent.'
@@ -188,10 +164,7 @@ export function EmptySessionState({
         {onSelectSuggestion || showWorkflowCanvasAction ? (
           <ul className="mt-8 flex w-full max-w-md flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/40 backdrop-blur-sm">
             {showWorkflowCanvasAction ? (
-              <li
-                className="agent-empty-stagger"
-                style={{ ['--stagger-index' as string]: 4 }}
-              >
+              <li>
                 <button
                   className={cn(
                     'agent-suggestion-row group flex w-full items-center gap-3 bg-primary/10 px-4 py-3.5 text-left transition-colors',
@@ -223,12 +196,8 @@ export function EmptySessionState({
               </li>
             ) : null}
             {onSelectSuggestion
-              ? suggestions.map((suggestion, index) => (
-                  <li
-                    key={suggestion.label}
-                    className="agent-empty-stagger"
-                    style={{ ['--stagger-index' as string]: index + (showWorkflowCanvasAction ? 5 : 4) }}
-                  >
+              ? suggestions.map((suggestion) => (
+                  <li key={suggestion.label}>
                     <button
                       className={cn(
                         'agent-suggestion-row group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors',

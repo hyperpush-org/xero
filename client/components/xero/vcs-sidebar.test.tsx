@@ -188,16 +188,16 @@ describe('VcsSidebar', () => {
     expect(onLoadDiff).not.toHaveBeenCalled()
   })
 
-  it('opens the floating panel immediately without staging a slide animation', () => {
+  it('opens the floating panel with the shared right-sidebar animation frame', () => {
     const { props, rerender } = renderVcsSidebar('', { open: false })
     expect(screen.queryByLabelText('Source control panel')).not.toBeInTheDocument()
 
     rerender(<VcsSidebar {...props} open />)
 
     const panel = screen.getByLabelText('Source control panel')
-    expect(panel).not.toHaveClass('invisible')
-    expect(panel.style.transform).toBe('')
-    expect(panel.style.transition).toBe('')
+    expect(panel).toHaveAttribute('data-slot', 'floating-right-sidebar-panel')
+    expect(panel).toHaveClass('gpu-layer')
+    expect(document.querySelector('[data-slot="floating-right-sidebar-overlay"]')).toBeInTheDocument()
   })
 
   it('keeps the hidden panel unpainted when closed status changes add a diff pane', () => {

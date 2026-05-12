@@ -1,5 +1,5 @@
 //! Dev-only synthetic frame generator. Produces a color-cycling test pattern
-//! so the pipeline (FrameBus → URI scheme → webview `<img>`) can be verified
+//! so the pipeline (FrameBus → IPC frame command → webview `<img>`) can be verified
 //! without a real Android or iOS device.
 //!
 //! Enabled by the `emulator-synthetic` cargo feature. When disabled this

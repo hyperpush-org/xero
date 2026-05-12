@@ -109,7 +109,7 @@ afterEach(() => {
   }
 })
 
-import { XeroApp, useActivatedSurface } from './App'
+import { XeroApp, useActivatedSurface, useStickyPrewarmedSurface } from './App'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import {
   createXeroDoctorReport,
@@ -2457,6 +2457,17 @@ function ActivatedSurfaceProbe({
   return <div data-mounted={mounted ? 'true' : 'false'}>surface</div>
 }
 
+function StickyPrewarmedSurfaceProbe({
+  active,
+  prewarm,
+}: {
+  active: boolean
+  prewarm?: boolean
+}) {
+  const mounted = useStickyPrewarmedSurface(active, prewarm)
+  return <div data-mounted={mounted ? 'true' : 'false'}>sticky surface</div>
+}
+
 describe('useActivatedSurface', () => {
   it('mounts a prewarmed surface only during the warmup window', () => {
     const { rerender } = render(<ActivatedSurfaceProbe active={false} prewarm />)
@@ -2476,6 +2487,18 @@ describe('useActivatedSurface', () => {
     rerender(<ActivatedSurfaceProbe active={false} />)
 
     expect(screen.getByText('surface')).toHaveAttribute('data-mounted', 'true')
+  })
+})
+
+describe('useStickyPrewarmedSurface', () => {
+  it('keeps a prewarmed heavy surface mounted after the warmup window', () => {
+    const { rerender } = render(<StickyPrewarmedSurfaceProbe active={false} prewarm />)
+
+    expect(screen.getByText('sticky surface')).toHaveAttribute('data-mounted', 'true')
+
+    rerender(<StickyPrewarmedSurfaceProbe active={false} prewarm={false} />)
+
+    expect(screen.getByText('sticky surface')).toHaveAttribute('data-mounted', 'true')
   })
 })
 
@@ -2915,6 +2938,27 @@ describe('XeroApp current UI', () => {
     await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
   })
 
+  it('defaults the agent dock composer to Agent Create when opened from Workflow', async () => {
+    const { adapter } = createAdapter()
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open agent dock' }))
+
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+    await waitFor(() =>
+      expect(within(dock).getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent(
+        'Agent Create',
+      ),
+    )
+    expect(screen.queryByLabelText('Agent authoring canvas')).not.toBeInTheDocument()
+  })
+
   it('lazy-activates the agent pane only after the Agent view is opened', async () => {
     const { adapter } = createAdapter()
 
@@ -3255,9 +3299,9 @@ describe('XeroApp current UI', () => {
     const panel = await screen.findByRole('complementary', {
       name: 'Project usage statistics',
     })
-    expect(panel).not.toHaveClass('invisible')
-    expect(panel.style.transform).toBe('')
-    expect(panel.style.transition).toBe('')
+    expect(panel).toHaveAttribute('data-slot', 'floating-right-sidebar-panel')
+    expect(panel).toHaveClass('gpu-layer')
+    expect(document.querySelector('[data-slot="floating-right-sidebar-overlay"]')).toBeInTheDocument()
     expect(screen.getByText('No agent runs recorded for this project yet.')).toBeVisible()
   })
 
@@ -3313,7 +3357,7 @@ describe('XeroApp current UI', () => {
     expect(within(breadcrumb).getByText('Cluster')).toBeVisible()
   })
 
-  it('opens the preloaded Solana workbench without waiting for an animation frame', async () => {
+  it('shows the Solana opening shell before mounting the heavy workbench chunk', async () => {
     const { adapter } = createAdapter()
     await import('@/components/xero/solana-workbench-sidebar')
     const originalRequestAnimationFrame = window.requestAnimationFrame
@@ -3341,11 +3385,12 @@ describe('XeroApp current UI', () => {
 
       fireEvent.click(screen.getByRole('button', { name: 'Open Solana workbench' }))
 
-      const breadcrumb = screen.getByRole('navigation', {
-        name: 'Solana Workbench breadcrumb',
-      })
-      expect(within(breadcrumb).getByText('Solana Workbench')).toBeVisible()
-      expect(screen.queryByLabelText('Loading Solana Workbench')).not.toBeInTheDocument()
+      expect(screen.getByLabelText('Loading Solana Workbench')).toBeInTheDocument()
+      expect(
+        screen.queryByRole('navigation', {
+          name: 'Solana Workbench breadcrumb',
+        }),
+      ).not.toBeInTheDocument()
     } finally {
       Object.defineProperty(window, 'requestAnimationFrame', {
         configurable: true,

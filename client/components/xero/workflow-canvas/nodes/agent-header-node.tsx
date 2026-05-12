@@ -40,6 +40,20 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         className="!bg-amber-500"
       />
       <Handle
+        id={AGENT_GRAPH_HEADER_HANDLES.workflow}
+        type="source"
+        position={Position.Left}
+        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow * 100}%` }}
+        className="!bg-amber-500"
+      />
+      <Handle
+        id={AGENT_GRAPH_HEADER_HANDLES.consumed}
+        type="target"
+        position={Position.Left}
+        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed * 100}%` }}
+        className="!bg-teal-500"
+      />
+      <Handle
         id={AGENT_GRAPH_HEADER_HANDLES.skills}
         type="source"
         position={Position.Left}
@@ -68,20 +82,6 @@ export const AgentHeaderNode = memo(function AgentHeaderNode({ data }: NodeProps
         type="source"
         position={Position.Bottom}
         className="!bg-foreground"
-      />
-      <Handle
-        id={AGENT_GRAPH_HEADER_HANDLES.workflow}
-        type="source"
-        position={Position.Left}
-        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow * 100}%` }}
-        className="!bg-amber-500"
-      />
-      <Handle
-        id={AGENT_GRAPH_HEADER_HANDLES.consumed}
-        type="target"
-        position={Position.Left}
-        style={{ top: `${AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed * 100}%` }}
-        className="!bg-teal-500"
       />
       <div
         className="agent-graph-lane-label agent-graph-lane-label--agent agent-card-header__label"

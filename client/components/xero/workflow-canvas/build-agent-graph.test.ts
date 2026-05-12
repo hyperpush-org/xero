@@ -11,9 +11,11 @@ import {
   AGENT_GRAPH_HEADER_NODE_ID,
   AGENT_GRAPH_OUTPUT_NODE_ID,
   AGENT_GRAPH_TRIGGER_HANDLES,
+  STAGE_GROUP_FRAME_NODE_ID,
   agentGraphFromProjection,
   buildAgentGraph,
   humanizeIdentifier,
+  stageNodeId,
   type AgentHeaderNodeData,
   toolCategoryPresentationForGroup,
 } from './build-agent-graph'
@@ -350,6 +352,98 @@ describe('buildAgentGraph', () => {
     const skillsLane = placed.find((node) => node.id === 'lane:skills')
 
     expect(skillsLane).toBeUndefined()
+  })
+
+  it('places attached skills under consumes and follows consume stack height', () => {
+    const detail = fixtureDetail()
+    detail.attachedSkills = [attachedSkill()]
+
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(nodes, new Map())
+    const consumed = placed.find((node) => node.type === 'consumed-artifact')
+    const consumedLane = placed.find((node) => node.id === 'lane:consumed-artifact')
+    const skillLane = placed.find((node) => node.id === 'lane:skills')
+    const skillNode = placed.find((node) => node.id === 'skills:rust-best-practices')
+    const consumedBottom = (consumed?.position.y ?? 0) + 96
+
+    expect(skillLane?.position.x).toBe(
+      (consumed?.position.x ?? 0) + (((consumedLane?.width ?? 0) - (skillLane?.width ?? 0)) / 2),
+    )
+    expect(skillLane?.position.y).toBe(consumedBottom + 64)
+    expect(skillNode?.position.y).toBe((skillLane?.position.y ?? 0) + 26 + 16)
+
+    const tallerDetail = fixtureDetail()
+    tallerDetail.attachedSkills = [attachedSkill()]
+    tallerDetail.consumes = [
+      ...tallerDetail.consumes,
+      {
+        id: 'debug_summary',
+        label: 'Debug Summary',
+        description: 'Root cause notes from Debug.',
+        sourceAgent: 'debug',
+        contract: 'debug_summary',
+        sections: ['constraints'],
+        required: true,
+      },
+    ]
+    const { nodes: tallerNodes } = buildAgentGraph(tallerDetail)
+    const tallerPlaced = layoutAgentGraphByCategory(tallerNodes, new Map())
+    const tallerSkillLane = tallerPlaced.find((node) => node.id === 'lane:skills')
+
+    expect(tallerSkillLane?.position.x).toBe(skillLane?.position.x)
+    expect(tallerSkillLane?.position.y).toBeGreaterThan(skillLane?.position.y ?? 0)
+  })
+
+  it('places stages above consumes and raises taller stage stacks automatically', () => {
+    const detail = fixtureDetail()
+    detail.workflowStructure = {
+      startPhaseId: 'discover',
+      phases: [
+        { id: 'discover', title: 'Discover' },
+        { id: 'draft', title: 'Draft' },
+      ],
+    }
+
+    const { nodes } = buildAgentGraph(detail)
+    const placed = layoutAgentGraphByCategory(nodes, new Map())
+    const consumed = placed.find((node) => node.type === 'consumed-artifact')
+    const consumedLane = placed.find((node) => node.id === 'lane:consumed-artifact')
+    const stageFrame = placed.find((node) => node.id === STAGE_GROUP_FRAME_NODE_ID)
+    const stageLane = placed.find((node) => node.id === 'lane:stage')
+    const firstStage = placed.find((node) => node.id === stageNodeId('discover'))
+    const stageFrameBottom = (stageFrame?.position.y ?? 0) + (stageFrame?.height ?? 0)
+
+    expect(stageFrame?.position.x).toBe(
+      (consumed?.position.x ?? 0) + (((consumedLane?.width ?? 0) - 284) / 2),
+    )
+    expect(stageFrameBottom).toBe((consumedLane?.position.y ?? 0) - 64)
+    expect(stageFrame?.width).toBe(284)
+    expect(stageFrame?.height).toBe(304)
+    expect(stageLane?.position.x).toBe(stageFrame?.position.x)
+    expect(stageLane?.position.y).toBe((stageFrame?.position.y ?? 0) - 26 - 16)
+    expect(firstStage?.position).toEqual({ x: 12, y: 12 })
+
+    const tallerDetail = fixtureDetail()
+    tallerDetail.workflowStructure = {
+      startPhaseId: 'survey',
+      phases: [
+        { id: 'survey', title: 'Survey' },
+        { id: 'plan', title: 'Plan' },
+        { id: 'implement', title: 'Implement' },
+        { id: 'verify', title: 'Verify' },
+      ],
+    }
+    const { nodes: tallerNodes } = buildAgentGraph(tallerDetail)
+    const tallerPlaced = layoutAgentGraphByCategory(tallerNodes, new Map())
+    const tallerConsumedLane = tallerPlaced.find((node) => node.id === 'lane:consumed-artifact')
+    const tallerStageFrame = tallerPlaced.find((node) => node.id === STAGE_GROUP_FRAME_NODE_ID)
+    const tallerStageFrameBottom =
+      (tallerStageFrame?.position.y ?? 0) + (tallerStageFrame?.height ?? 0)
+
+    expect(tallerStageFrame?.height).toBeGreaterThan(stageFrame?.height ?? 0)
+    expect(tallerStageFrame?.position.y).toBeLessThan(stageFrame?.position.y ?? 0)
+    expect(tallerStageFrame?.position.x).toBe(stageFrame?.position.x)
+    expect(tallerStageFrameBottom).toBe((tallerConsumedLane?.position.y ?? 0) - 64)
   })
 
   it('connects every non-header, non-section, non-consumed node back to the header', () => {

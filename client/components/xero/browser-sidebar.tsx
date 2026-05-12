@@ -16,7 +16,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import { recordIpcPayloadSample } from "@/src/lib/ipc-payload-budget"
 import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 import {
@@ -218,8 +218,9 @@ export function BrowserSidebar({ open }: BrowserSidebarProps) {
   const [navError, setNavError] = useState<string | null>(null)
   const [showCookieBanner, setShowCookieBanner] = useState(false)
   const [toolMode, setToolMode] = useState<ToolMode>(null)
-  const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
+  const motionOpen = useSidebarOpenMotion(open)
+  const targetWidth = motionOpen ? width : 0
+  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const {
     browsers: cookieBrowsers,
     status: importStatus,

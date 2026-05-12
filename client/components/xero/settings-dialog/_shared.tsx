@@ -14,7 +14,7 @@ export const TONE_BORDER: Record<Tone, string> = {
 }
 
 const PILL_BASE =
-  "inline-flex h-[18px] items-center gap-1 rounded-full border px-1.5 text-[10.5px] font-medium"
+  "inline-flex h-[20px] items-center gap-1 rounded-full border px-2 text-[11px] font-medium"
 
 export function Pill({
   tone,
@@ -47,7 +47,7 @@ export function InlineCounts({ items, className, ...rest }: InlineCountsProps) {
     <div
       data-testid={rest["data-testid"]}
       className={cn(
-        "flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[11.5px]",
+        "flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[12.5px]",
         className,
       )}
     >
@@ -56,7 +56,7 @@ export function InlineCounts({ items, className, ...rest }: InlineCountsProps) {
           <span className="text-muted-foreground">{item.label}</span>
           <span
             className={cn(
-              "text-[13px] font-semibold tabular-nums leading-none",
+              "text-[14px] font-semibold tabular-nums leading-none",
               INLINE_TONE[item.tone ?? "neutral"],
             )}
           >
@@ -78,13 +78,15 @@ export function EmptyPanel({
   body: string
 }) {
   return (
-    <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60 bg-secondary/10 px-6 text-center">
-      <div className="max-w-sm">
-        <div className="mx-auto flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-secondary/40">
+    <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+      <div className="flex max-w-sm flex-col items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60">
           {icon}
         </div>
-        <p className="mt-3 text-[12.5px] font-medium text-foreground">{title}</p>
-        <p className="mt-1 text-[11.5px] leading-[1.55] text-muted-foreground">{body}</p>
+        <div className="flex flex-col gap-1">
+          <p className="text-[14px] font-semibold tracking-tight text-foreground">{title}</p>
+          <p className="text-[12.5px] leading-[1.55] text-muted-foreground">{body}</p>
+        </div>
       </div>
     </div>
   )
@@ -94,9 +96,9 @@ export function ErrorBanner({ message }: { message: string }) {
   return (
     <p
       role="alert"
-      className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12px] text-destructive"
+      className="flex items-start gap-2.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-destructive"
     >
-      <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+      <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
       <span>{message}</span>
     </p>
   )
@@ -113,9 +115,9 @@ export function SuccessBanner({
     <p
       role="status"
       data-testid={testId}
-      className="flex items-start gap-2 rounded-md border border-success/30 bg-success/[0.06] px-3 py-2 text-[12px] text-success"
+      className="flex items-start gap-2.5 rounded-md border border-success/30 bg-success/[0.06] px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-success"
     >
-      <CheckCircle2 className="mt-px h-3.5 w-3.5 shrink-0" />
+      <CheckCircle2 className="mt-[1px] h-4 w-4 shrink-0" />
       <span>{message}</span>
     </p>
   )
@@ -131,10 +133,10 @@ export function SubHeading({
   className?: string
 }) {
   return (
-    <h4 className={cn("text-[12.5px] font-semibold text-foreground", className)}>
+    <h4 className={cn("text-[13.5px] font-semibold tracking-tight text-foreground", className)}>
       {children}
       {count !== undefined && count !== null ? (
-        <span className="ml-1.5 font-normal text-muted-foreground">{count}</span>
+        <span className="ml-2 text-[12px] font-normal text-muted-foreground">{count}</span>
       ) : null}
     </h4>
   )
@@ -153,7 +155,7 @@ export function ListContainer({
     <div
       data-testid={testId}
       className={cn(
-        "overflow-hidden rounded-md border border-border/60 divide-y divide-border/40",
+        "overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40",
         className,
       )}
     >

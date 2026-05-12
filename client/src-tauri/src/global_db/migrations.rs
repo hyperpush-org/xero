@@ -19,10 +19,21 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(PROVIDER_PREFLIGHT_RESULTS_SQL),
             M::up(AGENT_TOOLING_SETTINGS_SQL),
             M::up(DEVELOPER_TOOL_SEQUENCES_SQL),
+            M::up(PROJECT_START_COMMAND_SQL),
+            M::up(PROJECT_START_TARGETS_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const PROJECT_START_COMMAND_SQL: &str = r#"
+    ALTER TABLE projects ADD COLUMN start_command TEXT;
+"#;
+
+const PROJECT_START_TARGETS_SQL: &str = r#"
+    ALTER TABLE projects DROP COLUMN start_command;
+    ALTER TABLE projects ADD COLUMN start_targets TEXT NOT NULL DEFAULT '[]';
+"#;
 
 const DEVELOPER_TOOL_SEQUENCES_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS developer_tool_sequences (

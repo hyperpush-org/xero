@@ -12,9 +12,8 @@ use super::events::{FramePayload, EMULATOR_FRAME_EVENT};
 
 const FRAME_EVENT_MIN_INTERVAL_NS: u64 = 33_000_000;
 
-/// A single rendered frame ready to be served by the `emulator://frame` URI
-/// scheme. `bytes` is JPEG-encoded so the webview can paint it with its
-/// native image decoder.
+/// A single rendered frame ready to be delivered to the webview. `bytes` is
+/// JPEG-encoded so the viewport can paint it with the platform image decoder.
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub seq: u64,
@@ -24,7 +23,7 @@ pub struct Frame {
 }
 
 /// Single-slot frame buffer shared between the producer (sidecar driver) and
-/// consumer (URI scheme handler).
+/// consumer (viewport IPC command).
 ///
 /// The producer writes the latest frame with `publish`; the consumer reads it
 /// with `latest`. Readers always see a complete frame — `ArcSwapOption`
@@ -105,7 +104,7 @@ impl Default for FrameBus {
 }
 
 /// Publish a frame and rate-limit `emulator:frame` events so the frontend can
-/// swap its `<img src>` without flooding WebKit's custom scheme machinery.
+/// pull the latest JPEG without flooding the webview IPC bridge.
 pub fn publish_and_emit<R: Runtime>(
     app: &AppHandle<R>,
     bus: &FrameBus,

@@ -134,6 +134,7 @@ fn derive_project_summary(
         active_phase: 0,
         branch: project_row.branch,
         runtime: project_row.runtime,
+        start_targets: project_row.start_targets,
     }
 }
 
@@ -208,12 +209,14 @@ pub(crate) fn read_project_row(
                 milestone,
                 project_origin,
                 branch,
-                runtime
+                runtime,
+                start_targets
             FROM projects
             WHERE id = ?1
             "#,
             [expected_project_id],
             |row| {
+                let raw_targets: String = row.get(7)?;
                 Ok(ProjectSummaryRow {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -222,6 +225,7 @@ pub(crate) fn read_project_row(
                     project_origin: parse_project_origin(row.get::<_, String>(4)?.as_str()),
                     branch: row.get(5)?,
                     runtime: row.get(6)?,
+                    start_targets: serde_json::from_str(&raw_targets).unwrap_or_default(),
                 })
             },
         )

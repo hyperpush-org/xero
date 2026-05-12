@@ -14,6 +14,7 @@ import type {
   RuntimeSessionView,
   StagedAgentAttachmentDto,
 } from '@/src/lib/xero-model'
+import { BUILTIN_RUNTIME_AGENT_IDS } from '@/src/lib/xero-model'
 
 import {
   buildComposerAgentSelectionKey,
@@ -110,10 +111,38 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 const AUTO_COMPACT_STORAGE_KEY = 'xero.agent.autoCompact.enabled'
+const COMPOSER_SETTINGS_STORAGE_KEY = 'xero.agent.composer.settings.v1'
 const AUTO_COMPACT_DEFAULT_PREFERENCE: RuntimeAutoCompactPreferenceDto = {
   enabled: true,
   thresholdPercent: 85,
   rawTailMessageCount: 8,
+}
+const COMPOSER_SETTINGS_VERSION = 1
+const COMPOSER_THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'x_high'] as const
+const COMPOSER_APPROVAL_MODES = ['suggest', 'auto_edit', 'yolo'] as const
+
+interface StoredComposerSettings {
+  modelSelectionKey?: string | null
+  runtimeAgentId?: RuntimeAgentIdDto
+  agentDefinitionId?: string | null
+  thinkingEffort?: ComposerThinkingLevel
+  approvalMode?: RuntimeRunApprovalModeDto
+  autoCompactEnabled?: boolean
+}
+
+interface StoredComposerSettingsReadResult {
+  settings: StoredComposerSettings
+  hasControlSettings: boolean
+}
+
+interface InitialComposerSettings {
+  modelSelectionKey: string | null
+  runtimeAgentId: RuntimeAgentIdDto
+  agentDefinitionId: string | null
+  thinkingEffort: ComposerThinkingLevel
+  approvalMode: RuntimeRunApprovalModeDto
+  autoCompactEnabled: boolean
+  fromStoredControls: boolean
 }
 
 function sameRuntimeControlInput(
@@ -141,6 +170,109 @@ function readStoredAutoCompactEnabled(): boolean {
     return window.localStorage.getItem(AUTO_COMPACT_STORAGE_KEY) === '1'
   } catch {
     return false
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeStoredText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function isRuntimeAgentId(value: unknown): value is RuntimeAgentIdDto {
+  return (
+    typeof value === 'string' &&
+    BUILTIN_RUNTIME_AGENT_IDS.includes(value as RuntimeAgentIdDto)
+  )
+}
+
+function isComposerThinkingLevel(value: unknown): value is ProviderModelThinkingEffortDto {
+  return (
+    typeof value === 'string' &&
+    COMPOSER_THINKING_LEVELS.includes(value as ProviderModelThinkingEffortDto)
+  )
+}
+
+function isComposerApprovalMode(value: unknown): value is RuntimeRunApprovalModeDto {
+  return (
+    typeof value === 'string' &&
+    COMPOSER_APPROVAL_MODES.includes(value as RuntimeRunApprovalModeDto)
+  )
+}
+
+function readStoredComposerSettings(): StoredComposerSettingsReadResult | null {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)
+    if (!raw) return null
+
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed) || parsed.version !== COMPOSER_SETTINGS_VERSION) {
+      return null
+    }
+
+    const settings: StoredComposerSettings = {}
+    const modelSelectionKey = normalizeStoredText(parsed.modelSelectionKey)
+    const agentDefinitionId = normalizeStoredText(parsed.agentDefinitionId)
+    let hasControlSettings = false
+
+    if (modelSelectionKey) {
+      settings.modelSelectionKey = modelSelectionKey
+      hasControlSettings = true
+    }
+    if (isRuntimeAgentId(parsed.runtimeAgentId)) {
+      settings.runtimeAgentId = parsed.runtimeAgentId
+      hasControlSettings = true
+    }
+    if (agentDefinitionId) {
+      settings.agentDefinitionId = agentDefinitionId
+      hasControlSettings = true
+    }
+    if (isComposerThinkingLevel(parsed.thinkingEffort)) {
+      settings.thinkingEffort = parsed.thinkingEffort
+      hasControlSettings = true
+    } else if (parsed.thinkingEffort === null) {
+      settings.thinkingEffort = null
+    }
+    if (isComposerApprovalMode(parsed.approvalMode)) {
+      settings.approvalMode = parsed.approvalMode
+      hasControlSettings = true
+    }
+    if (typeof parsed.autoCompactEnabled === 'boolean') {
+      settings.autoCompactEnabled = parsed.autoCompactEnabled
+    }
+
+    return { settings, hasControlSettings }
+  } catch {
+    return null
+  }
+}
+
+function writeStoredComposerSettings(settings: Required<StoredComposerSettings>): void {
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(
+      COMPOSER_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        version: COMPOSER_SETTINGS_VERSION,
+        modelSelectionKey: settings.modelSelectionKey,
+        runtimeAgentId: settings.runtimeAgentId,
+        agentDefinitionId: settings.agentDefinitionId,
+        thinkingEffort: settings.thinkingEffort,
+        approvalMode: settings.approvalMode,
+        autoCompactEnabled: settings.autoCompactEnabled,
+      }),
+    )
+    window.localStorage.setItem(AUTO_COMPACT_STORAGE_KEY, settings.autoCompactEnabled ? '1' : '0')
+  } catch {
+    /* storage unavailable, keep the in-memory preference */
   }
 }
 
@@ -182,18 +314,52 @@ export function useAgentRuntimeController({
   getPendingAttachments,
   onSubmitAttachmentsSettled,
 }: UseAgentRuntimeControllerOptions) {
+  const initialComposerSettingsRef = useRef<InitialComposerSettings | null>(null)
+  const getInitialComposerSettings = () => {
+    if (!initialComposerSettingsRef.current) {
+      const stored = readStoredComposerSettings()
+      const storedRuntimeAgentId = stored?.settings.runtimeAgentId ?? selectedRuntimeAgentId
+      initialComposerSettingsRef.current = {
+        modelSelectionKey: stored?.settings.modelSelectionKey ?? selectedModelSelectionKey,
+        runtimeAgentId: storedRuntimeAgentId,
+        agentDefinitionId: stored?.settings.agentDefinitionId ?? selectedAgentDefinitionId ?? null,
+        thinkingEffort:
+          stored && 'thinkingEffort' in stored.settings
+            ? stored.settings.thinkingEffort ?? null
+            : selectedThinkingEffort,
+        approvalMode: resolveRuntimeAgentApprovalMode(
+          storedRuntimeAgentId,
+          stored?.settings.approvalMode ?? selectedApprovalMode,
+        ),
+        autoCompactEnabled: stored?.settings.autoCompactEnabled ?? readStoredAutoCompactEnabled(),
+        fromStoredControls: stored?.hasControlSettings ?? false,
+      }
+    }
+
+    return initialComposerSettingsRef.current
+  }
   const [draftPrompt, setDraftPrompt] = useState('')
-  const [draftModelSelectionKey, setDraftModelSelectionKey] = useState<string | null>(selectedModelSelectionKey)
-  const [draftRuntimeAgentId, setDraftRuntimeAgentId] = useState<RuntimeAgentIdDto>(selectedRuntimeAgentId)
-  const [draftAgentDefinitionId, setDraftAgentDefinitionId] = useState<string | null>(
-    selectedAgentDefinitionId ?? null,
+  const [draftModelSelectionKey, setDraftModelSelectionKey] = useState<string | null>(
+    () => getInitialComposerSettings().modelSelectionKey,
   )
-  const [draftThinkingEffort, setDraftThinkingEffort] = useState<ComposerThinkingLevel>(selectedThinkingEffort)
-  const [draftApprovalMode, setDraftApprovalMode] = useState<RuntimeRunApprovalModeDto>(selectedApprovalMode)
+  const [draftRuntimeAgentId, setDraftRuntimeAgentId] = useState<RuntimeAgentIdDto>(
+    () => getInitialComposerSettings().runtimeAgentId,
+  )
+  const [draftAgentDefinitionId, setDraftAgentDefinitionId] = useState<string | null>(
+    () => getInitialComposerSettings().agentDefinitionId,
+  )
+  const [draftThinkingEffort, setDraftThinkingEffort] = useState<ComposerThinkingLevel>(
+    () => getInitialComposerSettings().thinkingEffort,
+  )
+  const [draftApprovalMode, setDraftApprovalMode] = useState<RuntimeRunApprovalModeDto>(
+    () => getInitialComposerSettings().approvalMode,
+  )
   const [runtimeSessionBindInFlight, setRuntimeSessionBindInFlight] = useState(false)
   const [queuedDraftAcknowledgement, setQueuedDraftAcknowledgement] = useState<string | null>(null)
   const [runtimeRunActionMessage, setRuntimeRunActionMessage] = useState<string | null>(null)
-  const [autoCompactEnabled, setAutoCompactEnabled] = useState(readStoredAutoCompactEnabled)
+  const [autoCompactEnabled, setAutoCompactEnabled] = useState(
+    () => getInitialComposerSettings().autoCompactEnabled,
+  )
   const [operatorAnswers, setOperatorAnswers] = useState<Record<string, string>>({})
   const [pendingOperatorIntent, setPendingOperatorIntent] = useState<PendingOperatorIntent | null>(null)
   const [recentRunReplacement, setRecentRunReplacement] = useState<{
@@ -206,6 +372,7 @@ export function useAgentRuntimeController({
   const lastSeenRuntimeRunIdRef = useRef<string | null>(renderableRuntimeRun?.runId ?? null)
   const draftPromptRef = useRef(draftPrompt)
   const lastReportedComposerControlsRef = useRef<RuntimeRunControlInputDto | null | undefined>(undefined)
+  const hasUserComposerSettingsRef = useRef(getInitialComposerSettings().fromStoredControls)
 
   const activeRuntimeRun = renderableRuntimeRun && !renderableRuntimeRun.isTerminal ? renderableRuntimeRun : null
   const effectiveRuntimeAgentId = activeRuntimeRun ? selectedRuntimeAgentId : draftRuntimeAgentId
@@ -306,33 +473,16 @@ export function useAgentRuntimeController({
   }, [draftPrompt])
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
-
-    try {
-      window.localStorage.setItem(AUTO_COMPACT_STORAGE_KEY, autoCompactEnabled ? '1' : '0')
-    } catch {
-      /* storage unavailable, keep the in-memory preference */
-    }
-  }, [autoCompactEnabled])
-
-  useEffect(() => {
-    if (renderableRuntimeRun) {
+    if (activeRuntimeRun || !hasUserComposerSettingsRef.current) {
       setDraftModelSelectionKey(selectedModelSelectionKey)
       setDraftRuntimeAgentId(selectedRuntimeAgentId)
       setDraftAgentDefinitionId(selectedAgentDefinitionId ?? null)
       setDraftThinkingEffort(selectedThinkingEffort)
       setDraftApprovalMode(selectedApprovalMode)
-      return
     }
-
-    setDraftModelSelectionKey(selectedModelSelectionKey)
-    setDraftRuntimeAgentId(selectedRuntimeAgentId)
-    setDraftAgentDefinitionId(selectedAgentDefinitionId ?? null)
-    setDraftThinkingEffort(selectedThinkingEffort)
-    setDraftApprovalMode(selectedApprovalMode)
   }, [
+    activeRuntimeRun,
     projectId,
-    renderableRuntimeRun?.runId,
     selectedAgentDefinitionId,
     selectedApprovalMode,
     selectedModelSelectionKey,
@@ -341,10 +491,38 @@ export function useAgentRuntimeController({
   ])
 
   useEffect(() => {
+    const modelSelectionKey = normalizeStoredText(effectiveModelSelectionKey)
+    if (!hasUserComposerSettingsRef.current && !modelSelectionKey) {
+      return
+    }
+    if (activeRuntimeRun && modelSelectionKey) {
+      hasUserComposerSettingsRef.current = true
+    }
+
+    writeStoredComposerSettings({
+      modelSelectionKey,
+      runtimeAgentId: effectiveRuntimeAgentId,
+      agentDefinitionId: normalizeStoredText(effectiveAgentDefinitionId),
+      thinkingEffort: effectiveThinkingEffort,
+      approvalMode: effectiveApprovalMode,
+      autoCompactEnabled,
+    })
+  }, [
+    activeRuntimeRun,
+    autoCompactEnabled,
+    effectiveAgentDefinitionId,
+    effectiveApprovalMode,
+    effectiveModelSelectionKey,
+    effectiveRuntimeAgentId,
+    effectiveThinkingEffort,
+  ])
+
+  useEffect(() => {
     if (!pendingInitialRuntimeAgentId) return
     if (activeRuntimeRun) return
     if (runtimeMutationInFlight) return
 
+    hasUserComposerSettingsRef.current = true
     setDraftRuntimeAgentId(pendingInitialRuntimeAgentId)
     setDraftAgentDefinitionId(null)
     setDraftApprovalMode((current) =>
@@ -623,12 +801,14 @@ export function useAgentRuntimeController({
   }
 
   function handleAutoCompactEnabledChange(value: boolean) {
+    hasUserComposerSettingsRef.current = true
     setAutoCompactEnabled(value)
   }
 
   function handleComposerModelChange(value: string) {
     if (!activeRuntimeRun) {
       const selectedModel = getComposerModelOption(availableModels, value)
+      hasUserComposerSettingsRef.current = true
       setDraftModelSelectionKey(value)
       setDraftThinkingEffort(resolveComposerThinkingSelection(selectedModel, draftThinkingEffort))
       return
@@ -652,6 +832,7 @@ export function useAgentRuntimeController({
     }
 
     if (!activeRuntimeRun) {
+      hasUserComposerSettingsRef.current = true
       setDraftThinkingEffort(value)
       return
     }
@@ -673,6 +854,7 @@ export function useAgentRuntimeController({
     }
 
     if (!activeRuntimeRun) {
+      hasUserComposerSettingsRef.current = true
       setDraftApprovalMode(value)
       return
     }
@@ -693,6 +875,7 @@ export function useAgentRuntimeController({
       return
     }
 
+    hasUserComposerSettingsRef.current = true
     setDraftRuntimeAgentId(value)
     setDraftAgentDefinitionId(null)
     setDraftApprovalMode((current) => resolveRuntimeAgentApprovalMode(value, current))
@@ -708,6 +891,7 @@ export function useAgentRuntimeController({
       return
     }
 
+    hasUserComposerSettingsRef.current = true
     setDraftRuntimeAgentId(selection.runtimeAgentId)
     setDraftAgentDefinitionId(selection.agentDefinitionId)
     setDraftApprovalMode((current) =>

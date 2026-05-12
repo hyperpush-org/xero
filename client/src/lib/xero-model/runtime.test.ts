@@ -80,6 +80,7 @@ describe('runtime run control schemas', () => {
     expect(runtimeAgentIdSchema.parse('agent_create')).toBe('agent_create')
     expect(runtimeAgentIdSchema.safeParse('test').success).toBe(false)
     expect(ALL_RUNTIME_AGENT_DESCRIPTORS.map((agent) => agent.id)).toEqual([
+      'generalist',
       'ask',
       'plan',
       'engineer',
@@ -145,13 +146,27 @@ describe('runtime run control schemas', () => {
       allowVerificationGate: false,
       allowedApprovalModes: ['suggest'],
     })
+    expect(getRuntimeAgentDescriptor('generalist')).toMatchObject({
+      id: 'generalist',
+      label: 'Generalist',
+      shortLabel: 'Generalist',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'engineering',
+      promptPolicy: 'generalist',
+      toolPolicy: 'engineering',
+      outputContract: 'answer',
+      allowPlanGate: true,
+      allowVerificationGate: true,
+      allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    })
   })
 
   it('returns the built-in descriptors without environment-gated agent types', () => {
     expect(getRuntimeAgentAvailability({ DEV: false, MODE: 'production' })).toEqual({})
     expect(
       getRuntimeAgentDescriptorsForAvailability({}).map((agent) => agent.id),
-    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
+    ).toEqual(['generalist', 'ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
   })
 
   it('shows Crawl only for brownfield project origins', () => {
@@ -166,12 +181,12 @@ describe('runtime run control schemas', () => {
       getRuntimeAgentDescriptorsForProjectOrigin('greenfield', {}).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'agent_create'])
+    ).toEqual(['generalist', 'ask', 'plan', 'engineer', 'debug', 'agent_create'])
     expect(
       getRuntimeAgentDescriptorsForProjectOrigin('brownfield', {}).map(
         (agent) => agent.id,
       ),
-    ).toEqual(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
+    ).toEqual(['generalist', 'ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'])
   })
 
   it('maps durable active and pending control snapshots into a selected pending projection', () => {

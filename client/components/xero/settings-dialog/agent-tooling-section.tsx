@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -22,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import type { ToolCallGroupingPreference } from "@/src/features/xero/tool-call-grouping-preference"
 import { SectionHeader } from "./section-header"
 
 export type AgentToolingSettingsAdapter = Pick<
@@ -31,6 +33,8 @@ export type AgentToolingSettingsAdapter = Pick<
 
 interface AgentToolingSectionProps {
   adapter?: AgentToolingSettingsAdapter
+  toolCallGroupingPreference?: ToolCallGroupingPreference
+  onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
 }
 
 interface StyleOption {
@@ -87,10 +91,15 @@ const FALLBACK_SETTINGS: AgentToolingSettingsDto = {
 type LoadState = "idle" | "loading" | "ready" | "error"
 type SaveState = "idle" | "saving"
 
-export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
+export function AgentToolingSection({
+  adapter,
+  toolCallGroupingPreference = "grouped",
+  onToolCallGroupingPreferenceChange,
+}: AgentToolingSectionProps) {
   const [settings, setSettings] = useState<AgentToolingSettingsDto>(FALLBACK_SETTINGS)
   const [loadState, setLoadState] = useState<LoadState>("idle")
   const [saveState, setSaveState] = useState<SaveState>("idle")
+  const [groupingSaveState, setGroupingSaveState] = useState<SaveState>("idle")
   const [error, setError] = useState<string | null>(null)
   const [pendingOverrideKey, setPendingOverrideKey] = useState<string | null>(null)
 
@@ -127,6 +136,7 @@ export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
   }, [load])
 
   const isBusy = loadState === "loading" || saveState === "saving"
+  const isGroupingSaving = groupingSaveState === "saving"
 
   const submit = useCallback(
     async (
@@ -193,6 +203,25 @@ export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
     [submit],
   )
 
+  const updateToolCallGroupingPreference = useCallback(
+    async (checked: boolean) => {
+      if (!onToolCallGroupingPreferenceChange) return
+      const nextPreference: ToolCallGroupingPreference = checked ? "grouped" : "separate"
+      if (nextPreference === toolCallGroupingPreference) return
+
+      setGroupingSaveState("saving")
+      setError(null)
+      try {
+        await onToolCallGroupingPreferenceChange(nextPreference)
+      } catch (saveError) {
+        setError(getErrorMessage(saveError, "Xero could not save tool call grouping settings."))
+      } finally {
+        setGroupingSaveState("idle")
+      }
+    },
+    [onToolCallGroupingPreferenceChange, toolCallGroupingPreference],
+  )
+
   const sortedOverrides = useMemo(
     () =>
       [...settings.modelOverrides].sort((left, right) => {
@@ -204,7 +233,7 @@ export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
   )
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-6">
       <SectionHeader
         title="Agent Tooling"
         description="Choose how Xero presents tools to each model. Pick a default behavior and override it for individual models when their capabilities differ."
@@ -213,7 +242,7 @@ export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
             type="button"
             variant="outline"
             size="sm"
-            className="h-8 gap-1.5 text-[12px]"
+            className="h-8 gap-1.5 text-[12.5px]"
             disabled={isBusy || !canUseAdapter}
             onClick={load}
           >
@@ -232,11 +261,20 @@ export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
       ) : (
         <>
           {error ? (
-            <Alert variant="destructive" className="rounded-md px-3 py-2 text-[12px]">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              <AlertTitle className="text-[12px]">Agent Tooling settings need attention</AlertTitle>
-              <AlertDescription className="text-[12px]">{error}</AlertDescription>
+            <Alert variant="destructive" className="rounded-md px-3.5 py-2.5 text-[12.5px]">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle className="text-[12.5px] font-semibold">Agent Tooling settings need attention</AlertTitle>
+              <AlertDescription className="text-[12.5px] leading-[1.5]">{error}</AlertDescription>
             </Alert>
+          ) : null}
+
+          {onToolCallGroupingPreferenceChange ? (
+            <ToolCallGroupingPanel
+              value={toolCallGroupingPreference}
+              disabled={isGroupingSaving}
+              saving={isGroupingSaving}
+              onChange={updateToolCallGroupingPreference}
+            />
           ) : null}
 
           <GlobalDefaultPanel
@@ -260,6 +298,56 @@ export function AgentToolingSection({ adapter }: AgentToolingSectionProps) {
   )
 }
 
+function ToolCallGroupingPanel({
+  value,
+  disabled,
+  saving,
+  onChange,
+}: {
+  value: ToolCallGroupingPreference
+  disabled: boolean
+  saving: boolean
+  onChange: (checked: boolean) => void
+}) {
+  const grouped = value === "grouped"
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div>
+        <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">Conversation display</h4>
+        <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
+          Control how tool activity appears in agent conversations.
+        </p>
+      </div>
+      <div className="flex items-center justify-between gap-4 rounded-lg border border-border/60 bg-background px-4 py-3.5">
+        <div className="min-w-0 flex-1">
+          <Label
+            htmlFor="agent-tooling-tool-call-grouping"
+            className="text-[13px] font-semibold tracking-tight text-foreground"
+          >
+            Group completed tool calls
+          </Label>
+          <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
+            Adjacent completed tool calls collapse into one expandable row.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2.5">
+          {saving ? (
+            <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+          ) : null}
+          <Switch
+            id="agent-tooling-tool-call-grouping"
+            checked={grouped}
+            disabled={disabled}
+            onCheckedChange={onChange}
+            aria-label="Group completed tool calls"
+          />
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function GlobalDefaultPanel({
   value,
   disabled,
@@ -272,12 +360,12 @@ function GlobalDefaultPanel({
   onChange: (value: AgentToolApplicationStyleDto) => void
 }) {
   return (
-    <section className="flex flex-col gap-2.5">
+    <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h4 className="text-[12.5px] font-semibold text-foreground">Global default</h4>
+        <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">Global default</h4>
         {saving ? (
-          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-            <LoaderCircle className="h-3 w-3 animate-spin" />
+          <span className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
             Saving…
           </span>
         ) : null}
@@ -285,7 +373,7 @@ function GlobalDefaultPanel({
       <RadioGroup
         value={value}
         onValueChange={(next) => onChange(next as AgentToolApplicationStyleDto)}
-        className="grid grid-cols-1 gap-2"
+        className="grid grid-cols-1 gap-2.5"
         disabled={disabled}
       >
         {STYLE_OPTIONS.map((option) => {
@@ -295,7 +383,7 @@ function GlobalDefaultPanel({
               key={option.value}
               htmlFor={`agent-tooling-default-${option.value}`}
               className={cn(
-                "flex cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-colors",
+                "flex cursor-pointer items-start gap-3 rounded-lg border px-4 py-3.5 transition-colors",
                 selected
                   ? "border-primary/45 bg-primary/5"
                   : "border-border/70 bg-background hover:bg-accent/30",
@@ -306,17 +394,17 @@ function GlobalDefaultPanel({
                 id={`agent-tooling-default-${option.value}`}
                 value={option.value}
                 aria-label={option.label}
-                className="mt-0.5"
+                className="mt-1"
               />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
-                  <span className="text-[13px] font-medium text-foreground">{option.label}</span>
-                  {selected ? <Check className="h-3.5 w-3.5 text-primary" /> : null}
+                  <span className="text-[13.5px] font-semibold tracking-tight text-foreground">{option.label}</span>
+                  {selected ? <Check className="h-4 w-4 text-primary" /> : null}
                 </span>
-                <span className="mt-0.5 block text-[12px] font-medium text-foreground/85">
+                <span className="mt-1 block text-[12.5px] font-medium text-foreground/85">
                   {option.summary}
                 </span>
-                <span className="mt-1 block text-[11.5px] leading-[1.5] text-muted-foreground">
+                <span className="mt-1.5 block text-[12.5px] leading-[1.55] text-muted-foreground">
                   {option.detail}
                 </span>
               </span>
@@ -344,27 +432,25 @@ function ModelOverridesPanel({
   onRemoveOverride: (providerId: string, modelId: string) => void
 }) {
   return (
-    <section className="flex flex-col gap-2.5">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h4 className="text-[12.5px] font-semibold text-foreground">Per-model overrides</h4>
-          <p className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-foreground">
-            Pin a different style for specific provider/model pairs. Models without an override
-            inherit the global default.
-          </p>
-        </div>
+    <section className="flex flex-col gap-3">
+      <div>
+        <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">Per-model overrides</h4>
+        <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
+          Pin a different style for specific provider/model pairs. Models without an override
+          inherit the global default.
+        </p>
       </div>
 
       {overrides.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-5 text-center">
-          <p className="text-[12px] text-muted-foreground">
-            No overrides yet. Every model uses the {styleLabel(globalDefault)} default.
+        <div className="rounded-lg border border-dashed border-border/60 bg-secondary/10 px-4 py-5 text-center">
+          <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+            No overrides yet. Every model uses the <span className="font-medium text-foreground">{styleLabel(globalDefault)}</span> default.
           </p>
         </div>
       ) : (
         <ul
           aria-label="Per-model overrides"
-          className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40"
+          className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40"
         >
           {overrides.map((entry) => {
             const key = makeOverrideKey(entry.providerId, entry.modelId)
@@ -404,14 +490,14 @@ function OverrideRow({
     PROVIDER_OPTIONS.find((option) => option.value === entry.providerId)?.label ?? entry.providerId
 
   return (
-    <li className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5">
+    <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[12.5px] font-medium text-foreground">{entry.modelId}</p>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">{providerLabel}</p>
+        <p className="truncate text-[13px] font-semibold text-foreground">{entry.modelId}</p>
+        <p className="mt-0.5 text-[12px] text-muted-foreground">{providerLabel}</p>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="flex shrink-0 items-center gap-2">
         {saving ? (
-          <LoaderCircle aria-hidden className="h-3 w-3 animate-spin text-muted-foreground" />
+          <LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
         ) : null}
         <Select
           value={entry.style}
@@ -420,7 +506,7 @@ function OverrideRow({
         >
           <SelectTrigger
             aria-label={`Style for ${providerLabel} ${entry.modelId}`}
-            className="h-8 w-auto min-w-[160px] text-[12.5px]"
+            className="h-9 w-auto min-w-[170px] text-[12.5px]"
             size="sm"
           >
             <SelectValue />
@@ -437,12 +523,12 @@ function OverrideRow({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+          className="h-9 w-9 p-0 text-muted-foreground hover:text-destructive"
           aria-label={`Remove override for ${providerLabel} ${entry.modelId}`}
           disabled={disabled}
           onClick={onRemove}
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-4 w-4" />
         </Button>
       </div>
     </li>
@@ -476,92 +562,99 @@ function AddOverrideForm({
 
   return (
     <form
-      className="flex flex-col gap-3 rounded-md border border-border/60 bg-secondary/10 px-3.5 py-3"
+      className="overflow-hidden rounded-lg border border-border/60"
       onSubmit={submit}
       aria-label="Add per-model override"
     >
-      <div className="grid grid-cols-1 gap-2.5 md:grid-cols-[1fr_1.4fr_1fr]">
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="agent-tooling-add-provider" className="text-[11.5px] font-medium text-foreground">
-            Provider
-          </Label>
-          <Select
-            value={providerId}
-            disabled={disabled}
-            onValueChange={(value) => setProviderId(value as RuntimeProviderIdDto)}
-          >
-            <SelectTrigger
-              id="agent-tooling-add-provider"
-              aria-label="Provider"
-              className="h-8 text-[12.5px]"
-              size="sm"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PROVIDER_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="agent-tooling-add-model" className="text-[11.5px] font-medium text-foreground">
-            Model id
-          </Label>
-          <Input
-            id="agent-tooling-add-model"
-            placeholder="e.g. claude-opus-4-7"
-            value={modelId}
-            disabled={disabled}
-            onChange={(event) => setModelId(event.target.value)}
-            className="h-8 text-[12.5px]"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label htmlFor="agent-tooling-add-style" className="text-[11.5px] font-medium text-foreground">
-            Style
-          </Label>
-          <Select
-            value={style}
-            disabled={disabled}
-            onValueChange={(value) => setStyle(value as AgentToolApplicationStyleDto)}
-          >
-            <SelectTrigger
-              id="agent-tooling-add-style"
-              aria-label="Style"
-              className="h-8 text-[12.5px]"
-              size="sm"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STYLE_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] text-muted-foreground">
-          {validation ?? "Override applies whenever this provider/model pair starts a new run."}
+      <header className="border-b border-border/40 bg-secondary/10 px-4 py-3">
+        <h5 className="text-[13.5px] font-semibold tracking-tight text-foreground">Add override</h5>
+        <p className="mt-0.5 text-[12.5px] leading-[1.5] text-muted-foreground">
+          Override applies whenever this provider/model pair starts a new run.
         </p>
-        <Button
-          type="submit"
-          size="sm"
-          className="h-8 gap-1.5 text-[12px]"
-          disabled={disabled}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Add override
-        </Button>
+      </header>
+
+      <div className="flex flex-col gap-3 px-4 py-3.5">
+        <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-[1fr_1.4fr_1fr_auto]">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="agent-tooling-add-provider" className="text-[12px] font-medium text-muted-foreground">
+              Provider
+            </Label>
+            <Select
+              value={providerId}
+              disabled={disabled}
+              onValueChange={(value) => setProviderId(value as RuntimeProviderIdDto)}
+            >
+              <SelectTrigger
+                id="agent-tooling-add-provider"
+                aria-label="Provider"
+                className="h-9 text-[12.5px]"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDER_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="agent-tooling-add-model" className="text-[12px] font-medium text-muted-foreground">
+              Model id
+            </Label>
+            <Input
+              id="agent-tooling-add-model"
+              placeholder="e.g. claude-opus-4-7"
+              value={modelId}
+              disabled={disabled}
+              onChange={(event) => setModelId(event.target.value)}
+              className="h-9 text-[12.5px]"
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="agent-tooling-add-style" className="text-[12px] font-medium text-muted-foreground">
+              Style
+            </Label>
+            <Select
+              value={style}
+              disabled={disabled}
+              onValueChange={(value) => setStyle(value as AgentToolApplicationStyleDto)}
+            >
+              <SelectTrigger
+                id="agent-tooling-add-style"
+                aria-label="Style"
+                className="h-9 text-[12.5px]"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STYLE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            type="submit"
+            size="sm"
+            className="h-9 gap-1.5 px-3.5 text-[12.5px] md:self-end"
+            disabled={disabled}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add override
+          </Button>
+        </div>
+        {validation ? (
+          <p className="text-[12.5px] leading-[1.5] text-destructive">{validation}</p>
+        ) : null}
       </div>
     </form>
   )
@@ -569,12 +662,16 @@ function AddOverrideForm({
 
 function UnavailableCard() {
   return (
-    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-border/60 bg-secondary/10 px-5 py-8 text-center">
-      <Bot className="h-4 w-4 text-muted-foreground" />
-      <p className="text-[12.5px] font-medium text-foreground">Desktop runtime required</p>
-      <p className="max-w-sm text-[11.5px] leading-[1.5] text-muted-foreground">
-        Agent Tooling settings are available when Xero is running as a desktop app.
-      </p>
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60">
+        <Bot className="h-5 w-5 text-muted-foreground" />
+      </div>
+      <div className="flex max-w-sm flex-col gap-1">
+        <p className="text-[14px] font-semibold tracking-tight text-foreground">Desktop runtime required</p>
+        <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+          Agent Tooling settings are available when Xero is running as a desktop app.
+        </p>
+      </div>
     </div>
   )
 }

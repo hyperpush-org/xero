@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Check, LoaderCircle, Plus } from "lucide-react"
+import { BellOff, Check, LoaderCircle, Plus } from "lucide-react"
 import type { AgentPaneView } from "@/src/features/xero/use-xero-desktop-state"
 import type {
   NotificationRouteKindDto,
@@ -29,10 +29,21 @@ type RoutePending = "save" | "toggle" | null
 const CHANNELS: Array<{
   kind: NotificationRouteKindDto
   label: string
+  description: string
   Icon: React.ElementType
 }> = [
-  { kind: "telegram", label: "Telegram", Icon: TelegramIcon },
-  { kind: "discord", label: "Discord", Icon: DiscordIcon },
+  {
+    kind: "telegram",
+    label: "Telegram",
+    description: "Send operator prompts to a Telegram chat or channel.",
+    Icon: TelegramIcon,
+  },
+  {
+    kind: "discord",
+    label: "Discord",
+    description: "Post operator prompts to a Discord channel.",
+    Icon: DiscordIcon,
+  },
 ]
 
 interface NotificationsSectionProps {
@@ -42,7 +53,7 @@ interface NotificationsSectionProps {
 
 function FieldError({ msg }: { msg?: string }) {
   if (!msg) return null
-  return <p className="text-[12px] text-destructive">{msg}</p>
+  return <p className="text-[12.5px] text-destructive">{msg}</p>
 }
 
 export function NotificationsSection({ agent, onUpsertNotificationRoute }: NotificationsSectionProps) {
@@ -150,14 +161,14 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
   }
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-6">
       <SectionHeader
         title="Notifications"
         description="Route operator prompts to Telegram or Discord. Each route belongs to this project."
       />
 
-      <div className="flex flex-col gap-7">
-        {CHANNELS.map(({ kind, label, Icon }, channelIndex) => {
+      <div className="flex flex-col gap-4">
+        {CHANNELS.map(({ kind, label, description, Icon }) => {
           const channelRoutes = routes.filter((route) => route.routeKind === kind)
           const formOpen = formKind === kind
           const hasRoutes = channelRoutes.length > 0
@@ -165,26 +176,30 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
           return (
             <section
               key={kind}
-              className={cn(
-                "flex flex-col gap-3",
-                channelIndex > 0 ? "border-t border-border/50 pt-6" : null,
-              )}
+              className="overflow-hidden rounded-lg border border-border/60"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <Icon className="h-3.5 w-3.5 shrink-0 text-foreground/70" />
-                  <h4 className="text-[12.5px] font-semibold text-foreground">{label}</h4>
-                  {hasRoutes ? (
-                    <span className="text-[11px] text-muted-foreground">
-                      {channelRoutes.length}
-                    </span>
-                  ) : null}
+              <header className="flex items-start justify-between gap-3 border-b border-border/40 bg-secondary/10 px-4 py-3">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-card/60">
+                    <Icon className="h-[18px] w-[18px] text-foreground/80" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">{label}</h4>
+                      {hasRoutes ? (
+                        <span className="inline-flex h-[20px] items-center rounded-full border border-border/60 bg-secondary/60 px-2 text-[11px] font-medium text-foreground/70 tabular-nums">
+                          {channelRoutes.length}
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-0.5 text-[12.5px] leading-[1.5] text-muted-foreground">{description}</p>
+                  </div>
                 </div>
                 {!formOpen ? (
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 shrink-0 gap-1.5 px-2.5 text-[12px]"
+                    className="h-8 shrink-0 gap-1.5 px-3 text-[12.5px]"
                     disabled={!canMutate}
                     onClick={() => startNew(kind)}
                   >
@@ -192,38 +207,38 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
                     Add route
                   </Button>
                 ) : null}
-              </div>
+              </header>
 
               {hasRoutes ? (
-                <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+                <ul className="divide-y divide-border/40">
                   {channelRoutes.map((route) => {
                     const busy = pendingRouteId === route.routeId && (isMutating || pending === "toggle")
                     const isActiveEdit = editingId === route.routeId && formOpen
 
                     return (
-                      <div
+                      <li
                         key={route.routeId}
                         className={cn(
-                          "flex items-center gap-2 px-3 py-2 transition-colors",
-                          isActiveEdit ? "bg-secondary/40" : "hover:bg-secondary/25",
+                          "flex items-center gap-3 px-4 py-2.5 transition-colors",
+                          isActiveEdit ? "bg-secondary/40" : "hover:bg-secondary/20",
                         )}
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="text-[12.5px] leading-tight font-medium text-foreground">{route.routeId}</p>
-                          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                          <p className="text-[13px] leading-tight font-medium text-foreground">{route.routeId}</p>
+                          <p className="mt-1 truncate font-mono text-[12px] text-muted-foreground">
                             {routeTargetDisplay(route.routeKind, route.routeTarget)}
                           </p>
                         </div>
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-7 px-2 text-[11.5px] text-muted-foreground hover:text-foreground"
+                          className="h-8 px-2.5 text-[12px] text-muted-foreground hover:text-foreground"
                           onClick={() => editRoute(route)}
                         >
                           Edit
                         </Button>
                         <div className="flex items-center gap-2 pl-1">
-                          <Label htmlFor={`rt-${route.routeId}`} className="w-6 text-[11px] text-muted-foreground">
+                          <Label htmlFor={`rt-${route.routeId}`} className="w-7 text-[12px] text-muted-foreground">
                             {route.enabled ? "On" : "Off"}
                           </Label>
                           <Switch
@@ -233,26 +248,31 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
                             disabled={!canMutate || busy}
                           />
                         </div>
-                      </div>
+                      </li>
                     )
                   })}
+                </ul>
+              ) : !formOpen ? (
+                <div className="flex items-center gap-2.5 px-4 py-3 text-[12.5px] text-muted-foreground">
+                  <BellOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" aria-hidden />
+                  No {label} routes yet.
                 </div>
               ) : null}
 
               {formOpen ? (
-                <div className="rounded-md border border-border/60 bg-secondary/20 px-3.5 py-3 animate-in fade-in-0 slide-in-from-top-1 motion-enter">
-                  <p className="mb-3 text-[12px] font-medium text-foreground">
+                <div className="border-t border-border/40 bg-secondary/[0.07] px-4 py-3.5 animate-in fade-in-0 slide-in-from-top-1 motion-enter">
+                  <p className="mb-3 text-[12.5px] font-semibold text-foreground">
                     {editingId ? `Edit — ${editingId}` : `New ${label} route`}
                   </p>
                   <div className="grid gap-3">
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1.5">
-                        <Label htmlFor={`s-route-id-${kind}`} className="text-[11.5px]">
+                        <Label htmlFor={`s-route-id-${kind}`} className="text-[12px] font-medium text-muted-foreground">
                           Route name
                         </Label>
                         <Input
                           id={`s-route-id-${kind}`}
-                          className="h-8 text-[12.5px]"
+                          className="h-9 text-[12.5px]"
                           disabled={isMutating || pending === "save"}
                           onChange={(event) => setField("routeId", event.target.value)}
                           placeholder="e.g. ops-alerts"
@@ -261,12 +281,12 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
                         <FieldError msg={formErrors.routeId} />
                       </div>
                       <div className="space-y-1.5">
-                        <Label htmlFor={`s-route-target-${kind}`} className="text-[11.5px]">
+                        <Label htmlFor={`s-route-target-${kind}`} className="text-[12px] font-medium text-muted-foreground">
                           Target
                         </Label>
                         <Input
                           id={`s-route-target-${kind}`}
-                          className="h-8 font-mono text-[12.5px]"
+                          className="h-9 font-mono text-[12.5px]"
                           disabled={isMutating || pending === "save"}
                           onChange={(event) => setField("routeTarget", event.target.value)}
                           placeholder={kindOption.placeholder}
@@ -276,12 +296,12 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
                       </div>
                     </div>
                     {formErrors.form || formError ? (
-                      <p className="text-[12px] text-destructive">{formErrors.form ?? formError}</p>
+                      <p className="text-[12.5px] text-destructive">{formErrors.form ?? formError}</p>
                     ) : null}
                     <div className="flex items-center gap-2">
                       <Button
                         size="sm"
-                        className="h-8 gap-1.5 text-[12px]"
+                        className="h-9 gap-1.5 text-[12.5px]"
                         disabled={!canMutate || isMutating || pending === "save"}
                         onClick={() => void save()}
                       >
@@ -292,7 +312,7 @@ export function NotificationsSection({ agent, onUpsertNotificationRoute }: Notif
                         )}
                         {editingId ? "Save changes" : "Create route"}
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-8 text-[12px]" onClick={cancelForm}>
+                      <Button size="sm" variant="ghost" className="h-9 text-[12.5px]" onClick={cancelForm}>
                         Cancel
                       </Button>
                     </div>

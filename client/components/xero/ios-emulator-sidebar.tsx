@@ -4,8 +4,9 @@ import { EmulatorSidebar } from "./emulator-sidebar"
 
 interface IosEmulatorSidebarProps {
   open: boolean
+  openImmediately?: boolean
 }
 
-export function IosEmulatorSidebar({ open }: IosEmulatorSidebarProps) {
-  return <EmulatorSidebar open={open} platform="ios" />
+export function IosEmulatorSidebar({ open, openImmediately = false }: IosEmulatorSidebarProps) {
+  return <EmulatorSidebar open={open} openImmediately={openImmediately} platform="ios" />
 }

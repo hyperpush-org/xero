@@ -16,6 +16,12 @@ export interface Phase {
   summary?: string
 }
 
+export interface StartTarget {
+  id: string
+  name: string
+  command: string
+}
+
 export interface Project {
   id: string
   name: string
@@ -27,4 +33,5 @@ export interface Project {
   phases: Phase[]
   branch: string
   runtime: string
+  startTargets: StartTarget[]
 }

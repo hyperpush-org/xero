@@ -210,7 +210,7 @@ function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   return (
     <span
       className={cn(
-        'inline-flex h-[18px] items-center rounded-full border px-1.5 text-[10.5px] font-medium',
+        'inline-flex h-[20px] items-center rounded-full border px-2 text-[11px] font-medium',
         TONE_CLASS[tone],
       )}
     >
@@ -335,7 +335,7 @@ export function SkillsSection({
   const totalSkills = skillRegistry?.entries.length ?? 0
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-6">
       <SectionHeader
         title="Skills"
         description="Inspect installed and discoverable skills, then choose which sources Xero can load."
@@ -344,7 +344,7 @@ export function SkillsSection({
             type="button"
             variant="outline"
             size="sm"
-            className="h-8 gap-1.5 text-[12px]"
+            className="h-8 gap-1.5 text-[12.5px]"
             disabled={loading || (!onReloadSkillRegistry && !onRefreshSkillRegistry)}
             onClick={() => {
               if (onReloadSkillRegistry) {
@@ -365,14 +365,19 @@ export function SkillsSection({
 
       {/* Sources */}
       <section className="flex flex-col gap-3">
-        <h4 className="text-[12.5px] font-semibold text-foreground">Sources</h4>
+        <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">Sources</h4>
 
-        <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
-          <div className="flex items-center gap-3 px-3.5 py-2.5">
-            <Sparkles className={cn('h-3.5 w-3.5 shrink-0', projectSourceEnabled ? 'text-primary' : 'text-muted-foreground')} />
+        <div className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40">
+          <div className="flex items-center gap-3 px-4 py-3">
+            <div className={cn(
+              'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-card/60',
+              projectSourceEnabled ? 'border-primary/30 text-primary' : 'border-border/60 text-muted-foreground',
+            )}>
+              <Sparkles className="h-[18px] w-[18px]" />
+            </div>
             <div className="min-w-0 flex-1">
-              <p className="text-[12.5px] font-medium text-foreground">Project source</p>
-              <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+              <p className="text-[13.5px] font-semibold tracking-tight text-foreground">Project source</p>
+              <p className="mt-0.5 truncate font-mono text-[12px] text-muted-foreground">
                 {agent?.repositoryPath ?? 'No project selected'}
               </p>
             </div>
@@ -389,15 +394,40 @@ export function SkillsSection({
             />
           </div>
 
-          <div className="flex flex-col gap-2 px-3.5 py-3">
-            <div className="flex items-center gap-3">
-              <Github className={cn('h-3.5 w-3.5 shrink-0', githubForm.enabled ? 'text-primary' : 'text-muted-foreground')} />
+          <div className="flex flex-col">
+            <div className="flex items-center gap-3 px-4 py-3">
+              <div className={cn(
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-card/60',
+                githubForm.enabled ? 'border-primary/30 text-primary' : 'border-border/60 text-muted-foreground',
+              )}>
+                <Github className="h-[18px] w-[18px]" />
+              </div>
               <div className="min-w-0 flex-1">
-                <p className="text-[12.5px] font-medium text-foreground">GitHub source</p>
-                <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
-                  {skillRegistry?.sources.github.repo ?? githubForm.repo}
+                <p className="text-[13.5px] font-semibold tracking-tight text-foreground">GitHub source</p>
+                <p className="mt-0.5 truncate font-mono text-[12px] text-muted-foreground">
+                  {(skillRegistry?.sources.github.repo ?? githubForm.repo)}
+                  {githubForm.reference ? <span className="text-muted-foreground/60"> · {githubForm.reference}</span> : null}
                 </p>
               </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 px-2.5 text-[12px] text-muted-foreground hover:text-foreground"
+                aria-label="Edit source"
+                aria-expanded={githubExpanded}
+                aria-controls="skill-github-advanced"
+                onClick={() => setGithubExpanded((current) => !current)}
+              >
+                <ChevronDown
+                  className={cn(
+                    'h-3.5 w-3.5 transition-transform motion-fast',
+                    githubExpanded ? 'rotate-0' : '-rotate-90',
+                  )}
+                  aria-hidden
+                />
+                Edit
+              </Button>
               <Switch
                 checked={githubForm.enabled}
                 disabled={mutating}
@@ -408,57 +438,54 @@ export function SkillsSection({
                 }}
               />
             </div>
-            <button
-              type="button"
-              className="inline-flex w-fit items-center gap-1 rounded-md text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-              aria-expanded={githubExpanded}
-              aria-controls="skill-github-advanced"
-              onClick={() => setGithubExpanded((current) => !current)}
-            >
-              {githubExpanded ? (
-                <ChevronDown className="h-3 w-3" />
-              ) : (
-                <ChevronRight className="h-3 w-3" />
-              )}
-              Edit source
-            </button>
             {githubExpanded ? (
-              <div id="skill-github-advanced" className="grid gap-1.5 sm:grid-cols-[1fr_0.6fr_0.6fr_auto]">
-                <Input
-                  value={githubForm.repo}
-                  onChange={(event) => {
-                    setGithubDirty(true)
-                    setGithubForm((current) => ({ ...current, repo: event.target.value }))
-                  }}
-                  className="h-8 font-mono text-[12px]"
-                  aria-label="GitHub skill repository"
-                  placeholder="owner/repo"
-                />
-                <Input
-                  value={githubForm.reference}
-                  onChange={(event) => {
-                    setGithubDirty(true)
-                    setGithubForm((current) => ({ ...current, reference: event.target.value }))
-                  }}
-                  className="h-8 font-mono text-[12px]"
-                  aria-label="GitHub skill reference"
-                  placeholder="ref"
-                />
-                <Input
-                  value={githubForm.root}
-                  onChange={(event) => {
-                    setGithubDirty(true)
-                    setGithubForm((current) => ({ ...current, root: event.target.value }))
-                  }}
-                  className="h-8 font-mono text-[12px]"
-                  aria-label="GitHub skill root"
-                  placeholder="root"
-                />
+              <div
+                id="skill-github-advanced"
+                className="grid gap-3 border-t border-border/40 bg-secondary/[0.07] px-4 py-3.5 sm:grid-cols-[1.4fr_0.8fr_0.8fr_auto] sm:items-end"
+              >
+                <FieldStack label="Repository" htmlFor="skill-gh-repo">
+	                  <Input
+	                    id="skill-gh-repo"
+	                    aria-label="GitHub skill repository"
+	                    value={githubForm.repo}
+                    onChange={(event) => {
+                      setGithubDirty(true)
+                      setGithubForm((current) => ({ ...current, repo: event.target.value }))
+                    }}
+                    className="h-9 font-mono text-[12.5px]"
+                    placeholder="owner/repo"
+                  />
+                </FieldStack>
+                <FieldStack label="Branch" htmlFor="skill-gh-ref">
+	                  <Input
+	                    id="skill-gh-ref"
+	                    aria-label="GitHub skill reference"
+	                    value={githubForm.reference}
+                    onChange={(event) => {
+                      setGithubDirty(true)
+                      setGithubForm((current) => ({ ...current, reference: event.target.value }))
+                    }}
+                    className="h-9 font-mono text-[12.5px]"
+                    placeholder="main"
+                  />
+                </FieldStack>
+                <FieldStack label="Root path" htmlFor="skill-gh-root">
+	                  <Input
+	                    id="skill-gh-root"
+	                    aria-label="GitHub skill root"
+	                    value={githubForm.root}
+                    onChange={(event) => {
+                      setGithubDirty(true)
+                      setGithubForm((current) => ({ ...current, root: event.target.value }))
+                    }}
+                    className="h-9 font-mono text-[12.5px]"
+                    placeholder="skills"
+                  />
+                </FieldStack>
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
-                  className="h-8 text-[12px]"
+                  className="h-9 text-[12.5px]"
                   disabled={mutating || !githubDirty || !onUpdateGithubSkillSource}
                   onClick={() => void handleSaveGithub()}
                 >
@@ -471,18 +498,20 @@ export function SkillsSection({
       </section>
 
       {/* Local roots */}
-      <section className="flex flex-col gap-2.5">
-        <div className="flex items-baseline justify-between gap-3">
-          <h4 className="text-[12.5px] font-semibold text-foreground">
+      <section className="flex flex-col gap-3">
+        <div>
+          <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">
             Local roots
-            <span className="ml-1.5 font-normal text-muted-foreground">{localRoots.length}</span>
+            {localRoots.length > 0 ? (
+              <span className="ml-2 text-[12px] font-normal text-muted-foreground">{localRoots.length}</span>
+            ) : null}
           </h4>
+          <p className="mt-1 text-[12.5px] leading-[1.5] text-muted-foreground">
+            Point Xero at directories on disk that contain skill folders.
+          </p>
         </div>
-        <p className="-mt-1 text-[12px] text-muted-foreground">
-          Point Xero at directories on disk that contain skill folders.
-        </p>
 
-        <div className="flex items-start gap-1.5">
+        <div className="flex items-start gap-2">
           <div className="flex-1">
             <Label htmlFor="skill-root-path" className="sr-only">
               Local root path
@@ -491,17 +520,17 @@ export function SkillsSection({
               id="skill-root-path"
               value={localRootForm.path}
               onChange={(event) => setLocalRootForm((current) => ({ ...current, path: event.target.value }))}
-              className="h-8 font-mono text-[12px]"
+              className="h-9 font-mono text-[12.5px]"
               placeholder="/absolute/path/to/skills"
               aria-invalid={Boolean(localRootErrors.path)}
             />
-            {localRootErrors.path ? <p className="mt-1 text-[11px] text-destructive">{localRootErrors.path}</p> : null}
+            {localRootErrors.path ? <p className="mt-1.5 text-[12px] text-destructive">{localRootErrors.path}</p> : null}
           </div>
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-8 gap-1.5 text-[12px]"
+            className="h-9 gap-1.5 px-3.5 text-[12.5px]"
             disabled={mutating || !onUpsertSkillLocalRoot}
             onClick={() => void handleAddLocalRoot()}
           >
@@ -511,17 +540,17 @@ export function SkillsSection({
         </div>
 
         {localRoots.length > 0 ? (
-          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+          <div className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40">
             {localRoots.map((root) => (
               <div
                 key={root.rootId}
-                className="flex items-center gap-2 px-3 py-2"
+                className="flex items-center gap-3 px-4 py-3"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[12.5px] font-medium text-foreground">
+                  <p className="truncate text-[13px] font-semibold text-foreground">
                     {deriveLocalRootLabel(root.rootId, root.path)}
                   </p>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground" title={root.path}>
+                  <p className="mt-0.5 truncate font-mono text-[12px] text-muted-foreground" title={root.path}>
                     {root.path}
                   </p>
                 </div>
@@ -542,12 +571,12 @@ export function SkillsSection({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
                   disabled={mutating || !onRemoveSkillLocalRoot}
                   aria-label={`Remove local skill root ${root.rootId}`}
                   onClick={() => void onRemoveSkillLocalRoot?.({ rootId: root.rootId, projectId }).catch(() => undefined)}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
             ))}
@@ -556,29 +585,33 @@ export function SkillsSection({
       </section>
 
       {/* Skills list */}
-      <section className="flex flex-col gap-2.5">
+      <section className="flex flex-col gap-3">
         <div className="flex items-baseline justify-between gap-3">
-          <h4 className="text-[12.5px] font-semibold text-foreground">
+          <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">
             Discoverable skills
-            <span className="ml-1.5 font-normal text-muted-foreground">
-              {filteredEntries.length} of {totalSkills}
-            </span>
+            {totalSkills > 0 ? (
+              <span className="ml-2 text-[12px] font-normal text-muted-foreground">
+                {filteredEntries.length === totalSkills
+                  ? totalSkills
+                  : `${filteredEntries.length} of ${totalSkills}`}
+              </span>
+            ) : null}
           </h4>
         </div>
 
-        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-8 pl-8 text-[12.5px]"
+              className="h-9 pl-9 text-[12.5px]"
               placeholder="Search skills"
               aria-label="Search skills"
             />
           </div>
           <Select value={sourceFilter} onValueChange={(value) => setSourceFilter(value as SourceFilter)}>
-            <SelectTrigger className="h-8 w-full text-[12.5px] sm:w-44" aria-label="Filter skills by source" size="sm">
+            <SelectTrigger className="h-9 w-full text-[12.5px] sm:w-48" aria-label="Filter skills by source" size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -592,22 +625,42 @@ export function SkillsSection({
         </div>
 
         {loading && !skillRegistry ? (
-          <div className="flex items-center justify-center gap-2 rounded-md border border-border/60 px-4 py-10 text-[12px] text-muted-foreground">
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+          <div className="flex items-center justify-center gap-2 rounded-lg border border-border/60 px-4 py-10 text-[12.5px] text-muted-foreground">
+            <LoaderCircle className="h-4 w-4 animate-spin" />
             Loading skills
           </div>
         ) : filteredEntries.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
-            <Sparkles className="mx-auto h-4 w-4 text-muted-foreground" />
-            <p className="mt-2 text-[12.5px] font-medium text-foreground">No skills found</p>
-            <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-              {query || sourceFilter !== 'all'
-                ? 'Adjust the search or source filter.'
-                : 'Add a local root or enable a project source.'}
-            </p>
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+            <div className="flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60">
+              <Sparkles className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div className="flex max-w-sm flex-col gap-1">
+              <p className="text-[14px] font-semibold tracking-tight text-foreground">
+                {totalSkills > 0 ? 'No matches' : 'No skills found'}
+              </p>
+              <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+                {totalSkills > 0
+                  ? `Nothing matches "${query}"${sourceFilter !== 'all' ? ` in ${sourceFilterLabel(sourceFilter)}` : ''}.`
+                  : 'Enable a source above or add a local root to discover skills.'}
+              </p>
+            </div>
+            {totalSkills > 0 && (query || sourceFilter !== 'all') ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-[12px]"
+                onClick={() => {
+                  setQuery('')
+                  setSourceFilter('all')
+                }}
+              >
+                Clear filters
+              </Button>
+            ) : null}
           </div>
         ) : (
-          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+          <div className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40">
             {filteredEntries.map((entry) => (
               <SkillRow
                 key={entry.sourceId}
@@ -624,14 +677,24 @@ export function SkillsSection({
         )}
 
         {skillRegistry?.diagnostics.length ? (
-          <div className="rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2 text-[12px] text-warning dark:text-warning">
+          <ul className="flex flex-col gap-2 rounded-md border border-warning/30 bg-warning/[0.06] px-3.5 py-3 text-warning dark:text-warning">
             {skillRegistry.diagnostics.map((diagnostic) => (
-              <p key={`${diagnostic.code}:${diagnostic.relativePath ?? 'root'}`}>
-                {diagnostic.relativePath ? <span className="font-mono">{diagnostic.relativePath}: </span> : ''}
-                {diagnostic.message}
-              </p>
+              <li
+                key={`${diagnostic.code}:${diagnostic.relativePath ?? 'root'}`}
+                className="flex items-start gap-2.5"
+              >
+                <AlertCircle className="mt-[1px] h-4 w-4 shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12.5px] leading-[1.5]">{diagnostic.message}</p>
+                  {diagnostic.relativePath ? (
+                    <p className="mt-1 break-all font-mono text-[11.5px] text-warning/75 dark:text-warning/75">
+                      {diagnostic.relativePath}
+                    </p>
+                  ) : null}
+                </div>
+              </li>
             ))}
-          </div>
+          </ul>
         ) : null}
       </section>
     </div>
@@ -640,9 +703,28 @@ export function SkillsSection({
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] text-destructive">
-      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+    <div className="flex items-start gap-2.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-destructive">
+      <AlertCircle className="mt-[1px] h-4 w-4 shrink-0" />
       <span>{message}</span>
+    </div>
+  )
+}
+
+function FieldStack({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string
+  htmlFor: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={htmlFor} className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground/80">
+        {label}
+      </Label>
+      {children}
     </div>
   )
 }
@@ -671,23 +753,23 @@ function SkillRow({
   const showTrustPill = entry.trustState !== 'trusted' && entry.trustState !== 'user_approved'
 
   return (
-    <div className="px-3.5 py-3">
+    <div className="px-4 py-3.5">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <p className="truncate text-[13px] font-medium text-foreground">{entry.name}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-[13.5px] font-semibold tracking-tight text-foreground">{entry.name}</p>
             <Pill tone="neutral">{getSkillSourceKindLabel(entry.sourceKind)}</Pill>
             <Pill tone={stateTone(entry)}>{getSkillSourceStateLabel(entry.sourceState)}</Pill>
             {showTrustPill ? (
               <Pill tone={trustTone(entry)}>{getSkillTrustStateLabel(entry.trustState)}</Pill>
             ) : null}
           </div>
-          <p className="mt-1 line-clamp-2 text-[12px] leading-[1.5] text-muted-foreground">
+          <p className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.5] text-muted-foreground">
             {entry.description || entry.skillId}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {pending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+          {pending ? <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
           <Switch
             checked={entry.enabled}
             disabled={disabled || !canSetEnabled || entry.trustState === 'blocked'}
@@ -706,17 +788,17 @@ function SkillRow({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
                   disabled={disabled}
                   aria-label={`Remove ${entry.name}`}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash2 className="h-4 w-4" />
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Remove installed skill</AlertDialogTitle>
-                  <AlertDialogDescription>
+                  <AlertDialogTitle className="text-[15px] font-semibold tracking-tight">Remove installed skill</AlertDialogTitle>
+                  <AlertDialogDescription className="text-[12.5px] leading-[1.55]">
                     {entry.name} will be removed from this project. Discoverable source metadata will remain visible if the source is still enabled.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
@@ -740,7 +822,7 @@ function SkillRow({
         </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
         <span>
           <span className="text-muted-foreground/60">Last used </span>
           <span className="text-foreground/80">{formatTimestamp(entry.lastUsedAt)}</span>
@@ -752,18 +834,18 @@ function SkillRow({
       </div>
 
       {entry.lastDiagnostic ? (
-        <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-2.5 py-1.5 text-[11.5px] text-destructive">
-          <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" />
+        <div className="mt-2.5 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] leading-[1.5] text-destructive">
+          <ShieldAlert className="mt-[1px] h-4 w-4 shrink-0" />
           <span className="min-w-0">{entry.lastDiagnostic.message}</span>
         </div>
       ) : null}
 
-      <details className="mt-1.5 group">
-        <summary className="inline-flex cursor-pointer select-none items-center gap-1 rounded-md text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden [&::marker]:hidden">
-          <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+      <details className="mt-2 group">
+        <summary className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-md text-[12px] font-medium text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden [&::marker]:hidden">
+          <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
           Source metadata
         </summary>
-        <dl className="mt-1.5 grid gap-x-4 gap-y-1 rounded-md border border-border/50 bg-secondary/20 p-2.5 text-[11px] sm:grid-cols-[110px_1fr]">
+        <dl className="mt-2 grid gap-x-4 gap-y-1.5 rounded-md border border-border/50 bg-secondary/20 px-3 py-2.5 text-[12px] sm:grid-cols-[120px_1fr]">
           {rows.map(([label, value]) => (
             <div key={label} className="contents">
               <dt className="text-muted-foreground">{label}</dt>

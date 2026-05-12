@@ -35,6 +35,7 @@ import {
   AgentVisualization,
   applyKnownNodeDimensions,
   applyLaneDragPositionChanges,
+  buildSizeMap,
   estimateDbTableCardHeight,
   estimateExpandedCardHeight,
   getLaneDragMemberIds,
@@ -376,24 +377,42 @@ describe('AgentVisualization', () => {
     expect(expandedWithColumnsHeight).toBeGreaterThan(collapsedWithColumnsHeight)
   })
 
-  it('renders handles larger and clips them into half circles by side', () => {
+  it('anchors handle bounds to node edges and clips editing dots by side', () => {
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization \.react-flow__handle\s*\{[^}]*width:\s*16px;[^}]*height:\s*16px;[^}]*border-radius:\s*999px;/m,
+      /\.agent-visualization \.react-flow__handle\s*\{[^}]*width:\s*0;[^}]*height:\s*0;[^}]*min-width:\s*0;[^}]*min-height:\s*0;[^}]*border:\s*0;[^}]*border-radius:\s*999px;/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization \.react-flow__handle-left\s*\{[^}]*clip-path:\s*inset\(0 50% 0 0\);/m,
+      /\.agent-visualization\.is-editing \.react-flow__handle-left::before\s*\{[^}]*clip-path:\s*inset\(0 50% 0 0\);/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization \.react-flow__handle-right\s*\{[^}]*clip-path:\s*inset\(0 0 0 50%\);/m,
+      /\.agent-visualization\.is-editing \.react-flow__handle-right::before\s*\{[^}]*clip-path:\s*inset\(0 0 0 50%\);/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization \.react-flow__handle-top\s*\{[^}]*clip-path:\s*inset\(0 0 50% 0\);/m,
+      /\.agent-visualization\.is-editing \.react-flow__handle-top::before\s*\{[^}]*clip-path:\s*inset\(0 0 50% 0\);/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization \.react-flow__handle-bottom\s*\{[^}]*clip-path:\s*inset\(50% 0 0 0\);/m,
+      /\.agent-visualization\.is-editing \.react-flow__handle-bottom::before\s*\{[^}]*clip-path:\s*inset\(50% 0 0 0\);/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
-      /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*width:\s*18px !important;[^}]*height:\s*18px !important;/m,
+      /\.agent-visualization\.is-editing \.react-flow__handle-left::after\s*\{[^}]*left:\s*-9px;[^}]*width:\s*9px;[^}]*height:\s*1\.5px;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle-right::after\s*\{[^}]*left:\s*0;[^}]*width:\s*9px;[^}]*height:\s*1\.5px;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*width:\s*0 !important;[^}]*height:\s*0 !important;[^}]*min-width:\s*0 !important;[^}]*min-height:\s*0 !important;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle::before\s*\{[^}]*width:\s*18px;[^}]*height:\s*18px;[^}]*border:\s*1\.5px solid var\(--background\);/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle::after\s*\{[^}]*background:\s*var\(--agent-handle-bridge-color/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__node-agent-header \.react-flow__handle::before\s*\{[^}]*background-color:\s*color-mix\([^}]*var\(--agent-handle-tone/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\[class~='!bg-amber-500'\]\s*\{[^}]*--agent-handle-tone:\s*var\(--color-amber-500/m,
     )
     expect(AGENT_VISUALIZATION_CSS).toMatch(
       /\.agent-visualization\.is-editing \.react-flow__handle\s*\{[^}]*transform-origin:\s*center center;[^}]*scale:\s*1;/m,
@@ -407,12 +426,18 @@ describe('AgentVisualization', () => {
     expect(AGENT_VISUALIZATION_CSS).toMatch(
       /\.agent-visualization\.is-editing:not\(\[data-drag-role\]\) \.react-flow__handle:hover\s*\{[^}]*scale:\s*1\.08;/m,
     )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing:not\(\[data-drag-role\]\) \.react-flow__handle:hover::before\s*\{[^}]*box-shadow:\s*0 0 0 3px/m,
+    )
     // The grabbed source handle and any valid hovered target handle get
     // the full glow. Crucially, .connecting (every handle during a drag)
     // and .connectingto (without .valid) are NOT in this rule — they stay
     // at base, which is the whole point of the honest-highlights change.
     expect(AGENT_VISUALIZATION_CSS).toMatch(
       /\.agent-visualization\.is-editing \.react-flow__handle\.connectingfrom,[^{]*\.agent-visualization\.is-editing \.react-flow__handle\.connectingto\.valid\s*\{[^}]*scale:\s*1\.12;/m,
+    )
+    expect(AGENT_VISUALIZATION_CSS).toMatch(
+      /\.agent-visualization\.is-editing \.react-flow__handle\.connectingfrom::before,[^{]*\.agent-visualization\.is-editing \.react-flow__handle\.connectingto\.valid::before\s*\{[^}]*box-shadow:\s*0 0 0 5px/m,
     )
     expect(AGENT_VISUALIZATION_CSS).not.toMatch(
       /\.agent-visualization\.is-editing \.react-flow__handle:hover,[^{]*\{[^}]*transform:/m,
@@ -723,15 +748,32 @@ describe('AgentVisualization', () => {
     const skillsHandle = headerNode?.handles?.find(
       (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.skills,
     )
+    const workflowHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.workflow,
+    )
 
     expect((toolHandle?.y ?? 0) + (toolHandle?.height ?? 0) / 2).toBeCloseTo(
       210 * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
     )
+    expect((toolHandle?.x ?? 0) + (toolHandle?.width ?? 0)).toBe(300)
     expect((dbHandle?.y ?? 0) + (dbHandle?.height ?? 0) / 2).toBeCloseTo(
       210 * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db,
     )
+    expect((dbHandle?.x ?? 0) + (dbHandle?.width ?? 0)).toBe(300)
+    expect(workflowHandle?.position).toBe('left')
     expect(consumedHandle?.position).toBe('left')
     expect(skillsHandle?.position).toBe('left')
+    expect(workflowHandle?.x).toBeCloseTo(0)
+    expect(consumedHandle?.x).toBeCloseTo(0)
+    expect(skillsHandle?.x).toBeCloseTo(0)
+    expect([
+      AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow,
+      AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed,
+      AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.skills,
+    ]).toEqual([0.25, 0.5, 0.75])
+    expect((workflowHandle?.y ?? 0) + (workflowHandle?.height ?? 0) / 2).toBeCloseTo(
+      210 * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow,
+    )
     expect((consumedHandle?.y ?? 0) + (consumedHandle?.height ?? 0) / 2).toBeCloseTo(
       210 * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed,
     )
@@ -745,10 +787,62 @@ describe('AgentVisualization', () => {
     expect(dbNode?.handles?.[0]).toMatchObject({
       type: 'target',
       position: 'left',
-      y: 66,
     })
+    expect(dbNode?.handles?.[0]?.x).toBeCloseTo(0)
+    expect(
+      ((dbNode?.handles?.[0]?.y ?? 0) + (dbNode?.handles?.[0]?.height ?? 0) / 2),
+    ).toBeCloseTo(70)
     expect(frameNode?.width).toBe(280)
     expect(frameNode?.height).toBe(96)
+  })
+
+  it('uses measured header height for seeded side handles on copied templates', () => {
+    const { nodes: graphNodes } = buildAgentGraph(detail())
+    const measuredHeaderHeight = 286
+    const sizes = buildSizeMap(
+      graphNodes,
+      new Set(),
+      new Map([
+        ['agent-header', { width: 320, height: measuredHeaderHeight }],
+      ]),
+    )
+    const nodes = applyKnownNodeDimensions(graphNodes, sizes) as Node[]
+    const headerNode = nodes.find((node) => node.id === 'agent-header')
+    const toolHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.tool,
+    )
+    const dbHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.db,
+    )
+    const workflowHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.workflow,
+    )
+    const consumedHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.consumed,
+    )
+    const skillsHandle = headerNode?.handles?.find(
+      (handle) => handle.id === AGENT_GRAPH_HEADER_HANDLES.skills,
+    )
+
+    expect(sizes.get('agent-header')).toEqual({
+      width: 320,
+      height: measuredHeaderHeight,
+    })
+    expect((toolHandle?.y ?? 0) + (toolHandle?.height ?? 0) / 2).toBeCloseTo(
+      measuredHeaderHeight * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
+    )
+    expect((dbHandle?.y ?? 0) + (dbHandle?.height ?? 0) / 2).toBeCloseTo(
+      measuredHeaderHeight * AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db,
+    )
+    expect((workflowHandle?.y ?? 0) + (workflowHandle?.height ?? 0) / 2).toBeCloseTo(
+      measuredHeaderHeight * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow,
+    )
+    expect((consumedHandle?.y ?? 0) + (consumedHandle?.height ?? 0) / 2).toBeCloseTo(
+      measuredHeaderHeight * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed,
+    )
+    expect((skillsHandle?.y ?? 0) + (skillsHandle?.height ?? 0) / 2).toBeCloseTo(
+      measuredHeaderHeight * AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.skills,
+    )
   })
 
   it('lets editing DB nodes keep DOM-measured handles after drags', () => {
@@ -1218,7 +1312,7 @@ describe('AgentVisualization', () => {
     expect(visibleAgainViewport.y).toBeGreaterThan(0)
   })
 
-  it('refreshes node internals after mount so seeded handles cannot persist', () => {
+  it('refreshes node internals after mount with zero-sized DOM handles', () => {
     installResizeObserverStub()
 
     render(<AgentVisualization detail={detail()} />)

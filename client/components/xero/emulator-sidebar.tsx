@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { invoke, isTauri } from "@tauri-apps/api/core"
 import {
   Apple,
   Loader2,
@@ -19,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import {
   useEmulatorSession,
   type EmulatorInputKind,
@@ -31,6 +32,7 @@ import { EmulatorMissingSdk } from "./emulator-missing-sdk"
 
 interface EmulatorSidebarProps {
   open: boolean
+  openImmediately?: boolean
   platform: EmulatorPlatform
 }
 
@@ -42,7 +44,7 @@ const DEFAULT_RATIO = 0.4
 const RESIZE_HANDLE_INSET = 6
 export const EMULATOR_FRAME_REQUEST_INTERVAL_MS = 33
 const EMULATOR_FRAME_REQUEST_TIMEOUT_MS = 1500
-const EMULATOR_FRAME_URL_SLOTS = 3
+const EMULATOR_FRAME_MIME_TYPE = "image/jpeg"
 
 const PLATFORM_META: Record<EmulatorPlatform, {
   label: string
@@ -100,35 +102,98 @@ function nowMs(): number {
   return Date.now()
 }
 
-function frameSrcForSeq(seq: number): string {
-  const slot = ((seq - 1) % EMULATOR_FRAME_URL_SLOTS) + 1
-  return `emulator://localhost/frame?slot=${slot}`
+interface EmulatorFrameResponse {
+  seq: number
+  width: number
+  height: number
+  jpegBase64: string
+}
+
+interface LoadedEmulatorFrameSource {
+  seq: number
+  src: string
+  revoke: () => void
+}
+
+type LoadEmulatorFrameSource = (seq: number) => Promise<LoadedEmulatorFrameSource | null>
+
+function bytesFromBase64(base64: string): Uint8Array {
+  const binary = window.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+function createFrameSourceFromJpegBase64(seq: number, jpegBase64: string): LoadedEmulatorFrameSource {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.Blob === "function" &&
+    typeof window.URL?.createObjectURL === "function"
+  ) {
+    const bytes = bytesFromBase64(jpegBase64)
+    const src = window.URL.createObjectURL(new Blob([bytes], { type: EMULATOR_FRAME_MIME_TYPE }))
+    return {
+      seq,
+      src,
+      revoke: () => window.URL.revokeObjectURL(src),
+    }
+  }
+
+  return {
+    seq,
+    src: `data:${EMULATOR_FRAME_MIME_TYPE};base64,${jpegBase64}`,
+    revoke: () => undefined,
+  }
+}
+
+async function loadLatestEmulatorFrameSource(seq: number): Promise<LoadedEmulatorFrameSource | null> {
+  if (!isTauri()) return null
+  const frame = await invoke<EmulatorFrameResponse>("emulator_frame")
+  if (frame.seq < seq) return null
+  return createFrameSourceFromJpegBase64(frame.seq, frame.jpegBase64)
+}
+
+function revokeFrameSource(source: LoadedEmulatorFrameSource | null): void {
+  if (!source) return
+  try {
+    source.revoke()
+  } catch {
+    /* best-effort cleanup */
+  }
 }
 
 export function useThrottledEmulatorFrameSrc({
   enabled,
   frameSeq,
   minIntervalMs = EMULATOR_FRAME_REQUEST_INTERVAL_MS,
+  loadFrameSource = loadLatestEmulatorFrameSource,
 }: {
   enabled: boolean
   frameSeq: number | null
   minIntervalMs?: number
+  loadFrameSource?: LoadEmulatorFrameSource
 }): {
   frameSrc: string | null
   settleFrameRequest: () => void
 } {
-  const [requestedSeq, setRequestedSeq] = useState<number | null>(null)
+  const [frameSource, setFrameSource] = useState<LoadedEmulatorFrameSource | null>(null)
   const enabledRef = useRef(enabled)
+  const frameSourceRef = useRef<LoadedEmulatorFrameSource | null>(null)
   const inFlightRef = useRef(false)
   const latestSeqRef = useRef<number | null>(frameSeq)
+  const loadFrameSourceRef = useRef(loadFrameSource)
   const lastRequestAtRef = useRef<number | null>(null)
   const requestedSeqRef = useRef<number | null>(null)
+  const requestTokenRef = useRef(0)
   const retryTimerRef = useRef<number | null>(null)
   const inFlightTimerRef = useRef<number | null>(null)
   const requestLatestFrameRef = useRef<() => void>(() => undefined)
 
   enabledRef.current = enabled
   latestSeqRef.current = frameSeq
+  loadFrameSourceRef.current = loadFrameSource
 
   const clearRetryTimer = useCallback(() => {
     if (retryTimerRef.current === null || typeof window === "undefined") return
@@ -140,6 +205,15 @@ export function useThrottledEmulatorFrameSrc({
     if (inFlightTimerRef.current === null || typeof window === "undefined") return
     window.clearTimeout(inFlightTimerRef.current)
     inFlightTimerRef.current = null
+  }, [])
+
+  const replaceFrameSource = useCallback((nextSource: LoadedEmulatorFrameSource | null) => {
+    const previousSource = frameSourceRef.current
+    frameSourceRef.current = nextSource
+    setFrameSource(nextSource)
+    if (previousSource && previousSource !== nextSource) {
+      revokeFrameSource(previousSource)
+    }
   }, [])
 
   const requestLatestFrame = useCallback(() => {
@@ -160,26 +234,51 @@ export function useThrottledEmulatorFrameSrc({
       return
     }
 
+    const token = requestTokenRef.current + 1
+    requestTokenRef.current = token
     inFlightRef.current = true
     requestedSeqRef.current = nextSeq
     lastRequestAtRef.current = nowMs()
-    setRequestedSeq(nextSeq)
 
     if (typeof window !== "undefined") {
       clearInFlightTimer()
       inFlightTimerRef.current = window.setTimeout(() => {
         inFlightTimerRef.current = null
+        requestTokenRef.current += 1
         inFlightRef.current = false
         requestLatestFrameRef.current()
       }, EMULATOR_FRAME_REQUEST_TIMEOUT_MS)
     }
-  }, [clearInFlightTimer, clearRetryTimer, minIntervalMs])
+
+    void loadFrameSourceRef.current(nextSeq)
+      .then((nextSource) => {
+        if (requestTokenRef.current !== token || !enabledRef.current) {
+          revokeFrameSource(nextSource)
+          return
+        }
+
+        if (!nextSource) {
+          inFlightRef.current = false
+          requestLatestFrameRef.current()
+          return
+        }
+
+        requestedSeqRef.current = nextSource.seq
+        replaceFrameSource(nextSource)
+      })
+      .catch(() => {
+        if (requestTokenRef.current !== token) return
+        inFlightRef.current = false
+        requestLatestFrameRef.current()
+      })
+  }, [clearInFlightTimer, clearRetryTimer, minIntervalMs, replaceFrameSource])
 
   requestLatestFrameRef.current = requestLatestFrame
 
   const cancelFrameRequests = useCallback(() => {
     clearRetryTimer()
     clearInFlightTimer()
+    requestTokenRef.current += 1
     inFlightRef.current = false
   }, [clearInFlightTimer, clearRetryTimer])
 
@@ -187,8 +286,8 @@ export function useThrottledEmulatorFrameSrc({
     cancelFrameRequests()
     requestedSeqRef.current = null
     lastRequestAtRef.current = null
-    setRequestedSeq(null)
-  }, [cancelFrameRequests])
+    replaceFrameSource(null)
+  }, [cancelFrameRequests, replaceFrameSource])
 
   const settleFrameRequest = useCallback(() => {
     clearInFlightTimer()
@@ -206,15 +305,20 @@ export function useThrottledEmulatorFrameSrc({
     requestLatestFrame()
   }, [enabled, frameSeq, requestLatestFrame, resetFrameRequests])
 
-  useEffect(() => cancelFrameRequests, [cancelFrameRequests])
+  useEffect(() => () => {
+    cancelFrameRequests()
+    const currentSource = frameSourceRef.current
+    frameSourceRef.current = null
+    revokeFrameSource(currentSource)
+  }, [cancelFrameRequests])
 
   return {
-    frameSrc: requestedSeq === null ? null : frameSrcForSeq(requestedSeq),
+    frameSrc: frameSource?.src ?? null,
     settleFrameRequest,
   }
 }
 
-export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
+export function EmulatorSidebar({ open, openImmediately = false, platform }: EmulatorSidebarProps) {
   const meta = PLATFORM_META[platform]
   const [width, setWidth] = useState(() =>
     readPersistedWidth(meta.storageKey) ?? viewportDefaultWidth(),
@@ -222,8 +326,9 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
   const [maxWidth, setMaxWidth] = useState(viewportMaxWidth)
   const [isResizing, setIsResizing] = useState(false)
   const sessionActive = open
-  const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
+  const motionOpen = useSidebarOpenMotion(open, { instantOpen: openImmediately })
+  const targetWidth = motionOpen ? width : 0
+  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)

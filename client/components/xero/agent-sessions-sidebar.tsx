@@ -81,6 +81,12 @@ const WIDTH_STORAGE_KEY = 'xero.agentSessions.width'
 const STRIP_WIDTH = 6
 const STRIP_COLLAPSE_GHOST_DURATION_MS = 110
 const STRIP_EXPAND_DURATION_MS = 140
+const SESSION_ENTRY_DELETE_ANIMATION_MS = 150
+const SESSION_ENTRY_DELETE_FALLBACK_MS = SESSION_ENTRY_DELETE_ANIMATION_MS + 50
+const SESSION_ENTRY_ENTER_ANIMATION_CLASS =
+  'animate-in fade-in-0 slide-in-from-right-4 duration-300 ease-out'
+const SESSION_ENTRY_DELETE_ANIMATION_CLASS =
+  'animate-out fade-out-0 slide-out-to-left-4 fill-mode-forwards duration-150 ease-out pointer-events-none'
 
 export function readPinnedSessionIds(projectId: string | null): Set<string> {
   if (!projectId || typeof window === 'undefined') return new Set()
@@ -202,6 +208,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
   const [archivedSessions, setArchivedSessions] = useState<readonly AgentSessionView[]>([])
   const [archivedStatus, setArchivedStatus] = useState<ArchivedLoadStatus>('idle')
   const [archivedError, setArchivedError] = useState<string | null>(null)
+  const [archivedExitingIds, setArchivedExitingIds] = useState<Set<string>>(() => new Set())
   const [pendingRestoreId, setPendingRestoreId] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   const [archivedActionError, setArchivedActionError] = useState<string | null>(null)
@@ -375,9 +382,11 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
     try {
       const loaded = await onLoadArchivedSessions(projectId)
       setArchivedSessions(loaded)
+      setArchivedExitingIds(new Set())
       setArchivedStatus('loaded')
     } catch (error) {
       setArchivedSessions([])
+      setArchivedExitingIds(new Set())
       setArchivedError(
         error instanceof Error ? error.message : 'Failed to load archived sessions.',
       )
@@ -387,6 +396,10 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
 
   useEffect(() => {
     setArchivedVisible(false)
+    setArchivedSessions([])
+    setArchivedExitingIds(new Set())
+    setArchivedStatus('idle')
+    setArchivedActionError(null)
   }, [projectId])
 
   useEffect(() => {
@@ -425,9 +438,11 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
     setArchivedActionError(null)
     try {
       await onDeleteSession(targetId)
-      setArchivedSessions((prev) =>
-        prev.filter((entry) => entry.agentSessionId !== targetId),
-      )
+      setArchivedExitingIds((prev) => {
+        const next = new Set(prev)
+        next.add(targetId)
+        return next
+      })
     } catch (error) {
       setArchivedActionError(
         error instanceof Error ? error.message : 'Failed to delete session.',
@@ -436,6 +451,29 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
       setPendingDeleteId(null)
     }
   }, [onDeleteSession])
+
+  const handleArchivedExitAnimationEnd = useCallback((agentSessionId: string) => {
+    setArchivedSessions((prev) =>
+      prev.filter((entry) => entry.agentSessionId !== agentSessionId),
+    )
+    setArchivedExitingIds((prev) => {
+      if (!prev.has(agentSessionId)) return prev
+      const next = new Set(prev)
+      next.delete(agentSessionId)
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    if (archivedExitingIds.size === 0 || typeof window === 'undefined') return
+    const timeout = window.setTimeout(() => {
+      setArchivedSessions((prev) =>
+        prev.filter((entry) => !archivedExitingIds.has(entry.agentSessionId)),
+      )
+      setArchivedExitingIds(new Set())
+    }, SESSION_ENTRY_DELETE_FALLBACK_MS)
+    return () => window.clearTimeout(timeout)
+  }, [archivedExitingIds])
 
   const handleResizeStart = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (collapsed || event.button !== 0) return
@@ -577,6 +615,16 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
     )
   }, [])
 
+  useEffect(() => {
+    if (!entries.some((entry) => entry.state === 'exiting') || typeof window === 'undefined') {
+      return
+    }
+    const timeout = window.setTimeout(() => {
+      setEntries((prev) => prev.filter((entry) => entry.state !== 'exiting'))
+    }, SESSION_ENTRY_DELETE_FALLBACK_MS)
+    return () => window.clearTimeout(timeout)
+  }, [entries])
+
   const pinnedEntries = useMemo(
     () => entries.filter((entry) => pinnedIds.has(entry.session.agentSessionId)),
     [entries, pinnedIds],
@@ -590,10 +638,8 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
     <li
       key={entry.session.agentSessionId}
       className={cn(
-        entry.state === 'entering' &&
-          'animate-in fade-in-0 slide-in-from-right-4 duration-300 ease-out',
-        entry.state === 'exiting' &&
-          'animate-out fade-out-0 slide-out-to-left-4 fill-mode-forwards duration-300 ease-out pointer-events-none',
+        entry.state === 'entering' && SESSION_ENTRY_ENTER_ANIMATION_CLASS,
+        entry.state === 'exiting' && SESSION_ENTRY_DELETE_ANIMATION_CLASS,
       )}
       onAnimationEnd={(event) => {
         if (event.target !== event.currentTarget) return
@@ -820,20 +866,32 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
                     </div>
                   ) : (
                     <ul className="flex flex-col px-1.5 pb-1.5">
-                      {archivedSessions.map((session) => (
-                        <li key={session.agentSessionId}>
-                          <AgentArchivedSessionsSidebarItem
-                            session={session}
-                            isRestoring={pendingRestoreId === session.agentSessionId}
-                            isDeleting={pendingDeleteId === session.agentSessionId}
-                            isAnyActionPending={
-                              pendingRestoreId !== null || pendingDeleteId !== null
-                            }
-                            onRestore={handleRestoreArchivedSession}
-                            onDelete={handleDeleteArchivedSession}
-                          />
-                        </li>
-                      ))}
+                      {archivedSessions.map((session) => {
+                        const isExiting = archivedExitingIds.has(session.agentSessionId)
+                        return (
+                          <li
+                            key={session.agentSessionId}
+                            className={cn(isExiting && SESSION_ENTRY_DELETE_ANIMATION_CLASS)}
+                            onAnimationEnd={(event) => {
+                              if (event.target !== event.currentTarget || !isExiting) return
+                              handleArchivedExitAnimationEnd(session.agentSessionId)
+                            }}
+                          >
+                            <AgentArchivedSessionsSidebarItem
+                              session={session}
+                              isRestoring={pendingRestoreId === session.agentSessionId}
+                              isDeleting={pendingDeleteId === session.agentSessionId}
+                              isAnyActionPending={
+                                pendingRestoreId !== null ||
+                                pendingDeleteId !== null ||
+                                isExiting
+                              }
+                              onRestore={handleRestoreArchivedSession}
+                              onDelete={handleDeleteArchivedSession}
+                            />
+                          </li>
+                        )
+                      })}
                     </ul>
                   )}
                   {archivedActionError ? (

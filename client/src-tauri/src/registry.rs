@@ -107,7 +107,8 @@ pub fn read_project_summaries(
                 projects.completed_phases,
                 projects.active_phase,
                 projects.branch,
-                projects.runtime
+                projects.runtime,
+                projects.start_targets
             FROM repositories
             JOIN projects ON projects.id = repositories.project_id
             ORDER BY repositories.root_path
@@ -139,6 +140,7 @@ pub fn read_project_summaries(
                     active_phase: row.get::<_, u32>(8)?,
                     branch: row.get(9)?,
                     runtime: row.get(10)?,
+                    start_targets: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
                 },
             })
         })

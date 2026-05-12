@@ -15,6 +15,13 @@ import { providerModelThinkingEffortSchema } from './provider-models'
 export const projectOriginSchema = z.enum(['brownfield', 'greenfield', 'unknown'])
 export type ProjectOriginDto = z.infer<typeof projectOriginSchema>
 
+export const startTargetSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  command: z.string().min(1),
+})
+export type StartTargetDto = z.infer<typeof startTargetSchema>
+
 export const projectSummarySchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -26,6 +33,7 @@ export const projectSummarySchema = z.object({
   activePhase: z.number().int().nonnegative(),
   branch: nullableTextSchema,
   runtime: nullableTextSchema,
+  startTargets: z.array(startTargetSchema).optional(),
 })
 
 export const phaseSummarySchema = z.object({
@@ -781,6 +789,7 @@ export interface ProjectListItem {
   branchLabel: string
   runtimeLabel: string
   phaseProgressPercent: number
+  startTargets: StartTargetDto[]
 }
 
 export interface RepositoryView {
@@ -864,6 +873,7 @@ export function mapProjectSummary(dto: ProjectSummaryDto): ProjectListItem {
     runtimeLabel: runtime ?? 'Runtime unavailable',
     branchLabel: branch ?? 'No branch',
     phaseProgressPercent: safePercent(dto.completedPhases, dto.totalPhases),
+    startTargets: dto.startTargets ?? [],
   }
 }
 

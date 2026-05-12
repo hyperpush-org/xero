@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { WorkflowAgentSummaryDto } from '@/src/lib/xero-model/workflow-agents'
@@ -109,6 +109,24 @@ describe('WorkflowsSidebar', () => {
     )
     expect(screen.getByText('Failed to load agents.')).toBeInTheDocument()
     expect(screen.getByText('boom')).toBeInTheDocument()
+  })
+
+  it('keeps the closed layout sidebar on the shared width transition', () => {
+    const { container } = render(<WorkflowsSidebar open={false} agents={REAL_AGENTS} />)
+    const aside = container.querySelector('aside') as HTMLElement
+
+    expect(aside).toHaveAttribute('aria-hidden', 'true')
+    expect(aside.style.width).toBe('0px')
+    expect(aside.style.transition).toContain('width 160ms')
+  })
+
+  it('stages the first open from zero width so it can slide out', async () => {
+    const { container } = render(<WorkflowsSidebar open agents={REAL_AGENTS} />)
+    const aside = container.querySelector('aside') as HTMLElement
+
+    expect(aside).toHaveAttribute('aria-hidden', 'false')
+    expect(aside.style.width).toBe('0px')
+    await waitFor(() => expect(aside.style.width).toBe('380px'))
   })
 
   it('creates an agent directly from the agents header without opening a mode menu', () => {

@@ -11,6 +11,9 @@ import {
   type ReactFlowState,
 } from '@xyflow/react'
 
+import { useCanvasMode } from '../canvas-mode-context'
+import { arrowTargetEndpoint } from './edge-endpoint-offset'
+
 interface TriggerEdgeData extends Record<string, unknown> {
   triggerLabel?: string
   suppressLabel?: boolean
@@ -194,13 +197,21 @@ const TriggerEdgeWithoutLabel = memo(function TriggerEdgeWithoutLabel({
   style,
   interactionWidth,
 }: TriggerEdgePathProps) {
+  const { editing } = useCanvasMode()
+  const target = arrowTargetEndpoint({
+    editing,
+    markerEnd,
+    targetX,
+    targetY,
+    targetPosition,
+  })
   const [edgePath] = getTriggerEdgePath({
     id,
     sourceX,
     sourceY,
     sourcePosition,
-    targetX,
-    targetY,
+    targetX: target.x,
+    targetY: target.y,
     targetPosition,
     markerEnd,
     style,
@@ -236,13 +247,23 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
   interactionWidth,
   label,
 }: TriggerEdgeWithLabelProps) {
+  const { editing } = useCanvasMode()
+  const targetEndpoint = arrowTargetEndpoint({
+    editing,
+    markerEnd,
+    targetX,
+    targetY,
+    targetPosition,
+  })
+  const pathTargetX = targetEndpoint.x
+  const pathTargetY = targetEndpoint.y
   const [edgePath, midX, midY] = getTriggerEdgePath({
     id,
     sourceX,
     sourceY,
     sourcePosition,
-    targetX,
-    targetY,
+    targetX: pathTargetX,
+    targetY: pathTargetY,
     targetPosition,
     markerEnd,
     style,
@@ -256,10 +277,10 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
   // Edge's world-space bounding box plus collision margin (this is the
   // region the label could ever land in). If it doesn't intersect the
   // viewport rect, skip collision search and hide the label paint.
-  const edgeMinX = Math.min(sourceX, targetX) - EDGE_COLLISION_MARGIN
-  const edgeMaxX = Math.max(sourceX, targetX) + EDGE_COLLISION_MARGIN
-  const edgeMinY = Math.min(sourceY, targetY) - EDGE_COLLISION_MARGIN
-  const edgeMaxY = Math.max(sourceY, targetY) + EDGE_COLLISION_MARGIN
+  const edgeMinX = Math.min(sourceX, pathTargetX) - EDGE_COLLISION_MARGIN
+  const edgeMaxX = Math.max(sourceX, pathTargetX) + EDGE_COLLISION_MARGIN
+  const edgeMinY = Math.min(sourceY, pathTargetY) - EDGE_COLLISION_MARGIN
+  const edgeMaxY = Math.max(sourceY, pathTargetY) + EDGE_COLLISION_MARGIN
 
   const labelOnScreen =
     edgeMaxX >= visibleRect.minX &&
@@ -280,7 +301,7 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
   const labelPos = useMemo(() => {
     if (!labelOnScreen) return { x: midX, y: midY }
 
-    const sig = `${sourceX}|${sourceY}|${targetX}|${targetY}|${nodeLookup.size}`
+    const sig = `${sourceX}|${sourceY}|${pathTargetX}|${pathTargetY}|${nodeLookup.size}`
     const cached = labelCacheRef.current
     if (cached && cached.sig === sig) return cached.pos
 
@@ -288,14 +309,14 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
       sourcePosition,
       sourceX,
       sourceY,
-      targetX,
-      targetY,
+      pathTargetX,
+      pathTargetY,
       BEZIER_CURVATURE,
     )
     const [c2x, c2y] = getBezierControl(
       targetPosition,
-      targetX,
-      targetY,
+      pathTargetX,
+      pathTargetY,
       sourceX,
       sourceY,
       BEZIER_CURVATURE,
@@ -307,7 +328,7 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
       const [px, py] =
         t === 0.5
           ? [midX, midY]
-          : cubicBezierPoint(t, sourceX, sourceY, c1x, c1y, c2x, c2y, targetX, targetY)
+          : cubicBezierPoint(t, sourceX, sourceY, c1x, c1y, c2x, c2y, pathTargetX, pathTargetY)
       candidateXs.push(px)
       candidateYs.push(py)
     }
@@ -349,8 +370,8 @@ const TriggerEdgeWithLabel = memo(function TriggerEdgeWithLabel({
     sourceY,
     sourcePosition,
     source,
-    targetX,
-    targetY,
+    pathTargetX,
+    pathTargetY,
     targetPosition,
     target,
     nodeLookup,

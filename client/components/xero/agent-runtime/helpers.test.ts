@@ -26,6 +26,7 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
       branchLabel: 'main',
       runtimeLabel: 'Runtime unavailable',
       phaseProgressPercent: 0,
+      startTargets: [],
       repository: null,
       repositoryStatus: null,
       approvalRequests: [],

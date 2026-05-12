@@ -38,6 +38,8 @@ import type {
   RuntimeStreamToolItemView,
 } from '@/src/lib/xero-model'
 
+const COMPOSER_SETTINGS_STORAGE_KEY = 'xero.agent.composer.settings.v1'
+
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
   return {
     id: 'project-1',
@@ -53,6 +55,7 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     branchLabel: 'No branch',
     runtimeLabel: 'Runtime unavailable',
     phaseProgressPercent: 0,
+    startTargets: [],
     repository: {
       id: 'repo-1',
       projectId: 'project-1',
@@ -257,6 +260,23 @@ function makeProviderModelCatalog(
     lastSuccessAt: null,
     lastRefreshError: null,
     models: [makeAgentModel()],
+    ...overrides,
+  }
+}
+
+function makeComposerModelOption(
+  overrides: Partial<NonNullable<AgentPaneView['composerModelOptions']>[number]> = {},
+): NonNullable<AgentPaneView['composerModelOptions']>[number] {
+  return {
+    selectionKey: 'openai_codex:openai_codex',
+    profileId: 'openai_codex-default',
+    providerId: 'openai_codex',
+    providerLabel: 'OpenAI Codex',
+    modelId: 'openai_codex',
+    displayName: 'openai_codex',
+    thinking: { supported: true, effortOptions: ['medium'], defaultEffort: 'medium' },
+    thinkingEffortOptions: ['medium'],
+    defaultThinkingEffort: 'medium',
     ...overrides,
   }
 }
@@ -607,9 +627,13 @@ function setScrollMetrics(
   })
 }
 
-function renderRuntimeStreamItems(runtimeStreamItems: NonNullable<AgentPaneView['runtimeStreamItems']>) {
+function renderRuntimeStreamItems(
+  runtimeStreamItems: NonNullable<AgentPaneView['runtimeStreamItems']>,
+  props: Omit<Partial<ComponentProps<typeof AgentRuntime>>, 'agent'> = {},
+) {
   return render(
     <AgentRuntime
+      {...props}
       agent={makeAgent({
         runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
         runtimeRun: makeRuntimeRun(),
@@ -2249,6 +2273,38 @@ describe('AgentRuntime current UI', () => {
     expect(screen.getByText('Loaded project context 0.')).toBeVisible()
   })
 
+  it('shows adjacent tool calls individually when grouping is disabled', () => {
+    const toolBurst = Array.from({ length: 4 }, (_, index) =>
+      makeToolItem({
+        sequence: index + 3,
+        toolCallId: `call-read-${index}`,
+        toolName: 'read',
+        toolState: 'succeeded',
+        detail: `Read tool ${index}.`,
+        toolSummary: {
+          kind: 'file',
+          path: `client/src/tool-${index}.ts`,
+          scope: null,
+          lineCount: 12,
+          matchCount: null,
+          truncated: false,
+        },
+      }),
+    )
+
+    renderRuntimeStreamItems(
+      [
+        makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+        ...toolBurst,
+      ],
+      { toolCallGroupingPreference: 'separate' },
+    )
+
+    expect(screen.queryByText('4 tool calls')).not.toBeInTheDocument()
+    expect(screen.getByText('read tool-0.ts')).toBeVisible()
+    expect(screen.getByText('read tool-3.ts')).toBeVisible()
+  })
+
   it('splits tool groups around edit tool calls and shows the edit diff', () => {
     renderRuntimeStreamItems([
       makeToolItem({
@@ -2650,6 +2706,128 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
     expect(onConsumed).toHaveBeenCalled()
+  })
+
+  it('restores the last-used composer controls from persisted settings', async () => {
+    window.localStorage.setItem(
+      COMPOSER_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        modelSelectionKey: 'anthropic:anthropic/claude-3.5-haiku',
+        runtimeAgentId: 'debug',
+        agentDefinitionId: null,
+        thinkingEffort: 'low',
+        approvalMode: 'yolo',
+        autoCompactEnabled: true,
+      }),
+    )
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'ask',
+          selectedRuntimeAgentLabel: 'Ask',
+          selectedModelId: 'openai_codex',
+          selectedThinkingEffort: 'medium',
+          selectedApprovalMode: 'suggest',
+          composerModelOptions: [
+            makeComposerModelOption(),
+            makeComposerModelOption({
+              selectionKey: 'anthropic:anthropic/claude-3.5-haiku',
+              profileId: 'anthropic-default',
+              providerId: 'anthropic',
+              providerLabel: 'Anthropic',
+              modelId: 'anthropic/claude-3.5-haiku',
+              displayName: 'Claude 3.5 Haiku',
+              thinking: { supported: true, effortOptions: ['low', 'medium'], defaultEffort: 'low' },
+              thinkingEffortOptions: ['low', 'medium'],
+              defaultThinkingEffort: 'low',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={onStartRuntimeRun}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
+    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent(
+      'anthropic/claude-3.5-haiku',
+    )
+    expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Low')
+    expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('YOLO')
+    expect(screen.getByRole('button', { name: 'Auto-compact before sending' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+
+    fireEvent.change(screen.getByLabelText('Agent input'), {
+      target: { value: 'Use the restored controls.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onStartRuntimeRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: 'Use the restored controls.',
+          controls: expect.objectContaining({
+            runtimeAgentId: 'debug',
+            providerProfileId: 'anthropic-default',
+            modelId: 'anthropic/claude-3.5-haiku',
+            thinkingEffort: 'low',
+            approvalMode: 'yolo',
+          }),
+        }),
+      ),
+    )
+  })
+
+  it('persists composer control changes for the next reload', async () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedModelSelectionKey: 'openai_codex:openai_codex',
+          selectedThinkingEffort: 'medium',
+          composerModelOptions: [
+            makeComposerModelOption(),
+            makeComposerModelOption({
+              selectionKey: 'anthropic:anthropic/claude-3.5-haiku',
+              profileId: 'anthropic-default',
+              providerId: 'anthropic',
+              providerLabel: 'Anthropic',
+              modelId: 'anthropic/claude-3.5-haiku',
+              displayName: 'Claude 3.5 Haiku',
+              thinking: { supported: true, effortOptions: ['low', 'medium'], defaultEffort: 'low' },
+              thinkingEffortOptions: ['low', 'medium'],
+              defaultThinkingEffort: 'low',
+            }),
+          ],
+        })}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent selector' }))
+    fireEvent.click(await screen.findByRole('option', { name: /Engineer/i }))
+    fireEvent.click(screen.getByRole('combobox', { name: 'Approval mode selector' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'YOLO' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Auto-compact before sending' }))
+
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)
+      expect(raw).not.toBeNull()
+      expect(JSON.parse(raw ?? '{}')).toMatchObject({
+        version: 1,
+        modelSelectionKey: 'openai_codex:openai_codex',
+        runtimeAgentId: 'engineer',
+        agentDefinitionId: null,
+        thinkingEffort: 'medium',
+        approvalMode: 'yolo',
+        autoCompactEnabled: true,
+      })
+    })
   })
 
   it('uses the agent_create build placeholder and standalone empty state when active', () => {
@@ -3197,10 +3375,12 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    const input = screen.getByLabelText('Agent input')
+    const input = screen.getByLabelText('Agent input') as HTMLTextAreaElement
     fireEvent.change(input, { target: { value: 'Send from keyboard.' } })
+    input.setSelectionRange(input.value.length, input.value.length)
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
     expect(onUpdateRuntimeRunControls).not.toHaveBeenCalled()
+    await waitFor(() => expect(input).toHaveValue('Send from keyboard.\n'))
 
     fireEvent.keyDown(input, { key: 'Enter' })
 

@@ -31,10 +31,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
         .manage(commands::EmulatorState::default())
         .manage(commands::project_assets::ProjectAssetState::default())
         .register_asynchronous_uri_scheme_protocol(
-            commands::emulator::URI_SCHEME,
-            commands::emulator::handle_uri_scheme,
-        )
-        .register_asynchronous_uri_scheme_protocol(
             commands::project_assets::URI_SCHEME,
             commands::project_assets::handle,
         )
@@ -328,6 +324,12 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::skills::upsert_skill_local_root,
             commands::skills::remove_skill_local_root,
             commands::skills::update_project_skill_source,
+            commands::project_runner::update_project_start_targets,
+            commands::project_runner::suggest_project_start_targets,
+            commands::project_runner::terminal_open,
+            commands::project_runner::terminal_write,
+            commands::project_runner::terminal_resize,
+            commands::project_runner::terminal_close,
             commands::skills::update_github_skill_source,
             commands::skills::upsert_plugin_root,
             commands::skills::remove_plugin_root,
@@ -426,6 +428,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::emulator::emulator_input,
             commands::emulator::emulator_rotate,
             commands::emulator::emulator_subscribe_ready,
+            commands::emulator::emulator_frame,
             commands::emulator::emulator_screenshot,
             commands::emulator::emulator_ui_dump,
             commands::emulator::emulator_find,

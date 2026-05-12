@@ -1,12 +1,12 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useReducedMotion, type Transition } from 'motion/react'
 
 const SIDEBAR_REVEAL_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1]
-const SIDEBAR_REVEAL_EASE_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
+export const SIDEBAR_REVEAL_EASE_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
-const SIDEBAR_WIDTH_DURATION_MS = 200
+const SIDEBAR_WIDTH_DURATION_MS = 160
 const SIDEBAR_REVEAL_DURATION_MS = 160
-const SIDEBAR_LAYOUT_DURATION_MS = 200
+const SIDEBAR_LAYOUT_DURATION_MS = 160
 
 // Kept for any motion-based callers; transform/opacity content slides still
 // run on motion since those are GPU-accelerated and don't trigger layout.
@@ -30,6 +30,49 @@ export const SIDEBAR_WIDTH_TRANSITION: Transition = {
 }
 
 export const SIDEBAR_INSTANT_TRANSITION: Transition = { duration: 0 }
+
+export const FLOATING_RIGHT_SIDEBAR_TRANSITION: Transition = {
+  duration: SIDEBAR_REVEAL_DURATION_MS / 1000,
+  ease: SIDEBAR_REVEAL_EASE,
+}
+
+/**
+ * Layout sidebars are lazy-mounted. If the first render already uses the open
+ * width, the browser has no closed frame to interpolate from and the first open
+ * pops. Start closed for one animation frame, then mirror `open` normally.
+ */
+export function useSidebarOpenMotion(
+  open: boolean,
+  options: { instantOpen?: boolean } = {},
+): boolean {
+  const { instantOpen = false } = options
+  const [motionOpen, setMotionOpen] = useState(() => open && instantOpen)
+
+  useEffect(() => {
+    if (!open) {
+      setMotionOpen(false)
+      return
+    }
+
+    if (instantOpen) {
+      setMotionOpen(true)
+      return
+    }
+
+    if (
+      typeof window === 'undefined' ||
+      typeof window.requestAnimationFrame !== 'function'
+    ) {
+      setMotionOpen(true)
+      return
+    }
+
+    const frame = window.requestAnimationFrame(() => setMotionOpen(true))
+    return () => window.cancelAnimationFrame(frame)
+  }, [instantOpen, open])
+
+  return open && motionOpen
+}
 
 export interface SidebarWidthMotion {
   /** Class to apply to the sidebar root for compositor isolation + paint containment. */

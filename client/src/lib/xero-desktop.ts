@@ -202,6 +202,7 @@ import {
   listProjectFilesRequestSchema,
   listProjectFilesResponseSchema,
   listProjectsResponseSchema,
+  projectSummarySchema,
   moveProjectEntryRequestSchema,
   moveProjectEntryResponseSchema,
   appUiStateResponseSchema,
@@ -256,6 +257,7 @@ import {
   type ListProjectsResponseDto,
   type MoveProjectEntryRequestDto,
   type MoveProjectEntryResponseDto,
+  type ProjectSummaryDto,
   type ProjectUpdatedPayloadDto,
   type AppUiStateResponseDto,
   type ReadProjectFileResponseDto,
@@ -284,6 +286,7 @@ import {
   type WriteProjectFileResponseDto,
   type WriteProjectUiStateRequestDto,
 } from '@/src/lib/xero-model/project'
+export type { StartTargetDto } from '@/src/lib/xero-model/project'
 import {
   runtimeRunSchema,
   runtimeRunUpdatedPayloadSchema,
@@ -323,6 +326,7 @@ import {
   type RuntimeRunDto,
   type RuntimeRunUpdatedPayloadDto,
   type RuntimeSessionDto,
+  type RuntimeAgentIdDto,
   type ProviderAuthSessionDto,
   type RuntimeUpdatedPayloadDto,
   type StagedAgentAttachmentDto,
@@ -528,6 +532,12 @@ const COMMANDS = {
   restoreProjectStateBackup: 'restore_project_state_backup',
   repairProjectState: 'repair_project_state',
   getProjectLoadBundle: 'get_project_load_bundle',
+  updateProjectStartTargets: 'update_project_start_targets',
+  suggestProjectStartTargets: 'suggest_project_start_targets',
+  terminalOpen: 'terminal_open',
+  terminalWrite: 'terminal_write',
+  terminalResize: 'terminal_resize',
+  terminalClose: 'terminal_close',
   getProjectSnapshot: 'get_project_snapshot',
   getProjectUsageSummary: 'get_project_usage_summary',
   getRepositoryStatus: 'get_repository_status',
@@ -717,7 +727,83 @@ const EVENTS = {
   browserConsole: 'browser:console',
   browserTabUpdated: 'browser:tab_updated',
   agentUsageUpdated: 'agent_usage_updated',
+  terminalData: 'terminal:data',
+  terminalExit: 'terminal:exit',
+  terminalTitle: 'terminal:title',
 } as const
+
+// ---------------------------------------------------------------------------
+// Terminal sidebar + project-runner commands
+// ---------------------------------------------------------------------------
+
+const openTerminalResponseSchema = z.object({
+  terminalId: z.string().min(1),
+  shell: z.string(),
+  cwd: z.string(),
+  startedAt: z.string(),
+})
+export type OpenTerminalResponseDto = z.infer<typeof openTerminalResponseSchema>
+
+const suggestedStartTargetSchema = z.object({
+  name: z.string(),
+  command: z.string(),
+})
+const suggestedStartTargetsSchema = z.object({
+  targets: z.array(suggestedStartTargetSchema),
+  providerId: z.string(),
+  modelId: z.string(),
+})
+export type SuggestedStartTargetDto = z.infer<typeof suggestedStartTargetSchema>
+export type SuggestedStartTargetsDto = z.infer<typeof suggestedStartTargetsSchema>
+
+export const terminalDataEventSchema = z.object({
+  terminalId: z.string(),
+  data: z.string(),
+})
+export type TerminalDataEventPayload = z.infer<typeof terminalDataEventSchema>
+
+export const terminalExitEventSchema = z.object({
+  terminalId: z.string(),
+  exitCode: z.number().int().nullable().optional(),
+})
+export type TerminalExitEventPayload = z.infer<typeof terminalExitEventSchema>
+
+export const terminalTitleEventSchema = z.object({
+  terminalId: z.string(),
+  title: z.string(),
+})
+export type TerminalTitleEventPayload = z.infer<typeof terminalTitleEventSchema>
+
+export interface StartTargetInputDto {
+  id?: string | null
+  name: string
+  command: string
+}
+
+export interface UpdateProjectStartTargetsRequestDto {
+  projectId: string
+  targets: StartTargetInputDto[]
+}
+
+export interface OpenTerminalRequestDto {
+  projectId?: string | null
+  cols?: number
+  rows?: number
+}
+
+export interface SuggestProjectStartTargetsRequestDto {
+  projectId: string
+  modelId: string
+  providerProfileId?: string | null
+  runtimeAgentId?: RuntimeAgentIdDto | null
+  thinkingEffort?:
+    | 'minimal'
+    | 'low'
+    | 'medium'
+    | 'high'
+    | 'x_high'
+    | null
+}
 
 const commandErrorSchema = z.object({
   code: z.string(),
@@ -891,6 +977,16 @@ export interface XeroDesktopAdapter {
   getProjectLoadBundle?(
     request: ProjectLoadBundleRequestDto,
   ): Promise<ProjectLoadBundleDto>
+  updateProjectStartTargets?(
+    request: UpdateProjectStartTargetsRequestDto,
+  ): Promise<ProjectSummaryDto>
+  suggestProjectStartTargets?(
+    request: SuggestProjectStartTargetsRequestDto,
+  ): Promise<SuggestedStartTargetsDto>
+  terminalOpen?(request: OpenTerminalRequestDto): Promise<OpenTerminalResponseDto>
+  terminalWrite?(terminalId: string, data: string): Promise<void>
+  terminalResize?(terminalId: string, cols: number, rows: number): Promise<void>
+  terminalClose?(terminalId: string): Promise<void>
   getProjectUsageSummary(projectId: string): Promise<ProjectUsageSummaryDto>
   getRepositoryStatus(projectId: string): Promise<RepositoryStatusResponseDto>
   getRepositoryDiff(projectId: string, scope: RepositoryDiffScope): Promise<RepositoryDiffResponseDto>
@@ -2049,6 +2145,62 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTyped(COMMANDS.getProjectLoadBundle, projectLoadBundleSchema, {
       request: parsed,
     })
+  },
+
+  updateProjectStartTargets(request) {
+    return invokeTyped(COMMANDS.updateProjectStartTargets, projectSummarySchema, {
+      request: {
+        projectId: request.projectId,
+        targets: request.targets.map((target) => ({
+          id: target.id ?? null,
+          name: target.name,
+          command: target.command,
+        })),
+      },
+    })
+  },
+
+  terminalOpen(request) {
+    return invokeTyped(COMMANDS.terminalOpen, openTerminalResponseSchema, {
+      request: {
+        projectId: request.projectId ?? null,
+        cols: request.cols ?? null,
+        rows: request.rows ?? null,
+      },
+    })
+  },
+
+  async terminalWrite(terminalId, data) {
+    await invokeRaw(COMMANDS.terminalWrite, {
+      request: { terminalId, data },
+    })
+  },
+
+  async terminalResize(terminalId, cols, rows) {
+    await invokeRaw(COMMANDS.terminalResize, {
+      request: { terminalId, cols, rows },
+    })
+  },
+
+  async terminalClose(terminalId) {
+    await invokeRaw(COMMANDS.terminalClose, { request: { terminalId } })
+  },
+
+  suggestProjectStartTargets(request) {
+    const trimmedModel = request.modelId.trim()
+    return invokeTyped(
+      COMMANDS.suggestProjectStartTargets,
+      suggestedStartTargetsSchema,
+      {
+        request: {
+          projectId: request.projectId,
+          modelId: trimmedModel.length > 0 ? trimmedModel : null,
+          providerProfileId: request.providerProfileId ?? null,
+          runtimeAgentId: request.runtimeAgentId ?? null,
+          thinkingEffort: request.thinkingEffort ?? null,
+        },
+      },
+    )
   },
 
   getProjectUsageSummary(projectId) {

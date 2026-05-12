@@ -43,6 +43,7 @@ pub mod platform;
 pub mod project_assets;
 pub mod project_files;
 pub mod project_records;
+pub mod project_runner;
 pub mod project_state;
 pub mod provider_credentials;
 pub mod provider_diagnostics;
@@ -190,6 +191,13 @@ pub use project_records::{
     ListProjectContextRecordsRequestDto, ListProjectContextRecordsResponseDto,
     ProjectContextRecordSummaryDto, SupersedeProjectContextRecordRequestDto,
     SupersedeProjectContextRecordResponseDto,
+};
+pub use project_runner::{
+    suggest_project_start_targets, terminal_close, terminal_open, terminal_resize, terminal_write,
+    update_project_start_targets, OpenTerminalRequestDto, OpenTerminalResponseDto,
+    StartTargetInputDto, SuggestProjectStartTargetsRequestDto, SuggestedStartTargetDto,
+    SuggestedStartTargetsDto, TerminalIdRequestDto, TerminalResizeRequestDto,
+    TerminalWriteRequestDto, UpdateProjectStartTargetsRequestDto,
 };
 pub use project_state::{
     create_project_state_backup, list_project_state_backups, read_app_ui_state,

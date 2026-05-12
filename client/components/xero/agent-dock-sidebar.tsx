@@ -5,7 +5,7 @@ import { Bot, Plus } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import type {
   AgentRuntimeDesktopAdapter,
   AgentRuntimeProps,
@@ -61,6 +61,7 @@ export interface AgentDockSidebarProps {
   desktopAdapter?: AgentRuntimeDesktopAdapter
   accountAvatarUrl?: string | null
   accountLogin?: string | null
+  toolCallGroupingPreference?: AgentRuntimeProps["toolCallGroupingPreference"]
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   onOpenAgentManagement?: () => void
   onCreateAgentByHand?: AgentRuntimeProps["onCreateAgentByHand"]
@@ -103,8 +104,9 @@ export function AgentDockSidebar({
 }: AgentDockSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
-  const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
+  const motionOpen = useSidebarOpenMotion(open)
+  const targetWidth = motionOpen ? width : 0
+  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
 

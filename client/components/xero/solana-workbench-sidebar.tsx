@@ -31,7 +31,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -140,6 +140,7 @@ type TabId =
 interface SolanaWorkbenchSidebarProps {
   active?: boolean
   open: boolean
+  openImmediately?: boolean
   prewarm?: boolean
 }
 
@@ -227,13 +228,14 @@ function SolanaPanelSlot({
 export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
   active,
   open,
+  openImmediately = false,
 }: SolanaWorkbenchSidebarProps) {
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
   const workbenchActive = active ?? open
-  const targetWidth = open ? width : 0
+  const motionOpen = useSidebarOpenMotion(open, { instantOpen: openImmediately })
+  const targetWidth = motionOpen ? width : 0
   const widthMotion = useSidebarWidthMotion(targetWidth, {
-    animate: false,
     isResizing,
   })
   const widthRef = useRef(width)
@@ -721,6 +723,7 @@ export const SolanaWorkbenchSidebar = memo(function SolanaWorkbenchSidebar({
   return (
     <aside
       aria-hidden={!open}
+      aria-label="Solana workbench"
       className={cn(
         widthMotion.islandClassName,
         "relative flex shrink-0 flex-col overflow-hidden bg-sidebar",

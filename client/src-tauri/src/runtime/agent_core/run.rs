@@ -2118,6 +2118,14 @@ fn agent_specific_handoff(
             "validationStatus": "available_through_agent_definition_tool",
             "followUpInformationNeeded": [],
         }),
+        RuntimeAgentIdDto::Generalist => json!({
+            "userIntent": handoff_preview(pending_prompt, 700, redaction_count),
+            "completedWork": completed_work,
+            "filesChangedOrIntended": recent_file_changes,
+            "buildAndTestStatus": verification_status,
+            "remainingWork": [],
+            "routingSuggestionsMade": [],
+        }),
     }
 }
 

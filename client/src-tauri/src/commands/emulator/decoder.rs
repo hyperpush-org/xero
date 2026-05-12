@@ -3,7 +3,7 @@
 //! Both platform pipelines (scrcpy on Android, idb on iOS) receive H.264 NAL
 //! units over the wire. They hand the bytes to a [`H264Decoder`], receive
 //! RGBA, and then [`super::codec::encode_jpeg_rgba`] turns the result into
-//! the JPEG frames the webview consumes via `emulator://frame`.
+//! the JPEG frames the webview consumes through `emulator_frame`.
 //!
 //! The actual decoder implementation lives behind the `emulator-live` Cargo
 //! feature so Xero's default build is independent of the `openh264-sys2`

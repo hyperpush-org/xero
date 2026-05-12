@@ -251,4 +251,50 @@ describe('buildHistoricalConversationTurns', () => {
       expect.objectContaining({ kind: 'message', role: 'user', text: 'kept' }),
     ])
   })
+
+  it('extracts routing-suggestion markers from assistant messages into routing_suggestion turns', () => {
+    const markerText =
+      '<xero-routing-suggestion target="plan" reason="multi-file refactor" summary="rewrite routing layer"/>\n\nI think Plan would handle this better.'
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [
+        makeMessageItem('run-A', 1, 'user', 'refactor everything'),
+        makeMessageItem('run-A', 2, 'assistant', markerText),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns.map((turn) => turn.kind)).toEqual([
+      'message',
+      'message',
+      'routing_suggestion',
+    ])
+    expect(turns[1]).toMatchObject({
+      role: 'assistant',
+      text: 'I think Plan would handle this better.',
+    })
+    const routing = turns[2]
+    if (routing.kind === 'routing_suggestion') {
+      expect(routing.targetAgentId).toBe('plan')
+      expect(routing.reason).toBe('multi-file refactor')
+      expect(routing.summary).toBe('rewrite routing layer')
+      expect(routing.isResolved).toBe(true)
+    }
+  })
+
+  it('leaves messages without the marker untouched', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [
+        makeMessageItem('run-A', 1, 'user', 'simple question'),
+        makeMessageItem('run-A', 2, 'assistant', 'a plain answer'),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns.map((turn) => turn.kind)).toEqual(['message', 'message'])
+    expect(turns[1]).toMatchObject({ text: 'a plain answer' })
+  })
 })

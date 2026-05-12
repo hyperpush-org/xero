@@ -15,7 +15,6 @@ import type {
 import type { AgentToolingSettingsAdapter } from "@/components/xero/settings-dialog/agent-tooling-section"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
 import type { MemoryReviewAdapter } from "@/components/xero/settings-dialog/memory-review-section"
-import type { ProjectRecordsAdapter } from "@/components/xero/settings-dialog/project-records-section"
 import type { ProjectStateAdapter } from "@/components/xero/settings-dialog/project-state-section"
 import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
 import type {
@@ -31,6 +30,7 @@ import type {
   ProviderCredentialsSnapshotDto,
   ProviderAuthSessionView,
   ProviderProfileDiagnosticsDto,
+  RuntimeAgentIdDto,
   RuntimeProviderIdDto,
   RunDoctorReportRequestDto,
   ListSkillRegistryRequestDto,
@@ -49,13 +49,15 @@ import type {
   UpsertNotificationRouteRequestDto,
   UpsertProviderCredentialRequestDto,
 } from "@/src/lib/xero-model"
+import type { StartTargetDto, StartTargetInputDto } from "@/src/lib/xero-desktop"
+import type { ToolCallGroupingPreference } from "@/src/features/xero/tool-call-grouping-preference"
 import type { PlatformVariant } from "@/components/xero/shell"
 import type {
   GitHubAuthError,
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Brain, Code2, Database, FileText, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Brain, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, PlaySquare, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -79,8 +81,8 @@ export type SettingsSection =
   | "plugins"
   | "browser"
   | "workspaceIndex"
-  | "projectRecords"
   | "projectState"
+  | "projectRunner"
   | "themes"
   | "shortcuts"
   | "development"
@@ -100,8 +102,8 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "plugins",
   "browser",
   "workspaceIndex",
-  "projectRecords",
   "projectState",
+  "projectRunner",
   "themes",
   "shortcuts",
   "development",
@@ -175,13 +177,13 @@ const loadWorkspaceIndexSection = () =>
   import("@/components/xero/settings-dialog/workspace-index-section").then((module) => ({
     default: module.WorkspaceIndexSection,
   }))
-const loadProjectRecordsSection = () =>
-  import("@/components/xero/settings-dialog/project-records-section").then((module) => ({
-    default: module.ProjectRecordsSection,
-  }))
 const loadProjectStateSection = () =>
   import("@/components/xero/settings-dialog/project-state-section").then((module) => ({
     default: module.ProjectStateSection,
+  }))
+const loadProjectRunnerSection = () =>
+  import("@/components/xero/settings-dialog/project-runner-section").then((module) => ({
+    default: module.ProjectRunnerSection,
   }))
 
 const LazyAccountSection = lazy(loadAccountSection)
@@ -201,8 +203,8 @@ const LazySkillsSection = lazy(loadSkillsSection)
 const LazySoulSection = lazy(loadSoulSection)
 const LazyThemesSection = lazy(loadThemesSection)
 const LazyWorkspaceIndexSection = lazy(loadWorkspaceIndexSection)
-const LazyProjectRecordsSection = lazy(loadProjectRecordsSection)
 const LazyProjectStateSection = lazy(loadProjectStateSection)
+const LazyProjectRunnerSection = lazy(loadProjectRunnerSection)
 
 const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> = {
   account: loadAccountSection,
@@ -219,8 +221,8 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   plugins: loadPluginsSection,
   browser: loadBrowserSection,
   workspaceIndex: loadWorkspaceIndexSection,
-  projectRecords: loadProjectRecordsSection,
   projectState: loadProjectStateSection,
+  projectRunner: loadProjectRunnerSection,
   themes: loadThemesSection,
   shortcuts: loadShortcutsSection,
   development: loadDevelopmentSection,
@@ -279,8 +281,8 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
     { id: "workspaceIndex", label: "Workspace Index", icon: Database },
-    { id: "projectRecords", label: "Project Records", icon: FileText },
     { id: "projectState", label: "Project State", icon: HardDrive },
+    { id: "projectRunner", label: "Project Runner", icon: PlaySquare },
   ],
 }
 
@@ -343,9 +345,38 @@ export interface SettingsDialogProps {
   dictationAdapter?: DictationSettingsAdapter
   soulAdapter?: SoulSettingsAdapter
   agentToolingAdapter?: AgentToolingSettingsAdapter
+  toolCallGroupingPreference?: ToolCallGroupingPreference
+  onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
   memoryReviewAdapter?: MemoryReviewAdapter | null
-  projectRecordsAdapter?: ProjectRecordsAdapter | null
   projectStateAdapter?: ProjectStateAdapter | null
+  projectStartTargets?: StartTargetDto[]
+  onUpdateProjectStartTargets?: (
+    targets: StartTargetInputDto[],
+  ) => Promise<void>
+  resolveProjectRunnerSuggestRequest?: () => {
+    modelId: string
+    providerProfileId: string | null
+    runtimeAgentId: RuntimeAgentIdDto | null
+    thinkingEffort:
+      | "minimal"
+      | "low"
+      | "medium"
+      | "high"
+      | "x_high"
+      | null
+  } | null
+  onSuggestProjectStartTargets?: (request: {
+    modelId: string
+    providerProfileId: string | null
+    runtimeAgentId: RuntimeAgentIdDto | null
+    thinkingEffort:
+      | "minimal"
+      | "low"
+      | "medium"
+      | "high"
+      | "x_high"
+      | null
+  }) => Promise<{ targets: { name: string; command: string }[] }>
   onUpsertNotificationRoute?: (req: Omit<UpsertNotificationRouteRequestDto, "projectId" | "updatedAt">) => Promise<unknown>
   mcpRegistry?: McpRegistryDto | null
   mcpImportDiagnostics?: McpImportDiagnosticDto[]
@@ -435,9 +466,14 @@ export function SettingsDialog({
   dictationAdapter,
   soulAdapter,
   agentToolingAdapter,
+  toolCallGroupingPreference,
+  onToolCallGroupingPreferenceChange,
   memoryReviewAdapter = null,
-  projectRecordsAdapter = null,
   projectStateAdapter = null,
+  projectStartTargets = [],
+  onUpdateProjectStartTargets,
+  resolveProjectRunnerSuggestRequest,
+  onSuggestProjectStartTargets,
   onUpsertNotificationRoute,
   mcpRegistry = null,
   mcpImportDiagnostics = [],
@@ -689,7 +725,13 @@ export function SettingsDialog({
     }
 
     if (renderedSection === "agentTooling") {
-      return <LazyAgentToolingSection adapter={agentToolingAdapter} />
+      return (
+        <LazyAgentToolingSection
+          adapter={agentToolingAdapter}
+          toolCallGroupingPreference={toolCallGroupingPreference}
+          onToolCallGroupingPreferenceChange={onToolCallGroupingPreferenceChange}
+        />
+      )
     }
 
     if (renderedSection === "memory") {
@@ -759,22 +801,25 @@ export function SettingsDialog({
       )
     }
 
-    if (renderedSection === "projectRecords") {
-      return (
-        <LazyProjectRecordsSection
-          projectId={agent?.project.id ?? null}
-          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
-          adapter={projectRecordsAdapter}
-        />
-      )
-    }
-
     if (renderedSection === "projectState") {
       return (
         <LazyProjectStateSection
           projectId={agent?.project.id ?? null}
           projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
           adapter={projectStateAdapter}
+        />
+      )
+    }
+
+    if (renderedSection === "projectRunner") {
+      return (
+        <LazyProjectRunnerSection
+          projectId={agent?.project.id ?? null}
+          projectLabel={agent?.project.repository?.displayName ?? agent?.project.name ?? null}
+          startTargets={projectStartTargets}
+          onSave={onUpdateProjectStartTargets}
+          resolveSuggestRequest={resolveProjectRunnerSuggestRequest}
+          onSuggest={onSuggestProjectStartTargets}
         />
       )
     }

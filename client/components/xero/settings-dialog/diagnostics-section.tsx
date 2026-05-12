@@ -1,5 +1,6 @@
 import { useDeferredValue, useMemo, useState, type ElementType, type ReactNode } from "react"
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowRight,
   Check,
@@ -7,6 +8,7 @@ import {
   ChevronDown,
   Clipboard,
   CircleSlash,
+  Info,
   LoaderCircle,
   Plus,
   Play,
@@ -272,21 +274,21 @@ export function DiagnosticsSection({
       />
 
       {doctorReportError ? (
-        <Alert variant="destructive" className="rounded-md px-3 py-2 text-[12px]">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          <AlertTitle className="text-[12px]">Doctor report failed</AlertTitle>
-          <AlertDescription className="text-[12px]">
+        <Alert variant="destructive" className="rounded-md px-3.5 py-2.5 text-[13px]">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle className="text-[13px] font-semibold">Doctor report failed</AlertTitle>
+          <AlertDescription className="text-[12.5px] leading-[1.5]">
             <p>{doctorReportError.message}</p>
-            {doctorReportError.code ? <p className="font-mono text-[11px]">code: {doctorReportError.code}</p> : null}
+            {doctorReportError.code ? <p className="font-mono text-[12px]">code: {doctorReportError.code}</p> : null}
           </AlertDescription>
         </Alert>
       ) : null}
 
       {parsedReport && !parsedReport.success ? (
-        <Alert variant="destructive" className="rounded-md px-3 py-2 text-[12px]">
-          <XCircle className="h-3.5 w-3.5" />
-          <AlertTitle className="text-[12px]">Malformed report</AlertTitle>
-          <AlertDescription className="text-[12px]">
+        <Alert variant="destructive" className="rounded-md px-3.5 py-2.5 text-[13px]">
+          <XCircle className="h-4 w-4" />
+          <AlertTitle className="text-[13px] font-semibold">Malformed report</AlertTitle>
+          <AlertDescription className="text-[12.5px] leading-[1.5]">
             <p>The desktop backend returned diagnostics that failed the shared contract.</p>
           </AlertDescription>
         </Alert>
@@ -322,17 +324,24 @@ function EmptyState({
   onRun: (mode: RunDoctorReportRequestDto["mode"]) => void
 }) {
   return (
-    <div className="flex flex-col items-center gap-4 rounded-md border border-dashed border-border/60 bg-secondary/10 px-5 py-8 text-center">
-      {isRunning ? (
-        <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" />
-      ) : (
-        <Stethoscope className="h-4 w-4 text-muted-foreground" />
-      )}
-      <div className="flex max-w-xs flex-col gap-0.5">
-        <p className="text-[12.5px] font-medium text-foreground">
+    <div className="flex flex-col items-center gap-5 rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+      <div
+        className={cn(
+          "flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60",
+          isRunning && "animate-pulse",
+        )}
+      >
+        {isRunning ? (
+          <LoaderCircle className="h-5 w-5 animate-spin text-muted-foreground" />
+        ) : (
+          <Stethoscope className="h-5 w-5 text-muted-foreground" />
+        )}
+      </div>
+      <div className="flex max-w-sm flex-col gap-1">
+        <p className="text-[14px] font-semibold tracking-tight text-foreground">
           {isRunning ? "Running diagnostics" : "No diagnostics yet"}
         </p>
-        <p className="text-[11.5px] leading-[1.5] text-muted-foreground">
+        <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
           {isRunning
             ? "Xero is collecting current desktop state."
             : "Run a check to verify providers, runtime, MCP, and settings."}
@@ -343,7 +352,7 @@ function EmptyState({
           type="button"
           variant="outline"
           size="sm"
-          className="h-8 gap-1.5 text-[12px]"
+          className="h-9 gap-1.5 px-3.5 text-[12.5px]"
           disabled={!canRun}
           onClick={() => onRun("quick_local")}
         >
@@ -353,7 +362,7 @@ function EmptyState({
         <Button
           type="button"
           size="sm"
-          className="h-8 gap-1.5 text-[12px]"
+          className="h-9 gap-1.5 px-3.5 text-[12.5px]"
           disabled={!canRun}
           onClick={() => onRun("extended_network")}
         >
@@ -423,12 +432,12 @@ function EnvironmentProfilePanel({
   }
 
   return (
-    <section className="overflow-hidden rounded-md border border-border/60">
-      <header className="flex items-center justify-between gap-3 border-b border-border/40 bg-secondary/10 px-3.5 py-2.5">
+    <section className="overflow-hidden rounded-lg border border-border/60">
+      <header className="flex items-center justify-between gap-3 border-b border-border/40 bg-secondary/10 px-4 py-3">
         <div className="min-w-0">
-          <p className="text-[12.5px] font-semibold text-foreground">Developer environment</p>
+          <p className="text-[13.5px] font-semibold tracking-tight text-foreground">Developer environment</p>
           {summary ? (
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+            <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
               {summary.platform.osKind} {summary.platform.arch}
               {presentTools.length > 0 ? ` · ${presentTools.length} tool${presentTools.length === 1 ? "" : "s"}` : ""}
               {summary.refreshedAt ? ` · ${formatTimestamp(summary.refreshedAt)}` : ""}
@@ -437,7 +446,7 @@ function EnvironmentProfilePanel({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {isStale ? (
-            <span className="inline-flex h-[18px] items-center rounded-full border border-warning/30 bg-warning/[0.08] px-1.5 text-[10.5px] font-medium text-warning">
+            <span className="inline-flex h-[20px] items-center rounded-full border border-warning/30 bg-warning/[0.08] px-2 text-[11px] font-medium text-warning">
               Stale
             </span>
           ) : null}
@@ -445,18 +454,18 @@ function EnvironmentProfilePanel({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-foreground"
+            className="h-8 gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
             disabled={!canRefresh || isProbing}
             onClick={onRefresh}
           >
-            {isProbing ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+            {isProbing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
             Refresh
           </Button>
         </div>
       </header>
 
       {summary ? (
-        <div className="flex flex-col gap-3 px-3.5 py-3">
+        <div className="flex flex-col gap-3.5 px-4 py-3.5">
           {headlinerTools.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {headlinerTools.map((tool) => (
@@ -474,24 +483,24 @@ function EnvironmentProfilePanel({
             <Collapsible open={showAllTools} onOpenChange={setShowAllTools}>
               <CollapsibleTrigger
                 className={cn(
-                  "group inline-flex items-center gap-1.5 self-start rounded-md text-[11.5px]",
+                  "group inline-flex items-center gap-1.5 self-start rounded-md text-[12.5px] font-medium",
                   "text-muted-foreground transition-colors hover:text-foreground",
                   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 )}
               >
                 <ChevronDown
                   className={cn(
-                    "h-3 w-3 transition-transform motion-fast",
+                    "h-3.5 w-3.5 transition-transform motion-fast",
                     showAllTools ? "rotate-0" : "-rotate-90",
                   )}
                   aria-hidden
                 />
                 {showAllTools ? "Hide" : "Show"} all {presentTools.length} detected tools
               </CollapsibleTrigger>
-              <CollapsibleContent className="mt-3 flex flex-col gap-3">
+              <CollapsibleContent className="mt-3 flex flex-col gap-3.5">
                 {groupedRemaining.map((group) => (
-                  <div key={group.key} className="flex flex-col gap-1.5">
-                    <p className="text-[10.5px] font-medium uppercase tracking-[0.06em] text-muted-foreground/70">
+                  <div key={group.key} className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
                       {TOOL_CATEGORY_LABEL[group.key] ?? group.key}
                       <span className="ml-1.5 font-normal text-muted-foreground/50">{group.tools.length}</span>
                     </p>
@@ -511,19 +520,19 @@ function EnvironmentProfilePanel({
             </Collapsible>
           ) : null}
 
-          <div className="flex items-center justify-between gap-3 border-t border-border/40 pt-2">
-            <p className="text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-between gap-3 border-t border-border/40 pt-3">
+            <p className="text-[12.5px] text-muted-foreground">
               Add a verified CLI that is not in the built-in catalog.
             </p>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 text-[11.5px]"
+              className="h-8 gap-1.5 text-[12.5px]"
               disabled={!canMutateUserTools}
               onClick={() => setAddToolOpen(true)}
             >
-              <Plus className="h-3 w-3" />
+              <Plus className="h-3.5 w-3.5" />
               Add tool
             </Button>
           </div>
@@ -541,24 +550,43 @@ function EnvironmentProfilePanel({
 
       {attentionCapabilities.length > 0 ? (
         <ul className="divide-y divide-border/40 border-t border-border/40">
-          {attentionCapabilities.map((capability) => (
-            <li
-              key={capability.id}
-              className="flex items-start justify-between gap-3 px-3.5 py-2"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-[12px] font-medium text-foreground">{capability.id}</p>
-                {capability.message ? (
-                  <p className="mt-0.5 text-[11px] leading-[1.45] text-muted-foreground">
-                    {capability.message}
-                  </p>
-                ) : null}
-              </div>
-              <span className="inline-flex h-[18px] shrink-0 items-center rounded-full border border-border bg-secondary/60 px-1.5 text-[10.5px] font-medium text-foreground/70">
-                {CAPABILITY_LABEL[capability.state]}
-              </span>
-            </li>
-          ))}
+          {attentionCapabilities.map((capability) => {
+            const tone = capability.state === "blocked" || capability.state === "missing" ? "warning" : "muted"
+            return (
+              <li
+                key={capability.id}
+                className="flex items-start justify-between gap-3 px-4 py-2.5"
+              >
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <AlertCircle
+                    className={cn(
+                      "mt-[1px] h-4 w-4 shrink-0",
+                      tone === "warning" ? "text-warning" : "text-muted-foreground/70",
+                    )}
+                    aria-hidden
+                  />
+                  <div className="min-w-0">
+                    <p className="truncate text-[12.5px] font-medium text-foreground">{capability.id}</p>
+                    {capability.message ? (
+                      <p className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">
+                        {capability.message}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                <span
+                  className={cn(
+                    "inline-flex h-[20px] shrink-0 items-center rounded-full border px-2 text-[11px] font-medium",
+                    tone === "warning"
+                      ? "border-warning/30 bg-warning/[0.08] text-warning"
+                      : "border-border bg-secondary/60 text-foreground/70",
+                  )}
+                >
+                  {CAPABILITY_LABEL[capability.state]}
+                </span>
+              </li>
+            )
+          })}
         </ul>
       ) : null}
 
@@ -567,11 +595,14 @@ function EnvironmentProfilePanel({
           {status.diagnostics.slice(0, 4).map((diagnostic) => (
             <li
               key={`${diagnostic.code}-${diagnostic.message}`}
-              className="px-3.5 py-2 text-[11.5px] leading-[1.45] text-muted-foreground"
+              className="flex items-start gap-2.5 px-4 py-2.5"
             >
-              <span className="font-mono text-[10.5px] text-foreground/70">{diagnostic.code}</span>
-              <span className="mx-1.5 text-muted-foreground/40">·</span>
-              {diagnostic.message}
+              <Info className="mt-[1px] h-4 w-4 shrink-0 text-muted-foreground/70" aria-hidden />
+              <div className="min-w-0 text-[12.5px] leading-[1.5] text-muted-foreground">
+                <span className="font-mono text-[11.5px] text-foreground/80">{diagnostic.code}</span>
+                <span className="mx-1.5 text-muted-foreground/40">·</span>
+                {diagnostic.message}
+              </div>
             </li>
           ))}
         </ul>
@@ -593,8 +624,8 @@ function ToolChip({
   return (
     <span
       className={cn(
-        "group inline-flex h-[22px] items-center gap-1 rounded-md border border-border/50 bg-secondary/30 py-0.5 text-[11px] font-medium text-foreground",
-        onRemove ? "pl-1.5 pr-0.5" : "px-1.5",
+        "group inline-flex h-[26px] items-center gap-1 rounded-md border border-border/60 bg-secondary/40 text-[12px] font-medium text-foreground",
+        onRemove ? "pl-2.5 pr-1" : "px-2.5",
         removing && "opacity-60",
       )}
       title={hoverDetail}
@@ -603,7 +634,7 @@ function ToolChip({
       {onRemove ? (
         <button
           type="button"
-          className="inline-flex h-4 w-4 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+          className="inline-flex h-[18px] w-[18px] items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
           disabled={removing}
           aria-label={`Remove ${tool.id}`}
           title={`Remove ${tool.id}`}
@@ -612,7 +643,7 @@ function ToolChip({
             onRemove(tool)
           }}
         >
-          {removing ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+          {removing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
         </button>
       ) : null}
     </span>
@@ -717,10 +748,10 @@ function AddToolDialog({
 
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent className="max-w-md gap-4 rounded-md p-4">
+      <DialogContent className="max-w-md gap-4 rounded-lg p-5">
         <DialogHeader className="gap-1.5">
-          <DialogTitle className="text-[14px]">Add developer tool</DialogTitle>
-          <DialogDescription className="text-[12px] leading-[1.5]">
+          <DialogTitle className="text-[15px] font-semibold tracking-tight">Add developer tool</DialogTitle>
+          <DialogDescription className="text-[12.5px] leading-[1.55]">
             Xero will run <span className="font-mono text-foreground">{consentCommand}</span> to verify the tool. The first non-empty line of output with secrets redacted is stored as the version.
           </DialogDescription>
         </DialogHeader>
@@ -731,7 +762,7 @@ function AddToolDialog({
               value={id}
               onChange={(event) => setId(event.target.value.toLowerCase())}
               placeholder="terraform"
-              className="h-8 text-[12px]"
+              className="h-9 text-[12.5px]"
               autoComplete="off"
             />
           </FieldRow>
@@ -740,7 +771,7 @@ function AddToolDialog({
               value={command}
               onChange={(event) => setCommand(event.target.value)}
               placeholder="terraform"
-              className="h-8 text-[12px]"
+              className="h-9 text-[12.5px]"
               autoComplete="off"
             />
           </FieldRow>
@@ -749,18 +780,18 @@ function AddToolDialog({
               value={argsText}
               onChange={(event) => setArgsText(event.target.value)}
               placeholder="--version"
-              className="h-8 text-[12px]"
+              className="h-9 text-[12.5px]"
               autoComplete="off"
             />
           </FieldRow>
           <FieldRow label="Category">
             <Select value={category} onValueChange={(value) => setCategory(value as EnvironmentToolCategoryDto)}>
-              <SelectTrigger size="sm" className="h-8 w-full text-[12px]">
+              <SelectTrigger size="sm" className="h-9 w-full text-[12.5px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {TOOL_CATEGORY_ORDER.map((option) => (
-                  <SelectItem key={option} value={option} className="text-[12px]">
+                  <SelectItem key={option} value={option} className="text-[12.5px]">
                     {TOOL_CATEGORY_LABEL[option]}
                   </SelectItem>
                 ))}
@@ -776,7 +807,7 @@ function AddToolDialog({
             type="button"
             variant="outline"
             size="sm"
-            className="h-8 gap-1.5 text-[12px]"
+            className="h-9 gap-1.5 text-[12.5px]"
             disabled={!onVerify || isVerifying || isSaving}
             onClick={verify}
           >
@@ -788,7 +819,7 @@ function AddToolDialog({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-8 text-[12px]"
+              className="h-9 text-[12.5px]"
               onClick={() => close(false)}
             >
               Cancel
@@ -796,7 +827,7 @@ function AddToolDialog({
             <Button
               type="button"
               size="sm"
-              className="h-8 gap-1.5 text-[12px]"
+              className="h-9 gap-1.5 text-[12.5px]"
               disabled={!canSave}
               onClick={save}
             >
@@ -813,7 +844,7 @@ function AddToolDialog({
 function FieldRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="grid gap-1.5">
-      <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
+      <span className="text-[12px] font-medium text-muted-foreground">{label}</span>
       {children}
     </label>
   )
@@ -830,10 +861,10 @@ function VerifyResult({
 }) {
   if (error) {
     return (
-      <Alert variant="destructive" className="rounded-md px-3 py-2 text-[12px]">
-        <XCircle className="h-3.5 w-3.5" />
-        <AlertTitle className="text-[12px]">Verification failed</AlertTitle>
-        <AlertDescription className="text-[12px]">{error}</AlertDescription>
+      <Alert variant="destructive" className="rounded-md px-3.5 py-2.5 text-[12.5px]">
+        <XCircle className="h-4 w-4" />
+        <AlertTitle className="text-[12.5px] font-semibold">Verification failed</AlertTitle>
+        <AlertDescription className="text-[12.5px]">{error}</AlertDescription>
       </Alert>
     )
   }
@@ -842,8 +873,8 @@ function VerifyResult({
   const { record } = result
   if (record.probeStatus === "ok" && record.present) {
     return (
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-success/20 bg-success/10 px-3 py-2 text-[12px] text-success dark:text-success">
-        <Badge variant="outline" className="border-success/30 text-[11px] text-success dark:text-success">
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-success/20 bg-success/10 px-3.5 py-2.5 text-[12.5px] text-success dark:text-success">
+        <Badge variant="outline" className="border-success/30 text-[11.5px] text-success dark:text-success">
           Verified
         </Badge>
         <span className="min-w-0 truncate font-mono">{record.version ?? record.id}</span>
@@ -859,7 +890,7 @@ function VerifyResult({
       : diagnostic?.message ?? "The version probe did not return usable output."
 
   return (
-    <div className="rounded-md border border-warning/25 bg-warning/10 px-3 py-2 text-[12px] leading-[1.45] text-warning">
+    <div className="rounded-md border border-warning/25 bg-warning/10 px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-warning">
       {message}
     </div>
   )
@@ -984,7 +1015,7 @@ function ReportView({
           ))}
         </div>
       ) : (
-        <p className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-3.5 py-3 text-[11.5px] text-muted-foreground">
+        <p className="rounded-lg border border-dashed border-border/60 bg-secondary/10 px-4 py-3.5 text-[12.5px] text-muted-foreground">
           No checks returned for this run.
         </p>
       )}
@@ -1010,25 +1041,25 @@ function ReportSummary({
   const generatedAt = useMemo(() => formatTimestamp(report.generatedAt), [report.generatedAt])
 
   return (
-    <section className="overflow-hidden rounded-md border border-border/60">
-      <header className="flex flex-wrap items-center justify-between gap-3 bg-secondary/10 px-3.5 py-2.5">
+    <section className="overflow-hidden rounded-lg border border-border/60">
+      <header className="flex flex-wrap items-center justify-between gap-3 bg-secondary/10 px-4 py-3">
         <div className="min-w-0">
-          <p className="text-[12.5px] font-semibold text-foreground">{MODE_LABEL[report.mode]}</p>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{generatedAt}</p>
+          <p className="text-[13.5px] font-semibold tracking-tight text-foreground">{MODE_LABEL[report.mode]}</p>
+          <p className="mt-0.5 truncate text-[12px] text-muted-foreground">{generatedAt}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 gap-1.5 px-2 text-[11.5px] text-muted-foreground hover:text-foreground"
+            className="h-8 gap-1.5 px-2.5 text-[12px] text-muted-foreground hover:text-foreground"
             disabled={!canRun}
             onClick={() => onRun("quick_local")}
           >
             {isRunning ? (
-              <LoaderCircle className="h-3 w-3 animate-spin" />
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
             ) : (
-              <RotateCcw className="h-3 w-3" />
+              <RotateCcw className="h-3.5 w-3.5" />
             )}
             Quick
           </Button>
@@ -1036,26 +1067,26 @@ function ReportSummary({
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 gap-1.5 px-2 text-[11.5px]"
+            className="h-8 gap-1.5 px-2.5 text-[12px]"
             disabled={!canRun}
             onClick={() => onRun("extended_network")}
           >
-            <Play className="h-3 w-3" />
+            <Play className="h-3.5 w-3.5" />
             Extended
           </Button>
           <Button
             type="button"
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            className="h-8 w-8 text-muted-foreground hover:text-foreground"
             onClick={onCopy}
             aria-label={copied ? "Copied" : "Copy JSON"}
             title={copied ? "Copied" : "Copy JSON"}
           >
             {copied ? (
-              <Check className="h-3.5 w-3.5 text-success dark:text-success" />
+              <Check className="h-4 w-4 text-success dark:text-success" />
             ) : (
-              <Clipboard className="h-3.5 w-3.5" />
+              <Clipboard className="h-4 w-4" />
             )}
           </Button>
         </div>
@@ -1081,23 +1112,23 @@ function SummaryTile({
   const Icon = STATUS_ICON[tone]
   const isZero = value === 0
   return (
-    <div className="flex flex-1 items-center gap-2 px-3 py-2">
+    <div className="flex flex-1 items-center gap-2 px-3.5 py-2.5">
       <Icon
         className={cn(
-          "h-3.5 w-3.5 shrink-0",
+          "h-4 w-4 shrink-0",
           isZero ? "text-muted-foreground/40" : STATUS_TEXT[tone],
         )}
         aria-hidden
       />
       <span
         className={cn(
-          "text-[14px] font-semibold tabular-nums",
+          "text-[15px] font-semibold tabular-nums",
           isZero ? "text-foreground/40" : "text-foreground",
         )}
       >
         {value}
       </span>
-      <span className="text-[11px] text-muted-foreground">{STATUS_LABEL[tone]}</span>
+      <span className="text-[12px] text-muted-foreground">{STATUS_LABEL[tone]}</span>
     </div>
   )
 }
@@ -1125,11 +1156,11 @@ function CheckGroup({
   }, [checks])
 
   return (
-    <section className="flex flex-col gap-2.5">
+    <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h4 className="text-[12.5px] font-semibold text-foreground">
+        <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">
           {label}
-          <span className="ml-1.5 font-normal text-muted-foreground">{checks.length}</span>
+          <span className="ml-2 text-[12px] font-normal text-muted-foreground">{checks.length}</span>
         </h4>
         <div className="flex items-center gap-1">
           {(["failed", "warning", "skipped", "passed"] as const).map((tone) =>
@@ -1137,7 +1168,7 @@ function CheckGroup({
           )}
         </div>
       </div>
-      <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+      <div className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40">
         {sorted.map((check, index) => (
           <CheckRow key={`${check.checkId}-${index}`} check={check} />
         ))}
@@ -1150,7 +1181,7 @@ function CountChip({ tone, value }: { tone: XeroDiagnosticStatusDto; value: numb
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums ring-1 ring-inset",
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums ring-1 ring-inset",
         STATUS_BG[tone],
         STATUS_RING[tone],
         STATUS_TEXT[tone],
@@ -1175,23 +1206,23 @@ function CheckRow({ check }: { check: XeroDiagnosticCheckDto }) {
   const Icon = STATUS_ICON[check.status]
 
   return (
-    <div className="flex items-start gap-3 px-3.5 py-2.5">
+    <div className="flex items-start gap-3 px-4 py-3">
       <Icon
-        className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", STATUS_TEXT[check.status])}
+        className={cn("mt-[1px] h-4 w-4 shrink-0", STATUS_TEXT[check.status])}
         aria-hidden
       />
       <div className="min-w-0 flex-1">
-        <p className="text-[12px] leading-[1.5] text-foreground">{check.message}</p>
+        <p className="text-[12.5px] leading-[1.5] text-foreground">{check.message}</p>
         {check.remediation && check.status !== "passed" ? (
           <div
             className={cn(
-              "mt-1.5 flex items-start gap-1.5 text-[11.5px] leading-[1.5]",
+              "mt-1.5 flex items-start gap-1.5 text-[12px] leading-[1.5]",
               check.status === "failed"
                 ? "text-destructive/90"
                 : "text-warning/90 dark:text-warning/90",
             )}
           >
-            <ArrowRight className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+            <ArrowRight className="mt-[2px] h-3.5 w-3.5 shrink-0" aria-hidden />
             <p>{check.remediation}</p>
           </div>
         ) : null}

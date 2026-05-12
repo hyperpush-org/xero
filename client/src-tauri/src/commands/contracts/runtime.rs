@@ -164,6 +164,7 @@ pub enum RuntimeAgentIdDto {
     Debug,
     Crawl,
     AgentCreate,
+    Generalist,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +205,7 @@ pub enum RuntimeAgentPromptPolicyDto {
     Debug,
     Crawl,
     AgentCreate,
+    Generalist,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,6 +260,7 @@ impl RuntimeAgentIdDto {
             Self::Debug => "debug",
             Self::Crawl => "crawl",
             Self::AgentCreate => "agent_create",
+            Self::Generalist => "generalist",
         }
     }
 
@@ -269,19 +272,20 @@ impl RuntimeAgentIdDto {
             Self::Debug => "Debug",
             Self::Crawl => "Crawl",
             Self::AgentCreate => "Agent Create",
+            Self::Generalist => "Generalist",
         }
     }
 
     pub fn allows_plan_gate(&self) -> bool {
-        matches!(self, Self::Engineer | Self::Debug)
+        matches!(self, Self::Engineer | Self::Debug | Self::Generalist)
     }
 
     pub fn allows_verification_gate(&self) -> bool {
-        matches!(self, Self::Engineer | Self::Debug)
+        matches!(self, Self::Engineer | Self::Debug | Self::Generalist)
     }
 
     pub fn allows_engineering_tools(&self) -> bool {
-        matches!(self, Self::Engineer | Self::Debug)
+        matches!(self, Self::Engineer | Self::Debug | Self::Generalist)
     }
 }
 
@@ -329,6 +333,7 @@ pub fn default_runtime_agent_approval_mode(
         RuntimeAgentIdDto::Debug => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::Crawl => RuntimeRunApprovalModeDto::Suggest,
         RuntimeAgentIdDto::AgentCreate => RuntimeRunApprovalModeDto::Suggest,
+        RuntimeAgentIdDto::Generalist => RuntimeRunApprovalModeDto::Suggest,
     }
 }
 
@@ -342,11 +347,13 @@ pub fn runtime_agent_allowed_approval_modes(
         | RuntimeAgentIdDto::AgentCreate => {
             vec![RuntimeRunApprovalModeDto::Suggest]
         }
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => vec![
-            RuntimeRunApprovalModeDto::Suggest,
-            RuntimeRunApprovalModeDto::AutoEdit,
-            RuntimeRunApprovalModeDto::Yolo,
-        ],
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Generalist => {
+            vec![
+                RuntimeRunApprovalModeDto::Suggest,
+                RuntimeRunApprovalModeDto::AutoEdit,
+                RuntimeRunApprovalModeDto::Yolo,
+            ]
+        }
     }
 }
 
@@ -361,12 +368,15 @@ pub fn runtime_agent_allows_approval_mode(
         | RuntimeAgentIdDto::AgentCreate => {
             matches!(approval_mode, RuntimeRunApprovalModeDto::Suggest)
         }
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
+        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug | RuntimeAgentIdDto::Generalist => {
+            true
+        }
     }
 }
 
 pub fn builtin_runtime_agent_descriptors() -> Vec<RuntimeAgentDescriptorDto> {
     [
+        runtime_agent_descriptor(RuntimeAgentIdDto::Generalist),
         runtime_agent_descriptor(RuntimeAgentIdDto::Ask),
         runtime_agent_descriptor(RuntimeAgentIdDto::Plan),
         runtime_agent_descriptor(RuntimeAgentIdDto::Engineer),
@@ -499,6 +509,25 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             output_contract: RuntimeAgentOutputContractDto::AgentDefinitionDraft,
             allow_plan_gate: false,
             allow_verification_gate: false,
+            allow_auto_compact: true,
+        },
+        RuntimeAgentIdDto::Generalist => RuntimeAgentDescriptorDto {
+            id: agent_id,
+            version: 1,
+            label: "Generalist".into(),
+            short_label: "Generalist".into(),
+            description: "A do-anything agent with the full engineering toolset that recognises when a specialist agent would handle the task better and offers to route.".into(),
+            task_purpose: "Handle any user request directly, or suggest routing to Plan, Engineer, or Debug when the request fits a specialist's scope.".into(),
+            scope: RuntimeAgentScopeDto::BuiltIn,
+            lifecycle_state: RuntimeAgentLifecycleStateDto::Active,
+            base_capability_profile: RuntimeAgentBaseCapabilityProfileDto::Engineering,
+            default_approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            allowed_approval_modes: runtime_agent_allowed_approval_modes(&agent_id),
+            prompt_policy: RuntimeAgentPromptPolicyDto::Generalist,
+            tool_policy: RuntimeAgentToolPolicyDto::Engineering,
+            output_contract: RuntimeAgentOutputContractDto::Answer,
+            allow_plan_gate: true,
+            allow_verification_gate: true,
             allow_auto_compact: true,
         },
     }
@@ -1154,7 +1183,15 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ask", "plan", "engineer", "debug", "crawl", "agent_create"]
+            vec![
+                "generalist",
+                "ask",
+                "plan",
+                "engineer",
+                "debug",
+                "crawl",
+                "agent_create"
+            ]
         );
 
         let plan = descriptors
@@ -1306,6 +1343,7 @@ mod tests {
                 .map(|descriptor| descriptor.id)
                 .collect::<Vec<_>>(),
             vec![
+                RuntimeAgentIdDto::Generalist,
                 RuntimeAgentIdDto::Ask,
                 RuntimeAgentIdDto::Plan,
                 RuntimeAgentIdDto::Engineer,
@@ -1334,6 +1372,48 @@ mod tests {
                 RuntimeRunApprovalModeDto::Yolo
             ]
         );
+        assert_eq!(
+            runtime_agent_allowed_approval_modes(&RuntimeAgentIdDto::Generalist),
+            vec![
+                RuntimeRunApprovalModeDto::Suggest,
+                RuntimeRunApprovalModeDto::AutoEdit,
+                RuntimeRunApprovalModeDto::Yolo
+            ]
+        );
+    }
+
+    #[test]
+    fn builtin_runtime_agents_seed_generalist_descriptor() {
+        let descriptors = builtin_runtime_agent_descriptors();
+        let generalist = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == RuntimeAgentIdDto::Generalist)
+            .expect("Generalist descriptor should be seeded");
+
+        assert_eq!(generalist.label, "Generalist");
+        assert_eq!(
+            generalist.base_capability_profile,
+            RuntimeAgentBaseCapabilityProfileDto::Engineering
+        );
+        assert_eq!(
+            generalist.prompt_policy,
+            RuntimeAgentPromptPolicyDto::Generalist
+        );
+        assert_eq!(
+            generalist.tool_policy,
+            RuntimeAgentToolPolicyDto::Engineering
+        );
+        assert_eq!(
+            generalist.output_contract,
+            RuntimeAgentOutputContractDto::Answer
+        );
+        assert!(generalist.allow_plan_gate);
+        assert!(generalist.allow_verification_gate);
+        assert!(RuntimeAgentIdDto::Generalist.allows_engineering_tools());
+        assert!(runtime_agent_allows_approval_mode(
+            &RuntimeAgentIdDto::Generalist,
+            &RuntimeRunApprovalModeDto::Yolo
+        ));
     }
 }
 

@@ -62,6 +62,7 @@ import type {
   CodePatchTextHunkDto,
   RuntimeActionAnswerShapeDto,
   RuntimeActionRequiredOptionDto,
+  RuntimeAgentIdDto,
   RuntimeRunView,
   RuntimeStreamCompleteItemView,
   RuntimeStreamFailureItemView,
@@ -72,6 +73,7 @@ import type {
 import { AppLogo } from '../app-logo'
 import { ActionPromptCard } from './action-prompt-card'
 import { Markdown } from './conversation-markdown'
+import { RoutingSuggestionCard } from './routing-suggestion-card'
 
 export interface ConversationMessageAttachment {
   id: string
@@ -168,6 +170,16 @@ export type ConversationTurn =
       sequence: number
       sourceRunId: string
       targetRunId: string
+    }
+  | {
+      id: string
+      kind: 'routing_suggestion'
+      sequence: number
+      targetAgentId: RuntimeAgentIdDto
+      reason: string
+      summary: string
+      isResolved: boolean
+      acceptedTarget: RuntimeAgentIdDto | null
     }
   | {
       id: string
@@ -637,6 +649,8 @@ function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
           return `Agent prompt:\n${turn.title}${turn.detail.trim().length > 0 ? `\n${turn.detail}` : ''}`
         case 'handoff_notice':
           return '— Run continued in a fresh session —'
+        case 'routing_suggestion':
+          return `Routing suggestion → ${turn.targetAgentId}: ${turn.reason}`
         default:
           return ''
       }
@@ -970,6 +984,19 @@ function ConversationTurnRow({
             ? () => handler({ sourceRunId: turn.sourceRunId, targetRunId: turn.targetRunId })
             : undefined
         }
+      />
+    )
+  }
+
+  if (turn.kind === 'routing_suggestion') {
+    return (
+      <RoutingSuggestionCard
+        turnId={turn.id}
+        targetAgentId={turn.targetAgentId}
+        reason={turn.reason}
+        summary={turn.summary}
+        isResolved={turn.isResolved}
+        acceptedTarget={turn.acceptedTarget}
       />
     )
   }
@@ -2973,6 +3000,17 @@ function DenseTurnItem({
         <span className="shrink-0 select-none">⤳</span>
         <span className="min-w-0 flex-1 truncate" title="Run continued in a fresh session">
           handed off to a fresh same-type session
+        </span>
+      </li>
+    )
+  }
+
+  if (turn.kind === 'routing_suggestion') {
+    return (
+      <li className="flex items-start gap-1.5 px-1 text-muted-foreground">
+        <span className="shrink-0 select-none">↪</span>
+        <span className="min-w-0 flex-1 truncate" title={`Routing suggestion → ${turn.targetAgentId}`}>
+          suggested routing to {turn.targetAgentId}
         </span>
       </li>
     )

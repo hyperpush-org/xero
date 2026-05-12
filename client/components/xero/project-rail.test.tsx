@@ -18,6 +18,7 @@ const projects = [
     branchLabel: 'main',
     runtimeLabel: 'Runtime unavailable',
     phaseProgressPercent: 0,
+    startTargets: [],
   },
 ]
 

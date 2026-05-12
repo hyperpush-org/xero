@@ -170,9 +170,9 @@ describe('MemoryReviewSection', () => {
     expect(await screen.findAllByTestId('memory-review-item')).toHaveLength(2)
 
     const counts = screen.getByTestId('memory-review-counts')
-    expect(within(counts).getByText('Candidates').nextSibling?.textContent).toBe('1')
-    expect(within(counts).getByText('Approved').nextSibling?.textContent).toBe('1')
-    expect(within(counts).getByText('Retrievable').nextSibling?.textContent).toBe('1')
+    expect(within(counts).getByLabelText('Candidates: 1')).toBeVisible()
+    expect(within(counts).getByLabelText('Approved: 1')).toBeVisible()
+    expect(within(counts).getByLabelText('Retrievable: 1')).toBeVisible()
   })
 
   it('hides the preview and disables Approve for redacted (secret-shaped) memory', async () => {

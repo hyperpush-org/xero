@@ -119,6 +119,7 @@ import {
   type AgentCanvasExpansionContextValue,
 } from './expansion-context'
 import { AgentApprovalReviewDialog } from './agent-approval-review-dialog'
+import { EditingSmoothStepEdge } from './edges/editing-smoothstep-edge'
 import { PhaseBranchEdge } from './edges/phase-branch-edge'
 import { TriggerEdge } from './edges/trigger-edge'
 import { layoutAgentGraphByCategory, type NodeSize } from './layout'
@@ -161,6 +162,7 @@ const NODE_TYPES = {
 // happens to cross. Phase-branch edges use the same portal pattern to
 // keep the conditional label readable when one branch overlaps another.
 const EDGE_TYPES = {
+  smoothstep: EditingSmoothStepEdge,
   trigger: TriggerEdge,
   'phase-branch': PhaseBranchEdge,
 } as unknown as EdgeTypes
@@ -236,7 +238,7 @@ const DOT_ZOOM_PRECISION = 1000
 // moved by the viewport transform is smoother than per-frame culling work.
 const ONLY_RENDER_VISIBLE_ELEMENTS = false
 const FIT_VIEW_ON_INIT = import.meta.env.MODE !== 'test'
-const HANDLE_SIZE = 8
+const HANDLE_SIZE = 0
 const FOCUS_BULK_DOM_LOOKUP_THRESHOLD = 24
 const TRIGGER_EDGE_ID_PREFIX = 'e:trigger:'
 const EXPANDED_NODE_CLASS = 'agent-node-expanded'
@@ -500,6 +502,13 @@ function shouldUseMeasuredHeightForLayout(
 ): boolean {
   switch (node.type) {
     case 'agent-header':
+      // Template copies such as Engineer/Debug/Plan can wrap the header
+      // description/count rows beyond the nominal design height. The visible
+      // side handles are positioned as percentages of the rendered card, so
+      // the seeded React Flow handle bounds must use the same measured height.
+      // layoutAgentGraphByCategory still receives a stableHeaderHeight so the
+      // side lanes themselves do not drift when the card grows.
+      return true
     case 'tool':
     case 'output-section':
     case 'consumed-artifact':
@@ -519,7 +528,7 @@ function shouldUseMeasuredHeightForLayout(
   }
 }
 
-function buildSizeMap(
+export function buildSizeMap(
   nodes: AgentGraphNode[],
   expandedIds: ReadonlySet<string>,
   measuredSizes: ReadonlyMap<string, NodeSize>,
@@ -1046,6 +1055,22 @@ function knownHandlesForNode(node: AgentGraphNode, width: number, height: number
           Position.Left,
           width,
           height,
+          AGENT_GRAPH_HEADER_HANDLES.workflow,
+          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow) },
+        ),
+        nodeHandle(
+          'target',
+          Position.Left,
+          width,
+          height,
+          AGENT_GRAPH_HEADER_HANDLES.consumed,
+          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed) },
+        ),
+        nodeHandle(
+          'source',
+          Position.Left,
+          width,
+          height,
           AGENT_GRAPH_HEADER_HANDLES.skills,
           { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.skills) },
         ),
@@ -1066,22 +1091,6 @@ function knownHandlesForNode(node: AgentGraphNode, width: number, height: number
           { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.db) },
         ),
         nodeHandle('source', Position.Bottom, width, height, AGENT_GRAPH_HEADER_HANDLES.output),
-        nodeHandle(
-          'source',
-          Position.Left,
-          width,
-          height,
-          AGENT_GRAPH_HEADER_HANDLES.workflow,
-          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.workflow) },
-        ),
-        nodeHandle(
-          'target',
-          Position.Left,
-          width,
-          height,
-          AGENT_GRAPH_HEADER_HANDLES.consumed,
-          { y: handleTopFromRatio(height, AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS.consumed) },
-        ),
       ]
     case 'prompt':
       return [nodeHandle('target', Position.Bottom, width, height)]
@@ -2153,12 +2162,10 @@ function AgentVisualizationInner({
     refreshNodeInternals(refreshIds)
   }, [nodes, refreshNodeInternals])
 
-  // Handles collapse to 0×0 in view mode (so edge endpoints land on the node
-  // boundary) and expand to 18×18 in editing mode (so the dots are grabbable).
-  // The size flip is pure CSS — no node element resize — so React Flow's
-  // ResizeObserver won't refire. Force a remeasure so cached handleBounds
-  // matches the current size; otherwise the connection drag's hit-testing
-  // and edge endpoints stay stale across the toggle.
+  // Handles stay 0×0 in both modes so edge endpoints land on the node boundary.
+  // Editing mode paints the grabbable half-dot via CSS pseudo-elements, and
+  // some nodes add or remove handles when editing toggles. Force React Flow to
+  // refresh handleBounds so connection drag hit-testing sees the current set.
   useEffect(() => {
     const ids = refreshableNodeIds(nodesRef.current)
     if (ids.length === 0) return
@@ -4799,6 +4806,8 @@ function defaultLanePosition(
       // left-to-right under the rest of the agent. Index spacing matches
       // the stage node's measured height plus a comfortable gutter.
       return { x: -200 + index * 320, y: 780 }
+    case 'stage-group-frame':
+      return { x: -240, y: 720 }
   }
 }
 
@@ -4820,6 +4829,7 @@ function flattenForEditing(graph: AgentGraph): AgentGraph {
   const nodes: AgentGraphNode[] = []
   for (const node of graph.nodes) {
     if (node.type === 'tool-group-frame') continue
+    if (node.type === 'stage-group-frame') continue
     if (node.type === 'lane-label') continue
     let next: AgentGraphNode = node
     if (node.type === 'tool') {

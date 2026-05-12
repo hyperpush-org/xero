@@ -796,6 +796,14 @@ describe('SettingsDialog', () => {
     openUrlMock.mockReset()
   })
 
+  it('does not expose the project records view in settings navigation', async () => {
+    render(<SettingsDialog {...makeSettingsDialogProps()} />)
+
+    expect(await screen.findByRole('heading', { name: 'Providers' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Project Records' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Project State' })).toBeVisible()
+  })
+
   it('shows local storage data from the development section with sensitive values redacted by default', async () => {
     render(
       <SettingsDialog
@@ -1426,7 +1434,7 @@ describe('SettingsDialog', () => {
     expect(screen.getAllByText('Open Panel').length).toBeGreaterThan(0)
     expect(screen.getByText('Project automation helpers.')).toBeVisible()
     expect(screen.getByText(/1 .* 1 command/)).toBeVisible()
-    expect(screen.getByText(/1 projected/)).toBeVisible()
+    expect(screen.getByText('/tmp/xero-plugins')).toBeVisible()
 
     fireEvent.click(screen.getByText('Plugin metadata'))
     expect(screen.getAllByText('/tmp/xero-plugins/acme-tools').length).toBeGreaterThan(0)

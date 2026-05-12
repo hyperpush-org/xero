@@ -80,7 +80,7 @@ function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   return (
     <span
       className={cn(
-        "inline-flex h-[18px] items-center rounded-full border px-1.5 text-[10.5px] font-medium",
+        "inline-flex h-[20px] items-center rounded-full border px-2 text-[11px] font-medium",
         TONE_CLASS[tone],
       )}
     >
@@ -374,17 +374,21 @@ export function AgentsSection({
 
   if (!projectId) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-6">
         <SectionHeader
           title="Agents"
           description="Manage built-in and custom agents available to this workspace."
         />
-        <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
-          <Bot className="mx-auto h-4 w-4 text-muted-foreground" />
-          <p className="mt-2 text-[12.5px] font-medium text-foreground">No project open</p>
-          <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-            Open a project to inspect or manage agent definitions.
-          </p>
+        <div className="flex flex-col items-center gap-3 rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60">
+            <Bot className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="flex max-w-sm flex-col gap-1">
+            <p className="text-[14px] font-semibold tracking-tight text-foreground">No project open</p>
+            <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+              Open a project to inspect or manage agent definitions.
+            </p>
+          </div>
         </div>
       </div>
     )
@@ -394,7 +398,7 @@ export function AgentsSection({
   const isLoading = state.status === "loading"
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-6">
       <SectionHeader
         title="Agents"
         description={
@@ -408,7 +412,7 @@ export function AgentsSection({
             size="sm"
             onClick={refresh}
             disabled={isLoading}
-            className="h-8 gap-1.5 text-[12px]"
+            className="h-8 gap-1.5 text-[12.5px]"
           >
             {isLoading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -420,12 +424,11 @@ export function AgentsSection({
         }
       />
 
-      <div className="flex items-start justify-between gap-4">
-        <p className="max-w-prose text-[12px] leading-[1.5] text-muted-foreground">
-          Use Agent Create to design new custom agents. Activation, save and update happen
-          there; this surface is for management.
+      <div className="flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-secondary/10 px-4 py-3">
+        <p className="max-w-prose text-[12.5px] leading-[1.5] text-muted-foreground">
+          Use <span className="font-medium text-foreground">Agent Create</span> to design new custom agents. Activation, save, and update happen there — this surface is for management.
         </p>
-        <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
+        <label className="flex shrink-0 cursor-pointer items-center gap-2 text-[12.5px] text-muted-foreground select-none hover:text-foreground">
           <input
             type="checkbox"
             checked={includeArchived}
@@ -440,8 +443,8 @@ export function AgentsSection({
       {archiveError ? <ErrorBanner message={archiveError} /> : null}
 
       {isLoading && totalCount === 0 ? (
-        <div className="flex items-center justify-center gap-2 rounded-md border border-border/60 px-4 py-10 text-[12px] text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-border/60 px-4 py-10 text-[12.5px] text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
           Loading agents
         </div>
       ) : (
@@ -524,19 +527,19 @@ function AgentDefinitionGroup({
   showHistory,
 }: AgentDefinitionGroupProps) {
   return (
-    <section className="flex flex-col gap-2.5">
+    <section className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between gap-3">
-        <h4 className="text-[12.5px] font-semibold text-foreground">
+        <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">
           {title}
-          <span className="ml-1.5 font-normal text-muted-foreground">{count}</span>
+          <span className="ml-2 text-[12px] font-normal text-muted-foreground">{count}</span>
         </h4>
       </div>
       {definitions.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-3.5 py-3 text-[11.5px] text-muted-foreground">
+        <div className="rounded-lg border border-dashed border-border/60 bg-secondary/10 px-4 py-3.5 text-[12.5px] leading-[1.5] text-muted-foreground">
           {emptyMessage}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+        <div className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40">
           {definitions.map((definition) => (
             <AgentDefinitionRow
               key={definition.definitionId}
@@ -579,17 +582,17 @@ function AgentDefinitionRow({
   return (
     <div
       className={cn(
-        "group flex items-start gap-3 px-3.5 py-3 transition-opacity",
+        "group flex items-start gap-3 px-4 py-3 transition-opacity",
         isArchived && "opacity-60",
       )}
     >
-      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-secondary/40 text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      <div className="mt-[1px] flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-secondary/40 text-muted-foreground">
+        <Icon className="h-4 w-4" aria-hidden="true" />
       </div>
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <p className="truncate text-[13px] font-medium text-foreground">
+          <p className="truncate text-[13.5px] font-semibold tracking-tight text-foreground">
             {definition.displayName}
           </p>
           {showLifecyclePill ? (
@@ -598,7 +601,7 @@ function AgentDefinitionRow({
             </Pill>
           ) : null}
         </div>
-        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[1.5] text-muted-foreground">
+        <p className="mt-1 line-clamp-2 text-[12.5px] leading-[1.5] text-muted-foreground">
           {definition.description}
         </p>
       </div>
@@ -608,28 +611,28 @@ function AgentDefinitionRow({
           <Button
             size="icon"
             variant="ghost"
-            className="h-7 w-7 text-muted-foreground/70 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+            className="h-8 w-8 text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
             aria-label="Version history"
             title="Version history"
             onClick={() => void onViewHistory(definition)}
           >
-            <History className="h-3.5 w-3.5" />
+            <History className="h-4 w-4" />
           </Button>
         ) : null}
         {showArchive ? (
           <Button
             size="icon"
             variant="ghost"
-            className="h-7 w-7 text-muted-foreground/70 opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+            className="h-8 w-8 text-muted-foreground/60 opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
             aria-label="Archive"
             title="Archive"
             onClick={() => void onArchive(definition)}
             disabled={isArchiving}
           >
             {isArchiving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <Archive className="h-3.5 w-3.5" />
+              <Archive className="h-4 w-4" />
             )}
           </Button>
         ) : null}
@@ -660,45 +663,45 @@ function VersionHistoryPanel({ panel, onClose, onCompare }: VersionHistoryPanelP
     Boolean(onCompare) && versionOptions.length >= 2
 
   return (
-    <section className="overflow-hidden rounded-md border border-border/60 bg-secondary/10">
-      <header className="flex items-center justify-between gap-3 border-b border-border/40 px-3.5 py-2.5">
+    <section className="overflow-hidden rounded-lg border border-border/60 bg-secondary/[0.07]">
+      <header className="flex items-center justify-between gap-3 border-b border-border/40 bg-secondary/10 px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
-          <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <p className="truncate text-[12.5px] font-semibold text-foreground">
+          <History className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <p className="truncate text-[13.5px] font-semibold tracking-tight text-foreground">
             Version history
           </p>
-          <span className="truncate font-mono text-[11px] text-muted-foreground">
+          <span className="truncate font-mono text-[12px] text-muted-foreground">
             {panel.definitionId}
           </span>
         </div>
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 text-muted-foreground hover:text-foreground"
+          className="h-8 w-8 text-muted-foreground hover:text-foreground"
           onClick={onClose}
           aria-label="Close version history"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-4 w-4" />
         </Button>
       </header>
 
-      <div className="flex flex-col gap-3 px-3.5 py-2.5">
+      <div className="flex flex-col gap-3.5 px-4 py-3.5">
         {panel.status === "loading" ? (
-          <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+          <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Loading recent versions
           </div>
         ) : panel.status === "error" ? (
-          <p className="text-[12px] text-destructive">
+          <p className="text-[12.5px] text-destructive">
             {panel.errorMessage ?? "Could not load version history."}
           </p>
         ) : panel.versions.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground">
+          <p className="text-[12.5px] text-muted-foreground">
             No version snapshots are available.
           </p>
         ) : (
           <>
-            <ul className="flex flex-col gap-1.5">
+            <ul className="flex flex-col gap-2">
               {panel.versions.map((version) => {
                 const validationTone: Tone =
                   version.validationStatus === "valid"
@@ -709,21 +712,21 @@ function VersionHistoryPanel({ panel, onClose, onCompare }: VersionHistoryPanelP
                 return (
                   <li
                     key={`${version.definitionId}-${version.version}`}
-                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/40 px-3 py-2"
+                    className="flex items-center justify-between gap-3 rounded-md border border-border/40 bg-background/50 px-3 py-2"
                   >
-                    <div className="flex items-center gap-2 text-[12px]">
+                    <div className="flex items-center gap-2 text-[12.5px]">
                       <span className="font-medium text-foreground">
                         Version {version.version}
                       </span>
                       <Pill tone={validationTone}>{version.validationStatus ?? "unknown"}</Pill>
                       {version.validationDiagnosticCount > 0 ? (
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-[12px] text-muted-foreground">
                           {version.validationDiagnosticCount} diagnostic
                           {version.validationDiagnosticCount === 1 ? "" : "s"}
                         </span>
                       ) : null}
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-[12px] text-muted-foreground">
                       {formatTimestamp(version.createdAt)}
                     </span>
                   </li>
@@ -774,7 +777,7 @@ function DiffControls({
 }: DiffControlsProps) {
   const distinct = fromVersion !== null && toVersion !== null && fromVersion !== toVersion
   return (
-    <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-muted-foreground">
       <span>Compare</span>
       <VersionPicker
         label="From version"
@@ -800,7 +803,7 @@ function DiffControls({
       <Button
         variant="outline"
         size="sm"
-        className="h-7 gap-1.5 text-[11.5px]"
+        className="h-8 gap-1.5 text-[12.5px]"
         disabled={!distinct || diffStatus === "loading"}
         onClick={() => {
           if (fromVersion !== null && toVersion !== null) {
@@ -809,7 +812,7 @@ function DiffControls({
         }}
       >
         {diffStatus === "loading" ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : null}
         Compare
       </Button>
@@ -835,7 +838,7 @@ function VersionPicker({ label, versions, value, onChange }: VersionPickerProps)
           onChange(next)
         }
       }}
-      className="h-7 rounded-md border border-border/60 bg-background px-2 text-[11.5px] text-foreground"
+      className="h-8 rounded-md border border-border/60 bg-background px-2.5 text-[12.5px] text-foreground"
     >
       {value === null ? <option value="">—</option> : null}
       {versions.map((version) => (
@@ -849,8 +852,8 @@ function VersionPicker({ label, versions, value, onChange }: VersionPickerProps)
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] text-destructive">
-      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+    <div className="flex items-start gap-2.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-destructive">
+      <AlertCircle className="mt-[1px] h-4 w-4 shrink-0" />
       <span>{message}</span>
     </div>
   )

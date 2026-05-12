@@ -35,16 +35,16 @@ function renderUsageSidebar(overrides: Partial<UsageStatsSidebarProps> = {}) {
 }
 
 describe("UsageStatsSidebar", () => {
-  it("opens the floating panel immediately without staging a slide animation", () => {
+  it("opens the floating panel with the shared right-sidebar animation frame", () => {
     const { props, rerender } = renderUsageSidebar()
     expect(screen.queryByLabelText("Project usage statistics")).not.toBeInTheDocument()
 
     rerender(<UsageStatsSidebar {...props} open />)
 
     const panel = screen.getByLabelText("Project usage statistics")
-    expect(panel).not.toHaveClass("invisible")
-    expect(panel.style.transform).toBe("")
-    expect(panel.style.transition).toBe("")
+    expect(panel).toHaveAttribute("data-slot", "floating-right-sidebar-panel")
+    expect(panel).toHaveClass("gpu-layer")
+    expect(document.querySelector('[data-slot="floating-right-sidebar-overlay"]')).toBeInTheDocument()
     expect(screen.getByText("No agent runs recorded for this project yet.")).toBeVisible()
   })
 })

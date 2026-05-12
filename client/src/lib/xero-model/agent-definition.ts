@@ -356,7 +356,7 @@ export const customAgentConsumedArtifactSchema = z
     id: nonEmptyTextSchema,
     label: nonEmptyTextSchema,
     description: nonEmptyTextSchema,
-    sourceAgent: z.enum(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create']),
+    sourceAgent: z.enum(['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create', 'generalist']),
     contract: customAgentOutputContractSchema,
     sections: trimmedTextArraySchema,
     required: z.boolean(),

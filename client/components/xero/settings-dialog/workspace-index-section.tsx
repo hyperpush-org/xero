@@ -147,6 +147,8 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
   const completedAt = useMemo(() => formatStatusTime(status?.completedAt), [status?.completedAt])
   const coverage = Math.round(status?.coveragePercent ?? 0)
   const isIndexing = indexState === "loading"
+  const isEmpty = stateLabel === "empty" || (status?.indexedFiles ?? 0) === 0
+  const stateDisplay = stateLabel.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())
 
   if (!projectId) {
     return (
@@ -156,7 +158,7 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
           description="Local semantic code search is project-bound."
         />
         <EmptyPanel
-          icon={<Database className="h-4 w-4 text-muted-foreground/70" />}
+          icon={<Database className="h-5 w-5 text-muted-foreground/70" />}
           title="Select a project"
           body="The index is stored in Xero app data for the active project."
         />
@@ -190,20 +192,22 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
               )}
               Refresh
             </Button>
-            <Button
-              size="sm"
-              className="h-8 gap-1.5 text-[12px]"
-              onClick={() => void runIndex(false)}
-              disabled={isIndexing}
-              aria-label="Index workspace"
-            >
-              {isIndexing ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Database className="h-3.5 w-3.5" />
-              )}
-              Index
-            </Button>
+            {!isEmpty ? (
+              <Button
+                size="sm"
+                className="h-8 gap-1.5 text-[12px]"
+                onClick={() => void runIndex(false)}
+                disabled={isIndexing}
+                aria-label="Update workspace index"
+              >
+                {isIndexing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Database className="h-3.5 w-3.5" />
+                )}
+                Update
+              </Button>
+            ) : null}
           </div>
         }
       />
@@ -214,78 +218,101 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-[12.5px] font-semibold text-foreground">Index health</p>
-              <Pill tone={stateTone}>{stateLabel.replace(/_/g, " ")}</Pill>
+              <Pill tone={stateTone}>{stateDisplay}</Pill>
               <span className="ml-auto text-[11px] text-muted-foreground">{completedAt}</span>
             </div>
-            <div className="mt-2 flex items-center gap-2.5">
-              <Progress value={coverage} className="h-1.5 flex-1" />
-              <span className="shrink-0 text-[11.5px] font-medium tabular-nums text-foreground">
-                {coverage}%
-              </span>
-            </div>
-            <InlineCounts
-              className="mt-2.5"
-              items={[
-                {
-                  label: "Indexed",
-                  value: status?.indexedFiles ?? 0,
-                  tone: "info",
-                },
-                {
-                  label: "Total",
-                  value: status?.totalFiles ?? 0,
-                },
-                {
-                  label: "Symbols",
-                  value: status?.symbolCount ?? 0,
-                },
-                {
-                  label: "Coverage",
-                  value: `${coverage}%`,
-                  tone: coverageTone(coverage),
-                },
-              ]}
-            />
+
+            {isEmpty ? (
+              <p className="mt-2.5 text-[11.5px] leading-[1.55] text-muted-foreground">
+                Indexing scans <span className="font-medium text-foreground">{status?.totalFiles ?? 0}</span> files to enable
+                semantic, symbol, test, and impact queries. Nothing leaves your machine.
+              </p>
+            ) : (
+              <>
+                <div className="mt-2 flex items-center gap-2.5">
+                  <Progress value={coverage} className="h-1.5 flex-1" />
+                  <span className="shrink-0 text-[11.5px] font-medium tabular-nums text-foreground">
+                    {coverage}%
+                  </span>
+                </div>
+                <InlineCounts
+                  className="mt-2.5"
+                  items={[
+                    {
+                      label: "Indexed",
+                      value: status?.indexedFiles ?? 0,
+                      tone: coverageTone(coverage),
+                    },
+                    {
+                      label: "Total",
+                      value: status?.totalFiles ?? 0,
+                    },
+                    {
+                      label: "Symbols",
+                      value: status?.symbolCount ?? 0,
+                    },
+                  ]}
+                />
+              </>
+            )}
+
             <div className="mt-3 flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 gap-1.5 text-[11.5px]"
-                onClick={() => void runIndex(true)}
-                disabled={isIndexing}
-                aria-label="Rebuild index"
-              >
-                <RefreshCw className="h-3 w-3" />
-                Rebuild
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-destructive"
-                onClick={() => void resetIndex()}
-                disabled={isIndexing}
-                aria-label="Reset index"
-              >
-                <RotateCcw className="h-3 w-3" />
-                Reset
-              </Button>
+              {isEmpty ? (
+                <Button
+                  size="sm"
+                  className="h-7 gap-1.5 text-[11.5px]"
+                  onClick={() => void runIndex(false)}
+                  disabled={isIndexing}
+                  aria-label="Build index"
+                >
+                  {isIndexing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Database className="h-3 w-3" />}
+                  {isIndexing ? "Building" : "Build index"}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 text-[11.5px]"
+                  onClick={() => void runIndex(true)}
+                  disabled={isIndexing}
+                  aria-label="Rebuild index"
+                >
+                  {isIndexing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  Rebuild
+                </Button>
+              )}
+              {!isEmpty ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-destructive"
+                  onClick={() => void resetIndex()}
+                  disabled={isIndexing}
+                  aria-label="Reset index"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  Reset
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
       </section>
 
-      <section className="flex flex-col gap-2.5">
+      <section className={cn("flex flex-col gap-2.5", isEmpty && "opacity-60")}>
         <SubHeading>Query</SubHeading>
         <div className="flex gap-1 rounded-md border border-border/60 bg-secondary/30 p-1">
           {QUERY_MODES.map((item) => (
             <button
               key={item.value}
               type="button"
+              disabled={isEmpty}
               className={cn(
                 "flex flex-1 items-center justify-center rounded-md px-2 py-1.5 text-[12px] font-medium transition-colors",
                 mode === item.value
                   ? "bg-background text-foreground shadow-sm ring-1 ring-border/40"
                   : "text-muted-foreground hover:text-foreground",
+                isEmpty && "cursor-not-allowed hover:text-muted-foreground",
               )}
               onClick={() => setMode(item.value)}
             >
@@ -300,14 +327,15 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
             onKeyDown={(event) => {
               if (event.key === "Enter") void runQuery()
             }}
-            placeholder="Search files, symbols, tests, or impact"
+            placeholder={isEmpty ? "Build the index to enable search" : "Search files, symbols, tests, or impact"}
             className="text-[12.5px]"
+            disabled={isEmpty}
           />
           <Button
             size="sm"
             className="h-9 gap-1.5 text-[12px]"
             onClick={() => void runQuery()}
-            disabled={queryState === "loading" || !query.trim()}
+            disabled={isEmpty || queryState === "loading" || !query.trim()}
             aria-label="Run query"
           >
             {queryState === "loading" ? (
@@ -327,7 +355,7 @@ export function WorkspaceIndexSection({ projectId, projectLabel }: WorkspaceInde
           <SubHeading count={queryResponse.results.length}>Results</SubHeading>
           {queryResponse.results.length === 0 ? (
             <EmptyPanel
-              icon={<FileSearch className="h-4 w-4 text-muted-foreground/70" />}
+              icon={<FileSearch className="h-5 w-5 text-muted-foreground/70" />}
               title="No matches"
               body="Try a different query or switch search mode."
             />

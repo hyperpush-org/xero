@@ -494,6 +494,7 @@ pub const fn db_touchpoints_for_runtime_agent(id: RuntimeAgentIdDto) -> DbTouchp
         RuntimeAgentIdDto::Debug => DEBUG_ENTRIES,
         RuntimeAgentIdDto::Crawl => CRAWL_ENTRIES,
         RuntimeAgentIdDto::AgentCreate => AGENT_CREATE_ENTRIES,
+        RuntimeAgentIdDto::Generalist => ENGINEER_ENTRIES,
     };
     DbTouchpoints { entries }
 }
@@ -518,6 +519,7 @@ mod tests {
             RuntimeAgentIdDto::Debug,
             RuntimeAgentIdDto::Crawl,
             RuntimeAgentIdDto::AgentCreate,
+            RuntimeAgentIdDto::Generalist,
         ] {
             let touchpoints = db_touchpoints_for_runtime_agent(id);
             assert!(has_table(

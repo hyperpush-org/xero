@@ -571,6 +571,14 @@ pub enum ProjectOriginDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartTargetDto {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectSummaryDto {
     pub id: String,
     pub name: String,
@@ -583,6 +591,8 @@ pub struct ProjectSummaryDto {
     pub active_phase: u32,
     pub branch: Option<String>,
     pub runtime: Option<String>,
+    #[serde(default)]
+    pub start_targets: Vec<StartTargetDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -67,6 +67,7 @@ const projects = [
     branchLabel: 'main',
     runtimeLabel: 'Runtime unavailable',
     phaseProgressPercent: 0,
+    startTargets: [],
   },
   {
     id: 'project-2',
@@ -82,6 +83,7 @@ const projects = [
     branchLabel: 'main',
     runtimeLabel: 'Runtime unavailable',
     phaseProgressPercent: 0,
+    startTargets: [],
   },
 ] satisfies ProjectListItem[]
 

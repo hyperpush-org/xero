@@ -200,6 +200,7 @@ pub fn import_project_with_origin(
                 active_phase: 0,
                 branch: repository.branch_name.clone(),
                 runtime: None,
+                start_targets: Vec::new(),
             },
             repository: RepositorySummaryDto {
                 id: repository.repository_id.clone(),

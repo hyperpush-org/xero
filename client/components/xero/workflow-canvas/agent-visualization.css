@@ -132,7 +132,10 @@
 }
 
 .agent-visualization .react-flow__edges {
-  z-index: 0;
+  /* Keep every edge family above the editing handles so arrowheads remain
+     visible at drop points. Edge hit testing stays disabled below, so the
+     raised SVG layer does not steal handle/card pointer events. */
+  z-index: 2;
 }
 
 .agent-visualization .react-flow__nodes,
@@ -446,7 +449,7 @@
    admittance, 20–30 paths flipping into the paint tree on hover) feel
    laggy. The stroke is non-scaling so the line stays 1px at every zoom. */
 .agent-visualization .agent-stage-tool-fan-overlay {
-  z-index: 0;
+  z-index: 2;
 }
 .agent-visualization .agent-stage-tool-fan-overlay path {
   stroke: color-mix(in oklab, var(--color-amber-500, #f59e0b) 70%, var(--foreground));
@@ -489,9 +492,8 @@
    trigger edges and drop everything unrelated. The node itself also dims, so
    the related cluster pops out of the canvas at a glance.
 
-   React Flow's edge renderer stays under the node layer at all times, including
-   focus mode. The active edge still gets brighter, but it never rises above
-   any card. */
+   React Flow's edge renderer stays above the handle layer so active arrowheads
+   remain visible at connection points. */
 .agent-visualization.is-focusing .react-flow__edges,
 .agent-visualization.is-focusing .react-flow__edges * {
   pointer-events: none !important;
@@ -595,45 +597,176 @@
   opacity: 0;
 }
 
-.agent-visualization .react-flow__handle-left {
-  clip-path: inset(0 50% 0 0);
-}
-
-.agent-visualization .react-flow__handle-right {
-  clip-path: inset(0 0 0 50%);
-}
-
-.agent-visualization .react-flow__handle-top {
-  clip-path: inset(0 0 50% 0);
-}
-
-.agent-visualization .react-flow__handle-bottom {
-  clip-path: inset(50% 0 0 0);
-}
-
 /* Editing mode: handles must accept pointer events so the user can drag a
-   connection from one node to another. The colored dot itself is larger here,
-   not just the invisible hit target, so grab points are obvious before hover. */
+   connection from one node to another. The actual DOM handle stays 0×0 so
+   both seeded bounds and React Flow's own ResizeObserver measurements anchor
+   edges exactly on the node boundary. The visible 18×18 half-disc is painted
+   by ::before and inherits the handle's tone. */
 .agent-visualization.is-editing .react-flow__handle {
   pointer-events: auto;
-  width: 18px !important;
-  height: 18px !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
   opacity: 1;
   cursor: crosshair;
   box-sizing: border-box;
+  overflow: visible;
   transform-origin: center center;
   scale: 1;
-  /* Thin background-colored hairline so the dot reads as a solid colored
-     pill instead of a small splat inside a thick black ring. The default
-     `.react-flow__handle` rule zeroes the border in view mode so edges
-     anchor exactly to the node boundary; restore it here for the
-     visible-dot affordance. */
-  border: 1.5px solid var(--background);
+  border: 0;
   box-shadow: none;
   transition:
     scale 120ms ease,
     box-shadow 120ms ease,
     border-color 120ms ease;
+}
+
+.agent-visualization.is-editing .react-flow__handle::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: -9px;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--background);
+  border-radius: 999px;
+  background-color: inherit;
+  box-shadow: none;
+  pointer-events: auto;
+  transition:
+    box-shadow 120ms ease,
+    border-color 120ms ease;
+}
+
+.agent-visualization.is-editing .react-flow__handle::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  background: var(--agent-handle-bridge-color, color-mix(in oklab, var(--primary) 56%, var(--background)));
+  border-radius: 999px;
+}
+
+.agent-visualization.is-editing .react-flow__node-agent-header .react-flow__handle::before {
+  background-color: color-mix(
+    in oklab,
+    var(--agent-handle-tone, var(--primary)) 24%,
+    transparent
+  );
+  border-color: color-mix(
+    in oklab,
+    var(--agent-handle-tone, var(--primary)) 82%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__node-agent-header .react-flow__handle::after {
+  background: color-mix(
+    in oklab,
+    var(--agent-handle-tone, var(--primary)) 82%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle-left::before {
+  clip-path: inset(0 50% 0 0);
+}
+
+.agent-visualization.is-editing .react-flow__handle-left::after {
+  left: -9px;
+  top: -0.75px;
+  width: 9px;
+  height: 1.5px;
+}
+
+.agent-visualization.is-editing .react-flow__handle-right::before {
+  clip-path: inset(0 0 0 50%);
+}
+
+.agent-visualization.is-editing .react-flow__handle-right::after {
+  left: 0;
+  top: -0.75px;
+  width: 9px;
+  height: 1.5px;
+}
+
+.agent-visualization.is-editing .react-flow__handle-top::before {
+  clip-path: inset(0 0 50% 0);
+}
+
+.agent-visualization.is-editing .react-flow__handle-top::after {
+  left: -0.75px;
+  top: -9px;
+  width: 1.5px;
+  height: 9px;
+}
+
+.agent-visualization.is-editing .react-flow__handle-bottom::before {
+  clip-path: inset(50% 0 0 0);
+}
+
+.agent-visualization.is-editing .react-flow__handle-bottom::after {
+  left: -0.75px;
+  top: 0;
+  width: 1.5px;
+  height: 9px;
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-amber-500'] {
+  --agent-handle-tone: var(--color-amber-500, #f59e0b);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-amber-500, #f59e0b) 52%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-sky-500'] {
+  --agent-handle-tone: var(--color-sky-500, #0ea5e9);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-sky-500, #0ea5e9) 52%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-emerald-500'] {
+  --agent-handle-tone: var(--color-emerald-500, #10b981);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-emerald-500, #10b981) 52%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-rose-500'] {
+  --agent-handle-tone: var(--color-rose-500, #f43f5e);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-rose-500, #f43f5e) 52%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-teal-500'] {
+  --agent-handle-tone: #14b8a6;
+  --agent-handle-bridge-color: color-mix(in oklab, #14b8a6 58%, var(--background));
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-fuchsia-500'] {
+  --agent-handle-tone: var(--color-fuchsia-500, #d946ef);
+  --agent-handle-bridge-color: color-mix(
+    in oklab,
+    var(--color-fuchsia-500, #d946ef) 58%,
+    var(--background)
+  );
+}
+
+.agent-visualization.is-editing .react-flow__handle[class~='!bg-foreground'] {
+  --agent-handle-tone: var(--foreground);
+  --agent-handle-bridge-color: color-mix(in oklab, var(--foreground) 55%, var(--background));
 }
 
 /* Honest highlighting:
@@ -650,6 +783,9 @@
      base — no glow, no scale. */
 .agent-visualization.is-editing:not([data-drag-role]) .react-flow__handle:hover {
   scale: 1.08;
+}
+
+.agent-visualization.is-editing:not([data-drag-role]) .react-flow__handle:hover::before {
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 18%, transparent);
   border-color: color-mix(in oklab, var(--primary) 60%, var(--background));
 }
@@ -658,6 +794,10 @@
 .agent-visualization.is-editing .react-flow__handle.connectingto.valid {
   /* Use independent scale so React Flow's translate(...) anchor stays intact. */
   scale: 1.12;
+}
+
+.agent-visualization.is-editing .react-flow__handle.connectingfrom::before,
+.agent-visualization.is-editing .react-flow__handle.connectingto.valid::before {
   box-shadow: 0 0 0 5px color-mix(in oklab, var(--primary) 28%, transparent);
   border-color: var(--primary);
 }

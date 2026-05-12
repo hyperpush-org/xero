@@ -281,7 +281,9 @@ export function PluginsSection({
       <section className="flex flex-col gap-2.5">
         <h4 className="text-[12.5px] font-semibold text-foreground">
           Plugin roots
-          <span className="ml-1.5 font-normal text-muted-foreground">{pluginRoots.length}</span>
+          {pluginRoots.length > 0 ? (
+            <span className="ml-1.5 font-normal text-muted-foreground">{pluginRoots.length}</span>
+          ) : null}
         </h4>
         <p className="-mt-1 text-[12px] text-muted-foreground">
           Directories Xero scans for plugin manifests.
@@ -305,7 +307,7 @@ export function PluginsSection({
           <Button
             type="button"
             size="sm"
-            variant="outline"
+            variant={pluginRoots.length === 0 ? 'default' : 'outline'}
             className="h-8 gap-1.5 text-[12px]"
             disabled={mutating || !onUpsertPluginRoot}
             onClick={() => void handleAddRoot()}
@@ -363,79 +365,107 @@ export function PluginsSection({
         ) : null}
       </section>
 
-      {/* Plugins list */}
-      <section className="flex flex-col gap-2.5">
-        <h4 className="text-[12.5px] font-semibold text-foreground">
-          Plugins
-          <span className="ml-1.5 font-normal text-muted-foreground">
-            {totalPlugins} · {totalCommands} {totalCommands === 1 ? 'command' : 'commands'}
-          </span>
-        </h4>
-
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            className="h-8 pl-8 text-[12.5px]"
-            placeholder="Search plugins"
-            aria-label="Search plugins"
-          />
+      {pluginRoots.length === 0 && !loading ? (
+        <div className="flex items-start gap-3 rounded-md border border-border/60 bg-secondary/10 px-4 py-3.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-card/60 text-muted-foreground">
+            <Plug className="h-4 w-4" aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1 text-[12.5px] leading-[1.55] text-muted-foreground">
+            <p className="text-foreground">
+              Plugins extend Xero with skills and slash commands sourced from a directory you control.
+            </p>
+            <p className="mt-1">
+              Add a plugin root above. Once Xero discovers a <span className="font-mono text-foreground/80">plugin.toml</span> manifest, the plugin and its commands appear here.
+            </p>
+          </div>
         </div>
+      ) : (
+        <>
+          {/* Plugins list */}
+          <section className="flex flex-col gap-2.5">
+            <h4 className="text-[12.5px] font-semibold text-foreground">
+              Plugins
+              {totalPlugins > 0 ? (
+                <span className="ml-1.5 font-normal text-muted-foreground">
+                  {totalPlugins} · {totalCommands} {totalCommands === 1 ? 'command' : 'commands'}
+                </span>
+              ) : null}
+            </h4>
 
-        {loading && !skillRegistry ? (
-          <div className="flex items-center justify-center gap-2 rounded-md border border-border/60 px-4 py-10 text-[12px] text-muted-foreground">
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            Loading plugins
-          </div>
-        ) : filteredPlugins.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
-            <Plug className="mx-auto h-4 w-4 text-muted-foreground" />
-            <p className="mt-2 text-[12.5px] font-medium text-foreground">No plugins found</p>
-            <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-              {query ? 'Adjust the search query.' : 'Add a plugin root or reload configured roots.'}
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
-            {filteredPlugins.map((plugin) => (
-              <PluginRow
-                key={plugin.pluginId}
-                plugin={plugin}
-                projectId={projectId}
-                disabled={mutating}
-                pending={pendingSkillSourceId === pluginPendingId(plugin.pluginId)}
-                onSetPluginEnabled={onSetPluginEnabled}
-                onRemovePlugin={onRemovePlugin}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+            {totalPlugins > 0 ? (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  className="h-8 pl-8 text-[12.5px]"
+                  placeholder="Search plugins"
+                  aria-label="Search plugins"
+                />
+              </div>
+            ) : null}
 
-      {/* Plugin commands */}
-      <section className="flex flex-col gap-2.5">
-        <h4 className="text-[12.5px] font-semibold text-foreground">
-          Plugin commands
-          <span className="ml-1.5 font-normal text-muted-foreground">{totalCommands} projected</span>
-        </h4>
+            {loading && !skillRegistry ? (
+              <div className="flex items-center justify-center gap-2 rounded-md border border-border/60 px-4 py-10 text-[12px] text-muted-foreground">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                Loading plugins
+              </div>
+            ) : filteredPlugins.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
+                <Plug className="mx-auto h-4 w-4 text-muted-foreground" />
+                <p className="mt-2 text-[12.5px] font-medium text-foreground">
+                  {totalPlugins > 0 ? 'No matches' : 'No plugins discovered'}
+                </p>
+                <p className="mt-0.5 text-[11.5px] text-muted-foreground">
+                  {totalPlugins > 0
+                    ? `Nothing matches "${query}".`
+                    : 'Roots are configured but Xero found no plugin manifests. Reload after adding one.'}
+                </p>
+                {totalPlugins > 0 && query ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3 h-8 text-[12px]"
+                    onClick={() => setQuery('')}
+                  >
+                    Clear search
+                  </Button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+                {filteredPlugins.map((plugin) => (
+                  <PluginRow
+                    key={plugin.pluginId}
+                    plugin={plugin}
+                    projectId={projectId}
+                    disabled={mutating}
+                    pending={pendingSkillSourceId === pluginPendingId(plugin.pluginId)}
+                    onSetPluginEnabled={onSetPluginEnabled}
+                    onRemovePlugin={onRemovePlugin}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
 
-        {skillRegistry?.pluginCommands.length ? (
-          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
-            {skillRegistry.pluginCommands.map((command) => (
-              <PluginCommandRow key={command.commandId} command={command} />
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
-            <Plug className="mx-auto h-4 w-4 text-muted-foreground" />
-            <p className="mt-2 text-[12.5px] font-medium text-foreground">No plugin commands</p>
-            <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-              Enabled plugins with command contributions appear here.
-            </p>
-          </div>
-        )}
-      </section>
+          {/* Plugin commands */}
+          {skillRegistry?.pluginCommands.length ? (
+            <section className="flex flex-col gap-2.5">
+              <h4 className="text-[12.5px] font-semibold text-foreground">
+                Plugin commands
+                <span className="ml-1.5 font-normal text-muted-foreground">{totalCommands}</span>
+              </h4>
+              <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+                {skillRegistry.pluginCommands.map((command) => (
+                  <PluginCommandRow key={command.commandId} command={command} />
+                ))}
+              </div>
+            </section>
+          ) : null}
+        </>
+      )}
     </div>
   )
 }

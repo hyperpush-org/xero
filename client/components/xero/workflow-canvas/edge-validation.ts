@@ -143,6 +143,7 @@ const KIND_LABELS: Record<AgentGraphNodeKind, string> = {
   'output-section': 'output section',
   'consumed-artifact': 'consumed artifact',
   stage: 'stage',
+  'stage-group-frame': 'stage group',
 }
 
 function humanKind(kind: AgentGraphNodeKind): string {

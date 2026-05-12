@@ -466,6 +466,7 @@ pub fn developer_tool_model_run<R: Runtime + 'static>(
         Some("crawl") => RuntimeAgentIdDto::Crawl,
         Some("debug") => RuntimeAgentIdDto::Debug,
         Some("agent_create") => RuntimeAgentIdDto::AgentCreate,
+        Some("generalist") => RuntimeAgentIdDto::Generalist,
         Some(other) => {
             return Err(CommandError::user_fixable(
                 "developer_tool_harness_invalid_agent",

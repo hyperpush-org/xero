@@ -26,6 +26,7 @@ import type {
   AgentPaneView,
   AgentProviderModelView,
 } from '@/src/features/xero/use-xero-desktop-state'
+import type { ToolCallGroupingPreference } from '@/src/features/xero/tool-call-grouping-preference'
 import type { XeroDesktopAdapter } from '@/src/lib/xero-desktop'
 import type {
   AgentDefinitionSummaryDto,
@@ -78,6 +79,10 @@ import {
   ActionPromptDispatchProvider,
   type ActionPromptDispatchValue,
 } from './agent-runtime/action-prompt-card'
+import {
+  RoutingSuggestionDispatchProvider,
+  type RoutingSuggestionDispatchValue,
+} from './agent-runtime/routing-suggestion-card'
 import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
 import { PlanTray } from './agent-runtime/plan-tray'
 import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
@@ -231,6 +236,8 @@ export interface AgentRuntimeProps {
   pendingInitialRuntimeAgentId?: RuntimeAgentIdDto | null
   /** Called once the pending initial runtime agent has been applied. */
   onPendingInitialRuntimeAgentIdConsumed?: () => void
+  /** Display preference for compacting adjacent completed tool calls. */
+  toolCallGroupingPreference?: ToolCallGroupingPreference
 }
 
 const EMPTY_RUNTIME_STREAM_ITEMS: RuntimeStreamViewItem[] = []
@@ -691,7 +698,10 @@ interface PendingPromptTurn {
   queuedAt: string | null
 }
 
-const conversationProjectionCache = new WeakMap<readonly RuntimeStreamViewItem[], ConversationProjection>()
+const conversationProjectionCache = new WeakMap<
+  readonly RuntimeStreamViewItem[],
+  Partial<Record<ToolCallGroupingPreference, ConversationProjection>>
+>()
 
 interface TurnRoutingContext {
   turns: ConversationTurn[]
@@ -703,6 +713,74 @@ function createTurnRoutingContext(): TurnRoutingContext {
     turns: [],
     actionTurnIndexByToolCallId: new Map<string, number>(),
   }
+}
+
+const ROUTING_MARKER_REGEX =
+  /<xero-routing-suggestion\s+([^/>]*?)\/>/i
+
+interface ParsedRoutingMarker {
+  targetAgentId: 'plan' | 'engineer' | 'debug'
+  reason: string
+  summary: string
+  rawMarker: string
+}
+
+function parseRoutingMarker(text: string): ParsedRoutingMarker | null {
+  const match = text.match(ROUTING_MARKER_REGEX)
+  if (!match) return null
+  const attrs = match[1]
+  const target = /target\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.toLowerCase().trim()
+  if (target !== 'plan' && target !== 'engineer' && target !== 'debug') {
+    return null
+  }
+  const reason = /reason\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? ''
+  const summary = /summary\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? ''
+  return {
+    targetAgentId: target,
+    reason,
+    summary,
+    rawMarker: match[0],
+  }
+}
+
+function maybeAttachRoutingSuggestion(
+  context: TurnRoutingContext,
+  messageTurn: Extract<ConversationTurn, { kind: 'message' }>,
+): void {
+  if (messageTurn.role !== 'assistant') return
+  const parsed = parseRoutingMarker(messageTurn.text)
+  if (!parsed) return
+
+  // Strip the marker from the message body so the assistant text reads cleanly.
+  messageTurn.text = messageTurn.text.replace(parsed.rawMarker, '').replace(/\n{3,}/g, '\n\n').trim()
+
+  const routingTurnId = `routing_suggestion:${messageTurn.id}`
+  const existingIndex = context.turns.findIndex(
+    (turn) => turn.kind === 'routing_suggestion' && turn.id === routingTurnId,
+  )
+
+  const next: Extract<ConversationTurn, { kind: 'routing_suggestion' }> = {
+    id: routingTurnId,
+    kind: 'routing_suggestion',
+    sequence: messageTurn.sequence + 0.5,
+    targetAgentId: parsed.targetAgentId,
+    reason: parsed.reason,
+    summary: parsed.summary,
+    isResolved: false,
+    acceptedTarget: null,
+  }
+
+  if (existingIndex >= 0) {
+    const existing = context.turns[existingIndex]
+    if (existing.kind === 'routing_suggestion') {
+      next.isResolved = existing.isResolved
+      next.acceptedTarget = existing.acceptedTarget
+    }
+    context.turns[existingIndex] = next
+    return
+  }
+
+  context.turns.push(next)
 }
 
 /**
@@ -722,6 +800,7 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
     if (item.role === 'assistant' && previous?.kind === 'message' && previous.role === item.role) {
       previous.text = appendTranscriptDelta(previous.text, item.text)
       previous.sequence = item.sequence
+      maybeAttachRoutingSuggestion(context, previous)
       return false
     }
 
@@ -732,6 +811,12 @@ function routeItemIntoTurns(item: RuntimeStreamViewItem, context: TurnRoutingCon
       sequence: item.sequence,
       text: item.text,
     })
+    if (item.role === 'assistant') {
+      const justPushed = context.turns.at(-1)
+      if (justPushed?.kind === 'message') {
+        maybeAttachRoutingSuggestion(context, justPushed)
+      }
+    }
     return item.role === 'user'
   }
 
@@ -842,7 +927,19 @@ function emptySubagentGroupTurn(
   }
 }
 
-function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamViewItem[]): ConversationProjection {
+function finalizeActionTurns(
+  turns: ConversationTurn[],
+  toolCallGroupingPreference: ToolCallGroupingPreference,
+): ConversationTurn[] {
+  const projectedTurns =
+    toolCallGroupingPreference === 'grouped' ? compactActionBursts(turns) : turns
+  return limitActionTurns(projectedTurns)
+}
+
+function buildConversationProjection(
+  runtimeStreamItems: readonly RuntimeStreamViewItem[],
+  toolCallGroupingPreference: ToolCallGroupingPreference,
+): ConversationProjection {
   const topContext = createTurnRoutingContext()
   const subagentGroups = new Map<string, SubagentGroupState>()
   let hasUserMessage = false
@@ -909,7 +1006,7 @@ function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamV
       routeItemIntoTurns(item, state.context)
       const groupTurn = topContext.turns[state.index]
       if (groupTurn?.kind === 'subagent_group') {
-        groupTurn.children = limitActionTurns(compactActionBursts(state.context.turns))
+        groupTurn.children = finalizeActionTurns(state.context.turns, toolCallGroupingPreference)
         groupTurn.sequence = Math.max(groupTurn.sequence, item.sequence)
       }
       continue
@@ -922,21 +1019,26 @@ function buildConversationProjection(runtimeStreamItems: readonly RuntimeStreamV
   }
 
   return {
-    visibleTurns: limitActionTurns(compactActionBursts(topContext.turns)),
+    visibleTurns: finalizeActionTurns(topContext.turns, toolCallGroupingPreference),
     hasUserMessage,
   }
 }
 
 function getConversationProjection(
   runtimeStreamItems: readonly RuntimeStreamViewItem[],
+  toolCallGroupingPreference: ToolCallGroupingPreference,
 ): ConversationProjection {
   const cached = conversationProjectionCache.get(runtimeStreamItems)
-  if (cached) {
-    return cached
+  const cachedProjection = cached?.[toolCallGroupingPreference]
+  if (cachedProjection) {
+    return cachedProjection
   }
 
-  const projection = buildConversationProjection(runtimeStreamItems)
-  conversationProjectionCache.set(runtimeStreamItems, projection)
+  const projection = buildConversationProjection(runtimeStreamItems, toolCallGroupingPreference)
+  conversationProjectionCache.set(runtimeStreamItems, {
+    ...cached,
+    [toolCallGroupingPreference]: projection,
+  })
   return projection
 }
 
@@ -1525,6 +1627,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   historicalConversationTurns,
   pendingInitialRuntimeAgentId = null,
   onPendingInitialRuntimeAgentIdConsumed,
+  toolCallGroupingPreference = 'grouped',
 }: AgentRuntimeProps) {
   const runtimeSession = agent.runtimeSession ?? null
   const runtimeRun = agent.runtimeRun ?? null
@@ -1550,8 +1653,8 @@ export const AgentRuntime = memo(function AgentRuntime({
     [runtimeStreamItems, useBackgroundPaneFastPath],
   )
   const conversationProjection = useMemo(
-    () => getConversationProjection(runtimeStreamItemsForTurns),
-    [runtimeStreamItemsForTurns],
+    () => getConversationProjection(runtimeStreamItemsForTurns, toolCallGroupingPreference),
+    [runtimeStreamItemsForTurns, toolCallGroupingPreference],
   )
   const visibleTurns = conversationProjection.visibleTurns
   // Historical turns from prior runs in this agent session (loaded from the
@@ -2072,7 +2175,7 @@ export const AgentRuntime = memo(function AgentRuntime({
       !controller.isRuntimeAgentSwitchDisabled &&
       !availableRuntimeAgentIds.includes(controller.composerRuntimeAgentId)
     ) {
-      controller.handleComposerRuntimeAgentChange('ask')
+      controller.handleComposerRuntimeAgentChange('generalist')
     }
   }, [
     availableRuntimeAgentIds,
@@ -2080,6 +2183,36 @@ export const AgentRuntime = memo(function AgentRuntime({
     controller.isRuntimeAgentSwitchDisabled,
     controller.handleComposerRuntimeAgentChange,
   ])
+
+  const [resolvedRoutingTurns, setResolvedRoutingTurns] = useState<
+    Record<string, { acceptedTarget: RuntimeAgentIdDto | null }>
+  >({})
+  const routingSuggestionDispatchValue = useMemo<RoutingSuggestionDispatchValue>(() => {
+    return {
+      resolveRoutingSuggestion: (turnId, decision) => {
+        setResolvedRoutingTurns((previous) => ({
+          ...previous,
+          [turnId]: { acceptedTarget: decision.kind === 'accept' ? decision.targetAgentId : null },
+        }))
+        if (decision.kind === 'accept') {
+          // Update the composer agent so the user's next message in this
+          // session goes to the chosen specialist. The controller no-ops if
+          // the picker is locked during an active run; the next run starts
+          // under the new agent.
+          controller.handleComposerRuntimeAgentChange(decision.targetAgentId)
+        }
+      },
+    }
+  }, [controller.handleComposerRuntimeAgentChange])
+  function applyRoutingResolutions(turns: ConversationTurn[]): ConversationTurn[] {
+    if (Object.keys(resolvedRoutingTurns).length === 0) return turns
+    return turns.map((turn) => {
+      if (turn.kind !== 'routing_suggestion') return turn
+      const resolution = resolvedRoutingTurns[turn.id]
+      if (!resolution) return turn
+      return { ...turn, isResolved: true, acceptedTarget: resolution.acceptedTarget }
+    })
+  }
   const streamRunId = getStreamRunId(runtimeStream, renderableRuntimeRun)
   const shouldRefreshContextMeter = Boolean(
     foregroundWorkReady &&
@@ -2802,32 +2935,34 @@ export const AgentRuntime = memo(function AgentRuntime({
                 )}
               >
                 <ActionPromptDispatchProvider value={actionPromptDispatchValue}>
-                  <ConversationSection
-                    runtimeRun={renderableRuntimeRun}
-                    visibleTurns={visibleTurnsWithPendingPrompt}
-                    streamIssue={streamIssue}
-                    streamFailure={runtimeStream?.failure ?? null}
-                    showActivityIndicator={showAgentActivityIndicator}
-                    streamCompletion={runtimeStream?.completion ?? null}
-                    accountAvatarUrl={accountAvatarUrl}
-                    accountLogin={accountLogin}
-                    variant={isDense ? 'dense' : 'default'}
-                    codeUndoStates={codeUndoStates}
-                    returnSessionToHereStates={returnSessionToHereStates}
-                    onUndoChangeGroup={
-                      desktopAdapter?.applySelectiveUndo ? handleUndoCodeChange : undefined
-                    }
-                    onReturnSessionToHere={
-                      desktopAdapter?.returnSessionToHere ? handleReturnSessionToHere : undefined
-                    }
-                    onOpenKnowledgeInspection={
-                      getAgentKnowledgeInspectionFn ? handleOpenKnowledgeInspection : undefined
-                    }
-                    onOpenHandoffSummary={
-                      getAgentHandoffContextSummaryFn ? handleOpenHandoffSummary : undefined
-                    }
-                    footerHandoffSourceRunId={footerHandoffSourceRunId}
-                  />
+                  <RoutingSuggestionDispatchProvider value={routingSuggestionDispatchValue}>
+                    <ConversationSection
+                      runtimeRun={renderableRuntimeRun}
+                      visibleTurns={applyRoutingResolutions(visibleTurnsWithPendingPrompt)}
+                      streamIssue={streamIssue}
+                      streamFailure={runtimeStream?.failure ?? null}
+                      showActivityIndicator={showAgentActivityIndicator}
+                      streamCompletion={runtimeStream?.completion ?? null}
+                      accountAvatarUrl={accountAvatarUrl}
+                      accountLogin={accountLogin}
+                      variant={isDense ? 'dense' : 'default'}
+                      codeUndoStates={codeUndoStates}
+                      returnSessionToHereStates={returnSessionToHereStates}
+                      onUndoChangeGroup={
+                        desktopAdapter?.applySelectiveUndo ? handleUndoCodeChange : undefined
+                      }
+                      onReturnSessionToHere={
+                        desktopAdapter?.returnSessionToHere ? handleReturnSessionToHere : undefined
+                      }
+                      onOpenKnowledgeInspection={
+                        getAgentKnowledgeInspectionFn ? handleOpenKnowledgeInspection : undefined
+                      }
+                      onOpenHandoffSummary={
+                        getAgentHandoffContextSummaryFn ? handleOpenHandoffSummary : undefined
+                      }
+                      footerHandoffSourceRunId={footerHandoffSourceRunId}
+                    />
+                  </RoutingSuggestionDispatchProvider>
                 </ActionPromptDispatchProvider>
                 {controller.composerRuntimeAgentId === 'agent_create' ? (
                   <AgentCreateDraftSection

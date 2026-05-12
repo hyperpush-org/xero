@@ -263,6 +263,19 @@ describe("SolanaWorkbenchSidebar", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("keeps the width transition enabled when closing", () => {
+    const { rerender } = render(<SolanaWorkbenchSidebar open openImmediately />)
+    const aside = screen.getByLabelText("Solana workbench")
+
+    expect(aside.style.width).not.toBe("0px")
+
+    rerender(<SolanaWorkbenchSidebar open={false} openImmediately />)
+
+    expect(aside.style.width).toBe("0px")
+    expect(aside.style.transition).toContain("width")
+    expect(aside).toHaveClass("sidebar-motion-island")
+  })
+
   it("mounts non-active workbench panels only after the user opens their tab", async () => {
     render(<SolanaWorkbenchSidebar open />)
 

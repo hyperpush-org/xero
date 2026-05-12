@@ -29,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { createFrameCoalescer } from "@/lib/frame-governance"
-import { useSidebarWidthMotion } from "@/lib/sidebar-motion"
+import { useSidebarOpenMotion, useSidebarWidthMotion } from "@/lib/sidebar-motion"
 import {
   agentRefKey,
   agentRefsEqual,
@@ -98,8 +98,9 @@ export function WorkflowsSidebar({
   const [searchOpen, setSearchOpen] = useState(false)
   const [width, setWidth] = useState<number>(() => readPersistedWidth() ?? DEFAULT_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
-  const targetWidth = open ? width : 0
-  const widthMotion = useSidebarWidthMotion(targetWidth, { animate: false, isResizing })
+  const motionOpen = useSidebarOpenMotion(open)
+  const targetWidth = motionOpen ? width : 0
+  const widthMotion = useSidebarWidthMotion(targetWidth, { isResizing })
   const widthRef = useRef(width)
   widthRef.current = width
   const deferredQuery = useDeferredFilterQuery(query)

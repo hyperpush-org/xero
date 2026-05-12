@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, Error as SqlError, ErrorCode};
 use crate::{
     commands::{
         CommandError, OperatorApprovalDto, OperatorApprovalStatus, ProjectOriginDto,
-        ResumeHistoryEntryDto, ResumeHistoryStatus, VerificationRecordDto,
+        ResumeHistoryEntryDto, ResumeHistoryStatus, StartTargetDto, VerificationRecordDto,
         VerificationRecordStatus,
     },
     db::database_path_for_repo,
@@ -39,6 +39,7 @@ pub(crate) struct ProjectSummaryRow {
     pub(crate) project_origin: ProjectOriginDto,
     pub(crate) branch: Option<String>,
     pub(crate) runtime: Option<String>,
+    pub(crate) start_targets: Vec<StartTargetDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

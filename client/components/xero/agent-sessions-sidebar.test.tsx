@@ -150,6 +150,29 @@ describe('AgentSessionsSidebar', () => {
     expect(screen.queryByText('Rename')).not.toBeInTheDocument()
   })
 
+  it('uses a faster exit animation when an active session leaves the list', async () => {
+    const props: ComponentProps<typeof AgentSessionsSidebar> = {
+      projectId: 'project-1',
+      sessions,
+      selectedSessionId: 'agent-session-main',
+      onSelectSession: vi.fn(),
+      onCreateSession: vi.fn(),
+      onArchiveSession: vi.fn(),
+    }
+    const { rerender } = render(<AgentSessionsSidebar {...props} />)
+    const row = screen.getByText('Main session').closest('li') as HTMLElement
+
+    rerender(<AgentSessionsSidebar {...props} sessions={[]} />)
+
+    await waitFor(() => expect(row).toHaveClass('animate-out', 'duration-150'))
+    expect(row).not.toHaveClass('duration-300')
+
+    const exitingRow = screen.getByText('Main session').closest('li') as HTMLElement
+    fireEvent.animationEnd(exitingRow)
+
+    await waitFor(() => expect(screen.queryByText('Main session')).not.toBeInTheDocument())
+  })
+
   it('clears archive confirmation when the cursor leaves the archive button', () => {
     const onArchiveSession = vi.fn()
     renderSidebar({ onArchiveSession })
@@ -467,6 +490,14 @@ describe('AgentSessionsSidebar', () => {
     await waitFor(() =>
       expect(onDeleteSession).toHaveBeenCalledWith('agent-session-archived'),
     )
+
+    const row = screen.getByText('Old session').closest('li') as HTMLElement
+    await waitFor(() => expect(row).toHaveClass('animate-out', 'duration-150'))
+    expect(row).not.toHaveClass('duration-300')
+
+    const exitingRow = screen.getByText('Old session').closest('li') as HTMLElement
+    fireEvent.animationEnd(exitingRow)
+
     await waitFor(() => expect(screen.queryByText('Old session')).not.toBeInTheDocument())
   })
 

@@ -243,6 +243,8 @@ describe('NodePropertiesPanel granular policy editor', () => {
     const panel = container.querySelector('.agent-properties-panel')
     expect(panel).not.toBeNull()
     expect(panel).toHaveClass('w-[272px]')
+    expect(panel).toHaveClass('bottom-4')
+    expect(panel).toHaveClass('left-5')
   })
 
   it('expands an allowed tool pack into its granted tool chips so the user can see what was added', () => {

@@ -115,6 +115,31 @@ describe('AgentToolingSection', () => {
     expect(screen.getByRole('radio', { name: 'Conservative' })).toBeChecked()
   })
 
+  it('saves the tool call grouping display preference without touching model tooling settings', async () => {
+    const adapter = makeAdapter()
+    const onToolCallGroupingPreferenceChange = vi.fn(async () => undefined)
+
+    render(
+      <AgentToolingSection
+        adapter={adapter}
+        toolCallGroupingPreference="grouped"
+        onToolCallGroupingPreferenceChange={onToolCallGroupingPreferenceChange}
+      />,
+    )
+
+    const groupingSwitch = await screen.findByRole('switch', {
+      name: 'Group completed tool calls',
+    })
+    expect(groupingSwitch).toBeChecked()
+
+    fireEvent.click(groupingSwitch)
+
+    await waitFor(() =>
+      expect(onToolCallGroupingPreferenceChange).toHaveBeenCalledWith('separate'),
+    )
+    expect(adapter.agentToolingUpdateSettings).not.toHaveBeenCalled()
+  })
+
   it('renders saved per-model overrides and updates an override style through the adapter', async () => {
     const adapter = makeAdapter({
       settings: makeSettings({

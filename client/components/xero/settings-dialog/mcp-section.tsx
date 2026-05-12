@@ -390,7 +390,7 @@ export function McpSection({
   }
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-6">
       <SectionHeader
         title="MCP Servers"
         description="Manage app-local MCP server definitions and inspect connection diagnostics."
@@ -400,7 +400,7 @@ export function McpSection({
               type="button"
               variant="outline"
               size="sm"
-              className="h-8 gap-1.5 text-[12px]"
+              className="h-8 gap-1.5 text-[12.5px]"
               disabled={!onRefreshMcpRegistry || isLoading}
               onClick={() => void onRefreshMcpRegistry?.({ force: true })}
             >
@@ -414,7 +414,7 @@ export function McpSection({
             <Button
               type="button"
               size="sm"
-              className="h-8 gap-1.5 text-[12px]"
+              className="h-8 gap-1.5 text-[12.5px]"
               disabled={!canMutate || isMutating}
               onClick={openCreateForm}
             >
@@ -429,22 +429,22 @@ export function McpSection({
       {mcpRegistryMutationError ? <ErrorBanner message={mcpRegistryMutationError.message} /> : null}
 
       {editingServerId !== null ? (
-        <section className="rounded-md border border-border/70 bg-secondary/20 px-4 py-3.5 animate-in fade-in-0 slide-in-from-top-1 motion-enter">
-          <div className="flex items-baseline justify-between gap-3">
-            <h4 className="text-[12.5px] font-semibold text-foreground">
+        <section className="overflow-hidden rounded-lg border border-border/70 bg-secondary/[0.07] animate-in fade-in-0 slide-in-from-top-1 motion-enter">
+          <header className="flex items-baseline justify-between gap-3 border-b border-border/40 bg-secondary/10 px-4 py-3">
+            <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">
               {editingServerId === '' ? 'New MCP server' : `Edit ${activeServer?.name ?? editingServerId}`}
             </h4>
             {editingServerId !== '' ? (
-              <span className="font-mono text-[11px] text-muted-foreground">{editingServerId}</span>
+              <span className="font-mono text-[12px] text-muted-foreground">{editingServerId}</span>
             ) : null}
-          </div>
+          </header>
 
-          <div className="mt-3 grid gap-3">
+          <div className="grid gap-3.5 px-4 py-4">
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Server id" htmlFor="mcp-form-id" error={formErrors.id}>
                 <Input
                   id="mcp-form-id"
-                  className="h-8 font-mono text-[12.5px]"
+                  className="h-9 font-mono text-[12.5px]"
                   value={formValues.id}
                   disabled={isMutating || editingServerId !== ''}
                   onChange={(event) => setFormValues((current) => ({ ...current, id: event.target.value }))}
@@ -454,7 +454,7 @@ export function McpSection({
               <FormField label="Display name" htmlFor="mcp-form-name" error={formErrors.name}>
                 <Input
                   id="mcp-form-name"
-                  className="h-8 text-[12.5px]"
+                  className="h-9 text-[12.5px]"
                   value={formValues.name}
                   disabled={isMutating}
                   onChange={(event) => setFormValues((current) => ({ ...current, name: event.target.value }))}
@@ -474,7 +474,7 @@ export function McpSection({
                 }
                 disabled={isMutating}
               >
-                <SelectTrigger id="mcp-form-transport" className="h-8 text-[12.5px]" size="sm">
+                <SelectTrigger id="mcp-form-transport" className="h-9 text-[12.5px]" size="sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -490,7 +490,7 @@ export function McpSection({
                 <FormField label="Command" htmlFor="mcp-form-command" error={formErrors.command}>
                   <Input
                     id="mcp-form-command"
-                    className="h-8 font-mono text-[12.5px]"
+                    className="h-9 font-mono text-[12.5px]"
                     value={formValues.command}
                     disabled={isMutating}
                     onChange={(event) => setFormValues((current) => ({ ...current, command: event.target.value }))}
@@ -500,7 +500,7 @@ export function McpSection({
                 <FormField label="Args (one per line)" htmlFor="mcp-form-args">
                   <Textarea
                     id="mcp-form-args"
-                    className="min-h-16 font-mono text-[12px]"
+                    className="min-h-20 font-mono text-[12.5px]"
                     value={formValues.argsText}
                     disabled={isMutating}
                     onChange={(event) => setFormValues((current) => ({ ...current, argsText: event.target.value }))}
@@ -521,7 +521,7 @@ export function McpSection({
               >
                 <Input
                   id="mcp-form-url"
-                  className="h-8 font-mono text-[12.5px]"
+                  className="h-9 font-mono text-[12.5px]"
                   value={formValues.url}
                   disabled={isMutating}
                   onChange={(event) => setFormValues((current) => ({ ...current, url: event.target.value }))}
@@ -534,7 +534,7 @@ export function McpSection({
               <FormField label="Working directory (optional)" htmlFor="mcp-form-cwd">
                 <Input
                   id="mcp-form-cwd"
-                  className="h-8 font-mono text-[12.5px]"
+                  className="h-9 font-mono text-[12.5px]"
                   value={formValues.cwd}
                   disabled={isMutating}
                   onChange={(event) => setFormValues((current) => ({ ...current, cwd: event.target.value }))}
@@ -544,7 +544,7 @@ export function McpSection({
               <FormField label="Env mappings (KEY=ENV_VAR)" htmlFor="mcp-form-env" error={formErrors.envText}>
                 <Textarea
                   id="mcp-form-env"
-                  className="min-h-16 font-mono text-[12px]"
+                  className="min-h-20 font-mono text-[12.5px]"
                   value={formValues.envText}
                   disabled={isMutating}
                   onChange={(event) => setFormValues((current) => ({ ...current, envText: event.target.value }))}
@@ -553,20 +553,20 @@ export function McpSection({
               </FormField>
             </div>
 
-            {formErrors.form ? <p className="text-[12px] text-destructive">{formErrors.form}</p> : null}
+            {formErrors.form ? <p className="text-[12.5px] text-destructive">{formErrors.form}</p> : null}
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 pt-1">
               <Button
                 type="button"
                 size="sm"
-                className="h-8 gap-1.5 text-[12px]"
+                className="h-9 gap-1.5 text-[12.5px]"
                 disabled={!onUpsertMcpServer || isMutating}
                 onClick={() => void handleSave()}
               >
                 {isMutating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                 {editingServerId === '' ? 'Create server' : 'Save changes'}
               </Button>
-              <Button type="button" size="sm" variant="ghost" className="h-8 text-[12px]" onClick={closeForm}>
+              <Button type="button" size="sm" variant="ghost" className="h-9 text-[12.5px]" onClick={closeForm}>
                 Cancel
               </Button>
             </div>
@@ -574,22 +574,22 @@ export function McpSection({
         </section>
       ) : null}
 
-      <section className="flex flex-col gap-2.5">
+      <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
-          <h4 className="text-[12.5px] font-semibold text-foreground">
+          <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">
             Servers
-            <span className="ml-1.5 font-normal text-muted-foreground">{registryServers.length}</span>
+            <span className="ml-2 text-[12px] font-normal text-muted-foreground">{registryServers.length}</span>
           </h4>
           {registryServers.length > 0 ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 px-2 text-[11.5px] text-muted-foreground hover:text-foreground"
+              className="h-8 gap-1.5 px-2.5 text-[12px] text-muted-foreground hover:text-foreground"
               disabled={!onRefreshMcpServerStatuses || isMutating}
               onClick={() => void handleRefreshStatuses()}
             >
-              <RefreshCcw className="h-3 w-3" />
+              <RefreshCcw className="h-3.5 w-3.5" />
               Refresh statuses
             </Button>
           ) : null}
@@ -602,23 +602,23 @@ export function McpSection({
             hint="Add a server manually or import a JSON file below."
           />
         ) : (
-          <div className="overflow-hidden rounded-md border border-border/60 divide-y divide-border/40">
+          <div className="overflow-hidden rounded-lg border border-border/60 divide-y divide-border/40">
             {registryServers.map((server) => {
               const busy = isMutating && (pendingMcpServerId === null || pendingMcpServerId === server.id)
               const tone = statusTone(server.connection.status)
               return (
-                <div key={server.id} className="px-3.5 py-3">
+                <div key={server.id} className="px-4 py-3.5">
                   <div className="flex items-start gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-[13px] font-medium text-foreground">{server.name}</p>
-                        <span className={cn('inline-flex items-center gap-1 text-[11px]', STATUS_TEXT[tone])}>
+                        <p className="text-[13.5px] font-semibold text-foreground">{server.name}</p>
+                        <span className={cn('inline-flex items-center gap-1 text-[12px]', STATUS_TEXT[tone])}>
                           <span className={cn('h-1.5 w-1.5 rounded-full', STATUS_DOT[tone])} />
                           {getMcpConnectionStatusLabel(server.connection.status)}
                         </span>
-                        <span className="font-mono text-[11px] text-muted-foreground">{server.id}</span>
+                        <span className="font-mono text-[12px] text-muted-foreground">{server.id}</span>
                       </div>
-                      <p className="mt-1 text-[12px] text-muted-foreground">
+                      <p className="mt-1.5 text-[12.5px] leading-[1.5] text-muted-foreground">
                         <span className="text-muted-foreground/70">{getMcpTransportKindLabel(server.transport.kind)}</span>{' '}
                         <span className="font-mono text-foreground/80">{transportSummary(server)}</span>
                       </p>
@@ -628,18 +628,18 @@ export function McpSection({
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-7 gap-1 px-2 text-[11.5px] text-muted-foreground hover:text-foreground"
+                        className="h-8 gap-1.5 px-2.5 text-[12px] text-muted-foreground hover:text-foreground"
                         disabled={!onRefreshMcpServerStatuses || busy}
                         onClick={() => void handleRefreshStatuses([server.id])}
                       >
-                        <RefreshCcw className="h-3 w-3" />
+                        <RefreshCcw className="h-3.5 w-3.5" />
                         Refresh
                       </Button>
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-7 px-2 text-[11.5px] text-muted-foreground hover:text-foreground"
+                        className="h-8 px-2.5 text-[12px] text-muted-foreground hover:text-foreground"
                         disabled={!onUpsertMcpServer || busy}
                         onClick={() => openEditForm(server)}
                       >
@@ -649,27 +649,27 @@ export function McpSection({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive"
                         disabled={!onRemoveMcpServer || busy}
                         onClick={() => void handleRemove(server.id)}
                         aria-label={`Remove ${server.name}`}
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
 
                   {server.connection.diagnostic ? (
-                    <div className="mt-2.5 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-2.5 py-1.5 text-[11.5px] text-destructive">
-                      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] leading-[1.5] text-destructive">
+                      <AlertCircle className="mt-[1px] h-4 w-4 shrink-0" />
                       <span className="min-w-0">
                         {server.connection.diagnostic.message}{' '}
-                        <span className="font-mono text-[11px] opacity-80">({server.connection.diagnostic.code})</span>
+                        <span className="font-mono text-[12px] opacity-80">({server.connection.diagnostic.code})</span>
                       </span>
                     </div>
                   ) : null}
 
-                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                  <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
                     <span>
                       <span className="text-muted-foreground/60">Last checked </span>
                       <span className="text-foreground/80">{formatTimestamp(server.connection.lastCheckedAt)}</span>
@@ -690,57 +690,59 @@ export function McpSection({
         )}
       </section>
 
-      <section className="flex flex-col gap-2.5 border-t border-border/50 pt-5">
-        <div>
-          <h4 className="text-[12.5px] font-semibold text-foreground">Import from JSON</h4>
-          <p className="mt-0.5 text-[12px] leading-[1.5] text-muted-foreground">
+      <section className="overflow-hidden rounded-lg border border-border/60">
+        <header className="border-b border-border/40 bg-secondary/10 px-4 py-3">
+          <h4 className="text-[13.5px] font-semibold tracking-tight text-foreground">Import from JSON</h4>
+          <p className="mt-0.5 text-[12.5px] leading-[1.5] text-muted-foreground">
             Paste an absolute path to a JSON file that defines one or more MCP servers.
           </p>
-        </div>
+        </header>
 
-        <div className="flex items-center gap-2">
-          <Label htmlFor="mcp-import-path" className="sr-only">
-            Import JSON file
-          </Label>
-          <Input
-            id="mcp-import-path"
-            className="h-8 font-mono text-[12px]"
-            placeholder="/absolute/path/to/mcp-import.json"
-            value={importPath}
-            onChange={(event) => setImportPath(event.target.value)}
-            disabled={!onImportMcpServers || isMutating}
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 text-[12px]"
-            disabled={!onImportMcpServers || isMutating}
-            onClick={() => void handleImport()}
-          >
-            Import
-          </Button>
-        </div>
-        {importError ? <p className="text-[12px] text-destructive">{importError}</p> : null}
-
-        {mcpImportDiagnostics.length > 0 ? (
-          <div className="rounded-md border border-warning/30 bg-warning/[0.06] px-3 py-2 text-[12px] text-warning dark:text-warning">
-            <p className="font-medium">Import diagnostics</p>
-            <ul className="mt-1.5 space-y-1 pl-1">
-              {mcpImportDiagnostics.map((diagnostic) => (
-                <li key={`${diagnostic.index}:${diagnostic.code}`} className="flex gap-1.5">
-                  <span className="text-warning/70">·</span>
-                  <span className="min-w-0">
-                    {diagnostic.serverId ? <span className="font-mono">{diagnostic.serverId}</span> : null}
-                    {diagnostic.serverId ? ' — ' : ''}
-                    {diagnostic.message}{' '}
-                    <span className="font-mono text-[11px] opacity-70">({diagnostic.code})</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
+        <div className="flex flex-col gap-3 px-4 py-3.5">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="mcp-import-path" className="sr-only">
+              Import JSON file
+            </Label>
+            <Input
+              id="mcp-import-path"
+              className="h-9 font-mono text-[12.5px]"
+              placeholder="/absolute/path/to/mcp-import.json"
+              value={importPath}
+              onChange={(event) => setImportPath(event.target.value)}
+              disabled={!onImportMcpServers || isMutating}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 px-3.5 text-[12.5px]"
+              disabled={!onImportMcpServers || isMutating}
+              onClick={() => void handleImport()}
+            >
+              Import
+            </Button>
           </div>
-        ) : null}
+          {importError ? <p className="text-[12.5px] text-destructive">{importError}</p> : null}
+
+          {mcpImportDiagnostics.length > 0 ? (
+            <div className="rounded-md border border-warning/30 bg-warning/[0.06] px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-warning dark:text-warning">
+              <p className="font-semibold">Import diagnostics</p>
+              <ul className="mt-2 space-y-1.5 pl-1">
+                {mcpImportDiagnostics.map((diagnostic) => (
+                  <li key={`${diagnostic.index}:${diagnostic.code}`} className="flex gap-1.5">
+                    <span className="text-warning/70">·</span>
+                    <span className="min-w-0">
+                      {diagnostic.serverId ? <span className="font-mono">{diagnostic.serverId}</span> : null}
+                      {diagnostic.serverId ? ' — ' : ''}
+                      {diagnostic.message}{' '}
+                      <span className="font-mono text-[12px] opacity-70">({diagnostic.code})</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
       </section>
     </div>
   )
@@ -748,8 +750,8 @@ export function McpSection({
 
 function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2 text-[12.5px] text-destructive">
-      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+    <div className="flex items-start gap-2.5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3.5 py-2.5 text-[12.5px] leading-[1.5] text-destructive">
+      <AlertCircle className="mt-[1px] h-4 w-4 shrink-0" />
       <span>{message}</span>
     </div>
   )
@@ -770,12 +772,12 @@ function FormField({
 }) {
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={htmlFor} className="text-[11.5px]">
+      <Label htmlFor={htmlFor} className="text-[12px] font-medium text-muted-foreground">
         {label}
       </Label>
       {children}
-      {hint ? <p className="text-[11px] text-muted-foreground">{hint}</p> : null}
-      {error ? <p className="text-[12px] text-destructive">{error}</p> : null}
+      {hint ? <p className="text-[12px] text-muted-foreground">{hint}</p> : null}
+      {error ? <p className="text-[12.5px] text-destructive">{error}</p> : null}
     </div>
   )
 }
@@ -790,10 +792,14 @@ function EmptyState({
   hint: string
 }) {
   return (
-    <div className="rounded-md border border-dashed border-border/60 bg-secondary/10 px-4 py-8 text-center">
-      <Icon className="mx-auto h-4 w-4 text-muted-foreground" />
-      <p className="mt-2 text-[12.5px] font-medium text-foreground">{title}</p>
-      <p className="mt-0.5 text-[11.5px] text-muted-foreground">{hint}</p>
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-border/60 bg-secondary/10 px-6 py-10 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-full border border-border/60 bg-card/60">
+        <Icon className="h-5 w-5 text-muted-foreground" />
+      </div>
+      <div className="flex max-w-sm flex-col gap-1">
+        <p className="text-[14px] font-semibold tracking-tight text-foreground">{title}</p>
+        <p className="text-[12.5px] leading-[1.5] text-muted-foreground">{hint}</p>
+      </div>
     </div>
   )
 }

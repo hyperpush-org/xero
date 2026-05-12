@@ -11,17 +11,29 @@ import {
   Globe,
   Maximize2,
   Minus,
+  Play,
+  Square,
+  TerminalSquare,
   Workflow as WorkflowIcon,
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 import { useProjectSelectionPreview } from "@/src/features/xero/project-selection-preview"
 import { AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
 import { AppLogo } from "./app-logo"
 import type { View } from "./data"
+import { ProjectContextMenu } from "./project-context-menu"
 import { StatusFooter, type StatusFooterProps } from "./status-footer"
 
 // ---------------------------------------------------------------------------
@@ -102,6 +114,20 @@ interface XeroShellProps {
   agentDockOpen?: boolean
   /** Disabled state for the agent dock toggle (e.g., when on the agent view). */
   agentDockDisabled?: boolean
+  onToggleTerminal?: () => void
+  terminalOpen?: boolean
+  /** Project run state — drives the Play/Stop button visuals. */
+  projectRunning?: boolean
+  /** Targets the active project can run from the Play button. */
+  projectStartTargets?: { id: string; name: string }[]
+  /** Open the configure-start-targets dialog. */
+  onEditProjectStartTargets?: () => void
+  /** Run a specific target by id. */
+  onRunTarget?: (targetId: string) => void
+  /** Run every configured target as separate terminal tabs. */
+  onRunAllTargets?: () => void
+  /** Stop the active project run. */
+  onStopProject?: () => void
   /** Number of changed files in the working tree — surfaced as a badge on the diff button. */
   vcsChangeCount?: number
   /** Lines added across the working tree (for the +/- badge). */
@@ -228,6 +254,14 @@ export function XeroShell({
   onToggleAgentDock,
   agentDockOpen = false,
   agentDockDisabled = false,
+  onToggleTerminal,
+  terminalOpen = false,
+  projectRunning = false,
+  projectStartTargets = [],
+  onEditProjectStartTargets,
+  onRunTarget,
+  onRunAllTargets,
+  onStopProject,
   vcsChangeCount = 0,
   vcsAdditions = 0,
   vcsDeletions = 0,
@@ -296,6 +330,134 @@ export function XeroShell({
       ? projectSelectionPreview.projectName
       : null
   const trimmedProjectName = (previewProjectName ?? projectName)?.trim()
+  const showProjectActions = Boolean(projectId && trimmedProjectName)
+  const hasStartTargets = projectStartTargets.length > 0
+  const playButtonClass = cn(
+    "titlebar-no-drag pointer-events-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] transition-colors",
+    projectRunning
+      ? "bg-warning/15 text-warning hover:bg-warning/25"
+      : hasStartTargets
+        ? "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+        : "text-muted-foreground/60 hover:bg-secondary/60 hover:text-foreground",
+  )
+  const playTooltip = projectRunning
+    ? "Stop project"
+    : projectStartTargets.length === 0
+      ? "Configure start commands"
+      : projectStartTargets.length === 1
+        ? `Run ${projectStartTargets[0].name}`
+        : "Run project"
+  const playIcon = projectRunning ? (
+    <Square className="h-3 w-3 fill-current" />
+  ) : (
+    <Play className="h-3 w-3 fill-current" />
+  )
+  const directClick = (event: React.MouseEvent) => {
+    event.stopPropagation()
+    if (projectRunning) {
+      onStopProject?.()
+      return
+    }
+    if (projectStartTargets.length === 0) {
+      onEditProjectStartTargets?.()
+      return
+    }
+    if (projectStartTargets.length === 1) {
+      onRunTarget?.(projectStartTargets[0].id)
+    }
+  }
+
+  const PlayPauseBtn = showProjectActions ? (
+    !projectRunning && projectStartTargets.length >= 2 ? (
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label="Run project"
+                className={playButtonClass}
+                data-titlebar-no-drag="true"
+                onMouseDown={stopTitlebarMouseEventPropagation}
+                type="button"
+              >
+                {playIcon}
+              </button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>
+            {playTooltip}
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start" sideOffset={6} className="min-w-[200px]">
+          <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted-foreground">
+            Run target
+          </DropdownMenuLabel>
+          {projectStartTargets.map((target) => (
+            <DropdownMenuItem
+              key={target.id}
+              onSelect={() => onRunTarget?.(target.id)}
+            >
+              <span className="font-mono text-[12.5px]">{target.name}</span>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => onRunAllTargets?.()}>
+            Run all
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onEditProjectStartTargets?.()}>
+            Configure start commands…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-label={projectRunning ? "Stop project" : "Run project"}
+            aria-pressed={projectRunning}
+            className={playButtonClass}
+            data-titlebar-no-drag="true"
+            onClick={directClick}
+            onMouseDown={stopTitlebarMouseEventPropagation}
+            type="button"
+          >
+            {playIcon}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          {playTooltip}
+        </TooltipContent>
+      </Tooltip>
+    )
+  ) : null
+
+  const ProjectName = trimmedProjectName ? (
+    showProjectActions ? (
+      <ProjectContextMenu
+        projectRunning={projectRunning}
+        startTargets={projectStartTargets}
+        onEditStartTargets={() => onEditProjectStartTargets?.()}
+        onRunTarget={(id) => onRunTarget?.(id)}
+        onRunAllTargets={() => onRunAllTargets?.()}
+        onStop={() => onStopProject?.()}
+        onOpenTerminal={() => {
+          if (!terminalOpen) onToggleTerminal?.()
+        }}
+      >
+        <span
+          className="titlebar-no-drag pointer-events-auto min-w-0 truncate text-[13px] font-medium tracking-[-0.01em] text-foreground/75"
+          data-titlebar-no-drag="true"
+        >
+          {trimmedProjectName}
+        </span>
+      </ProjectContextMenu>
+    ) : (
+      <span className="min-w-0 truncate text-[13px] font-medium tracking-[-0.01em] text-foreground/75">
+        {trimmedProjectName}
+      </span>
+    )
+  ) : null
+
   const Logo = (
     <div className="flex min-w-0 items-center gap-2">
       <AppLogo className="h-3 w-3 shrink-0" />
@@ -308,9 +470,8 @@ export function XeroShell({
           >
             /
           </span>
-          <span className="min-w-0 truncate text-[13px] font-medium tracking-[-0.01em] text-foreground/75">
-            {trimmedProjectName}
-          </span>
+          {ProjectName}
+          {PlayPauseBtn}
         </>
       ) : null}
     </div>
@@ -381,8 +542,6 @@ export function XeroShell({
             aria-label="Install Xcode"
             className={titlebarToolButtonClassName(false, "warning")}
             onClick={handleInstallXcode}
-            onFocus={() => queueSurfacePreload("ios")}
-            onPointerEnter={() => queueSurfacePreload("ios")}
             size="icon-sm"
             title="iOS Simulator needs Xcode. Click to install."
             type="button"
@@ -401,8 +560,6 @@ export function XeroShell({
             aria-pressed={iosOpen}
             className={titlebarToolButtonClassName(iosOpen)}
             onClick={onToggleIos}
-            onFocus={() => queueSurfacePreload("ios")}
-            onPointerEnter={() => queueSurfacePreload("ios")}
             size="icon-sm"
             title="iOS Simulator"
             type="button"
@@ -446,8 +603,6 @@ export function XeroShell({
           aria-pressed={solanaOpen}
           className={titlebarToolButtonClassName(solanaOpen)}
           onClick={onToggleSolana}
-          onFocus={() => queueSurfacePreload("solana")}
-          onPointerEnter={() => queueSurfacePreload("solana")}
           size="icon-sm"
           title="Solana Workbench"
           type="button"
@@ -457,6 +612,26 @@ export function XeroShell({
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={8}>Solana Workbench</TooltipContent>
+    </Tooltip>
+  )
+
+  const TerminalToolBtn = (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={terminalOpen ? "Close terminal" : "Open terminal"}
+          aria-pressed={terminalOpen}
+          className={titlebarToolButtonClassName(terminalOpen)}
+          onClick={onToggleTerminal}
+          size="icon-sm"
+          title="Terminal"
+          type="button"
+          variant="ghost"
+        >
+          <TerminalSquare className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={8}>Terminal</TooltipContent>
     </Tooltip>
   )
 
@@ -677,6 +852,7 @@ export function XeroShell({
             {IosToolBtn}
             {BrowserToolBtn}
             {SolanaToolBtn}
+            {TerminalToolBtn}
           </div>
         ) : null}
       </header>
@@ -713,6 +889,7 @@ export function XeroShell({
               {AgentDockBtn}
               {BrowserToolBtn}
               {SolanaToolBtn}
+              {TerminalToolBtn}
               <div className="mx-2 h-4 w-px bg-border" />
             </>
           ) : null}

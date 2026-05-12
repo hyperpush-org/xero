@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils"
 import { createFrameCoalescer } from "@/lib/frame-governance"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { FloatingRightSidebarFrame } from "@/components/xero/floating-right-sidebar-frame"
 
 const MIN_WIDTH = 600
 const DEFAULT_WIDTH_RATIO = 0.7
@@ -246,58 +247,43 @@ export const VcsSidebar = memo(function VcsSidebar(props: VcsSidebarProps) {
     })
   }, [])
 
-  if (!open) {
-    return null
-  }
-
   // The panel overlays the main content area. `<main>` has `contain: paint`,
   // which makes it the containing block for fixed descendants, so `inset-y-0`
   // already fills exactly the area between the titlebar and the status footer.
   return (
-    <>
-      {/* Backdrop: dims the underlying app and dismisses the panel on click. */}
-      <div
-        aria-hidden="true"
-        className="fixed inset-0 z-40 bg-black/30"
-        onClick={handleClose}
-      />
-      <aside
-        aria-hidden="false"
-        aria-label="Source control panel"
-        className="fixed inset-y-0 right-0 z-50 flex flex-col overflow-hidden border-l border-border/80 bg-sidebar shadow-2xl"
-        style={{
-          width: renderedWidth,
-          contain: "layout paint style",
-        }}
-      >
-        {shouldRenderDiffPane ? (
-          <div
-            aria-label="Resize source control sidebar"
-            aria-orientation="vertical"
-            aria-valuemax={viewportMaxWidth()}
-            aria-valuemin={MIN_WIDTH}
-            aria-valuenow={width}
-            className={cn(
-              "absolute inset-y-0 -left-[3px] z-10 w-[6px] cursor-col-resize bg-transparent transition-colors",
-              "hover:bg-primary/30",
-              isResizing && "bg-primary/40",
-            )}
-            onKeyDown={handleResizeKey}
-            onPointerDown={handleResizeStart}
-            role="separator"
-            tabIndex={open ? 0 : -1}
-          />
-        ) : null}
+    <FloatingRightSidebarFrame
+      label="Source control panel"
+      onOverlayClick={handleClose}
+      open={open}
+      width={renderedWidth}
+    >
+      {shouldRenderDiffPane ? (
+        <div
+          aria-label="Resize source control sidebar"
+          aria-orientation="vertical"
+          aria-valuemax={viewportMaxWidth()}
+          aria-valuemin={MIN_WIDTH}
+          aria-valuenow={width}
+          className={cn(
+            "absolute inset-y-0 -left-[3px] z-10 w-[6px] cursor-col-resize bg-transparent transition-colors",
+            "hover:bg-primary/30",
+            isResizing && "bg-primary/40",
+          )}
+          onKeyDown={handleResizeKey}
+          onPointerDown={handleResizeStart}
+          role="separator"
+          tabIndex={open ? 0 : -1}
+        />
+      ) : null}
 
-        <div className="flex h-full min-w-0 flex-1 flex-col">
-          <VcsSidebarBody
-            {...props}
-            diffFileCacheRef={diffFileCacheRef}
-            diffPatchCacheRef={diffPatchCacheRef}
-          />
-        </div>
-      </aside>
-    </>
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        <VcsSidebarBody
+          {...props}
+          diffFileCacheRef={diffFileCacheRef}
+          diffPatchCacheRef={diffPatchCacheRef}
+        />
+      </div>
+    </FloatingRightSidebarFrame>
   )
 })
 

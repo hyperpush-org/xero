@@ -47,9 +47,17 @@ export const runtimeRunApprovalModeSchema = z.enum(['suggest', 'auto_edit', 'yol
 export const agentToolApplicationStyleSchema = z.enum(['conservative', 'balanced', 'declarative_first'])
 export const agentToolApplicationStyleResolutionSourceSchema = z.enum(['global_default', 'model_override'])
 export const DEFAULT_RUNTIME_RUN_APPROVAL_MODE: RuntimeRunApprovalModeDto = 'suggest'
-export const BUILTIN_RUNTIME_AGENT_IDS = ['ask', 'plan', 'engineer', 'debug', 'crawl', 'agent_create'] as const
+export const BUILTIN_RUNTIME_AGENT_IDS = [
+  'generalist',
+  'ask',
+  'plan',
+  'engineer',
+  'debug',
+  'crawl',
+  'agent_create',
+] as const
 export const runtimeAgentIdSchema = z.enum(BUILTIN_RUNTIME_AGENT_IDS)
-export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'ask'
+export const DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'generalist'
 export type RuntimeAgentProjectOrigin = 'brownfield' | 'greenfield' | 'unknown' | null | undefined
 
 export interface RuntimeAgentAvailabilityEnvironment {
@@ -76,7 +84,7 @@ export interface RuntimeAgentDescriptor {
     | 'agent_builder'
   defaultApprovalMode: RuntimeRunApprovalModeDto
   allowedApprovalModes: readonly RuntimeRunApprovalModeDto[]
-  promptPolicy: 'ask' | 'plan' | 'engineer' | 'debug' | 'crawl' | 'agent_create'
+  promptPolicy: 'ask' | 'plan' | 'engineer' | 'debug' | 'crawl' | 'agent_create' | 'generalist'
   toolPolicy: 'observe_only' | 'planning' | 'repository_recon' | 'engineering' | 'agent_builder'
   outputContract:
     | 'answer'
@@ -117,6 +125,45 @@ export function getRuntimeAgentAvailability(
 }
 
 export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
+  {
+    id: 'generalist',
+    version: 1,
+    label: 'Generalist',
+    shortLabel: 'Generalist',
+    description:
+      'A do-anything agent with the full engineering toolset that recognises when a specialist agent would handle the task better and offers to route.',
+    taskPurpose:
+      'Handle any user request directly, or suggest routing to Plan, Engineer, or Debug when the request fits a specialist’s scope.',
+    scope: 'built_in',
+    lifecycleState: 'active',
+    baseCapabilityProfile: 'engineering',
+    defaultApprovalMode: 'suggest',
+    allowedApprovalModes: ['suggest', 'auto_edit', 'yolo'],
+    promptPolicy: 'generalist',
+    toolPolicy: 'engineering',
+    outputContract: 'answer',
+    projectDataPolicy: {
+      required: true,
+      recordKinds: [
+        'agent_handoff',
+        'project_fact',
+        'decision',
+        'constraint',
+        'plan',
+        'question',
+        'context_note',
+        'diagnostic',
+        'verification',
+      ],
+      structuredSchemas: ['xero.project_record.v1'],
+      unstructuredScopes: ['answer_note', 'session_summary', 'troubleshooting_note'],
+      memoryCandidateKinds: ['project_fact', 'user_preference', 'decision', 'session_summary', 'troubleshooting'],
+    },
+    workflowRole: 'interactive',
+    allowPlanGate: true,
+    allowVerificationGate: true,
+    allowAutoCompact: true,
+  },
   {
     id: 'ask',
     version: 1,

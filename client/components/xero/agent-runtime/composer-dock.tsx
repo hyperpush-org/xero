@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Cpu, FileText, ListChecks, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Square, Users, Wrench, X } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowUp, Brain, Bug, CheckIcon, ChevronDownIcon, Compass, Cpu, FileText, ListChecks, LoaderCircle, MessageCircle, Mic, Paperclip, Search, Settings, ShieldCheck, Sparkles, Square, Users, Wrench, X } from 'lucide-react'
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { forwardRef, Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 
@@ -136,6 +136,8 @@ const composerInlineSelectContentClassName =
 
 function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
   switch (agentId) {
+    case 'generalist':
+      return Compass
     case 'ask':
       return MessageCircle
     case 'plan':
@@ -291,7 +293,23 @@ export function ComposerDock({
   const AgentTriggerIcon = isCustomAgent ? Users : getBuiltinAgentIcon(composerRuntimeAgentId)
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== 'Enter' || event.shiftKey) {
+    if (event.key !== 'Enter') {
+      return
+    }
+
+    if (event.shiftKey) {
+      event.preventDefault()
+      const textarea = event.currentTarget
+      const value = textarea.value
+      const selectionStart = textarea.selectionStart ?? value.length
+      const selectionEnd = textarea.selectionEnd ?? selectionStart
+      const nextValue = `${value.slice(0, selectionStart)}\n${value.slice(selectionEnd)}`
+      const nextCursor = selectionStart + 1
+      onDraftPromptChange(nextValue)
+      window.requestAnimationFrame(() => {
+        if (!textarea.isConnected) return
+        textarea.setSelectionRange(nextCursor, nextCursor)
+      })
       return
     }
 

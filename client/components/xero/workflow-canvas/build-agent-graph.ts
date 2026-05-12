@@ -271,9 +271,9 @@ export const AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS = {
 } as const
 
 export const AGENT_GRAPH_HEADER_LEFT_HANDLE_RATIOS = {
-  consumed: AGENT_GRAPH_HEADER_RIGHT_HANDLE_RATIOS.tool,
-  skills: 0.68,
-  workflow: 0.92,
+  workflow: 0.25,
+  consumed: 0.5,
+  skills: 0.75,
 } as const
 
 export const AGENT_GRAPH_TRIGGER_HANDLES = {

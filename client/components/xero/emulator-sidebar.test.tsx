@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -9,6 +9,8 @@ import {
 } from "./emulator-sidebar"
 import { IosEmulatorSidebar } from "./ios-emulator-sidebar"
 import { AndroidEmulatorSidebar } from "./android-emulator-sidebar"
+
+type FrameSourceLoader = NonNullable<Parameters<typeof useThrottledEmulatorFrameSrc>[0]["loadFrameSource"]>
 
 // jsdom in this project ships a localStorage whose methods aren't functions;
 // install a minimal in-memory shim so width persistence has something to call.
@@ -59,12 +61,28 @@ describe("EmulatorSidebar", () => {
     expect(aside.getAttribute("aria-hidden")).toBe("true")
   })
 
-  it("renders open with a positive width and the platform label", () => {
+  it("renders first open from zero width before expanding to the platform width", async () => {
     const { container } = render(<EmulatorSidebar open platform="android" />)
     const aside = container.querySelector("aside")!
-    expect(aside.style.width).not.toBe("0px")
+    expect(aside.style.width).toBe("0px")
+    await waitFor(() => expect(aside.style.width).not.toBe("0px"))
     expect(aside.getAttribute("aria-hidden")).toBe("false")
     expect(screen.getByText("Android Emulator")).toBeVisible()
+  })
+
+  it("keeps the width transition enabled when closing", () => {
+    const { container, rerender } = render(
+      <EmulatorSidebar open openImmediately platform="ios" />,
+    )
+    const aside = container.querySelector("aside")!
+
+    expect(aside.style.width).not.toBe("0px")
+
+    rerender(<EmulatorSidebar open={false} openImmediately platform="ios" />)
+
+    expect(aside.style.width).toBe("0px")
+    expect(aside.style.transition).toContain("width")
+    expect(aside).toHaveClass("sidebar-motion-island")
   })
 
   it("labels the iOS sidebar when platform=ios", () => {
@@ -111,15 +129,18 @@ describe("EmulatorSidebar", () => {
 function FrameSrcProbe({
   enabled = true,
   frameSeq,
+  loadFrameSource,
   minIntervalMs = 0,
 }: {
   enabled?: boolean
   frameSeq: number | null
+  loadFrameSource: FrameSourceLoader
   minIntervalMs?: number
 }) {
   const { frameSrc, settleFrameRequest } = useThrottledEmulatorFrameSrc({
     enabled,
     frameSeq,
+    loadFrameSource,
     minIntervalMs,
   })
 
@@ -130,70 +151,109 @@ function FrameSrcProbe({
   )
 }
 
+function createFrameSourceLoader() {
+  const revoked: string[] = []
+  const loadFrameSource: FrameSourceLoader = vi.fn(async (seq: number) => {
+    const src = `blob:xero-emulator-frame-${seq}`
+    return {
+      seq,
+      src,
+      revoke: () => {
+        revoked.push(src)
+      },
+    }
+  })
+  return { loadFrameSource, revoked }
+}
+
 describe("useThrottledEmulatorFrameSrc", () => {
-  it("keeps only one custom-scheme frame request in flight", () => {
-    const { rerender } = render(<FrameSrcProbe frameSeq={1} />)
+  it("keeps only one IPC frame request in flight", async () => {
+    const { loadFrameSource } = createFrameSourceLoader()
+    const { rerender } = render(<FrameSrcProbe frameSeq={1} loadFrameSource={loadFrameSource} />)
     const probe = screen.getByRole("button", { name: "settle" })
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
+    await waitFor(() => {
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-1")
+    })
 
-    rerender(<FrameSrcProbe frameSeq={2} />)
-    rerender(<FrameSrcProbe frameSeq={3} />)
+    rerender(<FrameSrcProbe frameSeq={2} loadFrameSource={loadFrameSource} />)
+    rerender(<FrameSrcProbe frameSeq={3} loadFrameSource={loadFrameSource} />)
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
+    expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-1")
+    expect(loadFrameSource).toHaveBeenCalledTimes(1)
 
     fireEvent.click(probe)
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=3")
+    await waitFor(() => {
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-3")
+    })
+    expect(loadFrameSource).toHaveBeenCalledTimes(2)
+    expect(loadFrameSource).toHaveBeenLastCalledWith(3)
   })
 
-  it("enforces a minimum interval between frame requests", () => {
+  it("enforces a minimum interval between frame requests", async () => {
     vi.useFakeTimers()
     try {
-      const { rerender } = render(<FrameSrcProbe frameSeq={1} minIntervalMs={100} />)
+      const { loadFrameSource } = createFrameSourceLoader()
+      const { rerender } = render(
+        <FrameSrcProbe frameSeq={1} loadFrameSource={loadFrameSource} minIntervalMs={100} />,
+      )
       const probe = screen.getByRole("button", { name: "settle" })
 
-      rerender(<FrameSrcProbe frameSeq={2} minIntervalMs={100} />)
+      await act(async () => undefined)
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-1")
+
+      rerender(<FrameSrcProbe frameSeq={2} loadFrameSource={loadFrameSource} minIntervalMs={100} />)
       fireEvent.click(probe)
 
-      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-1")
 
-      act(() => {
+      await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
 
-      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=2")
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-2")
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("bounds custom-scheme frame URLs to a small reusable slot set", () => {
-    const { rerender } = render(<FrameSrcProbe frameSeq={1} minIntervalMs={0} />)
+  it("uses revocable blob URLs instead of custom-scheme frame URLs", async () => {
+    const { loadFrameSource, revoked } = createFrameSourceLoader()
+    const { rerender } = render(
+      <FrameSrcProbe frameSeq={1} loadFrameSource={loadFrameSource} minIntervalMs={0} />,
+    )
     const probe = screen.getByRole("button", { name: "settle" })
-    const seenUrls = new Set<string>()
+
+    await waitFor(() => {
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-1")
+    })
 
     for (let seq = 1; seq <= 12; seq += 1) {
-      rerender(<FrameSrcProbe frameSeq={seq} minIntervalMs={0} />)
+      rerender(<FrameSrcProbe frameSeq={seq} loadFrameSource={loadFrameSource} minIntervalMs={0} />)
       fireEvent.click(probe)
-      seenUrls.add(probe.getAttribute("data-src") ?? "")
+      await waitFor(() => {
+        expect(probe.getAttribute("data-src") ?? "").toBe(`blob:xero-emulator-frame-${seq}`)
+      })
     }
 
-    expect(seenUrls).toEqual(new Set([
-      "emulator://localhost/frame?slot=1",
-      "emulator://localhost/frame?slot=2",
-      "emulator://localhost/frame?slot=3",
-    ]))
+    expect(probe.getAttribute("data-src") ?? "").not.toContain("emulator://")
+    expect(revoked).toContain("blob:xero-emulator-frame-1")
   })
 
-  it("drops the frame src when disabled", () => {
-    const { rerender } = render(<FrameSrcProbe frameSeq={1} />)
+  it("drops the frame src when disabled", async () => {
+    const { loadFrameSource, revoked } = createFrameSourceLoader()
+    const { rerender } = render(<FrameSrcProbe frameSeq={1} loadFrameSource={loadFrameSource} />)
     const probe = screen.getByRole("button", { name: "settle" })
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
+    await waitFor(() => {
+      expect(probe).toHaveAttribute("data-src", "blob:xero-emulator-frame-1")
+    })
 
-    rerender(<FrameSrcProbe enabled={false} frameSeq={2} />)
+    rerender(<FrameSrcProbe enabled={false} frameSeq={2} loadFrameSource={loadFrameSource} />)
 
     expect(probe).toHaveAttribute("data-src", "")
+    expect(revoked).toContain("blob:xero-emulator-frame-1")
   })
 })

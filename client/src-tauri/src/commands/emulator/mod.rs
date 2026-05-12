@@ -1,8 +1,8 @@
 //! Emulator sidebar backend — iOS Simulator and Android Emulator bring-up.
 //!
-//! Phase 2 scaffolded the frame pipeline (FrameBus + `emulator://` URI
-//! scheme) and a synthetic frame driver. Phase 3 wires in the real Android
-//! pipeline (emulator process + scrcpy). Phase 4 adds the iOS pipeline.
+//! Phase 2 scaffolded the frame pipeline (FrameBus + webview delivery) and a
+//! synthetic frame driver. Phase 3 wires in the real Android pipeline
+//! (emulator process + scrcpy). Phase 4 adds the iOS pipeline.
 
 pub mod android;
 pub mod automation;
@@ -44,8 +44,10 @@ use automation::{
     SubscriptionToken, SwipeRequest, TapTarget, TypeRequest, UiTree,
 };
 
-/// Process-wide emulator state. Holds the FrameBus (shared with the URI
-/// scheme handler) and the single active device session, if any.
+const EMULATOR_FRAME_TRANSPORT_URL: &str = "ipc://emulator_frame";
+
+/// Process-wide emulator state. Holds the FrameBus (shared with the viewport
+/// frame IPC command) and the single active device session, if any.
 pub struct EmulatorState {
     frame_bus: Arc<FrameBus>,
     active: Mutex<Option<ActiveDevice>>,
@@ -153,6 +155,15 @@ pub struct EmulatorStartResponse {
     pub height: u32,
     pub device_pixel_ratio: f32,
     pub frame_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmulatorFrameResponse {
+    pub seq: u64,
+    pub width: u32,
+    pub height: u32,
+    pub jpeg_base64: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -422,7 +433,7 @@ fn start_android<R: Runtime>(
         width,
         height,
         device_pixel_ratio: 2.0,
-        frame_url: "emulator://localhost/frame".to_string(),
+        frame_url: EMULATOR_FRAME_TRANSPORT_URL.to_string(),
     })
 }
 
@@ -453,7 +464,7 @@ fn start_ios<R: Runtime>(
         width,
         height,
         device_pixel_ratio: 3.0,
-        frame_url: "emulator://localhost/frame".to_string(),
+        frame_url: EMULATOR_FRAME_TRANSPORT_URL.to_string(),
     })
 }
 
@@ -503,7 +514,7 @@ fn start_synthetic<R: Runtime>(
         width: synthetic::synthetic_width(),
         height: synthetic::synthetic_height(),
         device_pixel_ratio: 2.0,
-        frame_url: "emulator://localhost/frame".to_string(),
+        frame_url: EMULATOR_FRAME_TRANSPORT_URL.to_string(),
     })
 }
 
@@ -774,6 +785,23 @@ pub fn emulator_screenshot(state: State<'_, EmulatorState>) -> CommandResult<Scr
         width: frame.width,
         height: frame.height,
         device_pixel_ratio: 1.0,
+    })
+}
+
+#[tauri::command]
+pub fn emulator_frame(state: State<'_, EmulatorState>) -> CommandResult<EmulatorFrameResponse> {
+    let frame = state.frame_bus().latest().ok_or_else(|| {
+        CommandError::user_fixable(
+            "emulator_no_frame",
+            "No frame has been captured yet. Wait for the stream to start.",
+        )
+    })?;
+
+    Ok(EmulatorFrameResponse {
+        seq: frame.seq,
+        width: frame.width,
+        height: frame.height,
+        jpeg_base64: base64::engine::general_purpose::STANDARD.encode(frame.bytes.as_ref()),
     })
 }
 

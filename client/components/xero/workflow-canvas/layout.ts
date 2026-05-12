@@ -44,6 +44,10 @@ const DEFAULTS: Required<LayoutOptions> = {
 // grid beat instead of drifting unevenly against the dot field.
 const LAYOUT_DOT_GRID_GAP = 32
 const LAYOUT_SNAP_GRID_SIZE = LAYOUT_DOT_GRID_GAP / 2
+const STAGE_FRAME_DEFAULT_OFFSET_X = LAYOUT_SNAP_GRID_SIZE * 3
+const STAGE_FRAME_DEFAULT_OFFSET_Y = -LAYOUT_SNAP_GRID_SIZE * 7
+const STAGE_CONSUMES_SECTION_GAP = LAYOUT_DOT_GRID_GAP * 2
+const SKILLS_CONSUMES_SECTION_GAP = LAYOUT_DOT_GRID_GAP * 2
 
 /**
  * Compass-style category layout.
@@ -223,51 +227,7 @@ export function layoutAgentGraphByCategory(
     } as AgentGraphNode)
   }
 
-  // 1b. Attached skills: upper-left context lane. The lane label appears only
-  // once at least one skill has been attached; the agent-card handle is the
-  // affordance for creating the first skill.
   const skills = grouped.skills
-  if (skills.length > 0) {
-    let colWidth = 260
-    let totalHeight = 0
-    for (const s of skills) {
-      const size = sizes.get(s.id) ?? { width: 260, height: 96 }
-      colWidth = Math.max(colWidth, size.width)
-      totalHeight += size.height
-    }
-    totalHeight += Math.max(0, skills.length - 1) * ROW_GAP
-
-    const xRight = headerX - HORIZ_GAP
-    const xLeft = xRight - colWidth
-    const blockTopY = headerY - HEADER_BAND_GAP - totalHeight
-
-    let y = blockTopY
-    for (const s of skills) {
-      const size = sizes.get(s.id) ?? { width: colWidth, height: 96 }
-      placedById.set(s.id, {
-        ...s,
-        position: {
-          x: xLeft + (colWidth - size.width) / 2,
-          y,
-        } as XYPosition,
-      })
-      y += size.height + ROW_GAP
-    }
-
-    laneLabelNodes.push({
-      id: 'lane:skills',
-      type: 'lane-label',
-      position: {
-        x: xLeft,
-        y: blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
-      } as XYPosition,
-      selectable: false,
-      draggable: true,
-      dragHandle: '.agent-graph-lane-label',
-      data: { label: CATEGORY_LABELS.skills, count: skills.length },
-      width: colWidth,
-    } as AgentGraphNode)
-  }
 
   // 2/3. Tools (upper) + DBs (lower) share the same X start (right of header).
   const rightStartX = headerX + headerSize.width + HORIZ_GAP
@@ -653,6 +613,8 @@ export function layoutAgentGraphByCategory(
   const consumed = grouped['consumed-artifact']
   let consumedColWidth = 0
   let consumedColLeftX = headerX
+  let consumedSectionTopY: number | null = null
+  let consumedSectionBottomY: number | null = null
   if (consumed.length > 0) {
     let totalHeight = 0
     for (const a of consumed) {
@@ -666,6 +628,8 @@ export function layoutAgentGraphByCategory(
     const xLeft = xRight - consumedColWidth
     consumedColLeftX = xLeft
     const blockTopY = headerCenterY - totalHeight / 2
+    consumedSectionTopY = blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP
+    consumedSectionBottomY = blockTopY + totalHeight
 
     let y = blockTopY
     for (const a of consumed) {
@@ -685,7 +649,7 @@ export function layoutAgentGraphByCategory(
       type: 'lane-label',
       position: {
         x: xLeft,
-        y: blockTopY - LANE_LABEL_HEIGHT - LANE_LABEL_GAP,
+        y: consumedSectionTopY,
       } as XYPosition,
       selectable: false,
       draggable: true,
@@ -695,11 +659,60 @@ export function layoutAgentGraphByCategory(
     } as AgentGraphNode)
   }
 
-  // 7. Stages — vertical column on the far left, wrapped in a dashed
-  // stage-group-frame (mirrors how tools sit inside tool-group-frame). Sits
-  // to the left of the consumed-artifact column (or directly left of the
-  // header when there are no consumes). Optional: graphs without stages
-  // skip this block entirely.
+  // 6b. Attached skills — if Consumes exists, keep skills in the same left
+  // context column, under the consumed artifact section. Without Consumes,
+  // fall back to the upper-left context lane so the first attached skill does
+  // not drift into unrelated right-side graph lanes.
+  if (skills.length > 0) {
+    let colWidth = 260
+    let totalHeight = 0
+    for (const s of skills) {
+      const size = sizes.get(s.id) ?? { width: 260, height: 96 }
+      colWidth = Math.max(colWidth, size.width)
+      totalHeight += size.height
+    }
+    totalHeight += Math.max(0, skills.length - 1) * ROW_GAP
+
+    const xLeft = consumed.length > 0
+      ? consumedColLeftX + (consumedColWidth - colWidth) / 2
+      : headerX - HORIZ_GAP - colWidth
+    const labelY = consumedSectionBottomY === null
+      ? headerY - HEADER_BAND_GAP - totalHeight - LANE_LABEL_HEIGHT - LANE_LABEL_GAP
+      : consumedSectionBottomY + SKILLS_CONSUMES_SECTION_GAP
+    const blockTopY = labelY + LANE_LABEL_HEIGHT + LANE_LABEL_GAP
+
+    let y = blockTopY
+    for (const s of skills) {
+      const size = sizes.get(s.id) ?? { width: colWidth, height: 96 }
+      placedById.set(s.id, {
+        ...s,
+        position: {
+          x: xLeft + (colWidth - size.width) / 2,
+          y,
+        } as XYPosition,
+      })
+      y += size.height + ROW_GAP
+    }
+
+    laneLabelNodes.push({
+      id: 'lane:skills',
+      type: 'lane-label',
+      position: {
+        x: xLeft,
+        y: labelY,
+      } as XYPosition,
+      selectable: false,
+      draggable: true,
+      dragHandle: '.agent-graph-lane-label',
+      data: { label: CATEGORY_LABELS.skills, count: skills.length },
+      width: colWidth,
+    } as AgentGraphNode)
+  }
+
+  // 7. Stages — vertical column wrapped in a dashed stage-group-frame
+  // (mirrors how tools sit inside tool-group-frame). When the graph consumes
+  // another agent's artifact, stages sit above that consumes lane and move up
+  // with their own height so the two sections never collide.
   const stages = grouped.stage
   if (stages.length > 0) {
     const STAGE_FRAME_PAD_X = 12
@@ -718,11 +731,16 @@ export function layoutAgentGraphByCategory(
     const frameWidth = stageColWidth + STAGE_FRAME_PAD_X * 2
     const frameHeight = stageTotalHeight + STAGE_FRAME_PAD_TOP + STAGE_FRAME_PAD_BOTTOM
 
-    const frameRightX = consumed.length > 0
-      ? consumedColLeftX - HORIZ_GAP
-      : headerX - HORIZ_GAP
-    const frameLeftX = frameRightX - frameWidth
-    const frameTopY = headerCenterY - frameHeight / 2
+    const frameLeftX = consumed.length > 0
+      ? consumedColLeftX + (consumedColWidth - frameWidth) / 2
+      : headerX - HORIZ_GAP - STAGE_FRAME_DEFAULT_OFFSET_X - frameWidth
+    const centeredFrameTopY = headerCenterY - frameHeight / 2 + STAGE_FRAME_DEFAULT_OFFSET_Y
+    const frameTopY = consumedSectionTopY === null
+      ? centeredFrameTopY
+      : Math.min(
+          centeredFrameTopY,
+          consumedSectionTopY - STAGE_CONSUMES_SECTION_GAP - frameHeight,
+        )
 
     const stageFrame = grouped['stage-group-frame'][0]
     if (stageFrame) {

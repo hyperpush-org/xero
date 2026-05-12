@@ -51,6 +51,7 @@ function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailV
     branchLabel: 'No branch',
     runtimeLabel: 'Runtime unavailable',
     phaseProgressPercent: 0,
+    startTargets: [],
     repository: {
       id: 'repo-1',
       projectId: 'project-1',

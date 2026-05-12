@@ -1605,7 +1605,9 @@ pub fn tool_allowed_for_runtime_agent(agent_id: RuntimeAgentIdDto, tool_name: &s
         return agent_id == RuntimeAgentIdDto::AgentCreate;
     }
     match agent_id {
-        RuntimeAgentIdDto::Engineer | RuntimeAgentIdDto::Debug => true,
+        RuntimeAgentIdDto::Engineer
+        | RuntimeAgentIdDto::Debug
+        | RuntimeAgentIdDto::Generalist => true,
         RuntimeAgentIdDto::Plan => TOOL_ACCESS_PLANNING_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Crawl => TOOL_ACCESS_REPOSITORY_RECON_TOOLS.contains(&tool_name),
         RuntimeAgentIdDto::Ask | RuntimeAgentIdDto::AgentCreate => {
@@ -1645,6 +1647,9 @@ pub fn allowed_runtime_agent_labels(tool_name: &str) -> Vec<&'static str> {
     }
     if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::AgentCreate, tool_name) {
         agents.push(RuntimeAgentIdDto::AgentCreate.as_str());
+    }
+    if tool_allowed_for_runtime_agent(RuntimeAgentIdDto::Generalist, tool_name) {
+        agents.push(RuntimeAgentIdDto::Generalist.as_str());
     }
     agents
 }

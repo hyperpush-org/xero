@@ -11,6 +11,9 @@ import {
 
 import type { CustomAgentWorkflowBranchConditionDto } from '@/src/lib/xero-model/agent-definition'
 
+import { useCanvasMode } from '../canvas-mode-context'
+import { arrowTargetEndpoint } from './edge-endpoint-offset'
+
 interface PhaseBranchEdgeData extends Record<string, unknown> {
   condition?: CustomAgentWorkflowBranchConditionDto
   label?: string
@@ -80,19 +83,27 @@ export const PhaseBranchEdge = memo(function PhaseBranchEdge(props: EdgeProps) {
   } = props
   const branchData = (data ?? undefined) as PhaseBranchEdgeData | undefined
   const label = branchData?.label?.trim() || describeCondition(branchData?.condition)
+  const { editing } = useCanvasMode()
+  const target = arrowTargetEndpoint({
+    editing,
+    markerEnd,
+    targetX,
+    targetY,
+    targetPosition,
+  })
 
   const sameSide =
     (sourcePosition === Position.Left && targetPosition === Position.Left) ||
     (sourcePosition === Position.Right && targetPosition === Position.Right)
 
   const [edgePath, labelX, labelY] = sameSide
-    ? getSameSideArc(sourceX, sourceY, targetX, targetY, sourcePosition)
+    ? getSameSideArc(sourceX, sourceY, target.x, target.y, sourcePosition)
     : getBezierPath({
         sourceX,
         sourceY,
         sourcePosition,
-        targetX,
-        targetY,
+        targetX: target.x,
+        targetY: target.y,
         targetPosition,
       })
 
