@@ -1,6 +1,6 @@
 import Link from "next/link"
 import type { ElementType } from "react"
-import { Check, Laptop, Rocket } from "lucide-react"
+import { Check, Download, Laptop, Rocket } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -9,7 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
-import { mailto } from "@/lib/site"
+import { mailto, siteConfig } from "@/lib/site"
 
 type PricingTier = {
   name: string
@@ -25,8 +25,6 @@ type PricingTier = {
   features: string[]
 }
 
-const waitlistHref = mailto("Xero Solana bundle waitlist")
-
 const tiers: PricingTier[] = [
   {
     name: "Free",
@@ -34,8 +32,8 @@ const tiers: PricingTier[] = [
     period: "forever",
     icon: Laptop,
     description: "The full desktop app. Every feature, every model provider, no trial timer. Bring your own keys and run as much as your machine handles.",
-    cta: "Coming soon",
-    ctaHref: "#download",
+    cta: "Run it locally",
+    ctaHref: siteConfig.githubUrl,
     highlight: true,
     badge: "Coming soon",
     comingSoon: true,
@@ -56,8 +54,8 @@ const tiers: PricingTier[] = [
     period: "/ month",
     icon: Rocket,
     description: "Optional. One subscription for the Solana infrastructure a builder usually pays four or five vendors for.",
-    cta: "Join waitlist",
-    ctaHref: waitlistHref,
+    cta: "Coming soon",
+    ctaHref: "#",
     highlight: false,
     badge: "Coming soon",
     comingSoon: true,
@@ -159,6 +157,30 @@ export function Pricing() {
 
                 <CardContent className="flex flex-1 flex-col px-6 pb-6">
                   {t.name === "Free" ? (
+                    <div className="mt-1 grid grid-cols-2 gap-2">
+                      <Button
+                        asChild
+                        size="lg"
+                        className="w-full bg-primary text-primary-foreground shadow-[0_8px_24px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] hover:bg-primary/90"
+                      >
+                        <Link href={siteConfig.githubUrl} target="_blank" rel="noopener noreferrer">
+                          Run it locally
+                        </Link>
+                      </Button>
+                      <Button
+                        size="lg"
+                        disabled
+                        aria-disabled
+                        className="relative w-full bg-secondary text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
+                      >
+                        <Download className="h-4 w-4" />
+                        Download
+                        <span className="absolute -top-2 -right-2 inline-flex items-center rounded-full border border-primary/40 bg-background px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+                          Soon
+                        </span>
+                      </Button>
+                    </div>
+                  ) : (
                     <Button
                       size="lg"
                       disabled
@@ -166,19 +188,6 @@ export function Pricing() {
                       className="mt-1 w-full bg-secondary text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
                     >
                       {t.cta}
-                    </Button>
-                  ) : (
-                    <Button
-                      asChild
-                      size="lg"
-                      className={cn(
-                        "mt-1 w-full",
-                        t.highlight
-                          ? "bg-primary text-primary-foreground shadow-[0_8px_24px_-12px_color-mix(in_oklab,var(--primary)_70%,transparent)] hover:bg-primary/90"
-                          : "bg-secondary text-foreground hover:bg-secondary/80",
-                      )}
-                    >
-                      <Link href={t.ctaHref}>{t.cta}</Link>
                     </Button>
                   )}
 
@@ -213,8 +222,8 @@ export function Pricing() {
         </div>
 
         <div className="mx-auto mt-5 max-w-5xl rounded-xl border border-border/60 bg-secondary/20 px-4 py-3 text-center text-xs leading-5 text-muted-foreground">
-          Model usage runs on your own provider accounts. The Solana bundle
-          isn't live yet, so the waitlist is the only real button until it is.
+          Model usage runs on your own provider accounts. Run it locally from
+          source today — packaged downloads and the Solana bundle land soon.
         </div>
 
         <p className="mt-8 text-center text-xs text-muted-foreground/60">

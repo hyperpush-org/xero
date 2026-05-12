@@ -34,9 +34,9 @@
         --line-gold: rgba(212, 165, 116, 0.22);
 
         --text: #f8f9fa;
-        --text-dim: #d6d8dc;
-        --muted: #a8aeb5;
-        --muted-2: #7a7f86;
+        --text-dim: #e7e9ed;
+        --muted: #c2c7ce;
+        --muted-2: #9aa1aa;
 
         --gold: #d4a574;
         --gold-soft: rgba(212, 165, 116, 0.08);
@@ -48,7 +48,12 @@
         font-family: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
 
       html, body {
         margin: 0;
@@ -56,14 +61,11 @@
         color: var(--text);
         letter-spacing: 0;
         font-feature-settings: "ss01", "cv11";
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
       }
 
       body { width: var(--w); }
-
-      @page {
-        size: 1600px 900px;
-        margin: 0;
-      }
 
       .deck { width: var(--w); }
 
@@ -138,14 +140,14 @@
 
       .mark .tag {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 14.5px;
         letter-spacing: 0.02em;
         color: var(--muted);
       }
 
       .meta {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 13.5px;
         text-transform: uppercase;
         letter-spacing: 0.16em;
         color: var(--muted-2);
@@ -156,7 +158,7 @@
 
       .eyebrow {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 14.5px;
         font-weight: 500;
         text-transform: uppercase;
         letter-spacing: 0.24em;
@@ -189,9 +191,9 @@
       .lead {
         margin-top: 20px;
         color: var(--text-dim);
-        font-size: 22px;
-        line-height: 1.4;
-        max-width: 880px;
+        font-size: 23px;
+        line-height: 1.45;
+        max-width: 920px;
         font-weight: 400;
       }
 
@@ -209,9 +211,9 @@
         background: rgba(36, 36, 35, 0.55);
         color: var(--text-dim);
         border-radius: 999px;
-        padding: 6px 13px;
+        padding: 9px 16px;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 13.5px;
         letter-spacing: 0.02em;
       }
 
@@ -220,7 +222,7 @@
         height: 5px;
         border-radius: 999px;
         background: var(--gold);
-        box-shadow: 0 0 10px rgba(212, 165, 116, 0.6);
+        box-shadow: none;
       }
 
       .chip.gold {
@@ -233,10 +235,10 @@
       .foot-num {
         position: absolute;
         right: 80px;
-        bottom: 30px;
+        bottom: 28px;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
-        color: var(--muted-2);
+        font-size: 13.5px;
+        color: var(--muted);
         letter-spacing: 0.08em;
         z-index: 2;
       }
@@ -244,12 +246,12 @@
       .source {
         position: absolute;
         left: 80px;
-        right: 180px;
-        bottom: 30px;
+        right: 200px;
+        bottom: 28px;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10.5px;
+        font-size: 13px;
         line-height: 1.5;
-        color: rgba(168, 174, 181, 0.6);
+        color: rgba(194, 199, 206, 0.86);
         letter-spacing: 0.02em;
         z-index: 2;
       }
@@ -285,10 +287,10 @@
 
       .cover-sub {
         margin-top: 26px;
-        max-width: 580px;
+        max-width: 600px;
         color: var(--text-dim);
-        font-size: 20px;
-        line-height: 1.45;
+        font-size: 21px;
+        line-height: 1.5;
       }
 
       .cover-chips {
@@ -303,18 +305,18 @@
         border: 1px solid var(--line);
         background: var(--card-soft);
         border-radius: var(--radius-lg);
-        padding: 28px 30px;
-        box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.6);
+        padding: 30px 32px;
+        box-shadow: none;
       }
 
       .loop-panel .head {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding-bottom: 16px;
+        padding-bottom: 18px;
         border-bottom: 1px solid var(--line-soft);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 14.5px;
         color: var(--muted);
         letter-spacing: 0.02em;
       }
@@ -332,7 +334,7 @@
         height: 6px;
         border-radius: 50%;
         background: var(--gold);
-        box-shadow: 0 0 12px rgba(212, 165, 116, 0.7);
+        box-shadow: none;
       }
 
       .loop-rows {
@@ -343,13 +345,13 @@
 
       .loop-row {
         display: grid;
-        grid-template-columns: 84px 1fr auto;
+        grid-template-columns: 100px 1fr auto;
         gap: 18px;
-        padding: 14px 0;
+        padding: 17px 0;
         align-items: center;
         border-bottom: 1px dashed var(--line-soft);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 13px;
+        font-size: 15.5px;
       }
 
       .loop-row:last-child { border-bottom: 0; }
@@ -358,14 +360,14 @@
         color: var(--gold);
         letter-spacing: 0.06em;
         text-transform: lowercase;
-        font-size: 11px;
+        font-size: 14.5px;
       }
 
       .loop-row .desc { color: var(--text-dim); }
 
       .loop-row .ok {
-        font-size: 10px;
-        color: var(--muted-2);
+        font-size: 13px;
+        color: var(--muted);
         letter-spacing: 0.14em;
         text-transform: uppercase;
       }
@@ -396,7 +398,7 @@
       .loop-footer .cell:not(:first-child) { padding-left: 18px; }
 
       .loop-footer .num {
-        font-size: 42px;
+        font-size: 48px;
         font-weight: 500;
         letter-spacing: -0.025em;
         color: var(--text);
@@ -404,11 +406,11 @@
       }
 
       .loop-footer .cap {
-        margin-top: 4px;
+        margin-top: 8px;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 13px;
         color: var(--muted);
-        line-height: 1.4;
+        line-height: 1.45;
         letter-spacing: 0.04em;
       }
 
@@ -416,117 +418,67 @@
          SLIDE 02 — The gap
          ========================================================= */
       .top {
-        padding-top: 40px;
+        padding-top: 32px;
       }
 
-      .top .eyebrow + h2 { margin-top: 18px; }
-      .top h2 + .lead { margin-top: 22px; }
+      .top .eyebrow + h2 { margin-top: 16px; }
+      .top h2 + .lead { margin-top: 18px; }
 
-      .body-2col {
-        flex: 1;
+      [data-slide="02"] .top .lead { max-width: 1080px; }
+
+      .pain-stack {
+        margin-top: 36px;
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 80px;
-        align-items: center;
-        padding-top: 40px;
+        gap: 0;
       }
 
-      .fragments {
-        position: relative;
-        height: 520px;
-      }
-
-      .frag {
-        position: absolute;
-        border: 1px solid var(--line);
-        background: var(--card);
-        border-radius: var(--radius);
-        padding: 18px 20px;
-        min-width: 220px;
-        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.35);
-      }
-
-      .frag .lbl {
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.18em;
-        color: var(--gold);
-      }
-
-      .frag strong {
-        display: block;
-        margin-top: 10px;
-        font-size: 20px;
-        font-weight: 500;
-      }
-
-      .frag span {
-        display: block;
-        margin-top: 6px;
-        color: var(--muted);
-        font-size: 13px;
-        line-height: 1.4;
-      }
-
-      .frag-line {
-        position: absolute;
-        height: 1px;
-        transform-origin: left center;
-        background: linear-gradient(90deg, var(--line-gold) 0%, rgba(212, 165, 116, 0.04) 100%);
-        opacity: 0.55;
-      }
-
-      .frag::after {
-        content: "";
-        position: absolute;
-        top: -1px;
-        left: 18px;
-        width: 32px;
-        height: 2px;
-        background: linear-gradient(90deg, var(--gold), transparent);
-        opacity: 0.7;
-      }
-
-      .pains {
+      .pain-row {
         display: grid;
-        gap: 26px;
-      }
-
-      .pain {
-        display: grid;
-        grid-template-columns: 44px 1fr;
-        gap: 18px;
-        padding-top: 22px;
+        grid-template-columns: 72px 1fr;
+        column-gap: 28px;
+        padding: 18px 0;
         border-top: 1px solid var(--line);
+        align-items: start;
       }
 
-      .pain .idx {
+      .pain-row:last-child {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .pain-num {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--gold);
-        font-size: 11px;
-        letter-spacing: 0.14em;
-        padding-top: 6px;
-        position: relative;
+        font-size: 15.5px;
+        letter-spacing: 0.18em;
+        padding-top: 28px;
       }
 
-      .pain .idx::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        top: -22px;
-        width: 28px;
-        height: 1px;
-        background: var(--gold);
-      }
-
-      .pain h3 { font-size: 22px; letter-spacing: -0.01em; }
-
-      .pain p {
-        margin-top: 8px;
+      .pain-trail {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 14.5px;
         color: var(--muted);
-        font-size: 16px;
-        line-height: 1.45;
+        letter-spacing: 0.04em;
+        text-transform: lowercase;
+      }
+
+      .pain-trail .arrow {
+        color: var(--gold);
+        margin: 0 6px;
+        opacity: 0.85;
+      }
+
+      .pain-body h3 {
+        margin-top: 8px;
+        font-size: 26px;
+        letter-spacing: -0.012em;
+      }
+
+      .pain-body p {
+        margin-top: 10px;
+        color: var(--text-dim);
+        font-size: 18px;
+        line-height: 1.5;
+        max-width: 1180px;
       }
 
       /* =========================================================
@@ -539,7 +491,7 @@
         background: var(--card);
         border-radius: 18px;
         overflow: hidden;
-        box-shadow: 0 40px 100px -20px rgba(0, 0, 0, 0.65);
+        box-shadow: none;
       }
 
       .win-top {
@@ -565,10 +517,10 @@
         border: 1px solid var(--line);
         border-radius: 7px;
         background: rgba(16, 16, 16, 0.7);
-        padding: 5px 14px;
+        padding: 6px 15px;
         color: var(--muted);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 12.5px;
       }
 
       .win-path .branch { color: var(--gold); }
@@ -579,7 +531,7 @@
         gap: 6px;
         color: var(--muted);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 12.5px;
       }
 
       .win-body {
@@ -595,7 +547,7 @@
 
       .rail-h {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 11.5px;
         text-transform: uppercase;
         letter-spacing: 0.18em;
         color: var(--muted-2);
@@ -608,12 +560,12 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 6px 10px;
+        padding: 7px 10px;
         margin: 1px 0;
         border-radius: 6px;
         color: var(--muted);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 13px;
       }
 
       .file-row.on {
@@ -644,16 +596,16 @@
       }
 
       .main-head strong {
-        font-size: 17px;
+        font-size: 18.5px;
         font-weight: 500;
       }
 
       .main-head .sub {
         display: block;
-        margin-top: 4px;
+        margin-top: 5px;
         color: var(--muted);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 12.5px;
         letter-spacing: 0.01em;
       }
 
@@ -665,20 +617,20 @@
 
       .tr {
         display: grid;
-        grid-template-columns: 88px 1fr 56px;
+        grid-template-columns: 96px 1fr 60px;
         align-items: center;
         gap: 14px;
-        padding: 12px 14px;
+        padding: 13px 16px;
         border: 1px solid var(--line);
         background: rgba(16, 16, 16, 0.55);
         border-radius: 10px;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 13px;
       }
 
       .tr .ph { color: var(--gold); letter-spacing: 0.04em; }
       .tr .m { color: var(--text-dim); }
-      .tr .ok { color: var(--gold); text-align: right; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; }
+      .tr .ok { color: var(--gold); text-align: right; font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; }
 
       .outcomes {
         margin-top: 22px;
@@ -697,17 +649,17 @@
 
       .outc strong {
         display: block;
-        font-size: 15px;
+        font-size: 16.5px;
         font-weight: 500;
         color: var(--text);
       }
 
       .outc span {
         display: block;
-        margin-top: 6px;
+        margin-top: 8px;
         color: var(--muted);
-        font-size: 12px;
-        line-height: 1.4;
+        font-size: 13.5px;
+        line-height: 1.45;
       }
 
       .win-side {
@@ -724,9 +676,9 @@
       .chat-head {
         display: flex;
         justify-content: space-between;
-        padding: 12px 14px;
+        padding: 13px 15px;
         border-bottom: 1px solid var(--line);
-        font-size: 12px;
+        font-size: 13.5px;
       }
 
       .chat-head strong { font-weight: 500; }
@@ -734,7 +686,7 @@
         display: inline-flex; align-items: center; gap: 6px;
         color: var(--gold);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 11.5px;
         letter-spacing: 0.14em;
         text-transform: uppercase;
       }
@@ -744,16 +696,16 @@
         width: 5px; height: 5px;
         border-radius: 50%;
         background: var(--gold);
-        box-shadow: 0 0 10px rgba(212, 165, 116, 0.6);
+        box-shadow: none;
       }
 
       .chat-body { padding: 12px; display: grid; gap: 10px; }
 
       .bubble {
         border-radius: 10px;
-        padding: 10px 12px;
-        font-size: 12px;
-        line-height: 1.42;
+        padding: 11px 13px;
+        font-size: 13.5px;
+        line-height: 1.45;
       }
 
       .bubble.u { background: rgba(36, 36, 35, 0.7); color: var(--text-dim); }
@@ -774,7 +726,7 @@
       .credits-h {
         display: flex; justify-content: space-between;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 12.5px;
         color: var(--muted);
       }
 
@@ -794,11 +746,442 @@
       }
 
       .credits p {
-        margin-top: 10px;
+        margin-top: 12px;
         color: var(--muted);
-        font-size: 11px;
-        line-height: 1.4;
+        font-size: 13px;
+        line-height: 1.45;
       }
+
+      /* -- SLIDE 03 · two-column with bleeding mock -- */
+      .s3-split {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 480px 1fr;
+        column-gap: 60px;
+        align-items: center;
+        padding-top: 28px;
+        min-height: 0;
+      }
+
+      .s3-left { max-width: 480px; }
+
+      .s3-left .eyebrow { }
+      .s3-left h2 {
+        margin-top: 16px;
+        font-size: 48px;
+        line-height: 1.02;
+      }
+      .s3-left .s3-sub {
+        margin-top: 22px;
+        color: var(--text-dim);
+        font-size: 19.5px;
+        line-height: 1.5;
+        max-width: 480px;
+      }
+      .s3-bullets {
+        margin-top: 30px;
+        display: grid;
+        gap: 18px;
+        list-style: none;
+      }
+      .s3-bullets li {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: 14px;
+        align-items: start;
+      }
+      .s3-bullets .n {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding-top: 4px;
+        min-width: 56px;
+      }
+      .s3-bullets .t {
+        display: block;
+        color: var(--text);
+        font-size: 19px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+      .s3-bullets .d {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .s3-right {
+        position: relative;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        margin-right: -220px;
+        min-width: 0;
+      }
+
+      .aw-shell {
+        margin-top: 0;
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        height: 640px;
+        background: #121212;
+        border: 1px solid rgba(45, 45, 45, 0.9);
+        border-radius: 12px;
+        overflow: hidden;
+        min-height: 0;
+      }
+
+      .aw-li {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      /* Title bar */
+      .aw-tbar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 50px;
+        padding: 0 14px;
+        background: #141414;
+        border-bottom: 1px solid #2d2d2d;
+      }
+
+      .aw-traf { display: flex; gap: 7px; }
+      .aw-traf span { width: 13px; height: 13px; border-radius: 50%; }
+      .aw-traf span:nth-child(1) { background: rgba(255, 95, 87, 0.85); }
+      .aw-traf span:nth-child(2) { background: rgba(254, 188, 46, 0.85); }
+      .aw-traf span:nth-child(3) { background: rgba(40, 200, 64, 0.85); }
+
+      .aw-tabs { display: flex; gap: 2px; padding-left: 10px; }
+      .aw-tab {
+        padding: 5px 11px;
+        border-radius: 7px;
+        font-size: 14.5px;
+        color: #c2c7ce;
+      }
+      .aw-tab.on { background: rgba(36, 36, 35, 0.82); color: #f8f9fa; }
+
+      .aw-center {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 14.5px;
+      }
+      .aw-center .nm { color: #f8f9fa; font-weight: 500; }
+      .aw-center .sl { color: rgba(194, 199, 206, 0.75); }
+      .aw-center .sub { color: #c2c7ce; }
+
+      .aw-right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #a8aeb5;
+      }
+      .aw-diff {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 7px;
+        font-family: "Geist Mono", ui-monospace, monospace;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0;
+      }
+      .aw-diff .pos { color: #5fd97a; }
+      .aw-diff .neg { color: #ff6b6b; }
+      .aw-iconbtn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        color: #a8aeb5;
+      }
+
+      /* Body */
+      .aw-body {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+
+      .aw-prjrail {
+        flex-shrink: 0;
+        width: 54px;
+        background: #141414;
+        border-right: 1px solid rgba(45, 45, 45, 0.7);
+        display: flex;
+        flex-direction: column;
+      }
+      .aw-prjlist {
+        list-style: none;
+        margin: 0;
+        padding: 10px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        align-items: center;
+        flex: 1;
+      }
+      .aw-prj {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 9px;
+        border: 1px solid transparent;
+        background: rgba(36, 36, 35, 0.3);
+        color: rgba(248, 249, 250, 0.55);
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .aw-prj.on {
+        border-color: rgba(45, 45, 45, 0.85);
+        background: #242423;
+        color: #f8f9fa;
+      }
+      .aw-prj.add {
+        border: 1px dashed rgba(45, 45, 45, 0.75);
+        background: transparent;
+        color: rgba(168, 174, 181, 0.85);
+        margin-top: 4px;
+      }
+      .aw-rail-foot {
+        display: flex;
+        justify-content: center;
+        padding: 8px;
+        color: rgba(168, 174, 181, 0.8);
+      }
+
+      /* Main column */
+      .aw-main {
+        position: relative;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .aw-handle {
+        position: absolute;
+        top: 50%;
+        width: 16px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(45, 45, 45, 0.65);
+        background: rgba(26, 26, 26, 0.42);
+        color: #a8aeb5;
+        transform: translateY(-50%);
+        z-index: 2;
+      }
+      .aw-handle.l {
+        left: -1px;
+        border-left: 0;
+        border-radius: 0 7px 7px 0;
+      }
+      .aw-handle.r {
+        right: -1px;
+        border-right: 0;
+        border-radius: 7px 0 0 7px;
+      }
+
+      .aw-crumb {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 22px 8px;
+        font-size: 14.5px;
+        color: #c2c7ce;
+      }
+      .aw-crumb .bc {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .aw-crumb .here { color: rgba(248, 249, 250, 0.85); }
+      .aw-crumb .acts {
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .aw-crumb .acts .ns {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .aw-empty {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 12px 32px 8px;
+      }
+      .aw-empty .badge {
+        width: 44px;
+        height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(45, 45, 45, 0.7);
+        background: rgba(26, 26, 26, 0.6);
+        border-radius: 13px;
+      }
+      .aw-empty .badge svg { width: 22px; height: 22px; }
+      .aw-empty .hd {
+        margin-top: 16px;
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        line-height: 1.15;
+        color: #f8f9fa;
+        text-align: center;
+      }
+      .aw-empty .hd .gold { color: #d4a574; }
+      .aw-empty .sub {
+        margin-top: 10px;
+        max-width: 420px;
+        text-align: center;
+        font-size: 13px;
+        line-height: 1.55;
+        color: #c2c7ce;
+      }
+      .aw-sugg {
+        margin-top: 18px;
+        width: 100%;
+        max-width: 420px;
+        list-style: none;
+        padding: 0;
+        border: 1px solid rgba(45, 45, 45, 0.75);
+        background: rgba(26, 26, 26, 0.45);
+        border-radius: 11px;
+        overflow: hidden;
+      }
+      .aw-sugg li {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 11px 16px;
+        font-size: 13px;
+        border-top: 1px solid rgba(45, 45, 45, 0.55);
+      }
+      .aw-sugg li:first-child { border-top: 0; }
+      .aw-sugg li .ico { color: #c2c7ce; flex-shrink: 0; }
+      .aw-sugg li .lbl { flex: 1; color: rgba(248, 249, 250, 0.92); }
+      .aw-sugg li .ch { color: rgba(194, 199, 206, 0.75); flex-shrink: 0; }
+
+      .aw-composer-wrap { padding: 6px 16px 14px; }
+      .aw-composer {
+        margin: 0 auto;
+        max-width: 720px;
+        border: 1px solid rgba(45, 45, 45, 0.6);
+        background: rgba(26, 26, 26, 0.75);
+        border-radius: 13px;
+        overflow: hidden;
+      }
+      .aw-composer .ph {
+        padding: 14px 16px 9px;
+        font-size: 15.5px;
+        color: rgba(194, 199, 206, 0.75);
+      }
+      .aw-composer .aw-cbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 8px;
+        border-top: 1px solid rgba(45, 45, 45, 0.4);
+      }
+      .aw-pills {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .aw-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 32px;
+        padding: 0 10px;
+        border-radius: 7px;
+        font-size: 13.5px;
+        font-weight: 500;
+        color: rgba(194, 199, 206, 0.95);
+      }
+      .aw-pill .awl { color: rgba(194, 199, 206, 0.78); }
+      .aw-pill .opa { opacity: 0.5; }
+      .aw-icons {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: rgba(168, 174, 181, 0.7);
+      }
+      .aw-icons .b {
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 7px;
+      }
+      .aw-icons .b.send {
+        background: #242423;
+        color: #f8f9fa;
+      }
+      .aw-icons .ring {
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        border: 1px solid rgba(168, 174, 181, 0.4);
+      }
+
+      /* Status bar */
+      .aw-status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 16px;
+        background: #141414;
+        border-top: 1px solid #2d2d2d;
+        font-family: "Geist Mono", ui-monospace, monospace;
+        font-size: 13px;
+        color: #c2c7ce;
+      }
+      .aw-sb-l,
+      .aw-sb-r {
+        display: inline-flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .aw-sb-l .b {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .aw-sb-l .b .ud {
+        margin-left: 4px;
+        opacity: 0.7;
+      }
+      .aw-sb-l .gd { color: #d4a574; }
 
       /* =========================================================
          SLIDE 04 — Product proof
@@ -813,20 +1196,9 @@
       }
 
       .big-stat {
-        border-left: 2px solid var(--gold);
+        border-left: 3px solid var(--gold);
         padding-left: 28px;
         position: relative;
-      }
-
-      .big-stat::before {
-        content: "";
-        position: absolute;
-        left: -2px;
-        top: 0;
-        width: 2px;
-        height: 32%;
-        background: var(--gold);
-        box-shadow: 0 0 18px rgba(212, 165, 116, 0.55);
       }
 
       .big-stat .n {
@@ -834,18 +1206,16 @@
         line-height: 0.84;
         font-weight: 500;
         letter-spacing: -0.045em;
-        background: linear-gradient(180deg, var(--text) 0%, #c9cdd3 100%);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
+        color: var(--text);
+        display: inline-block;
       }
 
       .big-stat .cap {
         margin-top: 24px;
         color: var(--text-dim);
-        font-size: 22px;
-        line-height: 1.35;
-        max-width: 340px;
+        font-size: 21px;
+        line-height: 1.4;
+        max-width: 360px;
       }
 
       .caps {
@@ -877,7 +1247,7 @@
 
       .cap-card .t {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10.5px;
+        font-size: 13px;
         color: var(--gold);
         text-transform: uppercase;
         letter-spacing: 0.2em;
@@ -885,39 +1255,39 @@
 
       .cap-card h3 {
         margin-top: 12px;
-        font-size: 20px;
+        font-size: 22.5px;
         font-weight: 500;
         letter-spacing: -0.005em;
       }
 
       .cap-card p {
-        margin-top: 10px;
-        color: var(--muted);
-        font-size: 13px;
+        margin-top: 12px;
+        color: var(--text-dim);
+        font-size: 16px;
         line-height: 1.5;
       }
 
       /* =========================================================
-         SLIDE 05 — LanaAI integration
+         SLIDE 05 — Helius for Agents integration
          ========================================================= */
       .hooks {
         flex: 1;
         display: grid;
         grid-template-columns: repeat(2, 1fr);
         gap: 0;
-        padding-top: 36px;
+        padding-top: 22px;
         align-content: center;
       }
 
       .hook {
-        padding: 26px 28px 26px 0;
+        padding: 20px 28px 20px 0;
         border-right: 1px solid var(--line);
         border-bottom: 1px solid var(--line);
       }
 
       .hook:nth-child(2n) { padding-right: 0; padding-left: 28px; border-right: 0; }
-      .hook:nth-child(n+3) { padding-bottom: 8px; }
-      .hook:nth-last-child(-n+2) { border-bottom: 0; padding-top: 28px; padding-bottom: 0; }
+      .hook:nth-child(n+3) { padding-bottom: 6px; }
+      .hook:nth-last-child(-n+2) { border-bottom: 0; padding-top: 22px; padding-bottom: 0; }
 
       .hook .rowh {
         display: flex;
@@ -928,40 +1298,42 @@
       .hook .n {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--gold);
-        font-size: 11px;
+        font-size: 12px;
         letter-spacing: 0.14em;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 34px;
+        height: 34px;
         border: 1px solid var(--gold-ring);
         background: var(--gold-soft);
         border-radius: 999px;
         flex-shrink: 0;
       }
 
-      .hook h3 { font-size: 24px; font-weight: 500; letter-spacing: -0.01em; }
+      .hook h3 { font-size: 23px; font-weight: 500; letter-spacing: -0.01em; }
 
       .hook p {
         margin-top: 12px;
-        margin-left: 48px;
-        color: var(--muted);
-        font-size: 16px;
-        line-height: 1.45;
-        max-width: 520px;
+        margin-left: 50px;
+        color: var(--text-dim);
+        font-size: 16.5px;
+        line-height: 1.5;
+        max-width: 560px;
       }
 
       .banner {
-        margin-top: 26px;
+        margin-top: 18px;
         border: 1px solid var(--line-gold);
         background: linear-gradient(90deg, rgba(212, 165, 116, 0.08), rgba(212, 165, 116, 0.02));
         border-radius: var(--radius);
-        padding: 20px 26px;
+        padding: 16px 24px;
         color: var(--text-dim);
-        font-size: 18px;
-        line-height: 1.45;
+        font-size: 16.5px;
+        line-height: 1.5;
       }
+
+      [data-slide="05"] .banner { margin-bottom: 32px; }
 
       .banner .hi { color: var(--gold); }
 
@@ -971,118 +1343,219 @@
       .pricing {
         flex: 1;
         display: grid;
-        grid-template-columns: 1.05fr 0.95fr;
-        gap: 42px;
+        grid-template-columns: 1.18fr 0.82fr;
+        gap: 36px;
         align-items: stretch;
-        padding-top: 36px;
+        padding-top: 32px;
       }
 
       .tiers {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 14px;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
       }
 
       .tier {
+        position: relative;
         border: 1px solid var(--line);
         background: var(--card);
-        border-radius: 18px;
-        padding: 26px 24px;
-        min-height: 420px;
+        border-radius: 20px;
+        padding: 30px 28px 28px;
         display: flex;
         flex-direction: column;
-        position: relative;
+        overflow: hidden;
       }
 
       .tier.hi {
-        border-color: var(--gold-ring);
-        background:
-          radial-gradient(ellipse at top, rgba(212, 165, 116, 0.10) 0%, transparent 60%),
-          rgba(212, 165, 116, 0.06);
-        box-shadow: 0 30px 80px -30px rgba(212, 165, 116, 0.28);
+        border: 1px solid rgba(212, 165, 116, 0.5);
+        background: var(--card);
       }
 
-      .tier.hi::before {
+      .tier.hi::after {
         content: "";
         position: absolute;
-        inset: 0;
-        border-radius: 18px;
-        padding: 1px;
-        background: linear-gradient(180deg, rgba(212, 165, 116, 0.45), transparent 60%);
-        -webkit-mask: linear-gradient(#000, #000) content-box, linear-gradient(#000, #000);
-        -webkit-mask-composite: xor;
-                mask-composite: exclude;
+        left: -1px;
+        right: -1px;
+        top: -1px;
+        height: 3px;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        background: var(--gold);
         pointer-events: none;
       }
 
-      .tier .name {
+      .tier .head {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        font-size: 18px;
-        font-weight: 500;
+        gap: 12px;
       }
 
-      .tier .ribbon {
-        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+      .tier .ident {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .tier .glyph {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        display: grid;
+        place-items: center;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+
+      .tier.hi .glyph {
+        background: var(--gold-soft);
+        border-color: var(--gold-ring);
         color: var(--gold);
-        letter-spacing: 0.16em;
+      }
+
+      .tier .glyph svg {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .tier .name {
+        font-size: 19px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+        color: var(--text);
+      }
+
+      .tier .pill {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        letter-spacing: 0.18em;
         text-transform: uppercase;
-        padding: 4px 10px;
-        border: 1px solid var(--gold-ring);
+        padding: 6px 12px;
+        border: 1px solid var(--line);
         border-radius: 999px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.025);
+        white-space: nowrap;
+      }
+
+      .tier .pill.gold {
+        color: var(--gold);
+        border-color: var(--gold-ring);
         background: var(--gold-soft);
       }
 
+      .tier .pill .dot {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        margin-right: 6px;
+        transform: translateY(-1px);
+        opacity: 0.85;
+      }
+
+      .tier .priceline {
+        margin-top: 26px;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+
       .tier .price {
-        margin-top: 22px;
-        font-size: 52px;
+        font-size: 58px;
         line-height: 1;
-        letter-spacing: -0.03em;
+        letter-spacing: -0.035em;
         font-weight: 500;
+        color: var(--text);
+      }
+
+      .tier.hi .price {
+        color: var(--gold);
       }
 
       .tier .per {
-        margin-left: 6px;
-        font-size: 14px;
+        font-size: 15px;
         color: var(--muted);
       }
 
       .tier .blurb {
-        margin-top: 14px;
-        color: var(--muted);
-        font-size: 13px;
+        margin-top: 16px;
+        color: var(--text-dim);
+        font-size: 15.5px;
         line-height: 1.5;
-        min-height: 60px;
+        min-height: 84px;
+      }
+
+      .tier .group-label {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-top: 20px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+
+      .tier.hi .group-label {
+        color: var(--gold);
+        border-top-color: rgba(212, 165, 116, 0.14);
       }
 
       .tier ul {
         list-style: none;
-        margin-top: 18px;
-        padding-top: 18px;
-        border-top: 1px solid var(--line);
+        margin: 16px 0 0 0;
+        padding: 0;
         display: grid;
-        gap: 10px;
+        gap: 13px;
       }
 
       .tier li {
         position: relative;
-        padding-left: 20px;
-        font-size: 13.5px;
+        padding-left: 26px;
+        font-size: 15.5px;
         color: var(--text-dim);
-        line-height: 1.42;
+        line-height: 1.45;
       }
 
       .tier li::before {
         content: "";
         position: absolute;
         left: 0;
-        top: 0.5em;
-        width: 6px; height: 6px;
+        top: 1px;
+        width: 16px;
+        height: 16px;
         border-radius: 50%;
-        background: var(--gold);
-        box-shadow: 0 0 8px rgba(212, 165, 116, 0.45);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+      }
+
+      .tier li::after {
+        content: "";
+        position: absolute;
+        left: 4px;
+        top: 6px;
+        width: 8px;
+        height: 4px;
+        border-left: 1.4px solid var(--muted);
+        border-bottom: 1.4px solid var(--muted);
+        transform: rotate(-45deg);
+      }
+
+      .tier.hi li::before {
+        background: var(--gold-soft);
+        border-color: var(--gold-ring);
+      }
+
+      .tier.hi li::after {
+        border-color: var(--gold);
       }
 
       .partner {
@@ -1093,17 +1566,19 @@
         display: flex;
         flex-direction: column;
         gap: 22px;
+        justify-content: space-between;
       }
 
       .partner h3 {
-        font-size: 26px;
+        font-size: 24px;
         font-weight: 500;
         letter-spacing: -0.01em;
       }
 
       .partner .intro {
-        color: var(--muted);
-        font-size: 15px;
+        margin-top: 12px;
+        color: var(--text-dim);
+        font-size: 16px;
         line-height: 1.5;
       }
 
@@ -1116,9 +1591,9 @@
       }
 
       .partner .pair h4 {
-        margin: 0 0 12px 0;
+        margin: 0 0 14px 0;
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 12px;
         color: var(--gold);
         text-transform: uppercase;
         letter-spacing: 0.2em;
@@ -1135,8 +1610,8 @@
         position: relative;
         padding-left: 18px;
         color: var(--text-dim);
-        font-size: 13.5px;
-        line-height: 1.45;
+        font-size: 15px;
+        line-height: 1.5;
       }
 
       .partner li::before {
@@ -1147,7 +1622,7 @@
         width: 5px; height: 5px;
         border-radius: 50%;
         background: var(--gold);
-        box-shadow: 0 0 6px rgba(212, 165, 116, 0.4);
+        box-shadow: none;
       }
 
       .partner ul { gap: 10px; }
@@ -1194,8 +1669,8 @@
       }
 
       .stat .l {
-        color: var(--muted);
-        font-size: 15px;
+        color: var(--text-dim);
+        font-size: 18px;
         line-height: 1.5;
       }
 
@@ -1207,7 +1682,7 @@
       }
 
       .why-card h3 {
-        font-size: 24px;
+        font-size: 26px;
         font-weight: 500;
         letter-spacing: -0.01em;
       }
@@ -1225,74 +1700,42 @@
 
       .why-card .k {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 13.5px;
         color: var(--gold);
         letter-spacing: 0.18em;
         text-transform: uppercase;
-        padding-top: 3px;
+        padding-top: 4px;
       }
 
       .why-card .v {
         color: var(--text-dim);
-        font-size: 15.5px;
+        font-size: 17.5px;
         line-height: 1.5;
       }
 
       /* =========================================================
-         SLIDE 08 — Pilot
+         SLIDE 07 — Pilot
          ========================================================= */
       .pilot {
         flex: 1;
-        display: grid;
-        grid-template-columns: 0.75fr 1.25fr;
-        gap: 40px;
-        padding-top: 32px;
-        align-items: stretch;
-      }
-
-      .rev {
-        border: 1px solid var(--line);
-        background: var(--card);
-        border-radius: var(--radius-lg);
-        padding: 30px 32px;
         display: flex;
         flex-direction: column;
+        gap: 22px;
+        padding-top: 28px;
       }
-
-      .rev h3 {
-        font-size: 24px;
-        font-weight: 500;
-        letter-spacing: -0.01em;
-      }
-
-      .rev .line {
-        display: flex;
-        justify-content: space-between;
-        gap: 14px;
-        padding: 14px 0;
-        border-bottom: 1px solid var(--line);
-        font-size: 15px;
-      }
-
-      .rev .line:last-child { border-bottom: 0; padding-bottom: 0; }
-
-      .rev .line .k { color: var(--text-dim); }
-      .rev .line .v { color: var(--gold); font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; text-align: right; }
-
-      .rev .lines { margin-top: 12px; }
 
       .weeks {
         display: grid;
         grid-template-columns: repeat(4, 1fr);
-        gap: 12px;
+        gap: 14px;
       }
 
       .week {
         border: 1px solid var(--line);
         background: var(--card);
         border-radius: var(--radius);
-        padding: 22px 20px;
-        min-height: 310px;
+        padding: 24px 22px;
+        min-height: 240px;
         display: flex;
         flex-direction: column;
         position: relative;
@@ -1302,8 +1745,8 @@
         content: "";
         position: absolute;
         top: 0;
-        left: 20px;
-        width: 24px;
+        left: 22px;
+        width: 28px;
         height: 1px;
         background: var(--gold);
         opacity: 0.7;
@@ -1311,7 +1754,7 @@
 
       .week .r {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10.5px;
+        font-size: 13px;
         color: var(--gold);
         letter-spacing: 0.2em;
         text-transform: uppercase;
@@ -1319,34 +1762,67 @@
 
       .week h3 {
         margin-top: 14px;
-        font-size: 19px;
+        font-size: 22px;
         font-weight: 500;
         letter-spacing: -0.005em;
       }
 
       .week p {
         margin-top: 12px;
-        color: var(--muted);
-        font-size: 13.5px;
+        color: var(--text-dim);
+        font-size: 16px;
         line-height: 1.5;
       }
 
-      .target {
-        grid-column: 1 / -1;
-        margin-top: 14px;
-        border: 1px solid var(--line-gold);
-        background: var(--gold-soft);
+      .done {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 32px;
+        align-items: start;
+        padding: 24px 28px;
+        border: 1px solid var(--line);
         border-radius: var(--radius);
-        padding: 18px 22px;
-        color: var(--text-dim);
-        font-size: 15.5px;
-        line-height: 1.45;
+        background: var(--card);
       }
 
-      .target strong { color: var(--gold); font-weight: 500; }
+      .done .label {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: var(--gold);
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        padding-top: 4px;
+      }
+
+      .done ul {
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px 36px;
+      }
+
+      .done li {
+        position: relative;
+        padding-left: 18px;
+        color: var(--text-dim);
+        font-size: 16.5px;
+        line-height: 1.5;
+      }
+
+      .done li::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.5em;
+        width: 7px;
+        height: 1px;
+        background: var(--gold);
+      }
+
+      .done li strong { color: var(--text); font-weight: 500; }
 
       /* =========================================================
-         SLIDE 09 — Founder note
+         SLIDE 08 — Founder note
          ========================================================= */
       .founder {
         flex: 1;
@@ -1364,7 +1840,7 @@
       }
 
       .letter .quote {
-        font-size: 44px;
+        font-size: 46px;
         line-height: 1.12;
         letter-spacing: -0.02em;
         font-weight: 500;
@@ -1400,31 +1876,31 @@
       .reason .n {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--gold);
-        font-size: 11.5px;
+        font-size: 13.5px;
         letter-spacing: 0.14em;
         padding-top: 5px;
       }
 
-      .reason h3 { font-size: 22px; font-weight: 500; letter-spacing: -0.01em; }
+      .reason h3 { font-size: 23px; font-weight: 500; letter-spacing: -0.01em; }
 
       .reason p {
-        margin-top: 8px;
-        color: var(--muted);
-        font-size: 16px;
-        line-height: 1.45;
-        max-width: 540px;
+        margin-top: 12px;
+        color: var(--text-dim);
+        font-size: 17.5px;
+        line-height: 1.5;
+        max-width: 580px;
       }
 
       /* =========================================================
-         SLIDE 10 — The ask
+         SLIDE 09 — The ask
          ========================================================= */
       .ask {
         flex: 1;
         display: grid;
         grid-template-columns: 1.12fr 0.88fr;
         gap: 56px;
-        align-items: center;
-        padding-top: 36px;
+        align-items: start;
+        padding-top: 20px;
       }
 
       .ask-list {
@@ -1436,7 +1912,7 @@
         display: grid;
         grid-template-columns: 52px 1fr;
         gap: 18px;
-        padding: 22px 0;
+        padding: 14px 0;
         border-bottom: 1px solid var(--line);
         position: relative;
       }
@@ -1447,39 +1923,39 @@
       .ask-item .n {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--gold);
-        font-size: 11.5px;
+        font-size: 13.5px;
         letter-spacing: 0.14em;
         padding-top: 4px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 30px;
-        height: 30px;
+        width: 34px;
+        height: 34px;
         border: 1px solid var(--gold-ring);
         background: var(--gold-soft);
         border-radius: 999px;
       }
 
-      .ask-item h3 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
+      .ask-item h3 { font-size: 21px; font-weight: 500; letter-spacing: -0.01em; }
 
       .ask-item p {
         margin-top: 6px;
-        color: var(--muted);
-        font-size: 14.5px;
+        color: var(--text-dim);
+        font-size: 16px;
         line-height: 1.45;
-        max-width: 520px;
+        max-width: 560px;
       }
 
       .next {
         position: relative;
-        border: 1px solid var(--gold-ring);
-        background: linear-gradient(160deg, rgba(212, 165, 116, 0.10) 0%, rgba(212, 165, 116, 0.02) 60%);
+        border: 1px solid rgba(212, 165, 116, 0.55);
+        background: linear-gradient(160deg, rgba(212, 165, 116, 0.16) 0%, rgba(212, 165, 116, 0.04) 60%);
         border-radius: var(--radius-lg);
         padding: 36px 36px 32px 36px;
         display: flex;
         flex-direction: column;
         gap: 20px;
-        box-shadow: 0 40px 90px -30px rgba(212, 165, 116, 0.22);
+        box-shadow: none;
         overflow: hidden;
       }
 
@@ -1495,7 +1971,7 @@
 
       .next .tag {
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 12.5px;
         color: var(--gold);
         letter-spacing: 0.22em;
         text-transform: uppercase;
@@ -1510,11 +1986,11 @@
         height: 6px;
         border-radius: 50%;
         background: var(--gold);
-        box-shadow: 0 0 10px rgba(212, 165, 116, 0.7);
+        box-shadow: none;
       }
 
       .next h3 {
-        font-size: 32px;
+        font-size: 34px;
         line-height: 1.08;
         letter-spacing: -0.02em;
         font-weight: 500;
@@ -1522,17 +1998,17 @@
 
       .next p {
         color: var(--text-dim);
-        font-size: 16px;
+        font-size: 18px;
         line-height: 1.55;
       }
 
       .next .sign {
         margin-top: 6px;
-        padding-top: 20px;
+        padding-top: 22px;
         border-top: 1px solid var(--line);
         font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
-        color: var(--muted);
+        font-size: 14.5px;
+        color: var(--text-dim);
         line-height: 1.6;
         letter-spacing: 0.01em;
       }
@@ -1547,14 +2023,14 @@
         display: inline-flex;
         align-items: center;
         gap: 10px;
-        padding: 12px 20px;
+        padding: 14px 24px;
         border-radius: 999px;
         background: var(--gold);
         color: #0a0e12;
-        font-size: 13.5px;
+        font-size: 15.5px;
         font-weight: 500;
         letter-spacing: 0.01em;
-        box-shadow: 0 12px 28px -12px rgba(212, 165, 116, 0.6);
+        box-shadow: none;
       }
     </style>
   </head>
@@ -1570,7 +2046,7 @@
               <span class="sep"></span>
               <span class="tag">partnership proposal</span>
             </div>
-            <div class="meta">confidential · april 2026</div>
+            <div class="meta">confidential · may 2026</div>
           </div>
 
           <div class="cover-grid">
@@ -1578,16 +2054,15 @@
               <img class="cover-logo" src="../landing/public/logo.svg" alt="Xero" />
               <div class="eyebrow">Xero × Helius</div>
               <h1 class="cover-title" style="margin-top: 20px;">
-                The agentic studio <span class="soft">for Solana builders.</span>
+                The desktop studio <span class="soft">Solana builders live in.</span>
               </h1>
               <p class="cover-sub">
-                One desktop app. LanaAI on the inside. Helius on the wire. A friendly proposal
-                from the Xero team for Mert and the Helius crew.
+                Helius for Agents in the harness. Lana as the explorer tab. One desktop, one bundle, one build loop.
               </p>
               <div class="cover-chips">
-                <span class="chip"><span class="d"></span>local-first</span>
-                <span class="chip"><span class="d"></span>agent-native</span>
-                <span class="chip"><span class="d"></span>solana-maximalist</span>
+                <span class="chip"><span class="d"></span>helius for agents · embedded</span>
+                <span class="chip"><span class="d"></span>lana · explorer tab</span>
+                <span class="chip"><span class="d"></span>wholesale rpc + sender</span>
               </div>
             </div>
 
@@ -1604,35 +2079,35 @@
                   <span class="ok">ready</span>
                 </div>
                 <div class="loop-row">
-                  <span class="step">build</span>
-                  <span class="desc">tx pipeline · compute-budget + ALT</span>
+                  <span class="step">simulate</span>
+                  <span class="desc">solana_simulate · compute + alt + priority fee</span>
                   <span class="ok">ok</span>
                 </div>
                 <div class="loop-row active">
-                  <span class="step">inspect</span>
-                  <span class="desc">lanaai · wallet flow + oracle risk</span>
+                  <span class="step">explain</span>
+                  <span class="desc">helius mcp · parse_tx → lana tab opens trace</span>
                   <span class="ok">live</span>
                 </div>
                 <div class="loop-row">
                   <span class="step">land</span>
-                  <span class="desc">helius sender · priority fee api</span>
+                  <span class="desc">helius sender · solana_tx_send</span>
                   <span class="ok">queued</span>
                 </div>
                 <div class="loop-row">
                   <span class="step">audit</span>
-                  <span class="desc">idl drift · trident fuzz · exploit replay</span>
+                  <span class="desc">solana_audit_static · trident fuzz · replay_exploit</span>
                   <span class="ok">clean</span>
                 </div>
               </div>
 
               <div class="loop-footer">
                 <div class="cell">
-                  <div class="num">78</div>
-                  <div class="cap">solana_* commands, live today</div>
+                  <div class="num">79</div>
+                  <div class="cap">solana_* commands registered today</div>
                 </div>
                 <div class="cell">
-                  <div class="num">1</div>
-                  <div class="cap">surface for UI + autonomous runs</div>
+                  <div class="num">24</div>
+                  <div class="cap">already wired into the agent harness</div>
                 </div>
                 <div class="cell">
                   <div class="num">90</div>
@@ -1643,7 +2118,7 @@
           </div>
         </div>
         <div class="source">Prepared for Mert Mumtaz · CEO, Helius Labs</div>
-        <div class="foot-num">01 / 10</div>
+        <div class="foot-num">01 / 09</div>
       </section>
 
       <!-- ============================== SLIDE 02 · The gap ============================== -->
@@ -1662,66 +2137,38 @@
             <div class="eyebrow">What's missing</div>
             <h2>Solana's tools are great. They just don't sit in the same window.</h2>
             <p class="lead">
-              Helius and LanaAI each nail their layer. But the place where a builder's
-              agent actually keeps context — repo, chain state, deploy safety, all in one loop —
-              still isn't a product. That's the seam we want to close together.
+              The rail, the explorer, the MCP servers — all shipped. The place a builder's agent <em>lives</em> isn't.
             </p>
           </div>
 
-          <div class="body-2col">
-            <div class="fragments" aria-label="Scattered tool surfaces">
-              <div class="frag-line" style="left: 130px; top: 120px; width: 240px; transform: rotate(28deg);"></div>
-              <div class="frag-line" style="left: 110px; top: 360px; width: 260px; transform: rotate(-22deg);"></div>
-              <div class="frag-line" style="left: 60px; top: 250px; width: 200px; transform: rotate(8deg);"></div>
-
-              <div class="frag" style="left: 0; top: 36px; width: 260px;">
-                <div class="lbl">editor</div>
-                <strong>Code + tests</strong>
-                <span>Where the work starts, but the chain never quite arrives here.</span>
-              </div>
-              <div class="frag" style="right: 0; top: 132px; width: 270px;">
-                <div class="lbl">terminal</div>
-                <strong>Validator scripts</strong>
-                <span>Anchor, SPL, cargo build — each one in its own tab.</span>
-              </div>
-              <div class="frag" style="left: 0; bottom: 76px; width: 270px;">
-                <div class="lbl">explorer</div>
-                <strong>Tx + wallets</strong>
-                <span>Copy signature. Paste into browser. Ctrl+F through logs.</span>
-              </div>
-              <div class="frag" style="right: 0; bottom: 0; width: 260px;">
-                <div class="lbl">dashboard</div>
-                <strong>RPC usage</strong>
-                <span>Endpoints, webhooks, credits — somewhere else entirely.</span>
+          <div class="pain-stack">
+            <div class="pain-row">
+              <div class="pain-num">01</div>
+              <div class="pain-body">
+                <div class="pain-trail">editor<span class="arrow">→</span>logs<span class="arrow">→</span>explorer<span class="arrow">→</span>docs</div>
+                <h3>Context dies between tabs.</h3>
+                <p>Code → logs → explorer → docs. By the time you find the answer, the agent forgot the question.</p>
               </div>
             </div>
-
-            <div class="pains">
-              <div class="pain">
-                <div class="idx">01</div>
-                <div>
-                  <h3>Context evaporates between tools.</h3>
-                  <p>A tx fails in code. Moves to logs. Then to a browser. By the time the answer shows up, the agent has forgotten why it was asking.</p>
-                </div>
+            <div class="pain-row">
+              <div class="pain-num">02</div>
+              <div class="pain-body">
+                <div class="pain-trail">localnet<span class="arrow">↔</span>mainnet</div>
+                <h3>Local and mainnet feel like two products.</h3>
+                <p>Fork and seed locally, then rewire everything for real reads and sends. Two worlds, one builder.</p>
               </div>
-              <div class="pain">
-                <div class="idx">02</div>
-                <div>
-                  <h3>Local and mainnet feel like two products.</h3>
-                  <p>You fork, seed, simulate, audit locally — then rewire everything to get reliable reads and confident sends on real infra.</p>
-                </div>
-              </div>
-              <div class="pain">
-                <div class="idx">03</div>
-                <div>
-                  <h3>Every piece is its own invoice.</h3>
-                  <p>RPC, explorer, indexer, deploy safety, cloud agents — five logins, five bills, five support threads. Velocity tax.</p>
-                </div>
+            </div>
+            <div class="pain-row">
+              <div class="pain-num">03</div>
+              <div class="pain-body">
+                <div class="pain-trail">rpc<span class="arrow">·</span>explorer<span class="arrow">·</span>indexer<span class="arrow">·</span>deploy<span class="arrow">·</span>agents</div>
+                <h3>Five vendors, five invoices, one tired dev.</h3>
+                <p>RPC, explorer, indexer, deploy, agents. Five logins, five bills — a velocity tax paid daily.</p>
               </div>
             </div>
           </div>
         </div>
-        <div class="foot-num">02 / 10</div>
+        <div class="foot-num">02 / 09</div>
       </section>
 
       <!-- ============================== SLIDE 03 · One window ============================== -->
@@ -1736,91 +2183,222 @@
             <div class="meta">03 — solution</div>
           </div>
 
-          <div class="top" style="padding-top: 28px;">
-            <div class="eyebrow">The product move</div>
-            <h2 style="margin-top: 14px;">One desktop app. Every step of the loop.</h2>
-          </div>
-
-          <div class="window">
-            <div class="win-top">
-              <div class="dots"><span></span><span></span><span></span></div>
-              <div class="win-path">Xero / squads-liquidator · <span class="branch">main</span></div>
-              <div class="win-mem">42mb · claude-opus-4.7</div>
-            </div>
-            <div class="win-body">
-              <aside class="win-rail">
-                <div class="rail-h">Project</div>
-                <div class="file-row">src/</div>
-                <div class="file-row" style="padding-left: 22px;">programs/</div>
-                <div class="file-row on" style="padding-left: 34px;">liquidator.rs<span class="dot"></span></div>
-                <div class="file-row" style="padding-left: 22px;">tests/</div>
-                <div class="file-row" style="padding-left: 34px;">whale-flow.ts</div>
-
-                <div class="rail-h">Workbench</div>
-                <div class="file-row on">Personas</div>
-                <div class="file-row">Tx inspector</div>
-                <div class="file-row">Deploy safety</div>
-                <div class="file-row">Audit + replay</div>
-              </aside>
-
-              <section class="win-main">
-                <div class="main-head">
+          <div class="s3-split">
+            <div class="s3-left">
+              <div class="eyebrow">What Xero is</div>
+              <h2>A desktop IDE built for Solana.</h2>
+              <p class="s3-sub">
+                Code, fork, simulate, replay, deploy — in one window.
+              </p>
+              <ul class="s3-bullets">
+                <li>
+                  <span class="n">01</span>
                   <div>
-                    <strong>Surfpool mainnet-fork</strong>
-                    <span class="sub">slot 331,804,110 · 3,891 tps · 5 personas</span>
+                    <span class="t">Local-first, Tauri-native</span>
+                    <span class="d">Rust + Tauri v2. Keys in the keychain, state in SQLite + LanceDB. No cloud session to babysit.</span>
                   </div>
-                  <span class="chip gold"><span class="d"></span>ready</span>
-                </div>
+                </li>
+                <li>
+                  <span class="n">02</span>
+                  <div>
+                    <span class="t">Agents share the builder's tools</span>
+                    <span class="d">79 <span class="mono">solana_*</span> commands · 24 already mounted as agent tools. MCP plugs in alongside.</span>
+                  </div>
+                </li>
+                <li>
+                  <span class="n">03</span>
+                  <div>
+                    <span class="t">Solana-native, not bolted on</span>
+                    <span class="d">Forks, personas, IDL drift, Squads, verified builds, Trident fuzz, exploit replay — built in.</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
 
-                <div class="trace">
-                  <div class="tr"><span class="ph">build</span><span class="m">solana_tx_build — v0 tx + ALT hints</span><span class="ok">ok</span></div>
-                  <div class="tr"><span class="ph">simulate</span><span class="m">auto CU 384k · fee percentile high</span><span class="ok">ok</span></div>
-                  <div class="tr"><span class="ph">inspect</span><span class="m">lanaai — whale wallet + token flow</span><span class="ok">ok</span></div>
-                  <div class="tr"><span class="ph">gate</span><span class="m">idl drift clean · squads authority ok</span><span class="ok">ok</span></div>
-                  <div class="tr"><span class="ph">send</span><span class="m">helius sender · priority fee api</span><span class="ok">queued</span></div>
-                </div>
+            <div class="s3-right">
+          <div class="aw-shell">
+            <!-- Title bar -->
+            <div class="aw-tbar">
+              <div class="aw-traf"><span></span><span></span><span></span></div>
 
-                <div class="outcomes">
-                  <div class="outc">
-                    <strong>One loop</strong>
-                    <span>Code, fork, inspect, land, and audit — same run, no tab switching.</span>
-                  </div>
-                  <div class="outc">
-                    <strong>One surface</strong>
-                    <span>UI and autonomous agent call the same Tauri commands, same way.</span>
-                  </div>
-                  <div class="outc">
-                    <strong>One bill</strong>
-                    <span>Solana Pro bundles the infra spend builders already have.</span>
-                  </div>
-                </div>
-              </section>
+              <div class="aw-tabs">
+                <span class="aw-tab">Workflow</span>
+                <span class="aw-tab on">Agent</span>
+                <span class="aw-tab">Editor</span>
+              </div>
 
-              <aside class="win-side">
-                <div class="chat">
-                  <div class="chat-head">
-                    <strong>LanaAI</strong>
-                    <span class="live">live</span>
-                  </div>
-                  <div class="chat-body">
-                    <div class="bubble u">What did this whale do in the minutes before the failed liquidation?</div>
-                    <div class="bubble a">Three related transfers. The failing tx writes to the same collateral PDA — looks like it's missing an oracle account.</div>
-                  </div>
-                </div>
+              <div class="aw-center">
+                <svg viewBox="0 0 455 455" width="15" height="15" aria-hidden="true">
+                  <path d="M256.391 256.395H454.326V404.33C454.326 431.944 431.941 454.33 404.326 454.33H256.391V256.395Z" fill="#d4a574"/>
+                  <path d="M197.936 197.941L0 197.941L0 50.0064C0 22.3921 22.386 0.006 50 0.006L197.936 0.006L197.936 197.941Z" fill="#d4a574"/>
+                  <path d="M0 256.395H197.935V454.33H50C22.3858 454.33 0 431.944 0 404.33L0 256.395Z" fill="rgba(248,249,250,0.32)"/>
+                  <path d="M256.392 0L404.327 0C431.941 0 454.327 22.3858 454.327 50V197.935H256.392V0Z" fill="rgba(248,249,250,0.32)"/>
+                </svg>
+                <span class="nm">Xero</span>
+                <span class="sl">/</span>
+                <span class="sub">xero</span>
+              </div>
 
-                <div class="credits">
-                  <div class="credits-h">
-                    <span>Helius credits</span>
-                    <span>62%</span>
-                  </div>
-                  <div class="bar"><span></span></div>
-                  <p>Auto top-up on. Public RPCs stay available as fallback for non-critical reads.</p>
+              <div class="aw-right">
+                <div class="aw-diff">
+                  <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><circle cx="5" cy="6" r="3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/><path d="m15 9-3-3 3-3"/><circle cx="19" cy="18" r="3"/><path d="M12 18H7a2 2 0 0 1-2-2V9"/><path d="m9 15 3 3-3 3"/></svg>
+                  <span><span class="pos">+1.2k</span> <span class="neg">−685</span></span>
+                </div>
+                <span class="aw-iconbtn">
+                  <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+                </span>
+                <span class="aw-iconbtn">
+                  <svg viewBox="0 0 24 24" width="16" height="16" class="aw-li" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+                </span>
+                <span class="aw-iconbtn">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+                </span>
+                <span class="aw-iconbtn">
+                  <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+                </span>
+                <span class="aw-iconbtn">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M23.876 18.362l-4.017 4.326a.93.93 0 01-.723.31H.452a.452.452 0 01-.33-.764l4.021-4.325a.93.93 0 01.72-.311h18.686a.452.452 0 01.328.764zM19.859 9.648a.93.93 0 00-.723-.31H.452a.452.452 0 00-.33.763l4.021 4.325a.93.93 0 00.72.31h18.686a.452.452 0 00.328-.764L19.859 9.65zM.452 6.574h18.684a.93.93 0 00.723-.31l4.017-4.326A.452.452 0 0023.6 1.175H4.915a.93.93 0 00-.72.31L.178 5.811a.452.452 0 00.274.763z"/></svg>
+                </span>
+              </div>
+            </div>
+
+            <!-- Body -->
+            <div class="aw-body">
+              <!-- Project rail -->
+              <aside class="aw-prjrail">
+                <ul class="aw-prjlist">
+                  <li><div class="aw-prj">C</div></li>
+                  <li><div class="aw-prj">M</div></li>
+                  <li><div class="aw-prj on">X</div></li>
+                  <li>
+                    <div class="aw-prj add">
+                      <svg viewBox="0 0 24 24" width="13" height="13" class="aw-li" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                    </div>
+                  </li>
+                </ul>
+                <div class="aw-rail-foot">
+                  <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
                 </div>
               </aside>
+
+              <!-- Main column -->
+              <div class="aw-main">
+                <div class="aw-handle l">
+                  <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                </div>
+                <div class="aw-handle r">
+                  <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                </div>
+
+                <div class="aw-crumb">
+                  <div class="bc">
+                    <span>xero</span>
+                    <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                    <span class="here">Main</span>
+                  </div>
+                  <div class="acts">
+                    <span class="ns">
+                      <svg viewBox="0 0 24 24" width="13" height="13" class="aw-li" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                      New Session
+                    </span>
+                    <svg viewBox="0 0 24 24" width="13" height="13" class="aw-li" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg>
+                  </div>
+                </div>
+
+                <div class="aw-empty">
+                  <div class="badge">
+                    <svg viewBox="0 0 455 455" aria-hidden="true">
+                      <path d="M256.391 256.395H454.326V404.33C454.326 431.944 431.941 454.33 404.326 454.33H256.391V256.395Z" fill="#d4a574"/>
+                      <path d="M197.936 197.941L0 197.941L0 50.0064C0 22.3921 22.386 0.006 50 0.006L197.936 0.006L197.936 197.941Z" fill="#d4a574"/>
+                      <path d="M0 256.395H197.935V454.33H50C22.3858 454.33 0 431.944 0 404.33L0 256.395Z" fill="rgba(248,249,250,0.32)"/>
+                      <path d="M256.392 0L404.327 0C431.941 0 454.327 22.3858 454.327 50V197.935H256.392V0Z" fill="rgba(248,249,250,0.32)"/>
+                    </svg>
+                  </div>
+                  <div class="hd">What can we build together in <span class="gold">xero</span>?</div>
+                  <div class="sub">Just ask. I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.</div>
+                  <ul class="aw-sugg">
+                    <li>
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ico" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                      <span class="lbl">Explore the codebase</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ch" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                    </li>
+                    <li>
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ico" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                      <span class="lbl">Review recent commits</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ch" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                    </li>
+                    <li>
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ico" aria-hidden="true"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>
+                      <span class="lbl">Suggest next steps</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ch" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="aw-composer-wrap">
+                  <div class="aw-composer">
+                    <div class="ph">Ask anything to get started — your agent has the workbench.</div>
+                    <div class="aw-cbar">
+                      <div class="aw-pills">
+                        <span class="aw-pill">
+                          <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li awl" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+                          Ask
+                          <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li opa" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                        </span>
+                        <span class="aw-pill">
+                          <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li awl" aria-hidden="true"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
+                          gpt-5.4
+                          <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li opa" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                        </span>
+                        <span class="aw-pill">
+                          <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li awl" aria-hidden="true"><path d="M12 18V5"/><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
+                          Medium
+                          <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li opa" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                        </span>
+                      </div>
+                      <div class="aw-icons">
+                        <span class="b"><span class="ring"></span></span>
+                        <span class="b">
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li" aria-hidden="true"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>
+                        </span>
+                        <span class="b">
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li" aria-hidden="true"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></svg>
+                        </span>
+                        <span class="b send">
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Status bar -->
+            <div class="aw-status">
+              <div class="aw-sb-l">
+                <span class="b">
+                  <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                  main
+                  <span class="ud">↑0 ↓0</span>
+                </span>
+                <span><span class="gd">●</span> 20 changes</span>
+                <span>269d200 save · about 8 hours ago</span>
+              </div>
+              <div class="aw-sb-r">
+                <span>0 tok</span>
+                <span>$ $0.00</span>
+                <span class="b" style="display:inline-flex;align-items:center;gap:5px;">
+                  <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></svg>
+                  <span style="opacity:0.7">0</span>
+                </span>
+              </div>
+            </div>
+          </div>
             </div>
           </div>
         </div>
-        <div class="foot-num">03 / 10</div>
+        <div class="foot-num">03 / 09</div>
       </section>
 
       <!-- ============================== SLIDE 04 · Already built ============================== -->
@@ -1839,74 +2417,71 @@
             <div class="eyebrow">What's live today</div>
             <h2>This isn't a pitch for a workbench. The workbench is done.</h2>
             <p class="lead">
-              Xero already has the Rust command surface, the mainnet-fork lifecycle, persona
-              seeding, the tx pipeline, the audit engine, and the deploy gates — all wired
-              through a Tauri app that ships as a single binary.
+              Command surface, forks, personas, tx pipeline, audit, deploy gates — shipped. 24 already mounted as agent tools.
             </p>
           </div>
 
           <div class="proof">
             <div class="big-stat">
-              <div class="n">78</div>
-              <div class="cap"><span class="mono gold">solana_*</span> commands registered through the Tauri app today.</div>
+              <div class="n">79</div>
+              <div class="cap"><span class="mono gold">solana_*</span> commands registered — 24 already mounted as agent tools. A ready-made surface for Helius MCP and Skills.</div>
             </div>
 
             <div class="caps">
               <div class="cap-card">
-                <div class="t">Desktop substrate</div>
-                <h3>Rust + Tauri core</h3>
-                <p>React/Vite frontend, Rust backend, local SQLite journaling, ShadCN/Radix UI.</p>
+                <div class="t">Substrate</div>
+                <h3>Rust + Tauri v2 core</h3>
+                <p>React 19 / Vite UI, Rust backend, SQLite + LanceDB project stores, ShadCN/Radix throughout.</p>
               </div>
               <div class="cap-card">
                 <div class="t">Clusters</div>
-                <h3>Local to mainnet-fork</h3>
-                <p>Toolchain probes, managed installs, localnet + fork lifecycle, snapshots, cost ledger.</p>
+                <h3>Local → mainnet-fork</h3>
+                <p>Toolchain probes, managed installs, Surfpool fork lifecycle, snapshots, cost ledger.</p>
               </div>
               <div class="cap-card">
                 <div class="t">Personas</div>
                 <h3>Seeded actors</h3>
-                <p>Whale, LP, voter, liquidator, new user — SOL/SPL/NFT funding receipts, scenario runs.</p>
+                <p>Whale, LP, voter, liquidator, new user — funded keypairs ready for scenario runs.</p>
               </div>
               <div class="cap-card">
                 <div class="t">Tx pipeline</div>
-                <h3>Build, simulate, land</h3>
-                <p>Priority fee tuning, compute-budget plans, ALT helpers, CPI resolver, Jito hooks.</p>
+                <h3>Build · simulate · land</h3>
+                <p>Priority-fee estimator, compute-budget, ALT helpers, CPI resolver — already pointing at Helius RPC.</p>
               </div>
               <div class="cap-card">
                 <div class="t">Deploy safety</div>
                 <h3>IDL + upgrade gates</h3>
-                <p>Codama gen, IDL fetch/publish/drift, upgrade checks, Squads proposals, verified builds.</p>
+                <p>Codama gen, IDL drift, Squads proposals, verified builds, rollback path.</p>
               </div>
               <div class="cap-card">
                 <div class="t">Security</div>
                 <h3>Audit + replay</h3>
-                <p>Static lints, Trident fuzz, coverage, exploit replay, PDA scans, secret detection.</p>
+                <p>Trident fuzz, coverage, exploit replay, PDA scans, Helius-key secret detection.</p>
               </div>
             </div>
           </div>
         </div>
-        <div class="source">Evidence: README, SOLANA_WORKBENCH_PLAN.md, client/src-tauri/src/lib.rs command registration, workbench source tree.</div>
-        <div class="foot-num">04 / 10</div>
+        <div class="source">Evidence: src-tauri/src/lib.rs (79 solana_* commands) · autonomous_tool_runtime/solana.rs (24 agent tools) · solana-workbench-sidebar.tsx (13 tabs).</div>
+        <div class="foot-num">04 / 09</div>
       </section>
 
-      <!-- ============================== SLIDE 05 · Where Lana plugs in ============================== -->
+      <!-- ============================== SLIDE 05 · Where Helius plugs in ============================== -->
       <section class="slide" data-slide="05">
         <div class="frame">
           <div class="strip">
             <div class="mark">
               <img src="../landing/public/logo.svg" alt="Xero" />
               <span class="sep"></span>
-              <span class="tag">lanaai inside</span>
+              <span class="tag">helius for agents · embedded</span>
             </div>
             <div class="meta">05 — integration</div>
           </div>
 
           <div class="top">
-            <div class="eyebrow">Where LanaAI plugs in</div>
-            <h2>LanaAI becomes the on-chain intelligence every run calls.</h2>
+            <div class="eyebrow">Where Helius plugs in</div>
+            <h2>Helius for Agents fits the harness like a missing tooth.</h2>
             <p class="lead">
-              We don't want to wrap LanaAI. We want to give it a home inside the workflow builders
-              already use — so a conversational explorer turns into the agent's working memory.
+              You shipped the stack. We shipped the harness. Bolting them together is wiring, not research.
             </p>
           </div>
 
@@ -1914,42 +2489,38 @@
             <div class="hook">
               <div class="rowh">
                 <span class="n">01</span>
-                <h3>Tx inspector + decoder</h3>
+                <h3>Helius MCP mounted as native tools</h3>
               </div>
-              <p>After simulation or failure, Xero hands LanaAI the signature, logs, IDL, writable accounts, and persona context — and gets a plain-English trace back.</p>
+              <p>Your 60+ MCP tools load next to our 24 <span class="mono">solana_*</span> tools through Xero's MCP registry. One namespace, one approval surface.</p>
             </div>
 
             <div class="hook">
               <div class="rowh">
                 <span class="n">02</span>
-                <h3>Audit + exploit replay</h3>
+                <h3>Helius Skills as first-class project skills</h3>
               </div>
-              <p>Before a risky deploy, the audit engine asks LanaAI for similar attack patterns, related account flows, and a short replay note humans can skim in 30 seconds.</p>
+              <p>Xero already discovers project skills. Helius Skills drop in unchanged, with "Powered by Helius" attribution in the planner.</p>
             </div>
 
             <div class="hook">
               <div class="rowh">
                 <span class="n">03</span>
-                <h3>Deploy-safety gate</h3>
+                <h3>RPC, Sender, Priority Fee on by default</h3>
               </div>
-              <p>Program upgrade checks query LanaAI for authority history, recent program activity, suspicious token flows, and IDL drift context — all before the button goes green.</p>
+              <p>In the Solana bundle, every simulate / send / replay routes through Sender + Priority Fee by default. Wholesale credits, predictable volume.</p>
             </div>
 
             <div class="hook">
               <div class="rowh">
                 <span class="n">04</span>
-                <h3>Persona + scenario seeding</h3>
+                <h3>Lana embedded as the 14th workbench tab</h3>
               </div>
-              <p>A builder describes a market, a wallet, an incident. Xero turns it into funded personas and a fork-ready scenario, with LanaAI filling in the on-chain context.</p>
+              <p>13 workbench tabs, then Lana. A partner explorer next to your rail — every query still a Helius read underneath.</p>
             </div>
           </div>
 
-          <div class="banner">
-            <span class="hi">The upshot for Helius —</span> every Xero Solana session becomes a LanaAI power session. Human prompts turn into agent loops. Agent loops multiply query volume.
-          </div>
         </div>
-        <div class="source">Sources: lana.ai public site · public r/solana launch post citing Mert's Apr 21, 2026 announcement.</div>
-        <div class="foot-num">05 / 10</div>
+        <div class="foot-num">05 / 09</div>
       </section>
 
       <!-- ============================== SLIDE 06 · Bundle ============================== -->
@@ -1965,61 +2536,69 @@
           </div>
 
           <div class="top">
-            <div class="eyebrow">One subscription, infra included</div>
-            <h2>Make Helius the default paid rail inside Xero Solana Pro.</h2>
+            <div class="eyebrow">Free forever · Solana, optional</div>
+            <h2>Helius becomes the default rail inside the Xero Solana bundle.</h2>
           </div>
 
           <div class="pricing">
             <div class="tiers">
               <div class="tier">
-                <div class="name">Free</div>
-                <div><span class="price">$0</span><span class="per">forever</span></div>
-                <p class="blurb">Local desktop studio for builders bringing their own model + infra keys.</p>
+                <div class="head">
+                  <div class="ident">
+                    <span class="glyph" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M2 19h20"/></svg>
+                    </span>
+                    <span class="name">Free</span>
+                  </div>
+                  <span class="pill"><span class="dot"></span>Coming soon</span>
+                </div>
+                <div class="priceline"><span class="price">$0</span><span class="per">forever</span></div>
+                <p class="blurb">Full app. Every feature, every provider, BYO keys. No trial timer.</p>
+                <div class="group-label">What's included</div>
                 <ul>
-                  <li>Unlimited local projects</li>
-                  <li>Local autonomous runtime</li>
-                  <li>Bring your own model providers</li>
-                  <li>Discord + Telegram pings</li>
-                </ul>
-              </div>
-
-              <div class="tier">
-                <div class="name">Pro</div>
-                <div><span class="price">$20</span><span class="per">/ month</span></div>
-                <p class="blurb">Cloud runtime, sync, and durable background runs. Everything keeps moving while you sleep.</p>
-                <ul>
-                  <li>Everything in Free</li>
-                  <li>Parallel workers · up to 16</li>
-                  <li>Hosted run history + replay</li>
-                  <li>Priority support</li>
+                  <li>Custom agents · tools, memory, stage gates</li>
+                  <li>Ask, Engineer, Debug, Agent Create built-in</li>
+                  <li>11 model providers · BYO keys</li>
+                  <li>Branch, rewind, compact, handoff, rollback</li>
+                  <li>MCP server registry · Helius MCP loads here</li>
                 </ul>
               </div>
 
               <div class="tier hi">
-                <div class="name">Solana Pro <span class="ribbon">bundle</span></div>
-                <div><span class="price">$50</span><span class="per">/ month</span></div>
-                <p class="blurb">Pro plus the on-chain workbench — and Helius credits that Just Work from the app.</p>
+                <div class="head">
+                  <div class="ident">
+                    <span class="glyph" aria-hidden="true">
+                      <svg viewBox="0 0 24 24"><path d="M12 3 3 7.5l9 4.5 9-4.5L12 3z"/><path d="m3 12 9 4.5L21 12"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
+                    </span>
+                    <span class="name">Solana Bundle</span>
+                  </div>
+                  <span class="pill gold">Helius inside</span>
+                </div>
+                <div class="priceline"><span class="price">$50</span><span class="per">/ month</span></div>
+                <p class="blurb">Optional. One sub for what builders usually pay 4–5 vendors for. Helius credits underneath.</p>
+                <div class="group-label">What's included</div>
                 <ul>
-                  <li>Managed Helius RPC + Sender + Webhooks</li>
-                  <li>Hosted forks and reusable snapshots</li>
-                  <li>Deploy safety, Squads, verified builds</li>
-                  <li>Cost alerts, drift alerts, priority fee tuning</li>
+                  <li>Helius RPC, elevated rate limits</li>
+                  <li>Sender + Priority Fee API by default</li>
+                  <li>Webhooks, DAS, LaserStream credentials</li>
+                  <li>Helius MCP + Skills loaded, attributed</li>
+                  <li>Lana tab · Squads + verified-build gates</li>
                 </ul>
               </div>
             </div>
 
             <aside class="partner">
               <div>
-                <h3>How the partnership works</h3>
-                <p class="intro">Xero owns the subscription UX, metering, invoicing, and first-line support. Helius provides the infra rail and wholesale credit economics. One bill for the builder, clean accounting between us.</p>
+                <h3>Clean split. One bill for the builder.</h3>
+                <p class="intro">Xero owns the app, UX, metering, billing, support. Helius owns the rail and wholesale credit economics.</p>
               </div>
 
               <div class="pair">
                 <div>
                   <h4>For builders</h4>
                   <ul>
-                    <li>Single invoice for app + Solana infra</li>
-                    <li>Automatic top-ups and cost panels</li>
+                    <li>One invoice for app + Solana infra</li>
+                    <li>Auto top-ups and cost panels</li>
                     <li>Priority Fee + Sender + RPC + Webhooks</li>
                     <li>Graceful public-RPC fallback</li>
                   </ul>
@@ -2028,87 +2607,20 @@
                   <h4>For Helius</h4>
                   <ul>
                     <li>Paid acquisition at the point of creation</li>
-                    <li>Predictable wholesale volume</li>
-                    <li>Stickier daily workflow usage</li>
-                    <li>Path to dedicated nodes + enterprise</li>
+                    <li>Predictable wholesale credit volume</li>
+                    <li>Daily-active stickiness vs. dashboard drop-ins</li>
+                    <li>Direct upsell path to dedicated nodes</li>
                   </ul>
                 </div>
               </div>
             </aside>
           </div>
         </div>
-        <div class="source">Xero pricing: landing/components/landing/pricing.tsx. Helius products: docs for RPC endpoints, Priority Fee API, Sender, Webhooks.</div>
-        <div class="foot-num">06 / 10</div>
+        <div class="foot-num">06 / 09</div>
       </section>
 
-      <!-- ============================== SLIDE 07 · Why now ============================== -->
+      <!-- ============================== SLIDE 07 · Pilot ============================== -->
       <section class="slide" data-slide="07">
-        <div class="frame">
-          <div class="strip">
-            <div class="mark">
-              <img src="../landing/public/logo.svg" alt="Xero" />
-              <span class="sep"></span>
-              <span class="tag">why now</span>
-            </div>
-            <div class="meta">07 — timing</div>
-          </div>
-
-          <div class="why">
-            <div>
-              <div class="eyebrow">The moment</div>
-              <h2 style="margin-top: 14px; font-size: 50px;">Agents don't use infra once. They use it on a loop.</h2>
-              <p class="lead" style="max-width: 620px;">
-                The next Solana dev platform isn't a dashboard. It's an environment where an agent
-                reads, simulates, explains, lands, and watches — over and over, all day long.
-              </p>
-
-              <div class="stats">
-                <div class="stat">
-                  <div class="v">6,000</div>
-                  <div class="l">active Solana developers reached in 2025</div>
-                </div>
-                <div class="stat">
-                  <div class="v">3,830</div>
-                  <div class="l">new developers joined the ecosystem in 2025</div>
-                </div>
-                <div class="stat">
-                  <div class="v">10×</div>
-                  <div class="l">query multiplier when agents drive exploration instead of humans clicking</div>
-                </div>
-              </div>
-            </div>
-
-            <div class="why-card">
-              <h3>Why this window is unusually good</h3>
-              <div class="row">
-                <div class="k">LanaAI</div>
-                <div class="v">A conversational Solana explorer is live today — exactly the integration surface agentic dev sessions need.</div>
-              </div>
-              <div class="row">
-                <div class="k">Agents</div>
-                <div class="v">Coding agents are graduating from chat helpers to persistent workers that need reliable reads and tx landing.</div>
-              </div>
-              <div class="row">
-                <div class="k">Local-first</div>
-                <div class="v">Serious builders want forked state, seeded scenarios, fast simulation, and safety checks before mainnet spend.</div>
-              </div>
-              <div class="row">
-                <div class="k">Helius</div>
-                <div class="v">You already own the trusted infra layer: RPC, Sender, LaserStream, Webhooks, DAS, priority fees.</div>
-              </div>
-              <div class="row">
-                <div class="k">Xero</div>
-                <div class="v">We sit at the daily point of creation — repo, agent, tooling, notifications, emulators, and now the Solana workbench.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="source">Sources: Solana Foundation 2023 developer ecosystem report · SolanaFloor/Syndica 2025 developer report coverage · Helius docs.</div>
-        <div class="foot-num">07 / 10</div>
-      </section>
-
-      <!-- ============================== SLIDE 08 · Pilot ============================== -->
-      <section class="slide" data-slide="08">
         <div class="frame">
           <div class="strip">
             <div class="mark">
@@ -2116,65 +2628,57 @@
               <span class="sep"></span>
               <span class="tag">90-day pilot</span>
             </div>
-            <div class="meta">08 — plan</div>
+            <div class="meta">07 — plan</div>
           </div>
 
           <div class="top">
-            <div class="eyebrow">Pilot + go-to-market</div>
-            <h2>Ninety days. A beta cohort. Real numbers on the table.</h2>
+            <div class="eyebrow">90-day pilot</div>
+            <h2>Ninety days. Bolt the two halves together.</h2>
+            <p class="lead">
+              Helius for Agents in the harness, Sender routed under the bundle, Lana inside the workbench — behind a beta flag, in front of a small cohort.
+            </p>
           </div>
 
           <div class="pilot">
-            <div class="rev">
-              <h3>How the money works</h3>
-              <div class="lines">
-                <div class="line"><span class="k">Xero SaaS</span><span class="v">$0 · $20 · $50</span></div>
-                <div class="line"><span class="k">Helius credits</span><span class="v">wholesale or rev-share</span></div>
-                <div class="line"><span class="k">Team plans</span><span class="v">seats + pooled credits</span></div>
-                <div class="line"><span class="k">Enterprise</span><span class="v">dedicated nodes + support</span></div>
-                <div class="line"><span class="k">Future</span><span class="v">MCP tool-surface licensing</span></div>
+            <div class="weeks">
+              <div class="week">
+                <div class="r">Weeks 0–2</div>
+                <h3>Agree the shape</h3>
+                <p>Scope MCP mounting, Skills attribution, credit metering, support handoff, and the Lana embed contract.</p>
               </div>
-
-              <div style="margin-top: auto; padding-top: 28px; color: var(--muted); font-size: 13px; line-height: 1.5;">
-                Simple principle: Xero covers the app, Helius covers the infra.
-                Nobody asks the other for freebies. Wholesale pricing makes the bundle fair.
+              <div class="week">
+                <div class="r">Weeks 3–5</div>
+                <h3>Ship the pilot</h3>
+                <p>Mount MCP. Load Skills. Default Sender + Priority Fee. Add Lana tab. All behind a beta flag.</p>
+              </div>
+              <div class="week">
+                <div class="r">Weeks 6–8</div>
+                <h3>Run with builders</h3>
+                <p>Invite a small cohort. Instrument tool-call volume, landing quality, retention, and credit usage — share the dashboard both ways.</p>
+              </div>
+              <div class="week">
+                <div class="r">Weeks 9–12</div>
+                <h3>Co-launch</h3>
+                <p>Joint docs, demos, co-branded beta. <em>Powered by Helius</em> on the bundle.</p>
               </div>
             </div>
 
-            <div>
-              <div class="weeks">
-                <div class="week">
-                  <div class="r">Weeks 0–2</div>
-                  <h3>Agree the shape</h3>
-                  <p>Scope LanaAI calls, credit metering, Helius account linking, privacy boundaries, and who owns support for what.</p>
-                </div>
-                <div class="week">
-                  <div class="r">Weeks 3–5</div>
-                  <h3>Ship the pilot</h3>
-                  <p>Embed LanaAI tx inspection, Helius credit ledger, Sender path, and priority fee defaults — all behind a beta flag.</p>
-                </div>
-                <div class="week">
-                  <div class="r">Weeks 6–8</div>
-                  <h3>Run with builders</h3>
-                  <p>Invite top Solana teams. Watch agent query volume, landing quality, workflow retention, and credit conversion.</p>
-                </div>
-                <div class="week">
-                  <div class="r">Weeks 9–12</div>
-                  <h3>Co-launch</h3>
-                  <p>Docs, examples, demo day. A co-branded Solana Pro beta launch, powered by Helius and LanaAI.</p>
-                </div>
-                <div class="target">
-                  <strong>Pilot target:</strong> 500 qualified builders · 300 Solana Pro seats · $180k ARR run-rate · 3× lift in Helius credit consumption from the Xero cohort.
-                </div>
-              </div>
+            <div class="done">
+              <div class="label">Done when</div>
+              <ul>
+                <li><strong>Helius MCP + Skills</strong> load by default in the bundle, with attribution</li>
+                <li><strong>Sender + Priority Fee</strong> are the default rail for every build, simulate, and send</li>
+                <li><strong>Lana</strong> ships as the 14th workbench tab</li>
+                <li><strong>Joint launch</strong> content out — docs, demo video, co-branded post</li>
+              </ul>
             </div>
           </div>
         </div>
-        <div class="foot-num">08 / 10</div>
+        <div class="foot-num">07 / 09</div>
       </section>
 
-      <!-- ============================== SLIDE 09 · Founder note ============================== -->
-      <section class="slide" data-slide="09">
+      <!-- ============================== SLIDE 08 · Founder note ============================== -->
+      <section class="slide" data-slide="08">
         <div class="frame">
           <div class="strip">
             <div class="mark">
@@ -2182,19 +2686,19 @@
               <span class="sep"></span>
               <span class="tag">founder to founder</span>
             </div>
-            <div class="meta">09 — a note for mert</div>
+            <div class="meta">08 — a note for mert</div>
           </div>
 
           <div class="founder">
             <div class="letter">
               <div class="eyebrow">A quick, honest pitch</div>
               <p class="quote">
-                Mert — LanaAI changes how people <em>explore</em> Solana.
-                <span class="soft">The next fight is over where they spend their eight hours a day actually building on it.</span>
+                Mert — you shipped the agent stack.
+                <span class="soft">The next fight is owning the place builders spend eight hours a day calling it.</span>
               </p>
               <div class="banner" style="margin-top: 0;">
-                <span class="hi">We're not trying to compete with Helius.</span>
-                We want Xero to be the reason every serious Solana builder has a Helius account open and asks LanaAI something new every day.
+                <span class="hi">We're not here to compete.</span>
+                We want Xero to be why every serious Solana builder loads your MCP, Skills, and rail by default.
               </div>
             </div>
 
@@ -2202,39 +2706,39 @@
               <div class="reason">
                 <div class="n">01</div>
                 <div>
-                  <h3>Distribution, at the point of creation</h3>
-                  <p>Helius moves from an infra dashboard to the default rail inside the builder's repo, tx pipeline, and deploy gate.</p>
+                  <h3>Distribution at the point of creation</h3>
+                  <p>"Available to install" becomes "loaded by default" inside the repo, tx pipeline, and deploy gate.</p>
                 </div>
               </div>
               <div class="reason">
                 <div class="n">02</div>
                 <div>
                   <h3>Agents are a volume multiplier</h3>
-                  <p>Agents don't ask one question. They inspect on a loop — accounts, logs, fees, histories, risks, landings. All on your infra.</p>
+                  <p>Agents loop — accounts, logs, fees, histories, landings. Every loop is an MCP call and an RPC read.</p>
                 </div>
               </div>
               <div class="reason">
                 <div class="n">03</div>
                 <div>
-                  <h3>Local-to-mainnet flywheel</h3>
-                  <p>Xero starts free and local. When reliability, speed, Sender, and webhooks start mattering — teams graduate straight into Helius.</p>
+                  <h3>Free-to-paid flywheel built in</h3>
+                  <p>Free and local to start. When reliability and Sender start mattering, teams graduate into the Helius bundle.</p>
                 </div>
               </div>
               <div class="reason">
                 <div class="n">04</div>
                 <div>
                   <h3>Shared DNA</h3>
-                  <p>Local-first craft. Solana-native bias. Honest about infra tradeoffs. Preference for tools builders actually use every day.</p>
+                  <p>Local-first. Solana-native. Built for builders who'd notice if either of us got lazy.</p>
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <div class="foot-num">09 / 10</div>
+        <div class="foot-num">08 / 09</div>
       </section>
 
-      <!-- ============================== SLIDE 10 · The ask ============================== -->
-      <section class="slide" data-slide="10">
+      <!-- ============================== SLIDE 09 · The ask ============================== -->
+      <section class="slide" data-slide="09">
         <div class="frame">
           <div class="strip">
             <div class="mark">
@@ -2242,12 +2746,12 @@
               <span class="sep"></span>
               <span class="tag">the ask</span>
             </div>
-            <div class="meta">10 — next steps</div>
+            <div class="meta">09 — next steps</div>
           </div>
 
           <div class="top">
             <div class="eyebrow">Start small, ship together</div>
-            <h2>A focused 90-day technical pilot. Nothing more than that to start.</h2>
+            <h2>A focused 90-day pilot. Nothing more to commit to up front.</h2>
           </div>
 
           <div class="ask">
@@ -2255,54 +2759,54 @@
               <div class="ask-item">
                 <div class="n">01</div>
                 <div>
-                  <h3>Technical pilot</h3>
-                  <p>LanaAI integration surface, Helius account linking, credit metering, Sender + priority-fee defaults.</p>
+                  <h3>Helius for Agents, loaded by default</h3>
+                  <p>Permission to embed MCP, Skills, and the Claude Code plugin with full attribution.</p>
                 </div>
               </div>
               <div class="ask-item">
                 <div class="n">02</div>
                 <div>
-                  <h3>Wholesale pricing</h3>
-                  <p>Clear credit economics for Solana Pro, Team, and enterprise tiers — no one asking anyone for freebies.</p>
+                  <h3>Wholesale Helius pricing</h3>
+                  <p>Credit economics for RPC, Sender, Priority Fee, Webhooks — so the bundle pays for itself on day one.</p>
                 </div>
               </div>
               <div class="ask-item">
                 <div class="n">03</div>
                 <div>
                   <h3>Co-branded launch</h3>
-                  <p>"Powered by Helius and LanaAI" inside Xero Solana Pro — joint docs, demos, and launch content.</p>
+                  <p>"Powered by Helius" on the bundle. Joint docs, demos, launch content. Lana attribution stays with Lana.</p>
                 </div>
               </div>
               <div class="ask-item">
                 <div class="n">04</div>
                 <div>
                   <h3>Builder intros</h3>
-                  <p>Run the pilot with top Solana teams who will stress the workbench and produce credible usage data.</p>
+                  <p>5–10 top teams to stress the workbench and produce credible usage data.</p>
                 </div>
               </div>
               <div class="ask-item">
                 <div class="n">05</div>
                 <div>
-                  <h3>Upside — when it's earned</h3>
-                  <p>Equity, rev-share, or strategic distribution — a conversation for after the pilot proves demand.</p>
+                  <h3>Upside — once it's earned</h3>
+                  <p>Equity, rev-share, or strategic distribution. After the pilot proves demand.</p>
                 </div>
               </div>
             </div>
 
             <aside class="next">
               <div class="tag">next step</div>
-              <h3>A 30-minute call this week.</h3>
-              <p>We'd scope the LanaAI hooks, credit metering contract, and the beta cohort. We'll bring the full Solana Workbench plan and command surface.</p>
+              <h3>30 minutes this week.</h3>
+              <p>Live walkthrough: harness mounting Helius MCP, 13 workbench tabs + sketched Lana tab, and the credit-metering contract.</p>
               <span class="cta">Ready when you are, Mert →</span>
               <div class="sign">
                 <b>Xero Team</b><br />
-                team@Xero.sh<br />
+                team@xero.sh<br />
                 @xero_dev
               </div>
             </aside>
           </div>
         </div>
-        <div class="foot-num">10 / 10</div>
+        <div class="foot-num">09 / 09</div>
       </section>
 
     </main>

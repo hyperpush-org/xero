@@ -181,7 +181,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
       {showTopLeftHeader ? (
         <div
           aria-label="Selected agent"
-          className="pointer-events-none absolute left-6 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_19rem)))] items-center gap-2 rounded-md px-2"
+          className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex h-[30px] max-w-[max(0px,min(34rem,calc(100%_-_19rem)))] items-center gap-2 rounded-md px-2"
         >
           <Bot
             aria-label="Agent"
@@ -291,23 +291,6 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
           className="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"
           onPointerDown={(event) => event.stopPropagation()}
         >
-          {isAuthoring && onAuthoringCancel ? (
-            <Button
-              type="button"
-              aria-label="Cancel authoring"
-              onClick={onAuthoringCancel}
-              size="icon-sm"
-              variant="ghost"
-              disabled={editingStatus?.saving}
-              title="Cancel"
-              className={cn(
-                'size-[30px] cursor-pointer rounded-md bg-transparent',
-                'text-foreground/70 hover:bg-transparent hover:text-foreground',
-              )}
-            >
-              <X className="size-3.5" />
-            </Button>
-          ) : null}
           {isAuthoring && editingStatus ? (
             <Button
               type="button"
@@ -329,6 +312,23 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
               ) : (
                 <Save className="size-3.5" />
               )}
+            </Button>
+          ) : null}
+          {isAuthoring && onAuthoringCancel ? (
+            <Button
+              type="button"
+              aria-label="Cancel authoring"
+              onClick={onAuthoringCancel}
+              size="icon-sm"
+              variant="ghost"
+              disabled={editingStatus?.saving}
+              title="Cancel"
+              className={cn(
+                'size-[30px] cursor-pointer rounded-md bg-transparent',
+                'text-foreground/70 hover:bg-transparent hover:text-foreground',
+              )}
+            >
+              <X className="size-3.5" />
             </Button>
           ) : null}
           {!isAuthoring && showAgentVisualization && onClearAgentSelection ? (

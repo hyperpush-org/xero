@@ -5,8 +5,9 @@ pub const EMULATOR_STATUS_EVENT: &str = "emulator:status";
 pub const EMULATOR_SDK_STATUS_CHANGED_EVENT: &str = "emulator:sdk_status_changed";
 
 /// Emitted when the latest frame should be presented. The payload deliberately
-/// omits the bytes — the frontend swaps `<img src="emulator://frame?t={seq}">`
-/// and the URI scheme handler returns the JPEG bytes from the [`FrameBus`].
+/// omits the bytes — the frontend swaps among a small set of
+/// `emulator://frame?slot={n}` image URLs and the URI scheme handler returns
+/// the JPEG bytes from the [`FrameBus`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FramePayload {

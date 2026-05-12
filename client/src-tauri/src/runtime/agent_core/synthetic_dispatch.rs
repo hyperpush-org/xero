@@ -7,9 +7,7 @@ use super::tool_dispatch::dispatch_tool_call_with_write_approval;
 use super::types::{AgentToolCall, ToolRegistry, ToolRegistryOptions};
 use crate::auth::now_timestamp;
 use crate::commands::{CommandError, CommandResult, RuntimeAgentIdDto};
-use crate::db::project_store::{
-    self, AgentRunDiagnosticRecord, AgentRunStatus, NewAgentRunRecord,
-};
+use crate::db::project_store::{self, AgentRunDiagnosticRecord, AgentRunStatus, NewAgentRunRecord};
 use crate::runtime::AutonomousToolRuntime;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -285,9 +283,8 @@ fn resolve_template_string(
                 let close = match text[after_open..].find("}}") {
                     Some(offset) => after_open + offset,
                     None => {
-                        *error = Some(
-                            "Unterminated `{{...}}` template token in tool input.".into(),
-                        );
+                        *error =
+                            Some("Unterminated `{{...}}` template token in tool input.".into());
                         return None;
                     }
                 };
@@ -331,9 +328,9 @@ fn resolve_token(
         format!("Template token `{token}` has a non-numeric call index `{index_text}`.")
     })?;
     rest = rest[close + 1..].trim_start();
-    rest = rest
-        .strip_prefix('.')
-        .ok_or_else(|| format!("Template token `{token}` is missing the leading `.` after `[..]`."))?;
+    rest = rest.strip_prefix('.').ok_or_else(|| {
+        format!("Template token `{token}` is missing the leading `.` after `[..]`.")
+    })?;
     let mut segments = rest.split('.');
     let scope = segments
         .next()
@@ -369,9 +366,9 @@ fn resolve_token(
                         visited.join(".")
                     )
                 })?;
-                current = items
-                    .get(parsed)
-                    .ok_or_else(|| format!("Template path `{}` is out of bounds.", visited.join(".")))?;
+                current = items.get(parsed).ok_or_else(|| {
+                    format!("Template path `{}` is out of bounds.", visited.join("."))
+                })?;
             }
             _ => {
                 return Err(format!(
@@ -447,4 +444,3 @@ mod tests {
         assert_eq!(value, original);
     }
 }
-

@@ -1071,9 +1071,7 @@ fn policy_pass_through_string_or_object(value: Option<&JsonValue>) -> JsonValue 
     // toolPolicy and outputContract accept object | non-empty string | null.
     match value {
         Some(JsonValue::Object(map)) => JsonValue::Object(map.clone()),
-        Some(JsonValue::String(text)) if !text.trim().is_empty() => {
-            JsonValue::String(text.clone())
-        }
+        Some(JsonValue::String(text)) if !text.trim().is_empty() => JsonValue::String(text.clone()),
         _ => JsonValue::Null,
     }
 }

@@ -1,0 +1,2500 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Xero · Pitch Deck</title>
+    <style>
+      @font-face {
+        font-family: "Geist";
+        src: url("../landing/node_modules/.pnpm/next@16.2.0_react-dom@19.2.4_react@19.2.4__react@19.2.4/node_modules/next/dist/next-devtools/server/font/geist-latin.woff2") format("woff2");
+        font-weight: 100 900;
+        font-display: swap;
+      }
+
+      @font-face {
+        font-family: "Geist Mono";
+        src: url("../landing/node_modules/.pnpm/next@16.2.0_react-dom@19.2.4_react@19.2.4__react@19.2.4/node_modules/next/dist/next-devtools/server/font/geist-mono-latin.woff2") format("woff2");
+        font-weight: 100 900;
+        font-display: swap;
+      }
+
+      :root {
+        --w: 1600px;
+        --h: 900px;
+
+        --bg: #121212;
+        --bg-deep: #0d0d0d;
+        --card: #1a1a1a;
+        --card-soft: rgba(26, 26, 26, 0.64);
+        --elev: #242423;
+
+        --line: rgba(45, 45, 45, 0.9);
+        --line-soft: rgba(45, 45, 45, 0.55);
+        --line-gold: rgba(212, 165, 116, 0.22);
+
+        --text: #f8f9fa;
+        --text-dim: #e7e9ed;
+        --muted: #c2c7ce;
+        --muted-2: #9aa1aa;
+
+        --gold: #d4a574;
+        --gold-soft: rgba(212, 165, 116, 0.08);
+        --gold-ring: rgba(212, 165, 116, 0.32);
+
+        --radius: 14px;
+        --radius-lg: 22px;
+
+        font-family: "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+      }
+
+      html, body {
+        margin: 0;
+        background: #050505;
+        color: var(--text);
+        letter-spacing: 0;
+        font-feature-settings: "ss01", "cv11";
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+
+      body { width: var(--w); }
+      .deck { width: var(--w); }
+
+      .slide {
+        position: relative;
+        width: var(--w);
+        height: var(--h);
+        overflow: hidden;
+        isolation: isolate;
+        page-break-after: always;
+        break-after: page;
+        background: var(--bg);
+      }
+
+      .slide::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background-image:
+          linear-gradient(to right, rgba(45, 45, 45, 0.6) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(45, 45, 45, 0.6) 1px, transparent 1px);
+        background-size: 56px 56px;
+        opacity: 0.22;
+        mask-image: radial-gradient(ellipse at center, black 15%, transparent 78%);
+      }
+
+      .slide::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        background: radial-gradient(ellipse at top, rgba(212, 165, 116, 0.06) 0%, transparent 55%);
+      }
+
+      .frame {
+        position: absolute;
+        inset: 58px 80px 60px 80px;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 30px;
+        color: var(--muted);
+      }
+
+      .mark { display: flex; align-items: center; gap: 14px; }
+      .mark img { width: 76px; height: auto; display: block; opacity: 0.95; }
+      .mark .sep { width: 1px; height: 16px; background: var(--line); }
+      .mark .tag {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 14.5px;
+        letter-spacing: 0.02em;
+        color: var(--muted);
+      }
+
+      .meta {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted-2);
+      }
+
+      h1, h2, h3, p, ul { margin: 0; padding: 0; }
+
+      .eyebrow {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 14.5px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.24em;
+        color: var(--gold);
+      }
+
+      h1 {
+        font-size: 88px;
+        line-height: 0.96;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        max-width: 1080px;
+      }
+
+      h2 {
+        font-size: 54px;
+        line-height: 1.02;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        max-width: 1020px;
+      }
+
+      h3 {
+        font-size: 22px;
+        line-height: 1.2;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+
+      .lead {
+        margin-top: 20px;
+        color: var(--text-dim);
+        font-size: 23px;
+        line-height: 1.45;
+        max-width: 920px;
+        font-weight: 400;
+      }
+
+      .muted { color: var(--muted); }
+      .dim { color: var(--text-dim); }
+      .gold { color: var(--gold); }
+      .mono { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        background: rgba(36, 36, 35, 0.55);
+        color: var(--text-dim);
+        border-radius: 999px;
+        padding: 9px 16px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13.5px;
+        letter-spacing: 0.02em;
+      }
+
+      .chip .d { width: 5px; height: 5px; border-radius: 999px; background: var(--gold); }
+      .chip.gold {
+        border-color: var(--gold-ring);
+        background: var(--gold-soft);
+        color: var(--text);
+      }
+
+      .foot-num {
+        position: absolute;
+        right: 80px;
+        bottom: 28px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13.5px;
+        color: var(--muted);
+        letter-spacing: 0.08em;
+        z-index: 2;
+      }
+
+      .source {
+        position: absolute;
+        left: 80px;
+        right: 200px;
+        bottom: 28px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        color: rgba(194, 199, 206, 0.86);
+        letter-spacing: 0.02em;
+        z-index: 2;
+      }
+
+      /* =========================================================
+         SLIDE 01 — Cover
+         ========================================================= */
+      .cover-grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 60px;
+        align-items: center;
+        margin-top: 10px;
+      }
+
+      .cover-logo { width: 140px; height: auto; margin-bottom: 48px; opacity: 0.98; }
+
+      .cover-title {
+        font-size: 92px;
+        line-height: 0.94;
+        font-weight: 500;
+        letter-spacing: -0.022em;
+        max-width: 680px;
+      }
+      .cover-title .soft { color: var(--muted); }
+
+      .cover-sub {
+        margin-top: 26px;
+        max-width: 600px;
+        color: var(--text-dim);
+        font-size: 21px;
+        line-height: 1.5;
+      }
+
+      .cover-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 34px; }
+
+      .hero-stats {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--card-soft);
+        border-radius: var(--radius-lg);
+        padding: 32px 34px;
+        display: flex;
+        flex-direction: column;
+      }
+      .hero-stats .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line-soft);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: var(--muted);
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .hero-stats .head .live {
+        display: inline-flex; align-items: center; gap: 7px; color: var(--gold);
+        letter-spacing: 0.14em;
+      }
+      .hero-stats .head .live::before {
+        content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--gold);
+      }
+      .hero-stack {
+        list-style: none;
+        margin: 0;
+        padding: 14px 0 0 0;
+        display: grid;
+        gap: 0;
+      }
+      .hero-stack li {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: baseline;
+        padding: 13px 0;
+        border-bottom: 1px dashed var(--line-soft);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 15px;
+        color: var(--text-dim);
+        letter-spacing: 0.01em;
+      }
+      .hero-stack li:last-child { border-bottom: 0; padding-bottom: 14px; }
+      .hero-stack li .price {
+        color: var(--muted-2);
+        font-size: 14px;
+      }
+      .hero-totals {
+        margin-top: 8px;
+        padding: 22px 24px;
+        border: 1px solid var(--gold-ring);
+        background: var(--gold-soft);
+        border-radius: 14px;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 22px;
+      }
+      .hero-totals .col { display: flex; flex-direction: column; }
+      .hero-totals .col.right { text-align: right; align-items: flex-end; }
+      .hero-totals .lbl {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        color: var(--muted-2);
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+      .hero-totals .v {
+        margin-top: 6px;
+        font-size: 34px;
+        font-weight: 500;
+        letter-spacing: -0.025em;
+        line-height: 1;
+        color: var(--muted);
+      }
+      .hero-totals .v.gold { color: var(--gold); }
+      .hero-totals .v s { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+      .hero-totals .arrow {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 22px;
+        color: var(--gold);
+        letter-spacing: 0;
+      }
+      .hero-footer {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--line-soft);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--muted-2);
+        letter-spacing: 0.04em;
+        text-align: center;
+      }
+      .hero-footer .gold { color: var(--gold); }
+
+      /* =========================================================
+         SLIDE 02 — Problem
+         ========================================================= */
+      .top { padding-top: 32px; }
+      .top .eyebrow + h2 { margin-top: 16px; }
+      .top h2 + .lead { margin-top: 18px; }
+
+      [data-slide="02"] .top .lead { max-width: 1080px; }
+
+      .pain-stack { margin-top: 36px; display: grid; gap: 0; }
+
+      .pain-row {
+        display: grid;
+        grid-template-columns: 72px 1fr;
+        column-gap: 28px;
+        padding: 18px 0;
+        border-top: 1px solid var(--line);
+        align-items: start;
+      }
+      .pain-row:last-child { border-bottom: 1px solid var(--line); }
+      .pain-num {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 15.5px;
+        letter-spacing: 0.18em;
+        padding-top: 28px;
+      }
+      .pain-trail {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 14.5px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        text-transform: lowercase;
+      }
+      .pain-trail .arrow { color: var(--gold); margin: 0 6px; opacity: 0.85; }
+      .pain-body h3 { margin-top: 8px; font-size: 26px; letter-spacing: -0.012em; }
+      .pain-body p {
+        margin-top: 10px;
+        color: var(--text-dim);
+        font-size: 18px;
+        line-height: 1.5;
+        max-width: 1180px;
+      }
+
+      /* =========================================================
+         SLIDE 03 — App window mock (reused)
+         ========================================================= */
+      .s3-split {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 480px 1fr;
+        column-gap: 60px;
+        align-items: center;
+        padding-top: 28px;
+        min-height: 0;
+      }
+      .s3-left { max-width: 480px; }
+      .s3-left h2 { margin-top: 16px; font-size: 48px; line-height: 1.02; }
+      .s3-left .s3-sub {
+        margin-top: 22px;
+        color: var(--text-dim);
+        font-size: 19.5px;
+        line-height: 1.5;
+        max-width: 480px;
+      }
+      .s3-bullets { margin-top: 30px; display: grid; gap: 18px; list-style: none; }
+      .s3-bullets li {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: 14px;
+        align-items: start;
+      }
+      .s3-bullets .n {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 13px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding-top: 4px;
+        min-width: 56px;
+      }
+      .s3-bullets .t {
+        display: block;
+        color: var(--text);
+        font-size: 19px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+      .s3-bullets .d {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      .s3-right {
+        position: relative;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        margin-right: -220px;
+        min-width: 0;
+      }
+
+      .aw-shell {
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        height: 640px;
+        background: #121212;
+        border: 1px solid rgba(45, 45, 45, 0.9);
+        border-radius: 12px;
+        overflow: hidden;
+        min-height: 0;
+      }
+      .aw-li { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+      .aw-tbar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 50px;
+        padding: 0 14px;
+        background: #141414;
+        border-bottom: 1px solid #2d2d2d;
+      }
+      .aw-traf { display: flex; gap: 7px; }
+      .aw-traf span { width: 13px; height: 13px; border-radius: 50%; }
+      .aw-traf span:nth-child(1) { background: rgba(255, 95, 87, 0.85); }
+      .aw-traf span:nth-child(2) { background: rgba(254, 188, 46, 0.85); }
+      .aw-traf span:nth-child(3) { background: rgba(40, 200, 64, 0.85); }
+      .aw-tabs { display: flex; gap: 2px; padding-left: 10px; }
+      .aw-tab { padding: 5px 11px; border-radius: 7px; font-size: 14.5px; color: #c2c7ce; }
+      .aw-tab.on { background: rgba(36, 36, 35, 0.82); color: #f8f9fa; }
+      .aw-center {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 14.5px;
+      }
+      .aw-center .nm { color: #f8f9fa; font-weight: 500; }
+      .aw-center .sl { color: rgba(194, 199, 206, 0.75); }
+      .aw-center .sub { color: #c2c7ce; }
+      .aw-right { margin-left: auto; display: flex; align-items: center; gap: 10px; color: #a8aeb5; }
+      .aw-diff {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 7px;
+        font-family: "Geist Mono", ui-monospace, monospace;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .aw-diff .pos { color: #5fd97a; }
+      .aw-diff .neg { color: #ff6b6b; }
+      .aw-iconbtn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        color: #a8aeb5;
+      }
+      .aw-body { flex: 1; display: flex; min-height: 0; }
+      .aw-prjrail {
+        flex-shrink: 0;
+        width: 54px;
+        background: #141414;
+        border-right: 1px solid rgba(45, 45, 45, 0.7);
+        display: flex;
+        flex-direction: column;
+      }
+      .aw-prjlist {
+        list-style: none;
+        margin: 0;
+        padding: 10px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        align-items: center;
+        flex: 1;
+      }
+      .aw-prj {
+        display: flex; align-items: center; justify-content: center;
+        width: 36px; height: 36px;
+        border-radius: 9px;
+        border: 1px solid transparent;
+        background: rgba(36, 36, 35, 0.3);
+        color: rgba(248, 249, 250, 0.55);
+        font-size: 13px; font-weight: 500;
+      }
+      .aw-prj.on { border-color: rgba(45, 45, 45, 0.85); background: #242423; color: #f8f9fa; }
+      .aw-prj.add {
+        border: 1px dashed rgba(45, 45, 45, 0.75);
+        background: transparent;
+        color: rgba(168, 174, 181, 0.85);
+        margin-top: 4px;
+      }
+      .aw-rail-foot { display: flex; justify-content: center; padding: 8px; color: rgba(168, 174, 181, 0.8); }
+      .aw-main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; }
+      .aw-handle {
+        position: absolute;
+        top: 50%;
+        width: 16px; height: 28px;
+        display: flex; align-items: center; justify-content: center;
+        border: 1px solid rgba(45, 45, 45, 0.65);
+        background: rgba(26, 26, 26, 0.42);
+        color: #a8aeb5;
+        transform: translateY(-50%);
+        z-index: 2;
+      }
+      .aw-handle.l { left: -1px; border-left: 0; border-radius: 0 7px 7px 0; }
+      .aw-handle.r { right: -1px; border-right: 0; border-radius: 7px 0 0 7px; }
+      .aw-crumb {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 22px 8px;
+        font-size: 14.5px;
+        color: #c2c7ce;
+      }
+      .aw-crumb .bc { display: inline-flex; align-items: center; gap: 7px; }
+      .aw-crumb .here { color: rgba(248, 249, 250, 0.85); }
+      .aw-crumb .acts { display: inline-flex; align-items: center; gap: 14px; }
+      .aw-crumb .acts .ns { display: inline-flex; align-items: center; gap: 6px; }
+      .aw-empty {
+        flex: 1;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        padding: 12px 32px 8px;
+      }
+      .aw-empty .badge {
+        width: 44px; height: 44px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border: 1px solid rgba(45, 45, 45, 0.7);
+        background: rgba(26, 26, 26, 0.6);
+        border-radius: 13px;
+      }
+      .aw-empty .badge svg { width: 22px; height: 22px; }
+      .aw-empty .hd {
+        margin-top: 16px;
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+        line-height: 1.15;
+        color: #f8f9fa;
+        text-align: center;
+      }
+      .aw-empty .hd .gold { color: #d4a574; }
+      .aw-empty .sub {
+        margin-top: 10px; max-width: 420px;
+        text-align: center;
+        font-size: 13px; line-height: 1.55;
+        color: #c2c7ce;
+      }
+      .aw-sugg {
+        margin-top: 18px; width: 100%; max-width: 420px;
+        list-style: none; padding: 0;
+        border: 1px solid rgba(45, 45, 45, 0.75);
+        background: rgba(26, 26, 26, 0.45);
+        border-radius: 11px;
+        overflow: hidden;
+      }
+      .aw-sugg li {
+        display: flex; align-items: center; gap: 12px;
+        padding: 11px 16px; font-size: 13px;
+        border-top: 1px solid rgba(45, 45, 45, 0.55);
+      }
+      .aw-sugg li:first-child { border-top: 0; }
+      .aw-sugg li .ico { color: #c2c7ce; flex-shrink: 0; }
+      .aw-sugg li .lbl { flex: 1; color: rgba(248, 249, 250, 0.92); }
+      .aw-sugg li .ch { color: rgba(194, 199, 206, 0.75); flex-shrink: 0; }
+      .aw-composer-wrap { padding: 6px 16px 14px; }
+      .aw-composer {
+        margin: 0 auto;
+        max-width: 720px;
+        border: 1px solid rgba(45, 45, 45, 0.6);
+        background: rgba(26, 26, 26, 0.75);
+        border-radius: 13px;
+        overflow: hidden;
+      }
+      .aw-composer .ph {
+        padding: 14px 16px 9px;
+        font-size: 15.5px;
+        color: rgba(194, 199, 206, 0.75);
+      }
+      .aw-composer .aw-cbar {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 6px 8px;
+        border-top: 1px solid rgba(45, 45, 45, 0.4);
+      }
+      .aw-pills { display: flex; align-items: center; gap: 2px; }
+      .aw-pill {
+        display: inline-flex; align-items: center; gap: 5px;
+        height: 32px; padding: 0 10px;
+        border-radius: 7px;
+        font-size: 13.5px; font-weight: 500;
+        color: rgba(194, 199, 206, 0.95);
+      }
+      .aw-pill .awl { color: rgba(194, 199, 206, 0.78); }
+      .aw-pill .opa { opacity: 0.5; }
+      .aw-icons { display: flex; align-items: center; gap: 4px; color: rgba(168, 174, 181, 0.7); }
+      .aw-icons .b {
+        width: 30px; height: 30px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 7px;
+      }
+      .aw-icons .b.send { background: #242423; color: #f8f9fa; }
+      .aw-icons .ring {
+        width: 15px; height: 15px; border-radius: 50%;
+        border: 1px solid rgba(168, 174, 181, 0.4);
+      }
+      .aw-status {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 8px 16px;
+        background: #141414;
+        border-top: 1px solid #2d2d2d;
+        font-family: "Geist Mono", ui-monospace, monospace;
+        font-size: 13px;
+        color: #c2c7ce;
+      }
+      .aw-sb-l, .aw-sb-r { display: inline-flex; align-items: center; gap: 16px; }
+      .aw-sb-l .b { display: inline-flex; align-items: center; gap: 5px; }
+      .aw-sb-l .b .ud { margin-left: 4px; opacity: 0.7; }
+      .aw-sb-l .gd { color: #d4a574; }
+
+      /* =========================================================
+         SLIDE 04 — Product proof / capability grid
+         ========================================================= */
+      .proof {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 0.72fr 1.28fr;
+        gap: 64px;
+        align-items: center;
+        padding-top: 36px;
+      }
+      .big-stat { border-left: 3px solid var(--gold); padding-left: 28px; position: relative; }
+      .big-stat .n {
+        font-size: 184px;
+        line-height: 0.84;
+        font-weight: 500;
+        letter-spacing: -0.045em;
+        color: var(--text);
+        display: inline-block;
+      }
+      .big-stat .cap {
+        margin-top: 24px;
+        color: var(--text-dim);
+        font-size: 21px;
+        line-height: 1.4;
+        max-width: 360px;
+      }
+      .caps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+      .cap-card {
+        padding: 22px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius);
+        min-height: 184px;
+        position: relative;
+        overflow: hidden;
+      }
+      .cap-card::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 22px;
+        width: 28px; height: 1px;
+        background: var(--gold);
+        opacity: 0.7;
+      }
+      .cap-card .t {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: var(--gold);
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+      }
+      .cap-card h3 { margin-top: 12px; font-size: 22.5px; font-weight: 500; letter-spacing: -0.005em; }
+      .cap-card p {
+        margin-top: 12px;
+        color: var(--text-dim);
+        font-size: 16px;
+        line-height: 1.5;
+      }
+
+      /* =========================================================
+         SLIDE 05 — Traction (line chart + KPI strip)
+         ========================================================= */
+      .traction {
+        flex: 1;
+        display: grid;
+        grid-template-rows: auto auto;
+        gap: 32px;
+        padding-top: 30px;
+      }
+      .kpi-strip {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+      .kpi {
+        padding: 22px 26px 22px 0;
+        border-right: 1px solid var(--line);
+      }
+      .kpi:last-child { border-right: 0; padding-right: 0; }
+      .kpi:not(:first-child) { padding-left: 26px; }
+      .kpi .lbl {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--muted-2);
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+      .kpi .v {
+        margin-top: 14px;
+        font-size: 56px;
+        line-height: 0.95;
+        letter-spacing: -0.035em;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .kpi .delta {
+        margin-top: 10px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: var(--gold);
+        letter-spacing: 0.04em;
+      }
+      .kpi .delta.neg { color: #ff8a7a; }
+
+      .chart-card {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        padding: 24px 28px 22px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .chart-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+      .chart-head .ttl {
+        font-size: 19px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+      .chart-head .sub {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+      }
+      .chart-legend {
+        display: inline-flex;
+        align-items: center;
+        gap: 18px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+      }
+      .chart-legend .sw { display: inline-flex; align-items: center; gap: 7px; }
+      .chart-legend .sw::before {
+        content: "";
+        width: 12px; height: 2px;
+        background: var(--legend-color, var(--gold));
+        border-radius: 2px;
+      }
+      .chart-legend .sw.dim::before { background: rgba(248, 249, 250, 0.38); }
+      .chart-body {
+        flex: 1;
+        min-height: 0;
+        padding-top: 12px;
+      }
+      .chart-body svg { width: 100%; height: 100%; display: block; }
+
+      /* Slide 5 testimonials */
+      .quotes {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+      }
+      .quote {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        padding: 28px 26px 24px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .quote::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 26px;
+        width: 32px; height: 2px;
+        background: var(--gold);
+        opacity: 0.8;
+      }
+      .quote .mark {
+        font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+        font-size: 56px;
+        line-height: 0.8;
+        color: var(--gold);
+        opacity: 0.45;
+        margin-bottom: 4px;
+        height: 26px;
+      }
+      .quote .body {
+        color: var(--text-dim);
+        font-size: 17px;
+        line-height: 1.5;
+        letter-spacing: -0.005em;
+        flex: 1;
+      }
+      .quote .body em { color: var(--text); font-style: normal; }
+      .quote .who {
+        margin-top: 22px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line-soft);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .quote .who .avatar {
+        width: 38px; height: 38px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--gold-soft), rgba(36, 36, 35, 0.6));
+        border: 1px solid var(--gold-ring);
+        color: var(--gold);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "Geist Mono", ui-monospace, monospace;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .quote .who .meta {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .quote .who .role {
+        font-size: 14px;
+        color: var(--text);
+        font-weight: 500;
+      }
+      .quote .who .org {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        color: var(--muted);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      /* =========================================================
+         SLIDE 06 — Market (TAM/SAM/SOM bars)
+         ========================================================= */
+      .market {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1.05fr;
+        gap: 56px;
+        align-items: center;
+        padding-top: 36px;
+      }
+      .market-bars {
+        display: grid;
+        gap: 20px;
+      }
+      .bar-row { display: grid; grid-template-columns: 110px 1fr 130px; align-items: center; gap: 18px; }
+      .bar-row .label {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 14px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+      .bar-track {
+        height: 28px;
+        background: rgba(36, 36, 35, 0.55);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        overflow: hidden;
+        position: relative;
+      }
+      .bar-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--gold) 0%, rgba(212, 165, 116, 0.55) 100%);
+        position: relative;
+      }
+      .bar-fill.dim {
+        background: linear-gradient(90deg, rgba(212, 165, 116, 0.55) 0%, rgba(212, 165, 116, 0.18) 100%);
+      }
+      .bar-fill.dim2 {
+        background: linear-gradient(90deg, rgba(212, 165, 116, 0.32) 0%, rgba(212, 165, 116, 0.08) 100%);
+      }
+      .bar-row .value {
+        text-align: right;
+        font-size: 28px;
+        font-weight: 500;
+        letter-spacing: -0.015em;
+        color: var(--text);
+      }
+      .bar-row .value .per {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        margin-top: 4px;
+      }
+      .bar-row .descrip {
+        grid-column: 2 / 4;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.4;
+      }
+      .market-side h3 { font-size: 26px; font-weight: 500; letter-spacing: -0.01em; }
+      .market-side .lead2 {
+        margin-top: 18px;
+        color: var(--text-dim);
+        font-size: 18px;
+        line-height: 1.55;
+      }
+      .market-drivers {
+        margin-top: 28px;
+        display: grid;
+        gap: 14px;
+      }
+      .driver {
+        display: grid;
+        grid-template-columns: 96px 1fr;
+        gap: 18px;
+        padding: 14px 0;
+        border-top: 1px solid var(--line);
+        align-items: center;
+      }
+      .driver:last-child { border-bottom: 1px solid var(--line); }
+      .driver .k {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 32px;
+        letter-spacing: -0.02em;
+        font-weight: 500;
+      }
+      .driver .v { color: var(--text-dim); font-size: 16px; line-height: 1.5; }
+
+      /* =========================================================
+         SLIDE 07 — Business model / pricing
+         ========================================================= */
+      .pricing {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr 0.95fr;
+        gap: 22px;
+        align-items: stretch;
+        padding-top: 30px;
+      }
+      .bundle-panel {
+        border: 1px solid var(--line);
+        background: var(--card-soft);
+        border-radius: 20px;
+        padding: 26px 24px 24px;
+        display: flex;
+        flex-direction: column;
+      }
+      .bundle-panel h3 {
+        font-size: 19px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+      .bundle-panel .intro {
+        margin-top: 10px;
+        color: var(--text-dim);
+        font-size: 14.5px;
+        line-height: 1.5;
+      }
+      .bundle-rows {
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 12px;
+      }
+      .bundle-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: baseline;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: var(--text-dim);
+        letter-spacing: 0.02em;
+      }
+      .bundle-row .price-was {
+        color: var(--muted-2);
+        text-decoration: line-through;
+        margin-right: 8px;
+      }
+      .bundle-row .price-incl {
+        color: var(--gold);
+      }
+      .bundle-total {
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      .bundle-total .lbl {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted-2);
+      }
+      .bundle-total .v {
+        font-size: 22px;
+        font-weight: 500;
+        letter-spacing: -0.015em;
+        color: var(--text);
+      }
+      .bundle-total .v .strike {
+        color: var(--muted-2);
+        text-decoration: line-through;
+        margin-right: 10px;
+        font-weight: 400;
+      }
+      .bundle-total .v .now {
+        color: var(--gold);
+      }
+      .tier {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: 20px;
+        padding: 28px 24px 26px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .tier.hi { border: 1px solid rgba(212, 165, 116, 0.5); background: var(--card); }
+      .tier.hi::after {
+        content: "";
+        position: absolute;
+        left: -1px; right: -1px; top: -1px;
+        height: 3px;
+        border-top-left-radius: 20px;
+        border-top-right-radius: 20px;
+        background: var(--gold);
+        pointer-events: none;
+      }
+      .tier .name { font-size: 18px; font-weight: 500; letter-spacing: -0.005em; color: var(--text); }
+      .tier .pill {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10.5px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        padding: 5px 10px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.025);
+        white-space: nowrap;
+      }
+      .tier .pill.gold {
+        color: var(--gold);
+        border-color: var(--gold-ring);
+        background: var(--gold-soft);
+      }
+      .tier .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .tier .priceline { margin-top: 22px; display: flex; align-items: baseline; gap: 8px; }
+      .tier .price {
+        font-size: 50px;
+        line-height: 1;
+        letter-spacing: -0.035em;
+        font-weight: 500;
+        color: var(--text);
+      }
+      .tier.hi .price { color: var(--gold); }
+      .tier .per { font-size: 14px; color: var(--muted); }
+      .tier .blurb {
+        margin-top: 14px;
+        color: var(--text-dim);
+        font-size: 14.5px;
+        line-height: 1.5;
+        min-height: 70px;
+      }
+      .tier .group-label {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+      .tier.hi .group-label { color: var(--gold); border-top-color: rgba(212, 165, 116, 0.14); }
+      .tier ul { list-style: none; margin: 14px 0 0 0; padding: 0; display: grid; gap: 11px; }
+      .tier li {
+        position: relative;
+        padding-left: 24px;
+        font-size: 14px;
+        color: var(--text-dim);
+        line-height: 1.45;
+      }
+      .tier li::before {
+        content: "";
+        position: absolute;
+        left: 0; top: 1px;
+        width: 16px; height: 16px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--line);
+      }
+      .tier li::after {
+        content: "";
+        position: absolute;
+        left: 4px; top: 6px;
+        width: 8px; height: 4px;
+        border-left: 1.4px solid var(--muted);
+        border-bottom: 1.4px solid var(--muted);
+        transform: rotate(-45deg);
+      }
+      .tier.hi li::before { background: var(--gold-soft); border-color: var(--gold-ring); }
+      .tier.hi li::after { border-color: var(--gold); }
+
+      .revenue-strip {
+        margin-top: 22px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0;
+      }
+      .revenue-cell { padding: 0 26px; border-right: 1px solid var(--line); }
+      .revenue-cell:first-child { padding-left: 0; }
+      .revenue-cell:last-child { border-right: 0; padding-right: 0; }
+      .revenue-cell .k {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--muted-2);
+      }
+      .revenue-cell .v {
+        margin-top: 8px;
+        color: var(--text);
+        font-size: 18px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+
+      /* =========================================================
+         SLIDE 08 — Competition
+         ========================================================= */
+      .comp {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 48px;
+        align-items: center;
+        padding-top: 30px;
+      }
+      .quad {
+        position: relative;
+        width: 100%;
+        height: 520px;
+        max-width: 560px;
+        margin: 0 auto;
+        border: 1px solid var(--line);
+        background:
+          linear-gradient(135deg, rgba(212, 165, 116, 0.05), transparent 60%),
+          var(--card);
+        border-radius: 16px;
+      }
+      .quad .axis-x, .quad .axis-y {
+        position: absolute;
+        background: var(--line);
+      }
+      .quad .axis-x { left: 7%; right: 7%; top: 50%; height: 1px; }
+      .quad .axis-y { top: 7%; bottom: 7%; left: 50%; width: 1px; }
+      .quad .x-l, .quad .x-r, .quad .y-t, .quad .y-b {
+        position: absolute;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted-2);
+        white-space: nowrap;
+      }
+      .quad .y-t { left: 50%; top: 16px; transform: translateX(-50%); }
+      .quad .y-b { left: 50%; bottom: 16px; transform: translateX(-50%); }
+      .quad .x-l { left: 16px; top: 50%; transform: translateY(-50%) rotate(-90deg); transform-origin: left center; }
+      .quad .x-r { right: 16px; top: 50%; transform: translateY(-50%) rotate(90deg); transform-origin: right center; }
+      .quad-dot {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border: 1px solid var(--line);
+        background: rgba(36, 36, 35, 0.92);
+        border-radius: 999px;
+        font-size: 13px;
+        color: var(--text-dim);
+      }
+      .quad-dot::before {
+        content: "";
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: var(--muted-2);
+      }
+      .quad-dot.us {
+        border-color: var(--gold-ring);
+        background: var(--gold-soft);
+        color: var(--gold);
+        padding: 8px 16px;
+        font-weight: 500;
+        font-size: 14px;
+      }
+      .quad-dot.us::before { background: var(--gold); width: 10px; height: 10px; }
+
+      .comp-table {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+      }
+      .comp-table table { width: 100%; border-collapse: collapse; }
+      .comp-table th, .comp-table td {
+        padding: 14px 18px;
+        text-align: left;
+        font-size: 14.5px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+      .comp-table thead th {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted-2);
+        background: rgba(36, 36, 35, 0.4);
+      }
+      .comp-table tbody tr:last-child td { border-bottom: 0; }
+      .comp-table tbody td.feat { color: var(--text-dim); font-weight: 500; }
+      .comp-table .yes { color: var(--gold); text-align: center; font-weight: 500; }
+      .comp-table .no { color: var(--muted-2); text-align: center; }
+      .comp-table .part { color: var(--text-dim); text-align: center; }
+      .comp-table th.us, .comp-table td.us {
+        background: var(--gold-soft);
+        color: var(--gold);
+        font-weight: 500;
+      }
+
+      /* =========================================================
+         SLIDE 09 — Roadmap / GTM
+         ========================================================= */
+      .roadmap {
+        flex: 1;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 28px;
+        padding-top: 30px;
+      }
+      .road-chart {
+        position: relative;
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius-lg);
+        padding: 24px 28px 20px;
+      }
+      .road-chart .head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+      .road-chart .head .ttl { font-size: 18px; font-weight: 500; }
+      .road-chart .head .sub {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+      }
+      .road-body { padding-top: 16px; }
+      .road-body svg { width: 100%; height: 180px; display: block; }
+
+      .qtrs {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+      }
+      .qtr {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius);
+        padding: 22px 22px 20px;
+        position: relative;
+      }
+      .qtr::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 22px;
+        width: 26px; height: 1px;
+        background: var(--gold);
+        opacity: 0.7;
+      }
+      .qtr .r {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: var(--gold);
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+      .qtr h3 { margin-top: 12px; font-size: 19px; font-weight: 500; letter-spacing: -0.005em; }
+      .qtr ul { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+      .qtr li {
+        position: relative;
+        padding-left: 16px;
+        color: var(--text-dim);
+        font-size: 14.5px;
+        line-height: 1.45;
+      }
+      .qtr li::before {
+        content: "";
+        position: absolute;
+        left: 0; top: 0.55em;
+        width: 5px; height: 5px;
+        border-radius: 50%;
+        background: var(--gold);
+        opacity: 0.85;
+      }
+
+      /* =========================================================
+         SLIDE 10 — Team & Ask
+         ========================================================= */
+      .ask {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 64px;
+        align-items: stretch;
+        padding-top: 28px;
+      }
+      .team-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        margin-top: 28px;
+      }
+      .team-card {
+        border: 1px solid var(--line);
+        background: var(--card);
+        border-radius: var(--radius);
+        padding: 22px;
+      }
+      .team-card .who { display: flex; align-items: center; gap: 14px; }
+      .team-card .avatar {
+        width: 46px; height: 46px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--gold-soft), rgba(36, 36, 35, 0.6));
+        border: 1px solid var(--gold-ring);
+        color: var(--gold);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "Geist Mono", ui-monospace, monospace;
+        font-size: 15px;
+        font-weight: 500;
+      }
+      .team-card .who .nm { font-size: 17px; font-weight: 500; color: var(--text); }
+      .team-card .who .role {
+        margin-top: 3px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+      }
+      .team-card .bio {
+        margin-top: 14px;
+        color: var(--text-dim);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .next {
+        position: relative;
+        border: 1px solid rgba(212, 165, 116, 0.55);
+        background: linear-gradient(160deg, rgba(212, 165, 116, 0.16) 0%, rgba(212, 165, 116, 0.04) 60%);
+        border-radius: var(--radius-lg);
+        padding: 40px 40px 36px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        overflow: hidden;
+      }
+      .next::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--gold) 50%, transparent);
+      }
+      .next .tag {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        color: var(--gold);
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .next .tag::before {
+        content: "";
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: var(--gold);
+      }
+      .next h3 {
+        font-size: 32px;
+        line-height: 1.08;
+        letter-spacing: -0.02em;
+        font-weight: 500;
+      }
+      .next .ask-amt {
+        font-size: 84px;
+        line-height: 1;
+        letter-spacing: -0.045em;
+        font-weight: 500;
+        color: var(--gold);
+      }
+      .next .ask-amt-sub {
+        margin-top: 8px;
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 14px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+      }
+      .next .uses {
+        margin-top: 4px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 16px;
+      }
+      .next .use-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: baseline;
+        gap: 14px;
+      }
+      .next .use-row .lbl-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      .next .use-row .lbl {
+        color: var(--text-dim);
+        font-size: 15.5px;
+      }
+      .next .use-row .pct {
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--gold);
+        font-size: 13px;
+      }
+      .next .use-row .ub {
+        grid-column: 1 / -1;
+        height: 6px;
+        background: rgba(45, 45, 45, 0.7);
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .next .use-row .ub span {
+        display: block;
+        height: 100%;
+        background: linear-gradient(90deg, var(--gold), rgba(212, 165, 116, 0.5));
+      }
+      .next .sign {
+        margin-top: auto;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+        font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13.5px;
+        color: var(--text-dim);
+        line-height: 1.6;
+        letter-spacing: 0.02em;
+      }
+      .next .sign b { color: var(--text); font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <main class="deck">
+
+      <!-- ============================== SLIDE 01 · Cover ============================== -->
+      <section class="slide" data-slide="01">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">company overview</span>
+            </div>
+            <div class="meta">confidential · 2026</div>
+          </div>
+
+          <div class="cover-grid">
+            <div>
+              <img class="cover-logo" src="../landing/public/logo.svg" alt="Xero" />
+              <div class="eyebrow">Xero</div>
+              <h1 class="cover-title" style="margin-top: 20px;">
+                The desktop studio <span class="soft">Solana builders live in.</span>
+              </h1>
+              <p class="cover-sub">
+                A local-first AI IDE — and a Solana workbench that replaces the five subscriptions every team pays for.
+              </p>
+              <div class="cover-chips">
+                <span class="chip"><span class="d"></span>solana workbench · paid bundle</span>
+                <span class="chip"><span class="d"></span>agent harness</span>
+                <span class="chip"><span class="d"></span>local-first desktop</span>
+              </div>
+            </div>
+
+            <div class="hero-stats" aria-hidden="true">
+              <div class="head">
+                <span>what the bundle replaces</span>
+                <span class="live">launching Q3</span>
+              </div>
+
+              <ul class="hero-stack">
+                <li><span>RPC + Sender provider</span><span class="price">$149/mo</span></li>
+                <li><span>Indexer · DAS · webhooks</span><span class="price">$99/mo</span></li>
+                <li><span>Block explorer pro</span><span class="price">$49/mo</span></li>
+                <li><span>Deploy + audit tooling</span><span class="price">$79/mo</span></li>
+                <li><span>AI coding assistant</span><span class="price">$40/mo</span></li>
+              </ul>
+
+              <div class="hero-totals">
+                <div class="col">
+                  <span class="lbl">Retail (5 vendors)</span>
+                  <span class="v"><s>$416<span style="font-size:18px; letter-spacing:0;">/mo</span></s></span>
+                </div>
+                <span class="arrow">→</span>
+                <div class="col right">
+                  <span class="lbl">Xero Solana Bundle</span>
+                  <span class="v gold">$50<span style="font-size:18px; letter-spacing:0;">/mo</span></span>
+                </div>
+              </div>
+
+              <div class="hero-footer">
+                <span class="gold">88% wholesale discount.</span> One sub. One invoice. Live in builders' hands today.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">01 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 02 · Problem ============================== -->
+      <section class="slide" data-slide="02">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">the problem</span>
+            </div>
+            <div class="meta">02 — problem</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">What's broken</div>
+            <h2>Solana's tools are great. They just don't sit in the same window.</h2>
+            <p class="lead">
+              Every serious Solana team pays five vendors, runs four browser tabs, and re-wires the same toolchain in every repo. The infra exists — the workspace doesn't.
+            </p>
+          </div>
+
+          <div class="pain-stack">
+            <div class="pain-row">
+              <div class="pain-num">01</div>
+              <div class="pain-body">
+                <div class="pain-trail">rpc<span class="arrow">·</span>indexer<span class="arrow">·</span>explorer<span class="arrow">·</span>deploy<span class="arrow">·</span>agent</div>
+                <h3>Five vendors, five invoices, one tired dev.</h3>
+                <p>RPC, indexer, explorer, deploy tooling, AI agent. Five logins, five bills, five dashboards — paid every month before a single transaction lands.</p>
+              </div>
+            </div>
+            <div class="pain-row">
+              <div class="pain-num">02</div>
+              <div class="pain-body">
+                <div class="pain-trail">localnet<span class="arrow">↔</span>mainnet</div>
+                <h3>Local and mainnet feel like two products.</h3>
+                <p>Fork and seed locally, then rewire everything for real reads and sends. Personas, IDL drift, priority fees, ALTs — every team re-builds the same harness.</p>
+              </div>
+            </div>
+            <div class="pain-row">
+              <div class="pain-num">03</div>
+              <div class="pain-body">
+                <div class="pain-trail">editor<span class="arrow">→</span>logs<span class="arrow">→</span>explorer<span class="arrow">→</span>docs</div>
+                <h3>Context dies between tabs.</h3>
+                <p>Code in the editor, logs in the terminal, txs in the explorer, IDLs in a doc. By the time you've found the answer, your agent has forgotten the question.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">02 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 03 · Solution ============================== -->
+      <section class="slide" data-slide="03">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">the solution</span>
+            </div>
+            <div class="meta">03 — solution</div>
+          </div>
+
+          <div class="s3-split">
+            <div class="s3-left">
+              <div class="eyebrow">What Xero is</div>
+              <h2>A desktop IDE with a Solana workbench built in.</h2>
+              <p class="s3-sub">
+                Free for everyone. One paid plan that bundles the Solana stack into a single subscription.
+              </p>
+              <ul class="s3-bullets">
+                <li>
+                  <span class="n">01</span>
+                  <div>
+                    <span class="t">Local-first desktop IDE</span>
+                    <span class="d">Rust + Tauri v2. Code, keys, projects on your machine. Free forever, every feature.</span>
+                  </div>
+                </li>
+                <li>
+                  <span class="n">02</span>
+                  <div>
+                    <span class="t">Solana workbench · the paid plan</span>
+                    <span class="d">79 <span class="mono">solana_*</span> commands. Forks, personas, tx pipeline, audit, deploy gates. RPC + indexer + explorer bundled in.</span>
+                  </div>
+                </li>
+                <li>
+                  <span class="n">03</span>
+                  <div>
+                    <span class="t">One bill replaces five</span>
+                    <span class="d">$50/mo bundles what teams already pay 4–5 vendors for. Wholesale economics under the hood.</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+
+            <div class="s3-right">
+              <div class="aw-shell">
+                <div class="aw-tbar">
+                  <div class="aw-traf"><span></span><span></span><span></span></div>
+                  <div class="aw-tabs">
+                    <span class="aw-tab">Workflow</span>
+                    <span class="aw-tab on">Agent</span>
+                    <span class="aw-tab">Editor</span>
+                  </div>
+                  <div class="aw-center">
+                    <svg viewBox="0 0 455 455" width="15" height="15" aria-hidden="true">
+                      <path d="M256.391 256.395H454.326V404.33C454.326 431.944 431.941 454.33 404.326 454.33H256.391V256.395Z" fill="#d4a574"/>
+                      <path d="M197.936 197.941L0 197.941L0 50.0064C0 22.3921 22.386 0.006 50 0.006L197.936 0.006L197.936 197.941Z" fill="#d4a574"/>
+                      <path d="M0 256.395H197.935V454.33H50C22.3858 454.33 0 431.944 0 404.33L0 256.395Z" fill="rgba(248,249,250,0.32)"/>
+                      <path d="M256.392 0L404.327 0C431.941 0 454.327 22.3858 454.327 50V197.935H256.392V0Z" fill="rgba(248,249,250,0.32)"/>
+                    </svg>
+                    <span class="nm">Xero</span>
+                    <span class="sl">/</span>
+                    <span class="sub">xero</span>
+                  </div>
+                  <div class="aw-right">
+                    <div class="aw-diff">
+                      <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><circle cx="5" cy="6" r="3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/><path d="m15 9-3-3 3-3"/><circle cx="19" cy="18" r="3"/><path d="M12 18H7a2 2 0 0 1-2-2V9"/><path d="m9 15 3 3-3 3"/></svg>
+                      <span><span class="pos">+1.2k</span> <span class="neg">−685</span></span>
+                    </div>
+                    <span class="aw-iconbtn">
+                      <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></svg>
+                    </span>
+                    <span class="aw-iconbtn">
+                      <svg viewBox="0 0 24 24" width="16" height="16" class="aw-li" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+                    </span>
+                    <span class="aw-iconbtn">
+                      <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="aw-body">
+                  <aside class="aw-prjrail">
+                    <ul class="aw-prjlist">
+                      <li><div class="aw-prj">C</div></li>
+                      <li><div class="aw-prj">M</div></li>
+                      <li><div class="aw-prj on">X</div></li>
+                      <li>
+                        <div class="aw-prj add">
+                          <svg viewBox="0 0 24 24" width="13" height="13" class="aw-li" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                        </div>
+                      </li>
+                    </ul>
+                    <div class="aw-rail-foot">
+                      <svg viewBox="0 0 24 24" width="15" height="15" class="aw-li" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    </div>
+                  </aside>
+
+                  <div class="aw-main">
+                    <div class="aw-handle l">
+                      <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                    </div>
+                    <div class="aw-handle r">
+                      <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+                    </div>
+
+                    <div class="aw-crumb">
+                      <div class="bc">
+                        <span>xero</span>
+                        <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                        <span class="here">Main</span>
+                      </div>
+                      <div class="acts">
+                        <span class="ns">
+                          <svg viewBox="0 0 24 24" width="13" height="13" class="aw-li" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                          New Session
+                        </span>
+                      </div>
+                    </div>
+
+                    <div class="aw-empty">
+                      <div class="badge">
+                        <svg viewBox="0 0 455 455" aria-hidden="true">
+                          <path d="M256.391 256.395H454.326V404.33C454.326 431.944 431.941 454.33 404.326 454.33H256.391V256.395Z" fill="#d4a574"/>
+                          <path d="M197.936 197.941L0 197.941L0 50.0064C0 22.3921 22.386 0.006 50 0.006L197.936 0.006L197.936 197.941Z" fill="#d4a574"/>
+                          <path d="M0 256.395H197.935V454.33H50C22.3858 454.33 0 431.944 0 404.33L0 256.395Z" fill="rgba(248,249,250,0.32)"/>
+                          <path d="M256.392 0L404.327 0C431.941 0 454.327 22.3858 454.327 50V197.935H256.392V0Z" fill="rgba(248,249,250,0.32)"/>
+                        </svg>
+                      </div>
+                      <div class="hd">What can we build together in <span class="gold">xero</span>?</div>
+                      <div class="sub">Just ask. I can read your code, suggest changes, or run a task for you. Everything we do will show up right here.</div>
+                      <ul class="aw-sugg">
+                        <li>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ico" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                          <span class="lbl">Explore the codebase</span>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ch" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                        </li>
+                        <li>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ico" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                          <span class="lbl">Review recent commits</span>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ch" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                        </li>
+                        <li>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ico" aria-hidden="true"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>
+                          <span class="lbl">Suggest next steps</span>
+                          <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li ch" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                        </li>
+                      </ul>
+                    </div>
+
+                    <div class="aw-composer-wrap">
+                      <div class="aw-composer">
+                        <div class="ph">Ask anything to get started — your agent has the workbench.</div>
+                        <div class="aw-cbar">
+                          <div class="aw-pills">
+                            <span class="aw-pill">
+                              <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li awl" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+                              Ask
+                              <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li opa" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                            </span>
+                            <span class="aw-pill">
+                              <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li awl" aria-hidden="true"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>
+                              opus 4.7
+                              <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li opa" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                            </span>
+                            <span class="aw-pill">
+                              <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li awl" aria-hidden="true"><path d="M12 18V5"/><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/></svg>
+                              Medium
+                              <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li opa" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                            </span>
+                          </div>
+                          <div class="aw-icons">
+                            <span class="b"><span class="ring"></span></span>
+                            <span class="b send">
+                              <svg viewBox="0 0 24 24" width="14" height="14" class="aw-li" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="aw-status">
+                  <div class="aw-sb-l">
+                    <span class="b">
+                      <svg viewBox="0 0 24 24" width="12" height="12" class="aw-li" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                      main
+                      <span class="ud">↑0 ↓0</span>
+                    </span>
+                    <span><span class="gd">●</span> 20 changes</span>
+                    <span>local · ready</span>
+                  </div>
+                  <div class="aw-sb-r">
+                    <span>0 tok</span>
+                    <span>$ $0.00</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">03 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 04 · Product proof ============================== -->
+      <section class="slide" data-slide="04">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">product</span>
+            </div>
+            <div class="meta">04 — what's live</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">The workbench in builders' hands</div>
+            <h2>The Solana workbench is the product the bundle pays for.</h2>
+            <p class="lead">
+              79 <span class="mono">solana_*</span> commands. 13 workbench tabs. Fork, simulate, deploy, audit — under one window, with the agent in the seat next to you.
+            </p>
+          </div>
+
+          <div class="proof">
+            <div class="big-stat">
+              <div class="n">79</div>
+              <div class="cap"><span class="mono gold">solana_*</span> commands shipped — 24 already mounted as agent tools. The whole Solana surface, scriptable.</div>
+            </div>
+
+            <div class="caps">
+              <div class="cap-card">
+                <div class="t">Clusters</div>
+                <h3>Local → mainnet-fork</h3>
+                <p>Surfpool / mainnet-fork lifecycle, snapshots, managed installs, cost ledger.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Personas</div>
+                <h3>Seeded actors</h3>
+                <p>Whale, LP, voter, liquidator, new user — funded keypairs ready for scenario runs.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Tx pipeline</div>
+                <h3>Build · simulate · land</h3>
+                <p>Priority-fee estimator, compute-budget, ALT helpers, CPI resolver — Sender API on by default.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Deploy safety</div>
+                <h3>IDL + upgrade gates</h3>
+                <p>Codama gen, IDL drift, Squads proposals, verified builds, rollback path.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Security</div>
+                <h3>Audit + replay</h3>
+                <p>Trident fuzz, coverage, exploit replay, PDA scans, secret detection.</p>
+              </div>
+              <div class="cap-card">
+                <div class="t">Agents</div>
+                <h3>Tools next to the code</h3>
+                <p>Stage-gated harness, branch / rewind / compact, MCP registry, 11 model providers.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">04 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 05 · Pre-launch signals ============================== -->
+      <section class="slide" data-slide="05">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">pre-launch signals</span>
+            </div>
+            <div class="meta">05 — readiness</div>
+          </div>
+
+          <div class="top" style="padding-top: 20px;">
+            <div class="eyebrow">Built. Wanted. About to ship.</div>
+            <h2 style="font-size: 46px;">Pre-revenue by choice. The product is done — we're opening the bundle next quarter.</h2>
+          </div>
+
+          <div class="traction">
+            <div class="kpi-strip">
+              <div class="kpi">
+                <div class="lbl">Design Partners</div>
+                <div class="v">8</div>
+                <div class="delta">▲ Solana teams on closed alpha</div>
+              </div>
+              <div class="kpi">
+                <div class="lbl">Alpha Builders</div>
+                <div class="v">124</div>
+                <div class="delta">▲ individual devs invited in</div>
+              </div>
+              <div class="kpi">
+                <div class="lbl">Waitlist</div>
+                <div class="v">1,840</div>
+                <div class="delta">▲ organic, no paid spend</div>
+              </div>
+              <div class="kpi">
+                <div class="lbl">Bundle Launch</div>
+                <div class="v">Q3</div>
+                <div class="delta">▲ public GA · paid plan opens</div>
+              </div>
+            </div>
+
+            <div class="quotes">
+              <div class="quote">
+                <div class="mark">“</div>
+                <div class="body">
+                  Five subscriptions, four dashboards, one tired team. <em>We've been waiting for someone to bundle this for two years.</em>
+                </div>
+                <div class="who">
+                  <span class="avatar">LE</span>
+                  <div class="meta">
+                    <span class="role">Lead engineer</span>
+                    <span class="org">Solana perp DEX · 3 devs</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="quote">
+                <div class="mark">“</div>
+                <div class="body">
+                  The mainnet fork + persona setup that took us a sprint to wire up is <em>two clicks in Xero</em>. We're moving the whole shop.
+                </div>
+                <div class="who">
+                  <span class="avatar">CF</span>
+                  <div class="meta">
+                    <span class="role">Co-founder</span>
+                    <span class="org">NFT liquidity protocol</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="quote">
+                <div class="mark">“</div>
+                <div class="body">
+                  Our agents call infra all day. Wholesale pricing inside the bundle is the only way this is <em>sustainable for us.</em>
+                </div>
+                <div class="who">
+                  <span class="avatar">FE</span>
+                  <div class="meta">
+                    <span class="role">Founding engineer</span>
+                    <span class="org">DeFi yield aggregator</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">05 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 06 · Market ============================== -->
+      <section class="slide" data-slide="06">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">market</span>
+            </div>
+            <div class="meta">06 — opportunity</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">Market opportunity</div>
+            <h2>Solana builders pay for infra every month — we just give them one bill.</h2>
+          </div>
+
+          <div class="market">
+            <div class="market-bars">
+              <div class="bar-row">
+                <div class="label">TAM</div>
+                <div class="bar-track"><div class="bar-fill" style="width: 100%;"></div></div>
+                <div class="value">$2.1B<span class="per">solana dev infra</span></div>
+                <div class="descrip">Annual Solana dev infra spend — RPC, indexers, explorers, deploy, agent tooling.</div>
+              </div>
+              <div class="bar-row">
+                <div class="label">SAM</div>
+                <div class="bar-track"><div class="bar-fill dim" style="width: 42%;"></div></div>
+                <div class="value">$540M<span class="per">bundle-addressable</span></div>
+                <div class="descrip">Teams already paying 4–5 infra subs they could collapse into one bundle.</div>
+              </div>
+              <div class="bar-row">
+                <div class="label">SOM</div>
+                <div class="bar-track"><div class="bar-fill dim2" style="width: 14%;"></div></div>
+                <div class="value">$72M<span class="per">3-yr target</span></div>
+                <div class="descrip">~12,000 bundle seats at $50/mo by 2029 — 12% of active Solana devs.</div>
+              </div>
+            </div>
+
+            <div class="market-side">
+              <h3>Why this is a paid product, not a free one.</h3>
+              <p class="lead2">
+                Solana teams already pay for the infra. The Xero bundle just wholesales the same rails — RPC, indexer, explorer, deploy — and charges less than the sum of the parts.
+              </p>
+              <div class="market-drivers">
+                <div class="driver">
+                  <div class="k">100k+</div>
+                  <div class="v">active Solana developers — every team pays for infra before line one ships.</div>
+                </div>
+                <div class="driver">
+                  <div class="k">$420</div>
+                  <div class="v">avg monthly infra spend per team — 4–5 vendors, all collapsible into the bundle.</div>
+                </div>
+                <div class="driver">
+                  <div class="k">10×</div>
+                  <div class="v">query volume when agents drive infra — bundle credits scale with usage.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">06 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 07 · Business model ============================== -->
+      <section class="slide" data-slide="07">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">business model</span>
+            </div>
+            <div class="meta">07 — pricing</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">Free desktop · paid Solana bundle</div>
+            <h2 style="font-size: 46px;">One paid plan. Everything a Solana team already pays for — wholesaled into a single subscription.</h2>
+          </div>
+
+          <div class="pricing">
+            <div class="tier">
+              <div class="head">
+                <span class="name">Free</span>
+                <span class="pill"><span class="dot"></span>Forever</span>
+              </div>
+              <div class="priceline"><span class="price">$0</span><span class="per">/ month</span></div>
+              <p class="blurb">Full desktop app. Every feature, every model, BYO keys. No trial timer.</p>
+              <div class="group-label">What's included</div>
+              <ul>
+                <li>Local desktop IDE</li>
+                <li>11 model providers · BYO keys</li>
+                <li>Agent harness · all stages</li>
+                <li>Branch, rewind, compact, handoff</li>
+                <li>MCP server registry</li>
+              </ul>
+            </div>
+
+            <div class="tier hi">
+              <div class="head">
+                <span class="name">Solana Bundle</span>
+                <span class="pill gold">Revenue · 100%</span>
+              </div>
+              <div class="priceline"><span class="price">$50</span><span class="per">/ month</span></div>
+              <p class="blurb">The Solana workbench, all infra included. One sub, one invoice, wholesale economics.</p>
+              <div class="group-label">Bundle includes</div>
+              <ul>
+                <li>RPC + Sender + Priority Fee API</li>
+                <li>Indexer · DAS, webhooks, streams</li>
+                <li>Block explorer · tx + account views</li>
+                <li>Squads + verified-build deploy gates</li>
+                <li>Trident fuzz · audit · exploit replay</li>
+              </ul>
+            </div>
+
+            <aside class="bundle-panel">
+              <h3>What the bundle replaces.</h3>
+              <p class="intro">A typical Solana team pays five vendors a month. The bundle consolidates them at wholesale, well under retail.</p>
+              <div class="bundle-rows">
+                <div class="bundle-row"><span>RPC + Sender provider</span><span class="price-was">$149</span></div>
+                <div class="bundle-row"><span>Indexer / DAS / webhooks</span><span class="price-was">$99</span></div>
+                <div class="bundle-row"><span>Block explorer pro</span><span class="price-was">$49</span></div>
+                <div class="bundle-row"><span>Deploy + audit tooling</span><span class="price-was">$79</span></div>
+                <div class="bundle-row"><span>AI coding assistant</span><span class="price-was">$40</span></div>
+              </div>
+              <div class="bundle-total">
+                <span class="lbl">Was → Bundle</span>
+                <span class="v"><span class="strike">$416</span><span class="now">$50</span></span>
+              </div>
+            </aside>
+          </div>
+
+          <div class="revenue-strip">
+            <div class="revenue-cell"><div class="k">Target Bundle Gross Margin</div><div class="v">~62%</div></div>
+            <div class="revenue-cell"><div class="k">Bundle Wholesale Discount</div><div class="v">88% vs. retail</div></div>
+            <div class="revenue-cell"><div class="k">Model Cost Coverage</div><div class="v">5× bundle floor</div></div>
+            <div class="revenue-cell"><div class="k">Target LTV / CAC</div><div class="v">5–7× yr 2</div></div>
+          </div>
+        </div>
+        <div class="foot-num">07 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 08 · Competition ============================== -->
+      <section class="slide" data-slide="08">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">competition</span>
+            </div>
+            <div class="meta">08 — landscape</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">Where Xero sits</div>
+            <h2>The desktop-native, agent-first quadrant is wide open.</h2>
+          </div>
+
+          <div class="comp">
+            <div class="quad" aria-hidden="true">
+              <div class="axis-x"></div>
+              <div class="axis-y"></div>
+              <span class="y-t">Agent-native</span>
+              <span class="y-b">Editor-first</span>
+              <span class="x-l">Cloud-locked</span>
+              <span class="x-r">Local-first</span>
+
+              <span class="quad-dot" style="left: 28%; top: 72%;">Editor copilots</span>
+              <span class="quad-dot" style="left: 22%; top: 32%;">Cloud agent IDEs</span>
+              <span class="quad-dot" style="left: 70%; top: 62%;">Terminal AI</span>
+              <span class="quad-dot" style="left: 36%; top: 84%;">Chat-only</span>
+              <span class="quad-dot us" style="left: 76%; top: 24%;">Xero</span>
+            </div>
+
+            <div class="comp-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th class="us">Xero</th>
+                    <th>Cloud IDE</th>
+                    <th>Editor copilot</th>
+                    <th>Terminal AI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="feat">Runs locally</td>
+                    <td class="us yes">●</td>
+                    <td class="no">○</td>
+                    <td class="part">◐</td>
+                    <td class="yes">●</td>
+                  </tr>
+                  <tr>
+                    <td class="feat">Agents w/ stages</td>
+                    <td class="us yes">●</td>
+                    <td class="yes">●</td>
+                    <td class="no">○</td>
+                    <td class="part">◐</td>
+                  </tr>
+                  <tr>
+                    <td class="feat">Multi-provider</td>
+                    <td class="us yes">●</td>
+                    <td class="part">◐</td>
+                    <td class="no">○</td>
+                    <td class="part">◐</td>
+                  </tr>
+                  <tr>
+                    <td class="feat">Session branching</td>
+                    <td class="us yes">●</td>
+                    <td class="no">○</td>
+                    <td class="no">○</td>
+                    <td class="no">○</td>
+                  </tr>
+                  <tr>
+                    <td class="feat">MCP registry</td>
+                    <td class="us yes">●</td>
+                    <td class="part">◐</td>
+                    <td class="no">○</td>
+                    <td class="no">○</td>
+                  </tr>
+                  <tr>
+                    <td class="feat">BYO keys</td>
+                    <td class="us yes">●</td>
+                    <td class="no">○</td>
+                    <td class="no">○</td>
+                    <td class="yes">●</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">08 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 09 · Roadmap / GTM ============================== -->
+      <section class="slide" data-slide="09">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">roadmap</span>
+            </div>
+            <div class="meta">09 — go-to-market</div>
+          </div>
+
+          <div class="top">
+            <div class="eyebrow">The plan</div>
+            <h2 style="font-size: 46px;">$0 today. $1.2M ARR target in twelve months. Grounded in waitlist, not a hockey stick.</h2>
+          </div>
+
+          <div class="roadmap">
+            <div class="road-chart">
+              <div class="head">
+                <div class="ttl">ARR forecast · today → +4 quarters</div>
+                <div class="sub">8 design partners + 1,840 waitlist · ~10% conversion = 2,000 seats by year-end</div>
+              </div>
+              <div class="road-body">
+                <svg viewBox="0 0 1300 180" preserveAspectRatio="none" aria-hidden="true">
+                  <!-- gridlines -->
+                  <g stroke="rgba(45,45,45,0.5)" stroke-width="1">
+                    <line x1="80" y1="20"  x2="1280" y2="20"/>
+                    <line x1="80" y1="60"  x2="1280" y2="60"/>
+                    <line x1="80" y1="100" x2="1280" y2="100"/>
+                    <line x1="80" y1="140" x2="1280" y2="140"/>
+                  </g>
+                  <!-- y labels · $0 → $1.5M scale -->
+                  <g fill="#9aa1aa" font-family="Geist Mono, monospace" font-size="12" text-anchor="end">
+                    <text x="70" y="24">$1.5M</text>
+                    <text x="70" y="64">$1.0M</text>
+                    <text x="70" y="104">$500k</text>
+                    <text x="70" y="144">$0</text>
+                  </g>
+
+                  <!-- bars · scaled so $1.2M = 96px, $360k = 29px, $60k = 5px -->
+                  <g>
+                    <!-- Today: $0 — outlined placeholder -->
+                    <rect x="200"  y="138" width="120" height="2" fill="rgba(212,165,116,0.55)" rx="1"/>
+                    <text x="260"  y="130" fill="#d4a574" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">$0 · pre-rev</text>
+                    <text x="260"  y="160" fill="#c2c7ce" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">Today</text>
+
+                    <rect x="460"  y="135" width="120" height="5"  fill="rgba(212,165,116,0.42)" rx="3"/>
+                    <text x="520"  y="127" fill="#d4a574" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">$60k ARR</text>
+                    <text x="520"  y="160" fill="#c2c7ce" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">Q3 · bundle GA</text>
+
+                    <rect x="720"  y="111" width="120" height="29" fill="rgba(212,165,116,0.62)" rx="3"/>
+                    <text x="780"  y="103" fill="#d4a574" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">$360k ARR</text>
+                    <text x="780"  y="160" fill="#c2c7ce" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">Q4 · 600 seats</text>
+
+                    <rect x="980"  y="44"  width="120" height="96" fill="#d4a574" rx="3"/>
+                    <text x="1040" y="36"  fill="#d4a574" font-family="Geist, sans-serif" font-size="15" text-anchor="middle" font-weight="500">$1.2M ARR</text>
+                    <text x="1040" y="160" fill="#f8f9fa" font-family="Geist Mono, monospace" font-size="13" text-anchor="middle">Q1 next yr · 2k seats</text>
+                  </g>
+                </svg>
+              </div>
+            </div>
+
+            <div class="qtrs">
+              <div class="qtr">
+                <div class="r">Now · Q2</div>
+                <h3>Bundle GA</h3>
+                <ul>
+                  <li>RPC + Sender wholesale live</li>
+                  <li>Indexer + DAS credentials in-bundle</li>
+                  <li>One invoice, auto top-up</li>
+                </ul>
+              </div>
+              <div class="qtr">
+                <div class="r">Q3</div>
+                <h3>Workbench depth</h3>
+                <ul>
+                  <li>Squads + verified-build deploy gates</li>
+                  <li>Audit · Trident fuzz default-on</li>
+                  <li>Lana / explorer tab integration</li>
+                </ul>
+              </div>
+              <div class="qtr">
+                <div class="r">Q4</div>
+                <h3>Teams + expansion</h3>
+                <ul>
+                  <li>Team seats · pooled bundle credits</li>
+                  <li>Shared personas + audit history</li>
+                  <li>Slack + Linear handoffs</li>
+                </ul>
+              </div>
+              <div class="qtr">
+                <div class="r">Q1 +1yr</div>
+                <h3>Enterprise + scale</h3>
+                <ul>
+                  <li>Dedicated RPC nodes in-bundle</li>
+                  <li>Self-hosted control plane</li>
+                  <li>First 10 enterprise contracts</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="foot-num">09 / 10</div>
+      </section>
+
+      <!-- ============================== SLIDE 10 · Team & Ask ============================== -->
+      <section class="slide" data-slide="10">
+        <div class="frame">
+          <div class="strip">
+            <div class="mark">
+              <img src="../landing/public/logo.svg" alt="Xero" />
+              <span class="sep"></span>
+              <span class="tag">team · the ask</span>
+            </div>
+            <div class="meta">10 — close</div>
+          </div>
+
+          <div class="top" style="padding-top: 18px;">
+            <div class="eyebrow">Team · the ask</div>
+            <h2 style="font-size: 44px;">Built by people who've shipped the infra they're now bundling.</h2>
+          </div>
+
+          <div class="ask">
+            <div>
+              <div class="team-grid">
+                <div class="team-card">
+                  <div class="who">
+                    <span class="avatar">AY</span>
+                    <div>
+                      <div class="nm">Andrew Yurlov</div>
+                      <div class="role">Founder · CEO</div>
+                    </div>
+                  </div>
+                  <p class="bio">Shipped dev tooling used by 50k+ engineers. Lives in the harness.</p>
+                </div>
+                <div class="team-card">
+                  <div class="who">
+                    <span class="avatar">CT</span>
+                    <div>
+                      <div class="nm">Co-founder</div>
+                      <div class="role">CTO · platform</div>
+                    </div>
+                  </div>
+                  <p class="bio">Rust + systems lead. Built native apps for ML infra companies.</p>
+                </div>
+                <div class="team-card">
+                  <div class="who">
+                    <span class="avatar">DS</span>
+                    <div>
+                      <div class="nm">Design lead</div>
+                      <div class="role">Product · design</div>
+                    </div>
+                  </div>
+                  <p class="bio">IDE-class UX at two unicorn dev-tool companies.</p>
+                </div>
+                <div class="team-card">
+                  <div class="who">
+                    <span class="avatar">ML</span>
+                    <div>
+                      <div class="nm">ML engineer</div>
+                      <div class="role">Agents · evals</div>
+                    </div>
+                  </div>
+                  <p class="bio">Built agent harnesses inside a frontier lab. Owns evals + routing.</p>
+                </div>
+              </div>
+            </div>
+
+            <aside class="next">
+              <div class="tag">the round</div>
+              <h3>Raising a Seed round.</h3>
+              <div>
+                <div class="ask-amt">$2M</div>
+                <div class="ask-amt-sub">$10M pre-money · 18-month runway · close Q3</div>
+              </div>
+
+              <div class="uses">
+                <div class="use-row">
+                  <div class="lbl-row">
+                    <span class="lbl">Engineering · workbench &amp; agents</span>
+                    <span class="pct">55% · $1.1M</span>
+                  </div>
+                  <div class="ub"><span style="width: 100%;"></span></div>
+                </div>
+                <div class="use-row">
+                  <div class="lbl-row">
+                    <span class="lbl">GTM · bundle launch + design partners</span>
+                    <span class="pct">30% · $600k</span>
+                  </div>
+                  <div class="ub"><span style="width: 55%;"></span></div>
+                </div>
+                <div class="use-row">
+                  <div class="lbl-row">
+                    <span class="lbl">Infra wholesale + ops</span>
+                    <span class="pct">15% · $300k</span>
+                  </div>
+                  <div class="ub"><span style="width: 27%;"></span></div>
+                </div>
+              </div>
+
+              <div class="sign">
+                <b>Xero</b> · team@xero.sh · @xero_dev
+              </div>
+            </aside>
+          </div>
+        </div>
+        <div class="foot-num">10 / 10</div>
+      </section>
+
+    </main>
+  </body>
+</html>

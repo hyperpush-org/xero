@@ -417,7 +417,10 @@ pub fn list_project_state_backups(
                         .get("createdAt")
                         .and_then(|v| v.as_str())
                         .map(str::to_string);
-                    file_count = value.get("fileCount").and_then(|v| v.as_u64()).map(|v| v as usize);
+                    file_count = value
+                        .get("fileCount")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize);
                     byte_count = value.get("byteCount").and_then(|v| v.as_u64());
                 }
             }

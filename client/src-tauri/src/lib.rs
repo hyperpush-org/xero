@@ -543,6 +543,26 @@ pub fn configure_builder<R: tauri::Runtime + 'static>(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     configure_builder(tauri::Builder::default())
-        .run(tauri::generate_context!())
-        .expect("error while running Xero desktop host");
+        .build(tauri::generate_context!())
+        .expect("error while building Xero desktop host")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            {
+                if let tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } = event
+                {
+                    if !has_visible_windows {
+                        window_state::restore_main_window(app);
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = app;
+                let _ = event;
+            }
+        });
 }

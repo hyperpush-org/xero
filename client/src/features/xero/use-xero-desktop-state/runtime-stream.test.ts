@@ -489,6 +489,50 @@ describe('runtime stream event coalescing', () => {
     })
   })
 
+  it('keeps only the latest projected patch while a replay burst is buffered', () => {
+    let stream: RuntimeStreamView | null = makeRuntimeStream()
+    let scheduledFlush: (() => void) | null = null
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+
+    const buffer = createRuntimeStreamEventBuffer({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeKind: 'openai_codex',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      subscribedItemKinds: ['transcript'],
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+      scheduleFlush: (callback) => {
+        scheduledFlush = callback
+        return vi.fn()
+      },
+    })
+
+    buffer.enqueue(makeRuntimeStreamEvent(1, { text: 'raw-client-event' }))
+    buffer.enqueue(makeRuntimeStreamPatch(8))
+    buffer.enqueue(makeRuntimeStreamPatch(9))
+
+    expect(updateRuntimeStream).not.toHaveBeenCalled()
+    const flush = scheduledFlush as (() => void) | null
+    flush?.()
+
+    expect(updateRuntimeStream).toHaveBeenCalledTimes(1)
+    expect(stream?.lastSequence).toBe(9)
+    expect(stream?.transcriptItems).toHaveLength(1)
+    expect(stream?.transcriptItems[0]?.text).toBe('projected-9')
+  })
+
   it('accepts sparse stream sequences while preserving the latest stream projection', () => {
     const stream = mergeRuntimeStreamEvents(makeRuntimeStream(), [
       makeRuntimeStreamEvent(1),

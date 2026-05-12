@@ -66,6 +66,23 @@ pub fn configure_main_window<R: Runtime>(app: AppHandle<R>) {
     }
 }
 
+pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        eprintln!("Xero could not restore the main window because it is not registered.");
+        return;
+    };
+
+    if let Err(error) = window.show() {
+        eprintln!("Xero failed to show the main window during app reopen: {error}");
+    }
+    if let Err(error) = window.unminimize() {
+        eprintln!("Xero failed to unminimize the main window during app reopen: {error}");
+    }
+    if let Err(error) = window.set_focus() {
+        eprintln!("Xero failed to focus the main window during app reopen: {error}");
+    }
+}
+
 fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
     let display_areas = match display_areas_for_window(window) {
         Ok(display_areas) => display_areas,

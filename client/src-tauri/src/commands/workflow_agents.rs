@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::{Value as JsonValue, json};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
+        available_builtin_runtime_agent_descriptors, runtime_agent_descriptor, validate_non_empty,
         AgentAttachedSkillAvailabilityStatusDto, AgentAttachedSkillDto,
         AgentAuthoringAttachableSkillDto, AgentAuthoringAvailabilityStatusDto,
         AgentAuthoringCatalogDiagnosticDto, AgentAuthoringCatalogDto,
@@ -33,20 +34,19 @@ use crate::{
         SkillSourceScopeDto, SkillSourceStateDto, SkillTrustStateDto, WorkflowAgentDetailDto,
         WorkflowAgentGraphEdgeDto, WorkflowAgentGraphGroupDto, WorkflowAgentGraphMarkerDto,
         WorkflowAgentGraphNodeDto, WorkflowAgentGraphPositionDto, WorkflowAgentGraphProjectionDto,
-        WorkflowAgentSummaryDto, available_builtin_runtime_agent_descriptors,
-        runtime_agent_descriptor, validate_non_empty,
+        WorkflowAgentSummaryDto,
     },
     db::project_store,
     runtime::{
         agent_core::{
-            ConsumedArtifactEntry, DbTouchpointEntry, OutputSectionEntry, TriggerRef,
             base_policy_fragment, consumed_artifacts_for, db_touchpoints_for_runtime_agent,
-            output_sections_for,
+            output_sections_for, ConsumedArtifactEntry, DbTouchpointEntry, OutputSectionEntry,
+            TriggerRef,
         },
         autonomous_tool_runtime::{
-            AutonomousToolCatalogEntry, AutonomousToolEffectClass, AutonomousToolRuntime,
             deferred_tool_catalog, tool_access_group_descriptors, tool_allowed_for_runtime_agent,
-            tool_effect_class,
+            tool_effect_class, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
+            AutonomousToolRuntime,
         },
     },
     state::DesktopState,
@@ -3915,18 +3915,14 @@ mod tests {
         let projection = workflow_agent_graph_projection_for_detail(&detail);
 
         assert_eq!(projection.schema, WORKFLOW_AGENT_GRAPH_PROJECTION_SCHEMA);
-        assert!(
-            projection
-                .nodes
-                .iter()
-                .any(|node| node.id == GRAPH_HEADER_NODE_ID && node.node_type == "agent-header")
-        );
-        assert!(
-            projection
-                .nodes
-                .iter()
-                .any(|node| node.id == GRAPH_OUTPUT_NODE_ID && node.node_type == "agent-output")
-        );
+        assert!(projection
+            .nodes
+            .iter()
+            .any(|node| node.id == GRAPH_HEADER_NODE_ID && node.node_type == "agent-header"));
+        assert!(projection
+            .nodes
+            .iter()
+            .any(|node| node.id == GRAPH_OUTPUT_NODE_ID && node.node_type == "agent-output"));
         assert_eq!(
             projection
                 .nodes
@@ -3935,12 +3931,10 @@ mod tests {
                 .count(),
             detail.tools.len()
         );
-        assert!(
-            projection
-                .nodes
-                .iter()
-                .any(|node| node.node_type == "tool-group-frame")
-        );
+        assert!(projection
+            .nodes
+            .iter()
+            .any(|node| node.node_type == "tool-group-frame"));
         assert!(projection.edges.iter().any(|edge| {
             edge.source == GRAPH_HEADER_NODE_ID
                 && edge.target == GRAPH_OUTPUT_NODE_ID
@@ -4597,14 +4591,12 @@ mod tests {
             context_kinds.kind,
             AgentAuthoringPolicyControlKindDto::Context
         );
-        assert!(
-            context_kinds
-                .default_value
-                .as_array()
-                .expect("record kinds")
-                .iter()
-                .any(|kind| kind == "project_fact")
-        );
+        assert!(context_kinds
+            .default_value
+            .as_array()
+            .expect("record kinds")
+            .iter()
+            .any(|kind| kind == "project_fact"));
     }
 
     #[test]
@@ -4640,13 +4632,11 @@ mod tests {
                     &template.base_capability_profile
                 ))
             );
-            assert!(
-                template.definition["prompts"]
-                    .as_array()
-                    .expect("template prompts")
-                    .iter()
-                    .any(|prompt| prompt["source"] == json!("template"))
-            );
+            assert!(template.definition["prompts"]
+                .as_array()
+                .expect("template prompts")
+                .iter()
+                .any(|prompt| prompt["source"] == json!("template")));
             assert!(template.definition["tools"].as_array().is_some());
             assert!(template.definition["attachedSkills"].as_array().is_some());
             assert!(template.definition["output"].is_object());
@@ -4833,18 +4823,14 @@ mod tests {
             .iter()
             .map(|pack| pack.pack_id.as_str())
             .collect::<std::collections::BTreeSet<_>>();
-        assert!(
-            catalog
-                .health_reports
-                .iter()
-                .all(|report| manifest_ids.contains(report.pack_id.as_str()))
-        );
-        assert!(
-            catalog
-                .available_pack_ids
-                .iter()
-                .all(|pack_id| manifest_ids.contains(pack_id.as_str()))
-        );
+        assert!(catalog
+            .health_reports
+            .iter()
+            .all(|report| manifest_ids.contains(report.pack_id.as_str())));
+        assert!(catalog
+            .available_pack_ids
+            .iter()
+            .all(|pack_id| manifest_ids.contains(pack_id.as_str())));
     }
 
     #[test]
@@ -4964,10 +4950,8 @@ mod tests {
             })
             .expect("unavailable constraint explanation");
         assert!(unavailable.message.contains("no current runtime profile"));
-        assert!(
-            unavailable
-                .resolution
-                .contains("install/enable a runtime capability")
-        );
+        assert!(unavailable
+            .resolution
+            .contains("install/enable a runtime capability"));
     }
 }

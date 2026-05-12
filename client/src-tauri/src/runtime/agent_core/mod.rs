@@ -84,12 +84,12 @@ pub(crate) use environment_lifecycle::*;
 pub(crate) use harness_order::*;
 pub(crate) use memory_guardrails::*;
 pub(crate) use persistence::*;
-pub(crate) use synthetic_dispatch::{dispatch_synthetic_tool_calls, SyntheticDispatchOptions};
-pub(crate) use tool_dispatch::dry_run_tool_call;
-pub(crate) use tool_descriptors::builtin_tool_descriptors;
 pub(crate) use provider_loop::*;
 pub(crate) use state_machine::*;
+pub(crate) use synthetic_dispatch::{dispatch_synthetic_tool_calls, SyntheticDispatchOptions};
+pub(crate) use tool_descriptors::builtin_tool_descriptors;
 pub(crate) use tool_descriptors::*;
+pub(crate) use tool_dispatch::dry_run_tool_call;
 pub(crate) use tool_dispatch::*;
 
 use serde::{Deserialize, Serialize};

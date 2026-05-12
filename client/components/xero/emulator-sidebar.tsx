@@ -42,6 +42,7 @@ const DEFAULT_RATIO = 0.4
 const RESIZE_HANDLE_INSET = 6
 export const EMULATOR_FRAME_REQUEST_INTERVAL_MS = 33
 const EMULATOR_FRAME_REQUEST_TIMEOUT_MS = 1500
+const EMULATOR_FRAME_URL_SLOTS = 3
 
 const PLATFORM_META: Record<EmulatorPlatform, {
   label: string
@@ -100,7 +101,8 @@ function nowMs(): number {
 }
 
 function frameSrcForSeq(seq: number): string {
-  return `emulator://localhost/frame?t=${seq}`
+  const slot = ((seq - 1) % EMULATOR_FRAME_URL_SLOTS) + 1
+  return `emulator://localhost/frame?slot=${slot}`
 }
 
 export function useThrottledEmulatorFrameSrc({
@@ -319,7 +321,7 @@ export function EmulatorSidebar({ open, platform }: EmulatorSidebarProps) {
     void session.stop()
   }, [session])
 
-  const isStreaming = session.status.phase === "streaming"
+  const isStreaming = open && session.status.phase === "streaming"
   const isActive =
     session.status.phase === "streaming" ||
     session.status.phase === "booting" ||

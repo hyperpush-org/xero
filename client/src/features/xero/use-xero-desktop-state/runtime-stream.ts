@@ -530,6 +530,9 @@ export function createRuntimeStreamEventBuffer({
         return
       }
 
+      if (isRuntimeStreamPatch(payload)) {
+        pendingEvents.length = 0
+      }
       pendingEvents.push(payload)
       if (isUrgentRuntimeStreamEvent(payload)) {
         flush()

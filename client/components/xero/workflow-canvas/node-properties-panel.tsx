@@ -182,7 +182,7 @@ export function NodePropertiesPanel({ selectedNode, onClose }: NodePropertiesPan
   return (
     <TooltipProvider delayDuration={150}>
       <div
-        className="agent-properties-panel pointer-events-auto absolute left-8 top-14 z-30 flex max-h-[calc(100%-4.5rem)] w-[272px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[10.5px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
+        className="agent-properties-panel pointer-events-auto absolute left-2.5 top-14 z-30 flex max-h-[calc(100%-4.5rem)] w-[272px] flex-col overflow-hidden rounded-lg border border-border/60 bg-card/95 text-[10.5px] text-card-foreground shadow-[0_8px_28px_-12px_rgba(0,0,0,0.55)] backdrop-blur-md"
         onPointerDown={(event) => event.stopPropagation()}
         onWheel={(event) => event.stopPropagation()}
       >

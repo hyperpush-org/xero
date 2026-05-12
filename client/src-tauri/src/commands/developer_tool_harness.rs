@@ -25,7 +25,11 @@ use crate::{
         start_agent_task, validate_non_empty, CommandError, CommandResult, RuntimeAgentIdDto,
         RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, StartAgentTaskRequestDto,
     },
-    db::{self, project_store::{self, AgentSessionCreateRecord}, ProjectOrigin},
+    db::{
+        self,
+        project_store::{self, AgentSessionCreateRecord},
+        ProjectOrigin,
+    },
     git::repository::CanonicalRepository,
     global_db::open_global_database,
     registry::{self, RegistryProjectRecord},
@@ -77,12 +81,10 @@ pub fn developer_tool_catalog(
             let tool_packs = pack_ids
                 .iter()
                 .filter_map(|pack_id| {
-                    domain_tool_pack_manifest(pack_id).map(|manifest| {
-                        DeveloperToolPackSummaryDto {
-                            pack_id: manifest.pack_id,
-                            label: manifest.label,
-                            policy_profile: manifest.policy_profile,
-                        }
+                    domain_tool_pack_manifest(pack_id).map(|manifest| DeveloperToolPackSummaryDto {
+                        pack_id: manifest.pack_id,
+                        label: manifest.label,
+                        policy_profile: manifest.policy_profile,
                     })
                 })
                 .collect();
@@ -143,7 +145,8 @@ pub fn developer_tool_synthetic_run<R: Runtime>(
     }
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let tool_runtime = AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
 
     let agent_session_id = match request.agent_session_id.as_deref() {
         Some(value) if !value.trim().is_empty() => value.trim().to_owned(),
@@ -153,8 +156,7 @@ pub fn developer_tool_synthetic_run<R: Runtime>(
                 &AgentSessionCreateRecord {
                     project_id: request.project_id.clone(),
                     title: format!("Tool harness — {}", now_timestamp()),
-                    summary: "Created by the developer tool harness for synthetic dispatch."
-                        .into(),
+                    summary: "Created by the developer tool harness for synthetic dispatch.".into(),
                     selected: false,
                 },
             )?;
@@ -230,7 +232,8 @@ pub fn developer_tool_dry_run<R: Runtime>(
     validate_non_empty(&request.tool_name, "toolName")?;
 
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let tool_runtime = AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
     let registry_options = ToolRegistryOptions {
         skill_tool_enabled: tool_runtime.skill_tool_enabled(),
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -363,7 +366,9 @@ pub fn developer_tool_sequence_list<R: Runtime>(
                 format!("Xero could not read a developer tool sequence row: {error}"),
             )
         })?;
-        sequences.push(parse_stored_sequence(id, name, &payload, created_at, updated_at)?);
+        sequences.push(parse_stored_sequence(
+            id, name, &payload, created_at, updated_at,
+        )?);
     }
 
     Ok(DeveloperToolSequenceListResponseDto { sequences })
@@ -548,7 +553,10 @@ mod tests {
             .expect("read entry");
         assert_eq!(read_entry.group, "core");
         assert_eq!(read_entry.effect_class, "observe");
-        assert!(read_entry.input_schema.is_some(), "read should expose a schema");
+        assert!(
+            read_entry.input_schema.is_some(),
+            "read should expose a schema"
+        );
         assert!(
             !read_entry.allowed_runtime_agents.is_empty(),
             "read should be allowed for at least one runtime agent"

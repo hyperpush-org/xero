@@ -13,10 +13,10 @@ const { PDFDocument } = runtimeRequire("pdf-lib");
 
 const __filename = fileURLToPath(import.meta.url);
 const deckDir = path.dirname(__filename);
-const htmlPath = path.join(deckDir, "xero-helius-pitch-deck.html");
-const pdfPath = path.join(deckDir, "xero-helius-pitch-deck.pdf");
-const previewDir = path.join(deckDir, "previews");
-const reportPath = path.join(deckDir, "render-report.json");
+const htmlPath = path.join(deckDir, "xero-pitch-deck.html");
+const pdfPath = path.join(deckDir, "xero-pitch-deck.pdf");
+const previewDir = path.join(deckDir, "previews-general");
+const reportPath = path.join(deckDir, "render-report-general.json");
 
 await fs.mkdir(previewDir, { recursive: true });
 for (const file of await fs.readdir(previewDir)) {
@@ -59,13 +59,10 @@ for (let index = 0; index < slideHandles.length; index += 1) {
 
 await browser.close();
 
-// Build PDF from the correctly-sized PNG screenshots — bypasses
-// Chromium's print pipeline which scales content to ~92.7% of the page.
 const pdfDoc = await PDFDocument.create();
 for (const previewPath of previews) {
   const bytes = await fs.readFile(previewPath);
   const png = await pdfDoc.embedPng(bytes);
-  // PDF points: 1 CSS px = 0.75 pt. 1600x900 px → 1200x675 pt.
   const pdfPage = pdfDoc.addPage([1200, 675]);
   pdfPage.drawImage(png, { x: 0, y: 0, width: 1200, height: 675 });
 }
@@ -99,7 +96,7 @@ const report = {
   pdfBytes: pdfStat.size,
   slideCount: slideHandles.length,
   previews: checks,
-  passed: checks.length === 9 && checks.every((check) => check.passed) && pdfStat.size > 100_000,
+  passed: checks.length === 10 && checks.every((check) => check.passed) && pdfStat.size > 100_000,
 };
 
 await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");

@@ -135,16 +135,16 @@ describe("useThrottledEmulatorFrameSrc", () => {
     const { rerender } = render(<FrameSrcProbe frameSeq={1} />)
     const probe = screen.getByRole("button", { name: "settle" })
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
 
     rerender(<FrameSrcProbe frameSeq={2} />)
     rerender(<FrameSrcProbe frameSeq={3} />)
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
 
     fireEvent.click(probe)
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=3")
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=3")
   })
 
   it("enforces a minimum interval between frame requests", () => {
@@ -156,23 +156,41 @@ describe("useThrottledEmulatorFrameSrc", () => {
       rerender(<FrameSrcProbe frameSeq={2} minIntervalMs={100} />)
       fireEvent.click(probe)
 
-      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
 
       act(() => {
         vi.advanceTimersByTime(100)
       })
 
-      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=2")
+      expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=2")
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("bounds custom-scheme frame URLs to a small reusable slot set", () => {
+    const { rerender } = render(<FrameSrcProbe frameSeq={1} minIntervalMs={0} />)
+    const probe = screen.getByRole("button", { name: "settle" })
+    const seenUrls = new Set<string>()
+
+    for (let seq = 1; seq <= 12; seq += 1) {
+      rerender(<FrameSrcProbe frameSeq={seq} minIntervalMs={0} />)
+      fireEvent.click(probe)
+      seenUrls.add(probe.getAttribute("data-src") ?? "")
+    }
+
+    expect(seenUrls).toEqual(new Set([
+      "emulator://localhost/frame?slot=1",
+      "emulator://localhost/frame?slot=2",
+      "emulator://localhost/frame?slot=3",
+    ]))
   })
 
   it("drops the frame src when disabled", () => {
     const { rerender } = render(<FrameSrcProbe frameSeq={1} />)
     const probe = screen.getByRole("button", { name: "settle" })
 
-    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?t=1")
+    expect(probe).toHaveAttribute("data-src", "emulator://localhost/frame?slot=1")
 
     rerender(<FrameSrcProbe enabled={false} frameSeq={2} />)
 

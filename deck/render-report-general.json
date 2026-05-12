@@ -1,0 +1,90 @@
+{
+  "generatedAt": "2026-05-11T21:47:00.717Z",
+  "html": "xero-pitch-deck.html",
+  "pdf": "xero-pitch-deck.pdf",
+  "pdfBytes": 2367681,
+  "slideCount": 10,
+  "previews": [
+    {
+      "file": "previews-general/slide-01.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 29.97,
+      "entropy": 3.196,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-02.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 29.17,
+      "entropy": 2.679,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-03.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 25.9,
+      "entropy": 2.466,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-04.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 32.18,
+      "entropy": 3.031,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-05.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 29.19,
+      "entropy": 3.036,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-06.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 28.99,
+      "entropy": 2.819,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-07.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 31.02,
+      "entropy": 3.031,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-08.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 27.23,
+      "entropy": 3.464,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-09.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 31.39,
+      "entropy": 2.65,
+      "passed": true
+    },
+    {
+      "file": "previews-general/slide-10.png",
+      "width": 1600,
+      "height": 900,
+      "mean": 29.69,
+      "entropy": 3.802,
+      "passed": true
+    }
+  ],
+  "passed": true
+}

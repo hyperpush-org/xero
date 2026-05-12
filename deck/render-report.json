@@ -1,88 +1,80 @@
 {
-  "generatedAt": "2026-04-24T21:44:11.904Z",
+  "generatedAt": "2026-05-11T22:34:39.483Z",
   "html": "xero-helius-pitch-deck.html",
   "pdf": "xero-helius-pitch-deck.pdf",
-  "pdfBytes": 2198942,
-  "slideCount": 10,
+  "pdfBytes": 2268849,
+  "slideCount": 9,
   "previews": [
     {
       "file": "previews/slide-01.png",
       "width": 1600,
       "height": 900,
-      "mean": 28.06,
-      "entropy": 3.474,
+      "mean": 30.67,
+      "entropy": 3.189,
       "passed": true
     },
     {
       "file": "previews/slide-02.png",
       "width": 1600,
       "height": 900,
-      "mean": 28.55,
-      "entropy": 3.388,
+      "mean": 27.64,
+      "entropy": 2.596,
       "passed": true
     },
     {
       "file": "previews/slide-03.png",
       "width": 1600,
       "height": 900,
-      "mean": 28.42,
-      "entropy": 3.844,
+      "mean": 24.85,
+      "entropy": 2.427,
       "passed": true
     },
     {
       "file": "previews/slide-04.png",
       "width": 1600,
       "height": 900,
-      "mean": 30.42,
-      "entropy": 3.094,
+      "mean": 32.63,
+      "entropy": 3.077,
       "passed": true
     },
     {
       "file": "previews/slide-05.png",
       "width": 1600,
       "height": 900,
-      "mean": 28.86,
-      "entropy": 3.076,
+      "mean": 28.12,
+      "entropy": 2.657,
       "passed": true
     },
     {
       "file": "previews/slide-06.png",
       "width": 1600,
       "height": 900,
-      "mean": 31.28,
-      "entropy": 3.742,
+      "mean": 32.27,
+      "entropy": 3.212,
       "passed": true
     },
     {
       "file": "previews/slide-07.png",
       "width": 1600,
       "height": 900,
-      "mean": 29.31,
-      "entropy": 2.959,
+      "mean": 29.77,
+      "entropy": 2.756,
       "passed": true
     },
     {
       "file": "previews/slide-08.png",
       "width": 1600,
       "height": 900,
-      "mean": 29.05,
-      "entropy": 2.944,
+      "mean": 28.12,
+      "entropy": 2.82,
       "passed": true
     },
     {
       "file": "previews/slide-09.png",
       "width": 1600,
       "height": 900,
-      "mean": 27.81,
-      "entropy": 2.906,
-      "passed": true
-    },
-    {
-      "file": "previews/slide-10.png",
-      "width": 1600,
-      "height": 900,
-      "mean": 29.1,
-      "entropy": 3.495,
+      "mean": 30.69,
+      "entropy": 3.396,
       "passed": true
     }
   ],

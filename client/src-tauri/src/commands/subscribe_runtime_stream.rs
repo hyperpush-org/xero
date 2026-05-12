@@ -99,6 +99,11 @@ impl RuntimeStreamProjection {
     }
 
     fn apply_item(&mut self, item: RuntimeStreamItemDto) -> RuntimeStreamPatchDto {
+        let patch_item = self.apply_item_to_projection(item);
+        self.patch_for_item(patch_item)
+    }
+
+    fn apply_item_to_projection(&mut self, item: RuntimeStreamItemDto) -> RuntimeStreamItemDto {
         let previous_timeline_item = latest_timeline_item(&self.items).cloned();
         let patch_item = item.clone();
         self.last_item_at = Some(item.created_at.clone());
@@ -182,6 +187,10 @@ impl RuntimeStreamProjection {
             previous_timeline_item.as_ref(),
         );
 
+        patch_item
+    }
+
+    fn patch_for_item(&self, patch_item: RuntimeStreamItemDto) -> RuntimeStreamPatchDto {
         RuntimeStreamPatchDto {
             schema: RUNTIME_STREAM_PATCH_SCHEMA.into(),
             item: patch_item,
@@ -728,37 +737,77 @@ fn replay_owned_agent_events(
         replay_limit,
         incremental_replay_limit,
     )?;
-    let mut last_event_id = after_event_id;
     let replayed_count = events.len();
-    let mut delivered_patch = false;
-    let mut last_projected_patch: Option<RuntimeStreamPatchDto> = None;
-    for event in events {
-        last_event_id = last_event_id.max(event.id);
-        if let Some(item) = owned_agent_event_runtime_item(event, session_id, None) {
-            if should_emit_owned_runtime_item(item_kinds, &item.kind) {
-                let should_deliver_patch = after_sequence
-                    .map(|sequence| item.sequence > sequence)
-                    .unwrap_or(true);
-                let patch = projection.apply_item(item);
-                if should_deliver_patch {
-                    send_runtime_stream_patch(channel, patch)?;
-                    delivered_patch = true;
-                } else {
-                    last_projected_patch = Some(patch);
-                }
-            }
-        }
-    }
-    if !delivered_patch {
-        if let (Some(_), Some(patch)) = (after_sequence, last_projected_patch) {
-            send_runtime_stream_patch(channel, patch)?;
-        }
+    let replay_projection = project_owned_agent_replay_events(
+        events,
+        session_id,
+        item_kinds,
+        projection,
+        after_sequence,
+        after_event_id,
+    );
+    let delivered_patch_count = usize::from(replay_projection.patch.is_some());
+    if let Some(patch) = replay_projection.patch {
+        send_runtime_stream_patch(channel, patch)?;
     }
     eprintln!(
-        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} last_event_id={last_event_id} duration_ms={}",
+        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} projected_count={} delivered_patch_count={delivered_patch_count} last_event_id={} duration_ms={}",
+        replay_projection.projected_count,
+        replay_projection.last_event_id,
         started.elapsed().as_millis()
     );
-    Ok((last_event_id, terminal))
+    Ok((replay_projection.last_event_id, terminal))
+}
+
+struct OwnedAgentReplayProjectionResult {
+    last_event_id: i64,
+    projected_count: usize,
+    patch: Option<RuntimeStreamPatchDto>,
+}
+
+fn project_owned_agent_replay_events(
+    events: Vec<AgentEventRecord>,
+    session_id: &str,
+    item_kinds: &[RuntimeStreamItemKind],
+    projection: &mut RuntimeStreamProjection,
+    after_sequence: Option<u64>,
+    after_event_id: i64,
+) -> OwnedAgentReplayProjectionResult {
+    let mut last_event_id = after_event_id;
+    let mut projected_count = 0;
+    let mut last_deliverable_item: Option<RuntimeStreamItemDto> = None;
+    let mut last_projected_item: Option<RuntimeStreamItemDto> = None;
+
+    for event in events {
+        last_event_id = last_event_id.max(event.id);
+        let Some(item) = owned_agent_event_runtime_item(event, session_id, None) else {
+            continue;
+        };
+        if !should_emit_owned_runtime_item(item_kinds, &item.kind) {
+            continue;
+        }
+
+        let should_deliver_patch = after_sequence
+            .map(|sequence| item.sequence > sequence)
+            .unwrap_or(true);
+        let patch_item = projection.apply_item_to_projection(item);
+        projected_count += 1;
+        if should_deliver_patch {
+            last_deliverable_item = Some(patch_item);
+        } else {
+            last_projected_item = Some(patch_item);
+        }
+    }
+
+    let patch_item =
+        last_deliverable_item.or_else(|| after_sequence.and_then(|_| last_projected_item));
+    let patch = patch_item.map(|item| projection.patch_for_item(item));
+
+    OwnedAgentReplayProjectionResult {
+        last_event_id,
+        projected_count,
+        patch,
+    }
 }
 
 fn load_owned_agent_replay_events(
@@ -822,8 +871,8 @@ fn stream_live_owned_agent_events(
         last_event_id = event.id;
         if let Some(item) = owned_agent_event_runtime_item(event, &session_id, None) {
             if should_emit_owned_runtime_item(&item_kinds, &item.kind) {
-                let patch = projection.apply_item(item);
-                if send_runtime_stream_patch(&channel, patch).is_err() {
+                let live_item = projection.apply_item_to_projection(item);
+                if send_runtime_stream_item(&channel, live_item).is_err() {
                     return;
                 }
             }
@@ -844,6 +893,21 @@ fn send_runtime_stream_patch(
             "runtime_stream_channel_closed",
             format!(
                 "Xero could not deliver an owned-agent runtime stream replay patch because the desktop channel closed: {error}"
+            ),
+        )
+    })
+}
+
+fn send_runtime_stream_item(
+    channel: &Channel<serde_json::Value>,
+    item: RuntimeStreamItemDto,
+) -> CommandResult<()> {
+    let payload = runtime_stream_item_payload_for_ipc(item)?;
+    channel.send(payload).map_err(|error| {
+        CommandError::retryable(
+            "runtime_stream_channel_closed",
+            format!(
+                "Xero could not deliver an owned-agent runtime stream item because the desktop channel closed: {error}"
             ),
         )
     })
@@ -880,6 +944,24 @@ fn runtime_stream_patch_payload_for_ipc(
         compact_runtime_stream_item_for_ipc(&mut item, 0);
     }
     runtime_stream_payload_value(item)
+}
+
+fn runtime_stream_item_payload_for_ipc(
+    item: RuntimeStreamItemDto,
+) -> CommandResult<serde_json::Value> {
+    let mut compact_item = item;
+    compact_runtime_stream_item_for_ipc(&mut compact_item, RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS);
+    if estimated_ipc_payload_bytes(&compact_item) <= RUNTIME_STREAM_IPC_MAX_BYTES {
+        return runtime_stream_payload_value(compact_item);
+    }
+
+    compact_runtime_stream_item_for_ipc(&mut compact_item, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
+    if estimated_ipc_payload_bytes(&compact_item) <= RUNTIME_STREAM_IPC_MAX_BYTES {
+        return runtime_stream_payload_value(compact_item);
+    }
+
+    compact_runtime_stream_item_for_ipc(&mut compact_item, 0);
+    runtime_stream_payload_value(compact_item)
 }
 
 fn runtime_stream_payload_value<T: Serialize>(payload: T) -> CommandResult<serde_json::Value> {
@@ -2658,6 +2740,52 @@ mod tests {
     }
 
     #[test]
+    fn runtime_stream_replay_projection_coalesces_history_to_latest_patch() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let event_count = 24;
+        let events = (0..event_count)
+            .map(|index| {
+                event_with_id(
+                    (index + 1) as i64,
+                    AgentRunEventKind::MessageDelta,
+                    &serde_json::json!({
+                        "role": "assistant",
+                        "text": format!("chunk-{index};")
+                    })
+                    .to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let result = project_owned_agent_replay_events(
+            events,
+            "owned-agent:run-1",
+            &[RuntimeStreamItemKind::Transcript],
+            &mut projection,
+            None,
+            0,
+        );
+
+        assert_eq!(result.last_event_id, event_count as i64);
+        assert_eq!(result.projected_count, event_count);
+        let patch = result.patch.expect("latest replay patch");
+        assert_eq!(patch.item.sequence, event_count as u64);
+        assert_eq!(patch.snapshot.last_sequence, Some(event_count as u64));
+        assert_eq!(patch.snapshot.transcript_items.len(), 1);
+        assert_eq!(
+            patch.snapshot.transcript_items[0].updated_sequence,
+            Some(event_count as u64)
+        );
+        let expected_text = (0..event_count)
+            .map(|index| format!("chunk-{index};"))
+            .collect::<String>();
+        assert_eq!(
+            patch.snapshot.transcript_items[0].text.as_deref(),
+            Some(expected_text.as_str())
+        );
+    }
+
+    #[test]
     fn oversized_tool_result_stream_payload_falls_back_under_ipc_budget() {
         let large_content = "x".repeat(180_000);
         let payload = serde_json::json!({
@@ -2693,6 +2821,42 @@ mod tests {
         assert!(
             channel_payload.get("schema").is_some() || channel_payload.get("kind").is_some(),
             "payload remains either a patch or an item envelope"
+        );
+    }
+
+    #[test]
+    fn live_runtime_stream_payload_uses_single_item_envelope() {
+        let item = owned_agent_event_runtime_item(
+            event(
+                AgentRunEventKind::MessageDelta,
+                &serde_json::json!({
+                    "role": "assistant",
+                    "text": "hello from the live stream"
+                })
+                .to_string(),
+            ),
+            "owned-agent:run-1",
+            None,
+        )
+        .expect("live transcript item");
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let live_item = projection.apply_item_to_projection(item);
+        let channel_payload =
+            runtime_stream_item_payload_for_ipc(live_item).expect("encode live stream item");
+
+        assert!(channel_payload.get("schema").is_none());
+        assert!(channel_payload.get("snapshot").is_none());
+        assert_eq!(
+            channel_payload.get("kind").and_then(|value| value.as_str()),
+            Some("transcript")
+        );
+        assert_eq!(
+            channel_payload.get("text").and_then(|value| value.as_str()),
+            Some("hello from the live stream")
+        );
+        assert!(
+            estimated_ipc_payload_bytes(&channel_payload) <= RUNTIME_STREAM_IPC_MAX_BYTES,
+            "live stream item should fit the frontend runtime-stream IPC budget"
         );
     }
 
