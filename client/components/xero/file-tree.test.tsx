@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { FileSystemNode } from '@/src/lib/file-system-tree'
@@ -148,5 +148,115 @@ describe('FileTree virtualization', () => {
 
     await waitFor(() => expect(screen.getByText('file-0950.ts')).toBeInTheDocument())
     expect(screen.getByText('file-0950.ts').closest('[role="treeitem"]')).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('FileTree keyboard navigation', () => {
+  it('uses roving tabindex so the selected row owns the tab stop', () => {
+    const root = makeTree([
+      makeFolder('/src', [makeFile('/src/app.tsx')]),
+      makeFile('/README.md'),
+    ])
+
+    renderFileTree(root, '/README.md')
+
+    const tree = screen.getByRole('tree')
+    const rows = within(tree).getAllByRole('treeitem')
+    const readme = rows.find((row) => row.textContent?.includes('README.md'))
+    expect(readme).toBeDefined()
+    expect(readme).toHaveAttribute('tabIndex', '0')
+    for (const row of rows.filter((row) => row !== readme)) {
+      expect(row).toHaveAttribute('tabIndex', '-1')
+    }
+  })
+
+  it('moves focus with ArrowDown and ArrowUp', async () => {
+    const root = makeTree([
+      makeFolder('/src', [makeFile('/src/app.tsx')]),
+      makeFile('/README.md'),
+    ])
+
+    renderFileTree(root, '/src')
+    const tree = screen.getByRole('tree')
+    const srcRow = within(tree).getAllByRole('treeitem').find((row) =>
+      row.getAttribute('aria-label')?.startsWith('src folder'),
+    )!
+    srcRow.focus()
+
+    fireEvent.keyDown(srcRow, { key: 'ArrowDown' })
+    await waitFor(() => {
+      const focused = within(tree).getAllByRole('treeitem').find((row) => row.tabIndex === 0)
+      expect(focused?.textContent).toContain('app.tsx')
+    })
+
+    const appRow = within(tree).getAllByRole('treeitem').find((row) =>
+      row.textContent?.includes('app.tsx'),
+    )!
+    fireEvent.keyDown(appRow, { key: 'ArrowUp' })
+    await waitFor(() => {
+      const focused = within(tree).getAllByRole('treeitem').find((row) => row.tabIndex === 0)
+      expect(focused?.getAttribute('aria-label')).toContain('src folder')
+    })
+  })
+
+  it('collapses an expanded folder with ArrowLeft and expands with ArrowRight', () => {
+    const root = makeTree([makeFolder('/src', [makeFile('/src/app.tsx')])])
+    const onToggleFolder = vi.fn()
+
+    render(
+      <FileTree
+        root={root}
+        selectedPath="/src"
+        expandedFolders={new Set(['/src'])}
+        dirtyPaths={new Set()}
+        onSelectFile={vi.fn()}
+        onToggleFolder={onToggleFolder}
+        onRequestRename={vi.fn()}
+        onRequestDelete={vi.fn()}
+        onRequestNewFile={vi.fn()}
+        onRequestNewFolder={vi.fn()}
+        onMoveEntry={vi.fn()}
+        onCancelCreate={vi.fn()}
+        onCreateEntry={vi.fn(async () => null)}
+        onCopyPath={vi.fn()}
+      />,
+    )
+
+    const tree = screen.getByRole('tree')
+    const srcRow = within(tree).getAllByRole('treeitem').find((row) =>
+      row.getAttribute('aria-label')?.startsWith('src folder'),
+    )!
+
+    fireEvent.keyDown(srcRow, { key: 'ArrowLeft' })
+    expect(onToggleFolder).toHaveBeenCalledWith('/src')
+  })
+
+  it('opens a file with Enter', () => {
+    const root = makeTree([makeFile('/README.md')])
+    const onSelectFile = vi.fn()
+
+    render(
+      <FileTree
+        root={root}
+        selectedPath="/README.md"
+        expandedFolders={new Set()}
+        dirtyPaths={new Set()}
+        onSelectFile={onSelectFile}
+        onToggleFolder={vi.fn()}
+        onRequestRename={vi.fn()}
+        onRequestDelete={vi.fn()}
+        onRequestNewFile={vi.fn()}
+        onRequestNewFolder={vi.fn()}
+        onMoveEntry={vi.fn()}
+        onCancelCreate={vi.fn()}
+        onCreateEntry={vi.fn(async () => null)}
+        onCopyPath={vi.fn()}
+      />,
+    )
+
+    const tree = screen.getByRole('tree')
+    const row = within(tree).getByRole('treeitem', { name: /README\.md/ })
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(onSelectFile).toHaveBeenCalledWith('/README.md')
   })
 })

@@ -492,7 +492,10 @@ export function useAgentRuntimeController({
 
   useEffect(() => {
     const modelSelectionKey = normalizeStoredText(effectiveModelSelectionKey)
-    if (!hasUserComposerSettingsRef.current && !modelSelectionKey) {
+    const shouldPersistComposerControls =
+      hasUserComposerSettingsRef.current ||
+      Boolean(activeRuntimeRun && modelSelectionKey)
+    if (!shouldPersistComposerControls) {
       return
     }
     if (activeRuntimeRun && modelSelectionKey) {
@@ -522,7 +525,6 @@ export function useAgentRuntimeController({
     if (activeRuntimeRun) return
     if (runtimeMutationInFlight) return
 
-    hasUserComposerSettingsRef.current = true
     setDraftRuntimeAgentId(pendingInitialRuntimeAgentId)
     setDraftAgentDefinitionId(null)
     setDraftApprovalMode((current) =>

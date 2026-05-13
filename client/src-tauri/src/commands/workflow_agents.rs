@@ -2753,14 +2753,24 @@ fn authoring_profile_availability(
     db_tables: &[AgentAuthoringDbTableDto],
     upstream_artifacts: &[AgentAuthoringUpstreamArtifactDto],
 ) -> Vec<AgentAuthoringProfileAvailabilityDto> {
-    let profiles = authoring_profile_runtimes();
+    let profile_groups = authoring_profile_runtime_groups();
+    let profiles = profile_groups
+        .iter()
+        .filter_map(|(profile, runtime_agent_ids)| {
+            runtime_agent_ids
+                .first()
+                .map(|runtime_agent_id| (*profile, *runtime_agent_id))
+        })
+        .collect::<Vec<_>>();
     let mut availability = Vec::new();
 
     for tool in tools {
-        let allowed_profiles = profiles
+        let allowed_profiles = profile_groups
             .iter()
-            .filter(|(_, runtime_agent_id)| {
-                tool_allowed_for_runtime_agent(*runtime_agent_id, &tool.name)
+            .filter(|(_, runtime_agent_ids)| {
+                runtime_agent_ids.iter().any(|runtime_agent_id| {
+                    tool_allowed_for_runtime_agent(*runtime_agent_id, &tool.name)
+                })
             })
             .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
@@ -2773,13 +2783,15 @@ fn authoring_profile_availability(
     }
 
     for db_table in db_tables {
-        let allowed_profiles = profiles
+        let allowed_profiles = profile_groups
             .iter()
-            .filter(|(_, runtime_agent_id)| {
-                db_touchpoints_for_runtime_agent(*runtime_agent_id)
-                    .entries
-                    .iter()
-                    .any(|entry| entry.table == db_table.table)
+            .filter(|(_, runtime_agent_ids)| {
+                runtime_agent_ids.iter().any(|runtime_agent_id| {
+                    db_touchpoints_for_runtime_agent(*runtime_agent_id)
+                        .entries
+                        .iter()
+                        .any(|entry| entry.table == db_table.table)
+                })
             })
             .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
@@ -2797,15 +2809,17 @@ fn authoring_profile_availability(
             artifact.source_agent.as_str(),
             output_contract_id(artifact.contract)
         );
-        let allowed_profiles = profiles
+        let allowed_profiles = profile_groups
             .iter()
-            .filter(|(_, runtime_agent_id)| {
-                consumed_artifacts_for(*runtime_agent_id)
-                    .iter()
-                    .any(|entry| {
-                        entry.source_agent == artifact.source_agent
-                            && entry.contract == artifact.contract
-                    })
+            .filter(|(_, runtime_agent_ids)| {
+                runtime_agent_ids.iter().any(|runtime_agent_id| {
+                    consumed_artifacts_for(*runtime_agent_id)
+                        .iter()
+                        .any(|entry| {
+                            entry.source_agent == artifact.source_agent
+                                && entry.contract == artifact.contract
+                        })
+                })
             })
             .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
@@ -2818,10 +2832,12 @@ fn authoring_profile_availability(
     }
 
     for contract in unique_output_contracts() {
-        let allowed_profiles = profiles
+        let allowed_profiles = profile_groups
             .iter()
-            .filter(|(_, runtime_agent_id)| {
-                runtime_agent_descriptor(*runtime_agent_id).output_contract == contract
+            .filter(|(_, runtime_agent_ids)| {
+                runtime_agent_ids.iter().any(|runtime_agent_id| {
+                    runtime_agent_descriptor(*runtime_agent_id).output_contract == contract
+                })
             })
             .map(|(profile, _)| *profile)
             .collect::<Vec<_>>();
@@ -2840,12 +2856,14 @@ fn authoring_profile_availability(
     effect_classes.sort_by_key(|effect| effect_class_id(*effect));
     effect_classes.dedup();
     for effect_class in effect_classes {
-        let allowed_profiles = profiles
+        let allowed_profiles = profile_groups
             .iter()
-            .filter(|(_, runtime_agent_id)| {
-                tools.iter().any(|tool| {
-                    tool.effect_class == effect_class
-                        && tool_allowed_for_runtime_agent(*runtime_agent_id, &tool.name)
+            .filter(|(_, runtime_agent_ids)| {
+                runtime_agent_ids.iter().any(|runtime_agent_id| {
+                    tools.iter().any(|tool| {
+                        tool.effect_class == effect_class
+                            && tool_allowed_for_runtime_agent(*runtime_agent_id, &tool.name)
+                    })
                 })
             })
             .map(|(profile, _)| *profile)
@@ -2861,17 +2879,39 @@ fn authoring_profile_availability(
     availability
 }
 
+#[cfg(test)]
 fn authoring_profile_runtimes() -> Vec<(AgentDefinitionBaseCapabilityProfileDto, RuntimeAgentIdDto)>
 {
-    let mut profiles = Vec::new();
+    authoring_profile_runtime_groups()
+        .into_iter()
+        .filter_map(|(profile, runtime_agent_ids)| {
+            runtime_agent_ids
+                .first()
+                .map(|runtime_agent_id| (profile, *runtime_agent_id))
+        })
+        .collect()
+}
+
+fn authoring_profile_runtime_groups() -> Vec<(
+    AgentDefinitionBaseCapabilityProfileDto,
+    Vec<RuntimeAgentIdDto>,
+)> {
+    let mut profiles: Vec<(
+        AgentDefinitionBaseCapabilityProfileDto,
+        Vec<RuntimeAgentIdDto>,
+    )> = Vec::new();
     for descriptor in available_builtin_runtime_agent_descriptors() {
         let profile = base_capability_from_runtime(descriptor.base_capability_profile);
-        if !profiles.iter().any(
-            |(existing, _): &(AgentDefinitionBaseCapabilityProfileDto, RuntimeAgentIdDto)| {
-                existing == &profile
-            },
-        ) {
-            profiles.push((profile, descriptor.id));
+        let mut matched = false;
+        for (existing, runtime_agent_ids) in &mut profiles {
+            if *existing == profile {
+                runtime_agent_ids.push(descriptor.id);
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            profiles.push((profile, vec![descriptor.id]));
         }
     }
     profiles
@@ -4005,11 +4045,7 @@ mod tests {
                 edge.source == GRAPH_HEADER_NODE_ID
                     && edge.target == STAGE_GROUP_FRAME_NODE_ID
                     && edge.source_handle.as_deref() == Some(GRAPH_HEADER_HANDLE_WORKFLOW)
-                    && edge
-                        .data
-                        .get("targetPhaseId")
-                        .and_then(JsonValue::as_str)
-                        == Some("survey")
+                    && edge.data.get("targetPhaseId").and_then(JsonValue::as_str) == Some("survey")
             }),
             "the agent header should connect to the stage frame and record the start phase in edge data",
         );

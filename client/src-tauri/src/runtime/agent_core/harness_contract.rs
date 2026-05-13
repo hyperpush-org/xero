@@ -621,6 +621,14 @@ mod tests {
             .collect::<Vec<_>>();
         let expected = vec![
             (
+                "generalist:base".to_string(),
+                "15ee630c38ef9d910ba1e6c8e9ba80b4bb8b7787563d6f592ad6f1c6eb9aeb7c",
+            ),
+            (
+                "generalist:custom_policy_skill_process_coordination".to_string(),
+                "9311241f86239793c39305022cfefe4b206cb474000763acbaffa51e9d2efa2c",
+            ),
+            (
                 "ask:base".to_string(),
                 "c92cb8fe6ce7393e465e2ef4afb3ee3b732e6fd57bcfffc45ff9c2510317ac99",
             ),
@@ -695,6 +703,10 @@ mod tests {
             .collect::<Vec<_>>();
         let expected = vec![
             (
+                "generalist:builtin_full".to_string(),
+                "bca7c1f189383eb464fe7c943084131c6ca3f5f6eb1c119007daca20133d0048",
+            ),
+            (
                 "ask:builtin_full".to_string(),
                 "b87b7fdfcba585073f0b539e5b155150a3ca64cef195fd9f99fbb56f8debc981",
             ),
@@ -724,7 +736,7 @@ mod tests {
             ),
             (
                 "engineer:custom_engineering".to_string(),
-                "d05ebb57815f324420056b4e487fa414c15841ffa21d9391012d62112f1c9226",
+                "bca7c1f189383eb464fe7c943084131c6ca3f5f6eb1c119007daca20133d0048",
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),

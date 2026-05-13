@@ -92,19 +92,13 @@ export function AgentApprovalReviewDialog({
         if (!next && !busy) onCancel()
       }}
     >
-      <DialogContent
-        className="max-w-3xl gap-0 p-0"
-        aria-describedby="agent-approval-review-description"
-      >
+      <DialogContent className="max-w-3xl gap-0 p-0">
         <DialogHeader className="border-b border-border/50 p-4">
           <DialogTitle className="flex items-center gap-2 text-[14px]">
             <HeaderIcon className="h-4 w-4 text-primary" aria-hidden="true" />
             {title}
           </DialogTitle>
-          <DialogDescription
-            id="agent-approval-review-description"
-            className="text-[12.5px]"
-          >
+          <DialogDescription className="text-[12.5px]">
             {description}
           </DialogDescription>
           {review ? (

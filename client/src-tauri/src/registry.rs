@@ -140,7 +140,8 @@ pub fn read_project_summaries(
                     active_phase: row.get::<_, u32>(8)?,
                     branch: row.get(9)?,
                     runtime: row.get(10)?,
-                    start_targets: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default(),
+                    start_targets: serde_json::from_str(&row.get::<_, String>(11)?)
+                        .unwrap_or_default(),
                 },
             })
         })

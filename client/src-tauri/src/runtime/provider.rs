@@ -565,7 +565,7 @@ fn reconcile_openai_codex_runtime_session<R: Runtime>(
                 message: "Xero no longer has a global app-local OpenAI auth session available."
                     .into(),
                 retryable: false,
-            }))
+            }));
         }
     };
     sync_openai_profile_link(app, state, Some(&profile.profile_id), Some(&stored))?;

@@ -1438,7 +1438,9 @@ fn history_event_guidance(event: &project_store::AgentCoordinationEventRecord) -
         "conflicted" => {
             "The undo/session rollback conflicted before writing; inspect current files before overlapping work."
         }
-        "failed" => "The history operation failed; inspect current workspace state before acting on affected paths.",
+        "failed" => {
+            "The history operation failed; inspect current workspace state before acting on affected paths."
+        }
         "repair_needed" => {
             "The history operation needs repair; re-read current files before overlapping writes on affected paths."
         }

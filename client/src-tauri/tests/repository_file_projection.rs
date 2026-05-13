@@ -9,10 +9,11 @@ use tempfile::TempDir;
 use xero_desktop_lib::{
     commands::{
         create_project_entry, delete_project_entry, import_repository, list_project_files,
-        read_project_file, rename_project_entry, write_project_file, CommandError,
-        CreateProjectEntryRequestDto, ImportRepositoryRequestDto, ListProjectFilesRequestDto,
-        ProjectAssetState, ProjectEntryKindDto, ProjectFileNodeDto, ProjectFileRendererKindDto,
-        ProjectFileRequestDto, ReadProjectFileResponseDto, RenameProjectEntryRequestDto,
+        read_project_file, rename_project_entry, stat_project_files, write_project_file,
+        CommandError, CreateProjectEntryRequestDto, ImportRepositoryRequestDto,
+        ListProjectFilesRequestDto, ProjectAssetState, ProjectEntryKindDto, ProjectFileNodeDto,
+        ProjectFileRendererKindDto, ProjectFileRequestDto, ProjectFileStatDto,
+        ReadProjectFileResponseDto, RenameProjectEntryRequestDto, StatProjectFilesRequestDto,
         WriteProjectFileRequestDto,
     },
     configure_builder_with_state,
@@ -93,10 +94,53 @@ fn write_file_with_app(
     tauri::async_runtime::block_on(write_project_file(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<xero_desktop_lib::commands::ProjectAssetState>(),
         WriteProjectFileRequestDto {
             project_id: project_id.to_owned(),
             path: path.to_owned(),
             content: content.to_owned(),
+            expected_content_hash: None,
+            expected_modified_at: None,
+            overwrite: true,
+        },
+    ))
+}
+
+fn write_file_with_preconditions(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    path: &str,
+    content: &str,
+    expected_content_hash: Option<String>,
+    expected_modified_at: Option<String>,
+    overwrite: bool,
+) -> Result<xero_desktop_lib::commands::WriteProjectFileResponseDto, CommandError> {
+    tauri::async_runtime::block_on(write_project_file(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        app.state::<ProjectAssetState>(),
+        WriteProjectFileRequestDto {
+            project_id: project_id.to_owned(),
+            path: path.to_owned(),
+            content: content.to_owned(),
+            expected_content_hash,
+            expected_modified_at,
+            overwrite,
+        },
+    ))
+}
+
+fn stat_files_with_app(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    project_id: &str,
+    paths: Vec<&str>,
+) -> Result<xero_desktop_lib::commands::StatProjectFilesResponseDto, CommandError> {
+    tauri::async_runtime::block_on(stat_project_files(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StatProjectFilesRequestDto {
+            project_id: project_id.to_owned(),
+            paths: paths.into_iter().map(ToOwned::to_owned).collect(),
         },
     ))
 }
@@ -317,6 +361,80 @@ fn project_file_commands_list_read_write_create_rename_and_delete_real_repo_stat
         list_files_at_with_app(&app, &project_id, "/src").expect("refreshed src tree loads");
     assert!(find_node(&refreshed_src_tree.root, "/src/editor-client.ts").is_some());
     assert!(find_node(&refreshed_src_tree.root, "/src/generated").is_none());
+}
+
+#[test]
+fn project_file_save_preconditions_detect_external_changes_and_return_fresh_metadata() {
+    let registry_root = tempfile::tempdir().expect("registry temp dir");
+    let repository_root = init_git_repo();
+    let app = build_mock_app(create_state(&registry_root));
+
+    let imported = import_with_app(&app, repository_root.path()).expect("import succeeds");
+    let project_id = imported.project.id;
+
+    let readme = read_file_with_app(&app, &project_id, "/README.md").expect("readme loads");
+    let (content_hash, modified_at) = match readme {
+        ReadProjectFileResponseDto::Text {
+            content_hash,
+            modified_at,
+            ..
+        } => (content_hash, modified_at),
+        other => panic!("expected text response, got {other:?}"),
+    };
+
+    fs::write(
+        repository_root.path().join("README.md"),
+        "External change\n",
+    )
+    .expect("write external change");
+
+    let conflict = write_file_with_preconditions(
+        &app,
+        &project_id,
+        "/README.md",
+        "My change\n",
+        Some(content_hash.clone()),
+        Some(modified_at.clone()),
+        false,
+    )
+    .expect_err("stale save is rejected");
+    assert_eq!(conflict.code, "project_file_changed_since_read");
+
+    let saved = write_file_with_preconditions(
+        &app,
+        &project_id,
+        "/README.md",
+        "My change\n",
+        Some(content_hash),
+        Some(modified_at),
+        true,
+    )
+    .expect("overwrite succeeds");
+    assert_eq!(saved.path, "/README.md");
+    assert_eq!(saved.byte_length, "My change\n".len() as u64);
+    assert_ne!(saved.content_hash, "");
+    assert_eq!(saved.renderer_kind, ProjectFileRendererKindDto::Markdown);
+    assert_eq!(
+        fs::read_to_string(repository_root.path().join("README.md")).expect("read saved README"),
+        "My change\n"
+    );
+
+    let stats = stat_files_with_app(&app, &project_id, vec!["/README.md", "/missing.ts"])
+        .expect("stats load");
+    assert_eq!(stats.files.len(), 2);
+    assert!(matches!(
+        &stats.files[0],
+        ProjectFileStatDto::File {
+            path,
+            content_hash,
+            renderer_kind,
+            ..
+        } if path == "/README.md" && !content_hash.is_empty() && *renderer_kind == ProjectFileRendererKindDto::Markdown
+    ));
+    assert!(matches!(
+        &stats.files[1],
+        ProjectFileStatDto::Missing { path } if path == "/missing.ts"
+    ));
 }
 
 #[test]

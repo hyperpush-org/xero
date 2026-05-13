@@ -955,7 +955,7 @@ pub fn emulator_type(state: State<'_, EmulatorState>, request: TypeRequest) -> C
                 return Err(CommandError::user_fixable(
                     "emulator_selector_no_match",
                     "Selector for `into` matched no elements.",
-                ))
+                ));
             }
             1 => {
                 let (cx, cy) = hits[0].bounds.center();
@@ -965,7 +965,7 @@ pub fn emulator_type(state: State<'_, EmulatorState>, request: TypeRequest) -> C
                 return Err(CommandError::user_fixable(
                     "emulator_selector_ambiguous",
                     format!("Selector for `into` matched {n} elements."),
-                ))
+                ));
             }
         }
     }

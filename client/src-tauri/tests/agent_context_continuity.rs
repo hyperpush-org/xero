@@ -86,7 +86,7 @@ fn seed_agent_run_for_agent_with_provider(
         &project_store::NewAgentRunRecord {
             runtime_agent_id,
             agent_definition_id: None,
-            agent_definition_version: None,
+            agent_definition_version: Some(project_store::BUILTIN_AGENT_DEFINITION_VERSION),
             project_id: project_id.into(),
             agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: run_id.into(),

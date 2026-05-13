@@ -95,6 +95,35 @@ describe('project file tree store', () => {
     expect(isFolderLoaded(store, '/src')).toBe(true)
   })
 
+  it('keeps hydrated descendants when an ancestor folder refreshes', () => {
+    const rootListing = listing('/', [
+      { name: 'src', path: '/src', type: 'folder', childrenLoaded: false },
+      { name: 'README.md', path: '/README.md', type: 'file', childrenLoaded: true },
+    ])
+    let store: ProjectFileTreeStore = createEmptyProjectFileTreeStore()
+
+    store = applyProjectFileListing(store, rootListing)
+    store = applyProjectFileListing(
+      store,
+      listing('/src', [{ name: 'main.ts', path: '/src/main.ts', type: 'file', childrenLoaded: true }]),
+    )
+    store = applyProjectFileListing(store, rootListing)
+
+    const src = materializeProjectFileTree(store).children?.find((node) => node.path === '/src')
+    expect(src?.children?.map((node) => node.path)).toEqual(['/src/main.ts'])
+    expect(isFolderLoaded(store, '/src')).toBe(true)
+  })
+
+  it('reuses the existing store object when a folder refresh has no changes', () => {
+    const response = listing('/', [
+      { name: 'src', path: '/src', type: 'folder', childrenLoaded: false },
+      { name: 'README.md', path: '/README.md', type: 'file', childrenLoaded: true },
+    ])
+    const store = applyProjectFileListing(createEmptyProjectFileTreeStore(), response)
+
+    expect(applyProjectFileListing(store, response)).toBe(store)
+  })
+
   it('replaces stale children when a folder is reloaded', () => {
     let store = createEmptyProjectFileTreeStore()
     store = applyProjectFileListing(

@@ -137,6 +137,14 @@ export const listProjectFilesRequestSchema = z
   })
   .strict()
 
+export const listProjectFileIndexRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    includeHidden: z.boolean().default(false),
+    limit: z.number().int().positive().optional(),
+  })
+  .strict()
+
 export const projectFileRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -156,6 +164,16 @@ export const writeProjectFileRequestSchema = z
     projectId: z.string().trim().min(1),
     path: projectTreePathSchema,
     content: z.string(),
+    expectedContentHash: z.string().trim().min(1).optional(),
+    expectedModifiedAt: z.string().trim().min(1).optional(),
+    overwrite: z.boolean().default(false),
+  })
+  .strict()
+
+export const statProjectFilesRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    paths: z.array(projectTreePathSchema).default([]),
   })
   .strict()
 
@@ -279,6 +297,13 @@ export const gitPathsRequestSchema = z
   })
   .strict()
 
+export const gitRevertPatchRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    patch: z.string().min(1).refine((value) => value.trim().length > 0, 'Patch must not be empty.'),
+  })
+  .strict()
+
 export const gitCommitRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -359,6 +384,25 @@ export const listProjectFilesResponseSchema = z
   })
   .strict()
 
+export const projectFileIndexEntrySchema = z
+  .object({
+    path: projectTreePathSchema,
+    name: z.string().trim().min(1),
+    parentPath: projectTreePathSchema,
+    hidden: z.boolean().default(false),
+  })
+  .strict()
+
+export const listProjectFileIndexResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    files: z.array(projectFileIndexEntrySchema),
+    totalFiles: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    payloadBudget: payloadBudgetDiagnosticSchema.nullable().optional(),
+  })
+  .strict()
+
 const projectFileContentBaseSchema = z
   .object({
     projectId: z.string().trim().min(1),
@@ -433,6 +477,183 @@ export const writeProjectFileResponseSchema = z
   .object({
     projectId: z.string().trim().min(1),
     path: projectTreePathSchema,
+    byteLength: z.number().int().nonnegative(),
+    modifiedAt: z.string().trim().min(1),
+    contentHash: z.string().trim().min(1),
+    mimeType: z.string().trim().min(1),
+    rendererKind: projectFileRendererKindSchema,
+    preview: projectFilePreviewSchema.nullable().optional(),
+  })
+  .strict()
+
+export const projectFileStatSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('file'),
+      path: projectTreePathSchema,
+      byteLength: z.number().int().nonnegative(),
+      modifiedAt: z.string().trim().min(1),
+      contentHash: z.string().trim().min(1),
+      mimeType: z.string().trim().min(1),
+      rendererKind: projectFileRendererKindSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('directory'),
+      path: projectTreePathSchema,
+      modifiedAt: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('missing'),
+      path: projectTreePathSchema,
+    })
+    .strict(),
+])
+
+export const statProjectFilesResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    files: z.array(projectFileStatSchema),
+  })
+  .strict()
+
+export const projectDiagnosticSeveritySchema = z.enum(['error', 'warning', 'info'])
+export const projectDiagnosticSchema = z
+  .object({
+    path: projectTreePathSchema.nullable().optional(),
+    line: z.number().int().positive().nullable().optional(),
+    column: z.number().int().positive().nullable().optional(),
+    severity: projectDiagnosticSeveritySchema,
+    code: z.string().trim().min(1).nullable().optional(),
+    message: z.string(),
+    source: z.string().trim().min(1),
+  })
+  .strict()
+
+export const editorLspInstallCommandSchema = z
+  .object({
+    label: z.string().trim().min(1),
+    argv: z.array(z.string().trim().min(1)),
+  })
+  .strict()
+
+export const editorLspInstallSuggestionSchema = z
+  .object({
+    reason: z.string(),
+    candidateCommands: z.array(editorLspInstallCommandSchema),
+  })
+  .strict()
+
+export const editorLspServerStatusSchema = z
+  .object({
+    serverId: z.string().trim().min(1),
+    language: z.string().trim().min(1),
+    command: z.string().trim().min(1),
+    args: z.array(z.string()),
+    available: z.boolean(),
+    supportsDiagnostics: z.boolean(),
+    supportsSymbols: z.boolean(),
+    supportsHover: z.boolean(),
+    supportsCompletion: z.boolean(),
+    supportsDefinition: z.boolean(),
+    supportsReferences: z.boolean(),
+    supportsRename: z.boolean(),
+    supportsCodeActions: z.boolean(),
+    installSuggestion: editorLspInstallSuggestionSchema.nullable().optional(),
+  })
+  .strict()
+
+export const runProjectTypecheckRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+  })
+  .strict()
+
+export const formatProjectDocumentRangeSchema = z
+  .object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const formatProjectDocumentRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    content: z.string(),
+    range: formatProjectDocumentRangeSchema.optional(),
+  })
+  .strict()
+
+export const formatProjectDocumentStatusSchema = z.enum([
+  'formatted',
+  'unchanged',
+  'unavailable',
+  'failed',
+])
+
+export const formatProjectDocumentResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema,
+    status: formatProjectDocumentStatusSchema,
+    formatterId: z.string().trim().min(1).nullable().optional(),
+    command: z.array(z.string()),
+    content: z.string().nullable().optional(),
+    rangeApplied: formatProjectDocumentRangeSchema.nullable().optional(),
+    diagnostics: z.array(projectDiagnosticSchema),
+    startedAt: z.string().trim().min(1),
+    completedAt: z.string().trim().min(1),
+    durationMs: z.number().int().nonnegative(),
+    message: z.string().nullable().optional(),
+  })
+  .strict()
+
+export const runProjectLintRequestSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    path: projectTreePathSchema.optional(),
+  })
+  .strict()
+
+export const projectLintStatusSchema = z.enum(['passed', 'failed', 'unavailable'])
+
+export const projectLintResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    status: projectLintStatusSchema,
+    source: z.string().trim().min(1),
+    command: z.array(z.string()),
+    cwd: z.string().trim().min(1),
+    diagnostics: z.array(projectDiagnosticSchema),
+    startedAt: z.string().trim().min(1),
+    completedAt: z.string().trim().min(1),
+    durationMs: z.number().int().nonnegative(),
+    exitCode: z.number().int().nullable().optional(),
+    truncated: z.boolean(),
+    message: z.string().nullable().optional(),
+  })
+  .strict()
+
+export const projectTypecheckStatusSchema = z.enum(['passed', 'failed', 'unavailable'])
+export const projectTypecheckResponseSchema = z
+  .object({
+    projectId: z.string().trim().min(1),
+    status: projectTypecheckStatusSchema,
+    source: z.string().trim().min(1),
+    command: z.array(z.string()),
+    cwd: z.string().trim().min(1),
+    diagnostics: z.array(projectDiagnosticSchema),
+    startedAt: z.string().trim().min(1),
+    completedAt: z.string().trim().min(1),
+    durationMs: z.number().int().nonnegative(),
+    exitCode: z.number().int().nullable().optional(),
+    truncated: z.boolean(),
+    message: z.string().nullable().optional(),
+    lspServers: z.array(editorLspServerStatusSchema),
   })
   .strict()
 
@@ -719,21 +940,42 @@ export type ProjectTextRendererKindDto = z.infer<typeof projectTextRendererKindS
 export type ProjectRenderableRendererKindDto = z.infer<typeof projectRenderableRendererKindSchema>
 export type ProjectFileRendererKindDto = z.infer<typeof projectFileRendererKindSchema>
 export type ListProjectFilesRequestDto = z.infer<typeof listProjectFilesRequestSchema>
+export type ListProjectFileIndexRequestDto = z.infer<typeof listProjectFileIndexRequestSchema>
 export type ProjectFileRequestDto = z.infer<typeof projectFileRequestSchema>
 export type ProjectFileTreeNodeDto = z.infer<typeof projectFileTreeNodeSchema>
 export type ProjectFileTreeStatsDto = z.infer<typeof projectFileTreeStatsSchema>
 export type ProjectFileTreeViewDto = z.infer<typeof projectFileTreeViewSchema>
 export type RevokeProjectAssetTokensRequestDto = z.infer<typeof revokeProjectAssetTokensRequestSchema>
 export type WriteProjectFileRequestDto = z.infer<typeof writeProjectFileRequestSchema>
+export type StatProjectFilesRequestDto = z.infer<typeof statProjectFilesRequestSchema>
 export type CreateProjectEntryRequestDto = z.infer<typeof createProjectEntryRequestSchema>
 export type RenameProjectEntryRequestDto = z.infer<typeof renameProjectEntryRequestSchema>
 export type MoveProjectEntryRequestDto = z.infer<typeof moveProjectEntryRequestSchema>
 export type ListProjectFilesResponseDto = z.infer<typeof listProjectFilesResponseSchema>
+export type ProjectFileIndexEntryDto = z.infer<typeof projectFileIndexEntrySchema>
+export type ListProjectFileIndexResponseDto = z.infer<typeof listProjectFileIndexResponseSchema>
 export type ProjectFileCsvPreviewDto = z.infer<typeof projectFileCsvPreviewSchema>
 export type ProjectFileMarkdownPreviewDto = z.infer<typeof projectFileMarkdownPreviewSchema>
 export type ProjectFilePreviewDto = z.infer<typeof projectFilePreviewSchema>
 export type ReadProjectFileResponseDto = z.infer<typeof readProjectFileResponseSchema>
 export type WriteProjectFileResponseDto = z.infer<typeof writeProjectFileResponseSchema>
+export type ProjectFileStatDto = z.infer<typeof projectFileStatSchema>
+export type StatProjectFilesResponseDto = z.infer<typeof statProjectFilesResponseSchema>
+export type ProjectDiagnosticSeverityDto = z.infer<typeof projectDiagnosticSeveritySchema>
+export type ProjectDiagnosticDto = z.infer<typeof projectDiagnosticSchema>
+export type EditorLspInstallCommandDto = z.infer<typeof editorLspInstallCommandSchema>
+export type EditorLspInstallSuggestionDto = z.infer<typeof editorLspInstallSuggestionSchema>
+export type EditorLspServerStatusDto = z.infer<typeof editorLspServerStatusSchema>
+export type RunProjectTypecheckRequestDto = z.infer<typeof runProjectTypecheckRequestSchema>
+export type ProjectTypecheckStatusDto = z.infer<typeof projectTypecheckStatusSchema>
+export type ProjectTypecheckResponseDto = z.infer<typeof projectTypecheckResponseSchema>
+export type FormatProjectDocumentRangeDto = z.infer<typeof formatProjectDocumentRangeSchema>
+export type FormatProjectDocumentRequestDto = z.infer<typeof formatProjectDocumentRequestSchema>
+export type FormatProjectDocumentStatusDto = z.infer<typeof formatProjectDocumentStatusSchema>
+export type FormatProjectDocumentResponseDto = z.infer<typeof formatProjectDocumentResponseSchema>
+export type RunProjectLintRequestDto = z.infer<typeof runProjectLintRequestSchema>
+export type ProjectLintStatusDto = z.infer<typeof projectLintStatusSchema>
+export type ProjectLintResponseDto = z.infer<typeof projectLintResponseSchema>
 export type ReadProjectUiStateRequestDto = z.infer<typeof readProjectUiStateRequestSchema>
 export type WriteProjectUiStateRequestDto = z.infer<typeof writeProjectUiStateRequestSchema>
 export type ProjectUiStateResponseDto = z.infer<typeof projectUiStateResponseSchema>
@@ -764,6 +1006,7 @@ export type WorkspaceExplainResponseDto = z.infer<typeof workspaceExplainRespons
 export type ReplaceInProjectRequestDto = z.infer<typeof replaceInProjectRequestSchema>
 export type ReplaceInProjectResponseDto = z.infer<typeof replaceInProjectResponseSchema>
 export type GitPathsRequestDto = z.infer<typeof gitPathsRequestSchema>
+export type GitRevertPatchRequestDto = z.infer<typeof gitRevertPatchRequestSchema>
 export type GitCommitRequestDto = z.infer<typeof gitCommitRequestSchema>
 export type GitRemoteRequestDto = z.infer<typeof gitRemoteRequestSchema>
 export type GitSignatureDto = z.infer<typeof gitSignatureSchema>

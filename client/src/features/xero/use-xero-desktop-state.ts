@@ -961,10 +961,12 @@ export function useXeroDesktopState(
           if (areAgentWorkspaceLayoutsEqual(currentLayouts[projectId], nextLayout)) {
             return currentLayouts
           }
-          return {
+          const nextLayouts = {
             ...currentLayouts,
             [projectId]: nextLayout,
           }
+          agentWorkspaceLayoutsRef.current = nextLayouts
+          return nextLayouts
         })
       })
       .catch(() => {
@@ -1032,10 +1034,12 @@ export function useXeroDesktopState(
         return currentLayouts
       }
 
-      return {
+      const nextLayouts = {
         ...currentLayouts,
         [activeProject.id]: nextLayout,
       }
+      agentWorkspaceLayoutsRef.current = nextLayouts
+      return nextLayouts
     })
   }, [activeProject])
 

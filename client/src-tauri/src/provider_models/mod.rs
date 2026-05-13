@@ -1040,14 +1040,12 @@ fn resolve_provider_model_catalog_refresh_target(
         | OLLAMA_PROVIDER_ID
         | AZURE_OPENAI_PROVIDER_ID
         | GITHUB_MODELS_PROVIDER_ID
-        | GEMINI_AI_STUDIO_PROVIDER_ID => {
-            resolve_openai_compatible_endpoint_for_profile(
-                profile,
-                &state.openai_compatible_auth_config(),
-            )
-            .map(ProviderModelCatalogRefreshTarget::OpenAiCompatible)
-            .map_err(diagnostic_from_auth_error)
-        }
+        | GEMINI_AI_STUDIO_PROVIDER_ID => resolve_openai_compatible_endpoint_for_profile(
+            profile,
+            &state.openai_compatible_auth_config(),
+        )
+        .map(ProviderModelCatalogRefreshTarget::OpenAiCompatible)
+        .map_err(diagnostic_from_auth_error),
         other => Err(ProviderModelCatalogDiagnostic {
             code: "provider_model_provider_unsupported".into(),
             message: format!(
@@ -1327,16 +1325,14 @@ fn readiness_diagnostic(
             | OLLAMA_PROVIDER_ID
             | AZURE_OPENAI_PROVIDER_ID
             | GITHUB_MODELS_PROVIDER_ID
-            | GEMINI_AI_STUDIO_PROVIDER_ID => {
-                ProviderModelCatalogDiagnostic {
-                    code: "provider_credentials_unavailable".into(),
-                    message: format!(
-                        "Xero cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
-                        profile.provider_id
-                    ),
-                    retryable: false,
-                }
-            }
+            | GEMINI_AI_STUDIO_PROVIDER_ID => ProviderModelCatalogDiagnostic {
+                code: "provider_credentials_unavailable".into(),
+                message: format!(
+                    "Xero cannot discover models for provider `{}` because the redacted credential metadata no longer matches the saved app-local secret state.",
+                    profile.provider_id
+                ),
+                retryable: false,
+            },
             _ => return None,
         }),
     }

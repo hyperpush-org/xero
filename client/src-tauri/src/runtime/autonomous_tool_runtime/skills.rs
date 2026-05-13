@@ -215,7 +215,10 @@ impl AutonomousToolRuntime {
                     operation,
                     Some(selection.public.source_id.clone()),
                     Some(selection.public.skill_id.clone()),
-                    format!("Resolved skill `{}` for model use.", selection.public.skill_id),
+                    format!(
+                        "Resolved skill `{}` for model use.",
+                        selection.public.skill_id
+                    ),
                 )?;
                 Ok(AutonomousSkillToolOutput {
                     operation,
@@ -1333,12 +1336,16 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<()> {
         match &record.source.locator {
             XeroSkillSourceLocator::Github { .. } => {
-                let source = record.source.locator.to_autonomous_github_source().ok_or_else(|| {
-                    CommandError::user_fixable(
-                        "skill_tool_source_unsupported",
-                        "Xero could not map this installed GitHub skill back to its source.",
-                    )
-                })?;
+                let source = record
+                    .source
+                    .locator
+                    .to_autonomous_github_source()
+                    .ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "skill_tool_source_unsupported",
+                            "Xero could not map this installed GitHub skill back to its source.",
+                        )
+                    })?;
                 self.install_github_skill(skill_tool, &source)
             }
             XeroSkillSourceLocator::Mcp { .. } => Ok(()),
@@ -1464,12 +1471,16 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<XeroSkillToolContextPayload> {
         match &record.source.locator {
             XeroSkillSourceLocator::Github { .. } => {
-                let source = record.source.locator.to_autonomous_github_source().ok_or_else(|| {
-                    CommandError::user_fixable(
-                        "skill_tool_source_unsupported",
-                        "Xero could not map this installed GitHub skill back to its source.",
-                    )
-                })?;
+                let source = record
+                    .source
+                    .locator
+                    .to_autonomous_github_source()
+                    .ok_or_else(|| {
+                        CommandError::user_fixable(
+                            "skill_tool_source_unsupported",
+                            "Xero could not map this installed GitHub skill back to its source.",
+                        )
+                    })?;
                 self.invoke_github_skill(skill_tool, &source, include_supporting_assets)
             }
             XeroSkillSourceLocator::Mcp { .. } => Err(CommandError::user_fixable(

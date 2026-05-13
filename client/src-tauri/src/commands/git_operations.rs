@@ -4,7 +4,8 @@ use crate::{
     commands::{
         validate_non_empty, CommandResult, GitCommitRequestDto, GitCommitResponseDto,
         GitFetchResponseDto, GitPathsRequestDto, GitPullResponseDto, GitPushResponseDto,
-        GitRemoteRequestDto, RepositoryStatusChangedPayloadDto, REPOSITORY_STATUS_CHANGED_EVENT,
+        GitRemoteRequestDto, GitRevertPatchRequestDto, RepositoryStatusChangedPayloadDto,
+        REPOSITORY_STATUS_CHANGED_EVENT,
     },
     git::{operations, status},
     state::DesktopState,
@@ -70,6 +71,28 @@ pub async fn git_discard_changes<R: Runtime>(
     let operation_registry_path = registry_path.clone();
     jobs.run_blocking_project_lane(project_id.clone(), "git", "git discard", move || {
         operations::discard_changes(&operation_project_id, &paths, &operation_registry_path)
+    })
+    .await?;
+    emit_status_changed(&app, &project_id, &registry_path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn git_revert_patch<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: GitRevertPatchRequestDto,
+) -> CommandResult<()> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    let registry_path = state.global_db_path(&app)?;
+    let jobs = state.backend_jobs().clone();
+
+    let project_id = request.project_id;
+    let patch = request.patch;
+    let operation_project_id = project_id.clone();
+    let operation_registry_path = registry_path.clone();
+    jobs.run_blocking_project_lane(project_id.clone(), "git", "git revert hunk", move || {
+        operations::revert_patch(&operation_project_id, &patch, &operation_registry_path)
     })
     .await?;
     emit_status_changed(&app, &project_id, &registry_path);

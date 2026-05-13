@@ -4,7 +4,9 @@ use rusqlite::{params, OptionalExtension, Row};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 use crate::{
-    commands::{CommandError, RuntimeAgentIdDto, RuntimeRunApprovalModeDto},
+    commands::{
+        runtime_agent_descriptor, CommandError, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
+    },
     db::database_path_for_repo,
 };
 
@@ -80,8 +82,8 @@ pub fn default_agent_definition_id_for_runtime_agent(agent_id: RuntimeAgentIdDto
     agent_id.as_str().to_string()
 }
 
-pub fn default_agent_definition_version_for_runtime_agent(_agent_id: RuntimeAgentIdDto) -> u32 {
-    BUILTIN_AGENT_DEFINITION_VERSION
+pub fn default_agent_definition_version_for_runtime_agent(agent_id: RuntimeAgentIdDto) -> u32 {
+    runtime_agent_descriptor(agent_id).version
 }
 
 pub fn parse_agent_definition_extends_spec(
@@ -1003,7 +1005,13 @@ pub fn resolve_agent_definition_for_run(
         .and_then(JsonValue::as_str)
         .unwrap_or(&definition.base_capability_profile)
         .to_string();
-    let runtime_agent_id = runtime_agent_id_for_base_capability_profile(&base_capability_profile);
+    let runtime_agent_id = if definition.scope == "built_in" {
+        runtime_agent_id_for_builtin_definition_id(&definition.definition_id).unwrap_or_else(|| {
+            runtime_agent_id_for_base_capability_profile(&base_capability_profile)
+        })
+    } else {
+        runtime_agent_id_for_base_capability_profile(&base_capability_profile)
+    };
     let default_approval_mode = definition_default_approval_mode(&snapshot, runtime_agent_id);
     let allowed_approval_modes = definition_allowed_approval_modes(&snapshot, runtime_agent_id);
     Ok(AgentDefinitionRunSelection {
@@ -1940,6 +1948,19 @@ pub fn runtime_agent_id_for_base_capability_profile(profile: &str) -> RuntimeAge
         "repository_recon" => RuntimeAgentIdDto::Crawl,
         "agent_builder" => RuntimeAgentIdDto::AgentCreate,
         _ => RuntimeAgentIdDto::Ask,
+    }
+}
+
+fn runtime_agent_id_for_builtin_definition_id(definition_id: &str) -> Option<RuntimeAgentIdDto> {
+    match definition_id {
+        "ask" => Some(RuntimeAgentIdDto::Ask),
+        "plan" => Some(RuntimeAgentIdDto::Plan),
+        "engineer" => Some(RuntimeAgentIdDto::Engineer),
+        "debug" => Some(RuntimeAgentIdDto::Debug),
+        "crawl" => Some(RuntimeAgentIdDto::Crawl),
+        "agent_create" => Some(RuntimeAgentIdDto::AgentCreate),
+        "generalist" => Some(RuntimeAgentIdDto::Generalist),
+        _ => None,
     }
 }
 

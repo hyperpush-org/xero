@@ -2,11 +2,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CsvPreview,
+  HtmlPreview,
   ImagePreview,
   MarkdownPreview,
   MediaPreview,
   PdfPreview,
-  PreviewUnavailablePanel,
   SvgTextPreview,
   UnsupportedFilePanel,
   parseDelimitedText,
@@ -129,6 +129,11 @@ describe('file renderers', () => {
               path: '/docs/logo.png',
               previewUrl: 'project-asset://rust-logo',
             },
+            {
+              source: './missing.png',
+              path: '/docs/missing.png',
+              previewUrl: null,
+            },
           ],
         }}
         onResolveAssetPreviewUrl={resolveAssetPreviewUrl}
@@ -138,6 +143,37 @@ describe('file renderers', () => {
     expect(await screen.findByAltText('safe')).toHaveAttribute('src', 'project-asset://rust-logo')
     expect(resolveAssetPreviewUrl).not.toHaveBeenCalled()
     expect(screen.getByText(/Image unavailable:/)).toHaveTextContent('./missing.png')
+    expect(screen.getByRole('status')).toHaveTextContent('saved image reference')
+  })
+
+  it('keeps saved Markdown asset refs while resolving unsaved image edits predictably', async () => {
+    const resolveAssetPreviewUrl = vi.fn(async (path: string) => `project-asset://preview${path}`)
+
+    render(
+      <MarkdownPreview
+        filePath="/docs/guide.md"
+        text="![saved](./logo.png)\n\n![new](./new-logo.png)"
+        preview={{
+          kind: 'markdown',
+          assetRefs: [
+            {
+              source: './logo.png',
+              path: '/docs/logo.png',
+              previewUrl: 'project-asset://rust-logo',
+            },
+          ],
+        }}
+        onResolveAssetPreviewUrl={resolveAssetPreviewUrl}
+      />,
+    )
+
+    expect(await screen.findByAltText('saved')).toHaveAttribute('src', 'project-asset://rust-logo')
+    await waitFor(() => expect(resolveAssetPreviewUrl).toHaveBeenCalledWith('/docs/new-logo.png'))
+    expect(resolveAssetPreviewUrl).toHaveBeenCalledTimes(1)
+    expect(await screen.findByAltText('new')).toHaveAttribute(
+      'src',
+      'project-asset://preview/docs/new-logo.png',
+    )
   })
 
   it('renders CSV tables and keeps parser limits deterministic for quoted delimited text', () => {
@@ -185,7 +221,7 @@ describe('file renderers', () => {
     expect(screen.queryByText('fallback')).not.toBeInTheDocument()
   })
 
-  it('renders PDF, audio, video, HTML placeholder, and unsupported file states with safe actions', () => {
+  it('renders PDF, audio, video, HTML preview, and unsupported file states with safe actions', async () => {
     const onCopyPath = vi.fn()
     const onOpenExternal = vi.fn()
     const { rerender } = render(
@@ -227,10 +263,32 @@ describe('file renderers', () => {
       'project-asset://video-token',
     )
 
-    rerender(<PreviewUnavailablePanel rendererKind="html" filePath="/index.html" />)
-    expect(screen.getByTestId('text-preview-placeholder:html')).toHaveTextContent(
-      'HTML preview is not available yet',
+    const resolveAssetPreviewUrl = vi.fn(async (path: string) => {
+      if (path === '/assets/logo.png') return 'project-asset://preview/assets/logo.png'
+      return null
+    })
+    rerender(
+      <HtmlPreview
+        filePath="/index.html"
+        text={[
+          '<!doctype html>',
+          '<button onclick="alert(1)">Run</button>',
+          '<script>window.xeroUnsafe = true</script>',
+          '<img alt="Logo" src="./assets/logo.png">',
+          '<img alt="Missing" src="./missing.png">',
+        ].join('\n')}
+        onResolveAssetPreviewUrl={resolveAssetPreviewUrl}
+      />,
     )
+    const htmlPreview = screen.getByTestId('html-preview')
+    const iframe = htmlPreview.querySelector('iframe')
+    expect(iframe).toHaveAttribute('sandbox', '')
+    await waitFor(() => expect(resolveAssetPreviewUrl).toHaveBeenCalledWith('/assets/logo.png'))
+    expect(iframe?.getAttribute('srcdoc')).not.toContain('<script>')
+    expect(iframe?.getAttribute('srcdoc')).not.toContain('onclick')
+    expect(iframe?.getAttribute('srcdoc')).toContain('project-asset://preview/assets/logo.png')
+    expect(screen.getByRole('status')).toHaveTextContent('Removed 1 blocked element')
+    expect(screen.getByRole('status')).toHaveTextContent('Image unavailable: ./missing.png')
 
     rerender(
       <UnsupportedFilePanel

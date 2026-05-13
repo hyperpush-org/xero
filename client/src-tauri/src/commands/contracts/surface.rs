@@ -34,6 +34,7 @@ pub const GET_REPOSITORY_STATUS_COMMAND: &str = "get_repository_status";
 pub const GET_REPOSITORY_DIFF_COMMAND: &str = "get_repository_diff";
 pub const APPLY_SELECTIVE_UNDO_COMMAND: &str = "apply_selective_undo";
 pub const APPLY_SESSION_ROLLBACK_COMMAND: &str = "apply_session_rollback";
+pub const GIT_REVERT_PATCH_COMMAND: &str = "git_revert_patch";
 pub const GIT_GENERATE_COMMIT_MESSAGE_COMMAND: &str = "git_generate_commit_message";
 pub const WORKSPACE_INDEX_COMMAND: &str = "workspace_index";
 pub const WORKSPACE_STATUS_COMMAND: &str = "workspace_status";
@@ -117,6 +118,7 @@ pub const REGISTERED_COMMAND_NAMES: &[&str] = &[
     GET_REPOSITORY_DIFF_COMMAND,
     APPLY_SELECTIVE_UNDO_COMMAND,
     APPLY_SESSION_ROLLBACK_COMMAND,
+    GIT_REVERT_PATCH_COMMAND,
     WORKSPACE_INDEX_COMMAND,
     WORKSPACE_STATUS_COMMAND,
     WORKSPACE_QUERY_COMMAND,
@@ -284,6 +286,16 @@ pub struct ListProjectFilesRequestDto {
     pub project_id: String,
     #[serde(default = "default_project_tree_path")]
     pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListProjectFileIndexRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub include_hidden: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -473,6 +485,20 @@ pub struct WriteProjectFileRequestDto {
     pub project_id: String,
     pub path: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_content_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_modified_at: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StatProjectFilesRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -759,6 +785,13 @@ pub struct GitPathsRequestDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GitRevertPatchRequestDto {
+    pub project_id: String,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GitCommitRequestDto {
     pub project_id: String,
     pub message: String,
@@ -858,6 +891,27 @@ pub struct ListProjectFilesResponseDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectFileIndexEntryDto {
+    pub path: String,
+    pub name: String,
+    pub parent_path: String,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListProjectFileIndexResponseDto {
+    pub project_id: String,
+    pub files: Vec<ProjectFileIndexEntryDto>,
+    pub total_files: u32,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_budget: Option<PayloadBudgetDiagnosticDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -935,6 +989,45 @@ pub enum ReadProjectFileResponseDto {
 pub struct WriteProjectFileResponseDto {
     pub project_id: String,
     pub path: String,
+    pub byte_length: u64,
+    pub modified_at: String,
+    pub content_hash: String,
+    pub mime_type: String,
+    pub renderer_kind: ProjectFileRendererKindDto,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<ProjectFilePreviewDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProjectFileStatDto {
+    File {
+        path: String,
+        byte_length: u64,
+        modified_at: String,
+        content_hash: String,
+        mime_type: String,
+        renderer_kind: ProjectFileRendererKindDto,
+    },
+    Directory {
+        path: String,
+        modified_at: String,
+    },
+    Missing {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StatProjectFilesResponseDto {
+    pub project_id: String,
+    pub files: Vec<ProjectFileStatDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -199,6 +199,8 @@ import {
   createProjectEntryRequestSchema,
   createProjectEntryResponseSchema,
   deleteProjectEntryResponseSchema,
+  listProjectFileIndexRequestSchema,
+  listProjectFileIndexResponseSchema,
   listProjectFilesRequestSchema,
   listProjectFilesResponseSchema,
   listProjectsResponseSchema,
@@ -220,8 +222,16 @@ import {
   repositoryStatusChangedPayloadSchema,
   repositoryStatusResponseSchema,
   revokeProjectAssetTokensRequestSchema,
+  runProjectTypecheckRequestSchema,
+  projectTypecheckResponseSchema,
+  formatProjectDocumentRequestSchema,
+  formatProjectDocumentResponseSchema,
+  runProjectLintRequestSchema,
+  projectLintResponseSchema,
   searchProjectRequestSchema,
   searchProjectResponseSchema,
+  statProjectFilesRequestSchema,
+  statProjectFilesResponseSchema,
   workspaceExplainRequestSchema,
   workspaceExplainResponseSchema,
   workspaceIndexRequestSchema,
@@ -241,6 +251,7 @@ import {
   gitPathsRequestSchema,
   gitPullResponseSchema,
   gitPushResponseSchema,
+  gitRevertPatchRequestSchema,
   gitRemoteRequestSchema,
   type CreateProjectEntryRequestDto,
   type CreateProjectEntryResponseDto,
@@ -251,7 +262,10 @@ import {
   type GitFetchResponseDto,
   type GitPullResponseDto,
   type GitPushResponseDto,
+  type GitRevertPatchRequestDto,
   type ImportRepositoryResponseDto,
+  type ListProjectFileIndexRequestDto,
+  type ListProjectFileIndexResponseDto,
   type ListProjectFilesRequestDto,
   type ListProjectFilesResponseDto,
   type ListProjectsResponseDto,
@@ -273,8 +287,14 @@ import {
   type RepositoryStatusChangedPayloadDto,
   type RepositoryStatusResponseDto,
   type RevokeProjectAssetTokensRequestDto,
+  type RunProjectTypecheckRequestDto,
+  type FormatProjectDocumentRequestDto,
+  type FormatProjectDocumentResponseDto,
+  type RunProjectLintRequestDto,
+  type ProjectLintResponseDto,
   type SearchProjectRequestDto,
   type SearchProjectResponseDto,
+  type StatProjectFilesResponseDto,
   type WorkspaceExplainRequestDto,
   type WorkspaceExplainResponseDto,
   type WorkspaceIndexRequestDto,
@@ -283,8 +303,10 @@ import {
   type WorkspaceQueryRequestDto,
   type WorkspaceQueryResponseDto,
   type WriteAppUiStateRequestDto,
+  type WriteProjectFileRequestDto,
   type WriteProjectFileResponseDto,
   type WriteProjectUiStateRequestDto,
+  type ProjectTypecheckResponseDto,
 } from '@/src/lib/xero-model/project'
 export type { StartTargetDto } from '@/src/lib/xero-model/project'
 import {
@@ -547,14 +569,17 @@ const COMMANDS = {
   gitStagePaths: 'git_stage_paths',
   gitUnstagePaths: 'git_unstage_paths',
   gitDiscardChanges: 'git_discard_changes',
+  gitRevertPatch: 'git_revert_patch',
   gitCommit: 'git_commit',
   gitGenerateCommitMessage: 'git_generate_commit_message',
   gitFetch: 'git_fetch',
   gitPull: 'git_pull',
   gitPush: 'git_push',
+  listProjectFileIndex: 'list_project_file_index',
   listProjectFiles: 'list_project_files',
   readProjectFile: 'read_project_file',
   writeProjectFile: 'write_project_file',
+  statProjectFiles: 'stat_project_files',
   revokeProjectAssetTokens: 'revoke_project_asset_tokens',
   openProjectFileExternal: 'open_project_file_external',
   createProjectEntry: 'create_project_entry',
@@ -563,6 +588,9 @@ const COMMANDS = {
   deleteProjectEntry: 'delete_project_entry',
   searchProject: 'search_project',
   replaceInProject: 'replace_in_project',
+  runProjectTypecheck: 'run_project_typecheck',
+  formatProjectDocument: 'format_project_document',
+  runProjectLint: 'run_project_lint',
   workspaceIndex: 'workspace_index',
   workspaceStatus: 'workspace_status',
   workspaceQuery: 'workspace_query',
@@ -951,6 +979,11 @@ export interface XeroDictationSession {
   cancel: () => Promise<void>
 }
 
+export type WriteProjectFileOptions = Pick<
+  WriteProjectFileRequestDto,
+  'expectedContentHash' | 'expectedModifiedAt' | 'overwrite'
+>
+
 export interface XeroDesktopAdapter {
   isDesktopRuntime(): boolean
   pickRepositoryFolder(): Promise<string | null>
@@ -995,6 +1028,7 @@ export interface XeroDesktopAdapter {
   gitStagePaths(projectId: string, paths: string[]): Promise<void>
   gitUnstagePaths(projectId: string, paths: string[]): Promise<void>
   gitDiscardChanges(projectId: string, paths: string[]): Promise<void>
+  gitRevertPatch(request: GitRevertPatchRequestDto): Promise<void>
   gitCommit(projectId: string, message: string): Promise<GitCommitResponseDto>
   gitGenerateCommitMessage(
     request: GitGenerateCommitMessageRequestDto,
@@ -1002,9 +1036,16 @@ export interface XeroDesktopAdapter {
   gitFetch(projectId: string, remote?: string | null): Promise<GitFetchResponseDto>
   gitPull(projectId: string, remote?: string | null): Promise<GitPullResponseDto>
   gitPush(projectId: string, remote?: string | null): Promise<GitPushResponseDto>
+  listProjectFileIndex(request: ListProjectFileIndexRequestDto): Promise<ListProjectFileIndexResponseDto>
   listProjectFiles(projectId: string, path?: string): Promise<ListProjectFilesResponseDto>
   readProjectFile(projectId: string, path: string): Promise<ReadProjectFileResponseDto>
-  writeProjectFile(projectId: string, path: string, content: string): Promise<WriteProjectFileResponseDto>
+  writeProjectFile(
+    projectId: string,
+    path: string,
+    content: string,
+    options?: Partial<WriteProjectFileOptions>,
+  ): Promise<WriteProjectFileResponseDto>
+  statProjectFiles?(projectId: string, paths: string[]): Promise<StatProjectFilesResponseDto>
   revokeProjectAssetTokens?(projectId: string, paths?: string[]): Promise<void>
   openProjectFileExternal?(projectId: string, path: string): Promise<void>
   createProjectEntry(request: CreateProjectEntryRequestDto): Promise<CreateProjectEntryResponseDto>
@@ -1013,6 +1054,11 @@ export interface XeroDesktopAdapter {
   deleteProjectEntry(projectId: string, path: string): Promise<DeleteProjectEntryResponseDto>
   searchProject(request: SearchProjectRequestDto): Promise<SearchProjectResponseDto>
   replaceInProject(request: ReplaceInProjectRequestDto): Promise<ReplaceInProjectResponseDto>
+  runProjectTypecheck?(request: RunProjectTypecheckRequestDto): Promise<ProjectTypecheckResponseDto>
+  formatProjectDocument?(
+    request: FormatProjectDocumentRequestDto,
+  ): Promise<FormatProjectDocumentResponseDto>
+  runProjectLint?(request: RunProjectLintRequestDto): Promise<ProjectLintResponseDto>
   workspaceIndex(request: WorkspaceIndexRequestDto): Promise<WorkspaceIndexResponseDto>
   workspaceStatus(projectId: string): Promise<WorkspaceIndexStatusDto>
   workspaceQuery(request: WorkspaceQueryRequestDto): Promise<WorkspaceQueryResponseDto>
@@ -2246,6 +2292,11 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     await invokeRaw(COMMANDS.gitDiscardChanges, { request })
   },
 
+  async gitRevertPatch(request) {
+    const parsedRequest = gitRevertPatchRequestSchema.parse(request)
+    await invokeRaw(COMMANDS.gitRevertPatch, { request: parsedRequest })
+  },
+
   gitCommit(projectId, message) {
     const request = gitCommitRequestSchema.parse({ projectId, message })
     return invokeTyped(COMMANDS.gitCommit, gitCommitResponseSchema, { request })
@@ -2275,6 +2326,13 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTyped(COMMANDS.gitPush, gitPushResponseSchema, { request })
   },
 
+  listProjectFileIndex(request) {
+    const parsedRequest = listProjectFileIndexRequestSchema.parse(request)
+    return invokeTypedDeduped(COMMANDS.listProjectFileIndex, listProjectFileIndexResponseSchema, {
+      request: parsedRequest,
+    })
+  },
+
   listProjectFiles(projectId, path = '/') {
     const request: ListProjectFilesRequestDto = listProjectFilesRequestSchema.parse({ projectId, path })
     return invokeTypedDeduped(COMMANDS.listProjectFiles, listProjectFilesResponseSchema, {
@@ -2289,9 +2347,16 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     })
   },
 
-  writeProjectFile(projectId, path, content) {
-    const request = writeProjectFileRequestSchema.parse({ projectId, path, content })
+  writeProjectFile(projectId, path, content, options = {}) {
+    const request = writeProjectFileRequestSchema.parse({ projectId, path, content, ...options })
     return invokeTyped(COMMANDS.writeProjectFile, writeProjectFileResponseSchema, {
+      request,
+    })
+  },
+
+  statProjectFiles(projectId, paths) {
+    const request = statProjectFilesRequestSchema.parse({ projectId, paths })
+    return invokeTypedDeduped(COMMANDS.statProjectFiles, statProjectFilesResponseSchema, {
       request,
     })
   },
@@ -2347,6 +2412,27 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   replaceInProject(request) {
     const parsed = replaceInProjectRequestSchema.parse(request)
     return invokeTyped(COMMANDS.replaceInProject, replaceInProjectResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  runProjectTypecheck(request) {
+    const parsed = runProjectTypecheckRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.runProjectTypecheck, projectTypecheckResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  formatProjectDocument(request) {
+    const parsed = formatProjectDocumentRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.formatProjectDocument, formatProjectDocumentResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  runProjectLint(request) {
+    const parsed = runProjectLintRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.runProjectLint, projectLintResponseSchema, {
       request: parsed,
     })
   },

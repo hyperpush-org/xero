@@ -16,6 +16,8 @@ pub mod development_storage;
 pub mod dictation;
 pub mod dock_icon;
 pub mod doctor_report;
+pub mod editor_diagnostics;
+pub mod editor_workflows;
 pub mod emulator;
 pub mod environment_discovery;
 pub mod environment_user_tools;
@@ -142,6 +144,17 @@ pub use dictation::{
 };
 pub use dock_icon::set_theme_dock_icon;
 pub use doctor_report::run_doctor_report;
+pub use editor_diagnostics::{
+    run_project_typecheck, EditorLspInstallCommandDto, EditorLspInstallSuggestionDto,
+    EditorLspServerStatusDto, ProjectDiagnosticDto, ProjectDiagnosticSeverityDto,
+    ProjectTypecheckResponseDto, ProjectTypecheckStatusDto, RunProjectTypecheckRequestDto,
+};
+pub use editor_workflows::{
+    format_project_document, run_project_lint, FormatProjectDocumentRangeDto,
+    FormatProjectDocumentRequestDto, FormatProjectDocumentResponseDto,
+    FormatProjectDocumentStatusDto, ProjectLintResponseDto, ProjectLintStatusDto,
+    RunProjectLintRequestDto,
+};
 pub use emulator::{
     emulator_android_provision, emulator_android_provision_status, emulator_input,
     emulator_ios_open_accessibility_settings, emulator_ios_request_ax_permission,
@@ -165,8 +178,8 @@ pub use get_runtime_run::get_runtime_run;
 pub use get_runtime_session::get_runtime_session;
 pub use git_commit_message::git_generate_commit_message;
 pub use git_operations::{
-    git_commit, git_discard_changes, git_fetch, git_pull, git_push, git_stage_paths,
-    git_unstage_paths,
+    git_commit, git_discard_changes, git_fetch, git_pull, git_push, git_revert_patch,
+    git_stage_paths, git_unstage_paths,
 };
 pub use import_mcp_servers::import_mcp_servers;
 pub use import_repository::import_repository;
@@ -182,8 +195,9 @@ pub use logout_runtime_session::logout_runtime_session;
 pub use platform::desktop_platform;
 pub use project_assets::{revoke_project_asset_tokens, ProjectAssetState};
 pub use project_files::{
-    create_project_entry, delete_project_entry, list_project_files, move_project_entry,
-    open_project_file_external, read_project_file, rename_project_entry, write_project_file,
+    create_project_entry, delete_project_entry, list_project_file_index, list_project_files,
+    move_project_entry, open_project_file_external, read_project_file, rename_project_entry,
+    stat_project_files, write_project_file,
 };
 pub use project_records::{
     delete_project_context_record, list_project_context_records, supersede_project_context_record,

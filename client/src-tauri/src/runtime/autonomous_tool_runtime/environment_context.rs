@@ -300,7 +300,9 @@ fn environment_context_message(
             format!("Returned {tool_count} requested environment tool fact(s).{freshness}")
         }
         AutonomousEnvironmentContextAction::Category => {
-            format!("Returned {tool_count} environment tool fact(s) for the requested category.{freshness}")
+            format!(
+                "Returned {tool_count} environment tool fact(s) for the requested category.{freshness}"
+            )
         }
         AutonomousEnvironmentContextAction::Capability => format!(
             "Returned {capability_count} requested environment capability fact(s).{freshness}"

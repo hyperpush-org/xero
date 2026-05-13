@@ -2186,10 +2186,7 @@ fn build_runtime_memory_extraction_source(
     let mut source_item_ids = Vec::new();
     let mut text = format!(
         "Review this Xero owned-agent run for durable memory candidates. Run {} provider={} model={} status={:?}.\n",
-        snapshot.run.run_id,
-        snapshot.run.provider_id,
-        snapshot.run.model_id,
-        snapshot.run.status,
+        snapshot.run.run_id, snapshot.run.provider_id, snapshot.run.model_id, snapshot.run.status,
     );
     text.push_str("Code history operation rows are provenance: do not promote implementation details from turns before an undo or session return as durable facts unless the memory text explicitly notes the history operation and cites its provenance.\n");
     for item in &transcript.items {
@@ -3427,6 +3424,30 @@ impl AgentWorkspaceGuard {
         );
     }
 
+    pub(crate) fn record_persisted_observations(
+        &mut self,
+        snapshot: &AgentRunSnapshotRecord,
+    ) -> CommandResult<()> {
+        for tool_call in snapshot.tool_calls.iter().filter(|tool_call| {
+            tool_call.state == AgentToolCallState::Succeeded && tool_call.result_json.is_some()
+        }) {
+            let Some(result_json) = tool_call.result_json.as_deref() else {
+                continue;
+            };
+            let Ok(tool_result) = serde_json::from_str::<AutonomousToolResult>(result_json) else {
+                continue;
+            };
+            self.record_persisted_output_observation(&tool_result.output)?;
+        }
+        for file_change in &snapshot.file_changes {
+            self.record_persisted_path_hash(
+                file_change.path.as_str(),
+                file_change.new_hash.as_deref(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_code_workspace_epoch_intent(
         &self,
         repo_root: &Path,
@@ -3527,9 +3548,7 @@ impl AgentWorkspaceGuard {
                         CommandErrorClass::PolicyDenied,
                         format!(
                             "Xero refused to modify `{path_key}` because the file changed after the owned agent last observed it (last observed hash: {}).",
-                            observed_hash
-                                .as_deref()
-                                .unwrap_or("absent")
+                            observed_hash.as_deref().unwrap_or("absent")
                         ),
                         false,
                     ));
@@ -3596,6 +3615,50 @@ impl AgentWorkspaceGuard {
         let hash = file_hash_if_present(repo_root, &path_key)?;
         self.observed_hashes.insert(path_key, hash);
         Ok(())
+    }
+
+    fn record_persisted_output_observation(
+        &mut self,
+        output: &AutonomousToolOutput,
+    ) -> CommandResult<()> {
+        match output {
+            AutonomousToolOutput::Read(output) => {
+                self.record_persisted_path_hash(output.path.as_str(), output.sha256.as_deref());
+            }
+            AutonomousToolOutput::Hash(output) => {
+                self.record_persisted_path_hash(output.path.as_str(), Some(output.sha256.as_str()));
+            }
+            AutonomousToolOutput::Edit(output) => {
+                self.record_persisted_path_hash(output.path.as_str(), output.new_hash.as_deref());
+            }
+            AutonomousToolOutput::Patch(output) => {
+                if output.files.is_empty() {
+                    self.record_persisted_path_hash(
+                        output.path.as_str(),
+                        output.new_hash.as_deref(),
+                    );
+                } else {
+                    for file in &output.files {
+                        self.record_persisted_path_hash(file.path.as_str(), Some(&file.new_hash));
+                    }
+                }
+            }
+            AutonomousToolOutput::AgentCoordination(output) => {
+                if let Some(workspace_epoch) = output.code_workspace_epoch {
+                    self.record_code_workspace_epoch(workspace_epoch);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn record_persisted_path_hash(&mut self, path: &str, hash: Option<&str>) {
+        let Some(path_key) = relative_path_key(path) else {
+            return;
+        };
+        self.observed_hashes
+            .insert(path_key, hash.map(ToOwned::to_owned));
     }
 }
 
@@ -3931,7 +3994,9 @@ mod tests {
             );
             let contract = handoff_completeness_contract(
                 &snapshot,
-                Some("Completed storage hardening. Verification passed. Remaining risk: run final suite."),
+                Some(
+                    "Completed storage hardening. Verification passed. Remaining risk: run final suite.",
+                ),
                 &json!(["client/src-tauri/src/db/project_store/storage_observability.rs"]),
             );
 

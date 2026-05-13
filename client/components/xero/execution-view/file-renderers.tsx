@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -52,6 +52,7 @@ const IMAGE_ZOOM_STEP = 0.25
 const CSV_PREVIEW_ROW_LIMIT = 1_000
 const CSV_PREVIEW_COLUMN_LIMIT = 80
 const MARKDOWN_CODE_BLOCK_HIGHLIGHT_BYTE_LIMIT = 96 * 1024
+const HTML_PREVIEW_IMAGE_LIMIT = 40
 
 export type ImageScaleMode = 'fit' | 'actual'
 
@@ -73,12 +74,35 @@ export interface ImageDimensions {
 }
 
 export interface ResolveAssetPreviewUrl {
-  (projectPath: string): Promise<string | null>
+  (projectPath: string): Promise<AssetPreviewResolution | string | null>
+}
+
+export type AssetPreviewIssueReason =
+  | 'missing'
+  | 'oversized'
+  | 'unsupportedType'
+  | 'blocked'
+  | 'unavailable'
+
+export interface AssetPreviewResolution {
+  path: string
+  url: string | null
+  reason?: AssetPreviewIssueReason
+  mimeType?: string | null
+  byteLength?: number
+  rendererKind?: string | null
+  message?: string
 }
 
 interface PreviewFileActions {
   onCopyPath?: (path: string) => void
   onOpenExternal?: (path: string) => void
+}
+
+interface PreviewDiagnostic {
+  code: string
+  message: string
+  severity: 'info' | 'warning' | 'error'
 }
 
 export function ImagePreview({
@@ -351,20 +375,27 @@ export function SvgTextPreview({
 export function MarkdownPreview({
   filePath,
   preview,
+  sourceLine,
   text,
   onResolveAssetPreviewUrl,
 }: {
   filePath: string
   preview?: ProjectFileMarkdownPreviewDto | null
+  sourceLine?: number
   text: string
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
 }) {
+  const scrollRootRef = useRef<HTMLDivElement | null>(null)
   const markdownAssetsBySource = useMemo(
     () =>
       preview
         ? new Map(preview.assetRefs.map((assetRef) => [assetRef.source, assetRef]))
         : null,
     [preview],
+  )
+  const previewDiagnostics = useMemo(
+    () => buildMarkdownPreviewDiagnostics(filePath, text, preview),
+    [filePath, preview, text],
   )
   const components = useMemo<Components>(
     () => createMarkdownComponents(filePath, markdownAssetsBySource, onResolveAssetPreviewUrl),
@@ -381,8 +412,34 @@ export function MarkdownPreview({
     )
   }
 
+  useEffect(() => {
+    if (!sourceLine || sourceLine < 1) return
+    const root = scrollRootRef.current
+    const viewport = root?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    if (!viewport) return
+    const sourceBlocks = Array.from(
+      viewport.querySelectorAll<HTMLElement>('[data-source-line]'),
+    )
+    let target: HTMLElement | null = null
+    let targetLine = 0
+    for (const block of sourceBlocks) {
+      const line = Number(block.dataset.sourceLine)
+      if (!Number.isFinite(line) || line < 1 || line > sourceLine || line < targetLine) {
+        continue
+      }
+      target = block
+      targetLine = line
+    }
+    if (!target) return
+    viewport.scrollTop = Math.max(0, target.offsetTop - 24)
+  }, [sourceLine, text])
+
   return (
-    <ScrollArea className="min-h-0 flex-1 bg-background" data-testid="markdown-preview">
+    <ScrollArea
+      ref={scrollRootRef}
+      className="min-h-0 flex-1 bg-background"
+      data-testid="markdown-preview"
+    >
       <article
         aria-label={`Markdown preview of ${filePath}`}
         className={cn(
@@ -390,6 +447,7 @@ export function MarkdownPreview({
           'prose-xero',
         )}
       >
+        <PreviewDiagnosticsPanel diagnostics={previewDiagnostics} />
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={components}
@@ -400,6 +458,59 @@ export function MarkdownPreview({
         </ReactMarkdown>
       </article>
     </ScrollArea>
+  )
+}
+
+export function HtmlPreview({
+  filePath,
+  text,
+  onResolveAssetPreviewUrl,
+}: {
+  filePath: string
+  text: string
+  onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
+}) {
+  const [state, setState] = useState<{
+    diagnostics: PreviewDiagnostic[]
+    srcDoc: string
+  }>(() => buildHtmlPreviewDocument(text, filePath))
+
+  useEffect(() => {
+    let cancelled = false
+    const build = async () => {
+      const next = await buildHtmlPreviewDocumentAsync(text, filePath, onResolveAssetPreviewUrl)
+      if (!cancelled) {
+        setState(next)
+      }
+    }
+    void build()
+    return () => {
+      cancelled = true
+    }
+  }, [filePath, onResolveAssetPreviewUrl, text])
+
+  if (text.trim().length === 0) {
+    return (
+      <PreviewEmptyState
+        testId="html-preview"
+        title="Empty HTML file"
+        description="Switch to Source to add markup."
+      />
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-background" data-testid="html-preview">
+      <PreviewDiagnosticsPanel diagnostics={state.diagnostics} />
+      <iframe
+        title={`HTML preview of ${filePath}`}
+        aria-label={`HTML preview of ${filePath}`}
+        className="min-h-0 flex-1 border-0 bg-white"
+        referrerPolicy="no-referrer"
+        sandbox=""
+        srcDoc={state.srcDoc}
+      />
+    </div>
   )
 }
 
@@ -706,6 +817,305 @@ export function PreviewUnavailablePanel({
   )
 }
 
+function PreviewDiagnosticsPanel({ diagnostics }: { diagnostics: PreviewDiagnostic[] }) {
+  if (diagnostics.length === 0) {
+    return null
+  }
+
+  const visibleDiagnostics = diagnostics.slice(0, 3)
+  const hiddenCount = diagnostics.length - visibleDiagnostics.length
+  const hasError = diagnostics.some((diagnostic) => diagnostic.severity === 'error')
+
+  return (
+    <div
+      className={cn(
+        'mb-4 flex flex-wrap items-start gap-2 rounded-md border px-3 py-2 text-[11px] leading-5',
+        hasError
+          ? 'border-destructive/30 bg-destructive/5 text-destructive'
+          : 'border-border bg-secondary/20 text-muted-foreground',
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1 space-y-1">
+        {visibleDiagnostics.map((diagnostic) => (
+          <p key={`${diagnostic.code}:${diagnostic.message}`} className="break-words">
+            {diagnostic.message}
+          </p>
+        ))}
+      </div>
+      {hiddenCount > 0 ? (
+        <Badge variant="outline" className="shrink-0 text-[10px]">
+          +{hiddenCount}
+        </Badge>
+      ) : null}
+    </div>
+  )
+}
+
+function buildMarkdownPreviewDiagnostics(
+  filePath: string,
+  text: string,
+  preview?: ProjectFileMarkdownPreviewDto | null,
+): PreviewDiagnostic[] {
+  const diagnostics: PreviewDiagnostic[] = []
+  const unavailableSavedAssets = preview?.assetRefs.filter((assetRef) => !assetRef.previewUrl) ?? []
+  if (unavailableSavedAssets.length > 0) {
+    diagnostics.push({
+      code: 'markdown.assets.unavailable',
+      severity: 'warning',
+      message: `${pluralize(unavailableSavedAssets.length, 'saved image reference')} could not be previewed. Check that the path exists, the file is an image, and the asset is within the preview size limit.`,
+    })
+  }
+
+  const imageReferences = extractMarkdownImageReferences(text)
+  const blockedRelativeImages = imageReferences.filter(
+    (reference) => !sanitizeExternalImageUrl(reference) && !normalizeProjectReference(filePath, reference),
+  )
+  if (blockedRelativeImages.length > 0) {
+    diagnostics.push({
+      code: 'markdown.assets.blocked',
+      severity: 'warning',
+      message: `${pluralize(blockedRelativeImages.length, 'image reference')} could not be resolved inside this project.`,
+    })
+  }
+
+  if (containsMarkdownHtml(text)) {
+    diagnostics.push({
+      code: 'markdown.html.omitted',
+      severity: 'info',
+      message: 'Embedded HTML is omitted from Markdown preview for safety.',
+    })
+  }
+
+  return diagnostics
+}
+
+function buildHtmlPreviewDocument(
+  text: string,
+  filePath: string,
+): { diagnostics: PreviewDiagnostic[]; srcDoc: string } {
+  const { diagnostics, doc } = sanitizeHtmlPreviewDocument(text, filePath)
+  return {
+    diagnostics,
+    srcDoc: serializeHtmlPreviewDocument(doc, text),
+  }
+}
+
+async function buildHtmlPreviewDocumentAsync(
+  text: string,
+  filePath: string,
+  onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl,
+): Promise<{ diagnostics: PreviewDiagnostic[]; srcDoc: string }> {
+  const { diagnostics, doc, imageSources } = sanitizeHtmlPreviewDocument(text, filePath)
+  if (!onResolveAssetPreviewUrl || imageSources.length === 0) {
+    return {
+      diagnostics,
+      srcDoc: serializeHtmlPreviewDocument(doc, text),
+    }
+  }
+
+  const limitedImageSources = imageSources.slice(0, HTML_PREVIEW_IMAGE_LIMIT)
+  if (imageSources.length > HTML_PREVIEW_IMAGE_LIMIT) {
+    diagnostics.push({
+      code: 'html.assets.limited',
+      severity: 'warning',
+      message: `Resolved the first ${HTML_PREVIEW_IMAGE_LIMIT.toLocaleString()} image references. Extra images stay inert until the preview is saved or simplified.`,
+    })
+  }
+
+  const resolutions = await Promise.all(
+    limitedImageSources.map(async (imageSource) => {
+      const projectPath = normalizeProjectReference(filePath, imageSource.source)
+      if (!projectPath) {
+        return {
+          imageSource,
+          resolution: {
+            path: imageSource.source,
+            reason: 'blocked' as const,
+            url: null,
+          },
+        }
+      }
+
+      try {
+        return {
+          imageSource,
+          resolution: normalizeAssetPreviewResolution(
+            projectPath,
+            await onResolveAssetPreviewUrl(projectPath),
+          ),
+        }
+      } catch (error) {
+        return {
+          imageSource,
+          resolution: {
+            path: projectPath,
+            reason: 'missing' as const,
+            url: null,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        }
+      }
+    }),
+  )
+
+  for (const { imageSource, resolution } of resolutions) {
+    if (resolution.url) {
+      imageSource.element.setAttribute('src', resolution.url)
+      continue
+    }
+
+    imageSource.element.removeAttribute('src')
+    imageSource.element.setAttribute('data-xero-preview-missing-src', imageSource.source)
+    diagnostics.push({
+      code: `html.assets.${resolution.reason ?? 'unavailable'}`,
+      severity: 'warning',
+      message: `Image unavailable: ${imageSource.source} (${assetPreviewIssueLabel(resolution)}).`,
+    })
+  }
+
+  return {
+    diagnostics,
+    srcDoc: serializeHtmlPreviewDocument(doc, text),
+  }
+}
+
+function sanitizeHtmlPreviewDocument(
+  text: string,
+  _filePath: string,
+): {
+  diagnostics: PreviewDiagnostic[]
+  doc: Document | null
+  imageSources: Array<{ element: HTMLImageElement; source: string }>
+} {
+  if (typeof DOMParser === 'undefined') {
+    return {
+      diagnostics: [
+        {
+          code: 'html.parser.unavailable',
+          severity: 'warning',
+          message: 'HTML preview is rendered as escaped text because this WebView has no DOM parser.',
+        },
+      ],
+      doc: null,
+      imageSources: [],
+    }
+  }
+
+  const diagnostics: PreviewDiagnostic[] = []
+  const doc = new DOMParser().parseFromString(text, 'text/html')
+  let removedElements = 0
+  let removedAttributes = 0
+
+  for (const selector of ['script', 'iframe', 'object', 'embed', 'applet', 'base']) {
+    for (const element of Array.from(doc.querySelectorAll(selector))) {
+      element.remove()
+      removedElements += 1
+    }
+  }
+
+  for (const element of Array.from(doc.querySelectorAll('meta[http-equiv]'))) {
+    if (element.getAttribute('http-equiv')?.trim().toLowerCase() === 'refresh') {
+      element.remove()
+      removedElements += 1
+    }
+  }
+
+  for (const element of Array.from(doc.querySelectorAll('*'))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const attributeName = attribute.name.toLowerCase()
+      if (
+        attributeName.startsWith('on') ||
+        attributeName === 'srcdoc' ||
+        (attributeName === 'style' && containsUnsafeCssUrl(attribute.value)) ||
+        (HTML_URL_ATTRIBUTES.has(attributeName) &&
+          !isSafeHtmlAttributeUrl(attribute.value, attributeName, element.tagName))
+      ) {
+        element.removeAttribute(attribute.name)
+        removedAttributes += 1
+      }
+    }
+  }
+
+  if (removedElements > 0 || removedAttributes > 0) {
+    diagnostics.push({
+      code: 'html.sanitized',
+      severity: 'warning',
+      message: `Removed ${pluralize(removedElements, 'blocked element')} and ${pluralize(removedAttributes, 'unsafe attribute')} from the preview.`,
+    })
+  }
+
+  const imageSources = Array.from(doc.querySelectorAll<HTMLImageElement>('img[src]'))
+    .map((element) => ({
+      element,
+      source: element.getAttribute('src')?.trim() ?? '',
+    }))
+    .filter(({ source }) => source.length > 0 && !sanitizeExternalImageUrl(source) && isRelativeReference(source))
+
+  injectHtmlPreviewStyles(doc)
+
+  return { diagnostics, doc, imageSources }
+}
+
+function injectHtmlPreviewStyles(doc: Document): void {
+  const style = doc.createElement('style')
+  style.setAttribute('data-xero-preview', 'true')
+  style.textContent = [
+    ':root { color-scheme: light dark; }',
+    'html, body { min-height: 100%; }',
+    'body { margin: 0; padding: 24px; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; }',
+    'img, video, canvas, svg { max-width: 100%; height: auto; }',
+    '[data-xero-preview-missing-src] { display: inline-block; min-width: 120px; min-height: 36px; border: 1px dashed #94a3b8; background: #f8fafc; color: #475569; }',
+  ].join('\n')
+  doc.head.prepend(style)
+}
+
+function serializeHtmlPreviewDocument(doc: Document | null, fallbackText: string): string {
+  if (!doc?.documentElement) {
+    return `<!doctype html><html><body><pre>${escapeHtml(fallbackText)}</pre></body></html>`
+  }
+  return `<!doctype html>${doc.documentElement.outerHTML}`
+}
+
+function normalizeAssetPreviewResolution(
+  path: string,
+  result: AssetPreviewResolution | string | null,
+): AssetPreviewResolution {
+  if (typeof result === 'string') {
+    return {
+      path,
+      url: result.trim().length > 0 ? result : null,
+      reason: result.trim().length > 0 ? undefined : 'unavailable',
+    }
+  }
+
+  if (!result) {
+    return {
+      path,
+      reason: 'unavailable',
+      url: null,
+    }
+  }
+
+  return {
+    ...result,
+    path: result.path || path,
+  }
+}
+
+function assetPreviewIssueLabel(issue: AssetPreviewResolution): string {
+  if (issue.message) return issue.message
+  if (issue.reason === 'oversized') return 'too large for preview'
+  if (issue.reason === 'unsupportedType') {
+    return issue.mimeType ? `unsupported type ${issue.mimeType}` : 'unsupported type'
+  }
+  if (issue.reason === 'blocked') return 'outside the project or blocked by preview safety'
+  if (issue.reason === 'missing') return 'file not found'
+  return 'not previewable'
+}
+
 interface ParsedDelimitedText {
   maxColumns: number
   rows: string[][]
@@ -838,19 +1248,22 @@ function createMarkdownComponents(
         </a>
       )
     },
-    blockquote({ children }) {
+    blockquote({ children, node }) {
       return (
-        <blockquote className="my-3 border-l-2 border-primary/40 pl-3 text-muted-foreground">
+        <blockquote
+          className="my-3 border-l-2 border-primary/40 pl-3 text-muted-foreground"
+          data-source-line={sourceLineFromMarkdownNode(node)}
+        >
           {children}
         </blockquote>
       )
     },
-    code({ children, className }) {
+    code({ children, className, node }) {
       const code = String(children).replace(/\n$/, '')
       const language = /language-([^\s]+)/.exec(className ?? '')?.[1] ?? null
 
       if (language) {
-        return <CodePreviewBlock code={code} lang={language} />
+        return <CodePreviewBlock code={code} lang={language} sourceLine={sourceLineFromMarkdownNode(node)} />
       }
 
       return (
@@ -859,48 +1272,100 @@ function createMarkdownComponents(
         </code>
       )
     },
-    h1({ children }) {
-      return <h1 className="mb-4 mt-0 text-[24px] font-semibold leading-tight">{children}</h1>
+    h1({ children, node }) {
+      return (
+        <h1
+          className="mb-4 mt-0 text-[24px] font-semibold leading-tight"
+          data-source-line={sourceLineFromMarkdownNode(node)}
+        >
+          {children}
+        </h1>
+      )
     },
-    h2({ children }) {
-      return <h2 className="mb-3 mt-6 border-b border-border pb-1 text-[19px] font-semibold">{children}</h2>
+    h2({ children, node }) {
+      return (
+        <h2
+          className="mb-3 mt-6 border-b border-border pb-1 text-[19px] font-semibold"
+          data-source-line={sourceLineFromMarkdownNode(node)}
+        >
+          {children}
+        </h2>
+      )
     },
-    h3({ children }) {
-      return <h3 className="mb-2 mt-5 text-[16px] font-semibold">{children}</h3>
+    h3({ children, node }) {
+      return (
+        <h3
+          className="mb-2 mt-5 text-[16px] font-semibold"
+          data-source-line={sourceLineFromMarkdownNode(node)}
+        >
+          {children}
+        </h3>
+      )
     },
-    h4({ children }) {
-      return <h4 className="mb-2 mt-4 text-[14px] font-semibold">{children}</h4>
+    h4({ children, node }) {
+      return (
+        <h4
+          className="mb-2 mt-4 text-[14px] font-semibold"
+          data-source-line={sourceLineFromMarkdownNode(node)}
+        >
+          {children}
+        </h4>
+      )
     },
     hr() {
       return <Separator className="my-5" />
     },
     img({ alt, src }) {
+      const assetRef = markdownAssetsBySource?.get(src ?? '')
       return (
         <MarkdownImage
           alt={alt ?? ''}
           filePath={filePath}
-          rustAssetPreviewUrl={markdownAssetsBySource?.get(src ?? '')?.previewUrl ?? null}
-          useRustAssetRefs={markdownAssetsBySource !== null}
+          hasRustAssetRef={assetRef !== undefined}
+          rustAssetPreviewUrl={assetRef?.previewUrl ?? null}
           src={src ?? ''}
           onResolveAssetPreviewUrl={onResolveAssetPreviewUrl}
         />
       )
     },
-    li({ children }) {
-      return <li className="my-0.5 pl-1">{children}</li>
+    li({ children, node }) {
+      return (
+        <li className="my-0.5 pl-1" data-source-line={sourceLineFromMarkdownNode(node)}>
+          {children}
+        </li>
+      )
     },
-    ol({ children }) {
-      return <ol className="my-3 list-decimal space-y-1 pl-6">{children}</ol>
+    ol({ children, node }) {
+      return (
+        <ol className="my-3 list-decimal space-y-1 pl-6" data-source-line={sourceLineFromMarkdownNode(node)}>
+          {children}
+        </ol>
+      )
     },
-    p({ children }) {
-      return <p className="my-3 whitespace-pre-wrap break-words">{children}</p>
+    p({ children, node }) {
+      if (markdownNodeContainsTag(node, 'img')) {
+        return (
+          <div className="my-3 whitespace-pre-wrap break-words" data-source-line={sourceLineFromMarkdownNode(node)}>
+            {children}
+          </div>
+        )
+      }
+
+      return (
+        <p className="my-3 whitespace-pre-wrap break-words" data-source-line={sourceLineFromMarkdownNode(node)}>
+          {children}
+        </p>
+      )
     },
     pre({ children }) {
       return <>{children}</>
     },
-    table({ children }) {
+    table({ children, node }) {
       return (
-        <div className="my-4 overflow-x-auto rounded-md border border-border">
+        <div
+          className="my-4 overflow-x-auto rounded-md border border-border"
+          data-source-line={sourceLineFromMarkdownNode(node)}
+        >
           <Table className="text-[12px]">{children}</Table>
         </div>
       )
@@ -920,31 +1385,53 @@ function createMarkdownComponents(
     tr({ children }) {
       return <TableRow>{children}</TableRow>
     },
-    ul({ children }) {
-      return <ul className="my-3 list-disc space-y-1 pl-6">{children}</ul>
+    ul({ children, node }) {
+      return (
+        <ul className="my-3 list-disc space-y-1 pl-6" data-source-line={sourceLineFromMarkdownNode(node)}>
+          {children}
+        </ul>
+      )
     },
   }
+}
+
+function markdownNodeContainsTag(node: unknown, tagName: string): boolean {
+  if (!node || typeof node !== 'object') {
+    return false
+  }
+
+  const candidate = node as { children?: unknown; tagName?: unknown }
+  if (candidate.tagName === tagName) {
+    return true
+  }
+
+  if (!Array.isArray(candidate.children)) {
+    return false
+  }
+
+  return candidate.children.some((child) => markdownNodeContainsTag(child, tagName))
 }
 
 function MarkdownImage({
   alt,
   filePath,
+  hasRustAssetRef,
   rustAssetPreviewUrl,
   src,
-  useRustAssetRefs,
   onResolveAssetPreviewUrl,
 }: {
   alt: string
   filePath: string
+  hasRustAssetRef?: boolean
   rustAssetPreviewUrl?: string | null
   src: string
-  useRustAssetRefs?: boolean
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
 }) {
   const [state, setState] = useState<{
     status: 'loading' | 'loaded' | 'error'
+    issue: AssetPreviewResolution | null
     url: string | null
-  }>({ status: 'loading', url: null })
+  }>({ status: 'loading', issue: null, url: null })
   const externalUrl = useMemo(() => sanitizeExternalImageUrl(src), [src])
   const projectPath = useMemo(
     () => (externalUrl ? null : normalizeProjectReference(filePath, src)),
@@ -954,35 +1441,71 @@ function MarkdownImage({
 
   useEffect(() => {
     if (externalUrl) {
-      setState({ status: 'loaded', url: externalUrl })
+      setState({ status: 'loaded', issue: null, url: externalUrl })
       return
     }
 
-    if (useRustAssetRefs) {
-      setState(
-        rustAssetPreviewUrl
-          ? { status: 'loaded', url: rustAssetPreviewUrl }
-          : { status: 'error', url: null },
-      )
+    if (rustAssetPreviewUrl) {
+      setState({ status: 'loaded', issue: null, url: rustAssetPreviewUrl })
+      return
+    }
+
+    if (hasRustAssetRef) {
+      setState({
+        status: 'error',
+        issue: {
+          path: projectPath ?? src,
+          reason: 'unavailable',
+          url: null,
+        },
+        url: null,
+      })
       return
     }
 
     if (!projectPath || !onResolveAssetPreviewUrl) {
-      setState({ status: 'error', url: null })
+      setState({
+        status: 'error',
+        issue: {
+          path: projectPath ?? src,
+          reason: 'blocked',
+          url: null,
+        },
+        url: null,
+      })
       return
     }
 
     let cancelled = false
-    setState({ status: 'loading', url: null })
-    onResolveAssetPreviewUrl(projectPath).then((url) => {
-      if (cancelled) return
-      setState(url ? { status: 'loaded', url } : { status: 'error', url: null })
-    })
+    setState({ status: 'loading', issue: null, url: null })
+    onResolveAssetPreviewUrl(projectPath)
+      .then((result) => {
+        if (cancelled) return
+        const resolution = normalizeAssetPreviewResolution(projectPath, result)
+        setState(
+          resolution.url
+            ? { status: 'loaded', issue: null, url: resolution.url }
+            : { status: 'error', issue: resolution, url: null },
+        )
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setState({
+          status: 'error',
+          issue: {
+            path: projectPath,
+            reason: 'missing',
+            url: null,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          url: null,
+        })
+      })
 
     return () => {
       cancelled = true
     }
-  }, [externalUrl, onResolveAssetPreviewUrl, projectPath, rustAssetPreviewUrl, useRustAssetRefs])
+  }, [externalUrl, hasRustAssetRef, onResolveAssetPreviewUrl, projectPath, rustAssetPreviewUrl, src])
 
   return (
     <figure className="my-4" data-testid="markdown-image">
@@ -999,6 +1522,11 @@ function MarkdownImage({
           <div className="flex items-center gap-2 px-4 py-3 text-[12px] text-muted-foreground">
             <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
             Image unavailable: <span className="font-mono">{src}</span>
+            {state.issue?.reason ? (
+              <span className="text-muted-foreground/70">
+                ({assetPreviewIssueLabel(state.issue)})
+              </span>
+            ) : null}
           </div>
         ) : null}
         {state.status === 'loaded' && state.url ? (
@@ -1007,7 +1535,17 @@ function MarkdownImage({
             alt={altText}
             referrerPolicy="no-referrer"
             className="max-h-[520px] max-w-full object-contain"
-            onError={() => setState({ status: 'error', url: null })}
+            onError={() =>
+              setState({
+                status: 'error',
+                issue: {
+                  path: state.issue?.path ?? projectPath ?? src,
+                  reason: 'unavailable',
+                  url: null,
+                },
+                url: null,
+              })
+            }
           />
         ) : null}
       </div>
@@ -1018,7 +1556,15 @@ function MarkdownImage({
   )
 }
 
-function CodePreviewBlock({ code, lang }: { code: string; lang: string }) {
+function CodePreviewBlock({
+  code,
+  lang,
+  sourceLine,
+}: {
+  code: string
+  lang: string
+  sourceLine?: number
+}) {
   const { theme } = useTheme()
   const [tokens, setTokens] = useState<TokenizedLine[] | null>(null)
   const [copied, setCopied] = useState(false)
@@ -1068,7 +1614,10 @@ function CodePreviewBlock({ code, lang }: { code: string; lang: string }) {
   }
 
   return (
-    <div className="group my-3 overflow-hidden rounded-md border border-border bg-card/60">
+    <div
+      className="group my-3 overflow-hidden rounded-md border border-border bg-card/60"
+      data-source-line={sourceLine}
+    >
       <div className="flex items-center justify-between border-b border-border bg-muted/40 px-2.5 py-1">
         <span className="flex items-center gap-2">
           <Code2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
@@ -1229,6 +1778,63 @@ function useSvgObjectUrl(text: string, mimeType: string): string | null {
   return url
 }
 
+const HTML_URL_ATTRIBUTES = new Set([
+  'action',
+  'formaction',
+  'href',
+  'poster',
+  'src',
+  'xlink:href',
+])
+
+function sourceLineFromMarkdownNode(node: unknown): number | undefined {
+  const line = (node as { position?: { start?: { line?: unknown } } } | null)?.position?.start?.line
+  return typeof line === 'number' && Number.isFinite(line) && line > 0 ? line : undefined
+}
+
+function extractMarkdownImageReferences(text: string): string[] {
+  const references: string[] = []
+  const pattern = /!\[[^\]]*]\(\s*(?:"([^"]+)"|'([^']+)'|([^)\s]+))(?:\s+["'][^"']*["'])?\s*\)/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(text)) !== null) {
+    const reference = (match[1] ?? match[2] ?? match[3] ?? '').trim()
+    if (reference.length > 0) {
+      references.push(reference)
+    }
+  }
+  return references
+}
+
+function containsMarkdownHtml(text: string): boolean {
+  return /<\/?[a-z][\w:-]*(?:\s|>|\/>)/i.test(text)
+}
+
+function containsUnsafeCssUrl(value: string): boolean {
+  return /expression\s*\(/i.test(value) || /url\s*\(\s*['"]?\s*(?:javascript|vbscript):/i.test(value)
+}
+
+function isSafeHtmlAttributeUrl(value: string, attributeName: string, tagName: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith('#')) {
+    return true
+  }
+
+  const normalizedTagName = tagName.toLowerCase()
+  if (isRelativeReference(trimmed) && !trimmed.startsWith('//')) {
+    return true
+  }
+
+  if (/^data:/i.test(trimmed)) {
+    return (
+      normalizedTagName === 'img' &&
+      attributeName === 'src' &&
+      /^data:image\/(?:avif|gif|jpe?g|png|webp);/i.test(trimmed)
+    )
+  }
+
+  return /^(?:https?:|mailto:|tel:|blob:|xero-asset:)/i.test(trimmed)
+}
+
 function sanitizeMarkdownUrl(value: string, key = 'href'): string {
   const safe = defaultUrlTransform(value)
   if (!safe) return ''
@@ -1256,7 +1862,7 @@ function isRelativeReference(value: string): boolean {
 
 function normalizeProjectReference(filePath: string, reference: string): string | null {
   const trimmed = reference.trim()
-  if (!trimmed || !isRelativeReference(trimmed) || trimmed.startsWith('#')) {
+  if (!trimmed || !isRelativeReference(trimmed) || trimmed.startsWith('#') || trimmed.startsWith('//')) {
     return null
   }
 
@@ -1315,6 +1921,19 @@ function clamp(value: number, min: number, max: number): number {
 
 function roundZoom(value: number): number {
   return Math.round(value / IMAGE_ZOOM_STEP) * IMAGE_ZOOM_STEP
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function shortHash(value: string): string {

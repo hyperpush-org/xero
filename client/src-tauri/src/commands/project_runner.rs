@@ -37,6 +37,7 @@ use tauri::{AppHandle, Emitter, Runtime, State};
 
 use crate::auth::now_timestamp;
 use crate::commands::{
+    default_runtime_agent_id,
     runtime_support::{emit_project_updated, resolve_owned_agent_provider_config},
     CommandError, CommandResult, ProjectSummaryDto, ProjectUpdateReason,
     ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
@@ -532,7 +533,12 @@ pub fn update_project_start_targets<R: Runtime>(
 
     // Broadcast the fresh snapshot so the active project view in the
     // frontend picks up the new targets without requiring a project switch.
-    emit_project_updated(&app, &repo_root, &project_id, ProjectUpdateReason::MetadataChanged)?;
+    emit_project_updated(
+        &app,
+        &repo_root,
+        &project_id,
+        ProjectUpdateReason::MetadataChanged,
+    )?;
 
     project_store::load_project_summary(&repo_root, &project_id)
 }
@@ -567,7 +573,9 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
 ) -> CommandResult<SuggestedStartTargetsDto> {
     let project_id = request.project_id.trim().to_owned();
     let repo_root = resolve_imported_repo_root(&app, &state, &project_id)?;
-    let runtime_agent_id = request.runtime_agent_id.unwrap_or(RuntimeAgentIdDto::Ask);
+    let runtime_agent_id = request
+        .runtime_agent_id
+        .unwrap_or_else(default_runtime_agent_id);
 
     let model_id = request
         .model_id
@@ -640,9 +648,25 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
 }
 
 #[tauri::command]
-pub fn terminal_open<R: Runtime>(
+pub async fn terminal_open<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    request: OpenTerminalRequestDto,
+) -> CommandResult<OpenTerminalResponseDto> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || terminal_open_blocking(app, state, request))
+        .await
+        .map_err(|error| {
+            CommandError::system_fault(
+                "terminal_open_task_failed",
+                format!("Xero could not open the terminal in the background: {error}"),
+            )
+        })?
+}
+
+fn terminal_open_blocking<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
     request: OpenTerminalRequestDto,
 ) -> CommandResult<OpenTerminalResponseDto> {
     let cwd = if let Some(project_id) = request
@@ -651,7 +675,7 @@ pub fn terminal_open<R: Runtime>(
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
-        let root = resolve_imported_repo_root(&app, state.inner(), project_id)?;
+        let root = resolve_imported_repo_root(&app, &state, project_id)?;
         root.to_string_lossy().into_owned()
     } else {
         dirs::home_dir()
@@ -1060,7 +1084,9 @@ fn build_suggest_prompt(repo_root: &Path) -> String {
         }
     }
 
-    sections.push("Return ONLY a JSON array of {\"name\": \"...\", \"command\": \"...\"} objects.".to_owned());
+    sections.push(
+        "Return ONLY a JSON array of {\"name\": \"...\", \"command\": \"...\"} objects.".to_owned(),
+    );
     sections.join("\n\n")
 }
 
@@ -1111,9 +1137,7 @@ fn sanitize_suggested_targets(message: &str) -> Result<Vec<SuggestedStartTargetD
     let raw: Vec<RawTarget> = serde_json::from_str(body).map_err(|error| {
         CommandError::retryable(
             "project_suggest_targets_invalid_json",
-            format!(
-                "The selected model returned invalid JSON for start targets: {error}"
-            ),
+            format!("The selected model returned invalid JSON for start targets: {error}"),
         )
     })?;
 

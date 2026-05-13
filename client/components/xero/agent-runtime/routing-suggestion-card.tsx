@@ -123,7 +123,7 @@ export function RoutingSuggestionCard({
               </span>
             </>
           ) : (
-            <span>Continued with Generalist.</span>
+            <span>Continued with Agent.</span>
           )}
         </div>
       ) : (
@@ -144,7 +144,7 @@ export function RoutingSuggestionCard({
             onClick={handleDecline}
             className="h-7 text-[12px]"
           >
-            Continue with Generalist
+            Continue with Agent
           </Button>
         </div>
       )}

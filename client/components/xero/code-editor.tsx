@@ -6,13 +6,14 @@ import { Annotation, Compartment, EditorState, Prec, type Extension } from '@cod
 import {
   HighlightStyle,
   StreamLanguage,
+  indentUnit,
   syntaxHighlighting,
 } from '@codemirror/language'
 import type { StreamParser } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
 import { indentWithTab } from '@codemirror/commands'
 import { highlightSelectionMatches, search } from '@codemirror/search'
-import { keymap } from '@codemirror/view'
+import { Decoration, GutterMarker, gutter, keymap } from '@codemirror/view'
 import { autocompletion } from '@codemirror/autocomplete'
 import { cn } from '@/lib/utils'
 import { getLangFromPath } from '@/lib/language-detection'
@@ -21,6 +22,9 @@ import type {
   EditorPalette,
   ThemeDefinition,
 } from '@/src/features/theme/theme-definitions'
+import type { ProjectDiagnosticDto } from '@/src/lib/xero-model'
+import type { EditorSelectionContext } from './execution-view/agent-aware-editor-hooks'
+import type { EditorGitDiffLineMarker } from './execution-view/git-aware-editing'
 
 export const EDITOR_SNAPSHOT_DEBOUNCE_MS = 250
 
@@ -43,18 +47,37 @@ export interface EditorDocumentStats {
   lineCount: number
 }
 
+export interface EditorRenderPreferences {
+  fontSize: number
+  tabSize: number
+  insertSpaces: boolean
+  lineWrapping: boolean
+}
+
+export const DEFAULT_EDITOR_RENDER_PREFERENCES: EditorRenderPreferences = {
+  fontSize: 13,
+  tabSize: 2,
+  insertSpaces: true,
+  lineWrapping: true,
+}
+
 export interface CodeEditorProps {
   value: string
   savedValue?: string
   documentVersion?: number
   onSnapshotChange?: (value: string) => void
   onDirtyChange?: (dirty: boolean) => void
+  diagnostics?: ProjectDiagnosticDto[]
+  gitDiffMarkers?: EditorGitDiffLineMarker[]
   filePath: string
   readOnly?: boolean
+  preferences?: EditorRenderPreferences
   onSave?: (snapshot: string) => void
   onCursorChange?: (position: EditorCursorPosition) => void
+  onSelectionChange?: (selection: EditorSelectionContext | null) => void
   onDocumentStatsChange?: (stats: EditorDocumentStats) => void
   onOpenFind?: (options: { withReplace: boolean; initialQuery: string }) => void
+  onGitDiffLineClick?: (marker: EditorGitDiffLineMarker) => void
   onViewReady?: (view: EditorView | null) => void
   className?: string
 }
@@ -121,6 +144,23 @@ export function createEditorFrameScheduler(options: EditorFrameSchedulerOptions 
     isPending(): boolean {
       return pendingFrame !== null
     },
+  }
+}
+
+export function getEditorSelectionContext(state: EditorState): EditorSelectionContext | null {
+  const selection = state.selection.main
+  if (selection.from === selection.to) {
+    return null
+  }
+
+  const fromLine = state.doc.lineAt(selection.from)
+  const toLine = state.doc.lineAt(selection.to)
+  return {
+    text: state.sliceDoc(selection.from, selection.to),
+    fromLine: fromLine.number,
+    fromColumn: selection.from - fromLine.from + 1,
+    toLine: toLine.number,
+    toColumn: selection.to - toLine.from + 1,
   }
 }
 
@@ -274,6 +314,186 @@ function buildThemeExtension(theme: ThemeDefinition): Extension {
   ]
 }
 
+function buildPreferenceExtensions(preferences: EditorRenderPreferences): Extension {
+  const indentValue = preferences.insertSpaces
+    ? ' '.repeat(Math.max(1, preferences.tabSize))
+    : '\t'
+  const extensions: Extension[] = [
+    EditorState.tabSize.of(preferences.tabSize),
+    indentUnit.of(indentValue),
+  ]
+  if (preferences.lineWrapping) {
+    extensions.push(EditorView.lineWrapping)
+  }
+  return extensions
+}
+
+function buildFontSizeExtension(fontSize: number): Extension {
+  return EditorView.theme({
+    '&': { fontSize: `${fontSize}px` },
+  })
+}
+
+function buildDiagnosticsExtension(diagnostics: readonly ProjectDiagnosticDto[] = []): Extension {
+  const lineDiagnostics = diagnostics.filter((diagnostic) => diagnostic.line)
+  return [
+    EditorView.theme({
+      '.xero-editor-diagnostic-error': {
+        textDecorationLine: 'underline',
+        textDecorationStyle: 'wavy',
+        textDecorationColor: 'hsl(var(--destructive))',
+        textUnderlineOffset: '3px',
+      },
+      '.xero-editor-diagnostic-warning': {
+        textDecorationLine: 'underline',
+        textDecorationStyle: 'wavy',
+        textDecorationColor: 'hsl(var(--warning))',
+        textUnderlineOffset: '3px',
+      },
+      '.cm-line.xero-editor-line-diagnostic-error': {
+        backgroundColor: 'hsl(var(--destructive) / 0.07)',
+      },
+      '.cm-line.xero-editor-line-diagnostic-warning': {
+        backgroundColor: 'hsl(var(--warning) / 0.08)',
+      },
+    }),
+    EditorView.decorations.compute(['doc'], (state) => {
+      const ranges = []
+      for (const diagnostic of lineDiagnostics) {
+        const lineNumber = diagnostic.line ?? 0
+        if (lineNumber < 1 || lineNumber > state.doc.lines) continue
+        const line = state.doc.line(lineNumber)
+        const column = Math.max(1, diagnostic.column ?? 1)
+        const from = Math.min(line.to, line.from + column - 1)
+        const to = Math.max(from + 1, Math.min(line.to, from + 1))
+        const severityClass =
+          diagnostic.severity === 'warning'
+            ? 'xero-editor-diagnostic-warning'
+            : 'xero-editor-diagnostic-error'
+        ranges.push(Decoration.mark({ class: severityClass }).range(from, to))
+        ranges.push(
+          Decoration.line({
+            class:
+              diagnostic.severity === 'warning'
+                ? 'xero-editor-line-diagnostic-warning'
+                : 'xero-editor-line-diagnostic-error',
+          }).range(line.from),
+        )
+      }
+      return Decoration.set(ranges, true)
+    }),
+  ]
+}
+
+class GitDiffGutterMarker extends GutterMarker {
+  constructor(
+    private readonly marker: EditorGitDiffLineMarker,
+    private readonly onClick?: (marker: EditorGitDiffLineMarker) => void,
+  ) {
+    super()
+  }
+
+  override eq(other: GutterMarker): boolean {
+    return (
+      other instanceof GitDiffGutterMarker &&
+      other.marker.line === this.marker.line &&
+      other.marker.kind === this.marker.kind &&
+      other.marker.hunkIndex === this.marker.hunkIndex
+    )
+  }
+
+  override toDOM(): HTMLElement {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = `xero-editor-git-marker xero-editor-git-marker-${this.marker.kind}`
+    button.title = gitDiffMarkerLabel(this.marker.kind)
+    button.setAttribute('aria-label', gitDiffMarkerLabel(this.marker.kind))
+    button.addEventListener('mousedown', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      this.onClick?.(this.marker)
+    })
+    return button
+  }
+}
+
+function gitDiffMarkerLabel(kind: EditorGitDiffLineMarker['kind']): string {
+  switch (kind) {
+    case 'added':
+      return 'Git added line'
+    case 'changed':
+      return 'Git changed line'
+    case 'deleted':
+      return 'Git deleted line'
+  }
+}
+
+function buildGitDiffExtension(
+  markers: readonly EditorGitDiffLineMarker[] = [],
+  onClick?: (marker: EditorGitDiffLineMarker) => void,
+): Extension {
+  const markersByLine = new Map(markers.map((marker) => [marker.line, marker]))
+  return [
+    EditorView.theme({
+      '.xero-editor-git-gutter': {
+        width: '5px',
+      },
+      '.xero-editor-git-marker': {
+        display: 'block',
+        width: '3px',
+        minWidth: '3px',
+        height: '100%',
+        minHeight: '14px',
+        margin: '0 auto',
+        border: '0',
+        borderRadius: '2px',
+        padding: '0',
+        cursor: 'pointer',
+        backgroundColor: 'transparent',
+      },
+      '.xero-editor-git-marker-added': {
+        backgroundColor: 'hsl(var(--success))',
+      },
+      '.xero-editor-git-marker-changed': {
+        backgroundColor: 'hsl(var(--primary))',
+      },
+      '.xero-editor-git-marker-deleted': {
+        backgroundColor: 'hsl(var(--destructive))',
+      },
+      '.cm-line.xero-editor-line-git-added': {
+        backgroundColor: 'hsl(var(--success) / 0.06)',
+      },
+      '.cm-line.xero-editor-line-git-changed': {
+        backgroundColor: 'hsl(var(--primary) / 0.05)',
+      },
+      '.cm-line.xero-editor-line-git-deleted': {
+        backgroundColor: 'hsl(var(--destructive) / 0.06)',
+      },
+    }),
+    gutter({
+      class: 'xero-editor-git-gutter',
+      lineMarker: (view, line) => {
+        const lineNumber = view.state.doc.lineAt(line.from).number
+        const marker = markersByLine.get(lineNumber)
+        return marker ? new GitDiffGutterMarker(marker, onClick) : null
+      },
+    }),
+    EditorView.decorations.compute(['doc'], (state) => {
+      const ranges = []
+      for (const marker of markers) {
+        if (marker.line < 1 || marker.line > state.doc.lines) continue
+        const line = state.doc.line(marker.line)
+        ranges.push(
+          Decoration.line({
+            class: `xero-editor-line-git-${marker.kind}`,
+          }).range(line.from),
+        )
+      }
+      return Decoration.set(ranges, true)
+    }),
+  ]
+}
+
 // ---------------------------------------------------------------------------
 // Language resolution
 // ---------------------------------------------------------------------------
@@ -419,12 +639,17 @@ export function CodeEditor({
   documentVersion = 0,
   onSnapshotChange,
   onDirtyChange,
+  diagnostics = [],
+  gitDiffMarkers = [],
   filePath,
   readOnly = false,
+  preferences = DEFAULT_EDITOR_RENDER_PREFERENCES,
   onSave,
   onCursorChange,
+  onSelectionChange,
   onDocumentStatsChange,
   onOpenFind,
+  onGitDiffLineClick,
   onViewReady,
   className,
 }: CodeEditorProps) {
@@ -440,20 +665,28 @@ export function CodeEditor({
   const onDirtyChangeRef = useRef(onDirtyChange)
   const onSaveRef = useRef(onSave)
   const onCursorChangeRef = useRef(onCursorChange)
+  const onSelectionChangeRef = useRef(onSelectionChange)
   const onDocumentStatsChangeRef = useRef(onDocumentStatsChange)
   const onOpenFindRef = useRef(onOpenFind)
+  const onGitDiffLineClickRef = useRef(onGitDiffLineClick)
   const onViewReadyRef = useRef(onViewReady)
   const langCompartment = useMemo(() => new Compartment(), [])
   const readOnlyCompartment = useMemo(() => new Compartment(), [])
   const themeCompartment = useMemo(() => new Compartment(), [])
+  const diagnosticsCompartment = useMemo(() => new Compartment(), [])
+  const gitDiffCompartment = useMemo(() => new Compartment(), [])
+  const preferencesCompartment = useMemo(() => new Compartment(), [])
+  const fontSizeCompartment = useMemo(() => new Compartment(), [])
   const { theme } = useTheme()
 
   onSnapshotChangeRef.current = onSnapshotChange
   onDirtyChangeRef.current = onDirtyChange
   onSaveRef.current = onSave
   onCursorChangeRef.current = onCursorChange
+  onSelectionChangeRef.current = onSelectionChange
   onDocumentStatsChangeRef.current = onDocumentStatsChange
   onOpenFindRef.current = onOpenFind
+  onGitDiffLineClickRef.current = onGitDiffLineClick
   onViewReadyRef.current = onViewReady
 
   function emitDirtyChange(dirty: boolean): void {
@@ -501,6 +734,7 @@ export function CodeEditor({
       const head = view.state.selection.main.head
       const line = view.state.doc.lineAt(head)
       onCursorChangeRef.current?.({ line: line.number, column: head - line.from + 1 })
+      onSelectionChangeRef.current?.(getEditorSelectionContext(view.state))
       onDocumentStatsChangeRef.current?.({ lineCount: view.state.doc.lines })
     })
   }
@@ -559,8 +793,13 @@ export function CodeEditor({
           },
         ]),
         langCompartment.of(languageExtension(filePath)),
+        diagnosticsCompartment.of(buildDiagnosticsExtension([])),
+        gitDiffCompartment.of(buildGitDiffExtension([], (marker) => {
+          onGitDiffLineClickRef.current?.(marker)
+        })),
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
-        EditorView.lineWrapping,
+        preferencesCompartment.of(buildPreferenceExtensions(preferences)),
+        fontSizeCompartment.of(buildFontSizeExtension(preferences.fontSize)),
         EditorView.updateListener.of((update) => {
           const isExternalSync = update.transactions.some((transaction) =>
             transaction.annotation(externalDocumentSync),
@@ -582,6 +821,7 @@ export function CodeEditor({
     viewRef.current = view
     onViewReadyRef.current?.(view)
     onDocumentStatsChangeRef.current?.({ lineCount: view.state.doc.lines })
+    onSelectionChangeRef.current?.(getEditorSelectionContext(view.state))
     scheduleCursorReport()
 
     return () => {
@@ -591,7 +831,37 @@ export function CodeEditor({
       view.destroy()
       viewRef.current = null
     }
-  }, [langCompartment, readOnlyCompartment, themeCompartment])
+  }, [
+    diagnosticsCompartment,
+    fontSizeCompartment,
+    gitDiffCompartment,
+    langCompartment,
+    preferencesCompartment,
+    readOnlyCompartment,
+    themeCompartment,
+  ])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: preferencesCompartment.reconfigure(buildPreferenceExtensions(preferences)),
+    })
+  }, [
+    preferences.tabSize,
+    preferences.insertSpaces,
+    preferences.lineWrapping,
+    preferencesCompartment,
+    preferences,
+  ])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: fontSizeCompartment.reconfigure(buildFontSizeExtension(preferences.fontSize)),
+    })
+  }, [preferences.fontSize, fontSizeCompartment])
 
   useEffect(() => {
     savedValueRef.current = savedValue ?? value
@@ -632,6 +902,24 @@ export function CodeEditor({
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
+    view.dispatch({ effects: diagnosticsCompartment.reconfigure(buildDiagnosticsExtension(diagnostics)) })
+  }, [diagnostics, diagnosticsCompartment])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: gitDiffCompartment.reconfigure(
+        buildGitDiffExtension(gitDiffMarkers, (marker) => {
+          onGitDiffLineClickRef.current?.(marker)
+        }),
+      ),
+    })
+  }, [gitDiffCompartment, gitDiffMarkers])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
     const documentVersionChanged = documentVersionRef.current !== documentVersion
     documentVersionRef.current = documentVersion
 
@@ -650,6 +938,7 @@ export function CodeEditor({
       lastSnapshotRef.current = value
       savedValueRef.current = savedValue ?? value
       onDocumentStatsChangeRef.current?.({ lineCount: countEditorLines(value) })
+      onSelectionChangeRef.current?.(getEditorSelectionContext(view.state))
       emitDirtyChange(value !== savedValueRef.current)
       scheduleCursorReport()
     }

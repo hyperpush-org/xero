@@ -17,8 +17,7 @@ pub struct ConsumedArtifactEntry {
 const ENGINEER_CONSUMES: &[ConsumedArtifactEntry] = &[ConsumedArtifactEntry {
     id: "plan_pack",
     label: "Accepted Plan Pack",
-    description:
-        "The xero.plan_pack.v1 the operator accepted. Engineer treats Slices as the live build queue and Build Handoff as its seed prompt.",
+    description: "The xero.plan_pack.v1 the operator accepted. Engineer treats Slices as the live build queue and Build Handoff as its seed prompt.",
     source_agent: RuntimeAgentIdDto::Plan,
     contract: RuntimeAgentOutputContractDto::PlanPack,
     sections: &["decisions", "build_strategy", "slices", "build_handoff"],

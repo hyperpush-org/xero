@@ -58,7 +58,9 @@ pub fn import_repository<R: Runtime>(
         .map_err(|error| {
             crate::commands::CommandError::retryable(
                 "repository_status_emit_failed",
-                format!("Xero imported the repo but could not emit the repository status event: {error}"),
+                format!(
+                    "Xero imported the repo but could not emit the repository status event: {error}"
+                ),
             )
         })?;
 

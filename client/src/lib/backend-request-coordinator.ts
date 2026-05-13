@@ -90,6 +90,12 @@ export function backendRequestKey(command: string, args?: Record<string, unknown
       return repositoryStatusRequestKey(readString(request, 'projectId'))
     case 'get_repository_diff':
       return repositoryDiffRequestKey(readString(request, 'projectId'), readString(request, 'scope'))
+    case 'list_project_file_index':
+      return listProjectFileIndexRequestKey(
+        readString(request, 'projectId'),
+        readBoolean(request, 'includeHidden'),
+        readNumber(request, 'limit') ?? undefined,
+      )
     case 'list_project_files':
       return listProjectFilesRequestKey(readString(request, 'projectId'), readString(request, 'path', '/'))
     case 'read_project_file':
@@ -124,6 +130,14 @@ export function repositoryDiffRequestKey(projectId: string, scope: string): stri
 
 export function listProjectFilesRequestKey(projectId: string, path = '/'): string {
   return joinRequestKey('list_project_files', projectId, path || '/')
+}
+
+export function listProjectFileIndexRequestKey(
+  projectId: string,
+  includeHidden = false,
+  limit?: number,
+): string {
+  return joinRequestKey('list_project_file_index', projectId, includeHidden, limit ?? '')
 }
 
 export function readProjectFileRequestKey(projectId: string, path: string): string {

@@ -5,7 +5,7 @@ import {
   listProjectFilesRequestKey,
   readProjectFileRequestKey,
 } from '@/src/lib/backend-request-coordinator'
-import { getDesktopErrorMessage } from '@/src/lib/xero-desktop'
+import { XeroDesktopError, getDesktopErrorMessage } from '@/src/lib/xero-desktop'
 import type {
   CreateProjectEntryRequestDto,
   CreateProjectEntryResponseDto,
@@ -17,9 +17,13 @@ import type {
   ProjectFilePreviewDto,
   ProjectRenderableRendererKindDto,
   ProjectTextRendererKindDto,
+  ProjectUiStateResponseDto,
   ReadProjectFileResponseDto,
+  ReadProjectUiStateRequestDto,
   RenameProjectEntryRequestDto,
   RenameProjectEntryResponseDto,
+  StatProjectFilesResponseDto,
+  WriteProjectUiStateRequestDto,
   WriteProjectFileResponseDto,
 } from '@/src/lib/xero-model'
 import {
@@ -34,9 +38,19 @@ import {
   type FileSystemNode,
 } from '@/src/lib/file-system-tree'
 import { getLangFromPath } from '@/lib/language-detection'
+import {
+  detectDocumentSettings,
+  normalizeToLf,
+  serializeWithSettings,
+  type DocumentSettings,
+} from '@/lib/document-settings'
 
 const EXECUTION_TREE_REQUEST_SCOPE = 'execution-project-tree'
 const EXECUTION_FILE_READ_REQUEST_SCOPE = 'execution-file-read'
+const EDITOR_DRAFTS_UI_STATE_KEY = 'editor.drafts:v1'
+const DRAFT_PERSIST_DEBOUNCE_MS = 400
+const OPEN_FILE_STAT_POLL_MS = 2500
+const TREE_REFRESH_POLL_MS = 7000
 
 interface CursorPosition {
   line: number
@@ -63,11 +77,70 @@ interface UseExecutionWorkspaceControllerOptions {
   active?: boolean
   listProjectFiles: (projectId: string, path?: string) => Promise<ListProjectFilesResponseDto>
   readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
-  writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
+  writeProjectFile: (
+    projectId: string,
+    path: string,
+    content: string,
+    options?: {
+      expectedContentHash?: string
+      expectedModifiedAt?: string
+      overwrite?: boolean
+    },
+  ) => Promise<WriteProjectFileResponseDto>
+  statProjectFiles?: (projectId: string, paths: string[]) => Promise<StatProjectFilesResponseDto>
+  readProjectUiState?: (request: ReadProjectUiStateRequestDto) => Promise<ProjectUiStateResponseDto>
+  writeProjectUiState?: (request: WriteProjectUiStateRequestDto) => Promise<ProjectUiStateResponseDto>
   createProjectEntry: (request: CreateProjectEntryRequestDto) => Promise<CreateProjectEntryResponseDto>
   renameProjectEntry: (request: RenameProjectEntryRequestDto) => Promise<RenameProjectEntryResponseDto>
   moveProjectEntry: (request: MoveProjectEntryRequestDto) => Promise<MoveProjectEntryResponseDto>
   deleteProjectEntry: (projectId: string, path: string) => Promise<DeleteProjectEntryResponseDto>
+}
+
+interface StaleOpenFileState {
+  kind: 'changed' | 'deleted'
+  detectedAt: string
+}
+
+interface SaveConflictState {
+  path: string
+  mine: string
+  disk: string
+  diskResource: Extract<ProjectFileResource, { kind: 'text' }>
+  detectedAt: string
+}
+
+type DirtyGuardOperation =
+  | { kind: 'close'; path: string }
+  | { kind: 'reload' }
+  | { kind: 'rename'; path: string; entryType: 'file' | 'folder' }
+  | { kind: 'delete'; path: string; entryType: 'file' | 'folder' }
+  | { kind: 'close-others' }
+  | { kind: 'save-all' }
+
+interface RefreshFolderOptions {
+  preserveExpandedFolders?: boolean
+  reportErrors?: boolean
+  showLoadingState?: boolean
+}
+
+interface DirtyGuardState {
+  operation: DirtyGuardOperation
+  paths: string[]
+}
+
+interface PersistedEditorDrafts {
+  schema: 'xero.editor.drafts.v1'
+  projectId: string
+  updatedAt: string
+  drafts: Record<
+    string,
+    {
+      content: string
+      savedContentHash?: string
+      savedModifiedAt?: string
+      updatedAt: string
+    }
+  >
 }
 
 function defaultExpandedFolders(root: FileSystemNode): Set<string> {
@@ -118,6 +191,27 @@ function parentPathOf(path: string): string {
   return `/${segments.slice(0, -1).join('/')}`
 }
 
+function ancestorFolderPaths(path: string): string[] {
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length <= 1) {
+    return ['/']
+  }
+
+  const ancestors = ['/']
+  for (let index = 1; index < segments.length; index += 1) {
+    ancestors.push(`/${segments.slice(0, index).join('/')}`)
+  }
+  return ancestors
+}
+
+function shouldKeepOpenPath(root: FileSystemNode, path: string): boolean {
+  const node = findNode(root, path)
+  if (node) return node.type === 'file'
+
+  const parent = findNode(root, parentPathOf(path))
+  return !(parent?.type === 'folder' && parent.childrenLoaded)
+}
+
 function splitEntryPath(value: string): string[] {
   return value
     .trim()
@@ -140,6 +234,7 @@ export type ProjectFileResource =
       modifiedAt: string
       contentHash: string
       preview?: ProjectFilePreviewDto | null
+      documentSettings: DocumentSettings
     }
   | {
       kind: 'renderable'
@@ -170,6 +265,7 @@ function projectFileResourceFromResponse(response: ReadProjectFileResponseDto): 
       modifiedAt: response.modifiedAt,
       contentHash: response.contentHash,
       preview: response.preview ?? null,
+      documentSettings: detectDocumentSettings(response.text),
     }
   }
 
@@ -196,12 +292,66 @@ function projectFileResourceFromResponse(response: ReadProjectFileResponseDto): 
   }
 }
 
+function projectFileResourceFromWriteResponse(
+  response: WriteProjectFileResponseDto,
+  fallback: ProjectFileResource,
+): ProjectFileResource {
+  if (isTextRendererKind(response.rendererKind)) {
+    return {
+      kind: 'text',
+      mimeType: response.mimeType,
+      rendererKind: response.rendererKind,
+      byteLength: response.byteLength,
+      modifiedAt: response.modifiedAt,
+      contentHash: response.contentHash,
+      preview: response.preview ?? null,
+      documentSettings:
+        fallback.kind === 'text'
+          ? fallback.documentSettings
+          : detectDocumentSettings(''),
+    }
+  }
+
+  return {
+    ...fallback,
+    byteLength: response.byteLength,
+    modifiedAt: response.modifiedAt,
+    contentHash: response.contentHash,
+    mimeType: response.mimeType,
+    rendererKind: response.rendererKind,
+  } as ProjectFileResource
+}
+
+function isTextRendererKind(value: ProjectFileRendererKindDto): value is ProjectTextRendererKindDto {
+  return value === 'code' || value === 'svg' || value === 'markdown' || value === 'csv' || value === 'html'
+}
+
+function dirtyPathsWithin(dirtyPaths: Set<string>, path: string, type: 'file' | 'folder'): string[] {
+  if (type === 'file') {
+    return dirtyPaths.has(path) ? [path] : []
+  }
+
+  const prefix = path.endsWith('/') ? path : `${path}/`
+  return Array.from(dirtyPaths)
+    .filter((candidate) => candidate === path || candidate.startsWith(prefix))
+    .sort()
+}
+
+function isPersistedEditorDrafts(value: unknown, projectId: string): value is PersistedEditorDrafts {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<PersistedEditorDrafts>
+  return candidate.schema === 'xero.editor.drafts.v1' && candidate.projectId === projectId && typeof candidate.drafts === 'object'
+}
+
 export function useExecutionWorkspaceController({
   projectId,
   active = true,
   listProjectFiles,
   readProjectFile,
   writeProjectFile,
+  statProjectFiles,
+  readProjectUiState,
+  writeProjectUiState,
   createProjectEntry,
   renameProjectEntry,
   moveProjectEntry,
@@ -224,10 +374,14 @@ export function useExecutionWorkspaceController({
   const [documentVersions, setDocumentVersions] = useState<Record<string, number>>({})
   const [lineCounts, setLineCounts] = useState<Record<string, number>>({})
   const [fileResources, setFileResources] = useState<Record<string, ProjectFileResource>>({})
+  const fileResourcesRef = useRef(fileResources)
   const [openTabs, setOpenTabs] = useState<string[]>([])
+  const openTabsRef = useRef(openTabs)
   const [activePath, setActivePath] = useState<string | null>(null)
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['/']))
+  const expandedFoldersRef = useRef(expandedFolders)
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set())
+  const dirtyPathsRef = useRef(dirtyPaths)
   const [searchQuery, setSearchQuery] = useState('')
   const [cursor, setCursor] = useState<CursorPosition>({ line: 1, column: 1 })
   const [isTreeLoading, setIsTreeLoading] = useState(false)
@@ -238,6 +392,17 @@ export function useExecutionWorkspaceController({
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const [newChildTarget, setNewChildTarget] = useState<NewChildTarget | null>(null)
+  const [stalePaths, setStalePaths] = useState<Record<string, StaleOpenFileState>>({})
+  const [saveConflict, setSaveConflict] = useState<SaveConflictState | null>(null)
+  const [dirtyGuard, setDirtyGuard] = useState<DirtyGuardState | null>(null)
+  const [draftsHydrated, setDraftsHydrated] = useState(false)
+
+  fileResourcesRef.current = fileResources
+  openTabsRef.current = openTabs
+  expandedFoldersRef.current = expandedFolders
+  dirtyPathsRef.current = dirtyPaths
+  const fileContentsRef = useRef(fileContents)
+  fileContentsRef.current = fileContents
 
   const commitTreeStore = useCallback((nextStore: ProjectFileTreeStore) => {
     treeStoreRef.current = nextStore
@@ -250,19 +415,25 @@ export function useExecutionWorkspaceController({
   }, [])
 
   const refreshFolder = useCallback(
-    async (path = '/', options: { preserveExpandedFolders?: boolean } = {}) => {
+    async (path = '/', options: RefreshFolderOptions = {}) => {
       const normalizedPath = path || '/'
       const isRootLoad = normalizedPath === '/'
+      const showLoadingState = options.showLoadingState ?? true
+      const reportErrors = options.reportErrors ?? true
       const requestEpoch = loadEpochRef.current
-      if (isRootLoad) {
+      if (showLoadingState && isRootLoad) {
         setIsTreeLoading(true)
       }
-      setLoadingFolders((current) => {
-        const next = new Set(current)
-        next.add(normalizedPath)
-        return next
-      })
-      setWorkspaceError(null)
+      if (showLoadingState) {
+        setLoadingFolders((current) => {
+          const next = new Set(current)
+          next.add(normalizedPath)
+          return next
+        })
+      }
+      if (reportErrors) {
+        setWorkspaceError(null)
+      }
 
       try {
         const response = await treeRequestCoordinatorRef.current.runLatest(
@@ -274,10 +445,21 @@ export function useExecutionWorkspaceController({
           return
         }
 
-        const nextStore = applyProjectFileListing(treeStoreRef.current, response)
+        const previousStore = treeStoreRef.current
+        const nextStore = applyProjectFileListing(previousStore, response)
+        const nextBudgetInfo = getProjectFileTreeBudgetInfo(response)
+        setTreeBudgetInfo((current) =>
+          current.omittedEntryCount === nextBudgetInfo.omittedEntryCount &&
+          current.truncated === nextBudgetInfo.truncated
+            ? current
+            : nextBudgetInfo,
+        )
+        if (nextStore === previousStore) {
+          return
+        }
+
         const nextTree = materializeProjectFileTree(nextStore)
         commitTreeStore(nextStore)
-        setTreeBudgetInfo(getProjectFileTreeBudgetInfo(response))
         setExpandedFolders((current) => {
           if (isRootLoad && (!options.preserveExpandedFolders || current.size === 0)) {
             return defaultExpandedFolders(nextTree)
@@ -298,13 +480,16 @@ export function useExecutionWorkspaceController({
           }
           return next
         })
-        setOpenTabs((current) => current.filter((path) => findNode(nextTree, path)?.type === 'file'))
-        setActivePath((current) => (current && findNode(nextTree, current)?.type === 'file' ? current : null))
+        setOpenTabs((current) => current.filter((path) => shouldKeepOpenPath(nextTree, path)))
+        setActivePath((current) => (current && shouldKeepOpenPath(nextTree, current) ? current : null))
       } catch (error) {
         if (isStaleBackendRequestError(error)) {
           return
         }
         if (requestEpoch !== loadEpochRef.current) {
+          return
+        }
+        if (!reportErrors) {
           return
         }
 
@@ -319,15 +504,17 @@ export function useExecutionWorkspaceController({
         setWorkspaceError(getDesktopErrorMessage(error))
       } finally {
         if (requestEpoch === loadEpochRef.current) {
-          if (isRootLoad) {
+          if (showLoadingState && isRootLoad) {
             setIsTreeLoading(false)
           }
-          setLoadingFolders((current) => {
-            if (!current.has(normalizedPath)) return current
-            const next = new Set(current)
-            next.delete(normalizedPath)
-            return next
-          })
+          if (showLoadingState) {
+            setLoadingFolders((current) => {
+              if (!current.has(normalizedPath)) return current
+              const next = new Set(current)
+              next.delete(normalizedPath)
+              return next
+            })
+          }
         }
       }
     },
@@ -335,17 +522,17 @@ export function useExecutionWorkspaceController({
   )
 
   const refreshTree = useCallback(
-    (options: { preserveExpandedFolders?: boolean } = {}) => refreshFolder('/', options),
+    (options: RefreshFolderOptions = {}) => refreshFolder('/', options),
     [refreshFolder],
   )
 
   const refreshFolderSet = useCallback(
-    async (paths: Iterable<string>) => {
+    async (paths: Iterable<string>, options: RefreshFolderOptions = {}) => {
       const uniquePaths = Array.from(new Set(paths))
         .filter(Boolean)
         .sort((left, right) => left.split('/').length - right.split('/').length)
       for (const path of uniquePaths) {
-        await refreshFolder(path, { preserveExpandedFolders: true })
+        await refreshFolder(path, { ...options, preserveExpandedFolders: true })
       }
     },
     [refreshFolder],
@@ -376,6 +563,10 @@ export function useExecutionWorkspaceController({
     setRenameTarget(null)
     setDeleteTarget(null)
     setNewChildTarget(null)
+    setStalePaths({})
+    setSaveConflict(null)
+    setDirtyGuard(null)
+    setDraftsHydrated(false)
   }, [commitTreeStore, projectId])
 
   useEffect(() => {
@@ -398,7 +589,7 @@ export function useExecutionWorkspaceController({
     setFileResources((current) => filterByExactPaths(current, pathSet))
   }, [])
 
-  const closeTab = useCallback(
+  const closeTabNow = useCallback(
     (path: string) => {
       setOpenTabs((current) => {
         const next = current.filter((candidate) => candidate !== path)
@@ -418,6 +609,17 @@ export function useExecutionWorkspaceController({
       dropCachedPaths([path])
     },
     [activePath, dropCachedPaths],
+  )
+
+  const closeTab = useCallback(
+    (path: string) => {
+      if (dirtyPathsRef.current.has(path)) {
+        setDirtyGuard({ operation: { kind: 'close', path }, paths: [path] })
+        return
+      }
+      closeTabNow(path)
+    },
+    [closeTabNow],
   )
 
   const handleSelectFile = useCallback(
@@ -448,11 +650,18 @@ export function useExecutionWorkspaceController({
 
         const resource = projectFileResourceFromResponse(response)
         setFileResources((current) => ({ ...current, [path]: resource }))
+        setStalePaths((current) => {
+          if (!current[path]) return current
+          const next = { ...current }
+          delete next[path]
+          return next
+        })
 
         if (response.kind === 'text') {
-          setSavedContents((current) => ({ ...current, [path]: response.text }))
-          setFileContents((current) => ({ ...current, [path]: response.text }))
-          setLineCounts((current) => ({ ...current, [path]: countLines(response.text) }))
+          const normalized = normalizeToLf(response.text)
+          setSavedContents((current) => ({ ...current, [path]: normalized }))
+          setFileContents((current) => ({ ...current, [path]: normalized }))
+          setLineCounts((current) => ({ ...current, [path]: countLines(normalized) }))
         }
 
         openFile(path)
@@ -574,17 +783,34 @@ export function useExecutionWorkspaceController({
     setDocumentVersions((current) => ({ ...current, [path]: (current[path] ?? 0) + 1 }))
   }, [])
 
-  const saveActive = useCallback(async (snapshot?: string) => {
-    if (!activePath) {
-      return
-    }
+  const showSaveConflict = useCallback(
+    async (path: string, mine: string) => {
+      try {
+        const diskResponse = await readProjectFile(projectId, path)
+        if (diskResponse.kind !== 'text') {
+          setWorkspaceError(`Xero cannot compare ${path} because it is no longer a text file.`)
+          return
+        }
+        setSaveConflict({
+          path,
+          mine,
+          disk: normalizeToLf(diskResponse.text),
+          diskResource: projectFileResourceFromResponse(diskResponse) as Extract<ProjectFileResource, { kind: 'text' }>,
+          detectedAt: new Date().toISOString(),
+        })
+      } catch (error) {
+        setWorkspaceError(getDesktopErrorMessage(error))
+      }
+    },
+    [projectId, readProjectFile],
+  )
 
-    if (fileResources[activePath]?.kind !== 'text') {
-      return
+  const savePath = useCallback(async (path: string, snapshot?: string, options: { overwrite?: boolean } = {}) => {
+    const resource = fileResourcesRef.current[path]
+    if (resource?.kind !== 'text') {
+      return false
     }
-
     const requestEpoch = loadEpochRef.current
-    const path = activePath
     const content = snapshot ?? fileContents[path] ?? ''
     setFileContents((current) => {
       if (current[path] === content) {
@@ -603,30 +829,101 @@ export function useExecutionWorkspaceController({
     setWorkspaceError(null)
 
     try {
-      await writeProjectFile(projectId, path, content)
+      if (!options.overwrite && stalePaths[path]) {
+        await showSaveConflict(path, content)
+        return false
+      }
+
+      const payload = serializeWithSettings(content, resource.documentSettings)
+      const response = await writeProjectFile(projectId, path, payload, {
+        expectedContentHash: resource.contentHash,
+        expectedModifiedAt: resource.modifiedAt,
+        overwrite: options.overwrite ?? false,
+      })
       if (requestEpoch !== loadEpochRef.current) {
-        return
+        return false
       }
 
       setSavedContents((current) => ({ ...current, [path]: content }))
+      setFileResources((current) => ({
+        ...current,
+        [path]: projectFileResourceFromWriteResponse(response, current[path] ?? resource),
+      }))
       setDirtyPaths((current) => {
         if (!current.has(path)) return current
         const next = new Set(current)
         next.delete(path)
         return next
       })
+      setStalePaths((current) => {
+        if (!current[path]) return current
+        const next = { ...current }
+        delete next[path]
+        return next
+      })
+      return true
     } catch (error) {
       if (requestEpoch !== loadEpochRef.current) {
-        return
+        return false
+      }
+
+      if (error instanceof XeroDesktopError && error.code === 'project_file_changed_since_read') {
+        await showSaveConflict(path, content)
+        return false
       }
 
       setWorkspaceError(getDesktopErrorMessage(error))
+      return false
     } finally {
       if (requestEpoch === loadEpochRef.current) {
         setSavingPath((current) => (current === path ? null : current))
       }
     }
-  }, [activePath, fileContents, fileResources, projectId, writeProjectFile])
+  }, [fileContents, projectId, showSaveConflict, stalePaths, writeProjectFile])
+
+  const saveActive = useCallback(async (snapshot?: string) => {
+    if (!activePath) {
+      return false
+    }
+
+    return savePath(activePath, snapshot)
+  }, [activePath, savePath])
+
+  const saveAll = useCallback(
+    async (overrides: Record<string, string | undefined> = {}) => {
+      const dirty = Array.from(dirtyPathsRef.current)
+      if (dirty.length === 0) return
+      for (const path of dirty) {
+        const latest = overrides[path] ?? fileContentsRef.current[path]
+        await savePath(path, latest)
+      }
+    },
+    [savePath],
+  )
+
+  const closeOthers = useCallback(() => {
+    if (!activePath) return
+    const others = openTabsRef.current.filter((path) => path !== activePath)
+    const cleanOthers = others.filter((path) => !dirtyPathsRef.current.has(path))
+    const dirtyOthers = others.filter((path) => dirtyPathsRef.current.has(path))
+    if (dirtyOthers.length > 0) {
+      setDirtyGuard({
+        operation: { kind: 'close-others' },
+        paths: dirtyOthers.sort(),
+      })
+      return
+    }
+    for (const path of cleanOthers) {
+      closeTabNow(path)
+    }
+  }, [activePath, closeTabNow])
+
+  const closeSaved = useCallback(() => {
+    const saved = openTabsRef.current.filter((path) => !dirtyPathsRef.current.has(path))
+    for (const path of saved) {
+      closeTabNow(path)
+    }
+  }, [closeTabNow])
 
   const revertActive = useCallback(() => {
     if (!activePath) {
@@ -649,7 +946,7 @@ export function useExecutionWorkspaceController({
     })
   }, [activePath, bumpDocumentVersion, fileResources, savedContents])
 
-  const reloadProjectTree = useCallback(() => {
+  const reloadProjectTreeNow = useCallback(() => {
     const cleanOpenTabs = openTabs.filter((path) => !dirtyPaths.has(path))
     dropCachedPaths(cleanOpenTabs)
     void refreshTree({ preserveExpandedFolders: true }).then(() => {
@@ -659,15 +956,54 @@ export function useExecutionWorkspaceController({
     })
   }, [activePath, dirtyPaths, dropCachedPaths, handleSelectFile, openTabs, refreshTree])
 
+  const reloadProjectTree = useCallback(() => {
+    const dirty = Array.from(dirtyPathsRef.current)
+    if (dirty.length > 0) {
+      setDirtyGuard({ operation: { kind: 'reload' }, paths: dirty.sort() })
+      return
+    }
+    reloadProjectTreeNow()
+  }, [reloadProjectTreeNow])
+
   const collapseAll = useCallback(() => {
     setExpandedFolders(new Set(['/']))
   }, [])
 
+  const revealPathInExplorer = useCallback(
+    async (path: string) => {
+      if (!path.startsWith('/')) return
+      const ancestors = ancestorFolderPaths(path)
+      setExpandedFolders((current) => {
+        const next = new Set(current)
+        for (const ancestor of ancestors) {
+          next.add(ancestor)
+        }
+        return next
+      })
+      for (const ancestor of ancestors) {
+        if (!isFolderLoaded(treeStoreRef.current, ancestor)) {
+          await refreshFolder(ancestor, { preserveExpandedFolders: true })
+        }
+      }
+    },
+    [refreshFolder],
+  )
+
   const handleRequestRename = useCallback((path: string, type: 'file' | 'folder') => {
+    const dirty = dirtyPathsWithin(dirtyPathsRef.current, path, type)
+    if (dirty.length > 0) {
+      setDirtyGuard({ operation: { kind: 'rename', path, entryType: type }, paths: dirty })
+      return
+    }
     setRenameTarget({ path, type })
   }, [])
 
   const handleRequestDelete = useCallback((path: string, type: 'file' | 'folder') => {
+    const dirty = dirtyPathsWithin(dirtyPathsRef.current, path, type)
+    if (dirty.length > 0) {
+      setDirtyGuard({ operation: { kind: 'delete', path, entryType: type }, paths: dirty })
+      return
+    }
     setDeleteTarget({ path, type })
   }, [])
 
@@ -838,6 +1174,7 @@ export function useExecutionWorkspaceController({
               byteLength: 0,
               modifiedAt: new Date(0).toISOString(),
               contentHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+              documentSettings: detectDocumentSettings(''),
             },
           }))
           openFile(response.path)
@@ -902,6 +1239,326 @@ export function useExecutionWorkspaceController({
     [expandedFolders, moveProjectEntry, projectId, refreshFolderSet],
   )
 
+  const discardDrafts = useCallback(
+    (paths: string[]) => {
+      setDirtyPaths((current) => {
+        const next = new Set(current)
+        for (const path of paths) {
+          next.delete(path)
+        }
+        return next
+      })
+      setFileContents((current) => {
+        const next = { ...current }
+        for (const path of paths) {
+          next[path] = savedContents[path] ?? ''
+        }
+        return next
+      })
+      setLineCounts((current) => {
+        const next = { ...current }
+        for (const path of paths) {
+          next[path] = countLines(savedContents[path] ?? '')
+        }
+        return next
+      })
+      for (const path of paths) {
+        bumpDocumentVersion(path)
+      }
+    },
+    [bumpDocumentVersion, savedContents],
+  )
+
+  const continueAfterDirtyGuard = useCallback(
+    (operation: DirtyGuardOperation) => {
+      if (operation.kind === 'close') {
+        closeTabNow(operation.path)
+        return
+      }
+      if (operation.kind === 'rename') {
+        setRenameTarget({ path: operation.path, type: operation.entryType })
+        return
+      }
+      if (operation.kind === 'delete') {
+        setDeleteTarget({ path: operation.path, type: operation.entryType })
+        return
+      }
+      if (operation.kind === 'close-others') {
+        const currentActivePath = activePath
+        for (const path of openTabsRef.current.slice()) {
+          if (path !== currentActivePath) {
+            closeTabNow(path)
+          }
+        }
+        return
+      }
+      if (operation.kind === 'save-all') {
+        return
+      }
+
+      const cachedTabs = openTabsRef.current
+      dropCachedPaths(cachedTabs)
+      void refreshTree({ preserveExpandedFolders: true }).then(() => {
+        const currentActivePath = activePath
+        if (currentActivePath && cachedTabs.includes(currentActivePath)) {
+          void handleSelectFile(currentActivePath, { force: true })
+        }
+      })
+    },
+    [activePath, closeTabNow, dropCachedPaths, handleSelectFile, refreshTree],
+  )
+
+  const saveDirtyGuard = useCallback(async () => {
+    if (!dirtyGuard) return
+    for (const path of dirtyGuard.paths) {
+      const saved = await savePath(path)
+      if (!saved) return
+    }
+    const operation = dirtyGuard.operation
+    setDirtyGuard(null)
+    continueAfterDirtyGuard(operation)
+  }, [continueAfterDirtyGuard, dirtyGuard, savePath])
+
+  const discardDirtyGuard = useCallback(() => {
+    if (!dirtyGuard) return
+    const operation = dirtyGuard.operation
+    discardDrafts(dirtyGuard.paths)
+    setDirtyGuard(null)
+    continueAfterDirtyGuard(operation)
+  }, [continueAfterDirtyGuard, dirtyGuard, discardDrafts])
+
+  const cancelDirtyGuard = useCallback(() => {
+    setDirtyGuard(null)
+  }, [])
+
+  const reloadSaveConflictFromDisk = useCallback(() => {
+    if (!saveConflict) return
+    const { path, disk, diskResource } = saveConflict
+    setSavedContents((current) => ({ ...current, [path]: disk }))
+    setFileContents((current) => ({ ...current, [path]: disk }))
+    setFileResources((current) => ({ ...current, [path]: diskResource }))
+    setLineCounts((current) => ({ ...current, [path]: countLines(disk) }))
+    bumpDocumentVersion(path)
+    setDirtyPaths((current) => {
+      if (!current.has(path)) return current
+      const next = new Set(current)
+      next.delete(path)
+      return next
+    })
+    setStalePaths((current) => {
+      if (!current[path]) return current
+      const next = { ...current }
+      delete next[path]
+      return next
+    })
+    setSaveConflict(null)
+  }, [bumpDocumentVersion, saveConflict])
+
+  const overwriteSaveConflict = useCallback(async () => {
+    if (!saveConflict) return
+    const conflict = saveConflict
+    setSaveConflict(null)
+    const saved = await savePath(conflict.path, conflict.mine, { overwrite: true })
+    if (!saved) {
+      setSaveConflict(conflict)
+    }
+  }, [saveConflict, savePath])
+
+  const keepMineSaveConflict = useCallback(() => {
+    setSaveConflict(null)
+  }, [])
+
+  useEffect(() => {
+    if (!active || !readProjectUiState || draftsHydrated) {
+      if (!readProjectUiState && !draftsHydrated) setDraftsHydrated(true)
+      return
+    }
+
+    let cancelled = false
+    const requestEpoch = loadEpochRef.current
+    void readProjectUiState({ projectId, key: EDITOR_DRAFTS_UI_STATE_KEY })
+      .then(async (response) => {
+        if (cancelled || requestEpoch !== loadEpochRef.current) return
+        if (!isPersistedEditorDrafts(response.value, projectId)) {
+          setDraftsHydrated(true)
+          return
+        }
+
+        const entries = Object.entries(response.value.drafts)
+          .filter(([path, draft]) => path.startsWith('/') && typeof draft.content === 'string')
+          .slice(0, 20)
+        if (entries.length === 0) {
+          setDraftsHydrated(true)
+          return
+        }
+
+        const restoredResources: Record<string, ProjectFileResource> = {}
+        const restoredSaved: Record<string, string> = {}
+        const restoredContents: Record<string, string> = {}
+        const restoredLines: Record<string, number> = {}
+        const restoredDirty = new Set<string>()
+        const restoredTabs: string[] = []
+        const restoredStale: Record<string, StaleOpenFileState> = {}
+
+        for (const [path, draft] of entries) {
+          try {
+            const disk = await readProjectFile(projectId, path)
+            if (cancelled || requestEpoch !== loadEpochRef.current) return
+            if (disk.kind !== 'text') continue
+            const resource = projectFileResourceFromResponse(disk)
+            restoredResources[path] = resource
+            restoredSaved[path] = normalizeToLf(disk.text)
+            restoredContents[path] = normalizeToLf(draft.content)
+            restoredLines[path] = countLines(normalizeToLf(draft.content))
+            restoredDirty.add(path)
+            restoredTabs.push(path)
+            if (
+              draft.savedContentHash &&
+              draft.savedContentHash !== disk.contentHash
+            ) {
+              restoredStale[path] = { kind: 'changed', detectedAt: new Date().toISOString() }
+            }
+          } catch {
+            // Draft recovery is best effort. The persisted content stays in app-data
+            // until a successful write clears it.
+          }
+        }
+
+        if (cancelled || requestEpoch !== loadEpochRef.current) return
+        if (restoredTabs.length > 0) {
+          setFileResources((current) => ({ ...current, ...restoredResources }))
+          setSavedContents((current) => ({ ...current, ...restoredSaved }))
+          setFileContents((current) => ({ ...current, ...restoredContents }))
+          setLineCounts((current) => ({ ...current, ...restoredLines }))
+          setDirtyPaths((current) => new Set([...Array.from(current), ...Array.from(restoredDirty)]))
+          setOpenTabs((current) => Array.from(new Set([...current, ...restoredTabs])))
+          setActivePath((current) => current ?? restoredTabs[0] ?? null)
+          setStalePaths((current) => ({ ...current, ...restoredStale }))
+        }
+        setDraftsHydrated(true)
+      })
+      .catch(() => {
+        if (!cancelled && requestEpoch === loadEpochRef.current) {
+          setDraftsHydrated(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [active, draftsHydrated, projectId, readProjectFile, readProjectUiState])
+
+  useEffect(() => {
+    if (!writeProjectUiState || !draftsHydrated) return
+    const persistDrafts = () => {
+      const drafts: PersistedEditorDrafts['drafts'] = {}
+      for (const path of dirtyPathsRef.current) {
+        const resource = fileResourcesRef.current[path]
+        if (resource?.kind !== 'text') continue
+        drafts[path] = {
+          content: fileContents[path] ?? '',
+          savedContentHash: resource.contentHash,
+          savedModifiedAt: resource.modifiedAt,
+          updatedAt: new Date().toISOString(),
+        }
+      }
+      const value: PersistedEditorDrafts | null =
+        Object.keys(drafts).length > 0
+          ? {
+              schema: 'xero.editor.drafts.v1',
+              projectId,
+              updatedAt: new Date().toISOString(),
+              drafts,
+            }
+          : null
+      void writeProjectUiState({ projectId, key: EDITOR_DRAFTS_UI_STATE_KEY, value }).catch(() => {})
+    }
+    const handle = window.setTimeout(persistDrafts, DRAFT_PERSIST_DEBOUNCE_MS)
+    return () => {
+      window.clearTimeout(handle)
+      persistDrafts()
+    }
+  }, [dirtyPaths, draftsHydrated, fileContents, projectId, writeProjectUiState])
+
+  useEffect(() => {
+    if (!active || dirtyPaths.size === 0 || typeof window === 'undefined') return
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [active, dirtyPaths])
+
+  useEffect(() => {
+    if (!active || !statProjectFiles) return
+
+    let cancelled = false
+    const checkOpenFiles = async () => {
+      const paths = openTabsRef.current.filter((path) => fileResourcesRef.current[path])
+      if (paths.length === 0) return
+      try {
+        const response = await statProjectFiles(projectId, paths)
+        if (cancelled) return
+        setStalePaths((current) => {
+          let changed = false
+          const next = { ...current }
+          const seen = new Set<string>()
+          for (const file of response.files) {
+            seen.add(file.path)
+            const resource = fileResourcesRef.current[file.path]
+            if (!resource) continue
+            if (file.kind === 'missing') {
+              if (next[file.path]?.kind !== 'deleted') {
+                next[file.path] = { kind: 'deleted', detectedAt: new Date().toISOString() }
+                changed = true
+              }
+              continue
+            }
+            if (file.kind !== 'file') continue
+            const isStale = file.contentHash !== resource.contentHash || file.modifiedAt !== resource.modifiedAt
+            if (isStale && next[file.path]?.kind !== 'changed') {
+              next[file.path] = { kind: 'changed', detectedAt: new Date().toISOString() }
+              changed = true
+            } else if (!isStale && next[file.path]) {
+              delete next[file.path]
+              changed = true
+            }
+          }
+          for (const path of paths) {
+            if (!seen.has(path) && next[path]?.kind !== 'deleted') {
+              next[path] = { kind: 'deleted', detectedAt: new Date().toISOString() }
+              changed = true
+            }
+          }
+          return changed ? next : current
+        })
+      } catch {
+        // Polling is a freshness aid; command failures should not block typing.
+      }
+    }
+
+    void checkOpenFiles()
+    const handle = window.setInterval(() => {
+      void checkOpenFiles()
+    }, OPEN_FILE_STAT_POLL_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(handle)
+    }
+  }, [active, projectId, statProjectFiles])
+
+  useEffect(() => {
+    if (!active) return
+    const handle = window.setInterval(() => {
+      void refreshFolderSet(expandedFoldersRef.current, {
+        reportErrors: false,
+        showLoadingState: false,
+      })
+    }, TREE_REFRESH_POLL_MS)
+    return () => window.clearInterval(handle)
+  }, [active, refreshFolderSet])
+
   const activeNode = useMemo(() => (activePath ? findNode(tree, activePath) : null), [activePath, tree])
   const activeResource = activePath ? fileResources[activePath] ?? null : null
   const activeContent = activePath ? fileContents[activePath] ?? '' : ''
@@ -937,6 +1594,9 @@ export function useExecutionWorkspaceController({
     setDeleteTarget,
     newChildTarget,
     setNewChildTarget,
+    stalePaths,
+    saveConflict,
+    dirtyGuard,
     activeNode,
     activeResource,
     activeContent,
@@ -949,15 +1609,19 @@ export function useExecutionWorkspaceController({
     isActiveLoading,
     isActiveText,
     closeTab,
+    closeOthers,
+    closeSaved,
     handleSelectFile,
     handleToggleFolder,
     handleSnapshotChange,
     handleDirtyChange,
     handleDocumentStatsChange,
     saveActive,
+    saveAll,
     revertActive,
     reloadProjectTree,
     collapseAll,
+    revealPathInExplorer,
     handleRequestRename,
     handleRequestDelete,
     handleRequestNewFile,
@@ -967,5 +1631,11 @@ export function useExecutionWorkspaceController({
     handleRenameSubmit,
     handleDeleteSubmit,
     handleCreateSubmit,
+    saveDirtyGuard,
+    discardDirtyGuard,
+    cancelDirtyGuard,
+    reloadSaveConflictFromDisk,
+    overwriteSaveConflict,
+    keepMineSaveConflict,
   }
 }

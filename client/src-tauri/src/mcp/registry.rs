@@ -363,7 +363,8 @@ pub fn apply_mcp_registry_import(
                 Some(validated.id.clone()),
                 format!(
                     "Xero rejected MCP import entry #{index} from {} because id `{}` was duplicated in the import batch.",
-                    source_path.display(), validated.id
+                    source_path.display(),
+                    validated.id
                 ),
             );
             continue;

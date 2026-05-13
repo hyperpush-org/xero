@@ -155,7 +155,7 @@ pub fn resolve(program_id: &str, instruction: &str, args: &ResolveArgs) -> Known
         None => {
             return KnownProgramLookup::UnknownProgram {
                 program_id: program_id.to_string(),
-            }
+            };
         }
     };
 
@@ -385,8 +385,18 @@ fn resolve_jupiter(instruction: &str, args: &ResolveArgs) -> Option<Partial> {
     match instruction {
         "route" | "sharedAccountsRoute" => Some(Partial {
             accounts: vec![
-                meta("userTransferAuthority", args.authority.as_deref(), true, false),
-                meta("userSourceTokenAccount", args.source.as_deref(), false, true),
+                meta(
+                    "userTransferAuthority",
+                    args.authority.as_deref(),
+                    true,
+                    false,
+                ),
+                meta(
+                    "userSourceTokenAccount",
+                    args.source.as_deref(),
+                    false,
+                    true,
+                ),
                 meta(
                     "userDestinationTokenAccount",
                     args.destination.as_deref(),
@@ -459,7 +469,9 @@ fn resolve_raydium(instruction: &str, _args: &ResolveArgs) -> Option<Partial> {
                 AccountMetaSpec::placeholder("userDestinationTokenAccount", false, true),
                 AccountMetaSpec::placeholder("userOwner", true, false),
             ],
-            notes: vec!["Raydium classic AMM accounts are brittle — prefer swapping via Jupiter V6 if possible."],
+            notes: vec![
+                "Raydium classic AMM accounts are brittle — prefer swapping via Jupiter V6 if possible.",
+            ],
         }),
         _ => None,
     }

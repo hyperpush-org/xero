@@ -173,8 +173,9 @@ const FIT_VIEW_TRANSITION_MS = 420
 const CONTROL_ZOOM_TRANSITION_MS = 180
 const CANVAS_CONTROL_ICON_CLASS = 'h-[18px] w-[18px]'
 const PROPERTIES_PANEL_FOCUS_FOOTPRINT_PX = 320
-// Initial authoring can mount while the agent dock is opening; allow a couple
-// of measured-size corrections without turning every later resize into a refit.
+// Initial authoring can mount while app chrome is opening or after a blank
+// canvas was already shown; allow a couple of measured-size corrections
+// without turning every later resize into a refit.
 const CREATE_MODE_INITIAL_FIT_MAX_PASSES = 3
 const CREATE_MODE_INITIAL_FIT_TRANSITION_MS = 0
 const CREATE_MODE_REFIT_TRANSITION_MS = 180
@@ -661,14 +662,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
-function nodePositionForViewportBounds(node: Node): XYPosition {
-  const internals = node as Node & {
-    internals?: { positionAbsolute?: XYPosition }
-    positionAbsolute?: XYPosition
-  }
-  return internals.positionAbsolute ?? internals.internals?.positionAbsolute ?? node.position
-}
-
 function nodeAbsolutePositionFromList(
   node: Node,
   nodesById: ReadonlyMap<string, Node>,
@@ -707,6 +700,7 @@ function nodeSizeForViewportBounds(node: Node): NodeSize {
 }
 
 function visibleNodeBounds(nodes: readonly Node[]): NodeViewportBounds | null {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]))
   let minX = Number.POSITIVE_INFINITY
   let minY = Number.POSITIVE_INFINITY
   let maxX = Number.NEGATIVE_INFINITY
@@ -714,7 +708,7 @@ function visibleNodeBounds(nodes: readonly Node[]): NodeViewportBounds | null {
 
   for (const node of nodes) {
     if (!node.type || node.hidden) continue
-    const position = nodePositionForViewportBounds(node)
+    const position = nodeAbsolutePositionFromList(node, nodesById)
     const size = nodeSizeForViewportBounds(node)
     minX = Math.min(minX, position.x)
     minY = Math.min(minY, position.y)
@@ -4187,9 +4181,12 @@ function AgentVisualizationInner({
     }
   }, [active, computedNodes.length, editing, hasIncomingDetail, reactFlow, viewFitKey])
 
+  const effectiveCanvasMode = mode ?? 'create'
+  const isInitialFitAuthoring =
+    editing && (effectiveCanvasMode === 'create' || effectiveCanvasMode === 'duplicate')
   const createModeFitNodeBounds = useMemo(
-    () => (editing && (mode ?? 'create') === 'create' ? visibleNodeBounds(nodes) : null),
-    [editing, mode, nodes],
+    () => (isInitialFitAuthoring ? visibleNodeBounds(nodes) : null),
+    [isInitialFitAuthoring, nodes],
   )
   const createModeFitKey = createModeFitNodeBounds
     ? `${canvasBoundsKey}:${viewportBoundsKey(createModeFitNodeBounds)}`
@@ -4203,9 +4200,9 @@ function AgentVisualizationInner({
   const createModeInitialFitReadyRef = useRef(false)
   const createModeInitialFitRevealTimerRef = useRef<number | null>(null)
   const [createModeInitialFitReady, setCreateModeInitialFitReady] = useState(false)
-  const isCreateModeAuthoring = editing && (mode ?? 'create') === 'create'
+  const hideDuringInitialAuthoringFit = editing && effectiveCanvasMode === 'create'
   useEffect(() => {
-    if (!active || !isCreateModeAuthoring) {
+    if (!active || !isInitialFitAuthoring) {
       createModeWasActiveRef.current = false
       createModeViewportFittedRef.current = false
       createModeInitialFitReadyRef.current = false
@@ -4233,7 +4230,7 @@ function AgentVisualizationInner({
     return () => {
       createModeWasActiveRef.current = false
     }
-  }, [active, isCreateModeAuthoring])
+  }, [active, isInitialFitAuthoring])
 
   useEffect(
     () => () => {
@@ -4246,7 +4243,7 @@ function AgentVisualizationInner({
   )
 
   useEffect(() => {
-    if (!active || !editing || (mode ?? 'create') !== 'create') {
+    if (!active || !isInitialFitAuthoring) {
       initialCreateFitKeyRef.current = null
       initialCreateFitCanvasBoundsKeyRef.current = null
       initialCreateFitPassCountRef.current = 0
@@ -4317,9 +4314,8 @@ function AgentVisualizationInner({
     createModeFitKey,
     createModeFitNodeBounds,
     createModeHasSelection,
-    editing,
     hasDetail,
-    mode,
+    isInitialFitAuthoring,
     nodes.length,
     reactFlow,
   ])
@@ -4526,7 +4522,7 @@ function AgentVisualizationInner({
       <AgentCanvasExpansionContext.Provider value={expansionValue}>
         <div
           ref={canvasRef}
-          className={`agent-visualization${isAgentExiting ? ' is-agent-exiting' : ''}${canvasInteractionsLocked ? ' is-locked' : ''}${editing ? ' is-editing' : ''}${isCreateModeAuthoring && !createModeInitialFitReady ? ' is-initial-fit-pending' : ''}${selectedAuthoringNodeId ? ' is-node-focused' : ''} h-full w-full`}
+          className={`agent-visualization${isAgentExiting ? ' is-agent-exiting' : ''}${canvasInteractionsLocked ? ' is-locked' : ''}${editing ? ' is-editing' : ''}${hideDuringInitialAuthoringFit && !createModeInitialFitReady ? ' is-initial-fit-pending' : ''}${selectedAuthoringNodeId ? ' is-node-focused' : ''} h-full w-full`}
           aria-label={editing ? 'Agent authoring canvas' : undefined}
         >
           <ReactFlow

@@ -183,7 +183,10 @@ impl XeroPluginManifest {
             if !skill_ids.insert(id.clone()) {
                 return Err(CommandError::user_fixable(
                     "xero_plugin_manifest_duplicate_id",
-                    format!("Xero rejected plugin `{}` because skill contribution `{id}` was duplicated.", self.id),
+                    format!(
+                        "Xero rejected plugin `{}` because skill contribution `{id}` was duplicated.",
+                        self.id
+                    ),
                 ));
             }
             let path = normalize_plugin_relative_path(&skill.path)?;
@@ -198,7 +201,10 @@ impl XeroPluginManifest {
             if !command_ids.insert(id.clone()) {
                 return Err(CommandError::user_fixable(
                     "xero_plugin_manifest_duplicate_id",
-                    format!("Xero rejected plugin `{}` because command contribution `{id}` was duplicated.", self.id),
+                    format!(
+                        "Xero rejected plugin `{}` because command contribution `{id}` was duplicated.",
+                        self.id
+                    ),
                 ));
             }
             let label = normalize_required(command.label, "command.label")?;
@@ -231,7 +237,9 @@ impl XeroPluginManifest {
             if !seen_locations.insert((format!("{:?}", location.kind), path.clone())) {
                 return Err(CommandError::user_fixable(
                     "xero_plugin_manifest_duplicate_id",
-                    format!("Xero rejected plugin `{id}` because entry location `{path}` was duplicated."),
+                    format!(
+                        "Xero rejected plugin `{id}` because entry location `{path}` was duplicated."
+                    ),
                 ));
             }
             ensure_plugin_path_stays_inside(
@@ -582,7 +590,9 @@ fn ensure_plugin_path_stays_inside(
     if !canonical.starts_with(plugin_root) {
         return Err(CommandError::user_fixable(
             "xero_plugin_path_outside_root",
-            format!("Xero rejected plugin entry `{relative}` because it resolves outside the plugin root."),
+            format!(
+                "Xero rejected plugin entry `{relative}` because it resolves outside the plugin root."
+            ),
         ));
     }
     if expected_directory && !canonical.is_dir() {

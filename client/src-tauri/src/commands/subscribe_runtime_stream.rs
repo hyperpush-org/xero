@@ -3522,7 +3522,9 @@ mod tests {
         assert_eq!(retrieval.tool_state, Some(RuntimeToolCallState::Succeeded));
         assert_eq!(
             retrieval.detail.as_deref(),
-            Some("action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB.")
+            Some(
+                "action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
+            )
         );
         assert!(retrieval
             .tool_result_preview

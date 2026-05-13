@@ -4006,7 +4006,7 @@ fn normalized_external_signal(signal: Option<&str>) -> CommandResult<ExternalSig
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_process_manager_signal_invalid",
                     "Xero supports external signals TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, and CONT.",
-                ))
+                ));
             }
         };
         Ok(signal)
@@ -4026,7 +4026,7 @@ fn normalized_external_signal(signal: Option<&str>) -> CommandResult<ExternalSig
                 return Err(CommandError::user_fixable(
                     "autonomous_tool_process_manager_signal_invalid",
                     "Xero supports external Windows signals TERM and KILL.",
-                ))
+                ));
             }
         };
         Ok(signal)

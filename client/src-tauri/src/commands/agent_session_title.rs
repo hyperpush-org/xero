@@ -3,10 +3,11 @@ use tauri::{AppHandle, Runtime, State};
 use crate::{
     auth::now_timestamp,
     commands::{
-        agent_session::agent_session_dto, runtime_support::resolve_owned_agent_provider_config,
+        agent_session::agent_session_dto, default_runtime_agent_id,
+        runtime_support::resolve_owned_agent_provider_config,
         runtime_support::resolve_project_root, validate_non_empty, AgentSessionDto,
         AutoNameAgentSessionRequestDto, CommandError, CommandResult,
-        ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
+        ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto,
         RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
     },
     db::project_store::{self, AgentSessionUpdateRecord, DEFAULT_AGENT_SESSION_TITLE},
@@ -168,7 +169,7 @@ fn title_generation_control_state(
         active: RuntimeRunActiveControlSnapshotDto {
             runtime_agent_id: controls
                 .map(|controls| controls.runtime_agent_id)
-                .unwrap_or(RuntimeAgentIdDto::Ask),
+                .unwrap_or_else(default_runtime_agent_id),
             agent_definition_id: controls.and_then(|controls| controls.agent_definition_id.clone()),
             agent_definition_version: None,
             provider_profile_id: controls.and_then(|controls| controls.provider_profile_id.clone()),

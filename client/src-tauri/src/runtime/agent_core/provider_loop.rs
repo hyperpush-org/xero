@@ -80,6 +80,7 @@ pub(crate) fn drive_provider_loop(
         let owned_process_summary = tool_runtime.owned_process_lifecycle_summary()?;
         let skill_contexts = skill_contexts_from_provider_messages(&messages)?;
         let run_snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
+        workspace_guard.record_persisted_observations(&run_snapshot)?;
         let agent_definition_snapshot =
             load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
         let attached_skill_contexts = attached_skill_contexts_for_provider_turn(
@@ -694,8 +695,7 @@ fn fail_closed_if_context_over_budget(
         "agent_context_budget_exceeded",
         format!(
             "Xero assembled provider context for run `{run_id}` at {} tokens, which exceeds the known {:?} token input budget. The provider turn was not submitted; compact, hand off, or reduce context before continuing.",
-            manifest.estimated_tokens,
-            manifest.budget_tokens
+            manifest.estimated_tokens, manifest.budget_tokens
         ),
     ))
 }

@@ -11472,6 +11472,9 @@ mod tests {
                         Ok((mut stream, _)) => {
                             request_count_for_thread
                                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            stream
+                                .set_nonblocking(false)
+                                .expect("configure mock probe stream");
                             read_http_request(&mut stream);
                             let body =
                                 serde_json::to_string(&response).expect("serialize probe response");

@@ -762,7 +762,7 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
         ]
         .join("\n"),
         RuntimeAgentIdDto::Generalist => [
-            "You are Xero's Generalist agent — the user's first stop for any task. You have the full engineering toolset (read, edit, shell, subagents) and act like a production coding agent when the work is straightforward.",
+            "You are Xero's Agent — the user's first stop for any task. You have the full engineering toolset (read, edit, shell, subagents) and act like a production coding agent when the work is straightforward.",
             "",
             "Before starting work, judge the shape of the request. If a specialist agent (`plan`, `engineer`, or `debug`) is clearly a better fit, surface a routing suggestion to the user before you proceed.",
             "",
@@ -770,7 +770,7 @@ pub(crate) fn base_policy_fragment(runtime_agent_id: RuntimeAgentIdDto) -> Strin
             "",
             "<xero-routing-suggestion target=\"plan|engineer|debug\" reason=\"short rationale\" summary=\"one-sentence carry-over summary for the new agent\"/>",
             "",
-            "After the marker, continue your response with a short human paragraph explaining the recommendation. The UI parses the marker and renders a choice card; the user picks `Switch to <target>` (then sends their next message under the new agent) or `Continue with Generalist` (then you proceed yourself).",
+            "After the marker, continue your response with a short human paragraph explaining the recommendation. The UI parses the marker and renders a choice card; the user picks `Switch to <target>` (then sends their next message under the new agent) or `Continue with Agent` (then you proceed yourself).",
             "",
             "Routing criteria:",
             "- Multi-file refactor, ambiguous scope, work that needs upfront design, or the user explicitly asks for a plan → target `plan`.",
@@ -3005,10 +3005,17 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             object_schema(
                 &["path"],
                 &[
-                    ("path", string_schema("Repo-relative file path to read. Absolute paths require systemPath=true and operator approval.")),
+                    (
+                        "path",
+                        string_schema(
+                            "Repo-relative file path to read. Absolute paths require systemPath=true and operator approval.",
+                        ),
+                    ),
                     (
                         "systemPath",
-                        boolean_schema("Treat path as an absolute or ~-relative system path. Requires operator approval."),
+                        boolean_schema(
+                            "Treat path as an absolute or ~-relative system path. Requires operator approval.",
+                        ),
                     ),
                     (
                         "mode",
@@ -3031,11 +3038,15 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "byteCount",
-                        integer_schema("Maximum bytes to return when byteOffset or byteCount is set."),
+                        integer_schema(
+                            "Maximum bytes to return when byteOffset or byteCount is set.",
+                        ),
                     ),
                     (
                         "includeLineHashes",
-                        boolean_schema("Include SHA-256 hashes for returned text lines so later edits can use startLineHash/endLineHash anchors."),
+                        boolean_schema(
+                            "Include SHA-256 hashes for returned text lines so later edits can use startLineHash/endLineHash anchors.",
+                        ),
                     ),
                 ],
             ),
@@ -3051,10 +3062,24 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "path",
                         string_schema("Optional repo-relative directory scope."),
                     ),
-                    ("regex", boolean_schema("Treat query as a regex instead of literal text.")),
-                    ("ignoreCase", boolean_schema("Use case-insensitive matching.")),
-                    ("includeHidden", boolean_schema("Include hidden dotfiles/directories.")),
-                    ("includeIgnored", boolean_schema("Include files ignored by .gitignore and global git excludes.")),
+                    (
+                        "regex",
+                        boolean_schema("Treat query as a regex instead of literal text."),
+                    ),
+                    (
+                        "ignoreCase",
+                        boolean_schema("Use case-insensitive matching."),
+                    ),
+                    (
+                        "includeHidden",
+                        boolean_schema("Include hidden dotfiles/directories."),
+                    ),
+                    (
+                        "includeIgnored",
+                        boolean_schema(
+                            "Include files ignored by .gitignore and global git excludes.",
+                        ),
+                    ),
                     (
                         "includeGlobs",
                         json!({
@@ -3073,7 +3098,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "contextLines",
-                        integer_schema("Number of surrounding lines per match, capped by the runtime."),
+                        integer_schema(
+                            "Number of surrounding lines per match, capped by the runtime.",
+                        ),
                     ),
                     (
                         "maxResults",
@@ -3127,10 +3154,7 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &[
                     (
                         "action",
-                        enum_schema(
-                            "Tool-access action to execute.",
-                            &["list", "request"],
-                        ),
+                        enum_schema("Tool-access action to execute.", &["list", "request"]),
                     ),
                     (
                         "groups",
@@ -3186,11 +3210,15 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "startLineHash",
-                        string_schema("Optional SHA-256 hash for the current start line, from read includeLineHashes."),
+                        string_schema(
+                            "Optional SHA-256 hash for the current start line, from read includeLineHashes.",
+                        ),
                     ),
                     (
                         "endLineHash",
-                        string_schema("Optional SHA-256 hash for the current end line, from read includeLineHashes."),
+                        string_schema(
+                            "Optional SHA-256 hash for the current end line, from read includeLineHashes.",
+                        ),
                     ),
                 ],
             ),
@@ -3372,7 +3400,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "taskId",
-                        string_schema("Existing subagent task id for lifecycle, trace, or integration actions."),
+                        string_schema(
+                            "Existing subagent task id for lifecycle, trace, or integration actions.",
+                        ),
                     ),
                     (
                         "role",
@@ -3407,7 +3437,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "decision",
-                        string_schema("Parent decision recorded when integrating or closing a subagent output."),
+                        string_schema(
+                            "Parent decision recorded when integrating or closing a subagent output.",
+                        ),
                     ),
                     (
                         "timeoutMs",
@@ -3415,7 +3447,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "maxToolCalls",
-                        integer_schema("Optional delegated tool-call budget for a spawned child run."),
+                        integer_schema(
+                            "Optional delegated tool-call budget for a spawned child run.",
+                        ),
                     ),
                     (
                         "maxTokens",
@@ -3423,7 +3457,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "maxCostMicros",
-                        integer_schema("Optional delegated cost budget in micros for a spawned child run."),
+                        integer_schema(
+                            "Optional delegated cost budget in micros for a spawned child run.",
+                        ),
                     ),
                 ],
             ),
@@ -3441,7 +3477,10 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                             &["list", "upsert", "complete", "delete", "clear"],
                         ),
                     ),
-                    ("id", string_schema("Todo id for update, complete, or delete.")),
+                    (
+                        "id",
+                        string_schema("Todo id for update, complete, or delete."),
+                    ),
                     ("title", string_schema("Todo title for upsert.")),
                     ("notes", string_schema("Optional todo notes for upsert.")),
                     (
@@ -3475,7 +3514,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "evidence",
-                        string_schema("Concise evidence, command result, file reference, or falsification note for debug_evidence items."),
+                        string_schema(
+                            "Concise evidence, command result, file reference, or falsification note for debug_evidence items.",
+                        ),
                     ),
                     (
                         "phaseId",
@@ -3483,15 +3524,21 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "phaseTitle",
-                        string_schema("Optional user-facing phase title for grouping plan-mode items."),
+                        string_schema(
+                            "Optional user-facing phase title for grouping plan-mode items.",
+                        ),
                     ),
                     (
                         "sliceId",
-                        string_schema("Optional stable slice id for plan-mode items, such as P0-S1."),
+                        string_schema(
+                            "Optional stable slice id for plan-mode items, such as P0-S1.",
+                        ),
                     ),
                     (
                         "handoffNote",
-                        string_schema("Optional concise handoff note for Engineer when this slice starts."),
+                        string_schema(
+                            "Optional concise handoff note for Engineer when this slice starts.",
+                        ),
                     ),
                 ],
             ),
@@ -3503,7 +3550,10 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &["path", "cellIndex", "replacementSource"],
                 &[
                     ("path", string_schema("Repo-relative .ipynb path.")),
-                    ("cellIndex", integer_schema("Zero-based notebook cell index.")),
+                    (
+                        "cellIndex",
+                        integer_schema("Zero-based notebook cell index."),
+                    ),
                     (
                         "expectedSource",
                         string_schema("Optional exact current source guard."),
@@ -3523,13 +3573,13 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &[
                     (
                         "action",
-                        enum_schema(
-                            "Code intelligence action.",
-                            &["symbols", "diagnostics"],
-                        ),
+                        enum_schema("Code intelligence action.", &["symbols", "diagnostics"]),
                     ),
                     ("query", string_schema("Optional symbol query.")),
-                    ("path", string_schema("Optional repo-relative file or directory scope.")),
+                    (
+                        "path",
+                        string_schema("Optional repo-relative file or directory scope."),
+                    ),
                     ("limit", integer_schema("Maximum result count.")),
                 ],
             ),
@@ -3548,9 +3598,15 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         ),
                     ),
                     ("query", string_schema("Optional symbol query.")),
-                    ("path", string_schema("Optional repo-relative file or directory scope.")),
+                    (
+                        "path",
+                        string_schema("Optional repo-relative file or directory scope."),
+                    ),
                     ("limit", integer_schema("Maximum result count.")),
-                    ("serverId", string_schema("Optional known LSP server id to force.")),
+                    (
+                        "serverId",
+                        string_schema("Optional known LSP server id to force."),
+                    ),
                     (
                         "timeoutMs",
                         integer_schema("Optional LSP server timeout in milliseconds."),
@@ -3565,7 +3621,10 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &["script"],
                 &[
                     ("script", string_schema("PowerShell script text to run.")),
-                    ("cwd", string_schema("Optional repo-relative working directory.")),
+                    (
+                        "cwd",
+                        string_schema("Optional repo-relative working directory."),
+                    ),
                     (
                         "timeoutMs",
                         integer_schema("Optional timeout in milliseconds."),
@@ -3679,14 +3738,20 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                             ],
                         ),
                     ),
-                    ("query", string_schema("Natural-language, symbol, or file-impact query.")),
+                    (
+                        "query",
+                        string_schema("Natural-language, symbol, or file-impact query."),
+                    ),
                     (
                         "path",
                         string_schema(
                             "Optional repo-relative path or subtree scope for query/explain.",
                         ),
                     ),
-                    ("limit", integer_schema("Maximum results to return, capped by runtime.")),
+                    (
+                        "limit",
+                        integer_schema("Maximum results to return, capped by runtime."),
+                    ),
                 ],
             ),
         ),
@@ -3718,7 +3783,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "path",
-                        string_schema("Single repo-relative file or directory path for conflict checks, claims, or releases."),
+                        string_schema(
+                            "Single repo-relative file or directory path for conflict checks, claims, or releases.",
+                        ),
                     ),
                     (
                         "paths",
@@ -3748,12 +3815,11 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "overrideReason",
-                        string_schema("Required to claim despite conflicts; explain why proceeding is coordinated or necessary."),
+                        string_schema(
+                            "Required to claim despite conflicts; explain why proceeding is coordinated or necessary.",
+                        ),
                     ),
-                    (
-                        "reservationId",
-                        string_schema("Reservation id to release."),
-                    ),
+                    ("reservationId", string_schema("Reservation id to release.")),
                     (
                         "releaseReason",
                         string_schema("Reason for releasing a reservation."),
@@ -3776,11 +3842,15 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "itemId",
-                        string_schema("Mailbox item id to acknowledge, reply to, resolve, or promote. Acknowledging a code-history notice records the current code workspace epoch for stale-write preflight."),
+                        string_schema(
+                            "Mailbox item id to acknowledge, reply to, resolve, or promote. Acknowledging a code-history notice records the current code workspace epoch for stale-write preflight.",
+                        ),
                     ),
                     (
                         "targetAgentSessionId",
-                        string_schema("Optional target agent session; omit with targetRunId/targetRole to broadcast to active same-project sessions."),
+                        string_schema(
+                            "Optional target agent session; omit with targetRunId/targetRole to broadcast to active same-project sessions.",
+                        ),
                     ),
                     (
                         "targetRunId",
@@ -3796,7 +3866,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "body",
-                        string_schema("Mailbox body. Temporary mailbox content is advisory and injection-filtered."),
+                        string_schema(
+                            "Mailbox body. Temporary mailbox content is advisory and injection-filtered.",
+                        ),
                     ),
                     (
                         "priority",
@@ -3804,11 +3876,15 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "ttlSeconds",
-                        integer_schema("Optional mailbox TTL in seconds; defaults to the runtime mailbox lease."),
+                        integer_schema(
+                            "Optional mailbox TTL in seconds; defaults to the runtime mailbox lease.",
+                        ),
                     ),
                     (
                         "summary",
-                        string_schema("Optional durable-context candidate summary when promoting a mailbox item."),
+                        string_schema(
+                            "Optional durable-context candidate summary when promoting a mailbox item.",
+                        ),
                     ),
                     ("limit", integer_schema("Maximum rows to return.")),
                 ],
@@ -4570,13 +4646,39 @@ fn process_manager_schema() -> JsonValue {
                     ],
                 ),
             ),
-            ("processId", string_schema("Managed process id for owned actions, or numeric/system-pid-N id for system actions.")),
-            ("pid", integer_schema("External/system PID for system_process_tree, system_signal, system_kill_tree, or filters.")),
-            ("parentPid", integer_schema("Filter system_process_list to children of this parent PID.")),
-            ("port", integer_schema("Filter system_port_list or system_process_list to a local listening port.")),
-            ("group", string_schema("Process group label for grouped status, kill, or async-await filtering.")),
+            (
+                "processId",
+                string_schema(
+                    "Managed process id for owned actions, or numeric/system-pid-N id for system actions.",
+                ),
+            ),
+            (
+                "pid",
+                integer_schema(
+                    "External/system PID for system_process_tree, system_signal, system_kill_tree, or filters.",
+                ),
+            ),
+            (
+                "parentPid",
+                integer_schema("Filter system_process_list to children of this parent PID."),
+            ),
+            (
+                "port",
+                integer_schema(
+                    "Filter system_port_list or system_process_list to a local listening port.",
+                ),
+            ),
+            (
+                "group",
+                string_schema(
+                    "Process group label for grouped status, kill, or async-await filtering.",
+                ),
+            ),
             ("label", string_schema("Human-readable process label.")),
-            ("processType", string_schema("Process type, such as dev_server, test_watcher, shell, or job.")),
+            (
+                "processType",
+                string_schema("Process type, such as dev_server, test_watcher, shell, or job."),
+            ),
             (
                 "argv",
                 json!({
@@ -4592,11 +4694,15 @@ fn process_manager_schema() -> JsonValue {
             ),
             (
                 "shellMode",
-                boolean_schema("Start a managed interactive shell instead of a normal argv process. Requires operator approval."),
+                boolean_schema(
+                    "Start a managed interactive shell instead of a normal argv process. Requires operator approval.",
+                ),
             ),
             (
                 "interactive",
-                boolean_schema("Pipe stdin for an argv process so send and send_and_wait can answer prompts."),
+                boolean_schema(
+                    "Pipe stdin for an argv process so send and send_and_wait can answer prompts.",
+                ),
             ),
             (
                 "targetOwnership",
@@ -4607,11 +4713,15 @@ fn process_manager_schema() -> JsonValue {
             ),
             (
                 "persistent",
-                boolean_schema("Whether a future started process should survive normal run cleanup."),
+                boolean_schema(
+                    "Whether a future started process should survive normal run cleanup.",
+                ),
             ),
             (
                 "timeoutMs",
-                integer_schema("Optional timeout in milliseconds for startup, readiness, send_and_wait, async_start job bound, or async_await wait."),
+                integer_schema(
+                    "Optional timeout in milliseconds for startup, readiness, send_and_wait, async_start job bound, or async_await wait.",
+                ),
             ),
             (
                 "afterCursor",
@@ -4619,10 +4729,18 @@ fn process_manager_schema() -> JsonValue {
             ),
             (
                 "sinceLastRead",
-                boolean_schema("For output, return only chunks after Xero's remembered read cursor for this process."),
+                boolean_schema(
+                    "For output, return only chunks after Xero's remembered read cursor for this process.",
+                ),
             ),
-            ("maxBytes", integer_schema("Maximum output bytes to return.")),
-            ("tailLines", integer_schema("For output, collapse returned chunks to the last N lines.")),
+            (
+                "maxBytes",
+                integer_schema("Maximum output bytes to return."),
+            ),
+            (
+                "tailLines",
+                integer_schema("For output, collapse returned chunks to the last N lines."),
+            ),
             (
                 "stream",
                 enum_schema(
@@ -4630,13 +4748,24 @@ fn process_manager_schema() -> JsonValue {
                     &["stdout", "stderr", "combined"],
                 ),
             ),
-            ("filter", string_schema("For output, return chunks whose text matches this regex.")),
-            ("input", string_schema("Exact stdin payload for send/send_and_wait, shell command text for run, or optional restart reason.")),
+            (
+                "filter",
+                string_schema("For output, return chunks whose text matches this regex."),
+            ),
+            (
+                "input",
+                string_schema(
+                    "Exact stdin payload for send/send_and_wait, shell command text for run, or optional restart reason.",
+                ),
+            ),
             (
                 "waitPattern",
                 string_schema("Output regex readiness or send_and_wait pattern."),
             ),
-            ("waitPort", integer_schema("Local TCP port readiness probe.")),
+            (
+                "waitPort",
+                integer_schema("Local TCP port readiness probe."),
+            ),
             ("waitUrl", string_schema("HTTP URL readiness probe.")),
             ("signal", string_schema("Signal name for signal actions.")),
         ],
@@ -4667,10 +4796,7 @@ fn system_diagnostics_schema_for_actions(description: &str, actions: &[&str]) ->
     object_schema(
         &["action"],
         &[
-            (
-                "action",
-                enum_schema(description, actions),
-            ),
+            ("action", enum_schema(description, actions)),
             (
                 "preset",
                 enum_schema(
@@ -4684,16 +4810,46 @@ fn system_diagnostics_schema_for_actions(description: &str, actions: &[&str]) ->
                     ],
                 ),
             ),
-            ("pid", integer_schema("Target process id for process diagnostics.")),
-            ("processName", string_schema("Optional process name target or filter.")),
-            ("bundleId", string_schema("Optional macOS bundle identifier target.")),
-            ("appName", string_schema("Optional macOS app display-name target.")),
-            ("windowId", integer_schema("Optional macOS window id target.")),
-            ("since", string_schema("Optional ISO-ish lower bound for time-based diagnostics.")),
-            ("durationMs", integer_schema("Duration in milliseconds for sampling-style diagnostics.")),
-            ("intervalMs", integer_schema("Interval in milliseconds for sampling-style diagnostics.")),
-            ("limit", integer_schema("Maximum structured rows to return, capped by runtime.")),
-            ("filter", string_schema("Optional regex applied to structured diagnostic row fields.")),
+            (
+                "pid",
+                integer_schema("Target process id for process diagnostics."),
+            ),
+            (
+                "processName",
+                string_schema("Optional process name target or filter."),
+            ),
+            (
+                "bundleId",
+                string_schema("Optional macOS bundle identifier target."),
+            ),
+            (
+                "appName",
+                string_schema("Optional macOS app display-name target."),
+            ),
+            (
+                "windowId",
+                integer_schema("Optional macOS window id target."),
+            ),
+            (
+                "since",
+                string_schema("Optional ISO-ish lower bound for time-based diagnostics."),
+            ),
+            (
+                "durationMs",
+                integer_schema("Duration in milliseconds for sampling-style diagnostics."),
+            ),
+            (
+                "intervalMs",
+                integer_schema("Interval in milliseconds for sampling-style diagnostics."),
+            ),
+            (
+                "limit",
+                integer_schema("Maximum structured rows to return, capped by runtime."),
+            ),
+            (
+                "filter",
+                string_schema("Optional regex applied to structured diagnostic row fields."),
+            ),
             (
                 "includeChildren",
                 boolean_schema("Include child processes where supported by the selected action."),
@@ -4718,18 +4874,30 @@ fn system_diagnostics_schema_for_actions(description: &str, actions: &[&str]) ->
             ),
             (
                 "includeSockets",
-                boolean_schema("For process_open_files, include socket descriptors when include filters are used."),
+                boolean_schema(
+                    "For process_open_files, include socket descriptors when include filters are used.",
+                ),
             ),
             (
                 "includeFiles",
-                boolean_schema("For process_open_files, include file-like descriptors when include filters are used."),
+                boolean_schema(
+                    "For process_open_files, include file-like descriptors when include filters are used.",
+                ),
             ),
             (
                 "includeDeleted",
-                boolean_schema("For process_open_files, include deleted file descriptors when include filters are used."),
+                boolean_schema(
+                    "For process_open_files, include deleted file descriptors when include filters are used.",
+                ),
             ),
-            ("sampleCount", integer_schema("Optional sample count for resource snapshots.")),
-            ("includePorts", boolean_schema("Include port metadata where supported.")),
+            (
+                "sampleCount",
+                integer_schema("Optional sample count for resource snapshots."),
+            ),
+            (
+                "includePorts",
+                boolean_schema("Include port metadata where supported."),
+            ),
             (
                 "includeThreadsSummary",
                 boolean_schema("Include thread summary metadata where supported."),
@@ -4740,13 +4908,18 @@ fn system_diagnostics_schema_for_actions(description: &str, actions: &[&str]) ->
             ),
             (
                 "includeStackHints",
-                boolean_schema("Include bounded stack hints for thread diagnostics where supported."),
+                boolean_schema(
+                    "Include bounded stack hints for thread diagnostics where supported.",
+                ),
             ),
             (
                 "maxArtifactBytes",
                 integer_schema("Maximum persisted artifact bytes for large diagnostics."),
             ),
-            ("lastMs", integer_schema("Recent log window in milliseconds.")),
+            (
+                "lastMs",
+                integer_schema("Recent log window in milliseconds."),
+            ),
             (
                 "level",
                 enum_schema(
@@ -4756,9 +4929,18 @@ fn system_diagnostics_schema_for_actions(description: &str, actions: &[&str]) ->
             ),
             ("subsystem", string_schema("System log subsystem filter.")),
             ("category", string_schema("System log category filter.")),
-            ("messageContains", string_schema("System log message substring filter.")),
-            ("processPredicate", string_schema("System log process predicate filter.")),
-            ("maxDepth", integer_schema("Maximum Accessibility tree depth.")),
+            (
+                "messageContains",
+                string_schema("System log message substring filter."),
+            ),
+            (
+                "processPredicate",
+                string_schema("System log process predicate filter."),
+            ),
+            (
+                "maxDepth",
+                integer_schema("Maximum Accessibility tree depth."),
+            ),
             (
                 "focusedOnly",
                 boolean_schema("Limit Accessibility snapshots to focused UI where supported."),
@@ -4795,11 +4977,23 @@ fn macos_automation_schema() -> JsonValue {
                     ],
                 ),
             ),
-            ("appName", string_schema("Target app display name, such as Finder or Simulator.")),
-            ("bundleId", string_schema("Target app bundle identifier, such as com.apple.finder.")),
+            (
+                "appName",
+                string_schema("Target app display name, such as Finder or Simulator."),
+            ),
+            (
+                "bundleId",
+                string_schema("Target app bundle identifier, such as com.apple.finder."),
+            ),
             ("pid", integer_schema("Target app process id.")),
-            ("windowId", integer_schema("Target window id from mac_window_list.")),
-            ("monitorId", integer_schema("Target monitor id for mac_screenshot.")),
+            (
+                "windowId",
+                integer_schema("Target window id from mac_window_list."),
+            ),
+            (
+                "monitorId",
+                integer_schema("Target monitor id for mac_screenshot."),
+            ),
             (
                 "screenshotTarget",
                 enum_schema("Screenshot target kind.", &["screen", "window"]),
@@ -6507,6 +6701,7 @@ mod tests {
             RuntimeAgentIdDto::Plan,
             RuntimeAgentIdDto::Engineer,
             RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Generalist,
             RuntimeAgentIdDto::Crawl,
             RuntimeAgentIdDto::AgentCreate,
         ] {
@@ -6538,7 +6733,11 @@ mod tests {
 
     #[test]
     fn s25_prompt_policy_guides_engineer_debug_subagent_delegation_only() {
-        for runtime_agent_id in [RuntimeAgentIdDto::Engineer, RuntimeAgentIdDto::Debug] {
+        for runtime_agent_id in [
+            RuntimeAgentIdDto::Engineer,
+            RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Generalist,
+        ] {
             let prompt = base_policy_fragment(runtime_agent_id);
             assert!(prompt.contains("Subagent delegation contract:"));
             assert!(prompt.contains("bounded parallel side work"));
@@ -6965,7 +7164,16 @@ mod tests {
     #[test]
     fn minimal_ask_prompt_toolset_includes_only_observe_discovery_tools() {
         let root = tempfile::tempdir().expect("temp dir");
-        let controls = runtime_controls_from_request(None);
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: None,
+            provider_profile_id: None,
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+        };
+        let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(root.path(), "What is left to do?", &controls);
         let names = registry.descriptor_names();
 

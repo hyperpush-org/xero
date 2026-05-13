@@ -16,6 +16,7 @@ import { createFrameCoalescer } from '@/lib/frame-governance'
 import { useSidebarWidthMotion } from '@/lib/sidebar-motion'
 import type { FileSystemNode, ProjectFileTreeBudgetInfo } from '@/src/lib/file-system-tree'
 import { FileTree } from '../file-tree'
+import type { EditorGitFileStatus } from './git-aware-editing'
 
 const MIN_WIDTH = 220
 const DEFAULT_WIDTH = 260
@@ -33,6 +34,10 @@ interface ExplorerPaneProps {
   expandedFolders: Set<string>
   loadingFolders: Set<string>
   dirtyPaths: Set<string>
+  stalePaths?: Record<string, { kind: 'changed' | 'deleted'; detectedAt: string }>
+  diagnosticCountsByPath?: Record<string, number>
+  gitStatusByPath?: Record<string, EditorGitFileStatus>
+  agentActivityCountsByPath?: Record<string, number>
   creatingEntry: { parentPath: string; type: 'file' | 'folder' } | null
   onSearchQueryChange: (value: string) => void
   onSelectFile: (path: string) => Promise<void> | void
@@ -90,6 +95,10 @@ export function ExplorerPane({
   expandedFolders,
   loadingFolders,
   dirtyPaths,
+  stalePaths,
+  diagnosticCountsByPath,
+  gitStatusByPath,
+  agentActivityCountsByPath,
   creatingEntry,
   onSearchQueryChange,
   onSelectFile,
@@ -271,6 +280,10 @@ export function ExplorerPane({
           expandedFolders={expandedFolders}
           loadingFolders={loadingFolders}
           dirtyPaths={dirtyPaths}
+          stalePaths={stalePaths}
+          diagnosticCountsByPath={diagnosticCountsByPath}
+          gitStatusByPath={gitStatusByPath}
+          agentActivityCountsByPath={agentActivityCountsByPath}
           searchQuery={searchQuery}
           creatingEntry={creatingEntry}
           onSelectFile={(path) => {

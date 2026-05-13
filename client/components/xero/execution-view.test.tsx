@@ -1,8 +1,20 @@
 import type { ComponentProps } from 'react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ExecutionPaneView } from '@/src/features/xero/use-xero-desktop-state'
-import type { ListProjectFilesResponseDto, ReadProjectFileResponseDto } from '@/src/lib/xero-model'
+import { XeroDesktopError } from '@/src/lib/xero-desktop'
+import type {
+  ListProjectFileIndexResponseDto,
+  ListProjectFilesResponseDto,
+  ReadProjectFileResponseDto,
+  RepositoryDiffResponseDto,
+  WriteProjectFileResponseDto,
+} from '@/src/lib/xero-model'
+import type { EditorTerminalTaskRequest } from './execution-view/editor-tasks'
+import type {
+  EditorAgentActivity,
+  EditorAgentContextRequest,
+} from './execution-view/agent-aware-editor-hooks'
 
 function textFileResponse(projectId: string, path: string, text: string): ReadProjectFileResponseDto {
   return {
@@ -15,6 +27,23 @@ function textFileResponse(projectId: string, path: string, text: string): ReadPr
     mimeType: 'text/plain; charset=utf-8',
     rendererKind: 'code',
     text,
+  }
+}
+
+function writeFileResponse(
+  projectId: string,
+  path: string,
+  content = '',
+): WriteProjectFileResponseDto {
+  return {
+    projectId,
+    path,
+    byteLength: content.length,
+    modifiedAt: '2026-01-01T00:00:01Z',
+    contentHash: `saved-${path}-${content.length}`,
+    mimeType: 'text/plain; charset=utf-8',
+    rendererKind: 'code',
+    preview: null,
   }
 }
 
@@ -56,6 +85,20 @@ function csvFileResponse(projectId: string, path: string, text: string): ReadPro
     contentHash: `test-${path}`,
     mimeType: 'text/csv; charset=utf-8',
     rendererKind: 'csv',
+    text,
+  }
+}
+
+function htmlFileResponse(projectId: string, path: string, text: string): ReadProjectFileResponseDto {
+  return {
+    kind: 'text',
+    projectId,
+    path,
+    byteLength: text.length,
+    modifiedAt: '2026-01-01T00:00:00Z',
+    contentHash: `test-${path}`,
+    mimeType: 'text/html; charset=utf-8',
+    rendererKind: 'html',
     text,
   }
 }
@@ -151,12 +194,40 @@ vi.mock('./code-editor', async () => {
     }, [documentVersion, filePath, value])
 
     React.useEffect(() => {
+      const lineOffsets = () => {
+        const text = draftRef.current
+        const offsets = [0]
+        for (let index = 0; index < text.length; index += 1) {
+          if (text[index] === '\n') offsets.push(index + 1)
+        }
+        return offsets
+      }
       const view = {
         state: {
           doc: {
             toString: () => draftRef.current,
+            get lines() {
+              return lineOffsets().length
+            },
+            line: (lineNumber: number) => {
+              const offsets = lineOffsets()
+              const from = offsets[Math.max(0, lineNumber - 1)] ?? 0
+              const next = offsets[lineNumber]
+              const to = next === undefined ? draftRef.current.length : Math.max(from, next - 1)
+              return { from, to }
+            },
+          },
+          selection: {
+            main: {
+              from: 0,
+              to: 0,
+              head: 0,
+            },
           },
         },
+        sliceDoc: (from: number, to: number) => draftRef.current.slice(from, to),
+        dispatch: () => undefined,
+        focus: () => undefined,
       }
       onViewReady?.(view)
       return () => onViewReady?.(null)
@@ -186,7 +257,15 @@ vi.mock('./code-editor', async () => {
     )
   }
 
-  return { CodeEditor: MockCodeEditor }
+  return {
+    CodeEditor: MockCodeEditor,
+    DEFAULT_EDITOR_RENDER_PREFERENCES: {
+      fontSize: 13,
+      tabSize: 2,
+      insertSpaces: true,
+      lineWrapping: true,
+    },
+  }
 })
 
 vi.mock('./file-tree', () => {
@@ -205,6 +284,8 @@ vi.mock('./file-tree', () => {
       selectedPath,
       expandedFolders,
       dirtyPaths,
+      diagnosticCountsByPath,
+      agentActivityCountsByPath,
       creatingEntry,
       onSelectFile,
       onToggleFolder,
@@ -263,7 +344,9 @@ vi.mock('./file-tree', () => {
               <div data-testid={`file:${node.path}`} key={node.path}>
                 <span>
                   file {node.path} {selectedPath === node.path ? 'selected' : 'idle'}{' '}
-                  {dirtyPaths?.has(node.path) ? 'dirty' : 'clean'}
+                  {dirtyPaths?.has(node.path) ? 'dirty' : 'clean'} problems:{' '}
+                  {diagnosticCountsByPath?.[node.path] ?? 0} agent:{' '}
+                  {agentActivityCountsByPath?.[node.path] ?? 0}
                 </span>
                 <button onClick={() => onSelectFile(node.path)} type="button">
                   Open {node.path}
@@ -346,7 +429,8 @@ function projectTreeView(root: ProjectNode): ListProjectFilesResponseDto['view']
 }
 
 function projectFileListing(projectId: string, path: string, root: ProjectNode): ListProjectFilesResponseDto {
-  const clonedRoot = cloneNode(root)
+  const listingRoot = findNode(root, path) ?? root
+  const clonedRoot = cloneNode(listingRoot)
   return {
     projectId,
     path,
@@ -354,6 +438,40 @@ function projectFileListing(projectId: string, path: string, root: ProjectNode):
     view: projectTreeView(clonedRoot),
     truncated: clonedRoot.truncated ?? false,
     omittedEntryCount: clonedRoot.omittedEntryCount ?? 0,
+  }
+}
+
+function projectFileIndex(
+  projectId: string,
+  root: ProjectNode,
+  includeHidden = false,
+): ListProjectFileIndexResponseDto {
+  const files: ListProjectFileIndexResponseDto['files'] = []
+  const visit = (node: ProjectNode) => {
+    if (node.type === 'file') {
+      const hidden = node.path.split('/').filter(Boolean).some((segment) => segment.startsWith('.'))
+      if (includeHidden || !hidden) {
+        files.push({
+          path: node.path,
+          name: node.name,
+          parentPath: parentPathOf(node.path),
+          hidden,
+        })
+      }
+      return
+    }
+
+    node.children?.forEach(visit)
+  }
+  visit(root)
+  files.sort((left, right) => left.path.localeCompare(right.path))
+
+  return {
+    projectId,
+    files,
+    totalFiles: files.length,
+    truncated: false,
+    payloadBudget: null,
   }
 }
 
@@ -522,6 +640,123 @@ function makeExecution(projectId = 'project-1', name = 'Xero'): ExecutionPaneVie
   } as ExecutionPaneView
 }
 
+function makeGitExecution(): ExecutionPaneView {
+  return {
+    ...makeExecution(),
+    statusEntries: [
+      {
+        path: 'README.md',
+        staged: null,
+        unstaged: 'modified',
+        untracked: false,
+      },
+    ],
+    statusCount: 1,
+    hasChanges: true,
+  }
+}
+
+function makeReadmeDiff(): RepositoryDiffResponseDto {
+  return {
+    repository: {
+      id: 'repo-project-1',
+      projectId: 'project-1',
+      rootPath: '/tmp/Xero',
+      displayName: 'Xero',
+      branch: 'main',
+      headSha: 'abc123',
+      isGitRepo: true,
+    },
+    scope: 'unstaged',
+    patch: [
+      'diff --git a/README.md b/README.md',
+      '--- a/README.md',
+      '+++ b/README.md',
+      '@@ -1,1 +1,1 @@',
+      '-Hello',
+      '+Hello git',
+      '',
+    ].join('\n'),
+    files: [
+      {
+        oldPath: 'README.md',
+        newPath: 'README.md',
+        displayPath: 'README.md',
+        status: 'modified',
+        hunks: [
+          {
+            header: '@@ -1,1 +1,1 @@',
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            rows: [
+              { kind: 'remove', prefix: '-', text: 'Hello', oldLineNumber: 1 },
+              { kind: 'add', prefix: '+', text: 'Hello git', newLineNumber: 1 },
+            ],
+            truncated: false,
+          },
+        ],
+        patch: [
+          'diff --git a/README.md b/README.md',
+          '--- a/README.md',
+          '+++ b/README.md',
+          '@@ -1,1 +1,1 @@',
+          '-Hello',
+          '+Hello git',
+          '',
+        ].join('\n'),
+        truncated: false,
+        cacheKey: 'modified\u0000README.md\u0000README.md',
+      },
+    ],
+    truncated: false,
+    baseRevision: null,
+  }
+}
+
+function makeEditorAgentActivity(
+  overrides: Partial<EditorAgentActivity> = {},
+): EditorAgentActivity {
+  return {
+    id: 'activity:run-1:1',
+    path: '/README.md',
+    operation: 'modify',
+    status: 'recent',
+    title: 'File changed',
+    detail: 'modify: README.md',
+    sessionTitle: 'Main session',
+    paneId: 'pane-1',
+    runId: 'run-1',
+    createdAt: '2026-05-01T12:00:00Z',
+    sequence: 1,
+    changeGroupId: 'code-change-1',
+    workspaceEpoch: 7,
+    patchAvailability: {
+      projectId: 'project-1',
+      targetChangeGroupId: 'code-change-1',
+      available: true,
+      affectedPaths: ['README.md'],
+      fileChangeCount: 1,
+      textHunkCount: 1,
+      textHunks: [
+        {
+          hunkId: 'hunk-1',
+          patchFileId: 'patch-file-1',
+          filePath: 'README.md',
+          hunkIndex: 0,
+          baseStartLine: 1,
+          baseLineCount: 1,
+          resultStartLine: 1,
+          resultLineCount: 2,
+        },
+      ],
+      unavailableReason: null,
+    },
+    ...overrides,
+  }
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((res) => {
@@ -551,12 +786,15 @@ function createWorkspaceHarness(options?: {
   const listProjectFiles = vi.fn(async (projectId: string, path = '/') =>
     projectFileListing(projectId, path, currentRoot),
   )
+  const listProjectFileIndex = vi.fn(async (request: { projectId: string; includeHidden?: boolean }) =>
+    projectFileIndex(request.projectId, currentRoot, request.includeHidden ?? false),
+  )
   const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
     ...textFileResponse(projectId, path, currentFileContents[path] ?? ''),
   }))
   const writeProjectFile = vi.fn(async (projectId: string, path: string, content: string) => {
     currentFileContents[path] = content
-    return { projectId, path }
+    return writeFileResponse(projectId, path, content)
   })
   const createProjectEntry = vi.fn(async (request) => {
     const path = joinPath(request.parentPath, request.name)
@@ -617,6 +855,7 @@ function createWorkspaceHarness(options?: {
   }))
 
   return {
+    listProjectFileIndex,
     listProjectFiles,
     readProjectFile,
     writeProjectFile,
@@ -631,10 +870,11 @@ function createWorkspaceHarness(options?: {
 
 function renderExecutionView(
   overrides: Partial<ComponentProps<typeof ExecutionView>> = {},
+  workspace = createWorkspaceHarness(),
 ) {
-  const workspace = createWorkspaceHarness()
   const props: ComponentProps<typeof ExecutionView> = {
     execution: makeExecution(),
+    listProjectFileIndex: workspace.listProjectFileIndex,
     listProjectFiles: workspace.listProjectFiles,
     readProjectFile: workspace.readProjectFile,
     writeProjectFile: workspace.writeProjectFile,
@@ -664,6 +904,7 @@ describe('ExecutionView', () => {
       <ExecutionView
         active={false}
         execution={makeExecution('project-2', 'Project Two')}
+        listProjectFileIndex={workspace.listProjectFileIndex}
         listProjectFiles={workspace.listProjectFiles}
         readProjectFile={workspace.readProjectFile}
         writeProjectFile={workspace.writeProjectFile}
@@ -682,6 +923,7 @@ describe('ExecutionView', () => {
       <ExecutionView
         active
         execution={makeExecution('project-2', 'Project Two')}
+        listProjectFileIndex={workspace.listProjectFileIndex}
         listProjectFiles={workspace.listProjectFiles}
         readProjectFile={workspace.readProjectFile}
         writeProjectFile={workspace.writeProjectFile}
@@ -732,10 +974,43 @@ describe('ExecutionView', () => {
     fireEvent.change(screen.getByLabelText('Editor for /README.md'), { target: { value: '# Saved\n' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(workspace.writeProjectFile).toHaveBeenCalledWith('project-1', '/README.md', '# Saved\n'))
+    await waitFor(() =>
+      expect(workspace.writeProjectFile).toHaveBeenCalledWith('project-1', '/README.md', '# Saved\n', {
+        expectedContentHash: 'test-/README.md',
+        expectedModifiedAt: '2026-01-01T00:00:00Z',
+        overwrite: false,
+      }),
+    )
     await waitFor(() => expect(screen.getByText('Saved')).toBeVisible())
     expect(screen.queryByRole('button', { name: 'Revert' })).not.toBeInTheDocument()
     expect(screen.getByTestId('file:/README.md')).toHaveTextContent('clean')
+  })
+
+  it('opens Git hunk actions for the active file and sends a reverse patch', async () => {
+    const getRepositoryDiff = vi.fn(async () => makeReadmeDiff())
+    const gitRevertPatch = vi.fn(async () => undefined)
+    renderExecutionView({
+      execution: makeGitExecution(),
+      getRepositoryDiff,
+      gitRevertPatch,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+
+    await waitFor(() => {
+      expect(getRepositoryDiff).toHaveBeenCalledWith('project-1', 'unstaged')
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '1 Git change' }))
+
+    expect(await screen.findByText('@@ -1,1 +1,1 @@')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Revert hunk' }))
+
+    await waitFor(() => {
+      expect(gitRevertPatch).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        patch: expect.stringContaining('diff --git a/README.md b/README.md'),
+      })
+    })
   })
 
   it('resizes the editor explorer from the separator and persists the width', async () => {
@@ -769,6 +1044,103 @@ describe('ExecutionView', () => {
     expect(screen.queryByLabelText('Search files')).not.toBeInTheDocument()
   })
 
+  it('quick opens indexed files outside the loaded explorer and exposes breadcrumb actions', async () => {
+    const unloadedRoot = folder('root', '/', [
+      file('README.md', '/README.md'),
+      { name: 'src', path: '/src', type: 'folder', childrenLoaded: false },
+    ])
+    const loadedSrc = folder('src', '/src', [file('main.tsx', '/src/main.tsx')])
+    const workspace = createWorkspaceHarness({
+      root: unloadedRoot,
+      fileContents: {
+        '/src/main.tsx': 'export function App() {\n  return null\n}\n',
+      },
+    })
+    workspace.listProjectFiles.mockImplementation(async (projectId: string, path = '/') =>
+      path === '/src'
+        ? projectFileListing(projectId, path, loadedSrc)
+        : projectFileListing(projectId, path, unloadedRoot),
+    )
+    workspace.listProjectFileIndex.mockImplementation(async (request: { projectId: string; includeHidden?: boolean }) => ({
+      projectId: request.projectId,
+      files: [
+        { path: '/README.md', name: 'README.md', parentPath: '/', hidden: false },
+        { path: '/src/main.tsx', name: 'main.tsx', parentPath: '/src', hidden: false },
+      ],
+      totalFiles: 2,
+      truncated: false,
+      payloadBudget: null,
+    }))
+    const clipboardWriteText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    })
+
+    renderExecutionView({}, workspace)
+
+    expect(await screen.findByTestId('folder:/src')).toHaveTextContent('collapsed')
+    expect(screen.queryByTestId('file:/src/main.tsx')).not.toBeInTheDocument()
+
+    fireEvent.keyDown(window, { key: 'p', metaKey: true })
+
+    await waitFor(() =>
+      expect(workspace.listProjectFileIndex).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        includeHidden: false,
+      }),
+    )
+    fireEvent.change(await screen.findByPlaceholderText('Open file by name or path'), {
+      target: { value: 'main' },
+    })
+    fireEvent.click(await screen.findByText('/src/main.tsx'))
+
+    await waitFor(() => expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/src/main.tsx'))
+    expect(await screen.findByLabelText('Editor for /src/main.tsx')).toHaveValue(
+      'export function App() {\n  return null\n}\n',
+    )
+    const breadcrumb = screen.getByRole('navigation', { name: 'Editor breadcrumb' })
+    expect(within(breadcrumb).getByText('src')).toBeVisible()
+    expect(within(breadcrumb).getByText('main.tsx')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy relative path' }))
+    await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledWith('src/main.tsx'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal in explorer' }))
+    await waitFor(() => expect(workspace.listProjectFiles).toHaveBeenCalledWith('project-1', '/src'))
+    expect(await screen.findByTestId('file:/src/main.tsx')).toBeVisible()
+  })
+
+  it('opens line, symbol, and reference navigation for source files', async () => {
+    const workspace = createWorkspaceHarness({
+      fileContents: {
+        '/src/main.tsx': 'target()\nfunction target() {\n  return true\n}\n',
+      },
+    })
+
+    renderExecutionView({}, workspace)
+
+    expect(await screen.findByTestId('file:/src/main.tsx')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /src/main.tsx' }))
+    await waitFor(() => expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/src/main.tsx'))
+    expect(await screen.findByLabelText('Editor for /src/main.tsx')).toBeVisible()
+
+    fireEvent.keyDown(window, { key: 'g', ctrlKey: true })
+    const lineInput = await screen.findByLabelText('Line and column')
+    fireEvent.change(lineInput, { target: { value: '2:10' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Go' }))
+    await waitFor(() => expect(screen.queryByLabelText('Line and column')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go to symbol' }))
+    expect(await screen.findByPlaceholderText('Search symbols in file')).toBeVisible()
+    fireEvent.click(await screen.findByText('target'))
+    await waitFor(() => expect(screen.queryByPlaceholderText('Search symbols in file')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find references' }))
+    expect(await screen.findByLabelText('Find')).toHaveValue('target')
+    expect(screen.getByRole('button', { name: 'Project' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
   it('keeps tabs, dirty markers, expanded folders, cached contents, and active paths in sync across create rename delete flows', async () => {
     const workspace = createWorkspaceHarness({
       root: folder('root', '/', [folder('src', '/src', [file('main.tsx', '/src/main.tsx')])]),
@@ -780,6 +1152,7 @@ describe('ExecutionView', () => {
     render(
       <ExecutionView
         execution={makeExecution()}
+        listProjectFileIndex={workspace.listProjectFileIndex}
         listProjectFiles={workspace.listProjectFiles}
         readProjectFile={workspace.readProjectFile}
         writeProjectFile={workspace.writeProjectFile}
@@ -823,6 +1196,16 @@ describe('ExecutionView', () => {
     expect(workspace.readProjectFile).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'Rename /src' }))
+    const unsavedRenameDialog = await screen.findByRole('dialog', { name: 'Unsaved changes' })
+    fireEvent.click(within(unsavedRenameDialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(workspace.writeProjectFile).toHaveBeenCalledWith('project-1', '/src/main.tsx', 'console.log("dirty")\n', {
+        expectedContentHash: 'test-/src/main.tsx',
+        expectedModifiedAt: '2026-01-01T00:00:00Z',
+        overwrite: false,
+      }),
+    )
+    await waitFor(() => expect(screen.getByDisplayValue('src')).toBeVisible())
     fireEvent.change(screen.getByDisplayValue('src'), { target: { value: 'app' } })
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
 
@@ -834,7 +1217,7 @@ describe('ExecutionView', () => {
       }),
     )
     expect(await screen.findByTestId('folder:/app')).toHaveTextContent('expanded')
-    expect(screen.getByTestId('file:/app/main.tsx')).toHaveTextContent('selected dirty')
+    expect(screen.getByTestId('file:/app/main.tsx')).toHaveTextContent('selected clean')
     expect(screen.getByLabelText('Editor for /app/main.tsx')).toHaveValue('console.log("dirty")\n')
     expect(screen.getByRole('button', { name: 'Close main.tsx' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Close notes.md' })).toBeVisible()
@@ -862,6 +1245,7 @@ describe('ExecutionView', () => {
     render(
       <ExecutionView
         execution={makeExecution()}
+        listProjectFileIndex={workspace.listProjectFileIndex}
         listProjectFiles={workspace.listProjectFiles}
         readProjectFile={workspace.readProjectFile}
         writeProjectFile={workspace.writeProjectFile}
@@ -919,14 +1303,15 @@ describe('ExecutionView', () => {
 
   it('ignores stale file reads after the selected project changes', async () => {
     const slowRead = createDeferred<ReadProjectFileResponseDto>()
+    const rootForProject = (projectId: string) =>
+      projectId === 'project-1'
+        ? folder('root', '/', [file('README.md', '/README.md')])
+        : folder('root', '/', [file('app.py', '/app.py')])
     const listProjectFiles = vi.fn(async (projectId: string, path = '/') =>
-      projectFileListing(
-        projectId,
-        path,
-        projectId === 'project-1'
-          ? folder('root', '/', [file('README.md', '/README.md')])
-          : folder('root', '/', [file('app.py', '/app.py')]),
-      ),
+      projectFileListing(projectId, path, rootForProject(projectId)),
+    )
+    const listProjectFileIndex = vi.fn(async (request: { projectId: string; includeHidden?: boolean }) =>
+      projectFileIndex(request.projectId, rootForProject(request.projectId), request.includeHidden ?? false),
     )
     const readProjectFile = vi.fn((projectId: string, path: string) => {
       if (projectId === 'project-1') {
@@ -937,7 +1322,9 @@ describe('ExecutionView', () => {
         ...textFileResponse(projectId, path, 'print("project two")\n'),
       })
     })
-    const writeProjectFile = vi.fn(async (projectId: string, path: string) => ({ projectId, path }))
+    const writeProjectFile = vi.fn(async (projectId: string, path: string, content = '') =>
+      writeFileResponse(projectId, path, content),
+    )
     const revokeProjectAssetTokens = vi.fn(async () => undefined)
     const openProjectFileExternal = vi.fn(async () => undefined)
     const createProjectEntry = vi.fn(async (request) => ({
@@ -969,6 +1356,7 @@ describe('ExecutionView', () => {
     const { rerender } = render(
       <ExecutionView
         execution={makeExecution('project-1', 'Project One')}
+        listProjectFileIndex={listProjectFileIndex}
         listProjectFiles={listProjectFiles}
         readProjectFile={readProjectFile}
         writeProjectFile={writeProjectFile}
@@ -989,6 +1377,7 @@ describe('ExecutionView', () => {
     rerender(
       <ExecutionView
         execution={makeExecution('project-2', 'Project Two')}
+        listProjectFileIndex={listProjectFileIndex}
         listProjectFiles={listProjectFiles}
         readProjectFile={readProjectFile}
         writeProjectFile={writeProjectFile}
@@ -1027,6 +1416,7 @@ describe('ExecutionView', () => {
     render(
       <ExecutionView
         execution={makeExecution()}
+        listProjectFileIndex={workspace.listProjectFileIndex}
         listProjectFiles={workspace.listProjectFiles}
         readProjectFile={workspace.readProjectFile}
         writeProjectFile={workspace.writeProjectFile}
@@ -1053,6 +1443,580 @@ describe('ExecutionView', () => {
     expect(screen.getByRole('button', { name: 'Revert' })).toBeVisible()
     expect(screen.getByTestId('file:/README.md')).toHaveTextContent('dirty')
   })
+
+  it('asks before closing a dirty tab', async () => {
+    renderExecutionView()
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
+    fireEvent.change(await screen.findByLabelText('Editor for /README.md'), {
+      target: { value: '# Unsaved close\n' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close README.md' }))
+    const cancelDialog = await screen.findByRole('dialog', { name: 'Unsaved changes' })
+    expect(within(cancelDialog).getByText('/README.md')).toBeVisible()
+
+    fireEvent.click(within(cancelDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Unsaved changes' })).not.toBeInTheDocument())
+    expect(screen.getByLabelText('Editor for /README.md')).toHaveValue('# Unsaved close\n')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close README.md' }))
+    const discardDialog = await screen.findByRole('dialog', { name: 'Unsaved changes' })
+    fireEvent.click(within(discardDialog).getByRole('button', { name: 'Discard' }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close README.md' })).not.toBeInTheDocument())
+    expect(screen.getByText('Select a file to start editing')).toBeVisible()
+  })
+
+  it('surfaces conflict-safe save choices when disk metadata changed', async () => {
+    const readProjectFile = vi
+      .fn()
+      .mockResolvedValueOnce(textFileResponse('project-1', '/README.md', '# Xero\n'))
+      .mockResolvedValueOnce(textFileResponse('project-1', '/README.md', '# Disk\n'))
+    const writeProjectFile = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new XeroDesktopError({
+          code: 'project_file_changed_since_read',
+          errorClass: 'user_fixable',
+          message: '`/README.md` changed on disk.',
+        }),
+      )
+      .mockImplementation(async (projectId: string, path: string, content: string) =>
+        writeFileResponse(projectId, path, content),
+      )
+
+    renderExecutionView({ readProjectFile, writeProjectFile })
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /README.md' }))
+    fireEvent.change(await screen.findByLabelText('Editor for /README.md'), {
+      target: { value: '# Mine\n' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    const conflictDialog = await screen.findByRole('dialog', { name: 'File changed on disk' })
+    expect(within(conflictDialog).getByText('/README.md changed outside Xero after this tab loaded.')).toBeVisible()
+    fireEvent.click(within(conflictDialog).getByRole('button', { name: 'Compare' }))
+    expect(within(conflictDialog).getByText('# Mine')).toBeVisible()
+    expect(within(conflictDialog).getByText('# Disk')).toBeVisible()
+
+    fireEvent.click(within(conflictDialog).getByRole('button', { name: 'Overwrite' }))
+    await waitFor(() =>
+      expect(writeProjectFile).toHaveBeenLastCalledWith('project-1', '/README.md', '# Mine\n', {
+        expectedContentHash: 'test-/README.md',
+        expectedModifiedAt: '2026-01-01T00:00:00Z',
+        overwrite: true,
+      }),
+    )
+    await waitFor(() => expect(screen.getByText('Saved')).toBeVisible())
+  })
+
+  it('runs TypeScript diagnostics and opens problem locations', async () => {
+    const runProjectTypecheck = vi.fn(async () => ({
+      projectId: 'project-1',
+      status: 'failed' as const,
+      source: 'typescript',
+      command: ['tsc', '--noEmit', '--pretty', 'false'],
+      cwd: '/tmp/Xero',
+      diagnostics: [
+        {
+          path: '/src/main.tsx',
+          line: 1,
+          column: 13,
+          severity: 'error' as const,
+          code: 'TS2322',
+          message: "Type 'string' is not assignable to type 'number'.",
+          source: 'typescript',
+        },
+      ],
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+      durationMs: 1000,
+      exitCode: 2,
+      truncated: false,
+      message: 'local TypeScript compiler',
+      lspServers: [
+        {
+          serverId: 'typescript_language_server',
+          language: 'TypeScript/JavaScript',
+          command: 'typescript-language-server',
+          args: ['--stdio'],
+          available: false,
+          supportsDiagnostics: true,
+          supportsSymbols: true,
+          supportsHover: true,
+          supportsCompletion: true,
+          supportsDefinition: true,
+          supportsReferences: true,
+          supportsRename: true,
+          supportsCodeActions: true,
+          installSuggestion: {
+            reason: '`typescript-language-server` was not found on PATH.',
+            candidateCommands: [
+              {
+                label: 'npm global',
+                argv: ['npm', 'install', '-g', 'typescript', 'typescript-language-server'],
+              },
+            ],
+          },
+        },
+      ],
+    }))
+
+    renderExecutionView({ runProjectTypecheck })
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Run typecheck' }))
+
+    await waitFor(() => expect(runProjectTypecheck).toHaveBeenCalledWith({ projectId: 'project-1' }))
+    expect(await screen.findByTestId('problems-panel')).toHaveTextContent('1 error')
+    expect(screen.getByTestId('file:/src/main.tsx')).toHaveTextContent('problems: 1')
+
+    fireEvent.click(screen.getByRole('button', { name: /TS2322/ }))
+    await waitFor(() => expect(screen.getByLabelText('Editor for /src/main.tsx')).toBeVisible())
+    expect(screen.getByText('1 problem')).toBeVisible()
+    expect(screen.getByText('LSP servers: 0/1 available')).toBeVisible()
+  })
+
+  it('formats the active document through the formatter and writes the result', async () => {
+    const formatProjectDocument = vi.fn(async (request: {
+      projectId: string
+      path: string
+      content: string
+    }) => ({
+      projectId: request.projectId,
+      path: request.path,
+      status: 'formatted' as const,
+      formatterId: 'prettier',
+      command: ['prettier', '--stdin-filepath=README.md'],
+      content: '# Pretty\n',
+      rangeApplied: null,
+      diagnostics: [],
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+      durationMs: 12,
+      message: null,
+    }))
+
+    const { workspace } = renderExecutionView({ formatProjectDocument })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await waitFor(() => expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/README.md'))
+    const editor = await screen.findByLabelText('Editor for /README.md')
+    fireEvent.change(editor, { target: { value: '# raw\n' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Format document' }))
+
+    await waitFor(() =>
+      expect(formatProjectDocument).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        path: '/README.md',
+        content: '# raw\n',
+      }),
+    )
+    await waitFor(() => expect(screen.getByLabelText('Editor for /README.md')).toHaveValue('# Pretty\n'))
+  })
+
+  it('runs format on save when the toggle is enabled before writing through the workspace', async () => {
+    const formatProjectDocument = vi.fn(async (request: {
+      projectId: string
+      path: string
+      content: string
+    }) => ({
+      projectId: request.projectId,
+      path: request.path,
+      status: 'formatted' as const,
+      formatterId: 'prettier',
+      command: ['prettier'],
+      content: '# Pretty\n',
+      rangeApplied: null,
+      diagnostics: [],
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+      durationMs: 12,
+      message: null,
+    }))
+
+    const { workspace } = renderExecutionView({ formatProjectDocument })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await screen.findByLabelText('Editor for /README.md')
+    fireEvent.click(screen.getByRole('button', { name: /Format on save: off/ }))
+    fireEvent.change(screen.getByLabelText('Editor for /README.md'), {
+      target: { value: '# raw\n' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(formatProjectDocument).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(workspace.writeProjectFile).toHaveBeenCalledWith(
+        'project-1',
+        '/README.md',
+        '# Pretty\n',
+        expect.objectContaining({ overwrite: false }),
+      ),
+    )
+  })
+
+  it('reports lint diagnostics in the Problems panel and updates file tree badges', async () => {
+    const runProjectLint = vi.fn(async () => ({
+      projectId: 'project-1',
+      status: 'failed' as const,
+      source: 'eslint',
+      command: ['eslint', '--format', 'json', '.'],
+      cwd: '/tmp/Xero',
+      diagnostics: [
+        {
+          path: '/src/main.tsx',
+          line: 4,
+          column: 2,
+          severity: 'warning' as const,
+          code: 'no-unused-vars',
+          message: "'foo' is defined but never used.",
+          source: 'eslint',
+        },
+      ],
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+      durationMs: 25,
+      exitCode: 1,
+      truncated: false,
+      message: null,
+    }))
+
+    renderExecutionView({ runProjectLint })
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Run lint' }))
+
+    await waitFor(() =>
+      expect(runProjectLint).toHaveBeenCalledWith({ projectId: 'project-1' }),
+    )
+    expect(await screen.findByTestId('problems-panel')).toHaveTextContent('0 errors · 1 warning')
+    expect(screen.getByTestId('file:/src/main.tsx')).toHaveTextContent('problems: 1')
+    expect(screen.getByRole('button', { name: /no-unused-vars/ })).toBeVisible()
+  })
+
+  it('runs editor typecheck tasks in a labeled terminal and streams matched problems', async () => {
+    let taskRequest: EditorTerminalTaskRequest | null = null
+    const runEditorTerminalTask = vi.fn(async (request: EditorTerminalTaskRequest) => {
+      taskRequest = request
+      return 'term-1'
+    })
+
+    renderExecutionView({ runEditorTerminalTask })
+
+    expect(await screen.findByTestId('file:/README.md')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Run typecheck' }))
+
+    await waitFor(() => expect(runEditorTerminalTask).toHaveBeenCalled())
+    expect(taskRequest).toMatchObject({
+      taskId: 'typecheck',
+      kind: 'typecheck',
+      label: 'task: typecheck',
+      exitWhenDone: true,
+    })
+
+    act(() => {
+      taskRequest?.onData?.(
+        "src/main.tsx(2,4): error TS1005: ';' expected.\n",
+      )
+    })
+
+    expect(await screen.findByTestId('problems-panel')).toHaveTextContent('1 error')
+    expect(screen.getByTestId('file:/src/main.tsx')).toHaveTextContent('problems: 1')
+
+    act(() => {
+      taskRequest?.onExit?.({ terminalId: 'term-1', exitCode: 2 })
+    })
+
+    expect(screen.getByTestId('problems-panel')).toHaveTextContent('Typecheck exited with code 2')
+    fireEvent.click(screen.getByRole('button', { name: /TS1005/ }))
+    await waitFor(() => expect(screen.getByLabelText('Editor for /src/main.tsx')).toBeVisible())
+  })
+
+  it('sends the current editor draft to the agent from the top bar', async () => {
+    const onSendEditorContextToAgent = vi.fn(async (_request: EditorAgentContextRequest) => undefined)
+    const { workspace } = renderExecutionView({ onSendEditorContextToAgent })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await waitFor(() => expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/README.md'))
+    const editor = await screen.findByLabelText('Editor for /README.md')
+    fireEvent.change(editor, { target: { value: '# Draft\n' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix this file with agent' }))
+
+    await waitFor(() => expect(onSendEditorContextToAgent).toHaveBeenCalledTimes(1))
+    expect(onSendEditorContextToAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'fix_file',
+        path: '/README.md',
+        content: '# Draft\n',
+        savedContent: '# Xero\n',
+        isDirty: true,
+        selection: null,
+      }),
+    )
+    expect(onSendEditorContextToAgent.mock.calls[0]?.[0].prompt).toContain('unsaved changes')
+  })
+
+  it('surfaces agent file activity and previews dirty editor conflicts', async () => {
+    const { workspace } = renderExecutionView({
+      agentActivities: [makeEditorAgentActivity()],
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await waitFor(() => expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/README.md'))
+    expect(await screen.findByText(/Agent activity on this file/)).toBeVisible()
+    expect(screen.getByTestId('file:/README.md')).toHaveTextContent('agent: 1')
+
+    const editor = await screen.findByLabelText('Editor for /README.md')
+    fireEvent.change(editor, { target: { value: '# Mine\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'Agent edit preview' })
+    expect(within(dialog).getByText(/Your open editor draft has unsaved changes/)).toBeVisible()
+    expect(within(dialog).getByText('hunk-1')).toBeVisible()
+    expect(within(dialog).getByText('Saved base')).toBeVisible()
+    expect(within(dialog).getByText('Your editor draft')).toBeVisible()
+    expect(within(dialog).getByText('Agent / disk')).toBeVisible()
+    await waitFor(() => expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/README.md'))
+  })
+
+  it('surfaces formatter failure diagnostics without rewriting the document', async () => {
+    const formatProjectDocument = vi.fn(async () => ({
+      projectId: 'project-1',
+      path: '/README.md',
+      status: 'failed' as const,
+      formatterId: 'prettier',
+      command: ['prettier'],
+      content: null,
+      rangeApplied: null,
+      diagnostics: [
+        {
+          path: '/README.md',
+          line: null,
+          column: null,
+          severity: 'error' as const,
+          code: 'exit:2',
+          message: 'Unexpected token at line 3',
+          source: 'prettier',
+        },
+      ],
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+      durationMs: 4,
+      message: 'Unexpected token at line 3',
+    }))
+
+    const { workspace } = renderExecutionView({ formatProjectDocument })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await screen.findByLabelText('Editor for /README.md')
+    fireEvent.change(screen.getByLabelText('Editor for /README.md'), {
+      target: { value: '# raw\n' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Format document' }))
+
+    await waitFor(() => expect(formatProjectDocument).toHaveBeenCalled())
+    expect(workspace.writeProjectFile).not.toHaveBeenCalled()
+    expect(await screen.findByTestId('problems-panel')).toHaveTextContent(
+      'Unexpected token at line 3',
+    )
+  })
+
+  it('preserves the original CRLF line endings and final-newline on save', async () => {
+    const harness = createWorkspaceHarness({
+      fileContents: {
+        '/README.md': 'first\r\nsecond\r\nthird\r\n',
+      },
+    })
+    const { workspace } = renderExecutionView({}, harness)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    const editor = await screen.findByLabelText('Editor for /README.md')
+    expect(editor).toHaveValue('first\nsecond\nthird\n')
+    fireEvent.change(editor, { target: { value: 'first\nsecond UPDATED\nthird\n' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(workspace.writeProjectFile).toHaveBeenLastCalledWith(
+        'project-1',
+        '/README.md',
+        'first\r\nsecond UPDATED\r\nthird\r\n',
+        expect.objectContaining({ overwrite: false }),
+      ),
+    )
+    expect(screen.getByText('CRLF')).toBeVisible()
+  })
+
+  it('shows detected indent + EOL in the status bar', async () => {
+    const harness = createWorkspaceHarness({
+      fileContents: {
+        '/src/main.tsx': 'function foo() {\n    return 1\n    if (cond) {\n        return 2\n    }\n}\n',
+      },
+    })
+    renderExecutionView({}, harness)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /src/main.tsx' }))
+    await screen.findByLabelText('Editor for /src/main.tsx')
+    expect(screen.getByText('Spaces (4)')).toBeVisible()
+    expect(screen.getByText('LF')).toBeVisible()
+  })
+
+  it('saves all dirty tabs through the Save All keyboard shortcut', async () => {
+    const { workspace } = renderExecutionView()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await screen.findByLabelText('Editor for /README.md')
+    fireEvent.change(screen.getByLabelText('Editor for /README.md'), {
+      target: { value: '# updated\n' },
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('file:/README.md')).toHaveTextContent('dirty'),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open /src/main.tsx' }))
+    await screen.findByLabelText('Editor for /src/main.tsx')
+    fireEvent.change(screen.getByLabelText('Editor for /src/main.tsx'), {
+      target: { value: 'console.log("updated")\n' },
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('file:/src/main.tsx')).toHaveTextContent('dirty'),
+    )
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 's', code: 'KeyS', metaKey: true, altKey: true })
+    })
+
+    await waitFor(() => {
+      expect(workspace.writeProjectFile).toHaveBeenCalledWith(
+        'project-1',
+        '/README.md',
+        '# updated\n',
+        expect.objectContaining({ overwrite: false }),
+      )
+    })
+    await waitFor(() => {
+      expect(workspace.writeProjectFile).toHaveBeenCalledWith(
+        'project-1',
+        '/src/main.tsx',
+        'console.log("updated")\n',
+        expect.objectContaining({ overwrite: false }),
+      )
+    })
+  })
+
+  it('cycles between tabs with the next/previous tab keyboard shortcut', async () => {
+    renderExecutionView()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await screen.findByLabelText('Editor for /README.md')
+    fireEvent.click(screen.getByRole('button', { name: 'Open /src/main.tsx' }))
+    await screen.findByLabelText('Editor for /src/main.tsx')
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'ArrowLeft', metaKey: true, altKey: true })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('file:/README.md')).toHaveTextContent('selected'),
+    )
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'ArrowRight', metaKey: true, altKey: true })
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('file:/src/main.tsx')).toHaveTextContent('selected'),
+    )
+  })
+
+  it('exposes the editor preferences button when text files are open', async () => {
+    renderExecutionView()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await screen.findByLabelText('Editor for /README.md')
+
+    expect(screen.getByRole('button', { name: 'Editor preferences' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Tab actions' })).toBeVisible()
+  })
+
+  it('exposes editor tabs as a tablist with arrow-key navigation', async () => {
+    renderExecutionView()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    await screen.findByLabelText('Editor for /README.md')
+    fireEvent.click(screen.getByRole('button', { name: 'Open /src/main.tsx' }))
+    await screen.findByLabelText('Editor for /src/main.tsx')
+
+    const tablist = screen.getByRole('tablist', { name: 'Open editor tabs' })
+    const tabs = within(tablist).getAllByRole('tab')
+    expect(tabs).toHaveLength(2)
+    const active = tabs.find((tab) => tab.getAttribute('aria-selected') === 'true')
+    expect(active).toBeDefined()
+    expect(active).toHaveAttribute('tabIndex', '0')
+    const inactive = tabs.find((tab) => tab.getAttribute('aria-selected') !== 'true')
+    expect(inactive).toHaveAttribute('tabIndex', '-1')
+
+    fireEvent.keyDown(active!, { key: 'ArrowLeft' })
+    await waitFor(() =>
+      expect(screen.getByTestId('file:/README.md')).toHaveTextContent('selected'),
+    )
+  })
+
+  it('announces save failures through the assertive live region', async () => {
+    const workspace = createWorkspaceHarness()
+    workspace.writeProjectFile.mockImplementationOnce(async () => {
+      throw new Error('Disk write failed.')
+    })
+
+    render(
+      <ExecutionView
+        execution={makeExecution()}
+        listProjectFileIndex={workspace.listProjectFileIndex}
+        listProjectFiles={workspace.listProjectFiles}
+        readProjectFile={workspace.readProjectFile}
+        writeProjectFile={workspace.writeProjectFile}
+        createProjectEntry={workspace.createProjectEntry}
+        renameProjectEntry={workspace.renameProjectEntry}
+        moveProjectEntry={workspace.moveProjectEntry}
+        deleteProjectEntry={workspace.deleteProjectEntry}
+        searchProject={workspace.searchProject}
+        replaceInProject={workspace.replaceInProject}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    fireEvent.change(await screen.findByLabelText('Editor for /README.md'), {
+      target: { value: '# Failure path\n' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    const alert = await screen.findByTestId('editor-live-region-alert')
+    await waitFor(() => expect(alert.textContent).toMatch(/Workspace error: Disk write failed\./))
+    expect(alert).toHaveAttribute('aria-live', 'assertive')
+  })
+
+  it('shows an editor context menu with Cut, Copy, Paste, and navigation actions', async () => {
+    renderExecutionView()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
+    const editor = await screen.findByLabelText('Editor for /README.md')
+
+    fireEvent.contextMenu(editor)
+
+    await screen.findByRole('menuitem', { name: /^Cut/ })
+    const items = screen.getAllByRole('menuitem').map((node) => node.textContent ?? '')
+    expect(items.some((text) => text.startsWith('Cut'))).toBe(true)
+    expect(items.some((text) => text.startsWith('Copy') && !text.startsWith('Copy path'))).toBe(true)
+    expect(items.some((text) => text.startsWith('Paste'))).toBe(true)
+    expect(items.some((text) => text.startsWith('Select all'))).toBe(true)
+    expect(items.some((text) => text.startsWith('Find'))).toBe(true)
+    expect(items.some((text) => text.includes('Reveal in Explorer'))).toBe(true)
+    expect(items.some((text) => text.startsWith('Copy path'))).toBe(true)
+  })
 })
 
 describe('ExecutionView file editor host', () => {
@@ -1060,6 +2024,7 @@ describe('ExecutionView file editor host', () => {
     const root = folder('root', '/', [
       file('README.md', '/README.md'),
       file('logo.svg', '/logo.svg'),
+      file('index.html', '/index.html'),
       file('photo.png', '/photo.png'),
       file('large-photo.png', '/large-photo.png'),
       file('data.csv', '/data.csv'),
@@ -1080,6 +2045,17 @@ describe('ExecutionView file editor host', () => {
       '/README.md': () => textFileResponse('project-1', '/README.md', '# Xero\n'),
       '/logo.svg': () =>
         svgFileResponse('project-1', '/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
+      '/index.html': () =>
+        htmlFileResponse(
+          'project-1',
+          '/index.html',
+          [
+            '<!doctype html>',
+            '<h1>Preview App</h1>',
+            '<script>window.xeroUnsafe = true</script>',
+            '<img alt="Logo" src="./docs/logo.png">',
+          ].join('\n'),
+        ),
       '/photo.png': () => imageFileResponse('project-1', '/photo.png'),
       '/large-photo.png': () =>
         imageFileResponse('project-1', '/large-photo.png', 128 * 1024 * 1024),
@@ -1117,6 +2093,9 @@ describe('ExecutionView file editor host', () => {
     const listProjectFiles = vi.fn(async (projectId: string, path = '/') =>
       projectFileListing(projectId, path, currentRoot),
     )
+    const listProjectFileIndex = vi.fn(async (request: { projectId: string; includeHidden?: boolean }) =>
+      projectFileIndex(request.projectId, currentRoot, request.includeHidden ?? false),
+    )
     const readProjectFile = vi.fn(async (_projectId: string, path: string) => {
       const builder = responses[path]
       if (!builder) {
@@ -1124,7 +2103,9 @@ describe('ExecutionView file editor host', () => {
       }
       return builder()
     })
-    const writeProjectFile = vi.fn(async (projectId: string, path: string) => ({ projectId, path }))
+    const writeProjectFile = vi.fn(async (projectId: string, path: string, content = '') =>
+      writeFileResponse(projectId, path, content),
+    )
     const revokeProjectAssetTokens = vi.fn(async () => undefined)
     const openProjectFileExternal = vi.fn(async () => undefined)
     const createProjectEntry = vi.fn(async (request) => ({
@@ -1154,6 +2135,7 @@ describe('ExecutionView file editor host', () => {
     }))
 
     return {
+      listProjectFileIndex,
       listProjectFiles,
       readProjectFile,
       writeProjectFile,
@@ -1175,6 +2157,7 @@ describe('ExecutionView file editor host', () => {
       ...render(
         <ExecutionView
           execution={makeExecution()}
+          listProjectFileIndex={workspace.listProjectFileIndex}
           listProjectFiles={workspace.listProjectFiles}
           readProjectFile={workspace.readProjectFile}
           writeProjectFile={workspace.writeProjectFile}
@@ -1223,6 +2206,26 @@ describe('ExecutionView file editor host', () => {
     expect(screen.getByText(/Ln 1, Col 1/)).toBeVisible()
   })
 
+  it('renders HTML files in a sandboxed preview without executing project scripts', async () => {
+    const { workspace } = renderHostExecutionView()
+
+    expect(await screen.findByTestId('file:/index.html')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Open /index.html' }))
+
+    expect(await screen.findByLabelText('Editor for /index.html')).toBeVisible()
+    fireEvent.click(screen.getByRole('radio', { name: 'Show preview' }))
+
+    const preview = await screen.findByTestId('html-preview')
+    const iframe = preview.querySelector('iframe')
+    expect(iframe).toHaveAttribute('sandbox', '')
+    await waitFor(() =>
+      expect(workspace.readProjectFile).toHaveBeenCalledWith('project-1', '/docs/logo.png'),
+    )
+    expect(iframe?.getAttribute('srcdoc')).not.toContain('<script>')
+    expect(iframe?.getAttribute('srcdoc')).toContain('xero-asset://preview/docs/logo.png')
+    expect(screen.getByRole('status')).toHaveTextContent('Removed 1 blocked element')
+  })
+
   it('renders an image preview for renderable image files and hides save controls', async () => {
     renderHostExecutionView()
 
@@ -1255,6 +2258,7 @@ describe('ExecutionView file editor host', () => {
     rerender(
       <ExecutionView
         execution={makeExecution('project-2', 'Project Two')}
+        listProjectFileIndex={workspace.listProjectFileIndex}
         listProjectFiles={workspace.listProjectFiles}
         readProjectFile={workspace.readProjectFile}
         writeProjectFile={workspace.writeProjectFile}

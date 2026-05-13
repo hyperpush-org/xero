@@ -502,7 +502,12 @@ export interface UseXeroDesktopStateResult {
   retryActiveRepositoryDiff: () => Promise<void>
   listProjectFiles: (projectId: string, path?: string) => Promise<ListProjectFilesResponseDto>
   readProjectFile: (projectId: string, path: string) => Promise<ReadProjectFileResponseDto>
-  writeProjectFile: (projectId: string, path: string, content: string) => Promise<WriteProjectFileResponseDto>
+  writeProjectFile: (
+    projectId: string,
+    path: string,
+    content: string,
+    options?: Parameters<XeroDesktopAdapter['writeProjectFile']>[3],
+  ) => Promise<WriteProjectFileResponseDto>
   revokeProjectAssetTokens?: (projectId: string, paths?: string[]) => Promise<void>
   openProjectFileExternal?: (projectId: string, path: string) => Promise<void>
   createProjectEntry: (request: CreateProjectEntryRequestDto) => Promise<CreateProjectEntryResponseDto>

@@ -33,6 +33,7 @@ import {
   type SubscribeRuntimeStreamResponseDto,
   type RuntimeUpdatedPayloadDto,
   type SkillRegistryDto,
+  type WriteProjectFileResponseDto,
 } from '@/src/lib/xero-model'
 import { type ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import { XeroDesktopError, type XeroDesktopAdapter } from '@/src/lib/xero-desktop'
@@ -59,6 +60,23 @@ function createDeferred<T>() {
   })
 
   return { promise, resolve, reject }
+}
+
+function writeFileResponse(
+  projectId: string,
+  path: string,
+  content = '',
+): WriteProjectFileResponseDto {
+  return {
+    projectId,
+    path,
+    byteLength: content.length,
+    modifiedAt: '2026-01-01T00:00:01Z',
+    contentHash: `saved-${path}-${content.length}`,
+    mimeType: 'text/plain; charset=utf-8',
+    rendererKind: 'code',
+    preview: null,
+  }
 }
 
 function makeProjectSummary(id: string, name: string) {
@@ -1930,6 +1948,13 @@ function createMockAdapter(options?: {
     truncated: false,
     omittedEntryCount: 0,
   }))
+  const listProjectFileIndex = vi.fn(async (request: { projectId: string }) => ({
+    projectId: request.projectId,
+    files: [],
+    totalFiles: 0,
+    truncated: false,
+    payloadBudget: null,
+  }))
   const readProjectFile = vi.fn(async (projectId: string, path: string) => ({
     kind: 'text' as const,
     projectId,
@@ -1941,7 +1966,9 @@ function createMockAdapter(options?: {
     rendererKind: 'code' as const,
     text: '',
   }))
-  const writeProjectFile = vi.fn(async (projectId: string, path: string) => ({ projectId, path }))
+  const writeProjectFile = vi.fn(async (projectId: string, path: string, content = '') =>
+    writeFileResponse(projectId, path, content),
+  )
   const createProjectEntry = vi.fn(async (request) => ({
     projectId: request.projectId,
     path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,
@@ -2090,6 +2117,7 @@ function createMockAdapter(options?: {
     gitStagePaths: async () => undefined,
     gitUnstagePaths: async () => undefined,
     gitDiscardChanges: async () => undefined,
+    gitRevertPatch: async () => undefined,
     gitCommit: async () => ({ sha: 'abc1234', summary: 'mock commit', signature: { name: 'Mock', email: 'mock@example.com' } }),
     gitGenerateCommitMessage: async () => ({
       message: 'feat: mock generated commit',
@@ -2100,6 +2128,7 @@ function createMockAdapter(options?: {
     gitFetch: async () => ({ remote: 'origin', refspecs: [] }),
     gitPull: async () => ({ remote: 'origin', branch: 'main', updated: false, summary: 'already up to date', newHeadSha: null }),
     gitPush: async () => ({ remote: 'origin', branch: 'main', updates: [] }),
+    listProjectFileIndex,
     listProjectFiles,
     readProjectFile,
     writeProjectFile,

@@ -189,6 +189,40 @@ describe('XeroShell', () => {
     }
   })
 
+  it('preloads the terminal surface from the titlebar button before opening', async () => {
+    const onSurfacePreload = vi.fn()
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number
+    }
+    const previousRequestIdleCallback = idleWindow.requestIdleCallback
+    idleWindow.requestIdleCallback = (callback) => {
+      ;(callback as () => void)()
+      return 1
+    }
+
+    try {
+      render(
+        <XeroShell
+          activeView="phases"
+          onSurfacePreload={onSurfacePreload}
+          onViewChange={() => undefined}
+          platformOverride="macos"
+        >
+          <div>Body</div>
+        </XeroShell>,
+      )
+
+      const terminalButton = screen.getByRole('button', { name: 'Open terminal' })
+      fireEvent.pointerEnter(terminalButton)
+      fireEvent.focus(terminalButton)
+
+      await waitFor(() => expect(onSurfacePreload).toHaveBeenCalledWith('terminal'))
+      expect(onSurfacePreload).toHaveBeenCalledTimes(2)
+    } finally {
+      idleWindow.requestIdleCallback = previousRequestIdleCallback
+    }
+  })
+
   it.each(['macos', 'windows'] as const)('keeps titlebar controls out of the drag strip in %s', (platform) => {
     isTauriMock.mockReturnValue(true)
     invokeMock.mockReturnValue(new Promise(() => undefined))

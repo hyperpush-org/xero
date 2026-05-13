@@ -346,7 +346,9 @@ impl ToolRegistry {
         let exposure_plan = ToolExposurePlan::for_tool_names(
             options.runtime_agent_id,
             "builtin_full_registry",
-            descriptors.iter().map(|descriptor| descriptor.name.as_str()),
+            descriptors
+                .iter()
+                .map(|descriptor| descriptor.name.as_str()),
             "startup_core",
             "builtin_full_registry",
             "Full built-in registry requested for contract export, harness setup, or explicit diagnostic use.",
@@ -1740,11 +1742,42 @@ impl ProviderAdapter for FakeProviderAdapter {
             });
         }
 
-        if request
+        let has_tool_message = request
             .messages
             .iter()
-            .any(|message| matches!(message, ProviderMessage::Tool { .. }))
-        {
+            .any(|message| matches!(message, ProviderMessage::Tool { .. }));
+        let continuation_prompt = request
+            .messages
+            .iter()
+            .rposition(|message| matches!(message, ProviderMessage::Tool { .. }))
+            .and_then(|last_tool_index| {
+                request
+                    .messages
+                    .iter()
+                    .skip(last_tool_index.saturating_add(1))
+                    .rev()
+                    .find_map(|message| match message {
+                        ProviderMessage::User { content, .. } => Some(content.clone()),
+                        _ => None,
+                    })
+            });
+        let user_prompt = if let Some(prompt) = continuation_prompt {
+            prompt
+        } else if has_tool_message {
+            String::new()
+        } else {
+            request
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    ProviderMessage::User { content, .. } => Some(content.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let tool_calls = parse_fake_tool_directives(&user_prompt);
+        if has_tool_message && tool_calls.is_empty() {
             let message =
                 "Owned agent run completed through the Xero model-loop scaffold.".to_string();
             emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
@@ -1756,16 +1789,6 @@ impl ProviderAdapter for FakeProviderAdapter {
             });
         }
 
-        let user_prompt = request
-            .messages
-            .iter()
-            .filter_map(|message| match message {
-                ProviderMessage::User { content, .. } => Some(content.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tool_calls = parse_fake_tool_directives(&user_prompt);
         let message = "Xero owned-agent runtime accepted the task.".to_string();
         emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
         if tool_calls.is_empty() {

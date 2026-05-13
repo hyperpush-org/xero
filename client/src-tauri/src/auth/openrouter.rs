@@ -291,9 +291,7 @@ fn map_probe_status_error(status: u16, body: &str) -> AuthFlowError {
         401 => AuthFlowError::terminal(
             "openrouter_invalid_api_key",
             RuntimeAuthPhase::Failed,
-            format!(
-                "OpenRouter rejected the configured API key with HTTP 401.{suffix}"
-            ),
+            format!("OpenRouter rejected the configured API key with HTTP 401.{suffix}"),
         ),
         402 => AuthFlowError::terminal(
             "openrouter_insufficient_credits",

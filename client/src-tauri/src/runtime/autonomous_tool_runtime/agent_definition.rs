@@ -2482,7 +2482,9 @@ fn attached_skill_unavailable_reason(
                 code: "agent_definition_attachable_skill_source_not_enabled",
                 repair_hint: "enable_source",
                 message: |source_id| {
-                    format!("Skill source `{source_id}` must be enabled before Agent Create can attach it.")
+                    format!(
+                        "Skill source `{source_id}` must be enabled before Agent Create can attach it."
+                    )
                 },
             });
         }
@@ -2491,7 +2493,9 @@ fn attached_skill_unavailable_reason(
                 code: "agent_definition_attachable_skill_source_stale",
                 repair_hint: "refresh_pin",
                 message: |source_id| {
-                    format!("Skill source `{source_id}` is stale; refresh the pin or remove the attachment.")
+                    format!(
+                        "Skill source `{source_id}` is stale; refresh the pin or remove the attachment."
+                    )
                 },
             });
         }
@@ -2500,7 +2504,9 @@ fn attached_skill_unavailable_reason(
                 code: "agent_definition_attachable_skill_source_failed",
                 repair_hint: "refresh_pin",
                 message: |source_id| {
-                    format!("Skill source `{source_id}` is in a failed state and must be reloaded before attachment.")
+                    format!(
+                        "Skill source `{source_id}` is in a failed state and must be reloaded before attachment."
+                    )
                 },
             });
         }
@@ -2522,7 +2528,9 @@ fn attached_skill_unavailable_reason(
                 code: "agent_definition_attachable_skill_trust_required",
                 repair_hint: "approve_source",
                 message: |source_id| {
-                    format!("Skill source `{source_id}` requires user approval before Agent Create can attach it.")
+                    format!(
+                        "Skill source `{source_id}` requires user approval before Agent Create can attach it."
+                    )
                 },
             });
         }

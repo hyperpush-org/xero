@@ -1,6 +1,7 @@
-use std::path::Path;
-
 use std::cell::RefCell;
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 
 use git2::{
@@ -15,6 +16,8 @@ use crate::{
     },
     git::{repository, status},
 };
+
+const MAX_REVERT_PATCH_BYTES: usize = 256 * 1024;
 
 pub fn stage_paths(
     expected_project_id: &str,
@@ -164,6 +167,86 @@ pub fn discard_changes(
             format!("Xero could not discard local changes: {error}"),
         )
     })?;
+
+    Ok(())
+}
+
+pub fn revert_patch(
+    expected_project_id: &str,
+    patch: &str,
+    registry_path: &Path,
+) -> CommandResult<()> {
+    let canonical = status::resolve_project_repository(expected_project_id, registry_path)?;
+    revert_patch_at_root(&canonical.root_path, patch)
+}
+
+fn revert_patch_at_root(root_path: &Path, patch: &str) -> CommandResult<()> {
+    let trimmed = patch.trim();
+    if trimmed.is_empty() {
+        return Err(CommandError::invalid_request("patch"));
+    }
+    if patch.len() > MAX_REVERT_PATCH_BYTES {
+        return Err(CommandError::user_fixable(
+            "git_revert_patch_too_large",
+            "This hunk is too large to revert from the editor.",
+        ));
+    }
+    if !patch.contains("diff --git ") || !patch.contains("\n@@ ") {
+        return Err(CommandError::user_fixable(
+            "git_revert_patch_invalid",
+            "Xero could not recognize this Git hunk patch.",
+        ));
+    }
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root_path)
+        .args(["apply", "--reverse", "--whitespace=nowarn", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CommandError::retryable(
+                "git_revert_patch_failed",
+                format!("Xero could not start git apply: {error}"),
+            )
+        })?;
+
+    {
+        let Some(mut stdin) = child.stdin.take() else {
+            return Err(CommandError::retryable(
+                "git_revert_patch_failed",
+                "Xero could not open git apply stdin.",
+            ));
+        };
+        stdin.write_all(patch.as_bytes()).map_err(|error| {
+            CommandError::retryable(
+                "git_revert_patch_failed",
+                format!("Xero could not pass the hunk to git apply: {error}"),
+            )
+        })?;
+    }
+
+    let output = child.wait_with_output().map_err(|error| {
+        CommandError::retryable(
+            "git_revert_patch_failed",
+            format!("Xero could not finish git apply: {error}"),
+        )
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            "Git could not reverse-apply this hunk.".to_string()
+        } else {
+            stderr
+        };
+        return Err(CommandError::user_fixable(
+            "git_revert_patch_failed",
+            detail,
+        ));
+    }
 
     Ok(())
 }
@@ -619,4 +702,50 @@ fn resolve_signature(repo: &Repository) -> CommandResult<Signature<'static>> {
             format!("Xero could not build a commit signature: {error}"),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn revert_patch_at_root_reverse_applies_a_single_hunk() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        init_repository(temp_dir.path());
+        let path = temp_dir.path().join("file.txt");
+        fs::write(&path, "alpha\nBETA\ngamma\n").unwrap();
+
+        let patch = [
+            "diff --git a/file.txt b/file.txt",
+            "--- a/file.txt",
+            "+++ b/file.txt",
+            "@@ -1,3 +1,3 @@",
+            " alpha",
+            "-beta",
+            "+BETA",
+            " gamma",
+            "",
+        ]
+        .join("\n");
+
+        revert_patch_at_root(temp_dir.path(), &patch).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), "alpha\nbeta\ngamma\n");
+    }
+
+    fn init_repository(root: &Path) {
+        let repository = Repository::init(root).unwrap();
+        fs::write(root.join("file.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        let mut index = repository.index().unwrap();
+        index.add_path(Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repository.find_tree(tree_id).unwrap();
+        let signature = Signature::now("Xero Test", "xero@example.test").unwrap();
+        repository
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .unwrap();
+    }
 }

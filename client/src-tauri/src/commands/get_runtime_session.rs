@@ -119,7 +119,9 @@ pub(crate) fn prepare_runtime_session_for_selected_provider<R: Runtime>(
                 return Err(signed_out_runtime(
                     runtime,
                     "provider_not_found",
-                    &format!("Xero could not bind the selected runtime because provider `{profile_id}` no longer exists."),
+                    &format!(
+                        "Xero could not bind the selected runtime because provider `{profile_id}` no longer exists."
+                    ),
                     false,
                 ));
             }

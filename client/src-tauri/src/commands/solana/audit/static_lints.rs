@@ -287,7 +287,7 @@ where
             return Err(CommandError::system_fault(
                 "solana_audit_static_read_dir_failed",
                 format!("Could not read {}: {err}", dir.display()),
-            ))
+            ));
         }
     };
     for entry in entries.flatten() {

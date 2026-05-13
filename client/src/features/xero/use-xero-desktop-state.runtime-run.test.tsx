@@ -23,6 +23,7 @@ import type {
   SyncNotificationAdaptersResponseDto,
   UpsertNotificationRouteCredentialsRequestDto,
   UpsertNotificationRouteCredentialsResponseDto,
+  WriteProjectFileResponseDto,
 } from '@/src/lib/xero-model'
 import type { ProviderProfilesDto } from '@/src/test/legacy-provider-profiles'
 import { useXeroDesktopState } from '@/src/features/xero/use-xero-desktop-state'
@@ -38,6 +39,23 @@ function makeProjectSummary(id: string, name: string) {
     activePhase: 1,
     branch: 'main',
     runtime: null,
+  }
+}
+
+function writeFileResponse(
+  projectId: string,
+  path: string,
+  content = '',
+): WriteProjectFileResponseDto {
+  return {
+    projectId,
+    path,
+    byteLength: content.length,
+    modifiedAt: '2026-01-01T00:00:01Z',
+    contentHash: `saved-${path}-${content.length}`,
+    mimeType: 'text/plain; charset=utf-8',
+    rendererKind: 'code',
+    preview: null,
   }
 }
 
@@ -814,7 +832,9 @@ function createMockAdapter(options?: {
       rendererKind: 'code' as const,
       text: '',
     })),
-    writeProjectFile: vi.fn(async (projectId: string, path: string) => ({ projectId, path })),
+    writeProjectFile: vi.fn(async (projectId: string, path: string, content = '') =>
+      writeFileResponse(projectId, path, content),
+    ),
     createProjectEntry: vi.fn(async (request) => ({
       projectId: request.projectId,
       path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,
@@ -1823,25 +1843,25 @@ describe('useXeroDesktopState runtime-run hydration', () => {
   })
 
   it('hydrates gate-linked pending approvals from durable snapshot truth on project:updated refresh', async () => {
-    const setup = createMockAdapter({
-      listProjects: { projects: [makeProjectSummary('project-1', 'Xero')] },
-    })
+    const setup = createMockAdapter()
 
     let includeGatePause = false
+    const baseSnapshot = makeSnapshot('project-1', 'Xero')
+    const gatePauseSnapshot = {
+      ...baseSnapshot,
+      approvalRequests: [makeGateLinkedPendingApproval()],
+    }
     vi.mocked(setup.getProjectSnapshot).mockImplementation(async (projectId: string) => {
-      const snapshot = makeSnapshot(projectId, projectId === 'project-1' ? 'Xero' : 'orchestra')
-
-      if (projectId === 'project-1' && includeGatePause) {
-        return {
-          ...snapshot,
-          approvalRequests: [makeGateLinkedPendingApproval()],
-        }
+      if (projectId !== 'project-1') {
+        return makeSnapshot(projectId, 'orchestra')
       }
 
-      return snapshot
+      return includeGatePause ? gatePauseSnapshot : baseSnapshot
     })
 
-    render(<Harness adapter={setup.adapter} />)
+    await act(async () => {
+      render(<Harness adapter={setup.adapter} />)
+    })
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
     expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('0')
@@ -2161,7 +2181,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
     await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('subscribing'))
 
-    act(() => {
+    await act(async () => {
       setup.emitRuntimeStream(0, {
         projectId: 'project-1',
         runtimeKind: 'openai_codex',
@@ -2951,7 +2971,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
     const syncCallsAfterImmediateRefresh = project1SyncCount()
 
-    act(() => {
+    await act(async () => {
       setup.emitRuntimeStream(0, {
         projectId: 'project-1',
         runtimeKind: 'openai_codex',
@@ -2987,12 +3007,16 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
     snapshotMode = 'resolved'
 
-    await new Promise((resolve) => setTimeout(resolve, 650))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650))
+    })
     expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1')
     expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
 
     const syncCallsAfterBoundaryClear = project1SyncCount()
-    await new Promise((resolve) => setTimeout(resolve, 650))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650))
+    })
     expect(project1SyncCount()).toBe(syncCallsAfterBoundaryClear)
   })
 
@@ -3073,7 +3097,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
     project1Blocked = true
 
-    act(() => {
+    await act(async () => {
       setup.emitRuntimeStream(0, {
         projectId: 'project-1',
         runtimeKind: 'openai_codex',
@@ -3107,13 +3131,17 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     await waitFor(() => expect(screen.getByTestId('pending-approval-count')).toHaveTextContent('1'))
     expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+    })
 
     await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
     expect(screen.getByTestId('sync-polling-active')).toHaveTextContent('false')
 
     const project1SyncCallsAfterSwitch = project1SyncCount()
-    await new Promise((resolve) => setTimeout(resolve, 650))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 650))
+    })
     expect(project1SyncCount()).toBe(project1SyncCallsAfterSwitch)
   })
 

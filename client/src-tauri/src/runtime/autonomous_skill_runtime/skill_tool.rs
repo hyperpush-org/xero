@@ -751,7 +751,9 @@ fn validate_sha256(value: &str, field: &'static str) -> CommandResult<String> {
     {
         return Err(CommandError::user_fixable(
             "skill_tool_context_invalid",
-            format!("Xero requires SkillTool context `{field}` values to be lowercase SHA-256 hex digests."),
+            format!(
+                "Xero requires SkillTool context `{field}` values to be lowercase SHA-256 hex digests."
+            ),
         ));
     }
     Ok(trimmed.to_ascii_lowercase())

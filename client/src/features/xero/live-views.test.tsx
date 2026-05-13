@@ -608,6 +608,16 @@ describe('live views', () => {
     render(
       <ExecutionView
         execution={makeExecution()}
+        listProjectFileIndex={async (request) => ({
+          projectId: request.projectId,
+          files: [
+            { path: '/README.md', name: 'README.md', parentPath: '/', hidden: false },
+            { path: '/src/App.tsx', name: 'App.tsx', parentPath: '/src', hidden: false },
+          ],
+          totalFiles: 2,
+          truncated: false,
+          payloadBudget: null,
+        })}
         listProjectFiles={async () => ({
           projectId: 'project-1',
           path: '/',
@@ -683,7 +693,16 @@ describe('live views', () => {
           omittedEntryCount: 0,
         })}
         readProjectFile={readProjectFile}
-        writeProjectFile={async (projectId: string, path: string) => ({ projectId, path })}
+        writeProjectFile={async (projectId: string, path: string, content = '') => ({
+          projectId,
+          path,
+          byteLength: content.length,
+          modifiedAt: '2026-01-01T00:00:01Z',
+          contentHash: `saved-${path}-${content.length}`,
+          mimeType: 'text/plain; charset=utf-8',
+          rendererKind: 'code',
+          preview: null,
+        })}
         createProjectEntry={async (request) => ({
           projectId: request.projectId,
           path: request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`,

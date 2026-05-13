@@ -2,10 +2,15 @@
 
 import { lazy, Suspense } from 'react'
 import type { EditorView as CodeMirrorView } from '@codemirror/view'
+import type { ProjectDiagnosticDto } from '@/src/lib/xero-model'
 import type { ProjectFileResource } from './use-execution-workspace-controller'
+import type { EditorRenderPreferences } from '../code-editor'
+import type { EditorSelectionContext } from './agent-aware-editor-hooks'
+import type { EditorGitDiffLineMarker } from './git-aware-editing'
 import { LoadingState } from './editor-empty-state'
 import {
   CsvPreview,
+  HtmlPreview,
   ImagePreview,
   MarkdownPreview,
   MediaPreview,
@@ -53,14 +58,20 @@ interface FileEditorHostProps {
   textDocumentVersion: number
   onSnapshotChange?: (value: string) => void
   onDirtyChange?: (dirty: boolean) => void
+  diagnostics?: ProjectDiagnosticDto[]
+  gitDiffMarkers?: EditorGitDiffLineMarker[]
   onDocumentStatsChange?: (stats: { lineCount: number }) => void
   onSave?: (snapshot: string) => void
   onCursorChange?: (position: { line: number; column: number }) => void
+  onSelectionChange?: (selection: EditorSelectionContext | null) => void
   onOpenFind?: (options: { withReplace: boolean; initialQuery: string }) => void
+  onGitDiffLineClick?: (marker: EditorGitDiffLineMarker) => void
   onViewReady?: (view: CodeMirrorView | null) => void
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
+  sourceLine?: number
   onCopyPath?: (path: string) => void
   onOpenExternal?: (path: string) => void
+  preferences?: EditorRenderPreferences
   // Mode toggle (per-tab state owned by parent — toggle UI lives in EditorTopBar)
   mode: FileEditorMode
   // Image controls (lifted to parent; rendered in EditorTopBar)
@@ -113,12 +124,17 @@ export function FileEditorHost(props: FileEditorHostProps) {
             savedValue={props.textSavedValue}
             documentVersion={props.textDocumentVersion}
             filePath={filePath}
+            preferences={props.preferences}
             onSnapshotChange={props.onSnapshotChange}
             onDirtyChange={props.onDirtyChange}
+            diagnostics={props.diagnostics}
+            gitDiffMarkers={props.gitDiffMarkers}
             onDocumentStatsChange={props.onDocumentStatsChange}
             onSave={props.onSave}
             onCursorChange={props.onCursorChange}
+            onSelectionChange={props.onSelectionChange}
             onOpenFind={props.onOpenFind}
+            onGitDiffLineClick={props.onGitDiffLineClick}
             onViewReady={props.onViewReady}
           />
         </Suspense>
@@ -129,7 +145,9 @@ export function FileEditorHost(props: FileEditorHostProps) {
           mimeType={resource.mimeType}
           text={props.textValue}
           preview={props.textValue === props.textSavedValue ? resource.preview : null}
+          savedPreview={resource.preview ?? null}
           onResolveAssetPreviewUrl={props.onResolveAssetPreviewUrl}
+          sourceLine={props.sourceLine}
           imageControls={props.imageControls}
           onImageDimensionsChange={props.onImageDimensionsChange}
         />
@@ -144,6 +162,8 @@ function TextBackedPreview({
   mimeType,
   text,
   preview,
+  savedPreview,
+  sourceLine,
   onResolveAssetPreviewUrl,
   imageControls,
   onImageDimensionsChange,
@@ -153,6 +173,8 @@ function TextBackedPreview({
   mimeType: string
   text: string
   preview?: Extract<ProjectFileResource, { kind: 'text' }>['preview']
+  savedPreview?: Extract<ProjectFileResource, { kind: 'text' }>['preview']
+  sourceLine?: number
   onResolveAssetPreviewUrl?: ResolveAssetPreviewUrl
   imageControls?: ImageControlsState
   onImageDimensionsChange?: (dimensions: ImageDimensions | null) => void
@@ -174,7 +196,14 @@ function TextBackedPreview({
       <MarkdownPreview
         filePath={filePath}
         text={text}
-        preview={preview?.kind === 'markdown' ? preview : null}
+        preview={
+          preview?.kind === 'markdown'
+            ? preview
+            : savedPreview?.kind === 'markdown'
+              ? savedPreview
+              : null
+        }
+        sourceLine={sourceLine}
         onResolveAssetPreviewUrl={onResolveAssetPreviewUrl}
       />
     )
@@ -187,6 +216,16 @@ function TextBackedPreview({
         text={text}
         mimeType={mimeType}
         preview={preview?.kind === 'csv' ? preview : null}
+      />
+    )
+  }
+
+  if (rendererKind === 'html') {
+    return (
+      <HtmlPreview
+        filePath={filePath}
+        text={text}
+        onResolveAssetPreviewUrl={onResolveAssetPreviewUrl}
       />
     )
   }

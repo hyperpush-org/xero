@@ -508,9 +508,20 @@ impl AutonomousToolHandlerShared {
         let operator_approved = self
             .operator_approved_call_ids
             .contains(&tool_call.tool_call_id);
-        let write_preflight = self
+        let mut write_preflight = self
             .get_write_preflight(&tool_call.tool_call_id)
             .map_err(command_error_to_tool_execution_error)?;
+        let mut fallback_preflight_created = false;
+        if write_preflight.is_none()
+            && code_capture_plan_for_request(&tool_call.tool_name, &request).is_some()
+        {
+            self.prepare_write_preflight(call, request.clone())
+                .map_err(command_error_to_tool_execution_error)?;
+            write_preflight = self
+                .get_write_preflight(&tool_call.tool_call_id)
+                .map_err(command_error_to_tool_execution_error)?;
+            fallback_preflight_created = write_preflight.is_some();
+        }
         if let Some(preflight) = write_preflight.as_ref() {
             if std::mem::discriminant(&preflight.request) != std::mem::discriminant(&request) {
                 return Err(ToolExecutionError::retryable(
@@ -556,10 +567,21 @@ impl AutonomousToolHandlerShared {
         let tool_result = match tool_execution {
             Ok(tool_result) => tool_result,
             Err(error) => {
-                if write_preflight.is_none() {
-                    let _ = self.release_write_preflight(&tool_call.tool_call_id, "tool_failed");
+                let tool_error = command_error_to_tool_execution_error(error);
+                if fallback_preflight_created {
+                    if let Some(preflight) = write_preflight.as_ref() {
+                        if let Some(code_capture) = preflight.code_capture.as_ref() {
+                            let command_error =
+                                tool_execution_error_ref_to_command_error(&tool_error);
+                            let _ = self.fail_code_capture(code_capture, &command_error);
+                        }
+                    }
+                    let _ = self.release_write_preflight(
+                        &tool_call.tool_call_id,
+                        "tool_failed_fallback_preflight",
+                    );
                 }
-                return Err(command_error_to_tool_execution_error(error));
+                return Err(tool_error);
             }
         };
 
@@ -1499,13 +1521,21 @@ fn persist_tool_dispatch_success(
         run_id,
         AgentRunEventKind::ToolCompleted,
         json!({
-            "toolCallId": success.tool_call_id,
-            "toolName": success.tool_name,
+            "toolCallId": success.tool_call_id.clone(),
+            "toolName": success.tool_name.clone(),
             "ok": true,
-            "summary": success.summary,
-            "output": success.output,
+            "summary": success.summary.clone(),
+            "output": success.output.clone(),
             "dispatch": dispatch,
         }),
+    )?;
+    record_command_output_event_from_dispatch_success(
+        repo_root,
+        project_id,
+        run_id,
+        &success.tool_call_id,
+        &success.tool_name,
+        &success.output,
     )?;
 
     Ok(AgentToolResult {
@@ -1524,6 +1554,49 @@ fn persist_tool_dispatch_success(
         }),
         parent_assistant_message_id: None,
     })
+}
+
+fn record_command_output_event_from_dispatch_success(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+    tool_name: &str,
+    output: &JsonValue,
+) -> CommandResult<()> {
+    if command_output_final_event_exists(repo_root, project_id, run_id, tool_call_id)? {
+        return Ok(());
+    }
+    let Ok(tool_result) = serde_json::from_value::<AutonomousToolResult>(output.clone()) else {
+        return Ok(());
+    };
+    record_command_output_event(
+        repo_root,
+        project_id,
+        run_id,
+        tool_call_id,
+        tool_name,
+        &tool_result.output,
+    )
+}
+
+fn command_output_final_event_exists(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+) -> CommandResult<bool> {
+    let events = project_store::read_all_agent_events(repo_root, project_id, run_id)?;
+    Ok(events.iter().any(|event| {
+        if event.event_kind != AgentRunEventKind::CommandOutput {
+            return false;
+        }
+        let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) else {
+            return false;
+        };
+        payload.get("toolCallId").and_then(JsonValue::as_str) == Some(tool_call_id)
+            && payload.get("partial").and_then(JsonValue::as_bool) != Some(true)
+    }))
 }
 
 #[expect(

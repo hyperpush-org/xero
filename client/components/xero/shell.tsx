@@ -48,6 +48,7 @@ export type SurfacePreloadTarget =
   | "ios"
   | "settings"
   | "solana"
+  | "terminal"
   | "usage"
   | "vcs"
   | "workflows"
@@ -623,6 +624,8 @@ export function XeroShell({
           aria-pressed={terminalOpen}
           className={titlebarToolButtonClassName(terminalOpen)}
           onClick={onToggleTerminal}
+          onFocus={() => queueSurfacePreload("terminal")}
+          onPointerEnter={() => queueSurfacePreload("terminal")}
           size="icon-sm"
           title="Terminal"
           type="button"

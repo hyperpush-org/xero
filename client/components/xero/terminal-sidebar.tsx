@@ -21,6 +21,7 @@ import type {
   EditorPalette,
   ThemeDefinition,
 } from "@/src/features/theme/theme-definitions"
+import type { EditorTerminalTaskExit } from "./execution-view/editor-tasks"
 
 import "@xterm/xterm/css/xterm.css"
 
@@ -75,7 +76,17 @@ export interface TerminalSidebarHandle {
    * the titlebar Play button to launch the project's start command. Returns
    * the new terminal id, or null if the sidebar isn't ready.
    */
-  spawnTabWithCommand: (command: string) => Promise<string | null>
+  spawnTabWithCommand: (
+    command: string,
+    options?: TerminalSpawnOptions,
+  ) => Promise<string | null>
+}
+
+export interface TerminalSpawnOptions {
+  label?: string
+  exitWhenDone?: boolean
+  onData?: (data: string) => void
+  onExit?: (event: EditorTerminalTaskExit) => void
 }
 
 interface TerminalSidebarProps {
@@ -90,6 +101,7 @@ interface TerminalSidebarProps {
 interface TerminalTab {
   id: string
   label: string
+  labelLocked?: boolean
   terminal: XTerm
   fit: FitAddon
 }
@@ -140,6 +152,13 @@ function sanitizeTerminalTabLabel(label: string): string | null {
     : compact
 }
 
+function buildTerminalCommandWrite(command: string, options?: TerminalSpawnOptions): string {
+  const trimmed = command.trim()
+  if (!trimmed) return ""
+  if (!options?.exitWhenDone) return `${trimmed}\r`
+  return `(\n${trimmed}\n)\n__xero_task_status=$?; printf '\\n[xero task exited with status %s]\\n' "$__xero_task_status"; exit "$__xero_task_status"\r`
+}
+
 export function TerminalSidebar({
   open,
   projectId,
@@ -171,6 +190,7 @@ export function TerminalSidebar({
   const openedTerminalIdsRef = useRef<Set<string>>(new Set())
   const pendingWriteBuffersRef = useRef<Map<string, string>>(new Map())
   const closingTerminalIdsRef = useRef<Set<string>>(new Set())
+  const taskHandlersRef = useRef<Map<string, Pick<TerminalSpawnOptions, "onData" | "onExit">>>(new Map())
   const autoOpeningTerminalRef = useRef(false)
   const lastTabReplacementPendingRef = useRef(false)
 
@@ -184,7 +204,7 @@ export function TerminalSidebar({
     if (!nextLabel) return
     setTabs((current) =>
       current.map((tab) =>
-        tab.id === terminalId && tab.label !== nextLabel
+        tab.id === terminalId && !tab.labelLocked && tab.label !== nextLabel
           ? { ...tab, label: nextLabel }
           : tab,
       ),
@@ -201,6 +221,7 @@ export function TerminalSidebar({
     void listen<TerminalDataEventPayload>("terminal:data", (event) => {
       const { terminalId, data } = event.payload
       if (closingTerminalIdsRef.current.has(terminalId)) return
+      taskHandlersRef.current.get(terminalId)?.onData?.(data)
       const tab = tabsRef.current.find((entry) => entry.id === terminalId)
       if (tab) {
         tab.terminal.write(data)
@@ -224,8 +245,10 @@ export function TerminalSidebar({
         return
       }
       const tab = tabsRef.current.find((entry) => entry.id === terminalId)
-      if (!tab) return
       const code = exitCode ?? null
+      taskHandlersRef.current.get(terminalId)?.onExit?.({ terminalId, exitCode: code })
+      taskHandlersRef.current.delete(terminalId)
+      if (!tab) return
       tab.terminal.write(`\r\n\x1b[2m[exited${code === null ? '' : ` with code ${code}`}]\x1b[0m\r\n`)
     }).then((fn) => {
       const unlisten = createSafeTauriUnlisten(fn)
@@ -319,7 +342,7 @@ export function TerminalSidebar({
   }, [activeTab])
 
   const spawnTab = useCallback(
-    async (command?: string): Promise<string | null> => {
+    async (command?: string, options?: TerminalSpawnOptions): Promise<string | null> => {
       if (!isTauri()) return null
       const cols = 120
       const rows = 32
@@ -356,14 +379,22 @@ export function TerminalSidebar({
           terminal.write(buffered)
           pendingWriteBuffersRef.current.delete(response.terminalId)
         }
-        const initialLabel = sanitizeTerminalTabLabel(
-          response.shell.split("/").pop() ?? response.shell,
-        ) ?? "terminal"
+        const initialLabel =
+          sanitizeTerminalTabLabel(options?.label ?? "") ??
+          sanitizeTerminalTabLabel(response.shell.split("/").pop() ?? response.shell) ??
+          "terminal"
         const tab: TerminalTab = {
           id: response.terminalId,
           label: initialLabel,
+          labelLocked: !!options?.label,
           terminal,
           fit,
+        }
+        if (options?.onData || options?.onExit) {
+          taskHandlersRef.current.set(response.terminalId, {
+            onData: options.onData,
+            onExit: options.onExit,
+          })
         }
         setTabs((current) => [...current, tab])
         setActiveTabId(response.terminalId)
@@ -371,9 +402,11 @@ export function TerminalSidebar({
           // Defer the write until the PTY has had a chance to wire up the
           // shell prompt. A small delay is usually enough.
           window.setTimeout(() => {
+            const write = buildTerminalCommandWrite(command, options)
+            if (!write) return
             void defaultAdapter.terminalWrite?.(
               response.terminalId,
-              `${command.trim()}\r`,
+              write,
             )
           }, 80)
         }
@@ -405,7 +438,7 @@ export function TerminalSidebar({
 
   useEffect(() => {
     if (!registerHandle) return
-    registerHandle({ spawnTabWithCommand: (command) => spawnTab(command) })
+    registerHandle({ spawnTabWithCommand: (command, options) => spawnTab(command, options) })
     return () => {
       registerHandle(null)
     }
@@ -423,6 +456,8 @@ export function TerminalSidebar({
         openedTerminalIdsRef.current.delete(id)
         tab.terminal.dispose()
         pendingWriteBuffersRef.current.delete(id)
+        taskHandlersRef.current.get(id)?.onExit?.({ terminalId: id, exitCode: null })
+        taskHandlersRef.current.delete(id)
         setTabs((current) => current.filter((entry) => entry.id !== id))
         setActiveTabId((current) => {
           if (current !== id) return current
@@ -510,6 +545,8 @@ export function TerminalSidebar({
         terminalHostsRef.current.delete(tab.id)
         openedTerminalIdsRef.current.delete(tab.id)
         try { tab.terminal.dispose() } catch { /* swallow */ }
+        taskHandlersRef.current.get(tab.id)?.onExit?.({ terminalId: tab.id, exitCode: null })
+        taskHandlersRef.current.delete(tab.id)
         void defaultAdapter.terminalClose?.(tab.id).catch(() => undefined)
       })
     }

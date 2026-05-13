@@ -1046,8 +1046,8 @@ fn classify_command(prepared: &PreparedCommandRequest) -> CommandClassification 
                 ),
             }
         }
-        "pwd" | "ls" | "dir" | "echo" | "cat" | "type" | "head" | "tail" | "grep"
-        | "rg" | "sleep" => safe_command(argv),
+        "pwd" | "ls" | "dir" | "echo" | "cat" | "type" | "head" | "tail" | "grep" | "rg"
+        | "sleep" => safe_command(argv),
         "find" => {
             if argv.iter().any(|argument| argument == "-delete") {
                 return CommandClassification::Escalated {
@@ -1064,8 +1064,8 @@ fn classify_command(prepared: &PreparedCommandRequest) -> CommandClassification 
         "git" => classify_git_command(argv),
         "cargo" => classify_cargo_command(argv),
         "npm" | "pnpm" | "yarn" | "bun" => classify_package_manager_command(argv, &prepared.cwd),
-        "rm" | "rmdir" | "del" | "erase" | "rd" | "mv" | "move" | "chmod" | "chown"
-        | "dd" | "mkfs" | "diskutil" => CommandClassification::Escalated {
+        "rm" | "rmdir" | "del" | "erase" | "rd" | "mv" | "move" | "chmod" | "chown" | "dd"
+        | "mkfs" | "diskutil" => CommandClassification::Escalated {
             profile: AutonomousCommandPolicyProfile::DestructiveOperation,
             code: "policy_escalated_destructive_command",
             reason: format!(
@@ -1094,38 +1094,29 @@ fn classify_git_command(argv: &[String]) -> CommandClassification {
             safe_command(argv)
         }
         Some("branch") => {
-            if argv.iter().any(|argument| matches!(argument.as_str(), "-d" | "-D" | "--delete")) {
+            if argv
+                .iter()
+                .any(|argument| matches!(argument.as_str(), "-d" | "-D" | "--delete"))
+            {
                 destructive_command(argv, "git branch delete flags are destructive")
             } else {
                 safe_command(argv)
             }
         }
         Some("tag") => {
-            if argv.iter().any(|argument| matches!(argument.as_str(), "-d" | "--delete")) {
+            if argv
+                .iter()
+                .any(|argument| matches!(argument.as_str(), "-d" | "--delete"))
+            {
                 destructive_command(argv, "git tag delete flags are destructive")
             } else {
                 safe_command(argv)
             }
         }
+        Some("add" | "commit" | "mv" | "rm") => safe_command(argv),
         Some(
-            "add"
-            | "commit"
-            | "mv"
-            | "rm",
-        ) => safe_command(argv),
-        Some(
-            "clean"
-            | "reset"
-            | "checkout"
-            | "switch"
-            | "restore"
-            | "stash"
-            | "merge"
-            | "rebase"
-            | "cherry-pick"
-            | "revert"
-            | "push"
-            | "pull",
+            "clean" | "reset" | "checkout" | "switch" | "restore" | "stash" | "merge" | "rebase"
+            | "cherry-pick" | "revert" | "push" | "pull",
         ) => destructive_command(argv, "the git subcommand mutates repository state"),
         Some(_) | None => CommandClassification::Escalated {
             profile: AutonomousCommandPolicyProfile::GeneralExecution,
@@ -1186,7 +1177,10 @@ fn classify_package_manager_command(argv: &[String], cwd: &Path) -> CommandClass
                 render_command_for_summary(argv)
             ),
         },
-        Some("publish") => destructive_command(argv, "package manager publish commands can affect external registries"),
+        Some("publish") => destructive_command(
+            argv,
+            "package manager publish commands can affect external registries",
+        ),
         Some("run" | "run-script") => classify_package_manager_run_script(argv, cwd),
         Some(_) | None => CommandClassification::Escalated {
             profile: AutonomousCommandPolicyProfile::GeneralExecution,
@@ -1288,8 +1282,8 @@ fn classify_repo_package_script(
     CommandClassification::Safe {
         profile: package_script_profile(script_name),
         reason: format!(
-        "Active approval mode `yolo` allowed repo-local package script `{script_name}` via `{}` after package.json introspection classified the script as verification-safe.",
-        render_command_for_summary(argv)
+            "Active approval mode `yolo` allowed repo-local package script `{script_name}` via `{}` after package.json introspection classified the script as verification-safe.",
+            render_command_for_summary(argv)
         ),
     }
 }

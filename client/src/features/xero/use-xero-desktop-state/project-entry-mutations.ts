@@ -132,8 +132,15 @@ export function useProjectEntryMutations({
   )
 
   const writeProjectFile = useCallback(
-    async (projectId: string, path: string, content: string) => {
-      return await adapter.writeProjectFile(projectId, path, content)
+    async (
+      projectId: string,
+      path: string,
+      content: string,
+      options?: Parameters<XeroDesktopMutationActions['writeProjectFile']>[3],
+    ) => {
+      return options === undefined
+        ? await adapter.writeProjectFile(projectId, path, content)
+        : await adapter.writeProjectFile(projectId, path, content, options)
     },
     [adapter],
   )

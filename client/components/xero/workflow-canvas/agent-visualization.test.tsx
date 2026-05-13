@@ -1187,6 +1187,46 @@ describe('AgentVisualization', () => {
     expect(fitViewSpy).not.toHaveBeenCalled()
   })
 
+  it('fits the copied-template canvas when duplicate authoring starts from the empty canvas', async () => {
+    installResizeObserverStub()
+    mockElementBounds(1100, 760)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0)
+      return 1
+    })
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+
+    const { container, rerender } = render(<AgentVisualization detail={null} />)
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalled())
+    setViewportSpy.mockClear()
+    fitViewSpy.mockClear()
+
+    rerender(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="duplicate"
+        initialDetail={detail()}
+      />,
+    )
+
+    await waitFor(() => expect(setViewportSpy).toHaveBeenCalled())
+    expect(container.querySelector('.agent-visualization')).not.toHaveClass(
+      'is-initial-fit-pending',
+    )
+    expect(fitViewSpy).not.toHaveBeenCalled()
+    const initialFitCall = setViewportSpy.mock.calls.find(
+      ([, options]) => options?.duration === 0,
+    )
+    expect(initialFitCall).toBeDefined()
+    const [viewport] = initialFitCall!
+    expect(viewport.zoom).toBeGreaterThan(0)
+    expect(viewport.zoom).toBeLessThanOrEqual(1)
+    expect(viewport.x).toBeGreaterThan(0)
+    expect(viewport.y).toBeGreaterThan(0)
+  })
+
   it('refits the new-agent canvas when the available width changes', async () => {
     installResizeObserverStub()
     mockElementBounds(1100, 760)

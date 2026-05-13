@@ -145,10 +145,12 @@ export interface AgentRuntimeProps {
   onStartRuntimeRun?: (options?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
+    attachments?: StagedAgentAttachmentDto[]
   }) => Promise<RuntimeRunView | null>
   onUpdateRuntimeRunControls?: (request?: {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
+    attachments?: StagedAgentAttachmentDto[]
     autoCompact?: RuntimeAutoCompactPreferenceDto | null
   }) => Promise<RuntimeRunView | null>
   onComposerControlsChange?: (controls: RuntimeRunControlInputDto | null) => void

@@ -95,7 +95,9 @@ fn apply_startup_window_bounds<R: Runtime>(app: &AppHandle<R>, window: &WebviewW
     let saved_bounds = match load_window_bounds(app) {
         Ok(saved_bounds) => saved_bounds,
         Err(error) => {
-            eprintln!("Xero could not load saved window bounds; using first-launch fullscreen defaults instead: {error}");
+            eprintln!(
+                "Xero could not load saved window bounds; using first-launch fullscreen defaults instead: {error}"
+            );
             None
         }
     };

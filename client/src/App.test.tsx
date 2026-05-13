@@ -93,7 +93,16 @@ vi.mock('../components/xero/code-editor', async () => {
     )
   }
 
-  return { CodeEditor: MockCodeEditor }
+  return {
+    CodeEditor: MockCodeEditor,
+    DEFAULT_EDITOR_RENDER_PREFERENCES: {
+      fontSize: 13,
+      tabSize: 2,
+      insertSpaces: true,
+      lineWrapping: true,
+    },
+    EDITOR_SNAPSHOT_DEBOUNCE_MS: 250,
+  }
 })
 
 afterEach(() => {
@@ -126,6 +135,7 @@ import type {
   EnvironmentDiscoveryStatusDto,
   ImportMcpServersResponseDto,
   ImportRepositoryResponseDto,
+  ListProjectFileIndexResponseDto,
   ListNotificationDispatchesResponseDto,
   ListNotificationRoutesResponseDto,
   ListProjectFilesResponseDto,
@@ -330,6 +340,41 @@ function makeProjectFiles(projectId = 'project-1'): ListProjectFilesResponseDto 
     view: makeProjectFileTreeView(root),
     truncated: false,
     omittedEntryCount: 0,
+  }
+}
+
+function makeProjectFileIndex(
+  projectId: string,
+  root: ProjectFileNode,
+  includeHidden = false,
+): ListProjectFileIndexResponseDto {
+  const files: ListProjectFileIndexResponseDto['files'] = []
+  const visit = (node: ProjectFileNode) => {
+    if (node.type === 'file') {
+      const hidden = node.path.split('/').filter(Boolean).some((segment) => segment.startsWith('.'))
+      if (includeHidden || !hidden) {
+        const segments = node.path.split('/').filter(Boolean)
+        files.push({
+          path: node.path,
+          name: node.name,
+          parentPath: segments.length <= 1 ? '/' : `/${segments.slice(0, -1).join('/')}`,
+          hidden,
+        })
+      }
+      return
+    }
+
+    node.children?.forEach(visit)
+  }
+  visit(root)
+  files.sort((left, right) => left.path.localeCompare(right.path))
+
+  return {
+    projectId,
+    files,
+    totalFiles: files.length,
+    truncated: false,
+    payloadBudget: null,
   }
 }
 
@@ -1695,6 +1740,7 @@ function createAdapter(options?: {
     gitStagePaths: async () => undefined,
     gitUnstagePaths: async () => undefined,
     gitDiscardChanges: async () => undefined,
+    gitRevertPatch: async () => undefined,
     gitCommit: async () => ({ sha: 'abc1234', summary: 'mock commit', signature: { name: 'Mock', email: 'mock@example.com' } }),
     gitGenerateCommitMessage: async () => ({
       message: 'feat: mock generated commit',
@@ -1705,6 +1751,8 @@ function createAdapter(options?: {
     gitFetch: async () => ({ remote: 'origin', refspecs: [] }),
     gitPull: async () => ({ remote: 'origin', branch: 'main', updated: false, summary: 'already up to date', newHeadSha: null }),
     gitPush: async () => ({ remote: 'origin', branch: 'main', updates: [] }),
+    listProjectFileIndex: async (request) =>
+      makeProjectFileIndex(request.projectId, currentProjectFiles.root, request.includeHidden ?? false),
     listProjectFiles: async () => currentProjectFiles,
     readProjectFile: async (projectId, path) => ({
       kind: 'text' as const,
@@ -1719,7 +1767,16 @@ function createAdapter(options?: {
     }),
     writeProjectFile: async (projectId, path, content) => {
       currentFileContents[path] = content
-      return { projectId, path }
+      return {
+        projectId,
+        path,
+        byteLength: content.length,
+        modifiedAt: '2026-01-01T00:00:01Z',
+        contentHash: `saved-${path}-${content.length}`,
+        mimeType: 'text/plain; charset=utf-8',
+        rendererKind: 'code' as const,
+        preview: null,
+      }
     },
     createProjectEntry: async (request) => {
       currentFileContents[request.parentPath === '/' ? `/${request.name}` : `${request.parentPath}/${request.name}`] = ''

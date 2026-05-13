@@ -561,9 +561,9 @@ fn synthetic_binding(
                 "runtime_provider_mismatch",
                 RuntimeAuthPhase::Failed,
                 format!(
-                "Xero cannot derive an Anthropic family runtime binding for provider `{other}`."
-            ),
-            ))
+                    "Xero cannot derive an Anthropic family runtime binding for provider `{other}`."
+                ),
+            ));
         }
     };
 

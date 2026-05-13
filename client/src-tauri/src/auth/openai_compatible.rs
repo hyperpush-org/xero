@@ -310,14 +310,16 @@ pub(crate) fn reconcile_openai_compatible_runtime_session(
     if account_id != Some(expected.account_id.as_str())
         || session_id != Some(expected.session_id.as_str())
     {
-        return Ok(OpenAiCompatibleReconcileOutcome::SignedOut(AuthDiagnostic {
-            code: cloud_binding_stale_code(provider.provider_id).into(),
-            message: format!(
-                "Xero rejected the persisted {} runtime binding because the selected provider profile, model, endpoint, or API key changed. Rebind the runtime session from the active profile.",
-                provider_display_label(provider.provider_id)
-            ),
-            retryable: false,
-        }));
+        return Ok(OpenAiCompatibleReconcileOutcome::SignedOut(
+            AuthDiagnostic {
+                code: cloud_binding_stale_code(provider.provider_id).into(),
+                message: format!(
+                    "Xero rejected the persisted {} runtime binding because the selected provider profile, model, endpoint, or API key changed. Rebind the runtime session from the active profile.",
+                    provider_display_label(provider.provider_id)
+                ),
+                retryable: false,
+            },
+        ));
     }
 
     Ok(OpenAiCompatibleReconcileOutcome::Authenticated(expected))
@@ -450,12 +452,12 @@ fn resolve_openai_compatible_endpoint(
             ),
             other => {
                 return Err(AuthFlowError::terminal(
-                "openai_compatible_provider_unsupported",
-                RuntimeAuthPhase::Failed,
-                format!(
-                    "Xero cannot resolve OpenAI-compatible endpoint metadata for unsupported provider `{other}`."
-                ),
-            ));
+                    "openai_compatible_provider_unsupported",
+                    RuntimeAuthPhase::Failed,
+                    format!(
+                        "Xero cannot resolve OpenAI-compatible endpoint metadata for unsupported provider `{other}`."
+                    ),
+                ));
             }
         };
 

@@ -10,8 +10,7 @@ use crate::{
 
 const CODE_HISTORY_PROVENANCE_REQUIRED_CODE: &str =
     "session_memory_candidate_code_history_provenance_required";
-const CODE_HISTORY_PROVENANCE_REQUIRED_MESSAGE: &str =
-    "Xero skipped a memory candidate because it described code later changed by undo or session return without citing that history operation.";
+const CODE_HISTORY_PROVENANCE_REQUIRED_MESSAGE: &str = "Xero skipped a memory candidate because it described code later changed by undo or session return without citing that history operation.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodeHistoryMemoryDiagnostic {

@@ -1430,7 +1430,9 @@ fn validate_system_diagnostics_request(
             if value.contains('\0') {
                 return Err(CommandError::user_fixable(
                     "system_diagnostics_input_invalid",
-                    format!("Xero refused system diagnostics field `{field}` because it contained a NUL byte."),
+                    format!(
+                        "Xero refused system diagnostics field `{field}` because it contained a NUL byte."
+                    ),
                 ));
             }
         }
@@ -2881,7 +2883,9 @@ mod macos_accessibility {
             let Some(pid) = window.pid().ok() else {
                 return Err(CommandError::user_fixable(
                     "system_diagnostics_accessibility_window_pid_unavailable",
-                    format!("Xero found macOS window `{window_id}` but could not resolve its process id."),
+                    format!(
+                        "Xero found macOS window `{window_id}` but could not resolve its process id."
+                    ),
                 ));
             };
             let mut target = app_summaries

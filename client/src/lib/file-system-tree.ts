@@ -80,18 +80,43 @@ export function applyProjectFileListing(
     childPathsByPath: { ...current.childPathsByPath },
   }
 
-  pruneExistingChildren(next, listingRootPath)
+  const nextRootChildren = new Set(response.view.childPathsByPath[listingRootPath] ?? [])
+  for (const childPath of next.childPathsByPath[listingRootPath] ?? []) {
+    if (!nextRootChildren.has(childPath)) {
+      removeNode(next, childPath)
+    }
+  }
+
   for (const node of Object.values(response.view.nodesByPath)) {
+    const existing = current.nodesByPath[node.path]
+    if (existing?.type === 'folder' && node.type === 'file') {
+      removeNode(next, node.path)
+    }
+
+    if (shouldPreserveHydratedFolder(existing, node)) {
+      next.nodesByPath[node.path] = {
+        ...node,
+        childrenLoaded: existing.childrenLoaded,
+        truncated: existing.truncated,
+        omittedEntryCount: existing.omittedEntryCount,
+      }
+      continue
+    }
+
     next.nodesByPath[node.path] = node
     if (node.type === 'file') {
       delete next.childPathsByPath[node.path]
     }
   }
   for (const [path, childPaths] of Object.entries(response.view.childPathsByPath)) {
+    const node = response.view.nodesByPath[path]
+    if (shouldPreserveHydratedFolder(current.nodesByPath[path], node)) {
+      continue
+    }
     next.childPathsByPath[path] = [...childPaths]
   }
 
-  return next
+  return projectFileTreeStoresEqual(current, next) ? current : next
 }
 
 export function materializeProjectFileTree(store: ProjectFileTreeStore): FileSystemNode {
@@ -134,19 +159,83 @@ export function getProjectFileTreeStoreStats(store: ProjectFileTreeStore): Proje
   }
 }
 
-function pruneExistingChildren(store: ProjectFileTreeStore, path: string): void {
-  for (const childPath of store.childPathsByPath[path] ?? []) {
-    removeNode(store, childPath)
-  }
-  store.childPathsByPath[path] = []
-}
-
 function removeNode(store: ProjectFileTreeStore, path: string): void {
   for (const childPath of store.childPathsByPath[path] ?? []) {
     removeNode(store, childPath)
   }
   delete store.nodesByPath[path]
   delete store.childPathsByPath[path]
+}
+
+function shouldPreserveHydratedFolder(
+  existing: ProjectFileTreeNodeDto | undefined,
+  incoming: ProjectFileTreeNodeDto | undefined,
+): existing is ProjectFileTreeNodeDto {
+  return Boolean(
+    existing?.type === 'folder' &&
+      existing.childrenLoaded &&
+      incoming?.type === 'folder' &&
+      !incoming.childrenLoaded,
+  )
+}
+
+function projectFileTreeStoresEqual(left: ProjectFileTreeStore, right: ProjectFileTreeStore): boolean {
+  if (!projectFileTreeNodesEqual(left.nodesByPath, right.nodesByPath)) {
+    return false
+  }
+  return childPathListsEqual(left.childPathsByPath, right.childPathsByPath)
+}
+
+function projectFileTreeNodesEqual(
+  left: ProjectFileTreeStore['nodesByPath'],
+  right: ProjectFileTreeStore['nodesByPath'],
+): boolean {
+  const leftEntries = Object.entries(left)
+  if (leftEntries.length !== Object.keys(right).length) {
+    return false
+  }
+
+  for (const [path, leftNode] of leftEntries) {
+    const rightNode = right[path]
+    if (
+      !rightNode ||
+      leftNode.id !== rightNode.id ||
+      leftNode.name !== rightNode.name ||
+      leftNode.path !== rightNode.path ||
+      leftNode.type !== rightNode.type ||
+      leftNode.childrenLoaded !== rightNode.childrenLoaded ||
+      leftNode.truncated !== rightNode.truncated ||
+      leftNode.omittedEntryCount !== rightNode.omittedEntryCount
+    ) {
+      return false
+    }
+  }
+
+  return true
+}
+
+function childPathListsEqual(
+  left: ProjectFileTreeStore['childPathsByPath'],
+  right: ProjectFileTreeStore['childPathsByPath'],
+): boolean {
+  const leftEntries = Object.entries(left)
+  if (leftEntries.length !== Object.keys(right).length) {
+    return false
+  }
+
+  for (const [path, leftPaths] of leftEntries) {
+    const rightPaths = right[path]
+    if (!rightPaths || leftPaths.length !== rightPaths.length) {
+      return false
+    }
+    for (let index = 0; index < leftPaths.length; index += 1) {
+      if (leftPaths[index] !== rightPaths[index]) {
+        return false
+      }
+    }
+  }
+
+  return true
 }
 
 function materializeNode(store: ProjectFileTreeStore, path: string): FileSystemNode | null {

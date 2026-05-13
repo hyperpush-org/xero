@@ -417,6 +417,16 @@ fn definition_has_attached_skills(definition_snapshot: &JsonValue) -> CommandRes
         })
 }
 
+fn workflow_policy_for_runtime_agent(
+    runtime_agent_id: RuntimeAgentIdDto,
+    definition_snapshot: &JsonValue,
+) -> Option<AutonomousAgentWorkflowPolicy> {
+    if runtime_agent_id == RuntimeAgentIdDto::Generalist {
+        return None;
+    }
+    AutonomousAgentWorkflowPolicy::from_definition_snapshot(definition_snapshot)
+}
+
 fn attached_skill_resolution_report_error(
     _repo_root: &Path,
     run_id: &str,
@@ -482,7 +492,7 @@ pub fn drive_owned_agent_run(
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let agent_workflow_policy =
-        AutonomousAgentWorkflowPolicy::from_definition_snapshot(&definition_snapshot);
+        workflow_policy_for_runtime_agent(snapshot.run.runtime_agent_id, &definition_snapshot);
     let skill_tool_enabled = request.tool_runtime.skill_tool_enabled();
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
@@ -749,7 +759,7 @@ pub fn prepare_owned_agent_continuation_for_drive(
         let agent_tool_policy =
             effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
         let agent_workflow_policy =
-            AutonomousAgentWorkflowPolicy::from_definition_snapshot(&definition_snapshot);
+            workflow_policy_for_runtime_agent(before.run.runtime_agent_id, &definition_snapshot);
         let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
             skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
             browser_control_preference: request.tool_runtime.browser_control_preference(),
@@ -1219,7 +1229,8 @@ fn estimate_continuation_context_tokens(
             &definition_snapshot,
             &request.tool_runtime,
         ))
-        .with_agent_workflow_policy(AutonomousAgentWorkflowPolicy::from_definition_snapshot(
+        .with_agent_workflow_policy(workflow_policy_for_runtime_agent(
+            snapshot.run.runtime_agent_id,
             &definition_snapshot,
         ));
     let tool_registry = tool_registry_for_snapshot(
@@ -2170,7 +2181,7 @@ pub fn drive_owned_agent_continuation(
     let agent_tool_policy =
         effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
     let agent_workflow_policy =
-        AutonomousAgentWorkflowPolicy::from_definition_snapshot(&definition_snapshot);
+        workflow_policy_for_runtime_agent(snapshot.run.runtime_agent_id, &definition_snapshot);
     let skill_tool_enabled = request.tool_runtime.skill_tool_enabled();
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request

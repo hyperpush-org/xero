@@ -136,7 +136,7 @@ fn project_route_readiness_from_store(
                 NotificationAdapterError::credentials_malformed(format!(
                     "Xero found malformed app-local credentials for route `{route_id}` because `route_kind` was not `telegram` or `discord`."
                 )),
-            )
+            );
         }
     };
 

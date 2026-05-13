@@ -2708,6 +2708,41 @@ describe('AgentRuntime current UI', () => {
     expect(onConsumed).toHaveBeenCalled()
   })
 
+  it('uses Agent as the first-run composer default without creating a sticky preference', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'generalist',
+          selectedRuntimeAgentLabel: 'Agent',
+          selectedApprovalMode: 'suggest',
+        })}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent')
+    expect(window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)).toBeNull()
+  })
+
+  it('does not persist one-shot Agent Create preselection as the last-used agent', () => {
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          selectedRuntimeAgentId: 'generalist',
+          selectedRuntimeAgentLabel: 'Agent',
+          selectedApprovalMode: 'suggest',
+        })}
+        pendingInitialRuntimeAgentId="agent_create"
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
+    expect(window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)).toBeNull()
+  })
+
   it('restores the last-used composer controls from persisted settings', async () => {
     window.localStorage.setItem(
       COMPOSER_SETTINGS_STORAGE_KEY,

@@ -148,8 +148,8 @@ describe('runtime run control schemas', () => {
     })
     expect(getRuntimeAgentDescriptor('generalist')).toMatchObject({
       id: 'generalist',
-      label: 'Generalist',
-      shortLabel: 'Generalist',
+      label: 'Agent',
+      shortLabel: 'Agent',
       scope: 'built_in',
       lifecycleState: 'active',
       baseCapabilityProfile: 'engineering',

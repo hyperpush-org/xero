@@ -272,7 +272,7 @@ impl RuntimeAgentIdDto {
             Self::Debug => "Debug",
             Self::Crawl => "Crawl",
             Self::AgentCreate => "Agent Create",
-            Self::Generalist => "Generalist",
+            Self::Generalist => "Agent",
         }
     }
 
@@ -281,7 +281,7 @@ impl RuntimeAgentIdDto {
     }
 
     pub fn allows_verification_gate(&self) -> bool {
-        matches!(self, Self::Engineer | Self::Debug | Self::Generalist)
+        matches!(self, Self::Engineer | Self::Debug)
     }
 
     pub fn allows_engineering_tools(&self) -> bool {
@@ -290,7 +290,7 @@ impl RuntimeAgentIdDto {
 }
 
 pub fn default_runtime_agent_id() -> RuntimeAgentIdDto {
-    RuntimeAgentIdDto::Ask
+    RuntimeAgentIdDto::Generalist
 }
 
 pub fn runtime_agent_is_available_for_context(
@@ -413,7 +413,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             tool_policy: RuntimeAgentToolPolicyDto::ObserveOnly,
             output_contract: RuntimeAgentOutputContractDto::Answer,
             allow_plan_gate: false,
-            allow_verification_gate: false,
+            allow_verification_gate: true,
             allow_auto_compact: true,
         },
         RuntimeAgentIdDto::Plan => RuntimeAgentDescriptorDto {
@@ -451,7 +451,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             tool_policy: RuntimeAgentToolPolicyDto::Engineering,
             output_contract: RuntimeAgentOutputContractDto::EngineeringSummary,
             allow_plan_gate: true,
-            allow_verification_gate: true,
+            allow_verification_gate: false,
             allow_auto_compact: true,
         },
         RuntimeAgentIdDto::Debug => RuntimeAgentDescriptorDto {
@@ -470,7 +470,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             tool_policy: RuntimeAgentToolPolicyDto::Engineering,
             output_contract: RuntimeAgentOutputContractDto::DebugSummary,
             allow_plan_gate: true,
-            allow_verification_gate: true,
+            allow_verification_gate: false,
             allow_auto_compact: true,
         },
         RuntimeAgentIdDto::Crawl => RuntimeAgentDescriptorDto {
@@ -514,8 +514,8 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
         RuntimeAgentIdDto::Generalist => RuntimeAgentDescriptorDto {
             id: agent_id,
             version: 1,
-            label: "Generalist".into(),
-            short_label: "Generalist".into(),
+            label: "Agent".into(),
+            short_label: "Agent".into(),
             description: "A do-anything agent with the full engineering toolset that recognises when a specialist agent would handle the task better and offers to route.".into(),
             task_purpose: "Handle any user request directly, or suggest routing to Plan, Engineer, or Debug when the request fits a specialist's scope.".into(),
             scope: RuntimeAgentScopeDto::BuiltIn,
@@ -527,7 +527,7 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
             tool_policy: RuntimeAgentToolPolicyDto::Engineering,
             output_contract: RuntimeAgentOutputContractDto::Answer,
             allow_plan_gate: true,
-            allow_verification_gate: true,
+            allow_verification_gate: false,
             allow_auto_compact: true,
         },
     }
@@ -1175,6 +1175,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_runtime_agent_is_generalist() {
+        assert_eq!(default_runtime_agent_id(), RuntimeAgentIdDto::Generalist);
+    }
+
+    #[test]
     fn builtin_runtime_agents_seed_agent_create_descriptor() {
         let descriptors = builtin_runtime_agent_descriptors();
 
@@ -1388,9 +1393,9 @@ mod tests {
         let generalist = descriptors
             .iter()
             .find(|descriptor| descriptor.id == RuntimeAgentIdDto::Generalist)
-            .expect("Generalist descriptor should be seeded");
+            .expect("Agent descriptor should be seeded");
 
-        assert_eq!(generalist.label, "Generalist");
+        assert_eq!(generalist.label, "Agent");
         assert_eq!(
             generalist.base_capability_profile,
             RuntimeAgentBaseCapabilityProfileDto::Engineering
@@ -1408,7 +1413,7 @@ mod tests {
             RuntimeAgentOutputContractDto::Answer
         );
         assert!(generalist.allow_plan_gate);
-        assert!(generalist.allow_verification_gate);
+        assert!(!generalist.allow_verification_gate);
         assert!(RuntimeAgentIdDto::Generalist.allows_engineering_tools());
         assert!(runtime_agent_allows_approval_mode(
             &RuntimeAgentIdDto::Generalist,

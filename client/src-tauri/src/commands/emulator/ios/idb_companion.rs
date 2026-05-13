@@ -59,11 +59,9 @@ pub fn spawn(launch: Launch, startup_timeout: Duration) -> Result<Companion> {
         match guard.try_wait() {
             Ok(Some(status)) => {
                 let tail = guard.stderr_tail();
-                return Err(std::io::Error::other(
-                    format!(
-                        "idb_companion exited before accepting connections (status={status}). stderr: {tail}"
-                    ),
-                ));
+                return Err(std::io::Error::other(format!(
+                    "idb_companion exited before accepting connections (status={status}). stderr: {tail}"
+                )));
             }
             Ok(None) if Instant::now() >= deadline => {
                 return Err(std::io::Error::new(

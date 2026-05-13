@@ -1,8 +1,17 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react'
 import {
   AlertTriangle,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -24,6 +33,7 @@ import { useFixedVirtualizer } from '@/hooks/use-fixed-virtualizer'
 import { shouldVirtualizeRows } from '@/lib/virtual-list'
 import { cn } from '@/lib/utils'
 import type { FileSystemNode } from '@/src/lib/file-system-tree'
+import type { EditorGitFileStatus } from './execution-view/git-aware-editing'
 import { FileContextMenu } from './file-context-menu'
 
 const FILE_TREE_DRAG_TYPE = 'application/x-xero-project-entry'
@@ -36,6 +46,10 @@ interface FileTreeProps {
   expandedFolders: Set<string>
   loadingFolders?: Set<string>
   dirtyPaths?: Set<string>
+  stalePaths?: Record<string, { kind: 'changed' | 'deleted'; detectedAt: string }>
+  diagnosticCountsByPath?: Record<string, number>
+  gitStatusByPath?: Record<string, EditorGitFileStatus>
+  agentActivityCountsByPath?: Record<string, number>
   searchQuery?: string
   creatingEntry?: { parentPath: string; type: 'file' | 'folder' } | null
   onSelectFile: (path: string) => void
@@ -106,6 +120,13 @@ function computeSearchMatches(root: FileSystemNode, query: string): MatchInfo | 
 function isVisibleForSearch(node: FileSystemNode, search: MatchInfo | null): boolean {
   if (!search) return true
   return search.matchedPaths.has(node.path) || search.ancestorPaths.has(node.path)
+}
+
+function parentOf(path: string): string | null {
+  if (!path || path === '/') return null
+  const idx = path.lastIndexOf('/')
+  if (idx <= 0) return '/'
+  return path.slice(0, idx)
 }
 
 function isFolderExpanded(
@@ -192,6 +213,10 @@ export function FileTree({
   expandedFolders,
   loadingFolders = new Set(),
   dirtyPaths,
+  stalePaths,
+  diagnosticCountsByPath,
+  gitStatusByPath,
+  agentActivityCountsByPath,
   searchQuery = '',
   creatingEntry = null,
   onSelectFile,
@@ -208,13 +233,136 @@ export function FileTree({
   const search = useMemo(() => computeSearchMatches(root, searchQuery), [root, searchQuery])
   const [draggingPath, setDraggingPath] = useState<string | null>(null)
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null)
+  const [focusedPath, setFocusedPath] = useState<string | null>(selectedPath)
+  const rowRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const rows = useMemo(
     () => flattenFileTreeRows({ root, expandedFolders, search, creatingEntry }),
     [creatingEntry, expandedFolders, root, search],
   )
+  const orderedNodePaths = useMemo(
+    () =>
+      rows.flatMap((row) => (row.kind === 'node' ? [row.node.path] : [])),
+    [rows],
+  )
+  const nodesByPath = useMemo(() => {
+    const map = new Map<string, FileSystemNode>()
+    for (const row of rows) {
+      if (row.kind === 'node') map.set(row.node.path, row.node)
+    }
+    return map
+  }, [rows])
+  const effectiveFocusedPath =
+    focusedPath && orderedNodePaths.includes(focusedPath)
+      ? focusedPath
+      : selectedPath && orderedNodePaths.includes(selectedPath)
+        ? selectedPath
+        : orderedNodePaths[0] ?? null
   const selectedRowIndex = useMemo(
     () => rows.findIndex((row) => row.kind === 'node' && row.node.path === selectedPath),
     [rows, selectedPath],
+  )
+
+  useEffect(() => {
+    if (selectedPath) {
+      setFocusedPath(selectedPath)
+    }
+  }, [selectedPath])
+
+  const registerRowRef = useCallback((path: string, node: HTMLButtonElement | null) => {
+    if (node) rowRefs.current.set(path, node)
+    else rowRefs.current.delete(path)
+  }, [])
+
+  const focusRowByPath = useCallback((path: string | null) => {
+    if (!path) return
+    rowRefs.current.get(path)?.focus()
+  }, [])
+
+  const handleRowKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>, rowPath: string) => {
+      const idx = orderedNodePaths.indexOf(rowPath)
+      if (idx < 0) return
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        const nextIdx = Math.min(idx + 1, orderedNodePaths.length - 1)
+        const nextPath = orderedNodePaths[nextIdx]
+        setFocusedPath(nextPath)
+        focusRowByPath(nextPath)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        const nextIdx = Math.max(idx - 1, 0)
+        const nextPath = orderedNodePaths[nextIdx]
+        setFocusedPath(nextPath)
+        focusRowByPath(nextPath)
+        return
+      }
+      if (event.key === 'Home') {
+        event.preventDefault()
+        const nextPath = orderedNodePaths[0]
+        setFocusedPath(nextPath)
+        focusRowByPath(nextPath)
+        return
+      }
+      if (event.key === 'End') {
+        event.preventDefault()
+        const nextPath = orderedNodePaths[orderedNodePaths.length - 1]
+        setFocusedPath(nextPath)
+        focusRowByPath(nextPath)
+        return
+      }
+
+      const node = nodesByPath.get(rowPath)
+      if (!node) return
+
+      if (event.key === 'ArrowRight') {
+        if (node.type === 'folder') {
+          const expanded = isFolderExpanded(node, expandedFolders, search)
+          if (!expanded) {
+            event.preventDefault()
+            onToggleFolder(node.path)
+            return
+          }
+          const nextPath = orderedNodePaths[idx + 1]
+          if (nextPath) {
+            event.preventDefault()
+            setFocusedPath(nextPath)
+            focusRowByPath(nextPath)
+          }
+        }
+        return
+      }
+      if (event.key === 'ArrowLeft') {
+        if (node.type === 'folder' && isFolderExpanded(node, expandedFolders, search)) {
+          event.preventDefault()
+          onToggleFolder(node.path)
+          return
+        }
+        const parent = parentOf(rowPath)
+        if (parent && parent !== '/' && orderedNodePaths.includes(parent)) {
+          event.preventDefault()
+          setFocusedPath(parent)
+          focusRowByPath(parent)
+        }
+        return
+      }
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        if (node.type === 'folder') onToggleFolder(node.path)
+        else onSelectFile(node.path)
+      }
+    },
+    [
+      expandedFolders,
+      focusRowByPath,
+      nodesByPath,
+      onSelectFile,
+      onToggleFolder,
+      orderedNodePaths,
+      search,
+    ],
   )
   const shouldVirtualize = shouldVirtualizeRows(rows.length, FILE_TREE_VIRTUALIZATION_THRESHOLD) && !creatingEntry
   const virtualizer = useFixedVirtualizer({
@@ -312,10 +460,18 @@ export function FileTree({
           return (
             <FileTreeRow
               dirtyPaths={dirtyPaths}
+              stalePaths={stalePaths}
+              diagnosticCountsByPath={diagnosticCountsByPath}
+              gitStatusByPath={gitStatusByPath}
+              agentActivityCountsByPath={agentActivityCountsByPath}
               draggingPath={draggingPath}
               dropTargetPath={dropTargetPath}
               expandedFolders={expandedFolders}
               loadingFolders={loadingFolders}
+              focusedPath={effectiveFocusedPath}
+              registerRowRef={registerRowRef}
+              onRowFocus={setFocusedPath}
+              onRowKeyDown={handleRowKeyDown}
               key={
                 row.kind === 'node'
                   ? row.node.id
@@ -357,9 +513,17 @@ interface FileTreeRowProps {
   expandedFolders: Set<string>
   loadingFolders: Set<string>
   dirtyPaths?: Set<string>
+  stalePaths?: Record<string, { kind: 'changed' | 'deleted'; detectedAt: string }>
+  diagnosticCountsByPath?: Record<string, number>
+  gitStatusByPath?: Record<string, EditorGitFileStatus>
+  agentActivityCountsByPath?: Record<string, number>
   search: MatchInfo | null
   draggingPath: string | null
   dropTargetPath: string | null
+  focusedPath: string | null
+  registerRowRef: (path: string, node: HTMLButtonElement | null) => void
+  onRowFocus: (path: string) => void
+  onRowKeyDown: (event: KeyboardEvent<HTMLButtonElement>, path: string) => void
   onDragStart: (path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -382,9 +546,17 @@ interface TreeNodeProps {
   expandedFolders: Set<string>
   loadingFolders: Set<string>
   dirtyPaths?: Set<string>
+  stalePaths?: Record<string, { kind: 'changed' | 'deleted'; detectedAt: string }>
+  diagnosticCountsByPath?: Record<string, number>
+  gitStatusByPath?: Record<string, EditorGitFileStatus>
+  agentActivityCountsByPath?: Record<string, number>
   search: MatchInfo | null
   draggingPath: string | null
   dropTargetPath: string | null
+  focusedPath: string | null
+  registerRowRef: (path: string, node: HTMLButtonElement | null) => void
+  onRowFocus: (path: string) => void
+  onRowKeyDown: (event: KeyboardEvent<HTMLButtonElement>, path: string) => void
   onDragStart: (path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -433,6 +605,10 @@ function FolderRow({
   search,
   draggingPath,
   dropTargetPath,
+  focusedPath,
+  registerRowRef,
+  onRowFocus,
+  onRowKeyDown,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
@@ -450,6 +626,7 @@ function FolderRow({
     dropTargetPath === node.path &&
     draggingPath !== node.path &&
     !node.path.startsWith(`${draggingPath ?? ''}/`)
+  const isFocusable = focusedPath === node.path
 
   return (
     <FileContextMenu
@@ -461,11 +638,16 @@ function FolderRow({
       onCopyPath={() => onCopyPath(node.path)}
     >
       <button
+        ref={(element) => registerRowRef(node.path, element)}
         aria-expanded={isExpanded}
         aria-level={level + 1}
+        aria-label={`${node.name} folder${isExpanded ? ', expanded' : ', collapsed'}`}
+        tabIndex={isFocusable ? 0 : -1}
         type="button"
         draggable
         onClick={() => onToggleFolder(node.path)}
+        onFocus={() => onRowFocus(node.path)}
+        onKeyDown={(event) => onRowKeyDown(event, node.path)}
         onDragEnd={onDragEnd}
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = 'move'
@@ -514,7 +696,15 @@ function FileRow({
   level,
   selectedPath,
   dirtyPaths,
+  stalePaths,
+  diagnosticCountsByPath,
+  gitStatusByPath,
+  agentActivityCountsByPath,
   draggingPath,
+  focusedPath,
+  registerRowRef,
+  onRowFocus,
+  onRowKeyDown,
   onDragStart,
   onDragEnd,
   onSelectFile,
@@ -524,6 +714,11 @@ function FileRow({
 }: TreeNodeProps) {
   const isSelected = selectedPath === node.path
   const isDirty = dirtyPaths?.has(node.path) ?? false
+  const isStale = !!stalePaths?.[node.path]
+  const diagnosticCount = diagnosticCountsByPath?.[node.path] ?? 0
+  const gitStatus = gitStatusByPath?.[node.path] ?? null
+  const agentActivityCount = agentActivityCountsByPath?.[node.path] ?? 0
+  const isFocusable = focusedPath === node.path
 
   return (
     <FileContextMenu
@@ -533,11 +728,15 @@ function FileRow({
       onCopyPath={() => onCopyPath(node.path)}
     >
       <button
+        ref={(element) => registerRowRef(node.path, element)}
         aria-level={level + 1}
         aria-selected={isSelected}
+        tabIndex={isFocusable ? 0 : -1}
         type="button"
         draggable
         onClick={() => onSelectFile(node.path)}
+        onFocus={() => onRowFocus(node.path)}
+        onKeyDown={(event) => onRowKeyDown(event, node.path)}
         onDragEnd={onDragEnd}
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = 'move'
@@ -562,8 +761,53 @@ function FileRow({
             aria-label="Unsaved changes"
           />
         ) : null}
+        {isStale ? (
+          <AlertTriangle className="ml-0.5 h-3.5 w-3.5 shrink-0 text-warning" aria-label="Changed on disk" />
+        ) : null}
+        {gitStatus ? <GitStatusBadge status={gitStatus} /> : null}
+        {agentActivityCount > 0 ? <AgentActivityBadge count={agentActivityCount} /> : null}
+        {diagnosticCount > 0 ? (
+          <span
+            className="ml-0.5 rounded bg-destructive/15 px-1 text-[10px] leading-4 text-destructive"
+            aria-label={`${diagnosticCount} problems`}
+          >
+            {diagnosticCount}
+          </span>
+        ) : null}
       </button>
     </FileContextMenu>
+  )
+}
+
+function AgentActivityBadge({ count }: { count: number }) {
+  return (
+    <span
+      aria-label={`${count} agent file ${count === 1 ? 'activity' : 'activities'}`}
+      className="ml-0.5 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border border-info/35 bg-info/10 px-1 text-[9px] leading-none text-info"
+      title={`${count} agent file ${count === 1 ? 'activity' : 'activities'}`}
+    >
+      <Bot className="h-2.5 w-2.5" aria-hidden="true" />
+      {count > 1 ? <span className="ml-0.5">{count}</span> : null}
+    </span>
+  )
+}
+
+function GitStatusBadge({ status }: { status: EditorGitFileStatus }) {
+  return (
+    <span
+      aria-label={`Git ${status.description}`}
+      className={cn(
+        'ml-0.5 inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded border px-1 font-mono text-[9px] leading-none',
+        status.tone === 'added' && 'border-success/40 bg-success/10 text-success',
+        status.tone === 'modified' && 'border-primary/35 bg-primary/10 text-primary',
+        status.tone === 'deleted' && 'border-destructive/40 bg-destructive/10 text-destructive',
+        status.tone === 'warning' && 'border-warning/45 bg-warning/10 text-warning',
+        status.tone === 'conflicted' && 'border-destructive/60 bg-destructive/15 text-destructive',
+      )}
+      title={`Git: ${status.description}`}
+    >
+      {status.label}
+    </span>
   )
 }
 

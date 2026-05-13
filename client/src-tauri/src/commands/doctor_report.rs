@@ -398,11 +398,15 @@ fn push_selected_locale_check(
                 severity: XeroDiagnosticSeverity::Error,
                 retryable: false,
                 code: "dictation_selected_locale_unsupported".into(),
-                message: format!("Selected dictation locale `{locale}` is not in the backend-supported locale list."),
+                message: format!(
+                    "Selected dictation locale `{locale}` is not in the backend-supported locale list."
+                ),
                 affected_profile_id: None,
                 affected_provider_id: None,
                 endpoint: None,
-                remediation: Some("Choose a supported locale in Dictation settings or use System default.".into()),
+                remediation: Some(
+                    "Choose a supported locale in Dictation settings or use System default.".into(),
+                ),
             }),
         );
     }
@@ -912,7 +916,9 @@ fn collect_runtime_session_check<R: Runtime>(
                 command_error_check(
                     XeroDiagnosticSubject::RuntimeBinding,
                     "runtime_session_reconcile_failed",
-                    format!("Xero could not reconcile runtime-session state for project `{project_id}`."),
+                    format!(
+                        "Xero could not reconcile runtime-session state for project `{project_id}`."
+                    ),
                     error,
                     "Repair the selected provider, then restart the runtime session from the Agent tab.",
                 ),
@@ -1027,15 +1033,17 @@ fn collect_runtime_supervisor_check(
         Ok(session) => session,
         Err(error) => {
             push_check(
-                    &mut checks.runtime_supervisor_checks,
-                    command_error_check(
-                        XeroDiagnosticSubject::RuntimeSupervisor,
-                        "agent_session_selection_unavailable",
-                        format!("Xero could not read the selected agent session for project `{project_id}`."),
-                        error,
-                        "Refresh the project or select an agent session before checking supervisor state.",
+                &mut checks.runtime_supervisor_checks,
+                command_error_check(
+                    XeroDiagnosticSubject::RuntimeSupervisor,
+                    "agent_session_selection_unavailable",
+                    format!(
+                        "Xero could not read the selected agent session for project `{project_id}`."
                     ),
-                );
+                    error,
+                    "Refresh the project or select an agent session before checking supervisor state.",
+                ),
+            );
             return;
         }
     };

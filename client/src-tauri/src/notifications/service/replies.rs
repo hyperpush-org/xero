@@ -158,10 +158,9 @@ where
             }
 
             let fetched = match (route_kind, credentials) {
-                (NotificationRouteKind::Telegram, RouteCredentials::Telegram(credentials)) => {
-                    self.telegram_transport
-                        .fetch_replies(&credentials, route_cursor.as_deref())
-                }
+                (NotificationRouteKind::Telegram, RouteCredentials::Telegram(credentials)) => self
+                    .telegram_transport
+                    .fetch_replies(&credentials, route_cursor.as_deref()),
                 (NotificationRouteKind::Discord, RouteCredentials::Discord(credentials)) => {
                     self.discord_transport.fetch_replies(
                         &credentials,

@@ -74,7 +74,7 @@ fn walk(dir: &Path, sites: &mut Vec<PdaSite>) -> CommandResult<()> {
             return Err(CommandError::system_fault(
                 "solana_pda_scan_read_dir_failed",
                 format!("Could not read {}: {err}", dir.display()),
-            ))
+            ));
         }
     };
     for entry in entries.flatten() {

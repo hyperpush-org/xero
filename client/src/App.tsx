@@ -28,7 +28,13 @@ import { XeroShell, type PlatformVariant, type SurfacePreloadTarget } from '@/co
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import type { StatusFooterProps } from '@/components/xero/status-footer'
 import type { SettingsSection } from '@/components/xero/settings-dialog'
+import type { TerminalSidebarHandle } from '@/components/xero/terminal-sidebar'
 import type { VcsCommitMessageModel } from '@/components/xero/vcs-sidebar'
+import type { EditorTerminalTaskRequest } from '@/components/xero/execution-view/editor-tasks'
+import {
+  buildEditorAgentActivities,
+  type EditorAgentContextRequest,
+} from '@/components/xero/execution-view/agent-aware-editor-hooks'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -115,6 +121,7 @@ const warmedSurfaceChunks = new Set<SurfacePreloadTarget>()
 
 const IDLE_SURFACE_PRELOAD_SEQUENCE: SurfacePreloadTarget[] = [
   'agent-dock',
+  'terminal',
   'solana',
   'workflows',
   'vcs',
@@ -140,6 +147,7 @@ const STARTUP_SURFACE_PRELOAD_TARGETS: SurfacePreloadTarget[] = [
   'ios',
   'solana',
   'settings',
+  'terminal',
   'usage',
   'vcs',
   'workflows',
@@ -208,6 +216,10 @@ function preloadSurfaceChunk(target: SurfacePreloadTarget): void {
   }
   if (target === 'solana') {
     void loadSolanaWorkbenchSidebar()
+    return
+  }
+  if (target === 'terminal') {
+    void loadTerminalSidebar()
     return
   }
   if (target === 'settings') {
@@ -321,6 +333,7 @@ async function preloadStartupSurfaceChunks(): Promise<void> {
     loadSettingsDialog().then((module) => {
       void module.preloadSettingsSectionChunks().catch(() => undefined)
     }),
+    loadTerminalSidebar(),
     loadUsageStatsSidebar(),
     loadVcsSidebar(),
     loadWorkflowsSidebar(),
@@ -1139,6 +1152,17 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const refreshCustomAgentDefinitions = useCallback(() => {
     setCustomAgentDefinitionsRevision((current) => current + 1)
   }, [])
+  const editorAgentActivities = useMemo(
+    () =>
+      buildEditorAgentActivities(
+        agentWorkspacePanes.map((pane) => ({
+          paneId: pane.paneId,
+          sessionTitle: pane.agent.project.selectedAgentSession?.title ?? null,
+          runtimeStreamItems: pane.agent.runtimeStreamItems ?? [],
+        })),
+      ),
+    [agentWorkspacePanes],
+  )
   const shouldRestoreExplorerFromAutoCollapseRef = useRef(false)
   const previousBrowserOpenRef = useRef<boolean>(browserOpen)
 
@@ -1412,9 +1436,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
 
   // Imperative handle published by <TerminalSidebar>. We use it to spawn a
   // tab and write the project's start_command when the user clicks Play.
-  const terminalSidebarHandleRef = useRef<{
-    spawnTabWithCommand: (command: string) => Promise<string | null>
-  } | null>(null)
+  const terminalSidebarHandleRef = useRef<TerminalSidebarHandle | null>(null)
 
   // Stable array reference so the start-targets editor's sync effect doesn't
   // clobber in-flight edits when App re-renders for unrelated reasons.
@@ -1438,6 +1460,14 @@ export function XeroApp({ adapter }: XeroAppProps) {
     setTerminalOpen(true)
   }, [])
 
+  const waitForTerminalSidebarHandle = useCallback(async () => {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (terminalSidebarHandleRef.current) return terminalSidebarHandleRef.current
+      await new Promise((resolve) => window.setTimeout(resolve, 50))
+    }
+    return terminalSidebarHandleRef.current
+  }, [])
+
   const handleRunTarget = useCallback(
     async (targetId: string) => {
       if (!activeProjectId) return
@@ -1447,12 +1477,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
         return
       }
       revealTerminalSidebar()
-      await new Promise((resolve) => window.setTimeout(resolve, 0))
-      const handle = terminalSidebarHandleRef.current
+      const handle = await waitForTerminalSidebarHandle()
       if (!handle) return
       await handle.spawnTabWithCommand(target.command)
     },
-    [activeProjectId, activeProjectStartTargets, revealTerminalSidebar],
+    [activeProjectId, activeProjectStartTargets, revealTerminalSidebar, waitForTerminalSidebarHandle],
   )
 
   const handleRunAllTargets = useCallback(async () => {
@@ -1463,13 +1492,28 @@ export function XeroApp({ adapter }: XeroAppProps) {
       return
     }
     revealTerminalSidebar()
-    await new Promise((resolve) => window.setTimeout(resolve, 0))
-    const handle = terminalSidebarHandleRef.current
+    const handle = await waitForTerminalSidebarHandle()
     if (!handle) return
     for (const target of targets) {
       await handle.spawnTabWithCommand(target.command)
     }
-  }, [activeProjectId, activeProjectStartTargets, revealTerminalSidebar])
+  }, [activeProjectId, activeProjectStartTargets, revealTerminalSidebar, waitForTerminalSidebarHandle])
+
+  const handleRunEditorTerminalTask = useCallback(
+    async (request: EditorTerminalTaskRequest) => {
+      if (!activeProjectId) return null
+      revealTerminalSidebar()
+      const handle = await waitForTerminalSidebarHandle()
+      if (!handle) return null
+      return handle.spawnTabWithCommand(request.command, {
+        label: request.label,
+        exitWhenDone: request.exitWhenDone ?? true,
+        onData: request.onData,
+        onExit: request.onExit,
+      })
+    },
+    [activeProjectId, revealTerminalSidebar, waitForTerminalSidebarHandle],
+  )
 
   const handleUpdateProjectStartTargets = useCallback(
     async (targets: { id?: string | null; name: string; command: string }[]) => {
@@ -2565,6 +2609,32 @@ export function XeroApp({ adapter }: XeroAppProps) {
     if (!(await ensurePaneAgentSessionSelected(paneId))) return null
     return updateRuntimeRunControls(request)
   }, [ensurePaneAgentSessionSelected, updateRuntimeRunControls])
+  const handleSendEditorContextToAgent = useCallback(
+    async (request: EditorAgentContextRequest) => {
+      if (!activeProject) {
+        throw new Error('Select a project before sending editor context to an agent.')
+      }
+
+      const activeRuntimeRun = agentView?.runtimeRun ?? null
+      if (activeRuntimeRun && !activeRuntimeRun.isTerminal) {
+        await updateRuntimeRunControls({ prompt: request.prompt })
+      } else {
+        await startRuntimeRun({
+          controls: agentComposerControls,
+          prompt: request.prompt,
+        })
+      }
+      setActiveView('agent')
+    },
+    [
+      activeProject,
+      agentComposerControls,
+      agentView?.runtimeRun,
+      setActiveView,
+      startRuntimeRun,
+      updateRuntimeRunControls,
+    ],
+  )
   const handleAgentComposerControlsChange = useCallback((
     _paneId: string,
     controls: RuntimeRunControlInputDto | null,
@@ -2970,9 +3040,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 <LazyExecutionView
                   active={isExecutionVisible}
                   execution={executionView}
+                  listProjectFileIndex={resolvedAdapter.listProjectFileIndex}
                   listProjectFiles={listProjectFiles}
                   readProjectFile={readProjectFile}
                   writeProjectFile={writeProjectFile}
+                  statProjectFiles={resolvedAdapter.statProjectFiles}
+                  readProjectUiState={resolvedAdapter.readProjectUiState}
+                  writeProjectUiState={resolvedAdapter.writeProjectUiState}
+                  runProjectTypecheck={resolvedAdapter.runProjectTypecheck}
+                  formatProjectDocument={resolvedAdapter.formatProjectDocument}
+                  runProjectLint={resolvedAdapter.runProjectLint}
+                  getRepositoryDiff={resolvedAdapter.getRepositoryDiff}
+                  gitRevertPatch={resolvedAdapter.gitRevertPatch}
+                  runEditorTerminalTask={handleRunEditorTerminalTask}
                   revokeProjectAssetTokens={revokeProjectAssetTokens}
                   openProjectFileExternal={openProjectFileExternal}
                   createProjectEntry={createProjectEntry}
@@ -2981,6 +3061,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                   deleteProjectEntry={deleteProjectEntry}
                   searchProject={searchProject}
                   replaceInProject={replaceInProject}
+                  agentActivities={editorAgentActivities}
+                  onSendEditorContextToAgent={handleSendEditorContextToAgent}
                 />
               </Suspense>
             </LazyMountedPane>

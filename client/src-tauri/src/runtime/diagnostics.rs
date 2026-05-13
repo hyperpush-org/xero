@@ -1584,7 +1584,9 @@ fn provider_remediation(profile: &ProviderCredentialProfile) -> String {
 
 fn provider_catalog_remediation(provider_id: &str, retryable: bool) -> String {
     if retryable {
-        format!("Check network access and credentials for `{provider_id}`, then refresh the model catalog.")
+        format!(
+            "Check network access and credentials for `{provider_id}`, then refresh the model catalog."
+        )
     } else {
         format!(
             "Review the saved provider for `{provider_id}` before refreshing the model catalog."

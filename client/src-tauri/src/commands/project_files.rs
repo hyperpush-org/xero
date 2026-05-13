@@ -17,17 +17,19 @@ use crate::{
         backend_jobs::BackendCancellationToken,
         payload_budget::{
             estimate_serialized_payload_bytes, payload_budget_diagnostic,
-            PROJECT_TREE_BUDGET_BYTES, PROJECT_TREE_NODE_BUDGET,
+            PROJECT_FILE_INDEX_BUDGET_BYTES, PROJECT_TREE_BUDGET_BYTES, PROJECT_TREE_NODE_BUDGET,
         },
         project_assets::{ProjectAssetGrant, ProjectAssetState},
         validate_non_empty, CommandError, CommandResult, CreateProjectEntryRequestDto,
-        CreateProjectEntryResponseDto, DeleteProjectEntryResponseDto, ListProjectFilesRequestDto,
-        ListProjectFilesResponseDto, MoveProjectEntryRequestDto, MoveProjectEntryResponseDto,
-        ProjectEntryKindDto, ProjectFileNodeDto, ProjectFilePreviewDto, ProjectFileRendererKindDto,
-        ProjectFileRequestDto, ProjectFileTreeNodeDto, ProjectFileTreeStatsDto,
+        CreateProjectEntryResponseDto, DeleteProjectEntryResponseDto,
+        ListProjectFileIndexRequestDto, ListProjectFileIndexResponseDto,
+        ListProjectFilesRequestDto, ListProjectFilesResponseDto, MoveProjectEntryRequestDto,
+        MoveProjectEntryResponseDto, ProjectEntryKindDto, ProjectFileIndexEntryDto,
+        ProjectFileNodeDto, ProjectFilePreviewDto, ProjectFileRendererKindDto,
+        ProjectFileRequestDto, ProjectFileStatDto, ProjectFileTreeNodeDto, ProjectFileTreeStatsDto,
         ProjectFileTreeViewDto, ProjectMarkdownAssetRefDto, ReadProjectFileResponseDto,
-        RenameProjectEntryRequestDto, RenameProjectEntryResponseDto, WriteProjectFileRequestDto,
-        WriteProjectFileResponseDto,
+        RenameProjectEntryRequestDto, RenameProjectEntryResponseDto, StatProjectFilesRequestDto,
+        StatProjectFilesResponseDto, WriteProjectFileRequestDto, WriteProjectFileResponseDto,
     },
     registry,
     state::DesktopState,
@@ -39,6 +41,8 @@ const EMPTY_CONTENT_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b93
 const CSV_PREVIEW_ROW_LIMIT: usize = 1_000;
 const CSV_PREVIEW_COLUMN_LIMIT: usize = 80;
 const MARKDOWN_ASSET_REF_LIMIT: usize = 128;
+const DEFAULT_PROJECT_FILE_INDEX_LIMIT: usize = 20_000;
+const HARD_PROJECT_FILE_INDEX_LIMIT: usize = 50_000;
 
 const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
     ".git",
@@ -106,6 +110,40 @@ pub async fn list_project_files<R: Runtime>(
             );
 
             Ok(response)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_project_file_index<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: ListProjectFileIndexRequestDto,
+) -> CommandResult<ListProjectFileIndexResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+
+    let project_root = resolve_project_root(&app, &state, &request.project_id)?;
+    let limit = request
+        .limit
+        .map(|value| value.min(HARD_PROJECT_FILE_INDEX_LIMIT as u32) as usize)
+        .unwrap_or(DEFAULT_PROJECT_FILE_INDEX_LIMIT);
+    let jobs = state.backend_jobs().clone();
+    let project_id = request.project_id;
+    let include_hidden = request.include_hidden;
+    drop(app);
+
+    jobs.run_blocking_latest(
+        format!("project-file-index:{project_id}:{include_hidden}:{limit}"),
+        "project file index",
+        move |cancellation| {
+            build_project_file_index(
+                &project_root,
+                project_id,
+                include_hidden,
+                limit,
+                &cancellation,
+            )
         },
     )
     .await
@@ -977,6 +1015,7 @@ pub(crate) fn metadata_modified_at(metadata: &fs::Metadata) -> String {
 pub async fn write_project_file<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    asset_state: State<'_, ProjectAssetState>,
     request: WriteProjectFileRequestDto,
 ) -> CommandResult<WriteProjectFileResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
@@ -986,25 +1025,62 @@ pub async fn write_project_file<R: Runtime>(
     let (resolved_path, normalized_path) =
         resolve_virtual_path(&project_root, &request.path, "path", false)?;
     let jobs = state.backend_jobs().clone();
+    let asset_state = asset_state.inner().clone();
     let project_id = request.project_id;
     let content = request.content;
+    let expected_content_hash = request.expected_content_hash;
+    let expected_modified_at = request.expected_modified_at;
+    let overwrite = request.overwrite;
     drop(app);
 
     jobs.run_blocking_project_lane(
         project_id.clone(),
         "file",
         "project file write",
-        move || write_project_file_at_path(project_id, resolved_path, normalized_path, content),
+        move || {
+            write_project_file_at_path(ProjectFileWriteRequest {
+                project_id,
+                project_root,
+                resolved_path,
+                normalized_path,
+                content,
+                expected_content_hash,
+                expected_modified_at,
+                overwrite,
+                asset_state,
+            })
+        },
     )
     .await
 }
 
-fn write_project_file_at_path(
+struct ProjectFileWriteRequest {
     project_id: String,
+    project_root: PathBuf,
     resolved_path: PathBuf,
     normalized_path: String,
     content: String,
+    expected_content_hash: Option<String>,
+    expected_modified_at: Option<String>,
+    overwrite: bool,
+    asset_state: ProjectAssetState,
+}
+
+fn write_project_file_at_path(
+    request: ProjectFileWriteRequest,
 ) -> CommandResult<WriteProjectFileResponseDto> {
+    let ProjectFileWriteRequest {
+        project_id,
+        project_root,
+        resolved_path,
+        normalized_path,
+        content,
+        expected_content_hash,
+        expected_modified_at,
+        overwrite,
+        asset_state,
+    } = request;
+
     let metadata = read_metadata(&resolved_path)?;
 
     if metadata.is_dir() {
@@ -1014,6 +1090,49 @@ fn write_project_file_at_path(
                 "Xero cannot save `{normalized_path}` because it is a directory, not a text file."
             ),
         ));
+    }
+
+    if !overwrite {
+        if expected_content_hash.is_none() && expected_modified_at.is_none() {
+            return Err(CommandError::user_fixable(
+                "project_file_save_precondition_required",
+                format!(
+                    "Xero needs the last saved metadata for `{normalized_path}` before it can save safely."
+                ),
+            ));
+        }
+
+        let current_modified_at = metadata_modified_at(&metadata);
+        let current_content_hash = if expected_content_hash.is_some() {
+            Some(sha256_file(&resolved_path)?)
+        } else {
+            None
+        };
+
+        let hash_changed = expected_content_hash
+            .as_deref()
+            .zip(current_content_hash.as_deref())
+            .map(|(expected, current)| expected != current)
+            .unwrap_or(false);
+        let modified_changed = expected_modified_at
+            .as_deref()
+            .map(|expected| expected != current_modified_at)
+            .unwrap_or(false);
+
+        let changed = if expected_content_hash.is_some() {
+            hash_changed
+        } else {
+            modified_changed
+        };
+
+        if changed {
+            return Err(CommandError::user_fixable(
+                "project_file_changed_since_read",
+                format!(
+                    "`{normalized_path}` changed on disk after this editor tab loaded. Compare, reload, or overwrite before saving."
+                ),
+            ));
+        }
     }
 
     fs::write(&resolved_path, content).map_err(|error| match error.kind() {
@@ -1028,9 +1147,168 @@ fn write_project_file_at_path(
         ),
     })?;
 
-    Ok(WriteProjectFileResponseDto {
+    write_project_file_response(
         project_id,
+        project_root,
+        resolved_path,
+        normalized_path,
+        asset_state,
+    )
+}
+
+fn write_project_file_response(
+    project_id: String,
+    project_root: PathBuf,
+    resolved_path: PathBuf,
+    normalized_path: String,
+    asset_state: ProjectAssetState,
+) -> CommandResult<WriteProjectFileResponseDto> {
+    let metadata = read_metadata(&resolved_path)?;
+    let response = read_project_file_at_path_with_limits(
+        project_id.clone(),
+        project_root,
+        resolved_path,
+        normalized_path.clone(),
+        metadata,
+        asset_state,
+        FileContentLimits::default(),
+    )?;
+
+    match response {
+        ReadProjectFileResponseDto::Text {
+            project_id,
+            path,
+            byte_length,
+            modified_at,
+            content_hash,
+            mime_type,
+            renderer_kind,
+            preview,
+            ..
+        } => Ok(WriteProjectFileResponseDto {
+            project_id,
+            path,
+            byte_length,
+            modified_at,
+            content_hash,
+            mime_type,
+            renderer_kind,
+            preview,
+        }),
+        ReadProjectFileResponseDto::Renderable {
+            project_id,
+            path,
+            byte_length,
+            modified_at,
+            content_hash,
+            mime_type,
+            renderer_kind,
+            ..
+        } => Ok(WriteProjectFileResponseDto {
+            project_id,
+            path,
+            byte_length,
+            modified_at,
+            content_hash,
+            mime_type,
+            renderer_kind,
+            preview: None,
+        }),
+        ReadProjectFileResponseDto::Unsupported {
+            project_id,
+            path,
+            byte_length,
+            modified_at,
+            content_hash,
+            mime_type: Some(mime_type),
+            renderer_kind: Some(renderer_kind),
+            ..
+        } => Ok(WriteProjectFileResponseDto {
+            project_id,
+            path,
+            byte_length,
+            modified_at,
+            content_hash,
+            mime_type,
+            renderer_kind,
+            preview: None,
+        }),
+        ReadProjectFileResponseDto::Unsupported { reason, .. } => Err(CommandError::user_fixable(
+            "project_file_save_metadata_unavailable",
+            format!(
+                "Xero saved `{normalized_path}` but could not classify the updated file metadata ({reason}). Reload the file before editing further."
+            ),
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn stat_project_files<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: StatProjectFilesRequestDto,
+) -> CommandResult<StatProjectFilesResponseDto> {
+    validate_non_empty(&request.project_id, "projectId")?;
+    if request.paths.is_empty() {
+        return Ok(StatProjectFilesResponseDto {
+            project_id: request.project_id,
+            files: Vec::new(),
+        });
+    }
+
+    let project_root = resolve_project_root(&app, &state, &request.project_id)?;
+    let jobs = state.backend_jobs().clone();
+    let project_id = request.project_id;
+    let paths = request.paths;
+    drop(app);
+
+    jobs.run_blocking_latest(
+        format!("project-file-stat:{project_id}"),
+        "project file metadata",
+        move |cancellation| {
+            let mut files = Vec::with_capacity(paths.len());
+            for path in paths {
+                cancellation.check_cancelled("project file metadata")?;
+                files.push(stat_project_file(&project_root, &path)?);
+            }
+            Ok(StatProjectFilesResponseDto { project_id, files })
+        },
+    )
+    .await
+}
+
+fn stat_project_file(project_root: &Path, path: &str) -> CommandResult<ProjectFileStatDto> {
+    validate_non_empty(path, "path")?;
+    let (resolved_path, normalized_path) = resolve_virtual_path(project_root, path, "path", false)?;
+    let metadata = match read_metadata(&resolved_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.code == "project_path_not_found" => {
+            return Ok(ProjectFileStatDto::Missing {
+                path: normalized_path,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let modified_at = metadata_modified_at(&metadata);
+
+    if metadata.is_dir() {
+        return Ok(ProjectFileStatDto::Directory {
+            path: normalized_path,
+            modified_at,
+        });
+    }
+
+    let sniff_bytes = read_file_prefix(&resolved_path, SNIFF_BYTE_LIMIT)?;
+    let detected = detect_project_file_type(&resolved_path, &sniff_bytes);
+    let content_hash = sha256_file(&resolved_path)?;
+
+    Ok(ProjectFileStatDto::File {
         path: normalized_path,
+        byte_length: metadata.len(),
+        modified_at,
+        content_hash,
+        mime_type: detected.mime_type,
+        renderer_kind: detected.renderer_kind,
     })
 }
 
@@ -1382,6 +1660,67 @@ struct BuiltProjectTree {
     omitted_entry_count: u32,
 }
 
+fn build_project_file_index(
+    project_root: &Path,
+    project_id: String,
+    include_hidden: bool,
+    limit: usize,
+    cancellation: &BackendCancellationToken,
+) -> CommandResult<ListProjectFileIndexResponseDto> {
+    cancellation.check_cancelled("project file index")?;
+    let mut files = Vec::new();
+    let mut truncated = false;
+    let walker = project_file_walk_builder(project_root, include_hidden).build();
+
+    for entry in walker {
+        cancellation.check_cancelled("project file index")?;
+        let Ok(entry) = entry else { continue };
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() || file_type.is_symlink() {
+            continue;
+        }
+
+        let Some(path) = virtual_path_from_project_root(project_root, entry.path()) else {
+            continue;
+        };
+        if files.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let parent_path = parent_virtual_path(&path);
+        files.push(ProjectFileIndexEntryDto {
+            hidden: virtual_path_has_hidden_segment(&path),
+            name,
+            parent_path,
+            path,
+        });
+    }
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut response = ListProjectFileIndexResponseDto {
+        project_id,
+        total_files: files.len().min(u32::MAX as usize) as u32,
+        truncated,
+        payload_budget: None,
+        files,
+    };
+    let observed_bytes = estimate_serialized_payload_bytes(&response);
+    response.payload_budget = payload_budget_diagnostic(
+        "project_file_index",
+        "project file index",
+        PROJECT_FILE_INDEX_BUDGET_BYTES,
+        observed_bytes,
+        response.truncated,
+        false,
+    );
+
+    Ok(response)
+}
+
 fn build_folder_listing(
     directory: &Path,
     parent_virtual_path: &str,
@@ -1602,6 +1941,36 @@ fn read_child_nodes(
         truncated: omitted_entry_count > 0,
         omitted_entry_count,
     })
+}
+
+fn project_file_walk_builder(project_root: &Path, include_hidden: bool) -> WalkBuilder {
+    let mut walk_builder = WalkBuilder::new(project_root);
+    walk_builder
+        .hidden(!include_hidden)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(true)
+        .parents(true)
+        .follow_links(false)
+        .filter_entry(|entry| !is_skipped_project_directory_entry(entry))
+        .sort_by_file_path(|left, right| left.cmp(right));
+    walk_builder
+}
+
+fn virtual_path_from_project_root(project_root: &Path, abs_path: &Path) -> Option<String> {
+    let rel = abs_path.strip_prefix(project_root).ok()?;
+    let raw = rel.to_string_lossy();
+    if raw.is_empty() {
+        return Some("/".into());
+    }
+
+    Some(format!("/{}", raw.replace('\\', "/")))
+}
+
+fn virtual_path_has_hidden_segment(path: &str) -> bool {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| segment.starts_with('.'))
 }
 
 pub(crate) fn is_skipped_project_directory_entry(entry: &DirEntry) -> bool {

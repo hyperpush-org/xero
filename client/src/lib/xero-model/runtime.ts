@@ -128,8 +128,8 @@ export const ALL_RUNTIME_AGENT_DESCRIPTORS = [
   {
     id: 'generalist',
     version: 1,
-    label: 'Generalist',
-    shortLabel: 'Generalist',
+    label: 'Agent',
+    shortLabel: 'Agent',
     description:
       'A do-anything agent with the full engineering toolset that recognises when a specialist agent would handle the task better and offers to route.',
     taskPurpose:

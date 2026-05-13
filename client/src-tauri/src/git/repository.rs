@@ -238,7 +238,7 @@ fn read_head_details(repository: &Repository) -> HeadDetails {
                 branch_name: None,
                 head_sha: None,
                 last_commit: None,
-            }
+            };
         }
     };
 
