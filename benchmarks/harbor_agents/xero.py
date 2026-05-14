@@ -203,8 +203,11 @@ class XeroInstalledAgent(BaseInstalledAgent):
             or metadata.get("taskId")
             or os.environ.get("HARBOR_TASK_ID")
             or os.environ.get("TASK_ID")
-            or "unknown-task"
         )
+        if not task_id:
+            trial_dir_name = self.logs_dir.parent.name
+            task_id = trial_dir_name.split("__", 1)[0] if "__" in trial_dir_name else None
+        task_id = task_id or "unknown-task"
         attempt = metadata.get("attempt_index") or metadata.get("attemptIndex") or os.environ.get(
             "HARBOR_ATTEMPT_INDEX", "0"
         )

@@ -13,7 +13,7 @@ def manifest(harness: str, task: str, status: str, wall: int = 1000):
             "taskId": task,
         },
         "harness": {"name": harness},
-        "model": {"provider": "openai_api", "modelId": "gpt-5.4"},
+        "model": {"provider": "openai_api", "modelId": "gpt-5.5"},
         "run": {"status": status},
         "verifier": {"resolved": status == "completed"},
         "metrics": {"wallTimeMs": wall},

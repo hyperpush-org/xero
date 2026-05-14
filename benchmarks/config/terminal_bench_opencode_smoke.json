@@ -7,7 +7,7 @@
   },
   "model": {
     "provider": "openai_api",
-    "modelId": "gpt-5.4",
+    "modelId": "gpt-5.5",
     "temperature": 0,
     "reasoningEffort": "medium",
     "maxOutputTokens": 16384,
@@ -31,11 +31,20 @@
   "taskSets": {
     "adapter-smoke": {
       "description": "One or two cheap tasks used only to validate Xero adapter plumbing.",
-      "taskIds": []
+      "taskIds": [
+        "break-filter-js-from-html",
+        "log-summary-date-ranges"
+      ]
     },
     "comparison-smoke": {
       "description": "Predeclared five-to-ten task fixed-model smoke set. Fill with resolved Terminal-Bench 2.0 ids during preflight before any paid comparison run.",
-      "taskIds": []
+      "taskIds": [
+        "log-summary-date-ranges",
+        "fix-git",
+        "cobol-modernization",
+        "db-wal-recovery",
+        "polyglot-c-py"
+      ]
     },
     "full-terminal-bench-2": {
       "description": "Full Terminal-Bench 2.0 task set resolved by Harbor.",

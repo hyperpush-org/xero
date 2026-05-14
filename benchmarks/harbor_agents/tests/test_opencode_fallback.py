@@ -29,7 +29,7 @@ class OpenCodeFallbackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = CapturingOpenCodeFallbackAgent(
                 logs_dir=Path(tmp),
-                model_name="openai/gpt-5.4",
+                model_name="openai/gpt-5.5",
             )
 
             with patch.dict("os.environ", {"OPENAI_API_KEY": "secret"}, clear=True):
@@ -37,7 +37,7 @@ class OpenCodeFallbackTests(unittest.TestCase):
 
             self.assertEqual(len(agent.agent_calls), 1)
             call = agent.agent_calls[0]
-            self.assertIn("opencode run --model openai/gpt-5.4", call["command"])
+            self.assertIn("opencode run --model openai/gpt-5.5", call["command"])
             self.assertIn("--format json", call["command"])
             self.assertEqual(call["env"]["OPENCODE_DISABLE_AUTOUPDATE"], "1")
             self.assertNotIn("OPENCODE_DISABLE_AUTO_UPDATE", call["env"])

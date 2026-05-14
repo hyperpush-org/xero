@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -9,7 +10,10 @@ from unittest.mock import patch
 
 from benchmarks.preflight import (
     config_check,
+    harbor_help_check,
+    opencode_path_check,
     provider_credential_check,
+    run_command,
     xero_fake_provider_fixture_check,
 )
 
@@ -50,7 +54,7 @@ def valid_config():
     return {
         "schemaVersion": 1,
         "benchmark": {"name": "terminal-bench", "datasetId": "terminal-bench@2.0"},
-        "model": {"provider": "openai_api", "modelId": "gpt-5.4"},
+        "model": {"provider": "openai_api", "modelId": "gpt-5.5"},
         "limits": {"attempts": 1},
         "taskSets": {"comparison-smoke": {"description": "smoke", "taskIds": []}},
         "harnesses": {
@@ -82,6 +86,63 @@ class PreflightTests(unittest.TestCase):
             "opencode_fallback_import_path_missing",
         )
 
+    def test_run_command_can_keep_full_output_for_harbor_agent_detection(self):
+        result = run_command(
+            [
+                sys.executable,
+                "-c",
+                "print('opencode'); print('x' * 5000)",
+            ],
+            output_limit=None,
+        )
+
+        self.assertEqual(result["status"], "passed")
+        self.assertIn("opencode", result["stdout"])
+
+    def test_harbor_help_check_detects_opencode_from_full_help(self):
+        def fake_which(name):
+            return "/usr/bin/uvx" if name == "uvx" else None
+
+        def fake_run_command(argv, timeout=30, output_limit=4000):
+            self.assertIsNone(output_limit)
+            return {
+                "status": "passed",
+                "code": "ok",
+                "command": argv,
+                "returnCode": 0,
+                "stdout": "Agent name [oracle|opencode|openhands]",
+                "stderr": "",
+            }
+
+        with patch("benchmarks.preflight.shutil.which", side_effect=fake_which), patch(
+            "benchmarks.preflight.run_command",
+            side_effect=fake_run_command,
+        ):
+            result = harbor_help_check()
+
+        self.assertTrue(result["opencodeBuiltIn"])
+
+    def test_opencode_path_check_accepts_discovered_harbor_builtin(self):
+        config = valid_config()
+        config["harnesses"]["opencode"]["preferredKind"] = "harbor-built-in"
+        config["harnesses"]["opencode"]["agentName"] = "opencode"
+
+        result = opencode_path_check(config, {"opencodeBuiltIn": True})
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["code"], "harbor_builtin_opencode")
+        self.assertEqual(result["selectedKind"], "harbor-built-in")
+
+    def test_opencode_path_check_rejects_missing_preferred_builtin(self):
+        config = valid_config()
+        config["harnesses"]["opencode"]["preferredKind"] = "harbor-built-in"
+        config["harnesses"]["opencode"]["agentName"] = "opencode"
+
+        result = opencode_path_check(config, {"opencodeBuiltIn": False})
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["code"], "harbor_builtin_opencode_missing")
+
     def test_provider_credential_check_accepts_openai_oauth_store(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "app-data"
@@ -90,7 +151,7 @@ class PreflightTests(unittest.TestCase):
             config = valid_config()
             config["model"] = {
                 "provider": "openai_codex",
-                "modelId": "gpt-5.4",
+                "modelId": "gpt-5.5",
                 "credentialMode": "app_openai_oauth",
                 "oauthAppDataRoot": str(root),
             }

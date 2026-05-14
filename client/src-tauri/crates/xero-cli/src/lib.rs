@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
@@ -1056,16 +1056,17 @@ fn load_benchmark_openai_codex_oauth_session(
             2,
         ));
     }
-    let connection = Connection::open(&database_path).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_open_failed",
-            format!(
-                "Could not open OpenAI OAuth credential store `{}`: {error}",
-                database_path.display()
-            ),
-            1,
-        )
-    })?;
+    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| {
+            CliError::benchmark(
+                "xero_benchmark_openai_oauth_store_open_failed",
+                format!(
+                    "Could not open OpenAI OAuth credential store `{}`: {error}",
+                    database_path.display()
+                ),
+                1,
+            )
+        })?;
     let mut session = load_openai_codex_session_from_provider_credentials(
         &connection,
         config.oauth_account_id.as_deref(),
@@ -1256,7 +1257,7 @@ fn normalize_openai_codex_model_id(model_id: &str) -> String {
     if trimmed.is_empty() {
         provider_catalog_entry(OPENAI_CODEX_PROVIDER_ID)
             .map(|entry| entry.default_model)
-            .unwrap_or("gpt-5.4")
+            .unwrap_or("gpt-5.5")
             .into()
     } else if let Some(model) = trimmed.strip_prefix("openai_codex/") {
         model.into()
@@ -5037,7 +5038,7 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
         ProviderCatalogEntry {
             provider_id: "openai_codex",
             label: "OpenAI Codex",
-            default_model: "gpt-5.4",
+            default_model: "gpt-5.5",
             credential_kind: "app_session",
             headless_status: "benchmark_app_oauth_supported",
             catalog_kind: "model_provider",
@@ -5046,7 +5047,7 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
         ProviderCatalogEntry {
             provider_id: "openai_api",
             label: "OpenAI API",
-            default_model: "gpt-5.4",
+            default_model: "gpt-5.5",
             credential_kind: "api_key_env",
             headless_status: "configured_profile_required",
             catalog_kind: "model_provider",
@@ -5055,7 +5056,7 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
         ProviderCatalogEntry {
             provider_id: "openrouter",
             label: "OpenRouter",
-            default_model: "openai/gpt-5.4",
+            default_model: "openai/gpt-5.5",
             credential_kind: "api_key_env",
             headless_status: "configured_profile_required",
             catalog_kind: "model_provider",
@@ -11990,14 +11991,14 @@ mod tests {
             "--provider".into(),
             "openai_codex".into(),
             "--model".into(),
-            "openai/gpt-5.4".into(),
+            "openai/gpt-5.5".into(),
         ];
 
         let config = parse_benchmark_terminal_bench_config(&globals, &mut args)
             .expect("parse OpenAI OAuth benchmark config");
 
         assert_eq!(config.provider_id, OPENAI_CODEX_PROVIDER_ID);
-        assert_eq!(config.model_id, "gpt-5.4");
+        assert_eq!(config.model_id, "gpt-5.5");
         assert_eq!(config.credential_mode.as_deref(), Some("app_openai_oauth"));
         assert_eq!(config.endpoint_class, "chatgpt-codex-oauth");
         assert_eq!(config.api_key_env, None);
@@ -12071,7 +12072,7 @@ mod tests {
             task_id: "openai-oauth-task".into(),
             attempt_index: 0,
             provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
-            model_id: "openai/gpt-5.4".into(),
+            model_id: "openai/gpt-5.5".into(),
             profile_id: None,
             credential_mode: Some("app_openai_oauth".into()),
             oauth_app_data_root: Some(app_data_root),
@@ -12108,7 +12109,7 @@ mod tests {
             .expect("benchmark OpenAI OAuth provider should resolve");
 
         assert_eq!(provider.provider_id, OPENAI_CODEX_PROVIDER_ID);
-        assert_eq!(provider.model_id, "gpt-5.4");
+        assert_eq!(provider.model_id, "gpt-5.5");
         assert_eq!(
             provider.credential_proof.as_deref(),
             Some("app_data_openai_codex_session")
@@ -12116,7 +12117,7 @@ mod tests {
         match provider.execution {
             HeadlessProviderExecutionConfig::OpenAiCodexResponses(execution_config) => {
                 assert_eq!(execution_config.provider_id, OPENAI_CODEX_PROVIDER_ID);
-                assert_eq!(execution_config.model_id, "gpt-5.4");
+                assert_eq!(execution_config.model_id, "gpt-5.5");
                 assert_eq!(execution_config.access_token, "oauth-access-token");
                 assert_eq!(execution_config.account_id, "acct_123");
                 assert_eq!(execution_config.session_id.as_deref(), Some("sess_123"));
@@ -12128,6 +12129,121 @@ mod tests {
             }
             other => panic!("expected OpenAI Codex OAuth execution, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn benchmark_openai_codex_oauth_reads_read_only_store() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data_root = unique_temp_dir("benchmark-openai-codex-read-only-app-data");
+        let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
+        let connection = Connection::open(&database_path).expect("open OAuth store");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE provider_credentials (
+                    provider_id              TEXT    PRIMARY KEY,
+                    kind                     TEXT    NOT NULL,
+                    api_key                  TEXT,
+                    oauth_account_id         TEXT,
+                    oauth_session_id         TEXT,
+                    oauth_access_token       TEXT,
+                    oauth_refresh_token      TEXT,
+                    oauth_expires_at         INTEGER,
+                    base_url                 TEXT,
+                    api_version              TEXT,
+                    region                   TEXT,
+                    scope_project_id         TEXT,
+                    default_model_id         TEXT,
+                    updated_at               TEXT    NOT NULL
+                );
+                "#,
+            )
+            .expect("create provider_credentials");
+        connection
+            .execute(
+                "INSERT INTO provider_credentials (
+                    provider_id,
+                    kind,
+                    oauth_account_id,
+                    oauth_session_id,
+                    oauth_access_token,
+                    oauth_expires_at,
+                    updated_at
+                ) VALUES (?1, 'oauth_session', ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    OPENAI_CODEX_PROVIDER_ID,
+                    "acct_read_only",
+                    "sess_read_only",
+                    "oauth-read-only-token",
+                    current_unix_timestamp() + 3600,
+                    now_timestamp(),
+                ],
+            )
+            .expect("insert OAuth session");
+        drop(connection);
+        fs::set_permissions(&database_path, fs::Permissions::from_mode(0o444))
+            .expect("make OAuth database read-only");
+        fs::set_permissions(&app_data_root, fs::Permissions::from_mode(0o555))
+            .expect("make OAuth directory read-only");
+
+        let config = BenchmarkRunConfig {
+            instruction: "Use the OpenAI OAuth session.".into(),
+            workspace_root: unique_temp_dir("benchmark-openai-codex-read-only-workspace"),
+            trial_app_data_root: unique_temp_dir("benchmark-openai-codex-read-only-trial-app-data"),
+            output_dir: unique_temp_dir("benchmark-openai-codex-read-only-output"),
+            project_id: "benchmark-project".into(),
+            agent_session_id: "benchmark-session".into(),
+            run_id: "benchmark-run".into(),
+            benchmark_name: "terminal-bench".into(),
+            dataset_id: "terminal-bench@2.0".into(),
+            dataset_digest: None,
+            task_id: "openai-oauth-read-only-task".into(),
+            attempt_index: 0,
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            model_id: "gpt-5.5".into(),
+            profile_id: None,
+            credential_mode: Some("app_openai_oauth".into()),
+            oauth_app_data_root: Some(app_data_root.clone()),
+            oauth_account_id: Some("acct_read_only".into()),
+            api_key_env: None,
+            base_url: None,
+            temperature: None,
+            reasoning_effort: None,
+            max_output_tokens: None,
+            context_budget: None,
+            wall_time_seconds: None,
+            max_turns: None,
+            max_tool_calls: None,
+            max_command_calls: None,
+            max_cost_usd: None,
+            approval_mode: "strict".into(),
+            sandbox_policy: "harbor_task_sandbox".into(),
+            network_policy: "harbor_controlled".into(),
+            sandbox_provider: "harbor".into(),
+            environment_id: None,
+            image_digest: None,
+            prompt_version: XERO_BENCHMARK_PROMPT_VERSION.into(),
+            tool_policy_version: XERO_BENCHMARK_TOOL_POLICY_VERSION.into(),
+            adapter_version: XERO_BENCHMARK_ADAPTER_VERSION.into(),
+            harness_version: "harbor".into(),
+            xero_source_revision: None,
+            comparison_mode: "fixed-model".into(),
+            provider_account_class: "standard".into(),
+            endpoint_class: "chatgpt-codex-oauth".into(),
+            allow_fake_provider_fixture: false,
+        };
+
+        let session =
+            load_benchmark_openai_codex_oauth_session(&config).expect("read read-only OAuth store");
+
+        assert_eq!(session.account_id, "acct_read_only");
+        assert_eq!(session.session_id, "sess_read_only");
+        assert_eq!(session.access_token, "oauth-read-only-token");
+
+        let _ = fs::set_permissions(&app_data_root, fs::Permissions::from_mode(0o755));
+        let _ = fs::set_permissions(&database_path, fs::Permissions::from_mode(0o644));
     }
 
     #[test]

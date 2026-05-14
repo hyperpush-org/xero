@@ -26,7 +26,17 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_command(argv: list[str], timeout: int = 30) -> dict[str, Any]:
+def limited_output(text: str, output_limit: int | None) -> str:
+    if output_limit is None:
+        return text
+    return text[-output_limit:]
+
+
+def run_command(
+    argv: list[str],
+    timeout: int = 30,
+    output_limit: int | None = 4000,
+) -> dict[str, Any]:
     try:
         result = subprocess.run(
             argv,
@@ -55,8 +65,8 @@ def run_command(argv: list[str], timeout: int = 30) -> dict[str, Any]:
         "code": "ok" if result.returncode == 0 else "nonzero_exit",
         "command": argv,
         "returnCode": result.returncode,
-        "stdout": result.stdout[-4000:],
-        "stderr": result.stderr[-4000:],
+        "stdout": limited_output(result.stdout, output_limit),
+        "stderr": limited_output(result.stderr, output_limit),
     }
 
 
@@ -98,6 +108,8 @@ def config_check(config: dict[str, Any]) -> dict[str, Any]:
     opencode = harnesses.get("opencode") or {}
     if not xero.get("agentImportPath"):
         return {"status": "failed", "code": "xero_agent_import_path_missing"}
+    if opencode.get("preferredKind") == "harbor-built-in" and not opencode.get("agentName"):
+        return {"status": "failed", "code": "opencode_agent_name_missing"}
     if opencode.get("preferredKind") == "fallback-installed-agent" and not opencode.get(
         "fallbackImportPath"
     ):
@@ -251,9 +263,9 @@ def harbor_help_check() -> dict[str, Any]:
     uvx = shutil.which("uvx")
     harbor = shutil.which("harbor")
     if uvx:
-        result = run_command(["uvx", "harbor", "run", "--help"], timeout=60)
+        result = run_command(["uvx", "harbor", "run", "--help"], timeout=60, output_limit=None)
     elif harbor:
-        result = run_command(["harbor", "run", "--help"], timeout=60)
+        result = run_command(["harbor", "run", "--help"], timeout=60, output_limit=None)
     else:
         return {
             "status": "failed",
@@ -263,6 +275,54 @@ def harbor_help_check() -> dict[str, Any]:
     help_text = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
     result["opencodeBuiltIn"] = "opencode" in help_text
     return result
+
+
+def opencode_path_check(config: dict[str, Any], harbor: dict[str, Any]) -> dict[str, Any]:
+    opencode = (config.get("harnesses") or {}).get("opencode", {})
+    preferred_kind = opencode.get("preferredKind")
+    fallback_import_path = opencode.get("fallbackImportPath")
+    built_in_available = harbor.get("opencodeBuiltIn") is True
+    base = {
+        "preferredKind": preferred_kind,
+        "agentName": opencode.get("agentName"),
+        "fallbackImportPath": fallback_import_path,
+        "harborOpencodeBuiltIn": built_in_available,
+    }
+
+    if preferred_kind == "harbor-built-in":
+        if built_in_available:
+            return {
+                **base,
+                "status": "passed",
+                "code": "harbor_builtin_opencode",
+                "selectedKind": "harbor-built-in",
+            }
+        return {
+            **base,
+            "status": "failed",
+            "code": "harbor_builtin_opencode_missing",
+            "message": "Harbor does not list built-in opencode. Install a Harbor version that exposes opencode, or set harnesses.opencode.preferredKind to fallback-installed-agent to make the fallback decision explicit.",
+        }
+
+    if preferred_kind == "fallback-installed-agent":
+        if fallback_import_path:
+            return {
+                **base,
+                "status": "passed",
+                "code": "fallback_wrapper_selected",
+                "selectedKind": "fallback-installed-agent",
+            }
+        return {
+            **base,
+            "status": "failed",
+            "code": "opencode_fallback_import_path_missing",
+        }
+
+    return {
+        **base,
+        "status": "failed",
+        "code": "opencode_preferred_kind_invalid",
+    }
 
 
 def build_manifest(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -284,18 +344,7 @@ def build_manifest(config: dict[str, Any], args: argparse.Namespace) -> dict[str
         xero_cli,
         args,
     )
-    opencode_path = (config.get("harnesses") or {}).get("opencode", {})
-    checks["opencodePath"] = {
-        "status": "passed"
-        if harbor.get("opencodeBuiltIn")
-        else "skipped",
-        "code": "harbor_builtin_opencode"
-        if harbor.get("opencodeBuiltIn")
-        else "fallback_wrapper_required",
-        "preferredKind": opencode_path.get("preferredKind"),
-        "agentName": opencode_path.get("agentName"),
-        "fallbackImportPath": opencode_path.get("fallbackImportPath"),
-    }
+    checks["opencodePath"] = opencode_path_check(config, harbor)
     failed = [name for name, check in checks.items() if check.get("status") == "failed"]
     return {
         "schema": "xero.benchmark.preflight.v1",

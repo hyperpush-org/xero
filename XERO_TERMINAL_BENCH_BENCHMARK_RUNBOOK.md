@@ -16,6 +16,8 @@ Do not start with the full benchmark. Start small, freeze task ids before runnin
 
 ### 1. Preflight
 
+Status: Completed on 2026-05-14. Fresh preflight passed after fixing Harbor OpenCode detection; Harbor selected built-in `opencode`, Docker was usable, Xero CLI reported a version, OpenAI OAuth app-data credentials were present, and the fake-provider fixture wrote the expected artifacts.
+
 Purpose: catch setup problems before spending model tokens.
 
 Run preflight from the repo root and require it to pass before any paid model run.
@@ -47,6 +49,8 @@ This uses the app-local `xero.db` OAuth session and does not require `OPENAI_API
 
 ### 2. Adapter Smoke
 
+Status: Completed on 2026-05-14. The adapter smoke fixture completed with all required artifacts present, `fakeProviderFixture` set to `true`, and no benchmark state written to legacy `.xero/` state.
+
 Purpose: prove Xero plumbing without judging model quality.
 
 Use one or two cheap Terminal-Bench tasks, or a fixture task, with the Xero fake-provider fixture where appropriate. This verifies that Xero can:
@@ -60,6 +64,8 @@ Gate: artifacts are complete, manifests label fake-provider runs as fixture-only
 
 ### 3. Oracle Smoke
 
+Status: Completed on 2026-05-14. Harbor oracle completed the frozen adapter-smoke task ids `break-filter-js-from-html` and `log-summary-date-ranges` with 2/2 trials complete, zero exceptions, and mean reward 1.000.
+
 Purpose: confirm the chosen tasks and environment are valid before comparing agents.
 
 Run Harbor oracle on the frozen smoke task ids. Harbor remains the task materialization, sandbox, verifier, and scoring authority.
@@ -67,6 +73,8 @@ Run Harbor oracle on the frozen smoke task ids. Harbor remains the task material
 Gate: oracle can complete the selected smoke tasks, or failures are understood as task/environment issues rather than Xero/OpenCode issues.
 
 ### 4. OpenCode Smoke
+
+Status: Completed on 2026-05-14 in product-mode route. Harbor built-in `opencode` ran the frozen adapter-smoke task ids `break-filter-js-from-html` and `log-summary-date-ranges` with `opencode/gpt-5.5` and OpenCode CLI `1.14.50`. Both trials produced Harbor-owned verifier outcomes with zero harness exceptions; verifier reward was 0.0 for both tasks, so this is model-quality signal rather than an adapter/runtime failure. The fixed-model OpenAI API route remains unrun until `OPENAI_API_KEY` is available.
 
 Purpose: establish the baseline under the same Harbor task set and model route.
 
@@ -85,6 +93,8 @@ Hold constant:
 Gate: OpenCode produces Harbor-owned outcomes and stored artifacts for the frozen smoke task ids.
 
 ### 5. Xero Comparison Smoke
+
+Status: Completed on 2026-05-14 in product-mode route. The frozen comparison-smoke task ids were `log-summary-date-ranges`, `fix-git`, `cobol-modernization`, `db-wal-recovery`, and `polyglot-c-py`. Harbor oracle validated the set with 5/5 trials complete, zero exceptions, and mean reward 1.000. Harbor built-in `opencode` then ran the same ids with `opencode/gpt-5.5`, OpenCode CLI `1.14.50`, one attempt each, zero exceptions, and mean reward 0.000. Xero ran the same ids with `openai_codex`/`gpt-5.5`, app-data OAuth credentials, one attempt each, zero exceptions, and mean reward 0.800. Every Xero trial emitted `manifest.json`, `trajectory.json`, `xero-trace.json`, `final.diff`, `support-bundle.zip`, `stdout.txt`, and `stderr.txt`; no manifest pointed at legacy `.xero` state. The only Xero verifier failure was `db-wal-recovery`, categorized as model-quality/verifier-failed because the agent completed and Harbor's verifier returned reward 0.0. Result roots: `/tmp/xero-terminal-bench-step5/jobs/oracle-comparison-smoke-v2-20260514`, `/tmp/xero-terminal-bench-step5/jobs/opencode-gpt55-comparison-smoke-20260514`, and `/tmp/xero-terminal-bench-step5/jobs/xero-gpt55-comparison-smoke-20260514`.
 
 Purpose: run the first real Xero scoring path against the same tasks.
 
@@ -179,11 +189,11 @@ The shareable summary should be shorter and clearly labeled as either fixed-mode
 
 ## Recommended Sequence
 
-1. Run preflight.
-2. Run adapter smoke.
-3. Run oracle smoke.
-4. Run OpenCode smoke.
-5. Run Xero comparison smoke.
-6. Generate the engineering report.
-7. Triage failures.
-8. Decide whether to run the full benchmark.
+1. [x] Run preflight.
+2. [x] Run adapter smoke.
+3. [x] Run oracle smoke.
+4. [x] Run OpenCode smoke.
+5. [x] Run Xero comparison smoke.
+6. [ ] Generate the engineering report.
+7. [ ] Triage failures.
+8. [ ] Decide whether to run the full benchmark.

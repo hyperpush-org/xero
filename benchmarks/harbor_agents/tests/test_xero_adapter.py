@@ -14,10 +14,10 @@ from benchmarks.harbor_agents.xero import (
 
 class XeroAdapterTests(unittest.TestCase):
     def test_split_harbor_model_maps_openai_provider(self):
-        self.assertEqual(split_harbor_model("openai/gpt-5.4"), ("openai_api", "gpt-5.4"))
+        self.assertEqual(split_harbor_model("openai/gpt-5.5"), ("openai_api", "gpt-5.5"))
         self.assertEqual(
-            split_harbor_model("openrouter/openai/gpt-5.4"),
-            ("openrouter", "openai/gpt-5.4"),
+            split_harbor_model("openrouter/openai/gpt-5.5"),
+            ("openrouter", "openai/gpt-5.5"),
         )
         self.assertEqual(
             split_harbor_model(
@@ -29,10 +29,10 @@ class XeroAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             split_harbor_model(
-                "openai/gpt-5.4",
+                "openai/gpt-5.5",
                 explicit_provider="openai_codex",
             ),
-            ("openai_codex", "gpt-5.4"),
+            ("openai_codex", "gpt-5.5"),
         )
 
     def test_approved_provider_env_passes_names_without_expanding_scope(self):
@@ -48,7 +48,7 @@ class XeroAdapterTests(unittest.TestCase):
             with patch.dict("os.environ", {"TERMINAL_BENCH_DATASET": "terminal-bench@2.0"}):
                 agent = XeroInstalledAgent(
                     logs_dir=Path(tmp),
-                    model_name="openai/gpt-5.4",
+                    model_name="openai/gpt-5.5",
                     xero_cli_path="/bin/xero",
                 )
                 context = SimpleNamespace(
@@ -61,7 +61,7 @@ class XeroAdapterTests(unittest.TestCase):
         self.assertIn("printf %s", command)
         self.assertIn("--instruction-file -", command)
         self.assertIn("--provider openai_api", command)
-        self.assertIn("--model gpt-5.4", command)
+        self.assertIn("--model gpt-5.5", command)
         self.assertIn("--api-key-env OPENAI_API_KEY", command)
         self.assertNotIn("secret", command)
         self.assertTrue(env["XERO_BENCHMARK_ADAPTER"].startswith("xero-terminal-bench"))
@@ -80,7 +80,7 @@ class XeroAdapterTests(unittest.TestCase):
             ):
                 agent = XeroInstalledAgent(
                     logs_dir=Path(tmp),
-                    model_name="openai/gpt-5.4",
+                    model_name="openai/gpt-5.5",
                     xero_cli_path="/bin/xero",
                 )
                 context = SimpleNamespace(metadata={"task_id": "oauth-task"})
@@ -88,11 +88,29 @@ class XeroAdapterTests(unittest.TestCase):
                 command, env, _ = agent.build_run_command("Do the task", context)
 
         self.assertIn("--provider openai_codex", command)
-        self.assertIn("--model gpt-5.4", command)
+        self.assertIn("--model gpt-5.5", command)
         self.assertIn("--oauth-app-data-root", command)
         self.assertIn("--oauth-account-id acct_123", command)
         self.assertNotIn("--api-key-env", command)
         self.assertEqual(env["XERO_BENCHMARK_ADAPTER"], "xero-terminal-bench-harbor-adapter.v1")
+
+    def test_build_run_command_infers_task_id_from_harbor_trial_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp) / "fix-git__abc1234" / "agent"
+            logs_dir.mkdir(parents=True)
+            with patch.dict("os.environ", {"TERMINAL_BENCH_DATASET": "terminal-bench@2.0"}):
+                agent = XeroInstalledAgent(
+                    logs_dir=logs_dir,
+                    model_name="openai/gpt-5.5",
+                    xero_cli_path="/bin/xero",
+                )
+                context = SimpleNamespace(metadata={})
+
+                command, _, _ = agent.build_run_command("Do the task", context)
+
+        self.assertIn("--task-id fix-git", command)
+        self.assertIn("--run-id harbor-fix-git-0", command)
+        self.assertIn("--project-id xero-fix-git", command)
 
     def test_sanitize_identifier_has_fallback(self):
         self.assertEqual(sanitize_identifier("task/with spaces", "fallback"), "task-with-spaces")
