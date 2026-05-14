@@ -432,7 +432,10 @@ export function useAgentRuntimeController({
     runtimeMutationInFlight ||
       (activeRuntimeRun ? !onUpdateRuntimeRunControls : !canStartNewRuntimeRun),
   )
-  const isRuntimeAgentSwitchDisabled = Boolean(activeRuntimeRun || runtimeMutationInFlight)
+  const isRuntimeAgentSwitchDisabled = Boolean(
+    runtimeMutationInFlight ||
+      (activeRuntimeRun ? !onUpdateRuntimeRunControls : !canStartNewRuntimeRun),
+  )
   const canSubmitPrompt = Boolean(
     !runtimeMutationInFlight &&
       !hasQueuedPrompt &&
@@ -877,6 +880,20 @@ export function useAgentRuntimeController({
       return
     }
 
+    if (activeRuntimeRun) {
+      void queueRuntimeRunControls(
+        getComposerControlInput({
+          runtimeAgentId: value,
+          agentDefinitionId: null,
+          models: availableModels,
+          selectionKey: effectiveModelSelectionKey,
+          thinkingEffort: effectiveThinkingEffort,
+          approvalMode: resolveRuntimeAgentApprovalMode(value, effectiveApprovalMode),
+        }),
+      )
+      return
+    }
+
     hasUserComposerSettingsRef.current = true
     setDraftRuntimeAgentId(value)
     setDraftAgentDefinitionId(null)
@@ -894,6 +911,23 @@ export function useAgentRuntimeController({
     }
 
     hasUserComposerSettingsRef.current = true
+    if (activeRuntimeRun) {
+      void queueRuntimeRunControls(
+        getComposerControlInput({
+          runtimeAgentId: selection.runtimeAgentId,
+          agentDefinitionId: selection.agentDefinitionId,
+          models: availableModels,
+          selectionKey: effectiveModelSelectionKey,
+          thinkingEffort: effectiveThinkingEffort,
+          approvalMode: resolveRuntimeAgentApprovalMode(
+            selection.runtimeAgentId,
+            effectiveApprovalMode,
+          ),
+        }),
+      )
+      return
+    }
+
     setDraftRuntimeAgentId(selection.runtimeAgentId)
     setDraftAgentDefinitionId(selection.agentDefinitionId)
     setDraftApprovalMode((current) =>

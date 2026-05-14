@@ -893,6 +893,13 @@ function renderExecutionView(
   }
 }
 
+async function runPaletteCommand(name: string | RegExp) {
+  fireEvent.keyDown(window, { key: 'P', code: 'KeyP', metaKey: true, shiftKey: true })
+  const option = await screen.findByRole('option', { name })
+  fireEvent.click(option)
+  await waitFor(() => expect(screen.queryByRole('option', { name })).not.toBeInTheDocument())
+}
+
 describe('ExecutionView', () => {
   it('defers project tree loading while the editor pane is hidden', async () => {
     const { rerender, workspace } = renderExecutionView({ active: false })
@@ -1000,7 +1007,7 @@ describe('ExecutionView', () => {
     await waitFor(() => {
       expect(getRepositoryDiff).toHaveBeenCalledWith('project-1', 'unstaged')
     })
-    fireEvent.click(await screen.findByRole('button', { name: '1 Git change' }))
+    await runPaletteCommand(/Show Git Changes/)
 
     expect(await screen.findByText('@@ -1,1 +1,1 @@')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Revert hunk' }))
@@ -1131,12 +1138,12 @@ describe('ExecutionView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Go' }))
     await waitFor(() => expect(screen.queryByLabelText('Line and column')).not.toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Go to symbol' }))
+    fireEvent.keyDown(window, { key: 'o', code: 'KeyO', metaKey: true, shiftKey: true })
     expect(await screen.findByPlaceholderText('Search symbols in file')).toBeVisible()
     fireEvent.click(await screen.findByText('target'))
     await waitFor(() => expect(screen.queryByPlaceholderText('Search symbols in file')).not.toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Find references' }))
+    fireEvent.keyDown(window, { key: 'F12', shiftKey: true })
     expect(await screen.findByLabelText('Find')).toHaveValue('target')
     expect(screen.getByRole('button', { name: 'Project' })).toHaveAttribute('aria-pressed', 'true')
   })
@@ -1568,7 +1575,7 @@ describe('ExecutionView', () => {
     renderExecutionView({ runProjectTypecheck })
 
     expect(await screen.findByTestId('file:/README.md')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Run typecheck' }))
+    await runPaletteCommand(/Run Typecheck/)
 
     await waitFor(() => expect(runProjectTypecheck).toHaveBeenCalledWith({ projectId: 'project-1' }))
     expect(await screen.findByTestId('problems-panel')).toHaveTextContent('1 error')
@@ -1607,7 +1614,7 @@ describe('ExecutionView', () => {
     const editor = await screen.findByLabelText('Editor for /README.md')
     fireEvent.change(editor, { target: { value: '# raw\n' } })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Format document' }))
+    await runPaletteCommand(/Format Document/)
 
     await waitFor(() =>
       expect(formatProjectDocument).toHaveBeenCalledWith({
@@ -1643,7 +1650,7 @@ describe('ExecutionView', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
     await screen.findByLabelText('Editor for /README.md')
-    fireEvent.click(screen.getByRole('button', { name: /Format on save: off/ }))
+    await runPaletteCommand(/Format on Save: Off/)
     fireEvent.change(screen.getByLabelText('Editor for /README.md'), {
       target: { value: '# raw\n' },
     })
@@ -1689,7 +1696,7 @@ describe('ExecutionView', () => {
     renderExecutionView({ runProjectLint })
 
     expect(await screen.findByTestId('file:/README.md')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Run lint' }))
+    await runPaletteCommand(/Run Lint/)
 
     await waitFor(() =>
       expect(runProjectLint).toHaveBeenCalledWith({ projectId: 'project-1' }),
@@ -1709,7 +1716,7 @@ describe('ExecutionView', () => {
     renderExecutionView({ runEditorTerminalTask })
 
     expect(await screen.findByTestId('file:/README.md')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: 'Run typecheck' }))
+    await runPaletteCommand(/Run Typecheck/)
 
     await waitFor(() => expect(runEditorTerminalTask).toHaveBeenCalled())
     expect(taskRequest).toMatchObject({
@@ -1746,7 +1753,7 @@ describe('ExecutionView', () => {
     const editor = await screen.findByLabelText('Editor for /README.md')
     fireEvent.change(editor, { target: { value: '# Draft\n' } })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fix this file with agent' }))
+    await runPaletteCommand(/Fix File with Agent/)
 
     await waitFor(() => expect(onSendEditorContextToAgent).toHaveBeenCalledTimes(1))
     expect(onSendEditorContextToAgent).toHaveBeenCalledWith(
@@ -1818,7 +1825,7 @@ describe('ExecutionView', () => {
     fireEvent.change(screen.getByLabelText('Editor for /README.md'), {
       target: { value: '# raw\n' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Format document' }))
+    await runPaletteCommand(/Format Document/)
 
     await waitFor(() => expect(formatProjectDocument).toHaveBeenCalled())
     expect(workspace.writeProjectFile).not.toHaveBeenCalled()
@@ -1933,14 +1940,14 @@ describe('ExecutionView', () => {
     )
   })
 
-  it('exposes the editor preferences button when text files are open', async () => {
+  it('exposes the editor commands chip and preferences gear when text files are open', async () => {
     renderExecutionView()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open /README.md' }))
     await screen.findByLabelText('Editor for /README.md')
 
+    expect(screen.getByRole('button', { name: /Open editor commands/ })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Editor preferences' })).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Tab actions' })).toBeVisible()
   })
 
   it('exposes editor tabs as a tablist with arrow-key navigation', async () => {

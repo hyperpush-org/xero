@@ -160,11 +160,17 @@ export function useHistoricalConversationTurns(
     shouldDeferTranscriptFetch,
   ])
 
-  // While stale-session keyed (e.g. user just switched panes), suppress the
-  // previous pane's history. Within the same session, keep the last settled
-  // transcript projection visible while a prompt is queued or the stream is
-  // attaching so the conversation surface does not disappear mid-send.
-  if (!sessionKey || !turnsByKey || turnsByKey.sessionKey !== sessionKey) {
+  // While stale-keyed (e.g. user just switched panes or the active run id just
+  // arrived during project load), suppress the previous history. Keeping a
+  // transcript fetched with no active run would let the current run appear once
+  // as static history and again from the live/restored stream.
+  if (
+    !sessionKey ||
+    !fetchKey ||
+    !turnsByKey ||
+    turnsByKey.sessionKey !== sessionKey ||
+    turnsByKey.fetchKey !== fetchKey
+  ) {
     return null
   }
   return turnsByKey.turns

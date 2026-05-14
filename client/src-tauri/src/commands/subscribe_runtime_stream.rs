@@ -747,23 +747,23 @@ fn replay_owned_agent_events(
         after_sequence,
         after_event_id,
     );
-    let delivered_patch_count = usize::from(replay_projection.patch.is_some());
-    if let Some(patch) = replay_projection.patch {
-        send_runtime_stream_patch(channel, patch)?;
-    }
+    let projected_count = replay_projection.projected_count;
+    let last_event_id = replay_projection.last_event_id;
+    let delivered_payload_count = send_runtime_stream_replay_payloads(channel, replay_projection)?;
     eprintln!(
-        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} projected_count={} delivered_patch_count={delivered_patch_count} last_event_id={} duration_ms={}",
-        replay_projection.projected_count,
-        replay_projection.last_event_id,
+        "[runtime-latency] subscribe_runtime_stream replay project_id={project_id} run_id={run_id} after_event_id={after_event_id} mode={replay_mode} incremental_limit={incremental_replay_limit} replayed_count={replayed_count} projected_count={} delivered_payload_count={delivered_payload_count} last_event_id={} duration_ms={}",
+        projected_count,
+        last_event_id,
         started.elapsed().as_millis()
     );
-    Ok((replay_projection.last_event_id, terminal))
+    Ok((last_event_id, terminal))
 }
 
 struct OwnedAgentReplayProjectionResult {
     last_event_id: i64,
     projected_count: usize,
     patch: Option<RuntimeStreamPatchDto>,
+    deliverable_items: Vec<RuntimeStreamItemDto>,
 }
 
 fn project_owned_agent_replay_events(
@@ -778,6 +778,7 @@ fn project_owned_agent_replay_events(
     let mut projected_count = 0;
     let mut last_deliverable_item: Option<RuntimeStreamItemDto> = None;
     let mut last_projected_item: Option<RuntimeStreamItemDto> = None;
+    let mut deliverable_items = Vec::new();
 
     for event in events {
         last_event_id = last_event_id.max(event.id);
@@ -794,6 +795,7 @@ fn project_owned_agent_replay_events(
         let patch_item = projection.apply_item_to_projection(item);
         projected_count += 1;
         if should_deliver_patch {
+            deliverable_items.push(patch_item.clone());
             last_deliverable_item = Some(patch_item);
         } else {
             last_projected_item = Some(patch_item);
@@ -807,6 +809,7 @@ fn project_owned_agent_replay_events(
         last_event_id,
         projected_count,
         patch,
+        deliverable_items,
     }
 }
 
@@ -883,16 +886,49 @@ fn stream_live_owned_agent_events(
     }
 }
 
+fn send_runtime_stream_replay_payloads(
+    channel: &Channel<serde_json::Value>,
+    replay: OwnedAgentReplayProjectionResult,
+) -> CommandResult<usize> {
+    let Some(patch) = replay.patch else {
+        return Ok(0);
+    };
+
+    if let Some(payload) = runtime_stream_patch_snapshot_payload_for_ipc(patch.clone())? {
+        send_runtime_stream_payload(channel, payload, "replay patch")?;
+        return Ok(1);
+    }
+
+    if replay.deliverable_items.is_empty() {
+        send_runtime_stream_patch(channel, patch)?;
+        return Ok(1);
+    }
+
+    let item_count = replay.deliverable_items.len();
+    for item in replay.deliverable_items {
+        send_runtime_stream_item(channel, item)?;
+    }
+    Ok(item_count)
+}
+
 fn send_runtime_stream_patch(
     channel: &Channel<serde_json::Value>,
     patch: RuntimeStreamPatchDto,
 ) -> CommandResult<()> {
     let payload = runtime_stream_patch_payload_for_ipc(patch)?;
+    send_runtime_stream_payload(channel, payload, "replay patch")
+}
+
+fn send_runtime_stream_payload(
+    channel: &Channel<serde_json::Value>,
+    payload: serde_json::Value,
+    label: &str,
+) -> CommandResult<()> {
     channel.send(payload).map_err(|error| {
         CommandError::retryable(
             "runtime_stream_channel_closed",
             format!(
-                "Xero could not deliver an owned-agent runtime stream replay patch because the desktop channel closed: {error}"
+                "Xero could not deliver an owned-agent runtime stream {label} because the desktop channel closed: {error}"
             ),
         )
     })
@@ -916,13 +952,30 @@ fn send_runtime_stream_item(
 fn runtime_stream_patch_payload_for_ipc(
     patch: RuntimeStreamPatchDto,
 ) -> CommandResult<serde_json::Value> {
+    if let Some(payload) = runtime_stream_patch_snapshot_payload_for_ipc(patch.clone())? {
+        return Ok(payload);
+    }
+
+    let mut compact_patch = patch;
+    compact_runtime_stream_patch_for_ipc(&mut compact_patch, 0);
+    let mut item = compact_patch.item;
+    compact_runtime_stream_item_for_ipc(&mut item, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
+    if estimated_ipc_payload_bytes(&item) > RUNTIME_STREAM_IPC_MAX_BYTES {
+        compact_runtime_stream_item_for_ipc(&mut item, 0);
+    }
+    runtime_stream_payload_value(item)
+}
+
+fn runtime_stream_patch_snapshot_payload_for_ipc(
+    patch: RuntimeStreamPatchDto,
+) -> CommandResult<Option<serde_json::Value>> {
     let mut compact_patch = patch;
     compact_runtime_stream_patch_for_ipc(
         &mut compact_patch,
         RUNTIME_STREAM_IPC_PATCH_PREVIEW_CHARS,
     );
     if estimated_ipc_payload_bytes(&compact_patch) <= RUNTIME_STREAM_IPC_MAX_BYTES {
-        return runtime_stream_payload_value(compact_patch);
+        return runtime_stream_payload_value(compact_patch).map(Some);
     }
 
     compact_runtime_stream_patch_for_ipc(
@@ -930,20 +983,15 @@ fn runtime_stream_patch_payload_for_ipc(
         RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS,
     );
     if estimated_ipc_payload_bytes(&compact_patch) <= RUNTIME_STREAM_IPC_MAX_BYTES {
-        return runtime_stream_payload_value(compact_patch);
+        return runtime_stream_payload_value(compact_patch).map(Some);
     }
 
     compact_runtime_stream_patch_for_ipc(&mut compact_patch, 0);
     if estimated_ipc_payload_bytes(&compact_patch) <= RUNTIME_STREAM_IPC_MAX_BYTES {
-        return runtime_stream_payload_value(compact_patch);
+        return runtime_stream_payload_value(compact_patch).map(Some);
     }
 
-    let mut item = compact_patch.item;
-    compact_runtime_stream_item_for_ipc(&mut item, RUNTIME_STREAM_IPC_TIGHT_PREVIEW_CHARS);
-    if estimated_ipc_payload_bytes(&item) > RUNTIME_STREAM_IPC_MAX_BYTES {
-        compact_runtime_stream_item_for_ipc(&mut item, 0);
-    }
-    runtime_stream_payload_value(item)
+    Ok(None)
 }
 
 fn runtime_stream_item_payload_for_ipc(
@@ -2783,6 +2831,54 @@ mod tests {
             patch.snapshot.transcript_items[0].text.as_deref(),
             Some(expected_text.as_str())
         );
+        assert_eq!(result.deliverable_items.len(), event_count);
+    }
+
+    #[test]
+    fn oversized_replay_snapshot_keeps_individual_items_for_lossless_fallback() {
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let event_count = 80;
+        let chunk = "x".repeat(2_000);
+        let events = (0..event_count)
+            .map(|index| {
+                event_with_id(
+                    (index + 1) as i64,
+                    AgentRunEventKind::MessageDelta,
+                    &serde_json::json!({
+                        "role": "assistant",
+                        "text": format!("{index}:{chunk}")
+                    })
+                    .to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let result = project_owned_agent_replay_events(
+            events,
+            "owned-agent:run-1",
+            &[RuntimeStreamItemKind::Transcript],
+            &mut projection,
+            None,
+            0,
+        );
+
+        let patch = result.patch.clone().expect("replay patch");
+        assert!(
+            runtime_stream_patch_snapshot_payload_for_ipc(patch)
+                .expect("encode oversized patch")
+                .is_none(),
+            "oversized replay snapshots should use the item fallback path"
+        );
+        assert_eq!(result.deliverable_items.len(), event_count);
+        let replayed_text = result
+            .deliverable_items
+            .iter()
+            .map(|item| item.text.as_deref().unwrap_or_default())
+            .collect::<String>();
+        let expected_text = (0..event_count)
+            .map(|index| format!("{index}:{chunk}"))
+            .collect::<String>();
+        assert_eq!(replayed_text, expected_text);
     }
 
     #[test]

@@ -44,13 +44,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { AlertTriangle, Bot, CheckCircle2, GitCompare, Play, RotateCcw, Sparkles, XCircle } from 'lucide-react'
+import { AlertTriangle, Bot, GitCompare, RotateCcw } from 'lucide-react'
 import { EditorContextMenu } from './execution-view/editor-context-menu'
 import { EditorEmptyState, LoadingState } from './execution-view/editor-empty-state'
 import { EditorLiveRegion } from './execution-view/editor-live-region'
 import { ExplorerPane } from './execution-view/explorer-pane'
 import { EditorStatusBar, PreviewStatusBar } from './execution-view/editor-status-bar'
 import { EditorTopBar } from './execution-view/editor-top-bar'
+import { EditorCommandPalette } from './execution-view/editor-command-palette'
+import { ProblemsPeek } from './execution-view/problems-peek'
 import {
   EditorNavigationDialog,
   type EditorFileIndexStatus,
@@ -469,6 +471,9 @@ function EditorView({
   )
   const [preferencesHydrated, setPreferencesHydrated] = useState(false)
   const [navigationMode, setNavigationMode] = useState<EditorNavigationMode | null>(null)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [problemsPeekOpen, setProblemsPeekOpen] = useState(false)
+  const [preferencesPopoverOpen, setPreferencesPopoverOpen] = useState(false)
   const [includeHiddenQuickOpen, setIncludeHiddenQuickOpen] = useState(false)
   const [fileIndexState, setFileIndexState] = useState<{
     status: EditorFileIndexStatus
@@ -643,6 +648,9 @@ function EditorView({
     setFormatStatus({ status: 'idle' })
     setPreferencesHydrated(false)
     setNavigationMode(null)
+    setCommandPaletteOpen(false)
+    setProblemsPeekOpen(false)
+    setPreferencesPopoverOpen(false)
     setFileIndexState({ status: 'idle', response: null, error: null, includeHidden: false })
     setGitDiffState({ status: 'idle', response: null, error: null, revision: `${projectId}\u0002clean` })
     setGitHunkDialog(null)
@@ -1532,6 +1540,11 @@ function EditorView({
         setNavigationMode('quick-open')
         return
       }
+      if (mod && event.shiftKey && !event.altKey && key === 'p') {
+        event.preventDefault()
+        setCommandPaletteOpen((prev) => !prev)
+        return
+      }
       if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && key === 'g') {
         event.preventDefault()
         setNavigationMode('go-line')
@@ -1583,6 +1596,29 @@ function EditorView({
     openTabs,
     setActivePath,
   ])
+
+  // Auto-open the problems peek when a diagnostics run completes or a
+  // formatter run fails, so the user sees results without an extra click.
+  useEffect(() => {
+    if (typecheckState.status === 'ready' || typecheckState.status === 'error') {
+      setProblemsPeekOpen(true)
+    }
+  }, [typecheckState.status])
+  useEffect(() => {
+    if (lintState.status === 'ready' || lintState.status === 'error') {
+      setProblemsPeekOpen(true)
+    }
+  }, [lintState.status])
+  useEffect(() => {
+    if (formatStatus.status === 'failed') {
+      setProblemsPeekOpen(true)
+    }
+  }, [formatStatus.status])
+  useEffect(() => {
+    if (editorTaskDiagnostics.length > 0) {
+      setProblemsPeekOpen(true)
+    }
+  }, [editorTaskDiagnostics.length])
 
   // After a jump-triggered file open finishes, position the cursor once the
   // editor state matches the requested file.
@@ -1672,18 +1708,6 @@ function EditorView({
           pendingFilePath={pendingFilePath}
           onSelectTab={handleSelectTab}
           onCloseTab={handleCloseTab}
-          onQuickOpen={() => setNavigationMode('quick-open')}
-          onGoToLine={activePath ? () => setNavigationMode('go-line') : undefined}
-          onGoToSymbol={isActiveText ? handleOpenSymbolNavigation : undefined}
-          onGoToDefinition={isActiveText ? handleGoToDefinition : undefined}
-          onFindReferences={isActiveText ? handleFindReferences : undefined}
-          onOpenGitChanges={activeGitStatus ? handleOpenActiveGitChanges : undefined}
-          activeGitChangeCount={activeGitChangeCount}
-          canSendEditorContextToAgent={Boolean(onSendEditorContextToAgent && isActiveText)}
-          hasActiveSelection={activeHasSelection}
-          agentContextStatus={agentContextStatus}
-          onAskAgentAboutSelection={onSendEditorContextToAgent && isActiveText ? handleAskAgentAboutSelection : undefined}
-          onFixActiveFileWithAgent={onSendEditorContextToAgent && isActiveText ? handleFixActiveFileWithAgent : undefined}
           onRevealActiveFile={activePath ? handleRevealActiveFile : undefined}
           onCopyRelativePath={activePath ? handleCopyRelativePath : undefined}
           supportsModeToggle={!!activeResource && resourceSupportsPreviewToggle(activeResource)}
@@ -1695,29 +1719,11 @@ function EditorView({
           isDirty={isActiveDirty}
           isSaving={isActiveSaving}
           staleState={activePath ? stalePaths[activePath] ?? null : null}
-          typecheckStatus={editorTaskStatusToPanelStatus(editorTaskStates.typecheck, typecheckState.status)}
-          lintStatus={editorTaskStatusToPanelStatus(editorTaskStates.lint, lintState.status)}
-          problemCount={projectDiagnostics.length}
-          onRunTypecheck={runProjectTypecheck || runEditorTerminalTask ? handleRunTypecheck : undefined}
-          onRunLint={runProjectLint || runEditorTerminalTask ? handleRunLint : undefined}
-          editorTasks={runEditorTerminalTask ? editorTasks : undefined}
-          editorTaskStatusById={editorTaskStatusById}
-          onRunEditorTask={runEditorTerminalTask ? handleRunEditorTask : undefined}
-          formatStatus={formatStatus.status}
-          formatStatusMessage={'message' in formatStatus ? formatStatus.message ?? null : null}
-          onFormatDocument={formatProjectDocument ? handleFormatActive : undefined}
-          formatOnSave={formatOnSave}
-          onToggleFormatOnSave={formatProjectDocument ? handleToggleFormatOnSave : undefined}
           onSave={() => {
             handleSaveActive()
           }}
           onRevert={revertActive}
-          dirtyCount={dirtyPaths.size}
-          onSaveAll={openTabs.length > 0 ? handleSaveAll : undefined}
-          onCloseOthers={openTabs.length > 1 ? handleCloseOthers : undefined}
-          onCloseSaved={openTabs.length > 0 ? handleCloseSaved : undefined}
-          preferences={editorPreferences}
-          onPreferencesChange={setEditorPreferences}
+          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           pathActions={activePathActions}
         />
 
@@ -1792,12 +1798,23 @@ function EditorView({
                     isDirty={isActiveDirty}
                     isSaving={isActiveSaving}
                     staleState={activePath ? stalePaths[activePath] ?? null : null}
-                    diagnosticCount={activeDiagnostics.length}
+                    diagnosticCount={projectDiagnostics.length}
+                    problemsBusy={
+                      typecheckState.status === 'running' ||
+                      lintState.status === 'running' ||
+                      Object.values(editorTaskStates).some((task) => task.status === 'running')
+                    }
+                    problemsPeekOpen={problemsPeekOpen}
+                    onToggleProblemsPeek={() => setProblemsPeekOpen((prev) => !prev)}
                     gitStatus={activeGitStatus}
                     documentSettings={
                       activeResource?.kind === 'text' ? activeResource.documentSettings : null
                     }
                     byteLength={activeResource?.byteLength}
+                    preferences={editorPreferences}
+                    onPreferencesChange={setEditorPreferences}
+                    preferencesOpen={preferencesPopoverOpen}
+                    onPreferencesOpenChange={setPreferencesPopoverOpen}
                   />
                 ) : (
                   <PreviewStatusBar
@@ -1813,13 +1830,19 @@ function EditorView({
             <EditorEmptyState loadingPath={pendingFilePath} projectLabel={projectLabel} />
           )}
         </div>
-        <ProblemsPanel
+        <ProblemsPeek
+          open={problemsPeekOpen}
+          onOpenChange={setProblemsPeekOpen}
           typecheckState={typecheckState}
           lintState={lintState}
           editorTaskStates={Object.values(editorTaskStates)}
           formatStatus={formatStatus}
-          onRunTypecheck={runProjectTypecheck || runEditorTerminalTask ? handleRunTypecheck : undefined}
-          onRunLint={runProjectLint || runEditorTerminalTask ? handleRunLint : undefined}
+          onRunTypecheck={
+            runProjectTypecheck || runEditorTerminalTask ? handleRunTypecheck : undefined
+          }
+          onRunLint={
+            runProjectLint || runEditorTerminalTask ? handleRunLint : undefined
+          }
           onOpenAtLine={handleOpenAtLine}
         />
       </section>
@@ -1844,6 +1867,53 @@ function EditorView({
         onOpenFile={handleOpenQuickFile}
         onGoToLine={handleGoToActiveLine}
         onCloseFocus={focusEditorView}
+      />
+      <EditorCommandPalette
+        open={commandPaletteOpen}
+        onOpenChange={setCommandPaletteOpen}
+        onQuickOpen={() => setNavigationMode('quick-open')}
+        onGoToLine={activePath ? () => setNavigationMode('go-line') : undefined}
+        onGoToSymbol={isActiveText ? handleOpenSymbolNavigation : undefined}
+        onGoToDefinition={isActiveText ? handleGoToDefinition : undefined}
+        onFindReferences={isActiveText ? handleFindReferences : undefined}
+        onOpenGitChanges={activeGitStatus ? handleOpenActiveGitChanges : undefined}
+        activeGitChangeCount={activeGitChangeCount}
+        onRunTypecheck={
+          runProjectTypecheck || runEditorTerminalTask ? handleRunTypecheck : undefined
+        }
+        onRunLint={runProjectLint || runEditorTerminalTask ? handleRunLint : undefined}
+        typecheckRunning={
+          editorTaskStatusToPanelStatus(editorTaskStates.typecheck, typecheckState.status) ===
+          'running'
+        }
+        lintRunning={
+          editorTaskStatusToPanelStatus(editorTaskStates.lint, lintState.status) === 'running'
+        }
+        problemCount={projectDiagnostics.length}
+        onFormatDocument={formatProjectDocument ? handleFormatActive : undefined}
+        formatRunning={formatStatus.status === 'running'}
+        formatOnSave={formatOnSave}
+        onToggleFormatOnSave={formatProjectDocument ? handleToggleFormatOnSave : undefined}
+        dirtyCount={dirtyPaths.size}
+        onSaveAll={openTabs.length > 0 ? handleSaveAll : undefined}
+        onCloseSaved={openTabs.length > 0 ? handleCloseSaved : undefined}
+        onCloseOthers={openTabs.length > 1 ? handleCloseOthers : undefined}
+        hasActiveSelection={activeHasSelection}
+        agentBusy={agentContextStatus === 'sending'}
+        onAskAgentAboutSelection={
+          onSendEditorContextToAgent && isActiveText
+            ? handleAskAgentAboutSelection
+            : undefined
+        }
+        onFixActiveFileWithAgent={
+          onSendEditorContextToAgent && isActiveText
+            ? handleFixActiveFileWithAgent
+            : undefined
+        }
+        editorTasks={runEditorTerminalTask ? editorTasks : undefined}
+        editorTaskStatusById={editorTaskStatusById}
+        onRunEditorTask={runEditorTerminalTask ? handleRunEditorTask : undefined}
+        onOpenPreferences={() => setPreferencesPopoverOpen(true)}
       />
       <RenameFileDialog
         open={!!renameTarget}
@@ -2103,204 +2173,6 @@ function PreviewMeta({ label, value }: { label: string; value: string }) {
         {value}
       </div>
     </div>
-  )
-}
-
-function ProblemsPanel({
-  typecheckState,
-  lintState,
-  editorTaskStates,
-  formatStatus,
-  onRunTypecheck,
-  onRunLint,
-  onOpenAtLine,
-}: {
-  typecheckState: TypecheckPanelState
-  lintState: LintPanelState
-  editorTaskStates: EditorTaskRunState[]
-  formatStatus: FormatStatus
-  onRunTypecheck?: () => void
-  onRunLint?: () => void
-  onOpenAtLine: (path: string, line: number, column: number) => void
-}) {
-  if (
-    typecheckState.status === 'idle' &&
-    lintState.status === 'idle' &&
-    editorTaskStates.length === 0 &&
-    formatStatus.status === 'idle' &&
-    !onRunTypecheck &&
-    !onRunLint
-  ) {
-    return null
-  }
-
-  const typecheckDiagnostics = typecheckState.response?.diagnostics ?? []
-  const lintDiagnostics = lintState.response?.diagnostics ?? []
-  const editorTaskDiagnostics = editorTaskStates.flatMap((task) => task.diagnostics)
-  const diagnostics = [...typecheckDiagnostics, ...lintDiagnostics, ...editorTaskDiagnostics]
-  const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length
-  const warningCount = diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length
-
-  const summaryParts: string[] = []
-  if (typecheckState.status === 'running') summaryParts.push('Typecheck running')
-  if (lintState.status === 'running') summaryParts.push('Lint running')
-  for (const task of editorTaskStates) {
-    if (task.status === 'running') summaryParts.push(`${task.label} running`)
-    if (task.status === 'failed' && task.message) summaryParts.push(task.message)
-    if (task.status === 'passed' && task.message && diagnostics.length === 0) {
-      summaryParts.push(task.message)
-    }
-  }
-  if (formatStatus.status === 'running') summaryParts.push('Formatting')
-  if (formatStatus.status === 'failed') summaryParts.push(formatStatus.message)
-  if (formatStatus.status === 'formatted' && formatStatus.message) summaryParts.push(formatStatus.message)
-  if (typecheckState.status === 'error') summaryParts.push(typecheckState.error)
-  if (lintState.status === 'error') summaryParts.push(lintState.error)
-  if (typecheckState.response?.status === 'unavailable' && typecheckState.response.message) {
-    summaryParts.push(typecheckState.response.message)
-  }
-  if (lintState.response?.status === 'unavailable' && lintState.response.message) {
-    summaryParts.push(lintState.response.message)
-  }
-  if (diagnostics.length > 0) {
-    summaryParts.push(
-      `${errorCount} error${errorCount === 1 ? '' : 's'} · ${warningCount} warning${warningCount === 1 ? '' : 's'}`,
-    )
-  }
-  if (summaryParts.length === 0) summaryParts.push('No problems')
-  const summary = summaryParts.join(' · ')
-
-  const truncated = !!(
-    typecheckState.response?.truncated ||
-    lintState.response?.truncated ||
-    editorTaskStates.some((task) => task.truncated)
-  )
-
-  const hasFailure =
-    diagnostics.length > 0 ||
-    typecheckState.status === 'error' ||
-    lintState.status === 'error' ||
-    editorTaskStates.some((task) => task.status === 'failed') ||
-    formatStatus.status === 'failed'
-
-  return (
-    <aside
-      aria-label="Problems"
-      className="max-h-48 shrink-0 border-t border-border bg-secondary/10"
-      data-testid="problems-panel"
-    >
-      <div className="flex h-8 items-center justify-between gap-3 border-b border-border/70 px-3">
-        <div className="flex min-w-0 items-center gap-2">
-          {hasFailure ? (
-            <XCircle className="h-3.5 w-3.5 text-destructive" aria-hidden="true" />
-          ) : (
-            <CheckCircle2 className="h-3.5 w-3.5 text-success" aria-hidden="true" />
-          )}
-          <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Problems
-          </span>
-          <span className="truncate text-[11px] text-muted-foreground">{summary}</span>
-          {truncated ? (
-            <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning">
-              Truncated
-            </span>
-          ) : null}
-        </div>
-        <div className="flex items-center gap-1">
-          {onRunLint ? (
-            <Button
-              className="h-6 gap-1 rounded px-2 text-[11px]"
-              disabled={lintState.status === 'running'}
-              onClick={onRunLint}
-              size="sm"
-              type="button"
-              variant="ghost"
-            >
-              <Sparkles className="h-3 w-3" aria-hidden="true" />
-              {lintState.status === 'running' ? 'Linting' : 'Lint'}
-            </Button>
-          ) : null}
-          {onRunTypecheck ? (
-            <Button
-              className="h-6 gap-1 rounded px-2 text-[11px]"
-              disabled={typecheckState.status === 'running'}
-              onClick={onRunTypecheck}
-              size="sm"
-              type="button"
-              variant="ghost"
-            >
-              <Play className="h-3 w-3" aria-hidden="true" />
-              {typecheckState.status === 'running' ? 'Running' : 'Typecheck'}
-            </Button>
-          ) : null}
-        </div>
-      </div>
-      {diagnostics.length > 0 ? (
-        <div className="max-h-40 overflow-auto py-1 scrollbar-thin">
-          {diagnostics.map((diagnostic, index) => (
-            <ProblemRow
-              diagnostic={diagnostic}
-              index={index}
-              key={`${diagnostic.source}:${diagnostic.path ?? 'project'}:${diagnostic.line ?? 0}:${diagnostic.column ?? 0}:${diagnostic.code ?? index}`}
-              onOpenAtLine={onOpenAtLine}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="px-3 py-3 text-[11px] text-muted-foreground">
-          {typecheckState.status === 'idle' && lintState.status === 'idle'
-            ? 'Run typecheck or lint to populate project diagnostics.'
-            : summary}
-        </div>
-      )}
-      {typecheckState.response?.lspServers.length ? (
-        <div className="border-t border-border/70 px-3 py-1.5 text-[10px] text-muted-foreground">
-          LSP servers: {typecheckState.response.lspServers.filter((server) => server.available).length}/
-          {typecheckState.response.lspServers.length} available
-        </div>
-      ) : null}
-    </aside>
-  )
-}
-
-function ProblemRow({
-  diagnostic,
-  index,
-  onOpenAtLine,
-}: {
-  diagnostic: ProjectDiagnosticDto
-  index: number
-  onOpenAtLine: (path: string, line: number, column: number) => void
-}) {
-  const canOpen = !!diagnostic.path && !!diagnostic.line
-  const location = diagnostic.path
-    ? `${diagnostic.path}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ''}`
-    : 'Project'
-
-  return (
-    <button
-      className="grid w-full grid-cols-[72px_minmax(120px,220px)_1fr] items-start gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-muted/40 disabled:cursor-default disabled:hover:bg-transparent"
-      disabled={!canOpen}
-      onClick={() => {
-        if (diagnostic.path && diagnostic.line) {
-          onOpenAtLine(diagnostic.path, diagnostic.line, diagnostic.column ?? 1)
-        }
-      }}
-      type="button"
-    >
-      <span className={diagnostic.severity === 'error' ? 'text-destructive' : 'text-warning'}>
-        {diagnostic.severity}
-      </span>
-      <span className="truncate font-mono text-muted-foreground" title={location}>
-        {location}
-      </span>
-      <span className="min-w-0 text-foreground/85">
-        {diagnostic.code ? (
-          <span className="mr-1 font-mono text-muted-foreground">{diagnostic.code}</span>
-        ) : null}
-        {diagnostic.message || `Diagnostic ${index + 1}`}
-      </span>
-    </button>
   )
 }
 

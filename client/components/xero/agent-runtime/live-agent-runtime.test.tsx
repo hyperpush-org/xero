@@ -210,6 +210,52 @@ describe('useHistoricalConversationTurns', () => {
     })
   })
 
+  it('suppresses history fetched before active run metadata arrives during stream attach', async () => {
+    const transcript = makeTranscriptWithHandoff()
+    const { adapter, getSessionTranscript } = makeAdapter(transcript)
+    const { result, rerender } = renderHook(
+      ({
+        activeRunId,
+        runtimeStreamStatus,
+      }: {
+        activeRunId: string | null
+        runtimeStreamStatus: AgentPaneView['runtimeStreamStatus']
+      }) =>
+        useHistoricalConversationTurns(
+          makeAgentPane({
+            activeRunId,
+            runtimeStreamStatus,
+          }),
+          adapter,
+        ),
+      { initialProps: { activeRunId: null, runtimeStreamStatus: 'idle' as const } },
+    )
+
+    await waitFor(() => {
+      const includesActiveRunHistory = result.current?.some(
+        (turn) => turn.kind === 'message' && turn.text === 'continuation in fresh run',
+      )
+      expect(includesActiveRunHistory).toBe(true)
+    })
+
+    rerender({ activeRunId: 'run-B', runtimeStreamStatus: 'replaying' })
+
+    expect(result.current).toBeNull()
+    expect(getSessionTranscript).toHaveBeenCalledTimes(1)
+
+    rerender({ activeRunId: 'run-B', runtimeStreamStatus: 'complete' })
+
+    await waitFor(() => {
+      expect(getSessionTranscript).toHaveBeenCalledTimes(2)
+    })
+    await waitFor(() => {
+      const includesActiveRunHistory = result.current?.some(
+        (turn) => turn.kind === 'message' && turn.text === 'continuation in fresh run',
+      )
+      expect(includesActiveRunHistory).toBe(false)
+    })
+  })
+
   it('defers transcript fetches while a prompt or live runtime stream is active', async () => {
     const transcript = makeTranscriptWithHandoff()
     const { adapter, getSessionTranscript } = makeAdapter(transcript)

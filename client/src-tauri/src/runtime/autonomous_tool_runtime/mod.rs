@@ -49,9 +49,10 @@ use super::autonomous_skill_runtime::{
 use crate::{
     commands::{
         browser::load_browser_control_settings, default_soul_settings, load_soul_settings,
-        BranchSummaryDto, BrowserControlPreferenceDto, CommandError, CommandResult,
-        RepositoryDiffScope, RepositoryStatusEntryDto, ResolvedAgentToolApplicationStyleDto,
-        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlStateDto, SoulSettingsDto,
+        BranchSummaryDto, BrowserControlPreferenceDto, CommandError, CommandErrorClass,
+        CommandResult, RepositoryDiffScope, RepositoryStatusEntryDto,
+        ResolvedAgentToolApplicationStyleDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
+        RuntimeRunControlStateDto, SoulSettingsDto,
     },
     db::project_store,
     runtime::redaction::find_prohibited_persistence_content,
@@ -122,6 +123,9 @@ pub use workspace_index::{
 };
 
 pub const AUTONOMOUS_TOOL_READ: &str = "read";
+pub const AUTONOMOUS_TOOL_READ_MANY: &str = "read_many";
+pub const AUTONOMOUS_TOOL_RESULT_PAGE: &str = "result_page";
+pub const AUTONOMOUS_TOOL_STAT: &str = "stat";
 pub const AUTONOMOUS_TOOL_SEARCH: &str = "search";
 pub const AUTONOMOUS_TOOL_FIND: &str = "find";
 pub const AUTONOMOUS_TOOL_GIT_STATUS: &str = "git_status";
@@ -131,10 +135,17 @@ pub const AUTONOMOUS_TOOL_HARNESS_RUNNER: &str = "harness_runner";
 pub const AUTONOMOUS_TOOL_EDIT: &str = "edit";
 pub const AUTONOMOUS_TOOL_WRITE: &str = "write";
 pub const AUTONOMOUS_TOOL_PATCH: &str = "patch";
+pub const AUTONOMOUS_TOOL_COPY: &str = "copy";
+pub const AUTONOMOUS_TOOL_FS_TRANSACTION: &str = "fs_transaction";
+pub const AUTONOMOUS_TOOL_JSON_EDIT: &str = "json_edit";
+pub const AUTONOMOUS_TOOL_TOML_EDIT: &str = "toml_edit";
+pub const AUTONOMOUS_TOOL_YAML_EDIT: &str = "yaml_edit";
 pub const AUTONOMOUS_TOOL_DELETE: &str = "delete";
 pub const AUTONOMOUS_TOOL_RENAME: &str = "rename";
 pub const AUTONOMOUS_TOOL_MKDIR: &str = "mkdir";
 pub const AUTONOMOUS_TOOL_LIST: &str = "list";
+pub const AUTONOMOUS_TOOL_LIST_TREE: &str = "list_tree";
+pub const AUTONOMOUS_TOOL_DIRECTORY_DIGEST: &str = "directory_digest";
 pub const AUTONOMOUS_TOOL_HASH: &str = "file_hash";
 pub const AUTONOMOUS_TOOL_COMMAND: &str = "command";
 pub const AUTONOMOUS_TOOL_COMMAND_SESSION_START: &str = "command_session_start";
@@ -194,6 +205,9 @@ const DEFAULT_SUBAGENT_MAX_DELEGATED_COST_MICROS: u64 = 250_000;
 
 const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
+    AUTONOMOUS_TOOL_READ_MANY,
+    AUTONOMOUS_TOOL_RESULT_PAGE,
+    AUTONOMOUS_TOOL_STAT,
     AUTONOMOUS_TOOL_SEARCH,
     AUTONOMOUS_TOOL_FIND,
     AUTONOMOUS_TOOL_GIT_STATUS,
@@ -206,12 +220,19 @@ const TOOL_ACCESS_CORE_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_AGENT_COORDINATION,
     AUTONOMOUS_TOOL_TODO,
     AUTONOMOUS_TOOL_LIST,
+    AUTONOMOUS_TOOL_LIST_TREE,
+    AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
     AUTONOMOUS_TOOL_HASH,
 ];
 const TOOL_ACCESS_MUTATION_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_EDIT,
     AUTONOMOUS_TOOL_WRITE,
     AUTONOMOUS_TOOL_PATCH,
+    AUTONOMOUS_TOOL_COPY,
+    AUTONOMOUS_TOOL_FS_TRANSACTION,
+    AUTONOMOUS_TOOL_JSON_EDIT,
+    AUTONOMOUS_TOOL_TOML_EDIT,
+    AUTONOMOUS_TOOL_YAML_EDIT,
     AUTONOMOUS_TOOL_DELETE,
     AUTONOMOUS_TOOL_RENAME,
     AUTONOMOUS_TOOL_MKDIR,
@@ -247,6 +268,9 @@ const TOOL_ACCESS_COMMAND_MUTATING_TOOLS: &[&str] =
 const TOOL_ACCESS_COMMAND_SESSION_TOOLS: &[&str] = &[AUTONOMOUS_TOOL_COMMAND_SESSION];
 const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
+    AUTONOMOUS_TOOL_READ_MANY,
+    AUTONOMOUS_TOOL_RESULT_PAGE,
+    AUTONOMOUS_TOOL_STAT,
     AUTONOMOUS_TOOL_SEARCH,
     AUTONOMOUS_TOOL_FIND,
     AUTONOMOUS_TOOL_GIT_STATUS,
@@ -257,6 +281,8 @@ const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
     AUTONOMOUS_TOOL_LIST,
+    AUTONOMOUS_TOOL_LIST_TREE,
+    AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
     AUTONOMOUS_TOOL_HASH,
     AUTONOMOUS_TOOL_COMMAND_PROBE,
     AUTONOMOUS_TOOL_CODE_INTEL,
@@ -266,6 +292,9 @@ const TOOL_ACCESS_REPOSITORY_RECON_TOOLS: &[&str] = &[
 ];
 const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_READ,
+    AUTONOMOUS_TOOL_READ_MANY,
+    AUTONOMOUS_TOOL_RESULT_PAGE,
+    AUTONOMOUS_TOOL_STAT,
     AUTONOMOUS_TOOL_SEARCH,
     AUTONOMOUS_TOOL_FIND,
     AUTONOMOUS_TOOL_GIT_STATUS,
@@ -277,6 +306,8 @@ const TOOL_ACCESS_PLANNING_TOOLS: &[&str] = &[
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
     AUTONOMOUS_TOOL_WORKSPACE_INDEX,
     AUTONOMOUS_TOOL_LIST,
+    AUTONOMOUS_TOOL_LIST_TREE,
+    AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
     AUTONOMOUS_TOOL_HASH,
     AUTONOMOUS_TOOL_TODO,
 ];
@@ -562,6 +593,7 @@ pub fn tool_access_group_descriptors() -> Vec<AutonomousToolAccessGroup> {
                 .map(|tool| (*tool).to_owned())
                 .collect(),
             risk_class: definition.risk_class.into(),
+            tool_summaries: Vec::new(),
         })
         .collect()
 }
@@ -1531,11 +1563,16 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
     }
     match tool_name {
         AUTONOMOUS_TOOL_READ
+        | AUTONOMOUS_TOOL_READ_MANY
+        | AUTONOMOUS_TOOL_RESULT_PAGE
+        | AUTONOMOUS_TOOL_STAT
         | AUTONOMOUS_TOOL_SEARCH
         | AUTONOMOUS_TOOL_FIND
         | AUTONOMOUS_TOOL_GIT_STATUS
         | AUTONOMOUS_TOOL_GIT_DIFF
         | AUTONOMOUS_TOOL_LIST
+        | AUTONOMOUS_TOOL_LIST_TREE
+        | AUTONOMOUS_TOOL_DIRECTORY_DIGEST
         | AUTONOMOUS_TOOL_HASH
         | AUTONOMOUS_TOOL_HARNESS_RUNNER
         | AUTONOMOUS_TOOL_CODE_INTEL
@@ -1558,6 +1595,11 @@ pub fn tool_effect_class(tool_name: &str) -> AutonomousToolEffectClass {
         AUTONOMOUS_TOOL_WRITE
         | AUTONOMOUS_TOOL_EDIT
         | AUTONOMOUS_TOOL_PATCH
+        | AUTONOMOUS_TOOL_COPY
+        | AUTONOMOUS_TOOL_FS_TRANSACTION
+        | AUTONOMOUS_TOOL_JSON_EDIT
+        | AUTONOMOUS_TOOL_TOML_EDIT
+        | AUTONOMOUS_TOOL_YAML_EDIT
         | AUTONOMOUS_TOOL_RENAME
         | AUTONOMOUS_TOOL_MKDIR
         | AUTONOMOUS_TOOL_NOTEBOOK_EDIT => AutonomousToolEffectClass::Write,
@@ -1693,6 +1735,103 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
             &[
                 "Read src/lib.rs with line hashes before editing.",
                 "Inspect an image preview in the imported repo.",
+            ],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_READ_MANY,
+            "core",
+            "Read a bounded ordered set of small repo-relative files with per-file errors and total byte caps.",
+            &["file", "inspect", "read", "batch", "line_hash"],
+            &[
+                "paths",
+                "mode",
+                "startLine",
+                "lineCount",
+                "maxBytesPerFile",
+                "maxTotalBytes",
+                "includeLineHashes",
+            ],
+            &[
+                "Read package.json and tsconfig.json in one bounded call.",
+                "Read several small source files with line hashes before planning edits.",
+            ],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_RESULT_PAGE,
+            "core",
+            "Read a bounded continuation slice from a tool artifact stored under this project's app-data tool-artifacts directory.",
+            &["artifact", "continuation", "pagination", "read", "app_data"],
+            &["artifactPath", "byteOffset", "maxBytes"],
+            &[
+                "Read the next slice from a command, patch, MCP, or manifest artifact path.",
+                "Use nextByteOffset from result_page to continue a large artifact without rerunning the original tool.",
+            ],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_STAT,
+            "core",
+            "Inspect repo-relative path metadata without reading file content, including missing paths, symlinks, optional small-file hashes, and optional git status.",
+            &[
+                "file",
+                "metadata",
+                "stat",
+                "exists",
+                "symlink",
+                "permissions",
+                "hash",
+                "git",
+            ],
+            &[
+                "path",
+                "followSymlinks",
+                "includeGitStatus",
+                "includeHash",
+                "strict",
+            ],
+            &[
+                "Check whether a path exists before deciding to read it.",
+                "Inspect file size and hash without loading content into the model.",
+            ],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_LIST_TREE,
+            "core",
+            "Return a compact deterministic repo-relative directory tree with depth, entry, ignore, and permission omission counts.",
+            &["directory", "tree", "inspect", "list", "git"],
+            &[
+                "path",
+                "maxDepth",
+                "maxEntries",
+                "includeGlobs",
+                "excludeGlobs",
+                "includeGitStatus",
+                "showOmitted",
+            ],
+            &[
+                "Show a compact tree under src.",
+                "Map a directory with git status and omission counts before planning edits.",
+            ],
+            "observe",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+            "core",
+            "Compute a deterministic digest for a repo-relative directory or file set with omission counts and a compact manifest.",
+            &["directory", "digest", "hash", "guard", "manifest"],
+            &[
+                "path",
+                "includeGlobs",
+                "excludeGlobs",
+                "maxFiles",
+                "hashMode",
+            ],
+            &[
+                "Compute a metadata-only digest for src before a recursive operation.",
+                "Compute a content-hash digest for a generated file set.",
             ],
             "observe",
         ),
@@ -2076,6 +2215,95 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "Preview a multi-file patch before writing.",
                 "Replace an exact import statement with an expected hash.",
             ],
+            "write",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_COPY,
+            "mutation",
+            "Copy a repo-relative file or directory with preview and hash/digest guards.",
+            &["file", "copy", "directory", "preview", "hash_guard"],
+            &[
+                "from",
+                "to",
+                "recursive",
+                "expectedSourceHash",
+                "expectedSourceDigest",
+                "overwrite",
+                "expectedTargetHash",
+                "preview",
+            ],
+            &["Preview a guarded copy before writing."],
+            "write",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_FS_TRANSACTION,
+            "mutation",
+            "Apply a guarded multi-step filesystem transaction with preview, validation, and rollback attempts.",
+            &[
+                "file",
+                "transaction",
+                "multi_file",
+                "preview",
+                "hash_guard",
+                "rollback",
+            ],
+            &[
+                "operations",
+                "preview",
+                "stopOnFirstError",
+                "expectedHash",
+                "expectedDigest",
+                "expectedSourceDigest",
+            ],
+            &[
+                "Preview a create/edit/rename plan before writing.",
+                "Apply multiple guarded file mutations with rollback attempts on partial failure.",
+            ],
+            "write",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_JSON_EDIT,
+            "mutation",
+            "Apply parser-backed JSON edits with preview and expected-hash guards.",
+            &["file", "json", "structured_edit", "preview", "hash_guard"],
+            &[
+                "path",
+                "operations",
+                "expectedHash",
+                "formattingMode",
+                "preview",
+            ],
+            &["Set or delete a package.json key without string search/replace."],
+            "write",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_TOML_EDIT,
+            "mutation",
+            "Apply parser-backed TOML edits with preview and expected-hash guards.",
+            &["file", "toml", "structured_edit", "preview", "hash_guard"],
+            &[
+                "path",
+                "operations",
+                "expectedHash",
+                "formattingMode",
+                "preview",
+            ],
+            &["Set a Cargo.toml package or dependency key with parser validation."],
+            "write",
+        ),
+        catalog_entry(
+            AUTONOMOUS_TOOL_YAML_EDIT,
+            "mutation",
+            "Apply parser-backed YAML edits with preview and expected-hash guards.",
+            &["file", "yaml", "structured_edit", "preview", "hash_guard"],
+            &[
+                "path",
+                "operations",
+                "expectedHash",
+                "formattingMode",
+                "preview",
+            ],
+            &["Set a workflow YAML field with parser validation."],
             "write",
         ),
         catalog_entry(
@@ -3442,6 +3670,9 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<AutonomousToolResult> {
         match request {
             AutonomousToolRequest::Read(request) => self.read(request),
+            AutonomousToolRequest::ReadMany(request) => self.read_many(request),
+            AutonomousToolRequest::ResultPage(request) => self.result_page(request),
+            AutonomousToolRequest::Stat(request) => self.stat(request),
             AutonomousToolRequest::Search(request) => self.search(request),
             AutonomousToolRequest::Find(request) => self.find(request),
             AutonomousToolRequest::GitStatus(request) => self.git_status(request),
@@ -3453,10 +3684,29 @@ impl AutonomousToolRuntime {
             AutonomousToolRequest::Edit(request) => self.edit(request),
             AutonomousToolRequest::Write(request) => self.write(request),
             AutonomousToolRequest::Patch(request) => self.patch(request),
+            AutonomousToolRequest::Copy(request) => self.copy(request),
+            AutonomousToolRequest::FsTransaction(request) => self.fs_transaction(request),
+            AutonomousToolRequest::JsonEdit(request) => self.structured_edit(
+                request,
+                AutonomousStructuredEditFormat::Json,
+                AUTONOMOUS_TOOL_JSON_EDIT,
+            ),
+            AutonomousToolRequest::TomlEdit(request) => self.structured_edit(
+                request,
+                AutonomousStructuredEditFormat::Toml,
+                AUTONOMOUS_TOOL_TOML_EDIT,
+            ),
+            AutonomousToolRequest::YamlEdit(request) => self.structured_edit(
+                request,
+                AutonomousStructuredEditFormat::Yaml,
+                AUTONOMOUS_TOOL_YAML_EDIT,
+            ),
             AutonomousToolRequest::Delete(request) => self.delete(request),
             AutonomousToolRequest::Rename(request) => self.rename(request),
             AutonomousToolRequest::Mkdir(request) => self.mkdir(request),
             AutonomousToolRequest::List(request) => self.list(request),
+            AutonomousToolRequest::ListTree(request) => self.list_tree(request),
+            AutonomousToolRequest::DirectoryDigest(request) => self.directory_digest(request),
             AutonomousToolRequest::Hash(request) => self.hash(request),
             AutonomousToolRequest::Command(request) => self.command(request),
             AutonomousToolRequest::CommandSessionStart(request) => {
@@ -3724,6 +3974,7 @@ impl AutonomousToolRuntime {
             AutonomousToolAccessAction::List => AutonomousToolAccessOutput {
                 action: "list".into(),
                 granted_tools: Vec::new(),
+                granted_tool_details: Vec::new(),
                 denied_tools: Vec::new(),
                 available_groups: self.available_tool_access_groups(),
                 available_tool_packs: self.available_tool_pack_manifests(),
@@ -3775,9 +4026,16 @@ impl AutonomousToolRuntime {
                     }
                 }
 
+                let granted_tools = requested.into_iter().collect::<Vec<_>>();
+                let granted_tool_details = granted_tools
+                    .iter()
+                    .map(|tool| self.tool_access_tool_summary(tool))
+                    .collect::<Vec<_>>();
+
                 AutonomousToolAccessOutput {
                     action: "request".into(),
-                    granted_tools: requested.into_iter().collect(),
+                    granted_tools,
+                    granted_tool_details,
                     denied_tools: denied.into_iter().collect(),
                     available_groups: self.available_tool_access_groups(),
                     available_tool_packs: self.available_tool_pack_manifests(),
@@ -3805,6 +4063,11 @@ impl AutonomousToolRuntime {
                 group.tools.retain(|tool| {
                     self.tool_available_by_runtime(tool) && self.tool_allowed_by_active_agent(tool)
                 });
+                group.tool_summaries = group
+                    .tools
+                    .iter()
+                    .map(|tool| self.tool_access_tool_summary(tool))
+                    .collect();
                 if group.tools.is_empty() {
                     return None;
                 }
@@ -3819,6 +4082,31 @@ impl AutonomousToolRuntime {
                 Some(group)
             })
             .collect()
+    }
+
+    fn tool_access_tool_summary(&self, tool: &str) -> AutonomousToolAccessToolSummary {
+        let risk_class = tool_catalog_metadata_for_tool(tool, self.skill_tool_enabled())
+            .and_then(|metadata| {
+                metadata
+                    .get("riskClass")
+                    .and_then(JsonValue::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .or_else(|| {
+                tool_catalog_activation_groups(tool)
+                    .first()
+                    .and_then(|group| tool_access_group_definition(group))
+                    .map(|definition| definition.risk_class.to_owned())
+            })
+            .unwrap_or_else(|| "unknown".into());
+        AutonomousToolAccessToolSummary {
+            tool_name: tool.to_owned(),
+            effect_class: tool_effect_class(tool).as_str().into(),
+            risk_class,
+            runtime_available: self.tool_available_by_runtime(tool),
+            allowed_for_agent: self.tool_allowed_by_active_agent(tool),
+            activation_groups: tool_catalog_activation_groups(tool),
+        }
     }
 
     fn tool_access_exposure_diagnostics(reason: Option<&str>) -> JsonValue {
@@ -4000,6 +4288,9 @@ impl AutonomousToolRuntime {
 #[serde(rename_all = "snake_case", tag = "tool", content = "input")]
 pub enum AutonomousToolRequest {
     Read(AutonomousReadRequest),
+    ReadMany(AutonomousReadManyRequest),
+    ResultPage(AutonomousResultPageRequest),
+    Stat(AutonomousStatRequest),
     Search(AutonomousSearchRequest),
     Find(AutonomousFindRequest),
     GitStatus(AutonomousGitStatusRequest),
@@ -4011,10 +4302,17 @@ pub enum AutonomousToolRequest {
     Edit(AutonomousEditRequest),
     Write(AutonomousWriteRequest),
     Patch(AutonomousPatchRequest),
+    Copy(AutonomousCopyRequest),
+    FsTransaction(AutonomousFsTransactionRequest),
+    JsonEdit(AutonomousStructuredEditRequest),
+    TomlEdit(AutonomousStructuredEditRequest),
+    YamlEdit(AutonomousStructuredEditRequest),
     Delete(AutonomousDeleteRequest),
     Rename(AutonomousRenameRequest),
     Mkdir(AutonomousMkdirRequest),
     List(AutonomousListRequest),
+    ListTree(AutonomousListTreeRequest),
+    DirectoryDigest(AutonomousDirectoryDigestRequest),
     #[serde(rename = "file_hash")]
     Hash(AutonomousHashRequest),
     Command(AutonomousCommandRequest),
@@ -4071,6 +4369,9 @@ impl AutonomousToolRequest {
     pub fn tool_name(&self) -> &'static str {
         match self {
             Self::Read(_) => AUTONOMOUS_TOOL_READ,
+            Self::ReadMany(_) => AUTONOMOUS_TOOL_READ_MANY,
+            Self::ResultPage(_) => AUTONOMOUS_TOOL_RESULT_PAGE,
+            Self::Stat(_) => AUTONOMOUS_TOOL_STAT,
             Self::Search(_) => AUTONOMOUS_TOOL_SEARCH,
             Self::Find(_) => AUTONOMOUS_TOOL_FIND,
             Self::GitStatus(_) => AUTONOMOUS_TOOL_GIT_STATUS,
@@ -4082,10 +4383,17 @@ impl AutonomousToolRequest {
             Self::Edit(_) => AUTONOMOUS_TOOL_EDIT,
             Self::Write(_) => AUTONOMOUS_TOOL_WRITE,
             Self::Patch(_) => AUTONOMOUS_TOOL_PATCH,
+            Self::Copy(_) => AUTONOMOUS_TOOL_COPY,
+            Self::FsTransaction(_) => AUTONOMOUS_TOOL_FS_TRANSACTION,
+            Self::JsonEdit(_) => AUTONOMOUS_TOOL_JSON_EDIT,
+            Self::TomlEdit(_) => AUTONOMOUS_TOOL_TOML_EDIT,
+            Self::YamlEdit(_) => AUTONOMOUS_TOOL_YAML_EDIT,
             Self::Delete(_) => AUTONOMOUS_TOOL_DELETE,
             Self::Rename(_) => AUTONOMOUS_TOOL_RENAME,
             Self::Mkdir(_) => AUTONOMOUS_TOOL_MKDIR,
             Self::List(_) => AUTONOMOUS_TOOL_LIST,
+            Self::ListTree(_) => AUTONOMOUS_TOOL_LIST_TREE,
+            Self::DirectoryDigest(_) => AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
             Self::Hash(_) => AUTONOMOUS_TOOL_HASH,
             Self::Command(_) => AUTONOMOUS_TOOL_COMMAND,
             Self::CommandSessionStart(_) => AUTONOMOUS_TOOL_COMMAND_SESSION_START,
@@ -4207,11 +4515,57 @@ pub struct AutonomousReadRequest {
     pub start_line: Option<usize>,
     pub line_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub around_pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byte_offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byte_count: Option<usize>,
     #[serde(default)]
     pub include_line_hashes: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousReadManyRequest {
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AutonomousReadMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes_per_file: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_bytes: Option<usize>,
+    #[serde(default)]
+    pub include_line_hashes: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousResultPageRequest {
+    pub artifact_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousStatRequest {
+    pub path: String,
+    #[serde(default)]
+    pub follow_symlinks: bool,
+    #[serde(default)]
+    pub include_git_status: bool,
+    #[serde(default)]
+    pub include_hash: bool,
+    #[serde(default)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4235,6 +4589,10 @@ pub struct AutonomousSearchRequest {
     pub context_lines: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<usize>,
+    #[serde(default)]
+    pub files_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -4251,9 +4609,15 @@ pub enum AutonomousReadMode {
 pub struct AutonomousFindRequest {
     pub pattern: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AutonomousFindMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -4299,6 +4663,8 @@ pub struct AutonomousEditRequest {
     pub start_line_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_line_hash: Option<String>,
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4306,6 +4672,14 @@ pub struct AutonomousEditRequest {
 pub struct AutonomousWriteRequest {
     pub path: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub create_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4341,12 +4715,162 @@ pub struct AutonomousPatchOperation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCopyRequest {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_target_hash: Option<String>,
+    #[serde(default)]
+    pub preview: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousFsTransactionAction {
+    #[default]
+    CreateFile,
+    ReplaceFile,
+    EditFile,
+    DeleteFile,
+    DeleteDirectory,
+    Rename,
+    Copy,
+    Mkdir,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionRequest {
+    pub operations: Vec<AutonomousFsTransactionOperation>,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub stop_on_first_error: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionOperation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub action: AutonomousFsTransactionAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
+    #[serde(default)]
+    pub replace_all: bool,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_target_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parents: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exist_ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousStructuredEditFormat {
+    Json,
+    Toml,
+    Yaml,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousStructuredEditFormattingMode {
+    Normalize,
+}
+
+impl Default for AutonomousStructuredEditFormattingMode {
+    fn default() -> Self {
+        Self::Normalize
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousStructuredEditAction {
+    Set,
+    Delete,
+    AppendUnique,
+    SortKeys,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousStructuredEditRequest {
+    pub path: String,
+    pub operations: Vec<AutonomousStructuredEditOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub formatting_mode: AutonomousStructuredEditFormattingMode,
+    #[serde(default)]
+    pub preview: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousStructuredEditOperation {
+    pub action: AutonomousStructuredEditAction,
+    pub pointer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousDeleteRequest {
     pub path: String,
     #[serde(default)]
     pub recursive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_digest: Option<String>,
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4356,12 +4880,24 @@ pub struct AutonomousRenameRequest {
     pub to_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_target_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousMkdirRequest {
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parents: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exist_ok: Option<bool>,
+    #[serde(default)]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4371,12 +4907,88 @@ pub struct AutonomousListRequest {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_by: Option<AutonomousListSortBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_direction: Option<AutonomousListSortDirection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousListSortBy {
+    Path,
+    Name,
+    Kind,
+    Size,
+    Modified,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousListSortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousListTreeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entries: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_globs: Vec<String>,
+    #[serde(default)]
+    pub include_git_status: bool,
+    #[serde(default)]
+    pub show_omitted: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousDirectoryDigestHashMode {
+    MetadataOnly,
+    ContentHash,
+    GitIndexAware,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousDirectoryDigestRequest {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_mode: Option<AutonomousDirectoryDigestHashMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousHashRequest {
     pub path: String,
+    #[serde(default)]
+    pub recursive: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_globs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files: Option<usize>,
+    #[serde(default)]
+    pub manifest: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5378,6 +5990,9 @@ pub struct AutonomousToolResult {
 )]
 pub enum AutonomousToolOutput {
     Read(AutonomousReadOutput),
+    ReadMany(AutonomousReadManyOutput),
+    ResultPage(AutonomousResultPageOutput),
+    Stat(AutonomousStatOutput),
     Search(AutonomousSearchOutput),
     Find(AutonomousFindOutput),
     GitStatus(AutonomousGitStatusOutput),
@@ -5389,10 +6004,17 @@ pub enum AutonomousToolOutput {
     Edit(AutonomousEditOutput),
     Write(AutonomousWriteOutput),
     Patch(AutonomousPatchOutput),
+    Copy(AutonomousCopyOutput),
+    FsTransaction(AutonomousFsTransactionOutput),
+    JsonEdit(AutonomousStructuredEditOutput),
+    TomlEdit(AutonomousStructuredEditOutput),
+    YamlEdit(AutonomousStructuredEditOutput),
     Delete(AutonomousDeleteOutput),
     Rename(AutonomousRenameOutput),
     Mkdir(AutonomousMkdirOutput),
     List(AutonomousListOutput),
+    ListTree(AutonomousListTreeOutput),
+    DirectoryDigest(AutonomousDirectoryDigestOutput),
     Hash(AutonomousHashOutput),
     Command(AutonomousCommandOutput),
     CommandSession(AutonomousCommandSessionOutput),
@@ -5421,11 +6043,22 @@ pub enum AutonomousToolOutput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousReadOutput {
     pub path: String,
+    pub path_kind: AutonomousStatKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
     pub start_line: usize,
     pub line_count: usize,
     pub total_lines: usize,
     pub truncated: bool,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_omitted_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_kind: Option<AutonomousReadContentKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5460,16 +6093,138 @@ pub struct AutonomousReadOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousReadManyError {
+    pub code: String,
+    pub class: CommandErrorClass,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl From<CommandError> for AutonomousReadManyError {
+    fn from(error: CommandError) -> Self {
+        Self {
+            code: error.code,
+            class: error.class,
+            message: error.message,
+            retryable: error.retryable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousReadManyItem {
+    pub path: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read: Option<AutonomousReadOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<AutonomousReadManyError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousReadManyOutput {
+    pub paths: Vec<String>,
+    pub results: Vec<AutonomousReadManyItem>,
+    pub total_files: usize,
+    pub ok_files: usize,
+    pub error_files: usize,
+    pub omitted_files: usize,
+    pub total_bytes: u64,
+    pub omitted_bytes: u64,
+    pub truncated: bool,
+    pub max_bytes_per_file: usize,
+    pub max_total_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousResultPageOutput {
+    pub artifact_path: String,
+    pub byte_offset: u64,
+    pub byte_count: usize,
+    pub total_bytes: u64,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_byte_offset: Option<u64>,
+    pub content: String,
+    pub encoding: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousStatKind {
+    File,
+    Directory,
+    Symlink,
+    Missing,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousStatPermissions {
+    pub readonly: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unix_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousStatOutput {
+    pub path: String,
+    pub path_kind: AutonomousStatKind,
+    pub exists: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<AutonomousStatPermissions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_omitted_reason: Option<String>,
+    #[serde(default)]
+    pub follow_symlinks: bool,
+    #[serde(default)]
+    pub include_git_status: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub git_status: Vec<RepositoryStatusEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousSearchOutput {
     pub query: String,
     pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<AutonomousSearchFileSummary>,
     pub matches: Vec<AutonomousSearchMatch>,
     pub scanned_files: usize,
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default)]
+    pub files_only: bool,
+    #[serde(default)]
+    pub returned_matches: usize,
+    #[serde(default)]
+    pub skipped_matches: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_matches: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_files: Option<usize>,
+    pub omissions: AutonomousSearchOmissions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
     #[serde(default)]
@@ -5490,12 +6245,76 @@ pub struct AutonomousSearchOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSearchFileSummary {
+    pub path: String,
+    pub match_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousSearchOmissions {
+    #[serde(default)]
+    pub ignored_directories: usize,
+    #[serde(default)]
+    pub filtered_files: usize,
+    #[serde(default)]
+    pub binary_files: usize,
+    #[serde(default)]
+    pub oversized_files: usize,
+    #[serde(default)]
+    pub unreadable_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousFindOutput {
     pub pattern: String,
     pub scope: Option<String>,
+    pub mode: AutonomousFindMode,
     pub matches: Vec<String>,
     pub scanned_files: usize,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(default)]
+    pub returned_matches: usize,
+    #[serde(default)]
+    pub skipped_matches: usize,
+    #[serde(default)]
+    pub file_count: usize,
+    #[serde(default)]
+    pub directory_count: usize,
+    #[serde(default)]
+    pub symlink_count: usize,
+    #[serde(default)]
+    pub other_count: usize,
+    pub omissions: AutonomousFindOmissions,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutonomousFindMode {
+    Glob,
+    Name,
+    Extension,
+    PathPrefix,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFindOmissions {
+    #[serde(default)]
+    pub ignored_directories: usize,
+    #[serde(default)]
+    pub depth_limited_directories: usize,
+    #[serde(default)]
+    pub permission_denied: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5577,6 +6396,19 @@ pub struct AutonomousToolAccessGroup {
     pub description: String,
     pub tools: Vec<String>,
     pub risk_class: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_summaries: Vec<AutonomousToolAccessToolSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousToolAccessToolSummary {
+    pub tool_name: String,
+    pub effect_class: String,
+    pub risk_class: String,
+    pub runtime_available: bool,
+    pub allowed_for_agent: bool,
+    pub activation_groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5584,6 +6416,8 @@ pub struct AutonomousToolAccessGroup {
 pub struct AutonomousToolAccessOutput {
     pub action: String,
     pub granted_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub granted_tool_details: Vec<AutonomousToolAccessToolSummary>,
     pub denied_tools: Vec<String>,
     pub available_groups: Vec<AutonomousToolAccessGroup>,
     #[serde(default)]
@@ -5602,6 +6436,10 @@ pub struct AutonomousEditOutput {
     pub start_line: usize,
     pub end_line: usize,
     pub replacement_len: usize,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5620,6 +6458,20 @@ pub struct AutonomousWriteOutput {
     pub path: String,
     pub created: bool,
     pub bytes_written: usize,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5636,12 +6488,17 @@ pub struct AutonomousPatchOutput {
     pub files: Vec<AutonomousPatchFileOutput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<AutonomousPatchFailure>,
+    pub rollback_status: AutonomousFsTransactionRollbackStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    #[serde(default)]
+    pub diff_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_ending: Option<AutonomousLineEnding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5657,8 +6514,27 @@ pub struct AutonomousPatchFileOutput {
     pub old_hash: String,
     pub new_hash: String,
     pub diff: String,
+    pub guard_status: AutonomousPatchGuardStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_ranges: Vec<AutonomousPatchChangedRange>,
     pub line_ending: AutonomousLineEnding,
     pub bom_preserved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousPatchGuardStatus {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_hashes: Vec<String>,
+    pub current_hash: String,
+    pub matched: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousPatchChangedRange {
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5673,10 +6549,189 @@ pub struct AutonomousPatchFailure {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCopyOmissions {
+    pub symlinks: usize,
+    pub existing_targets: usize,
+    pub unsupported: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCopyOperation {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_path: Option<String>,
+    pub to_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default)]
+    pub overwritten: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCopyOutput {
+    pub from_path: String,
+    pub to_path: String,
+    pub recursive: bool,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub overwritten: bool,
+    pub copied_files: usize,
+    pub copied_bytes: u64,
+    pub created_directories: usize,
+    pub source_kind: AutonomousStatKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_hash: Option<String>,
+    pub omitted: AutonomousCopyOmissions,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<AutonomousCopyOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionError {
+    pub code: String,
+    pub class: CommandErrorClass,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl From<CommandError> for AutonomousFsTransactionError {
+    fn from(error: CommandError) -> Self {
+        Self {
+            code: error.code,
+            class: error.class,
+            message: error.message,
+            retryable: error.retryable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionValidationSummary {
+    pub ok: bool,
+    pub validated_operations: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<AutonomousFsTransactionOperationResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionRollbackAttempt {
+    pub path: String,
+    pub action: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<AutonomousFsTransactionError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionRollbackStatus {
+    pub attempted: bool,
+    pub succeeded: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<AutonomousFsTransactionRollbackAttempt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionOperationResult {
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub action: AutonomousFsTransactionAction,
+    pub ok: bool,
+    pub status: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<AutonomousFsTransactionError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousFsTransactionOutput {
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    pub operation_count: usize,
+    pub validation: AutonomousFsTransactionValidationSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned_operations: Vec<AutonomousFsTransactionOperationResult>,
+    pub rollback_status: AutonomousFsTransactionRollbackStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<AutonomousFsTransactionOperationResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousStructuredEditOutput {
+    pub path: String,
+    pub format: AutonomousStructuredEditFormat,
+    pub operations_applied: usize,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    pub formatting_mode: AutonomousStructuredEditFormattingMode,
+    pub old_hash: String,
+    pub new_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    pub line_ending: AutonomousLineEnding,
+    pub bom_preserved: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_changes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousDeleteOutput {
     pub path: String,
     pub recursive: bool,
     pub existed: bool,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub deleted_count: usize,
+    #[serde(default)]
+    pub file_count: usize,
+    #[serde(default)]
+    pub directory_count: usize,
+    #[serde(default)]
+    pub symlink_count: usize,
+    #[serde(default)]
+    pub other_count: usize,
+    #[serde(default)]
+    pub bytes_estimated: u64,
+    #[serde(default)]
+    pub bytes_remaining: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5684,6 +6739,25 @@ pub struct AutonomousDeleteOutput {
 pub struct AutonomousRenameOutput {
     pub from_path: String,
     pub to_path: String,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    #[serde(default)]
+    pub overwritten: bool,
+    pub source_kind: AutonomousStatKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default)]
+    pub target_existed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<AutonomousStatKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5691,6 +6765,14 @@ pub struct AutonomousRenameOutput {
 pub struct AutonomousMkdirOutput {
     pub path: String,
     pub created: bool,
+    #[serde(default)]
+    pub applied: bool,
+    #[serde(default)]
+    pub preview: bool,
+    pub parents: bool,
+    pub exist_ok: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub created_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5699,6 +6781,8 @@ pub struct AutonomousListEntry {
     pub path: String,
     pub kind: String,
     pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5707,14 +6791,146 @@ pub struct AutonomousListOutput {
     pub path: String,
     pub entries: Vec<AutonomousListEntry>,
     pub truncated: bool,
+    pub max_depth: usize,
+    pub max_results: usize,
+    pub sort_by: AutonomousListSortBy,
+    pub sort_direction: AutonomousListSortDirection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub returned_entries: usize,
+    pub skipped_entries: usize,
+    pub file_count: usize,
+    pub directory_count: usize,
+    pub symlink_count: usize,
+    pub other_count: usize,
+    pub omitted: AutonomousListOmissions,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousListOmissions {
+    pub depth: usize,
+    pub entry_cap: usize,
+    pub ignored_directory: usize,
+    pub permission: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousListTreeOmissions {
+    pub depth: usize,
+    pub entry_cap: usize,
+    pub ignored_directory: usize,
+    pub permission: usize,
+    pub filtered: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousListTreeNode {
+    pub name: String,
+    pub path: String,
+    pub path_kind: AutonomousStatKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<AutonomousListTreeNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousListTreeOutput {
+    pub path: String,
+    pub root: AutonomousListTreeNode,
+    pub file_count: usize,
+    pub directory_count: usize,
+    pub symlink_count: usize,
+    pub other_count: usize,
+    pub max_depth: usize,
+    pub max_entries: usize,
+    pub truncated: bool,
+    pub omitted: AutonomousListTreeOmissions,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub git_status: Vec<RepositoryStatusEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousDirectoryDigestOmissions {
+    pub max_files: usize,
+    pub ignored_directory: usize,
+    pub permission: usize,
+    pub filtered: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousDirectoryDigestEntry {
+    pub path: String,
+    pub path_kind: AutonomousStatKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousDirectoryDigestOutput {
+    pub path: String,
+    pub digest: String,
+    pub algorithm: String,
+    pub hash_mode: AutonomousDirectoryDigestHashMode,
+    pub file_count: usize,
+    pub directory_count: usize,
+    pub symlink_count: usize,
+    pub other_count: usize,
+    pub total_bytes: u64,
+    pub max_files: usize,
+    pub truncated: bool,
+    pub omitted: AutonomousDirectoryDigestOmissions,
+    pub manifest: Vec<AutonomousDirectoryDigestEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutonomousHashOutput {
     pub path: String,
+    pub path_kind: AutonomousStatKind,
+    pub algorithm: String,
+    pub mode: String,
     pub sha256: String,
     pub bytes: u64,
+    pub file_count: usize,
+    pub max_files: usize,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<AutonomousHashFileEntry>,
+    pub omitted: AutonomousHashOmissions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHashFileEntry {
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousHashOmissions {
+    pub max_files: usize,
+    pub ignored_directory: usize,
+    pub permission: usize,
+    pub filtered: usize,
+    pub unsupported: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5722,6 +6938,7 @@ pub struct AutonomousHashOutput {
 pub struct AutonomousCommandOutput {
     pub argv: Vec<String>,
     pub cwd: String,
+    pub intent: String,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
     pub stdout_truncated: bool,
@@ -5732,8 +6949,26 @@ pub struct AutonomousCommandOutput {
     pub timed_out: bool,
     pub spawned: bool,
     pub policy: AutonomousCommandPolicyTrace,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<RepositoryStatusEntryDto>,
+    pub changed_files_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_artifact: Option<AutonomousCommandOutputArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_next_actions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxExecutionMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousCommandOutputArtifact {
+    pub path: String,
+    pub byte_count: usize,
+    pub stdout_bytes: usize,
+    pub stderr_bytes: usize,
+    pub redacted: bool,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6232,6 +7467,20 @@ pub struct AutonomousMcpOutput {
     pub capability_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_artifact: Option<AutonomousMcpResultArtifact>,
+    #[serde(default)]
+    pub result_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_original_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutonomousMcpResultArtifact {
+    pub id: String,
+    pub path: String,
+    pub byte_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6358,7 +7607,10 @@ pub struct AutonomousToolSearchMatch {
     pub schema_fields: Vec<String>,
     pub examples: Vec<String>,
     pub risk_class: String,
+    pub effect_class: String,
     pub runtime_available: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub why_matched: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6625,6 +7877,7 @@ mod tests {
 
         for allowed_tool in [
             AUTONOMOUS_TOOL_READ,
+            AUTONOMOUS_TOOL_STAT,
             AUTONOMOUS_TOOL_SEARCH,
             AUTONOMOUS_TOOL_GIT_STATUS,
             AUTONOMOUS_TOOL_COMMAND_PROBE,
@@ -6929,6 +8182,10 @@ mod tests {
             .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
                 path: "notes.txt".into(),
                 content: "premature write\n".into(),
+                expected_hash: None,
+                create_only: false,
+                overwrite: None,
+                preview: false,
             }))
             .expect_err("write is gated before inspect todo completes");
         assert_eq!(denied.code, "policy_denied");
@@ -6956,6 +8213,10 @@ mod tests {
             .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
                 path: "notes.txt".into(),
                 content: "gated write\n".into(),
+                expected_hash: None,
+                create_only: false,
+                overwrite: None,
+                preview: false,
             }))
             .expect("write allowed after workflow gate");
         assert_eq!(

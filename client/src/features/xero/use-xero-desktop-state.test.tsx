@@ -3077,6 +3077,80 @@ describe('useXeroDesktopState', () => {
     expect(setup.syncNotificationAdapters).not.toHaveBeenCalled()
   })
 
+  it('loads the last selected project from app UI state on startup', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')],
+      },
+    })
+    const readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: 'project-2',
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    setup.adapter.readAppUiState = readAppUiState
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
+    expect(readAppUiState).toHaveBeenCalledWith({ key: 'project.lastSelectedProjectId.v1' })
+    expect(setup.getProjectSnapshot).toHaveBeenCalledWith('project-2')
+  })
+
+  it('falls back to the first project when the saved last selected project is stale', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')],
+      },
+    })
+    setup.adapter.readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: 'project-missing',
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    expect(screen.getByTestId('active-project')).toHaveTextContent('Xero')
+    expect(setup.getProjectSnapshot).toHaveBeenCalledWith('project-1')
+  })
+
+  it('persists the selected project in app UI state', async () => {
+    const setup = createMockAdapter({
+      listProjects: {
+        projects: [makeProjectSummary('project-1', 'Xero'), makeProjectSummary('project-2', 'orchestra')],
+      },
+    })
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    setup.adapter.writeAppUiState = writeAppUiState
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 2' }))
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-2'))
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'project.lastSelectedProjectId.v1',
+        value: 'project-2',
+      }),
+    )
+  })
+
   it('keeps agent projections stable across unrelated local rerenders', async () => {
     const setup = createMockAdapter()
 
@@ -3944,6 +4018,70 @@ describe('useXeroDesktopState', () => {
     expect(screen.getByTestId('project-loading')).toHaveTextContent('false')
     expect(setup.getProjectSnapshot).toHaveBeenCalledTimes(snapshotCallsBeforeArchive)
     expect(setup.createAgentSession).not.toHaveBeenCalled()
+  })
+
+  it('deletes a blank new session instead of archiving when archive is requested', async () => {
+    const blankSession = {
+      ...makeAgentSession('project-1'),
+      title: 'New Chat',
+      summary: '',
+      lastRunId: null,
+      lastRuntimeKind: null,
+      lastProviderId: null,
+    }
+    const replacementSession = {
+      ...makeAgentSession('project-1'),
+      agentSessionId: 'agent-session-replacement',
+      title: 'New Chat',
+      summary: '',
+      selected: true,
+      createdAt: '2026-04-15T18:02:00Z',
+      updatedAt: '2026-04-15T18:02:00Z',
+    }
+    const setup = createMockAdapter({
+      snapshots: {
+        'project-1': {
+          ...makeSnapshot('project-1', 'Xero'),
+          agentSessions: [blankSession],
+        },
+      },
+    })
+    let deletedBlankSession = false
+    const deleteAgentSession = vi.fn(async () => {
+      deletedBlankSession = true
+      return undefined
+    })
+    const archiveAgentSession = vi.fn(setup.adapter.archiveAgentSession)
+    const listAgentSessions = vi.fn(async () => ({
+      sessions: deletedBlankSession ? [replacementSession] : [blankSession],
+    }))
+    setup.adapter.deleteAgentSession = deleteAgentSession as XeroDesktopAdapter['deleteAgentSession']
+    setup.adapter.archiveAgentSession = archiveAgentSession as XeroDesktopAdapter['archiveAgentSession']
+    setup.adapter.listAgentSessions = listAgentSessions as XeroDesktopAdapter['listAgentSessions']
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-main'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive selected session' }))
+
+    await waitFor(() =>
+      expect(deleteAgentSession).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+      }),
+    )
+    expect(archiveAgentSession).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(listAgentSessions).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        includeArchived: false,
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('selected-agent-session-id')).toHaveTextContent('agent-session-replacement'),
+    )
+    expect(screen.getByTestId('workspace-pane-session-ids')).toHaveTextContent('agent-session-replacement')
   })
 
   it('refreshes the backend-created replacement session after deleting the last session without project loading', async () => {

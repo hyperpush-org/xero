@@ -5,7 +5,22 @@ import type {
   UseXeroDesktopMutationsArgs,
 } from './mutation-support'
 import { getActiveProjectId } from './mutation-support'
-import { mapAgentSession } from '@/src/lib/xero-model'
+import { XeroDesktopError } from '@/src/lib/xero-desktop'
+import { mapAgentSession, type AgentSessionView } from '@/src/lib/xero-model'
+
+const DEFAULT_AGENT_SESSION_TITLE = 'New Chat'
+
+function isBlankNewAgentSession(session: AgentSessionView | null | undefined): boolean {
+  return Boolean(
+    session?.isActive &&
+      session.lastRunId === null &&
+      session.lastRuntimeKind === null &&
+      session.lastProviderId === null &&
+      session.lineage === null &&
+      session.summary.trim().length === 0 &&
+      session.title.trim().toLowerCase() === DEFAULT_AGENT_SESSION_TITLE.toLowerCase(),
+  )
+}
 
 function waitForAgentSessionSelectionPaint(): Promise<void> {
   if (typeof window === 'undefined') {
@@ -148,6 +163,22 @@ export function useAgentSessionMutations({
         currentProject.agentSessions.some(
           (session) => session.agentSessionId === agentSessionId && session.isActive,
         )
+      const targetSession =
+        currentProject?.id === projectId
+          ? currentProject.agentSessions.find((session) => session.agentSessionId === agentSessionId)
+          : null
+
+      if (isBlankNewAgentSession(targetSession)) {
+        try {
+          await adapter.deleteAgentSession({ projectId, agentSessionId })
+          await refreshActiveAgentSessions(projectId)
+          return activeProjectIdRef.current === projectId ? activeProjectRef.current : null
+        } catch (error) {
+          if (!(error instanceof XeroDesktopError) || error.code !== 'agent_session_not_archived') {
+            throw error
+          }
+        }
+      }
 
       const response = await adapter.archiveAgentSession({ projectId, agentSessionId })
       const archivedSession = mapAgentSession(response)

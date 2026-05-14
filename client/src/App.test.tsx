@@ -3038,6 +3038,64 @@ describe('XeroApp current UI', () => {
     )
   })
 
+  it('opens to the persisted main view from app UI state', async () => {
+    const { adapter } = createAdapter()
+    const readAppUiState = vi.fn(async (request: { key: string }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.key === 'app.activeView.v1' ? 'editor' : null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.readAppUiState = readAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    expect(screen.getByRole('button', { name: 'Editor' })).toHaveClass('bg-secondary')
+    expect(screen.getByRole('button', { name: 'Workflow' })).not.toHaveClass('bg-secondary')
+    expect(readAppUiState).toHaveBeenCalledWith({ key: 'app.activeView.v1' })
+  })
+
+  it('persists main view changes to app UI state', async () => {
+    const { adapter } = createAdapter()
+    const writeAppUiState = vi.fn(async (request: { key: string; value?: unknown | null }) => ({
+      schema: 'xero.app_ui_state.v1' as const,
+      key: request.key,
+      value: request.value ?? null,
+      storageScope: 'os_app_data' as const,
+      uiDeferred: true,
+    }))
+    adapter.writeAppUiState = writeAppUiState
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }))
+
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'app.activeView.v1',
+        value: 'agent',
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+
+    await waitFor(() =>
+      expect(writeAppUiState).toHaveBeenCalledWith({
+        key: 'app.activeView.v1',
+        value: 'editor',
+      }),
+    )
+  })
+
   it('renders the existing single-pane agent runtime through the workspace shell', async () => {
     const { adapter } = createAdapter()
 

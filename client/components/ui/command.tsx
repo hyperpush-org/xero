@@ -34,12 +34,14 @@ function CommandDialog({
   description = 'Search for a command to run...',
   children,
   className,
-  showCloseButton = true,
+  footer,
+  showCloseButton = false,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string
   description?: string
   className?: string
+  footer?: React.ReactNode
   showCloseButton?: boolean
 }) {
   return (
@@ -49,11 +51,26 @@ function CommandDialog({
         <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       <DialogContent
-        className={cn('overflow-hidden p-0', className)}
+        className={cn(
+          'top-[12%] translate-y-0 gap-0 overflow-hidden rounded-xl border-border/70 bg-popover/95 p-0 shadow-2xl shadow-black/40 backdrop-blur-xl sm:max-w-2xl',
+          className,
+        )}
         showCloseButton={showCloseButton}
       >
-        <Command className="[&_[cmdk-group-heading]]:text-muted-foreground **:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
+        <Command
+          className={cn(
+            'bg-transparent',
+            '**:data-[slot=command-input-wrapper]:h-14 **:data-[slot=command-input-wrapper]:gap-3 **:data-[slot=command-input-wrapper]:px-4 **:data-[slot=command-input-wrapper]:border-border/70',
+            '[&_[cmdk-input]]:h-14 [&_[cmdk-input]]:text-[15px]',
+            '[&_[cmdk-list]]:max-h-[min(440px,60vh)] [&_[cmdk-list]]:p-1.5',
+            '[&_[cmdk-group]]:px-1 [&_[cmdk-group]]:pb-1 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0',
+            '[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:text-[10.5px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-[0.09em] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:text-muted-foreground/55',
+            '[&_[cmdk-item]]:min-h-10 [&_[cmdk-item]]:gap-3 [&_[cmdk-item]]:rounded-lg [&_[cmdk-item]]:px-2.5 [&_[cmdk-item]]:py-2 [&_[cmdk-item][data-selected=true]]:bg-muted',
+            '[&_[cmdk-item]_svg]:size-[18px]',
+          )}
+        >
           {children}
+          {footer}
         </Command>
       </DialogContent>
     </Dialog>
@@ -104,7 +121,7 @@ function CommandEmpty({
   return (
     <CommandPrimitive.Empty
       data-slot="command-empty"
-      className="py-6 text-center text-sm"
+      className="py-10 text-center text-sm text-muted-foreground"
       {...props}
     />
   )
@@ -133,7 +150,7 @@ function CommandSeparator({
   return (
     <CommandPrimitive.Separator
       data-slot="command-separator"
-      className={cn('bg-border -mx-1 h-px', className)}
+      className={cn('bg-border/70 -mx-1 my-1 h-px', className)}
       {...props}
     />
   )
@@ -155,19 +172,117 @@ function CommandItem({
   )
 }
 
-function CommandShortcut({
-  className,
-  ...props
-}: React.ComponentProps<'span'>) {
+const SHORTCUT_MODIFIER_KEYS = new Set([
+  '⌘',
+  '⌃',
+  '⌥',
+  '⇧',
+  '↵',
+  '⏎',
+  '⌫',
+  '⎋',
+  '→',
+  '←',
+  '↑',
+  '↓',
+])
+
+function parseShortcut(value: string): string[] {
+  const keys: string[] = []
+  let buffer = ''
+  for (const char of value) {
+    if (SHORTCUT_MODIFIER_KEYS.has(char)) {
+      if (buffer) {
+        keys.push(buffer)
+        buffer = ''
+      }
+      keys.push(char)
+    } else {
+      buffer += char
+    }
+  }
+  if (buffer) keys.push(buffer)
+  return keys
+}
+
+function Kbd({ className, ...props }: React.ComponentProps<'kbd'>) {
   return (
-    <span
-      data-slot="command-shortcut"
+    <kbd
+      data-slot="kbd"
       className={cn(
-        'text-muted-foreground ml-auto text-xs tracking-widest',
+        'border-border/70 bg-muted/60 text-muted-foreground inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 font-sans text-[11px] leading-none font-medium',
         className,
       )}
       {...props}
     />
+  )
+}
+
+function CommandShortcut({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<'span'>) {
+  const keys = typeof children === 'string' ? parseShortcut(children) : null
+  return (
+    <span
+      data-slot="command-shortcut"
+      className={cn('ml-auto flex items-center gap-1', className)}
+      {...props}
+    >
+      {keys
+        ? keys.map((key, index) => <Kbd key={`${key}-${index}`}>{key}</Kbd>)
+        : children}
+    </span>
+  )
+}
+
+function CommandMeta({ className, ...props }: React.ComponentProps<'span'>) {
+  return (
+    <span
+      data-slot="command-meta"
+      className={cn(
+        'text-muted-foreground/70 ml-auto text-xs tabular-nums',
+        className,
+      )}
+      {...props}
+    />
+  )
+}
+
+function CommandFooter({
+  className,
+  children,
+  primaryLabel = 'Open',
+  ...props
+}: React.ComponentProps<'div'> & { primaryLabel?: string }) {
+  return (
+    <div
+      data-slot="command-footer"
+      className={cn(
+        'border-border/70 bg-muted/20 text-muted-foreground/80 flex items-center gap-4 border-t px-4 py-2.5 text-[11px]',
+        className,
+      )}
+      {...props}
+    >
+      {children ?? (
+        <>
+          <span className="flex items-center gap-1.5">
+            <Kbd>↵</Kbd>
+            {primaryLabel}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Kbd>↑</Kbd>
+            <Kbd>↓</Kbd>
+            Navigate
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Kbd>esc</Kbd>
+            Close
+          </span>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -180,5 +295,8 @@ export {
   CommandGroup,
   CommandItem,
   CommandShortcut,
+  CommandMeta,
+  CommandFooter,
   CommandSeparator,
+  Kbd,
 }

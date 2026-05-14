@@ -25,17 +25,26 @@ use xero_desktop_lib::{
     runtime::{
         AutonomousAgentToolPolicy, AutonomousCodeIntelAction, AutonomousCodeIntelRequest,
         AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandRequest,
-        AutonomousEditRequest, AutonomousFindRequest, AutonomousGitDiffRequest,
-        AutonomousGitStatusRequest, AutonomousLspAction, AutonomousLspRequest,
-        AutonomousMacosAutomationAction, AutonomousMacosAutomationRequest, AutonomousMcpAction,
-        AutonomousMcpRequest, AutonomousNotebookEditRequest, AutonomousProcessManagerAction,
-        AutonomousProcessManagerRequest, AutonomousProcessOwnershipScope, AutonomousReadMode,
-        AutonomousReadRequest, AutonomousSearchRequest, AutonomousSubagentAction,
-        AutonomousSubagentLimits, AutonomousSubagentRequest, AutonomousSubagentRole,
-        AutonomousTodoAction, AutonomousTodoRequest, AutonomousToolAccessAction,
-        AutonomousToolAccessRequest, AutonomousToolOutput, AutonomousToolRequest,
-        AutonomousToolRuntime, AutonomousToolRuntimeLimits, AutonomousToolSearchRequest,
-        AutonomousWebConfig, AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
+        AutonomousCopyRequest, AutonomousDeleteRequest, AutonomousDirectoryDigestHashMode,
+        AutonomousDirectoryDigestRequest, AutonomousEditRequest, AutonomousFindMode,
+        AutonomousFindRequest, AutonomousFsTransactionAction, AutonomousFsTransactionOperation,
+        AutonomousFsTransactionRequest, AutonomousGitDiffRequest, AutonomousGitStatusRequest,
+        AutonomousHashRequest, AutonomousListRequest, AutonomousListSortBy,
+        AutonomousListSortDirection, AutonomousListTreeRequest, AutonomousLspAction,
+        AutonomousLspRequest, AutonomousMacosAutomationAction, AutonomousMacosAutomationRequest,
+        AutonomousMcpAction, AutonomousMcpRequest, AutonomousMkdirRequest,
+        AutonomousNotebookEditRequest, AutonomousPatchOperation, AutonomousPatchRequest,
+        AutonomousProcessManagerAction, AutonomousProcessManagerRequest,
+        AutonomousProcessOwnershipScope, AutonomousReadManyRequest, AutonomousReadMode,
+        AutonomousReadRequest, AutonomousRenameRequest, AutonomousSearchRequest,
+        AutonomousStatKind, AutonomousStatRequest, AutonomousStructuredEditAction,
+        AutonomousStructuredEditFormat, AutonomousStructuredEditOperation,
+        AutonomousStructuredEditRequest, AutonomousSubagentAction, AutonomousSubagentLimits,
+        AutonomousSubagentRequest, AutonomousSubagentRole, AutonomousTodoAction,
+        AutonomousTodoRequest, AutonomousToolAccessAction, AutonomousToolAccessRequest,
+        AutonomousToolOutput, AutonomousToolRequest, AutonomousToolRuntime,
+        AutonomousToolRuntimeLimits, AutonomousToolSearchRequest, AutonomousWebConfig,
+        AutonomousWebFetchContentKind, AutonomousWebFetchRequest,
         AutonomousWebSearchProviderConfig, AutonomousWebSearchRequest, AutonomousWriteRequest,
     },
     state::DesktopState,
@@ -238,6 +247,8 @@ fn search_request(query: impl Into<String>, path: Option<&str>) -> AutonomousSea
         exclude_globs: Vec::new(),
         context_lines: None,
         max_results: None,
+        files_only: false,
+        cursor: None,
     }
 }
 
@@ -395,6 +406,22 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
                 .iter()
                 .any(|group| group.name == "process_manager"
                     && group.tools == vec!["process_manager"]));
+            let core_group = output
+                .available_groups
+                .iter()
+                .find(|group| group.name == "core")
+                .expect("core group");
+            assert!(!core_group.tools.contains(&"harness_runner".into()));
+            let read_summary = core_group
+                .tool_summaries
+                .iter()
+                .find(|tool| tool.tool_name == "read")
+                .expect("read summary");
+            assert_eq!(read_summary.effect_class, "observe");
+            assert_eq!(read_summary.risk_class, "observe");
+            assert!(read_summary.runtime_available);
+            assert!(read_summary.allowed_for_agent);
+            assert!(read_summary.activation_groups.contains(&"core".into()));
             #[cfg(target_os = "macos")]
             assert!(output
                 .available_groups
@@ -462,6 +489,14 @@ fn tool_runtime_tool_access_lists_and_grants_requested_groups() {
             assert!(output.granted_tools.contains(&"web_search".into()));
             assert!(output.granted_tools.contains(&"command_session".into()));
             assert!(output.granted_tools.contains(&"command_run".into()));
+            let command_run = output
+                .granted_tool_details
+                .iter()
+                .find(|tool| tool.tool_name == "command_run")
+                .expect("command_run details");
+            assert_eq!(command_run.effect_class, "command");
+            assert_eq!(command_run.risk_class, "command");
+            assert!(command_run.runtime_available);
             assert!(output.denied_tools.contains(&"emulator".into()));
             assert!(output.denied_tools.contains(&"solana_alt".into()));
             assert!(output.denied_tools.contains(&"missing_tool".into()));
@@ -492,7 +527,9 @@ fn ask_tool_access_filters_and_denies_non_observe_tools() {
     match list.output {
         AutonomousToolOutput::ToolAccess(output) => {
             assert!(output.available_groups.iter().any(|group| {
-                group.name == "core" && group.tools.contains(&"read".to_string())
+                group.name == "core"
+                    && group.tools.contains(&"read".to_string())
+                    && group.tools.contains(&"stat".to_string())
             }));
             assert!(!output
                 .available_groups
@@ -904,13 +941,31 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
                 .find(|item| item.tool_name == "file_hash")
                 .expect("file hash match");
             assert_eq!(hash_match.risk_class, "observe");
+            assert_eq!(hash_match.effect_class, "observe");
             assert!(hash_match.schema_fields.contains(&"path".into()));
             assert!(hash_match.activation_tools.contains(&"file_hash".into()));
             assert!(hash_match.activation_groups.contains(&"core".into()));
             assert!(hash_match.runtime_available);
+            assert!(!hash_match.why_matched.is_empty());
+            assert!(hash_match.examples.len() <= 1);
             assert!(output.searched_catalog_size >= output.matches.len());
         }
         other => panic!("unexpected hash tool search output: {other:?}"),
+    }
+    let reserved_search = runtime
+        .tool_search(AutonomousToolSearchRequest {
+            query: "harness runner".into(),
+            limit: None,
+        })
+        .expect("tool search excludes reserved tools");
+    match reserved_search.output {
+        AutonomousToolOutput::ToolSearch(output) => {
+            assert!(!output
+                .matches
+                .iter()
+                .any(|item| item.tool_name == "harness_runner"));
+        }
+        other => panic!("unexpected reserved tool search output: {other:?}"),
     }
     let lsp_search = runtime
         .tool_search(AutonomousToolSearchRequest {
@@ -942,6 +997,10 @@ fn tool_runtime_executes_priority_one_agent_surface_tools() {
             assert!(output.matches[0]
                 .activation_groups
                 .contains(&"command_readonly".into()));
+            assert!(output.matches[0]
+                .why_matched
+                .iter()
+                .any(|reason| { reason.contains("boosted") || reason.contains("description") }));
         }
         other => panic!("unexpected command tool search output: {other:?}"),
     }
@@ -1903,6 +1962,8 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             mode: None,
             start_line: Some(2),
             line_count: Some(2),
+            cursor: None,
+            around_pattern: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,
@@ -1940,8 +2001,11 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     let find = runtime
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
+            mode: None,
             path: Some("src".into()),
             max_depth: None,
+            max_results: None,
+            cursor: None,
         })
         .expect("find repo files");
     assert_eq!(find.tool_name, "find");
@@ -1962,8 +2026,11 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
     let bounded_find = runtime
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
+            mode: None,
             path: Some("src".into()),
             max_depth: Some(1),
+            max_results: None,
+            cursor: None,
         })
         .expect("depth-bounded find repo files");
     match bounded_find.output {
@@ -1980,6 +2047,10 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
         .write(AutonomousWriteRequest {
             path: "notes/output.txt".into(),
             content: "hello from Xero\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
         })
         .expect("write file inside repo");
     assert_eq!(written.tool_name, "write");
@@ -2006,6 +2077,7 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         })
         .expect("edit file inside repo");
     assert_eq!(edited.tool_name, "edit");
@@ -2059,6 +2131,1479 @@ fn tool_runtime_executes_repo_scoped_operations_and_returns_stable_envelopes() {
         }
         other => panic!("unexpected command output: {other:?}"),
     }
+}
+
+#[test]
+fn tool_runtime_read_supports_cursors_pattern_windows_and_omission_metadata() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let long_text = (1..=6)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    fs::write(repo_root.join("src").join("long.txt"), long_text).expect("seed long file");
+    let window_text = (1..=30)
+        .map(|line| {
+            if line == 20 {
+                "line 20 NEEDLE\n".to_string()
+            } else {
+                format!("line {line}\n")
+            }
+        })
+        .collect::<String>();
+    fs::write(repo_root.join("src").join("window.txt"), window_text).expect("seed window file");
+    fs::write(
+        repo_root.join("src").join("bundle.min.js"),
+        format!("const bundle = \"{}\";", "x".repeat(20 * 1024)),
+    )
+    .expect("seed generated-looking file");
+
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
+
+    let first = runtime
+        .read(AutonomousReadRequest {
+            path: "src/long.txt".into(),
+            system_path: false,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: Some(2),
+            cursor: None,
+            around_pattern: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: true,
+        })
+        .expect("read first page");
+    let next_cursor = match first.output {
+        AutonomousToolOutput::Read(output) => {
+            assert_eq!(output.path_kind, AutonomousStatKind::File);
+            assert_eq!(output.size, Some(42));
+            assert!(output.modified_at.is_some());
+            assert_eq!(output.sha256.as_deref().map(str::len), Some(64));
+            assert_eq!(output.start_line, 1);
+            assert_eq!(output.content, "line 1\nline 2\n");
+            assert!(output.truncated);
+            assert!(output
+                .cursor
+                .as_deref()
+                .is_some_and(|cursor| cursor.starts_with("read:v1:")));
+            output.next_cursor.expect("next cursor")
+        }
+        other => panic!("unexpected first read output: {other:?}"),
+    };
+
+    let second = runtime
+        .read(AutonomousReadRequest {
+            path: "src/long.txt".into(),
+            system_path: false,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: Some(2),
+            cursor: Some(next_cursor.clone()),
+            around_pattern: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        })
+        .expect("read continuation");
+    match second.output {
+        AutonomousToolOutput::Read(output) => {
+            assert_eq!(output.start_line, 3);
+            assert_eq!(output.content, "line 3\nline 4\n");
+        }
+        other => panic!("unexpected second read output: {other:?}"),
+    }
+
+    let around = runtime
+        .read(AutonomousReadRequest {
+            path: "src/window.txt".into(),
+            system_path: false,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: Some(5),
+            cursor: None,
+            around_pattern: Some("NEEDLE".into()),
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        })
+        .expect("read around pattern");
+    match around.output {
+        AutonomousToolOutput::Read(output) => {
+            assert_eq!(output.start_line, 18);
+            assert!(output.content.contains("line 20 NEEDLE"));
+        }
+        other => panic!("unexpected around read output: {other:?}"),
+    }
+
+    let omitted = runtime
+        .read(AutonomousReadRequest {
+            path: "src/bundle.min.js".into(),
+            system_path: false,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: None,
+            cursor: None,
+            around_pattern: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        })
+        .expect("omit generated-looking file");
+    match omitted.output {
+        AutonomousToolOutput::Read(output) => {
+            assert_eq!(output.content, "");
+            assert_eq!(output.line_count, 0);
+            assert_eq!(
+                output.content_omitted_reason.as_deref(),
+                Some("minified_or_generated")
+            );
+            assert!(output.next_cursor.is_some());
+            assert!(output.truncated);
+        }
+        other => panic!("unexpected omitted read output: {other:?}"),
+    }
+
+    fs::write(repo_root.join("src").join("long.txt"), "changed\n").expect("change long file");
+    let stale = runtime
+        .read(AutonomousReadRequest {
+            path: "src/long.txt".into(),
+            system_path: false,
+            mode: Some(AutonomousReadMode::Text),
+            start_line: None,
+            line_count: Some(2),
+            cursor: Some(next_cursor),
+            around_pattern: None,
+            byte_offset: None,
+            byte_count: None,
+            include_line_hashes: false,
+        })
+        .expect_err("stale cursor should be rejected");
+    assert_eq!(stale.code, "autonomous_tool_read_cursor_stale");
+}
+
+#[test]
+fn tool_runtime_search_paginates_files_only_and_reports_omissions() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path();
+    fs::create_dir_all(root.join("src")).expect("src dir");
+    fs::create_dir_all(root.join("node_modules/pkg")).expect("node_modules dir");
+    fs::write(root.join("src/a.txt"), "needle a\n").expect("a");
+    fs::write(root.join("src/b.txt"), "needle b\n").expect("b");
+    fs::write(root.join("src/c.txt"), "needle c\n").expect("c");
+    fs::write(
+        root.join("node_modules/pkg/ignored.txt"),
+        "needle ignored\n",
+    )
+    .expect("ignored");
+    fs::write(root.join("blob.bin"), [0xff_u8, 0xfe, 0x00]).expect("binary");
+
+    let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+    let first = runtime
+        .search(AutonomousSearchRequest {
+            query: "needle".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: Some(2),
+            files_only: false,
+            cursor: None,
+        })
+        .expect("first search page");
+    let next_cursor = match first.output {
+        AutonomousToolOutput::Search(output) => {
+            assert_eq!(output.matches.len(), 2);
+            assert_eq!(output.files.len(), 2);
+            assert_eq!(output.files[0].path, "src/a.txt");
+            assert_eq!(output.files[0].match_count, 1);
+            assert_eq!(output.returned_matches, 2);
+            assert_eq!(output.skipped_matches, 0);
+            assert!(output.truncated);
+            assert!(output.omissions.ignored_directories >= 1);
+            assert_eq!(output.omissions.binary_files, 1);
+            output.next_cursor.expect("next search cursor")
+        }
+        other => panic!("unexpected first search output: {other:?}"),
+    };
+
+    let second = runtime
+        .search(AutonomousSearchRequest {
+            query: "needle".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: Some(2),
+            files_only: false,
+            cursor: Some(next_cursor.clone()),
+        })
+        .expect("second search page");
+    match second.output {
+        AutonomousToolOutput::Search(output) => {
+            assert_eq!(output.skipped_matches, 2);
+            assert_eq!(output.matches.len(), 1);
+            assert_eq!(output.matches[0].path, "src/c.txt");
+            assert!(!output.truncated);
+            assert!(output.next_cursor.is_none());
+        }
+        other => panic!("unexpected second search output: {other:?}"),
+    }
+
+    let files_only = runtime
+        .search(AutonomousSearchRequest {
+            query: "needle".into(),
+            path: None,
+            regex: false,
+            ignore_case: false,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: Some(10),
+            files_only: true,
+            cursor: None,
+        })
+        .expect("files-only search");
+    match files_only.output {
+        AutonomousToolOutput::Search(output) => {
+            assert!(output.files_only);
+            assert!(output.matches.is_empty());
+            assert_eq!(output.files.len(), 3);
+            assert_eq!(output.returned_matches, 3);
+        }
+        other => panic!("unexpected files-only search output: {other:?}"),
+    }
+
+    let mismatch = runtime
+        .search(AutonomousSearchRequest {
+            query: "needle".into(),
+            path: None,
+            regex: false,
+            ignore_case: true,
+            include_hidden: false,
+            include_ignored: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            context_lines: None,
+            max_results: Some(2),
+            files_only: false,
+            cursor: Some(next_cursor),
+        })
+        .expect_err("cursor should be tied to search options");
+    assert_eq!(mismatch.code, "autonomous_tool_search_cursor_mismatch");
+}
+
+#[test]
+fn tool_runtime_find_supports_modes_pagination_counts_and_omissions() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path();
+    fs::create_dir_all(root.join("src/nested")).expect("nested dir");
+    fs::create_dir_all(root.join("node_modules/pkg")).expect("node_modules dir");
+    fs::write(root.join("src/app.rs"), "fn app() {}\n").expect("app");
+    fs::write(root.join("src/lib.ts"), "export {}\n").expect("lib");
+    fs::write(root.join("src/nested/deep.rs"), "fn deep() {}\n").expect("deep");
+    fs::write(root.join("node_modules/pkg/ignored.rs"), "ignored\n").expect("ignored");
+
+    let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+    let by_name = runtime
+        .find(AutonomousFindRequest {
+            pattern: "app.rs".into(),
+            mode: Some(AutonomousFindMode::Name),
+            path: None,
+            max_depth: None,
+            max_results: None,
+            cursor: None,
+        })
+        .expect("find by name");
+    match by_name.output {
+        AutonomousToolOutput::Find(output) => {
+            assert_eq!(output.mode, AutonomousFindMode::Name);
+            assert_eq!(output.matches, vec!["src/app.rs"]);
+            assert_eq!(output.file_count, 1);
+            assert!(output.omissions.ignored_directories >= 1);
+        }
+        other => panic!("unexpected name find output: {other:?}"),
+    }
+
+    let first = runtime
+        .find(AutonomousFindRequest {
+            pattern: "rs".into(),
+            mode: Some(AutonomousFindMode::Extension),
+            path: None,
+            max_depth: None,
+            max_results: Some(1),
+            cursor: None,
+        })
+        .expect("first extension page");
+    let next_cursor = match first.output {
+        AutonomousToolOutput::Find(output) => {
+            assert_eq!(output.matches, vec!["src/app.rs"]);
+            assert_eq!(output.returned_matches, 1);
+            assert_eq!(output.skipped_matches, 0);
+            assert!(output.truncated);
+            output.next_cursor.expect("find cursor")
+        }
+        other => panic!("unexpected first extension find output: {other:?}"),
+    };
+
+    let second = runtime
+        .find(AutonomousFindRequest {
+            pattern: "rs".into(),
+            mode: Some(AutonomousFindMode::Extension),
+            path: None,
+            max_depth: None,
+            max_results: Some(1),
+            cursor: Some(next_cursor.clone()),
+        })
+        .expect("second extension page");
+    match second.output {
+        AutonomousToolOutput::Find(output) => {
+            assert_eq!(output.skipped_matches, 1);
+            assert_eq!(output.matches, vec!["src/nested/deep.rs"]);
+            assert!(!output.truncated);
+        }
+        other => panic!("unexpected second extension find output: {other:?}"),
+    }
+
+    let prefix = runtime
+        .find(AutonomousFindRequest {
+            pattern: "src/nested".into(),
+            mode: Some(AutonomousFindMode::PathPrefix),
+            path: None,
+            max_depth: None,
+            max_results: None,
+            cursor: None,
+        })
+        .expect("find by path prefix");
+    match prefix.output {
+        AutonomousToolOutput::Find(output) => {
+            assert!(output.matches.contains(&"src/nested".to_string()));
+            assert!(output.matches.contains(&"src/nested/deep.rs".to_string()));
+            assert!(output.directory_count >= 1);
+            assert!(output.file_count >= 1);
+        }
+        other => panic!("unexpected path-prefix find output: {other:?}"),
+    }
+
+    let mismatch = runtime
+        .find(AutonomousFindRequest {
+            pattern: "rs".into(),
+            mode: Some(AutonomousFindMode::Name),
+            path: None,
+            max_depth: None,
+            max_results: Some(1),
+            cursor: Some(next_cursor),
+        })
+        .expect_err("cursor should be tied to find mode");
+    assert_eq!(mismatch.code, "autonomous_tool_find_cursor_mismatch");
+}
+
+#[test]
+fn tool_runtime_list_paginates_sorts_and_reports_counts_and_omissions() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path();
+    fs::create_dir_all(root.join("src/nested")).expect("nested dir");
+    fs::create_dir_all(root.join("node_modules/pkg")).expect("node_modules dir");
+    fs::write(root.join("src/a.txt"), "a\n").expect("a");
+    fs::write(root.join("src/b.txt"), "bbbb\n").expect("b");
+    fs::write(root.join("src/nested/c.txt"), "cc\n").expect("c");
+    fs::write(root.join("node_modules/pkg/ignored.txt"), "ignored\n").expect("ignored");
+
+    let runtime = AutonomousToolRuntime::new(root).expect("runtime");
+    let first = runtime
+        .list(AutonomousListRequest {
+            path: Some("src".into()),
+            max_depth: Some(2),
+            max_results: Some(2),
+            sort_by: Some(AutonomousListSortBy::Size),
+            sort_direction: Some(AutonomousListSortDirection::Desc),
+            cursor: None,
+        })
+        .expect("first list page");
+    let next_cursor = match first.output {
+        AutonomousToolOutput::List(output) => {
+            assert_eq!(output.path, "src");
+            assert_eq!(output.entries.len(), 2);
+            assert_eq!(output.entries[0].path, "src/b.txt");
+            assert_eq!(output.entries[0].bytes, Some(5));
+            assert!(output.entries[0].modified_at.is_some());
+            assert_eq!(output.returned_entries, 2);
+            assert_eq!(output.skipped_entries, 0);
+            assert!(output.truncated);
+            assert_eq!(output.file_count, 3);
+            assert_eq!(output.directory_count, 1);
+            output.next_cursor.expect("list cursor")
+        }
+        other => panic!("unexpected first list output: {other:?}"),
+    };
+
+    let second = runtime
+        .list(AutonomousListRequest {
+            path: Some("src".into()),
+            max_depth: Some(2),
+            max_results: Some(2),
+            sort_by: Some(AutonomousListSortBy::Size),
+            sort_direction: Some(AutonomousListSortDirection::Desc),
+            cursor: Some(next_cursor.clone()),
+        })
+        .expect("second list page");
+    match second.output {
+        AutonomousToolOutput::List(output) => {
+            assert_eq!(output.skipped_entries, 2);
+            assert_eq!(output.entries.len(), 2);
+            assert!(output.next_cursor.is_none());
+        }
+        other => panic!("unexpected second list output: {other:?}"),
+    }
+
+    let depth_limited = runtime
+        .list(AutonomousListRequest {
+            path: None,
+            max_depth: Some(1),
+            max_results: Some(20),
+            sort_by: None,
+            sort_direction: None,
+            cursor: None,
+        })
+        .expect("depth-limited list");
+    match depth_limited.output {
+        AutonomousToolOutput::List(output) => {
+            assert!(output.omitted.depth >= 1);
+            assert!(output.omitted.ignored_directory >= 1);
+            assert!(output.truncated);
+        }
+        other => panic!("unexpected depth-limited list output: {other:?}"),
+    }
+
+    let mismatch = runtime
+        .list(AutonomousListRequest {
+            path: Some("src".into()),
+            max_depth: Some(2),
+            max_results: Some(2),
+            sort_by: Some(AutonomousListSortBy::Path),
+            sort_direction: Some(AutonomousListSortDirection::Asc),
+            cursor: Some(next_cursor),
+        })
+        .expect_err("cursor should be tied to list sort options");
+    assert_eq!(mismatch.code, "autonomous_tool_list_cursor_mismatch");
+}
+
+#[test]
+fn tool_runtime_write_supports_preview_and_hash_guarded_overwrite() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(repo_root.join("tracked.txt"), "alpha\n").expect("seed tracked file");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let implicit_overwrite = runtime
+        .write(AutonomousWriteRequest {
+            path: "tracked.txt".into(),
+            content: "beta\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
+        })
+        .expect_err("existing files require explicit overwrite");
+    assert_eq!(
+        implicit_overwrite.code,
+        "autonomous_tool_write_overwrite_required"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_root.join("tracked.txt")).expect("read original"),
+        "alpha\n"
+    );
+
+    let current_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "tracked.txt".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash current file")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected hash output: {other:?}"),
+    };
+
+    let preview = runtime
+        .write(AutonomousWriteRequest {
+            path: "tracked.txt".into(),
+            content: "beta\n".into(),
+            expected_hash: Some(current_hash.clone()),
+            create_only: false,
+            overwrite: Some(true),
+            preview: true,
+        })
+        .expect("preview guarded replacement");
+    match preview.output {
+        AutonomousToolOutput::Write(output) => {
+            assert_eq!(output.path, "tracked.txt");
+            assert!(!output.created);
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert_eq!(output.old_hash.as_deref(), Some(current_hash.as_str()));
+            assert_eq!(output.new_hash.as_deref().map(str::len), Some(64));
+            let diff = output.diff.expect("replacement diff");
+            assert!(diff.contains("-alpha"));
+            assert!(diff.contains("+beta"));
+        }
+        other => panic!("unexpected write preview output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("tracked.txt")).expect("read after preview"),
+        "alpha\n"
+    );
+
+    let applied = runtime
+        .write(AutonomousWriteRequest {
+            path: "tracked.txt".into(),
+            content: "beta\n".into(),
+            expected_hash: Some(current_hash.clone()),
+            create_only: false,
+            overwrite: Some(true),
+            preview: false,
+        })
+        .expect("apply guarded replacement");
+    match applied.output {
+        AutonomousToolOutput::Write(output) => {
+            assert!(!output.created);
+            assert!(!output.preview);
+            assert!(output.applied);
+            assert_eq!(output.old_hash.as_deref(), Some(current_hash.as_str()));
+        }
+        other => panic!("unexpected write output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("tracked.txt")).expect("read replaced file"),
+        "beta\n"
+    );
+
+    let stale = runtime
+        .write(AutonomousWriteRequest {
+            path: "tracked.txt".into(),
+            content: "gamma\n".into(),
+            expected_hash: Some(current_hash),
+            create_only: false,
+            overwrite: Some(true),
+            preview: false,
+        })
+        .expect_err("stale hash should block replacement");
+    assert_eq!(stale.code, "autonomous_tool_write_expected_hash_mismatch");
+
+    let create_only = runtime
+        .write(AutonomousWriteRequest {
+            path: "tracked.txt".into(),
+            content: "gamma\n".into(),
+            expected_hash: None,
+            create_only: true,
+            overwrite: Some(true),
+            preview: false,
+        })
+        .expect_err("createOnly refuses existing files");
+    assert_eq!(create_only.code, "autonomous_tool_write_create_only_exists");
+
+    let create_preview = runtime
+        .write(AutonomousWriteRequest {
+            path: "notes/new.txt".into(),
+            content: "new\n".into(),
+            expected_hash: None,
+            create_only: true,
+            overwrite: None,
+            preview: true,
+        })
+        .expect("preview create");
+    match create_preview.output {
+        AutonomousToolOutput::Write(output) => {
+            assert!(output.created);
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert_eq!(output.content_bytes, Some(4));
+            assert_eq!(output.line_count, Some(1));
+            assert!(output.diff.is_none());
+        }
+        other => panic!("unexpected write create preview output: {other:?}"),
+    }
+    assert!(!repo_root.join("notes").join("new.txt").exists());
+}
+
+#[test]
+fn tool_runtime_edit_supports_preview_and_conflict_context() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(repo_root.join("notes.txt"), "one\ntwo\nthree\n").expect("seed notes");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let preview = runtime
+        .edit(AutonomousEditRequest {
+            path: "notes.txt".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "two\n".into(),
+            replacement: "TWO\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: true,
+        })
+        .expect("preview edit");
+    match preview.output {
+        AutonomousToolOutput::Edit(output) => {
+            assert_eq!(output.path, "notes.txt");
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert_eq!(output.replacement_len, 4);
+            assert_ne!(output.old_hash, output.new_hash);
+            let diff = output.diff.expect("preview diff");
+            assert!(diff.contains("-two"));
+            assert!(diff.contains("+TWO"));
+        }
+        other => panic!("unexpected edit preview output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("notes.txt")).expect("read after preview"),
+        "one\ntwo\nthree\n"
+    );
+
+    let conflict = runtime
+        .edit(AutonomousEditRequest {
+            path: "notes.txt".into(),
+            start_line: 2,
+            end_line: 2,
+            expected: "stale\n".into(),
+            replacement: "TWO\n".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        })
+        .expect_err("mismatched expected text should include context");
+    assert_eq!(conflict.code, "autonomous_tool_edit_expected_text_mismatch");
+    assert!(conflict.message.contains("line 2: sha256="));
+    assert!(conflict.message.contains("text=two"));
+}
+
+#[test]
+fn tool_runtime_delete_previews_and_requires_digest_for_recursive_apply() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::create_dir_all(repo_root.join("target/nested")).expect("create target tree");
+    fs::write(repo_root.join("target/a.txt"), "alpha\n").expect("seed a");
+    fs::write(repo_root.join("target/nested/b.txt"), "beta\n").expect("seed b");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let preview = runtime
+        .delete(AutonomousDeleteRequest {
+            path: "target".into(),
+            recursive: true,
+            expected_hash: None,
+            expected_digest: None,
+            preview: true,
+        })
+        .expect("preview recursive delete");
+    let digest = match preview.output {
+        AutonomousToolOutput::Delete(output) => {
+            assert_eq!(output.path, "target");
+            assert!(output.recursive);
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert_eq!(output.file_count, 2);
+            assert_eq!(output.directory_count, 2);
+            assert_eq!(output.deleted_count, 4);
+            assert_eq!(output.bytes_estimated, 11);
+            assert_eq!(output.bytes_remaining, 11);
+            output.digest.expect("directory digest")
+        }
+        other => panic!("unexpected delete preview output: {other:?}"),
+    };
+    assert_eq!(digest.len(), 64);
+    assert!(repo_root.join("target").exists());
+
+    let missing_digest = runtime
+        .delete(AutonomousDeleteRequest {
+            path: "target".into(),
+            recursive: true,
+            expected_hash: None,
+            expected_digest: None,
+            preview: false,
+        })
+        .expect_err("recursive delete requires digest");
+    assert_eq!(
+        missing_digest.code,
+        "autonomous_tool_delete_expected_digest_required"
+    );
+
+    let wrong_digest = runtime
+        .delete(AutonomousDeleteRequest {
+            path: "target".into(),
+            recursive: true,
+            expected_hash: None,
+            expected_digest: Some("0".repeat(64)),
+            preview: false,
+        })
+        .expect_err("wrong digest blocks recursive delete");
+    assert_eq!(
+        wrong_digest.code,
+        "autonomous_tool_delete_expected_digest_mismatch"
+    );
+
+    let applied = runtime
+        .delete(AutonomousDeleteRequest {
+            path: "target".into(),
+            recursive: true,
+            expected_hash: None,
+            expected_digest: Some(digest),
+            preview: false,
+        })
+        .expect("apply digest-guarded recursive delete");
+    match applied.output {
+        AutonomousToolOutput::Delete(output) => {
+            assert!(output.applied);
+            assert!(!output.preview);
+            assert_eq!(output.deleted_count, 4);
+            assert_eq!(output.bytes_remaining, 0);
+        }
+        other => panic!("unexpected delete output: {other:?}"),
+    }
+    assert!(!repo_root.join("target").exists());
+}
+
+#[test]
+fn tool_runtime_rename_previews_and_requires_guarded_overwrite() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(repo_root.join("source.txt"), "source\n").expect("seed source");
+    fs::write(repo_root.join("target.txt"), "target\n").expect("seed target");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let source_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "source.txt".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash source")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected source hash output: {other:?}"),
+    };
+    let target_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "target.txt".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash target")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected target hash output: {other:?}"),
+    };
+
+    let preview = runtime
+        .rename(AutonomousRenameRequest {
+            from_path: "source.txt".into(),
+            to_path: "renamed.txt".into(),
+            expected_hash: Some(source_hash.clone()),
+            expected_target_hash: None,
+            overwrite: None,
+            preview: true,
+        })
+        .expect("preview rename");
+    match preview.output {
+        AutonomousToolOutput::Rename(output) => {
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert!(!output.overwritten);
+            assert_eq!(output.source_kind, AutonomousStatKind::File);
+            assert_eq!(output.source_bytes, Some(7));
+            assert_eq!(output.source_hash.as_deref(), Some(source_hash.as_str()));
+            assert!(!output.target_existed);
+        }
+        other => panic!("unexpected rename preview output: {other:?}"),
+    }
+    assert!(repo_root.join("source.txt").exists());
+    assert!(!repo_root.join("renamed.txt").exists());
+
+    let target_exists = runtime
+        .rename(AutonomousRenameRequest {
+            from_path: "source.txt".into(),
+            to_path: "target.txt".into(),
+            expected_hash: Some(source_hash.clone()),
+            expected_target_hash: None,
+            overwrite: None,
+            preview: false,
+        })
+        .expect_err("existing target requires overwrite guard");
+    assert_eq!(target_exists.code, "autonomous_tool_rename_target_exists");
+
+    let missing_target_hash = runtime
+        .rename(AutonomousRenameRequest {
+            from_path: "source.txt".into(),
+            to_path: "target.txt".into(),
+            expected_hash: Some(source_hash.clone()),
+            expected_target_hash: None,
+            overwrite: Some(true),
+            preview: false,
+        })
+        .expect_err("overwrite requires target hash");
+    assert_eq!(
+        missing_target_hash.code,
+        "autonomous_tool_rename_expected_target_hash_required"
+    );
+
+    let overwrite_preview = runtime
+        .rename(AutonomousRenameRequest {
+            from_path: "source.txt".into(),
+            to_path: "target.txt".into(),
+            expected_hash: Some(source_hash.clone()),
+            expected_target_hash: Some(target_hash.clone()),
+            overwrite: Some(true),
+            preview: true,
+        })
+        .expect("preview guarded overwrite");
+    match overwrite_preview.output {
+        AutonomousToolOutput::Rename(output) => {
+            assert!(output.preview);
+            assert!(output.overwritten);
+            assert!(output.target_existed);
+            assert_eq!(output.target_kind, Some(AutonomousStatKind::File));
+            assert_eq!(output.target_bytes, Some(7));
+            assert_eq!(output.target_hash.as_deref(), Some(target_hash.as_str()));
+        }
+        other => panic!("unexpected guarded rename preview output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("target.txt")).expect("target remains after preview"),
+        "target\n"
+    );
+
+    let applied = runtime
+        .rename(AutonomousRenameRequest {
+            from_path: "source.txt".into(),
+            to_path: "target.txt".into(),
+            expected_hash: Some(source_hash),
+            expected_target_hash: Some(target_hash),
+            overwrite: Some(true),
+            preview: false,
+        })
+        .expect("apply guarded overwrite rename");
+    match applied.output {
+        AutonomousToolOutput::Rename(output) => {
+            assert!(output.applied);
+            assert!(!output.preview);
+            assert!(output.overwritten);
+        }
+        other => panic!("unexpected guarded rename output: {other:?}"),
+    }
+    assert!(!repo_root.join("source.txt").exists());
+    assert_eq!(
+        fs::read_to_string(repo_root.join("target.txt")).expect("target replaced"),
+        "source\n"
+    );
+}
+
+#[test]
+fn tool_runtime_mkdir_previews_parent_and_existence_modes() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::create_dir_all(repo_root.join("existing")).expect("existing dir");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let preview = runtime
+        .mkdir(AutonomousMkdirRequest {
+            path: "a/b/c".into(),
+            parents: Some(true),
+            exist_ok: Some(true),
+            preview: true,
+        })
+        .expect("preview mkdir parents");
+    match preview.output {
+        AutonomousToolOutput::Mkdir(output) => {
+            assert!(output.created);
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert!(output.parents);
+            assert!(output.exist_ok);
+            assert_eq!(output.created_paths, vec!["a", "a/b", "a/b/c"]);
+        }
+        other => panic!("unexpected mkdir preview output: {other:?}"),
+    }
+    assert!(!repo_root.join("a").exists());
+
+    let no_parents = runtime
+        .mkdir(AutonomousMkdirRequest {
+            path: "a/b/c".into(),
+            parents: Some(false),
+            exist_ok: Some(true),
+            preview: false,
+        })
+        .expect_err("parents=false refuses missing parent chain");
+    assert_eq!(no_parents.code, "autonomous_tool_mkdir_parent_missing");
+
+    let applied = runtime
+        .mkdir(AutonomousMkdirRequest {
+            path: "a/b/c".into(),
+            parents: Some(true),
+            exist_ok: Some(true),
+            preview: false,
+        })
+        .expect("apply mkdir parents");
+    match applied.output {
+        AutonomousToolOutput::Mkdir(output) => {
+            assert!(output.created);
+            assert!(output.applied);
+            assert!(!output.preview);
+            assert_eq!(output.created_paths, vec!["a", "a/b", "a/b/c"]);
+        }
+        other => panic!("unexpected mkdir output: {other:?}"),
+    }
+    assert!(repo_root.join("a/b/c").is_dir());
+
+    let exists = runtime
+        .mkdir(AutonomousMkdirRequest {
+            path: "existing".into(),
+            parents: Some(true),
+            exist_ok: Some(false),
+            preview: false,
+        })
+        .expect_err("existOk=false refuses existing directory");
+    assert_eq!(exists.code, "autonomous_tool_mkdir_exists");
+}
+
+#[test]
+fn tool_runtime_copy_previews_and_requires_overwrite_or_directory_digest() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(repo_root.join("source.txt"), "source\n").expect("seed source");
+    fs::write(repo_root.join("target.txt"), "target\n").expect("seed target");
+    fs::create_dir_all(repo_root.join("srcdir/nested")).expect("seed source dir");
+    fs::write(repo_root.join("srcdir/nested/a.txt"), "alpha\n").expect("seed nested file");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let source_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "source.txt".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash source")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected source hash output: {other:?}"),
+    };
+    let target_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "target.txt".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash target")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected target hash output: {other:?}"),
+    };
+
+    let implicit_overwrite = runtime
+        .copy(AutonomousCopyRequest {
+            from: "source.txt".into(),
+            to: "target.txt".into(),
+            recursive: false,
+            expected_source_hash: Some(source_hash.clone()),
+            expected_source_digest: None,
+            overwrite: None,
+            expected_target_hash: None,
+            preview: false,
+        })
+        .expect_err("copy refuses implicit overwrite");
+    assert_eq!(
+        implicit_overwrite.code,
+        "autonomous_tool_copy_target_exists"
+    );
+
+    let file_preview = runtime
+        .copy(AutonomousCopyRequest {
+            from: "source.txt".into(),
+            to: "target.txt".into(),
+            recursive: false,
+            expected_source_hash: Some(source_hash.clone()),
+            expected_source_digest: None,
+            overwrite: Some(true),
+            expected_target_hash: Some(target_hash.clone()),
+            preview: true,
+        })
+        .expect("preview guarded file copy");
+    match file_preview.output {
+        AutonomousToolOutput::Copy(output) => {
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert!(output.overwritten);
+            assert_eq!(output.copied_files, 1);
+            assert_eq!(output.copied_bytes, 7);
+            assert_eq!(output.source_hash.as_deref(), Some(source_hash.as_str()));
+            assert_eq!(output.target_hash.as_deref(), Some(target_hash.as_str()));
+        }
+        other => panic!("unexpected copy file preview output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("target.txt")).expect("target unchanged after preview"),
+        "target\n"
+    );
+
+    let dir_preview = runtime
+        .copy(AutonomousCopyRequest {
+            from: "srcdir".into(),
+            to: "dstdir".into(),
+            recursive: true,
+            expected_source_hash: None,
+            expected_source_digest: None,
+            overwrite: None,
+            expected_target_hash: None,
+            preview: true,
+        })
+        .expect("preview directory copy");
+    let source_digest = match dir_preview.output {
+        AutonomousToolOutput::Copy(output) => {
+            assert_eq!(output.source_kind, AutonomousStatKind::Directory);
+            assert!(output.preview);
+            assert_eq!(output.created_directories, 2);
+            assert_eq!(output.copied_files, 1);
+            assert_eq!(output.copied_bytes, 6);
+            assert_eq!(output.operations.len(), 3);
+            output.source_digest.expect("source digest")
+        }
+        other => panic!("unexpected copy directory preview output: {other:?}"),
+    };
+    assert_eq!(source_digest.len(), 64);
+    assert!(!repo_root.join("dstdir").exists());
+
+    let missing_digest = runtime
+        .copy(AutonomousCopyRequest {
+            from: "srcdir".into(),
+            to: "dstdir".into(),
+            recursive: true,
+            expected_source_hash: None,
+            expected_source_digest: None,
+            overwrite: None,
+            expected_target_hash: None,
+            preview: false,
+        })
+        .expect_err("directory copy apply requires digest");
+    assert_eq!(
+        missing_digest.code,
+        "autonomous_tool_copy_expected_source_digest_required"
+    );
+
+    let applied_dir = runtime
+        .copy(AutonomousCopyRequest {
+            from: "srcdir".into(),
+            to: "dstdir".into(),
+            recursive: true,
+            expected_source_hash: None,
+            expected_source_digest: Some(source_digest),
+            overwrite: None,
+            expected_target_hash: None,
+            preview: false,
+        })
+        .expect("apply digest-guarded directory copy");
+    match applied_dir.output {
+        AutonomousToolOutput::Copy(output) => {
+            assert!(output.applied);
+            assert!(!output.preview);
+            assert_eq!(output.created_directories, 2);
+            assert_eq!(output.copied_files, 1);
+        }
+        other => panic!("unexpected copy directory output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("dstdir/nested/a.txt")).expect("copied file"),
+        "alpha\n"
+    );
+}
+
+#[test]
+fn tool_runtime_fs_transaction_previews_applies_and_requires_directory_guards() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(repo_root.join("existing.txt"), "old\n").expect("seed existing");
+    fs::create_dir_all(repo_root.join("tree/nested")).expect("seed tree");
+    fs::write(repo_root.join("tree/nested/a.txt"), "alpha\n").expect("seed tree file");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let existing_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "existing.txt".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash existing")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected hash output: {other:?}"),
+    };
+
+    let preview = runtime
+        .fs_transaction(AutonomousFsTransactionRequest {
+            preview: true,
+            stop_on_first_error: false,
+            operations: vec![
+                AutonomousFsTransactionOperation {
+                    id: Some("create".into()),
+                    action: AutonomousFsTransactionAction::CreateFile,
+                    path: Some("created.txt".into()),
+                    content: Some("created\n".into()),
+                    ..Default::default()
+                },
+                AutonomousFsTransactionOperation {
+                    id: Some("replace".into()),
+                    action: AutonomousFsTransactionAction::ReplaceFile,
+                    path: Some("existing.txt".into()),
+                    content: Some("new\n".into()),
+                    expected_hash: Some(existing_hash.clone()),
+                    ..Default::default()
+                },
+                AutonomousFsTransactionOperation {
+                    id: Some("mkdir".into()),
+                    action: AutonomousFsTransactionAction::Mkdir,
+                    path: Some("a/b".into()),
+                    parents: Some(true),
+                    exist_ok: Some(true),
+                    ..Default::default()
+                },
+            ],
+        })
+        .expect("preview transaction");
+    match preview.output {
+        AutonomousToolOutput::FsTransaction(output) => {
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert!(output.validation.ok);
+            assert_eq!(output.operation_count, 3);
+            assert!(output.changed_paths.contains(&"created.txt".into()));
+            assert!(output.changed_paths.contains(&"existing.txt".into()));
+            assert!(output.changed_paths.contains(&"a/b".into()));
+            assert!(output.diff.as_deref().unwrap_or_default().contains("+new"));
+        }
+        other => panic!("unexpected fs_transaction preview output: {other:?}"),
+    }
+    assert!(!repo_root.join("created.txt").exists());
+    assert_eq!(
+        fs::read_to_string(repo_root.join("existing.txt")).expect("existing unchanged"),
+        "old\n"
+    );
+
+    let applied = runtime
+        .fs_transaction(AutonomousFsTransactionRequest {
+            preview: false,
+            stop_on_first_error: true,
+            operations: vec![
+                AutonomousFsTransactionOperation {
+                    id: Some("create".into()),
+                    action: AutonomousFsTransactionAction::CreateFile,
+                    path: Some("created.txt".into()),
+                    content: Some("created\n".into()),
+                    ..Default::default()
+                },
+                AutonomousFsTransactionOperation {
+                    id: Some("replace".into()),
+                    action: AutonomousFsTransactionAction::ReplaceFile,
+                    path: Some("existing.txt".into()),
+                    content: Some("new\n".into()),
+                    expected_hash: Some(existing_hash),
+                    ..Default::default()
+                },
+            ],
+        })
+        .expect("apply transaction");
+    match applied.output {
+        AutonomousToolOutput::FsTransaction(output) => {
+            assert!(output.applied);
+            assert!(!output.preview);
+            assert!(output.validation.ok);
+            assert!(!output.rollback_status.attempted);
+            assert_eq!(output.results.len(), 2);
+            assert!(output.results.iter().all(|result| result.ok));
+        }
+        other => panic!("unexpected fs_transaction apply output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("created.txt")).expect("created file"),
+        "created\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo_root.join("existing.txt")).expect("replaced file"),
+        "new\n"
+    );
+
+    let dir_preview = runtime
+        .fs_transaction(AutonomousFsTransactionRequest {
+            preview: true,
+            stop_on_first_error: false,
+            operations: vec![AutonomousFsTransactionOperation {
+                id: Some("copy-dir".into()),
+                action: AutonomousFsTransactionAction::Copy,
+                from: Some("tree".into()),
+                to: Some("tree-copy".into()),
+                recursive: true,
+                ..Default::default()
+            }],
+        })
+        .expect("preview directory copy transaction");
+    let digest = match dir_preview.output {
+        AutonomousToolOutput::FsTransaction(output) => {
+            assert!(output.validation.ok);
+            assert_eq!(output.planned_operations.len(), 1);
+            assert!(output
+                .planned_operations
+                .first()
+                .expect("planned copy")
+                .changed_paths
+                .contains(&"tree-copy".into()));
+            output.planned_operations[0]
+                .source_digest
+                .clone()
+                .expect("transaction copy source digest")
+        }
+        other => panic!("unexpected fs_transaction dir preview output: {other:?}"),
+    };
+
+    let missing_digest = runtime
+        .fs_transaction(AutonomousFsTransactionRequest {
+            preview: false,
+            stop_on_first_error: true,
+            operations: vec![AutonomousFsTransactionOperation {
+                id: Some("copy-dir".into()),
+                action: AutonomousFsTransactionAction::Copy,
+                from: Some("tree".into()),
+                to: Some("tree-copy".into()),
+                recursive: true,
+                ..Default::default()
+            }],
+        })
+        .expect("transaction validation returns structured error");
+    match missing_digest.output {
+        AutonomousToolOutput::FsTransaction(output) => {
+            assert!(!output.validation.ok);
+            assert_eq!(output.validation.errors.len(), 1);
+            assert_eq!(
+                output.validation.errors[0]
+                    .error
+                    .as_ref()
+                    .expect("validation error")
+                    .code,
+                "autonomous_tool_fs_transaction_expected_source_digest_required"
+            );
+        }
+        other => panic!("unexpected missing digest output: {other:?}"),
+    }
+
+    let applied_copy = runtime
+        .fs_transaction(AutonomousFsTransactionRequest {
+            preview: false,
+            stop_on_first_error: true,
+            operations: vec![AutonomousFsTransactionOperation {
+                id: Some("copy-dir".into()),
+                action: AutonomousFsTransactionAction::Copy,
+                from: Some("tree".into()),
+                to: Some("tree-copy".into()),
+                recursive: true,
+                expected_source_digest: Some(digest),
+                ..Default::default()
+            }],
+        })
+        .expect("apply guarded directory copy transaction");
+    match applied_copy.output {
+        AutonomousToolOutput::FsTransaction(output) => {
+            assert!(output.applied);
+            assert!(output.validation.ok);
+            assert!(output.changed_paths.contains(&"tree-copy".into()));
+        }
+        other => panic!("unexpected applied copy transaction output: {other:?}"),
+    }
+    assert_eq!(
+        fs::read_to_string(repo_root.join("tree-copy/nested/a.txt")).expect("copied tree file"),
+        "alpha\n"
+    );
+}
+
+#[test]
+fn tool_runtime_structured_edits_parse_preview_and_apply_json_toml_yaml() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repo_root = tempdir.path();
+    fs::write(
+        repo_root.join("package.json"),
+        "{\n  \"scripts\": {\"test\": \"old\"},\n  \"keywords\": [\"xero\"]\n}\n",
+    )
+    .expect("seed json");
+    fs::write(repo_root.join("Cargo.toml"), "[package]\nname = \"old\"\n").expect("seed toml");
+    fs::write(
+        repo_root.join("workflow.yml"),
+        "name: old\njobs:\n  test:\n    runs-on: ubuntu-latest\n",
+    )
+    .expect("seed yaml");
+    let runtime = AutonomousToolRuntime::new(repo_root).expect("runtime");
+
+    let json_hash = match runtime
+        .hash(AutonomousHashRequest {
+            path: "package.json".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("hash json")
+        .output
+    {
+        AutonomousToolOutput::Hash(output) => output.sha256,
+        other => panic!("unexpected hash output: {other:?}"),
+    };
+
+    let preview = runtime
+        .structured_edit(
+            AutonomousStructuredEditRequest {
+                path: "package.json".into(),
+                expected_hash: Some(json_hash.clone()),
+                formatting_mode: Default::default(),
+                preview: true,
+                operations: vec![
+                    AutonomousStructuredEditOperation {
+                        action: AutonomousStructuredEditAction::Set,
+                        pointer: "/scripts/test".into(),
+                        value: Some(serde_json::json!("vitest")),
+                    },
+                    AutonomousStructuredEditOperation {
+                        action: AutonomousStructuredEditAction::AppendUnique,
+                        pointer: "/keywords".into(),
+                        value: Some(serde_json::json!("agent")),
+                    },
+                    AutonomousStructuredEditOperation {
+                        action: AutonomousStructuredEditAction::SortKeys,
+                        pointer: "".into(),
+                        value: None,
+                    },
+                ],
+            },
+            AutonomousStructuredEditFormat::Json,
+            "json_edit",
+        )
+        .expect("preview json edit");
+    match preview.output {
+        AutonomousToolOutput::JsonEdit(output) => {
+            assert!(output.preview);
+            assert!(!output.applied);
+            assert_eq!(output.operations_applied, 3);
+            assert!(output
+                .semantic_changes
+                .contains(&"set /scripts/test".into()));
+            assert!(output
+                .diff
+                .as_deref()
+                .unwrap_or_default()
+                .contains("+    \"test\": \"vitest\""));
+        }
+        other => panic!("unexpected json_edit preview output: {other:?}"),
+    }
+    assert!(fs::read_to_string(repo_root.join("package.json"))
+        .expect("json unchanged")
+        .contains("\"old\""));
+
+    runtime
+        .structured_edit(
+            AutonomousStructuredEditRequest {
+                path: "package.json".into(),
+                expected_hash: Some(json_hash),
+                formatting_mode: Default::default(),
+                preview: false,
+                operations: vec![AutonomousStructuredEditOperation {
+                    action: AutonomousStructuredEditAction::Set,
+                    pointer: "/scripts/test".into(),
+                    value: Some(serde_json::json!("vitest")),
+                }],
+            },
+            AutonomousStructuredEditFormat::Json,
+            "json_edit",
+        )
+        .expect("apply json edit");
+    assert!(fs::read_to_string(repo_root.join("package.json"))
+        .expect("json applied")
+        .contains("\"vitest\""));
+
+    runtime
+        .structured_edit(
+            AutonomousStructuredEditRequest {
+                path: "Cargo.toml".into(),
+                expected_hash: None,
+                formatting_mode: Default::default(),
+                preview: false,
+                operations: vec![AutonomousStructuredEditOperation {
+                    action: AutonomousStructuredEditAction::Set,
+                    pointer: "/package/name".into(),
+                    value: Some(serde_json::json!("new-name")),
+                }],
+            },
+            AutonomousStructuredEditFormat::Toml,
+            "toml_edit",
+        )
+        .expect("apply toml edit");
+    assert!(fs::read_to_string(repo_root.join("Cargo.toml"))
+        .expect("toml applied")
+        .contains("new-name"));
+
+    runtime
+        .structured_edit(
+            AutonomousStructuredEditRequest {
+                path: "workflow.yml".into(),
+                expected_hash: None,
+                formatting_mode: Default::default(),
+                preview: false,
+                operations: vec![AutonomousStructuredEditOperation {
+                    action: AutonomousStructuredEditAction::Set,
+                    pointer: "/name".into(),
+                    value: Some(serde_json::json!("ci")),
+                }],
+            },
+            AutonomousStructuredEditFormat::Yaml,
+            "yaml_edit",
+        )
+        .expect("apply yaml edit");
+    assert!(fs::read_to_string(repo_root.join("workflow.yml"))
+        .expect("yaml applied")
+        .contains("name: ci"));
 }
 
 #[test]
@@ -2370,6 +3915,481 @@ fn tool_runtime_git_status_reports_detached_head_truthfully() {
 }
 
 #[test]
+fn tool_runtime_read_many_returns_ordered_results_and_per_file_errors() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::write(
+        repo_root.join("src").join("large.txt"),
+        "0123456789abcdef\n",
+    )
+    .expect("seed oversized file");
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let result = runtime
+        .read_many(AutonomousReadManyRequest {
+            paths: vec![
+                "src/tracked.txt".into(),
+                "src/missing.txt".into(),
+                "src/large.txt".into(),
+            ],
+            mode: Some(AutonomousReadMode::Text),
+            start_line: Some(1),
+            line_count: Some(1),
+            max_bytes_per_file: Some(8),
+            max_total_bytes: Some(64),
+            include_line_hashes: true,
+        })
+        .expect("read_many returns a batch result");
+
+    match result.output {
+        AutonomousToolOutput::ReadMany(output) => {
+            assert_eq!(output.total_files, 3);
+            assert_eq!(output.ok_files, 1);
+            assert_eq!(output.error_files, 2);
+            assert_eq!(output.omitted_files, 1);
+            assert!(output.truncated);
+            assert_eq!(output.results[0].path, "src/tracked.txt");
+            assert!(output.results[0].ok);
+            let read = output.results[0].read.as_ref().expect("read output");
+            assert_eq!(read.content, "alpha\n");
+            assert_eq!(read.line_hashes.len(), 1);
+            assert_eq!(output.results[1].path, "src/missing.txt");
+            assert!(!output.results[1].ok);
+            assert_eq!(
+                output.results[1]
+                    .error
+                    .as_ref()
+                    .expect("missing error")
+                    .code,
+                "autonomous_tool_path_not_found"
+            );
+            assert_eq!(output.results[2].path, "src/large.txt");
+            assert_eq!(
+                output.results[2].error.as_ref().expect("large error").code,
+                "autonomous_tool_read_many_file_too_large"
+            );
+            assert_eq!(output.results[2].omitted_bytes, Some(17));
+        }
+        other => panic!("unexpected read_many output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_list_tree_returns_stable_tree_and_omission_counts() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::create_dir_all(repo_root.join("src").join("nested")).expect("seed nested dir");
+    fs::write(
+        repo_root.join("src").join("nested").join("mod.rs"),
+        "pub fn nested() {}\n",
+    )
+    .expect("seed nested file");
+    fs::write(repo_root.join("src").join("skip.log"), "skip\n").expect("seed filtered file");
+    fs::write(repo_root.join("src").join("tracked.txt"), "alpha\nbeta\n")
+        .expect("modify tracked file");
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let result = runtime
+        .list_tree(AutonomousListTreeRequest {
+            path: Some("src".into()),
+            max_depth: Some(1),
+            max_entries: Some(10),
+            include_globs: Vec::new(),
+            exclude_globs: vec!["**/*.log".into()],
+            include_git_status: true,
+            show_omitted: true,
+        })
+        .expect("list_tree succeeds");
+
+    match result.output {
+        AutonomousToolOutput::ListTree(output) => {
+            assert_eq!(output.path, "src");
+            assert_eq!(output.root.path, "src");
+            assert_eq!(output.root.children.len(), 2);
+            assert_eq!(output.root.children[0].path, "src/nested");
+            assert_eq!(output.root.children[1].path, "src/tracked.txt");
+            assert_eq!(output.file_count, 1);
+            assert_eq!(output.directory_count, 2);
+            assert_eq!(output.omitted.depth, 1);
+            assert_eq!(output.omitted.filtered, 1);
+            assert!(output.truncated);
+            assert!(output
+                .git_status
+                .iter()
+                .any(|entry| entry.path == "src/tracked.txt" && entry.unstaged.is_some()));
+        }
+        other => panic!("unexpected list_tree output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_directory_digest_is_deterministic_and_reports_omissions() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::create_dir_all(repo_root.join("src").join("nested")).expect("seed nested dir");
+    fs::write(
+        repo_root.join("src").join("nested").join("mod.rs"),
+        "pub fn nested() {}\n",
+    )
+    .expect("seed nested file");
+    fs::write(repo_root.join("src").join("skip.log"), "skip\n").expect("seed filtered file");
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let first = runtime
+        .directory_digest(AutonomousDirectoryDigestRequest {
+            path: "src".into(),
+            include_globs: vec!["**/*.rs".into()],
+            exclude_globs: vec!["**/*.log".into()],
+            max_files: Some(2),
+            hash_mode: Some(AutonomousDirectoryDigestHashMode::ContentHash),
+        })
+        .expect("directory digest succeeds");
+    let second = runtime
+        .directory_digest(AutonomousDirectoryDigestRequest {
+            path: "src".into(),
+            include_globs: vec!["**/*.rs".into()],
+            exclude_globs: vec!["**/*.log".into()],
+            max_files: Some(2),
+            hash_mode: Some(AutonomousDirectoryDigestHashMode::ContentHash),
+        })
+        .expect("directory digest is repeatable");
+
+    match (first.output, second.output) {
+        (
+            AutonomousToolOutput::DirectoryDigest(first),
+            AutonomousToolOutput::DirectoryDigest(second),
+        ) => {
+            assert_eq!(first.digest, second.digest);
+            assert_eq!(
+                first.hash_mode,
+                AutonomousDirectoryDigestHashMode::ContentHash
+            );
+            assert_eq!(first.file_count, 1);
+            assert_eq!(first.directory_count, 2);
+            assert_eq!(first.omitted.filtered, 2);
+            assert!(first.truncated);
+            assert!(first
+                .manifest
+                .iter()
+                .any(|entry| entry.path == "src/nested/mod.rs" && entry.sha256.is_some()));
+        }
+        other => panic!("unexpected directory_digest output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_file_hash_supports_file_sets_and_app_data_manifests() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    fs::create_dir_all(repo_root.join("src").join("nested")).expect("seed nested dir");
+    fs::write(repo_root.join("src").join("a.rs"), "pub fn a() {}\n").expect("seed a");
+    fs::write(
+        repo_root.join("src").join("nested").join("b.rs"),
+        "pub fn b() {}\n",
+    )
+    .expect("seed b");
+    fs::write(repo_root.join("src").join("skip.log"), "skip\n").expect("seed skip");
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let single = runtime
+        .hash(AutonomousHashRequest {
+            path: "src/a.rs".into(),
+            recursive: false,
+            include_globs: Vec::new(),
+            exclude_globs: Vec::new(),
+            max_files: None,
+            manifest: false,
+        })
+        .expect("single file hash");
+    match single.output {
+        AutonomousToolOutput::Hash(output) => {
+            assert_eq!(output.path, "src/a.rs");
+            assert_eq!(output.path_kind, AutonomousStatKind::File);
+            assert_eq!(output.algorithm, "sha256");
+            assert_eq!(output.mode, "single_file");
+            assert_eq!(output.file_count, 1);
+            assert_eq!(output.bytes, 14);
+            assert_eq!(output.sha256.len(), 64);
+            assert!(output.artifact_path.is_none());
+        }
+        other => panic!("unexpected single file hash output: {other:?}"),
+    }
+
+    let file_set = runtime
+        .hash(AutonomousHashRequest {
+            path: "src".into(),
+            recursive: true,
+            include_globs: vec!["**/*.rs".into()],
+            exclude_globs: vec!["**/skip*".into()],
+            max_files: Some(1),
+            manifest: true,
+        })
+        .expect("file set hash");
+    match file_set.output {
+        AutonomousToolOutput::Hash(output) => {
+            assert_eq!(output.path, "src");
+            assert_eq!(output.path_kind, AutonomousStatKind::Directory);
+            assert_eq!(output.mode, "file_set");
+            assert_eq!(output.algorithm, "sha256");
+            assert_eq!(output.file_count, 1);
+            assert_eq!(output.max_files, 1);
+            assert!(output.truncated);
+            assert_eq!(output.omitted.max_files, 1);
+            assert!(output.omitted.filtered >= 1);
+            assert_eq!(output.files.len(), 1);
+            assert!(output.files[0].path.ends_with(".rs"));
+            let artifact_path = output.artifact_path.expect("manifest artifact path");
+            let artifact_path = Path::new(&artifact_path);
+            assert!(artifact_path.is_file());
+            assert!(artifact_path.starts_with(db::project_app_data_dir_for_repo(&repo_root)));
+            let manifest = fs::read_to_string(artifact_path).expect("read manifest artifact");
+            assert!(manifest.contains("\"schemaVersion\": \"xero.file_hash_manifest.v1\""));
+            assert!(manifest.contains("\"files\""));
+        }
+        other => panic!("unexpected file set hash output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_patch_persists_large_diff_artifacts_under_app_data() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let artifact_dir = repo_root.join("src").join("patch-artifacts");
+    fs::create_dir_all(&artifact_dir).expect("seed artifact dir");
+    let operations = (0..64)
+        .map(|index| {
+            let path =
+                format!("src/patch-artifacts/very-long-file-name-for-artifact-diff-{index:02}.txt");
+            fs::write(repo_root.join(&path), "old\n").expect("seed patch file");
+            AutonomousPatchOperation {
+                path,
+                search: "old\n".into(),
+                replace: "patched\n".into(),
+                replace_all: false,
+                expected_hash: None,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let result = runtime
+        .patch(AutonomousPatchRequest {
+            path: None,
+            search: None,
+            replace: None,
+            replace_all: false,
+            expected_hash: None,
+            preview: false,
+            operations,
+        })
+        .expect("large patch applies");
+
+    match result.output {
+        AutonomousToolOutput::Patch(output) => {
+            assert!(output.applied);
+            assert_eq!(output.files.len(), 64);
+            assert_eq!(output.files[0].replacements, 1);
+            assert!(output.files[0].guard_status.matched);
+            assert_eq!(output.files[0].changed_ranges[0].start_line, 1);
+            assert_eq!(output.files[0].changed_ranges[0].end_line, 1);
+            assert!(!output.rollback_status.attempted);
+            assert!(output.diff_truncated);
+            let artifact_path = output.artifact_path.expect("patch diff artifact");
+            let artifact_path = Path::new(&artifact_path);
+            assert!(artifact_path.is_file());
+            assert!(artifact_path.starts_with(db::project_app_data_dir_for_repo(&repo_root)));
+            assert!(fs::read_to_string(artifact_path)
+                .expect("read patch artifact")
+                .contains("patched"));
+        }
+        other => panic!("unexpected patch output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_stat_reports_metadata_without_reading_content() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let tracked_path = repo_root.join("src").join("tracked.txt");
+    fs::write(&tracked_path, "alpha\nbeta\n").expect("modify tracked file");
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let stat = runtime
+        .stat(AutonomousStatRequest {
+            path: "src/tracked.txt".into(),
+            follow_symlinks: false,
+            include_git_status: true,
+            include_hash: true,
+            strict: false,
+        })
+        .expect("stat tracked file");
+    match stat.output {
+        AutonomousToolOutput::Stat(output) => {
+            assert_eq!(output.path, "src/tracked.txt");
+            assert_eq!(output.path_kind, AutonomousStatKind::File);
+            assert!(output.exists);
+            assert_eq!(output.size, Some(11));
+            assert_eq!(output.sha256.as_deref().map(str::len), Some(64));
+            assert!(output.modified_at.is_some());
+            assert!(output.permissions.is_some());
+            assert!(output
+                .git_status
+                .iter()
+                .any(|entry| entry.path == "src/tracked.txt" && entry.unstaged.is_some()));
+        }
+        other => panic!("unexpected stat output: {other:?}"),
+    }
+
+    let missing = runtime
+        .stat(AutonomousStatRequest {
+            path: "src/missing.txt".into(),
+            follow_symlinks: false,
+            include_git_status: true,
+            include_hash: true,
+            strict: false,
+        })
+        .expect("missing stat is successful observation");
+    match missing.output {
+        AutonomousToolOutput::Stat(output) => {
+            assert_eq!(output.path_kind, AutonomousStatKind::Missing);
+            assert!(!output.exists);
+            assert!(output.sha256.is_none());
+            assert!(output.git_status.is_empty());
+        }
+        other => panic!("unexpected missing stat output: {other:?}"),
+    }
+
+    let strict_missing = runtime
+        .stat(AutonomousStatRequest {
+            path: "src/missing.txt".into(),
+            follow_symlinks: false,
+            include_git_status: false,
+            include_hash: false,
+            strict: true,
+        })
+        .expect_err("strict missing stat should fail");
+    assert_eq!(strict_missing.code, "autonomous_tool_stat_path_not_found");
+
+    let directory = runtime
+        .stat(AutonomousStatRequest {
+            path: "src".into(),
+            follow_symlinks: false,
+            include_git_status: true,
+            include_hash: true,
+            strict: false,
+        })
+        .expect("stat directory");
+    match directory.output {
+        AutonomousToolOutput::Stat(output) => {
+            assert_eq!(output.path_kind, AutonomousStatKind::Directory);
+            assert!(output.size.is_none());
+            assert!(output.sha256.is_none());
+            assert!(output.hash_omitted_reason.is_some());
+            assert!(output
+                .git_status
+                .iter()
+                .any(|entry| entry.path == "src/tracked.txt"));
+        }
+        other => panic!("unexpected directory stat output: {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn tool_runtime_stat_reports_symlink_targets_without_following_by_default() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    std::os::unix::fs::symlink("src/tracked.txt", repo_root.join("tracked-link.txt"))
+        .expect("create symlink");
+
+    let runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let link = runtime
+        .stat(AutonomousStatRequest {
+            path: "tracked-link.txt".into(),
+            follow_symlinks: false,
+            include_git_status: false,
+            include_hash: true,
+            strict: false,
+        })
+        .expect("stat symlink");
+    match link.output {
+        AutonomousToolOutput::Stat(output) => {
+            assert_eq!(output.path_kind, AutonomousStatKind::Symlink);
+            assert_eq!(output.symlink_target.as_deref(), Some("src/tracked.txt"));
+            assert!(output.sha256.is_none());
+        }
+        other => panic!("unexpected symlink stat output: {other:?}"),
+    }
+
+    let followed = runtime
+        .stat(AutonomousStatRequest {
+            path: "tracked-link.txt".into(),
+            follow_symlinks: true,
+            include_git_status: false,
+            include_hash: true,
+            strict: false,
+        })
+        .expect("stat followed symlink");
+    match followed.output {
+        AutonomousToolOutput::Stat(output) => {
+            assert_eq!(output.path_kind, AutonomousStatKind::File);
+            assert_eq!(output.resolved_path.as_deref(), Some("src/tracked.txt"));
+            assert_eq!(output.sha256.as_deref().map(str::len), Some(64));
+        }
+        other => panic!("unexpected followed symlink stat output: {other:?}"),
+    }
+}
+
+#[test]
 fn tool_runtime_git_diff_reports_truncation_truthfully() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
@@ -2436,6 +4456,8 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             mode: Some(AutonomousReadMode::Text),
             start_line: None,
             line_count: None,
+            cursor: None,
+            around_pattern: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,
@@ -2471,8 +4493,11 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
     let empty_find = runtime
         .find(AutonomousFindRequest {
             pattern: "**/*.md".into(),
+            mode: None,
             path: Some("src".into()),
             max_depth: None,
+            max_results: None,
+            cursor: None,
         })
         .expect("zero-match find should still succeed");
     match empty_find.output {
@@ -2483,8 +4508,11 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
     let invalid_find_pattern = runtime
         .find(AutonomousFindRequest {
             pattern: "[*.txt".into(),
+            mode: None,
             path: None,
             max_depth: None,
+            max_results: None,
+            cursor: None,
         })
         .expect_err("malformed find patterns should be rejected");
     assert_eq!(
@@ -2495,8 +4523,11 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
     let invalid_find_scope = runtime
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
+            mode: None,
             path: Some("../outside".into()),
             max_depth: None,
+            max_results: None,
+            cursor: None,
         })
         .expect_err("find path traversal should be denied");
     assert_eq!(invalid_find_scope.code, "autonomous_tool_path_denied");
@@ -2523,6 +4554,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         })
         .expect_err("out-of-range edit should be rejected");
     assert_eq!(invalid_range.code, "autonomous_tool_edit_range_invalid");
@@ -2537,6 +4569,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         })
         .expect("first deterministic edit succeeds");
     let deterministic_mismatch = runtime
@@ -2549,6 +4582,7 @@ fn tool_runtime_rejects_malformed_inputs_and_reports_error_paths_deterministical
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         })
         .expect_err("repeating stale edit should fail deterministically");
     assert_eq!(
@@ -2688,6 +4722,59 @@ fn tool_runtime_command_policy_uses_active_approval_snapshot_only() {
             assert_eq!(output.policy.code, "policy_allowed_repo_scoped_command");
         }
         other => panic!("unexpected yolo command output: {other:?}"),
+    }
+}
+
+#[test]
+fn tool_runtime_command_persists_large_output_artifacts_and_metadata() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let runtime =
+        runtime_for_project_with_approval(&app, &project_id, RuntimeRunApprovalModeDto::Yolo);
+    let lines = (0..260)
+        .map(|index| format!("command artifact continuation line {index:03}"))
+        .collect::<Vec<_>>();
+    let print_steps = lines
+        .iter()
+        .map(|line| runtime_shell::script_print_line(line))
+        .collect::<Vec<_>>();
+
+    let result = runtime
+        .command(AutonomousCommandRequest {
+            argv: shell_argv(runtime_shell::script_join_steps(&print_steps)),
+            cwd: None,
+            timeout_ms: Some(5_000),
+        })
+        .expect("large command output succeeds");
+
+    match result.output {
+        AutonomousToolOutput::Command(output) => {
+            assert_eq!(result.tool_name, "command");
+            assert_eq!(output.intent, "general_execution");
+            assert_eq!(output.exit_code, Some(0));
+            assert!(output.stdout_truncated);
+            let artifact = output.output_artifact.expect("command output artifact");
+            let artifact_path = Path::new(&artifact.path);
+            assert!(artifact_path.is_file());
+            assert!(artifact_path.starts_with(db::project_app_data_dir_for_repo(&repo_root)));
+            assert!(artifact.stdout_bytes > 2_000);
+            assert!(artifact.truncated);
+            assert!(!artifact.redacted);
+            assert!(output
+                .suggested_next_actions
+                .iter()
+                .any(|action| action.contains("outputArtifact.path")));
+            let artifact_json: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(artifact_path).expect("read artifact"))
+                    .expect("command artifact json");
+            assert_eq!(artifact_json["schema"], "xero.command_output_artifact.v1");
+            assert!(artifact_json["stdout"]
+                .as_str()
+                .expect("artifact stdout")
+                .contains("command artifact continuation line 120"));
+        }
+        other => panic!("unexpected command output: {other:?}"),
     }
 }
 
@@ -2927,8 +5014,11 @@ fn tool_runtime_reports_truncation_for_bounded_search_and_find_results() {
     let find = runtime
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
+            mode: None,
             path: Some("fixtures".into()),
             max_depth: None,
+            max_results: None,
+            cursor: None,
         })
         .expect("bounded find succeeds");
     match find.output {
@@ -2956,6 +5046,8 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
             mode: None,
             start_line: None,
             line_count: None,
+            cursor: None,
+            around_pattern: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,
@@ -2971,6 +5063,10 @@ fn tool_runtime_denies_path_traversal_and_out_of_repo_cwds() {
         .write(AutonomousWriteRequest {
             path: "../outside.txt".into(),
             content: "denied".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
         })
         .expect_err("out-of-root write should be denied");
     assert_eq!(write_error.code, "autonomous_tool_path_denied");
@@ -3027,8 +5123,11 @@ fn tool_runtime_search_and_find_skip_symlink_escapes() {
     let find = runtime
         .find(AutonomousFindRequest {
             pattern: "**/*.txt".into(),
+            mode: None,
             path: None,
             max_depth: None,
+            max_results: None,
+            cursor: None,
         })
         .expect("find should skip symlink escapes");
     match find.output {
@@ -3128,6 +5227,8 @@ fn tool_runtime_denies_symlink_escapes() {
             mode: None,
             start_line: None,
             line_count: None,
+            cursor: None,
+            around_pattern: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,

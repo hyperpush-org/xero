@@ -1233,22 +1233,24 @@ pub(crate) fn update_owned_runtime_run_controls(
         &snapshot.run.project_id,
         active.runtime_agent_id,
     )?;
-    if let Some(requested_agent_id) = controls
-        .as_ref()
-        .map(|controls| controls.runtime_agent_id)
-        .filter(|agent_id| agent_id != &active.runtime_agent_id)
-    {
-        return Err(CommandError::user_fixable(
-            "runtime_agent_switch_blocked",
-            format!(
-                "Xero cannot switch active runtime run `{}` from {} to {}. Stop the current run before changing agents.",
-                snapshot.run.run_id,
-                active.runtime_agent_id.label(),
-                requested_agent_id.label()
-            ),
-        ));
-    }
     let base_pending = snapshot.controls.pending.as_ref();
+    let requested_definition = match controls.as_ref() {
+        Some(controls) => {
+            let selection = project_store::resolve_agent_definition_for_run(
+                repo_root,
+                controls.agent_definition_id.as_deref(),
+                controls.runtime_agent_id,
+            )?;
+            ensure_runtime_agent_available(selection.runtime_agent_id)?;
+            project_store::ensure_runtime_agent_allowed_for_project(
+                repo_root,
+                &snapshot.run.project_id,
+                selection.runtime_agent_id,
+            )?;
+            Some(selection)
+        }
+        None => None,
+    };
     let model_id = controls
         .as_ref()
         .map(|controls| controls.model_id.clone())
@@ -1264,15 +1266,35 @@ pub(crate) fn update_owned_runtime_run_controls(
         .and_then(|controls| controls.thinking_effort.clone())
         .or_else(|| base_pending.and_then(|pending| pending.thinking_effort.clone()))
         .or_else(|| active.thinking_effort.clone());
-    let approval_mode = controls
+    let approval_mode = match (&controls, &requested_definition) {
+        (Some(controls), Some(selection)) => selection
+            .allowed_approval_modes
+            .iter()
+            .any(|allowed| allowed == &controls.approval_mode)
+            .then(|| controls.approval_mode.clone())
+            .unwrap_or_else(|| selection.default_approval_mode.clone()),
+        _ => base_pending
+            .map(|pending| pending.approval_mode.clone())
+            .unwrap_or_else(|| active.approval_mode.clone()),
+    };
+    let runtime_agent_id = requested_definition
         .as_ref()
-        .map(|controls| controls.approval_mode.clone())
-        .or_else(|| base_pending.map(|pending| pending.approval_mode.clone()))
-        .unwrap_or_else(|| active.approval_mode.clone());
-    let runtime_agent_id = active.runtime_agent_id;
+        .map(|selection| selection.runtime_agent_id)
+        .or_else(|| base_pending.map(|pending| pending.runtime_agent_id))
+        .unwrap_or(active.runtime_agent_id);
+    let agent_definition_id = requested_definition
+        .as_ref()
+        .map(|selection| Some(selection.definition_id.clone()))
+        .or_else(|| base_pending.map(|pending| pending.agent_definition_id.clone()))
+        .unwrap_or_else(|| active.agent_definition_id.clone());
+    let agent_definition_version = requested_definition
+        .as_ref()
+        .map(|selection| Some(selection.version))
+        .or_else(|| base_pending.map(|pending| pending.agent_definition_version))
+        .unwrap_or(active.agent_definition_version);
     let plan_mode_required = controls
         .as_ref()
-        .map(|controls| controls.plan_mode_required)
+        .map(|controls| controls.plan_mode_required && runtime_agent_id.allows_plan_gate())
         .or_else(|| base_pending.map(|pending| pending.plan_mode_required))
         .unwrap_or(active.plan_mode_required);
     let queued_prompt = prompt
@@ -1302,8 +1324,8 @@ pub(crate) fn update_owned_runtime_run_controls(
         active: active.clone(),
         pending: Some(RuntimeRunPendingControlSnapshotRecord {
             runtime_agent_id,
-            agent_definition_id: active.agent_definition_id.clone(),
-            agent_definition_version: active.agent_definition_version,
+            agent_definition_id,
+            agent_definition_version,
             provider_profile_id: provider_profile_id
                 .map(str::trim)
                 .filter(|value| !value.is_empty())

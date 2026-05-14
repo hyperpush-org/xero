@@ -294,8 +294,14 @@ pub fn repair_project_state(
     let handoffs = reconcile_agent_handoff_lineage(repo_root, project_id, checked_at)?;
     let record_store = project_record_lance::open_for_database_path(&database_path, project_id);
     let memory_store = agent_memory_lance::open_for_database_path(&database_path, project_id);
-    let project_record_health = record_store.health_report()?;
-    let agent_memory_health = memory_store.health_report()?;
+    let mut project_record_health = record_store.health_report()?;
+    if project_record_health.maintenance_recommended {
+        project_record_health = record_store.optimize_for_maintenance()?.after;
+    }
+    let mut agent_memory_health = memory_store.health_report()?;
+    if agent_memory_health.maintenance_recommended {
+        agent_memory_health = memory_store.optimize_for_maintenance()?.after;
+    }
     let lance_dir = project_record_lance::dataset_dir_for_database_path(&database_path);
 
     let mut diagnostics = Vec::new();
@@ -948,9 +954,61 @@ mod tests {
             .expect("repair project state");
         assert!(repair.sqlite_checkpointed);
         assert_eq!(repair.outbox_inspected_count, 0);
+        assert_eq!(repair.project_record_health_status, "healthy");
+        assert_eq!(repair.agent_memory_health_status, "healthy");
+        assert!(repair.diagnostics.is_empty());
         assert!(repair
             .database_path
             .starts_with(repo_root.parent().expect("repo parent").join("app-data")));
         assert!(!repo_root.join(".xero").exists());
+    }
+
+    #[test]
+    fn s43_project_state_repair_compacts_lance_maintenance_before_reporting_health() {
+        project_record_lance::reset_connection_cache_for_tests();
+        agent_memory_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-state-fragmented-repair";
+        let database_path = create_project_database(&repo_root, project_id);
+
+        for index in 0..32 {
+            insert_project_record(
+                &repo_root,
+                &backup_project_record(
+                    project_id,
+                    &format!("project-record-fragment-{index:02}"),
+                    &format!("Fragmented record {index} that repair should compact."),
+                    &format!("2026-05-09T00:00:{index:02}Z"),
+                ),
+            )
+            .expect("insert fragmented project record");
+        }
+
+        let record_store = project_record_lance::open_for_database_path(&database_path, project_id);
+        let before = record_store
+            .health_report()
+            .expect("project-record health before repair");
+        assert!(
+            before.maintenance_recommended,
+            "expected fragmented Lance table to request maintenance, got {before:?}"
+        );
+        assert_eq!(before.status, "degraded");
+
+        let repair = repair_project_state(&repo_root, project_id, "2026-05-09T00:02:00Z")
+            .expect("repair fragmented project state");
+        assert_eq!(repair.project_record_health_status, "healthy");
+        assert_eq!(repair.agent_memory_health_status, "healthy");
+        assert!(repair
+            .diagnostics
+            .iter()
+            .all(|diagnostic| { diagnostic.code != "project_state_repair_lance_degraded" }));
+
+        let after = record_store
+            .health_report()
+            .expect("project-record health after repair");
+        assert!(!after.maintenance_recommended);
+        assert_eq!(after.status, "healthy");
     }
 }

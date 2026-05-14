@@ -102,6 +102,20 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
     void loadList()
   }, [loadList])
 
+  useEffect(() => {
+    if (!actionMessage) return
+    const timeout = window.setTimeout(() => setActionMessage(null), 5000)
+    return () => window.clearTimeout(timeout)
+  }, [actionMessage])
+
+  useEffect(() => {
+    if (!listState.errorMessage) return
+    const timeout = window.setTimeout(() => {
+      setListState((current) => ({ ...current, errorMessage: null }))
+    }, 5000)
+    return () => window.clearTimeout(timeout)
+  }, [listState.errorMessage])
+
   const backups = listState.response?.backups ?? []
   const userBackups = useMemo(() => backups.filter((entry) => !entry.preRestore), [backups])
   const preRestoreBackups = useMemo(() => backups.filter((entry) => entry.preRestore), [backups])
@@ -184,25 +198,26 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
   const isLoading = listState.status === "loading"
 
   const headerActions = (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1">
       <Button
-        size="sm"
-        variant="outline"
-        className="h-8 gap-1.5 text-[12px]"
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 text-muted-foreground hover:text-foreground"
         onClick={() => void loadList()}
         disabled={isLoading || !projectId || !adapter}
         aria-label="Refresh project state backups"
+        title="Refresh"
       >
         {isLoading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
           <RefreshCw className="h-3.5 w-3.5" />
         )}
-        Refresh
       </Button>
       <Button
         size="sm"
-        className="h-8 gap-1.5 text-[12px]"
+        className="h-8 gap-1.5 px-3 text-[12.5px] font-medium"
         onClick={() => void handleCreate()}
         disabled={pendingAction !== null || !projectId || !adapter}
         aria-label="Create project state backup"
@@ -218,23 +233,32 @@ export function ProjectStateSection({ projectId, projectLabel, adapter }: Projec
   )
 
   const repairFooter = (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 px-1 pt-3 text-[11.5px] text-muted-foreground">
-      <span className="inline-flex items-center gap-1.5">
-        <Wrench className="h-3.5 w-3.5 text-muted-foreground/70" aria-hidden />
-        Project state looks corrupted?
-      </span>
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 rounded-lg border border-border/60 bg-card/30 px-4 py-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-secondary/40 text-muted-foreground">
+          <Wrench className="h-3.5 w-3.5" aria-hidden />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[12.5px] font-medium text-foreground">
+            Project state looks corrupted?
+          </p>
+          <p className="mt-0.5 text-[11.5px] leading-[1.5] text-muted-foreground">
+            Reconcile the outbox, handoff log, and record health without touching backups.
+          </p>
+        </div>
+      </div>
       <Button
         size="sm"
-        variant="ghost"
-        className="h-7 gap-1.5 text-[11.5px] text-muted-foreground hover:text-foreground"
+        variant="outline"
+        className="h-8 gap-1.5 text-[12px]"
         onClick={() => void handleRepair()}
         disabled={pendingAction !== null || !projectId || !adapter}
         aria-label="Repair project state"
       >
         {pendingAction === "repair" ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
         ) : (
-          <Wrench className="h-3 w-3" />
+          <Wrench className="h-3.5 w-3.5" />
         )}
         Run repair
       </Button>

@@ -95,6 +95,7 @@ export * from './xero-model/usage'
 export * from './xero-model/environment'
 export * from './xero-model/developer-storage'
 export * from './xero-model/code-history'
+export * from './xero-model/wipe-data'
 
 export const projectSnapshotResponseSchema = z
   .object({

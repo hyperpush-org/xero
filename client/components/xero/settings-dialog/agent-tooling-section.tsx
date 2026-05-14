@@ -6,19 +6,29 @@ import type {
   AgentToolApplicationStyleDto,
   AgentToolingModelOverrideDto,
   AgentToolingSettingsDto,
+  ProviderCredentialDto,
+  ProviderCredentialsSnapshotDto,
+  ProviderModelCatalogDto,
   RuntimeProviderIdDto,
   UpsertAgentToolingSettingsRequestDto,
 } from "@/src/lib/xero-model"
+import { getCloudProviderDefaultProfileId } from "@/src/lib/xero-model/provider-presets"
+import {
+  buildComposerModelOptions,
+  getRuntimeProviderLabel,
+  type ComposerModelOptionView,
+} from "@/src/features/xero/use-xero-desktop-state/runtime-provider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -29,7 +39,8 @@ import { SectionHeader } from "./section-header"
 export type AgentToolingSettingsAdapter = Pick<
   XeroDesktopAdapter,
   "isDesktopRuntime" | "agentToolingSettings" | "agentToolingUpdateSettings"
->
+> &
+  Partial<Pick<XeroDesktopAdapter, "listProviderCredentials" | "getProviderModelCatalog">>
 
 interface AgentToolingSectionProps {
   adapter?: AgentToolingSettingsAdapter
@@ -68,20 +79,6 @@ const STYLE_OPTIONS: readonly StyleOption[] = [
   },
 ] as const
 
-const PROVIDER_OPTIONS: ReadonlyArray<{ value: RuntimeProviderIdDto; label: string }> = [
-  { value: "anthropic", label: "Anthropic" },
-  { value: "openrouter", label: "OpenRouter" },
-  { value: "openai_codex", label: "OpenAI Codex" },
-  { value: "openai_api", label: "OpenAI API" },
-  { value: "github_models", label: "GitHub Models" },
-  { value: "deepseek", label: "DeepSeek" },
-  { value: "ollama", label: "Ollama" },
-  { value: "azure_openai", label: "Azure OpenAI" },
-  { value: "gemini_ai_studio", label: "Gemini (AI Studio)" },
-  { value: "bedrock", label: "AWS Bedrock" },
-  { value: "vertex", label: "Google Vertex" },
-] as const
-
 const FALLBACK_SETTINGS: AgentToolingSettingsDto = {
   globalDefault: "balanced",
   modelOverrides: [],
@@ -90,6 +87,10 @@ const FALLBACK_SETTINGS: AgentToolingSettingsDto = {
 
 type LoadState = "idle" | "loading" | "ready" | "error"
 type SaveState = "idle" | "saving"
+
+function profileIdForProvider(providerId: ProviderCredentialDto["providerId"]): string {
+  return getCloudProviderDefaultProfileId(providerId) ?? providerId
+}
 
 export function AgentToolingSection({
   adapter,
@@ -102,6 +103,8 @@ export function AgentToolingSection({
   const [groupingSaveState, setGroupingSaveState] = useState<SaveState>("idle")
   const [error, setError] = useState<string | null>(null)
   const [pendingOverrideKey, setPendingOverrideKey] = useState<string | null>(null)
+  const [credentials, setCredentials] = useState<ProviderCredentialsSnapshotDto | null>(null)
+  const [catalogs, setCatalogs] = useState<Record<string, ProviderModelCatalogDto>>({})
 
   const canUseAdapter = Boolean(
     adapter?.isDesktopRuntime?.() &&
@@ -112,20 +115,48 @@ export function AgentToolingSection({
   const load = useCallback(() => {
     if (!canUseAdapter || !adapter?.agentToolingSettings) {
       setSettings(FALLBACK_SETTINGS)
+      setCredentials(null)
+      setCatalogs({})
       setLoadState("ready")
       return
     }
 
     setLoadState("loading")
     setError(null)
-    adapter
-      .agentToolingSettings()
-      .then((next) => {
-        setSettings(next)
+
+    const settingsPromise = adapter.agentToolingSettings()
+    const credentialsPromise = adapter.listProviderCredentials
+      ? adapter.listProviderCredentials().catch(() => null)
+      : Promise.resolve(null)
+
+    settingsPromise
+      .then(async (nextSettings) => {
+        const snapshot = await credentialsPromise
+        const nextCatalogs: Record<string, ProviderModelCatalogDto> = {}
+        if (snapshot && adapter.getProviderModelCatalog) {
+          await Promise.all(
+            snapshot.credentials.map(async (credential) => {
+              const profileId = profileIdForProvider(credential.providerId)
+              try {
+                const catalog = await adapter.getProviderModelCatalog!(profileId, {
+                  forceRefresh: false,
+                })
+                nextCatalogs[profileId] = catalog
+              } catch {
+                // Skip providers whose catalog fetch fails; the override form simply hides those models.
+              }
+            }),
+          )
+        }
+        setSettings(nextSettings)
+        setCredentials(snapshot)
+        setCatalogs(nextCatalogs)
         setLoadState("ready")
       })
       .catch((loadError) => {
         setSettings(FALLBACK_SETTINGS)
+        setCredentials(null)
+        setCatalogs({})
         setError(getErrorMessage(loadError, "Xero could not load Agent Tooling settings."))
         setLoadState("error")
       })
@@ -232,6 +263,11 @@ export function AgentToolingSection({
     [settings.modelOverrides],
   )
 
+  const composerModelOptions = useMemo(
+    () => buildComposerModelOptions(credentials, catalogs),
+    [credentials, catalogs],
+  )
+
   return (
     <div className="flex flex-col gap-6">
       <SectionHeader
@@ -289,6 +325,7 @@ export function AgentToolingSection({
             globalDefault={settings.globalDefault}
             disabled={isBusy}
             pendingOverrideKey={pendingOverrideKey}
+            availableModels={composerModelOptions}
             onUpsertOverride={upsertOverride}
             onRemoveOverride={removeOverride}
           />
@@ -421,6 +458,7 @@ function ModelOverridesPanel({
   globalDefault,
   disabled,
   pendingOverrideKey,
+  availableModels,
   onUpsertOverride,
   onRemoveOverride,
 }: {
@@ -428,6 +466,7 @@ function ModelOverridesPanel({
   globalDefault: AgentToolApplicationStyleDto
   disabled: boolean
   pendingOverrideKey: string | null
+  availableModels: ComposerModelOptionView[]
   onUpsertOverride: (providerId: string, modelId: string, style: AgentToolApplicationStyleDto) => void
   onRemoveOverride: (providerId: string, modelId: string) => void
 }) {
@@ -460,6 +499,7 @@ function ModelOverridesPanel({
                 entry={entry}
                 disabled={disabled}
                 saving={pendingOverrideKey === key}
+                availableModels={availableModels}
                 onChangeStyle={(style) => onUpsertOverride(entry.providerId, entry.modelId, style)}
                 onRemove={() => onRemoveOverride(entry.providerId, entry.modelId)}
               />
@@ -468,7 +508,12 @@ function ModelOverridesPanel({
         </ul>
       )}
 
-      <AddOverrideForm disabled={disabled} onSubmit={onUpsertOverride} />
+      <AddOverrideForm
+        disabled={disabled}
+        availableModels={availableModels}
+        existingOverrides={overrides}
+        onSubmit={onUpsertOverride}
+      />
     </section>
   )
 }
@@ -477,22 +522,27 @@ function OverrideRow({
   entry,
   disabled,
   saving,
+  availableModels,
   onChangeStyle,
   onRemove,
 }: {
   entry: AgentToolingModelOverrideDto
   disabled: boolean
   saving: boolean
+  availableModels: ComposerModelOptionView[]
   onChangeStyle: (style: AgentToolApplicationStyleDto) => void
   onRemove: () => void
 }) {
-  const providerLabel =
-    PROVIDER_OPTIONS.find((option) => option.value === entry.providerId)?.label ?? entry.providerId
+  const matchingOption = availableModels.find(
+    (option) => option.providerId === entry.providerId && option.modelId === entry.modelId,
+  )
+  const providerLabel = matchingOption?.providerLabel ?? getRuntimeProviderLabel(entry.providerId)
+  const modelLabel = matchingOption?.displayName ?? entry.modelId
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-semibold text-foreground">{entry.modelId}</p>
+        <p className="truncate text-[13px] font-semibold text-foreground">{modelLabel}</p>
         <p className="mt-0.5 text-[12px] text-muted-foreground">{providerLabel}</p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -505,7 +555,7 @@ function OverrideRow({
           onValueChange={(value) => onChangeStyle(value as AgentToolApplicationStyleDto)}
         >
           <SelectTrigger
-            aria-label={`Style for ${providerLabel} ${entry.modelId}`}
+            aria-label={`Style for ${providerLabel} ${modelLabel}`}
             className="h-9 w-auto min-w-[170px] text-[12.5px]"
             size="sm"
           >
@@ -524,7 +574,7 @@ function OverrideRow({
           variant="ghost"
           size="sm"
           className="h-9 w-9 p-0 text-muted-foreground hover:text-destructive"
-          aria-label={`Remove override for ${providerLabel} ${entry.modelId}`}
+          aria-label={`Remove override for ${providerLabel} ${modelLabel}`}
           disabled={disabled}
           onClick={onRemove}
         >
@@ -535,30 +585,81 @@ function OverrideRow({
   )
 }
 
+interface ProviderModelGroup {
+  providerId: RuntimeProviderIdDto
+  providerLabel: string
+  models: ComposerModelOptionView[]
+}
+
+function groupModelsByProvider(models: ComposerModelOptionView[]): ProviderModelGroup[] {
+  const byProvider = new Map<RuntimeProviderIdDto, ProviderModelGroup>()
+  for (const model of models) {
+    const existing = byProvider.get(model.providerId)
+    if (existing) {
+      existing.models.push(model)
+    } else {
+      byProvider.set(model.providerId, {
+        providerId: model.providerId,
+        providerLabel: model.providerLabel,
+        models: [model],
+      })
+    }
+  }
+  return [...byProvider.values()].sort((left, right) =>
+    left.providerLabel.localeCompare(right.providerLabel),
+  )
+}
+
 function AddOverrideForm({
   disabled,
+  availableModels,
+  existingOverrides,
   onSubmit,
 }: {
   disabled: boolean
+  availableModels: ComposerModelOptionView[]
+  existingOverrides: AgentToolingModelOverrideDto[]
   onSubmit: (providerId: string, modelId: string, style: AgentToolApplicationStyleDto) => void
 }) {
-  const [providerId, setProviderId] = useState<RuntimeProviderIdDto>("anthropic")
-  const [modelId, setModelId] = useState("")
+  const providerGroups = useMemo(() => groupModelsByProvider(availableModels), [availableModels])
+  const overrideKeys = useMemo(
+    () => new Set(existingOverrides.map((entry) => makeOverrideKey(entry.providerId, entry.modelId))),
+    [existingOverrides],
+  )
+  const selectableModels = useMemo(
+    () => availableModels.filter((model) => !overrideKeys.has(makeOverrideKey(model.providerId, model.modelId))),
+    [availableModels, overrideKeys],
+  )
+
+  const [selectionKey, setSelectionKey] = useState<string>("")
   const [style, setStyle] = useState<AgentToolApplicationStyleDto>("balanced")
-  const [validation, setValidation] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (selectionKey && selectableModels.some((model) => model.selectionKey === selectionKey)) {
+      return
+    }
+    setSelectionKey(selectableModels[0]?.selectionKey ?? "")
+  }, [selectableModels, selectionKey])
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const trimmedModelId = modelId.trim()
-    if (trimmedModelId.length === 0) {
-      setValidation("Enter a model id before saving the override.")
-      return
-    }
-    setValidation(null)
-    onSubmit(providerId, trimmedModelId, style)
-    setModelId("")
+    const chosen = selectableModels.find((model) => model.selectionKey === selectionKey)
+    if (!chosen) return
+    onSubmit(chosen.providerId, chosen.modelId, style)
     setStyle("balanced")
   }
+
+  if (availableModels.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border/60 bg-secondary/10 px-4 py-5 text-center">
+        <p className="text-[12.5px] leading-[1.5] text-muted-foreground">
+          Configure a provider in <span className="font-medium text-foreground">Providers</span> to add per-model overrides.
+        </p>
+      </div>
+    )
+  }
+
+  const canSubmit = !disabled && selectableModels.length > 0 && selectionKey.length > 0
 
   return (
     <form
@@ -574,47 +675,49 @@ function AddOverrideForm({
       </header>
 
       <div className="flex flex-col gap-3 px-4 py-3.5">
-        <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-[1fr_1.4fr_1fr_auto]">
+        <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-[2fr_1fr_auto]">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="agent-tooling-add-provider" className="text-[12px] font-medium text-muted-foreground">
-              Provider
+            <Label htmlFor="agent-tooling-add-model" className="text-[12px] font-medium text-muted-foreground">
+              Model
             </Label>
             <Select
-              value={providerId}
-              disabled={disabled}
-              onValueChange={(value) => setProviderId(value as RuntimeProviderIdDto)}
+              value={selectionKey}
+              disabled={disabled || selectableModels.length === 0}
+              onValueChange={(value) => setSelectionKey(value)}
             >
               <SelectTrigger
-                id="agent-tooling-add-provider"
-                aria-label="Provider"
+                id="agent-tooling-add-model"
+                aria-label="Model"
                 className="h-9 text-[12.5px]"
                 size="sm"
               >
-                <SelectValue />
+                <SelectValue
+                  placeholder={
+                    selectableModels.length === 0
+                      ? "Every configured model already has an override"
+                      : "Select a configured model"
+                  }
+                />
               </SelectTrigger>
               <SelectContent>
-                {PROVIDER_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
+                {providerGroups.map((group) => {
+                  const groupModels = group.models.filter(
+                    (model) => !overrideKeys.has(makeOverrideKey(model.providerId, model.modelId)),
+                  )
+                  if (groupModels.length === 0) return null
+                  return (
+                    <SelectGroup key={group.providerId}>
+                      <SelectLabel>{group.providerLabel}</SelectLabel>
+                      {groupModels.map((model) => (
+                        <SelectItem key={model.selectionKey} value={model.selectionKey}>
+                          {model.displayName}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )
+                })}
               </SelectContent>
             </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="agent-tooling-add-model" className="text-[12px] font-medium text-muted-foreground">
-              Model id
-            </Label>
-            <Input
-              id="agent-tooling-add-model"
-              placeholder="e.g. claude-opus-4-7"
-              value={modelId}
-              disabled={disabled}
-              onChange={(event) => setModelId(event.target.value)}
-              className="h-9 text-[12.5px]"
-              spellCheck={false}
-              autoComplete="off"
-            />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="agent-tooling-add-style" className="text-[12px] font-medium text-muted-foreground">
@@ -646,15 +749,12 @@ function AddOverrideForm({
             type="submit"
             size="sm"
             className="h-9 gap-1.5 px-3.5 text-[12.5px] md:self-end"
-            disabled={disabled}
+            disabled={!canSubmit}
           >
             <Plus className="h-3.5 w-3.5" />
             Add override
           </Button>
         </div>
-        {validation ? (
-          <p className="text-[12.5px] leading-[1.5] text-destructive">{validation}</p>
-        ) : null}
       </div>
     </form>
   )

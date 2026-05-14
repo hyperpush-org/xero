@@ -13,6 +13,10 @@ import type {
   SkillRegistryMutationStatus,
 } from "@/src/features/xero/use-xero-desktop-state"
 import type { AgentToolingSettingsAdapter } from "@/components/xero/settings-dialog/agent-tooling-section"
+import type {
+  DangerSettingsAdapter,
+  DangerZoneProject,
+} from "@/components/xero/settings-dialog/account-danger-zone"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
 import type { MemoryReviewAdapter } from "@/components/xero/settings-dialog/memory-review-section"
 import type { ProjectStateAdapter } from "@/components/xero/settings-dialog/project-state-section"
@@ -349,6 +353,8 @@ export interface SettingsDialogProps {
   onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
   memoryReviewAdapter?: MemoryReviewAdapter | null
   projectStateAdapter?: ProjectStateAdapter | null
+  dangerAdapter?: DangerSettingsAdapter | null
+  projects?: DangerZoneProject[]
   projectStartTargets?: StartTargetDto[]
   onUpdateProjectStartTargets?: (
     targets: StartTargetInputDto[],
@@ -470,6 +476,8 @@ export function SettingsDialog({
   onToolCallGroupingPreferenceChange,
   memoryReviewAdapter = null,
   projectStateAdapter = null,
+  dangerAdapter = null,
+  projects = [],
   projectStartTargets = [],
   onUpdateProjectStartTargets,
   resolveProjectRunnerSuggestRequest,
@@ -629,6 +637,9 @@ export function SettingsDialog({
           error={githubAuthError ?? null}
           onLogin={() => onGithubLogin?.()}
           onLogout={() => onGithubLogout?.()}
+          dangerAdapter={dangerAdapter}
+          dangerProjects={projects}
+          activeProjectId={agent?.project.id ?? null}
         />
       )
     }

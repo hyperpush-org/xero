@@ -255,11 +255,6 @@ interface ConversationSectionProps {
   onUndoChangeGroup?: (request: CodeUndoRequest) => void
   onReturnSessionToHere?: (request: ReturnSessionToHereUiRequest) => void
   /**
-   * When provided, the conversation surfaces a "What this agent can see right now"
-   * affordance that opens the knowledge-inspection panel for the active run.
-   */
-  onOpenKnowledgeInspection?: () => void
-  /**
    * When provided, the inline same-session handoff notice rows and the footer
    * handoff completion notice become clickable and open the handoff context
    * summary dialog.
@@ -344,7 +339,6 @@ export const ConversationSection = memo(function ConversationSection({
   returnSessionToHereStates = {},
   onUndoChangeGroup,
   onReturnSessionToHere,
-  onOpenKnowledgeInspection,
   onOpenHandoffSummary,
   footerHandoffSourceRunId = null,
 }: ConversationSectionProps) {
@@ -375,10 +369,6 @@ export const ConversationSection = memo(function ConversationSection({
     !showRunFailure && !hasInlineHandoffNotice && isHandoffCompletion(streamCompletion)
   const showAnyNotice = showRunFailure || showStreamFailure || showStreamIssue || showHandoffNotice
   const showAnyTurn = visibleTurns.length > 0
-  const getCopyableConversationText = useCallback(
-    () => formatConversationForCopy(visibleTurns),
-    [visibleTurns],
-  )
 
   const lastTurn = visibleTurns.length > 0 ? visibleTurns[visibleTurns.length - 1] : null
   const isLastTurnStreamingAssistant = Boolean(
@@ -455,20 +445,6 @@ export const ConversationSection = memo(function ConversationSection({
               </li>
             ) : null}
           </ul>
-        ) : null}
-        {showAnyTurn ? (
-          <div className="mt-2 flex items-center justify-end gap-1.5">
-            {onOpenKnowledgeInspection ? (
-              <KnowledgeInspectionTrigger onOpen={onOpenKnowledgeInspection} variant="dense" />
-            ) : null}
-            <CopyTextButton
-              getText={getCopyableConversationText}
-              label="Copy visible conversation"
-              copiedLabel="Copied visible conversation"
-              tooltip="Copy conversation"
-              className="h-6 w-6 rounded-full text-muted-foreground/75 hover:text-foreground"
-            />
-          </div>
         ) : null}
       </section>
     )
@@ -554,150 +530,28 @@ export const ConversationSection = memo(function ConversationSection({
           ) : null}
         </ul>
       ) : null}
-
-      {showAnyTurn ? (
-        <div className="flex items-center justify-end gap-1.5 pt-1">
-          {onOpenKnowledgeInspection ? (
-            <KnowledgeInspectionTrigger onOpen={onOpenKnowledgeInspection} variant="default" />
-          ) : null}
-          <CopyTextButton
-            getText={getCopyableConversationText}
-            label="Copy visible conversation"
-            copiedLabel="Copied visible conversation"
-            tooltip="Copy conversation"
-            className={cn(
-              'h-5 w-5 rounded-full text-muted-foreground/55 hover:text-foreground',
-              'opacity-50 hover:opacity-100',
-            )}
-          />
-        </div>
-      ) : null}
     </section>
   )
 })
 
-function KnowledgeInspectionTrigger({
-  onOpen,
-  variant,
-}: {
-  onOpen: () => void
-  variant: 'default' | 'dense'
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label="See what this agent can see right now"
-      className={cn(
-        'inline-flex items-center gap-1 rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        variant === 'dense'
-          ? 'h-6 px-2 text-[10.5px]'
-          : 'h-5 px-1.5 text-[10.5px] opacity-60 hover:opacity-100',
-      )}
-    >
-      <Brain className="h-3 w-3" aria-hidden="true" />
-      <span>What this agent can see</span>
-    </button>
-  )
-}
-
-function formatConversationForCopy(turns: readonly ConversationTurn[]): string {
-  return turns
-    .map((turn) => {
-      switch (turn.kind) {
-        case 'message': {
-          if (turn.role === 'assistant') {
-            return splitAssistantText(turn.text)
-              .map((segment) => {
-                const segmentText = segment.text.trim()
-                if (segmentText.length === 0) return ''
-                return `${segment.kind === 'thinking' ? 'Thoughts' : 'Agent'}:\n${segmentText}`
-              })
-              .filter(Boolean)
-              .join('\n\n')
-          }
-          const parts = [turn.text.trim()]
-          if (turn.attachments && turn.attachments.length > 0) {
-            const attachmentNames = turn.attachments
-              .map((attachment) => attachment.originalName.trim())
-              .filter(Boolean)
-            if (attachmentNames.length > 0) {
-              parts.push(`Attachments: ${attachmentNames.join(', ')}`)
-            }
-          }
-          const body = parts.filter(Boolean).join('\n')
-          return body.length > 0 ? `${turn.role === 'user' ? 'You' : 'Agent'}:\n${body}` : ''
-        }
-        case 'thinking':
-          return turn.text.trim().length > 0 ? `Thoughts:\n${turn.text.trim()}` : ''
-        case 'action':
-          return formatActionForCopy('Tool', turn.title, turn.detail, turn.detailRows)
-        case 'action_group': {
-          const groupLines = [
-            formatActionForCopy('Tools', turn.title, turn.detail, []),
-            ...turn.actions.map((action) =>
-              formatActionForCopy('Tool', action.title, action.detail, action.detailRows),
-            ),
-          ]
-          return groupLines.filter(Boolean).join('\n\n')
-        }
-        case 'file_change':
-          return formatActionForCopy('File change', turn.title, turn.detail, [])
-        case 'failure':
-          return `Agent run failed:\n${turn.message}${turn.code.trim().length > 0 ? `\nCode: ${turn.code}` : ''}`
-        case 'action_prompt':
-          return `Agent prompt:\n${turn.title}${turn.detail.trim().length > 0 ? `\n${turn.detail}` : ''}`
-        case 'handoff_notice':
-          return '— Run continued in a fresh session —'
-        case 'routing_suggestion':
-          return `Routing suggestion → ${turn.targetAgentId}: ${turn.reason}`
-        default:
-          return ''
-      }
-    })
-    .filter(Boolean)
-    .join('\n\n')
-    .trim()
-}
-
-function formatActionForCopy(
-  prefix: string,
-  title: string,
-  detail: string,
-  detailRows: ReadonlyArray<{ label: string; value: string }>,
-): string {
-  const lines = [`${prefix}: ${title.trim() || 'activity'}`]
-  if (detail.trim().length > 0) {
-    lines.push(detail.trim())
-  }
-  for (const row of detailRows) {
-    const label = row.label.trim()
-    const value = row.value.trim()
-    if (label.length > 0 && value.length > 0) {
-      lines.push(`${label}: ${value}`)
-    } else if (value.length > 0) {
-      lines.push(value)
-    }
-  }
-  return lines.join('\n')
-}
-
 interface CopyTextButtonProps {
   text?: string
-  getText?: () => string
   label: string
   copiedLabel: string
   tooltip: string
   className?: string
+  iconClassName?: string
+  size?: 'icon-xs' | 'icon-sm'
 }
 
 function CopyTextButton({
   text,
-  getText,
   label,
   copiedLabel,
   tooltip,
   className,
+  iconClassName,
+  size = 'icon-sm',
 }: CopyTextButtonProps) {
   const [copied, setCopied] = useState(false)
 
@@ -710,14 +564,14 @@ function CopyTextButton({
   const handleCopy = useCallback(async () => {
     try {
       if (!navigator.clipboard?.writeText) return
-      const resolvedText = getText ? getText() : text ?? ''
+      const resolvedText = text ?? ''
       if (resolvedText.length === 0) return
       await navigator.clipboard.writeText(resolvedText)
       setCopied(true)
     } catch {
       // Clipboard writes can be denied by WebView permissions or test runners.
     }
-  }, [getText, text])
+  }, [text])
 
   const Icon = copied ? Check : Copy
 
@@ -727,11 +581,12 @@ function CopyTextButton({
         <Button
           type="button"
           variant="ghost"
-          size="icon-sm"
+          size={size}
           aria-label={copied ? copiedLabel : label}
           onClick={handleCopy}
           className={cn(
-            'select-none rounded-md transition-opacity [&_svg]:size-[11px]',
+            'select-none rounded-md transition-opacity',
+            iconClassName ? null : '[&_svg]:size-[11px]',
             copied ? 'text-success opacity-100' : null,
             className,
           )}
@@ -739,7 +594,7 @@ function CopyTextButton({
           <Icon
             key={copied ? 'copied' : 'idle'}
             aria-hidden="true"
-            className={copied ? 'agent-copy-icon-pop' : undefined}
+            className={cn(iconClassName, copied ? 'agent-copy-icon-pop' : undefined)}
           />
         </Button>
       </TooltipTrigger>
@@ -1707,7 +1562,7 @@ function ActionCardHeader({
       <ToolStatusIcon state={state} className="shrink-0" />
       <span
         className={cn(
-          'min-w-0 shrink truncate text-[12.5px] font-medium tracking-[-0.005em]',
+          'min-w-0 shrink truncate text-[13px] font-medium tracking-[-0.005em]',
           isFailed ? 'text-destructive' : 'text-foreground',
         )}
         title={title}
@@ -1716,7 +1571,7 @@ function ActionCardHeader({
       </span>
       {hasDetail ? (
         <span
-          className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
+          className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
           title={detail}
         >
           {detail}
@@ -1728,7 +1583,7 @@ function ActionCardHeader({
         <ChevronDown
           aria-hidden="true"
           className={cn(
-            'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+            'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
             'group-hover/tool:text-muted-foreground/80',
             open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
           )}
@@ -1745,8 +1600,8 @@ function ActionCardHeader({
  * connector in the middle of the gap.
  *
  * Positioning is hard-coded to match the row layout: outer wrapper has no
- * padding, the inner row uses `px-1` (4px) and a 14px status icon, putting
- * the icon center at x = 4 + 7 = 11px and y ≈ 10px (icon vertically centered
+ * padding, the inner row uses `px-1` (4px) and a 16px status icon, putting
+ * the icon center at x = 4 + 8 = 12px and y ≈ 10px (icon vertically centered
  * in a ~20px row with `items-center`).
  */
 function ToolChainConnectors({
@@ -1762,13 +1617,13 @@ function ToolChainConnectors({
       {connectsTop ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute left-[11px] -top-[10px] h-[20px] w-px bg-muted-foreground/35"
+          className="pointer-events-none absolute left-[12px] -top-[10px] h-[20px] w-px bg-muted-foreground/35"
         />
       ) : null}
       {connectsBottom ? (
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute left-[11px] top-[10px] -bottom-[10px] w-px bg-muted-foreground/35"
+          className="pointer-events-none absolute left-[12px] top-[10px] -bottom-[10px] w-px bg-muted-foreground/35"
         />
       ) : null}
     </>
@@ -2148,14 +2003,14 @@ function ActionGroupCard({
         >
           <ToolStatusIcon state={state} className="shrink-0" />
           <span
-            className="min-w-0 shrink truncate text-[12.5px] font-medium tracking-[-0.005em] text-foreground"
+            className="min-w-0 shrink truncate text-[13px] font-medium tracking-[-0.005em] text-foreground"
             title={title}
           >
             {title}
           </span>
           {hasDetail ? (
             <span
-              className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
+              className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
               title={detail}
             >
               {detail}
@@ -2166,7 +2021,7 @@ function ActionGroupCard({
           <ChevronDown
             aria-hidden="true"
             className={cn(
-              'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+              'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
               'group-hover/tool:text-muted-foreground/80',
               open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
             )}
@@ -2181,7 +2036,7 @@ function ActionGroupCard({
           'data-[state=open]:duration-200 data-[state=closed]:duration-150',
         )}
       >
-        <ol className="ml-[22px] mt-0.5 flex flex-col gap-px border-l border-border/25 pl-2">
+        <ol className="ml-[12px] mt-0.5 flex flex-col gap-0.5 border-l border-border/60 pl-3">
           {actions.map((action, index) => (
             <ActionGroupItem key={action.id} action={action} index={index} />
           ))}
@@ -2261,7 +2116,7 @@ function ActionGroupItemHeader({
       <ToolStatusIcon state={action.state} className="shrink-0" />
       <span
         className={cn(
-          'min-w-0 shrink truncate text-[12.5px]',
+          'min-w-0 shrink truncate text-[13px]',
           isFailed ? 'text-destructive' : 'text-foreground/95',
         )}
         title={action.title}
@@ -2270,7 +2125,7 @@ function ActionGroupItemHeader({
       </span>
       {hasDetail ? (
         <span
-          className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground/75"
+          className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/75"
           title={action.detail}
         >
           {action.detail}
@@ -2282,7 +2137,7 @@ function ActionGroupItemHeader({
         <ChevronDown
           aria-hidden="true"
           className={cn(
-            'h-3 w-3 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
+            'h-3.5 w-3.5 shrink-0 text-muted-foreground/45 transition-all duration-200 ease-out',
             open ? 'rotate-180 text-muted-foreground/80' : 'rotate-0',
           )}
         />
@@ -2331,7 +2186,7 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
         {text.trim().length > 0 ? (
           <div
             className={cn(
-              'flex h-4 items-center justify-end pr-0.5',
+              'flex h-3 translate-y-1.5 items-center justify-end pr-0.5',
               'opacity-0 transition-opacity duration-150',
               'group-hover/user:opacity-100 focus-within:opacity-100',
             )}
@@ -2341,7 +2196,9 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
               label="Copy your prompt"
               copiedLabel="Copied your prompt"
               tooltip="Copy"
-              className="h-4 w-4 text-muted-foreground/60 hover:text-foreground"
+              size="icon-xs"
+              className="!size-[22px] text-muted-foreground/55 hover:text-foreground"
+              iconClassName="size-[11px]"
             />
           </div>
         ) : null}
@@ -2807,7 +2664,7 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
           : 'text-muted-foreground/55'
 
   const pop = state === 'succeeded' || state === 'failed'
-  const iconSize = state === 'pending' || state === null ? 'h-3 w-3' : 'h-3.5 w-3.5'
+  const iconSize = state === 'pending' || state === null ? 'h-3.5 w-3.5' : 'h-4 w-4'
   // Replays a soft halo only when the tool finishes — keyed on `state` so a
   // re-render with the same terminal state doesn't restart the animation,
   // but a transition (running → succeeded) does.

@@ -17,7 +17,13 @@ const REQUIRED_FIXTURES: &[HarnessEvalFixtureKind] = &[
     HarnessEvalFixtureKind::FailingTestRepair,
     HarnessEvalFixtureKind::PromptInjectionFile,
     HarnessEvalFixtureKind::StaleWorktreeConflict,
+    HarnessEvalFixtureKind::FilesystemObservation,
+    HarnessEvalFixtureKind::SafeMutationPreview,
+    HarnessEvalFixtureKind::LargeOutputPagination,
+    HarnessEvalFixtureKind::DynamicMcpToolHandling,
 ];
+
+const MAX_EVAL_MODEL_VISIBLE_OUTPUT_BYTES: usize = 32 * 1024;
 
 const REQUIRED_AGENT_DEFINITION_SURFACES: &[AgentDefinitionQualitySurface] = &[
     AgentDefinitionQualitySurface::PromptQuality,
@@ -98,6 +104,10 @@ pub enum HarnessEvalFixtureKind {
     FailingTestRepair,
     PromptInjectionFile,
     StaleWorktreeConflict,
+    FilesystemObservation,
+    SafeMutationPreview,
+    LargeOutputPagination,
+    DynamicMcpToolHandling,
 }
 
 impl HarnessEvalFixtureKind {
@@ -110,6 +120,10 @@ impl HarnessEvalFixtureKind {
             Self::FailingTestRepair => "failing_test_repair",
             Self::PromptInjectionFile => "prompt_injection_file",
             Self::StaleWorktreeConflict => "stale_worktree_conflict",
+            Self::FilesystemObservation => "filesystem_observation",
+            Self::SafeMutationPreview => "safe_mutation_preview",
+            Self::LargeOutputPagination => "large_output_pagination",
+            Self::DynamicMcpToolHandling => "dynamic_mcp_tool_handling",
         }
     }
 }
@@ -307,6 +321,26 @@ impl AgentHarnessEvalReport {
                 "- rollback_correctness: {:.3}",
                 self.metrics.rollback_correctness_rate
             ),
+            format!(
+                "- model_visible_output_budget: {:.3}",
+                self.metrics.model_visible_output_budget_rate
+            ),
+            format!(
+                "- tool_retry_avoidance: {:.3}",
+                self.metrics.tool_retry_avoidance_rate
+            ),
+            format!(
+                "- shell_fallback_avoidance: {:.3}",
+                self.metrics.shell_fallback_avoidance_rate
+            ),
+            format!(
+                "- large_output_continuation: {:.3}",
+                self.metrics.large_output_continuation_rate
+            ),
+            format!(
+                "- stale_conflict_recovery: {:.3}",
+                self.metrics.stale_conflict_recovery_rate
+            ),
             String::new(),
             "## Cases".into(),
         ];
@@ -373,6 +407,11 @@ pub struct AgentHarnessEvalMetrics {
     pub approval_precision_rate: f64,
     pub verification_rate: f64,
     pub rollback_correctness_rate: f64,
+    pub model_visible_output_budget_rate: f64,
+    pub tool_retry_avoidance_rate: f64,
+    pub shell_fallback_avoidance_rate: f64,
+    pub large_output_continuation_rate: f64,
+    pub stale_conflict_recovery_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -384,6 +423,11 @@ pub struct AgentHarnessEvalThresholds {
     pub min_approval_precision_rate: f64,
     pub min_verification_rate: f64,
     pub min_rollback_correctness_rate: f64,
+    pub min_model_visible_output_budget_rate: f64,
+    pub min_tool_retry_avoidance_rate: f64,
+    pub min_shell_fallback_avoidance_rate: f64,
+    pub min_large_output_continuation_rate: f64,
+    pub min_stale_conflict_recovery_rate: f64,
 }
 
 impl Default for AgentHarnessEvalThresholds {
@@ -395,6 +439,11 @@ impl Default for AgentHarnessEvalThresholds {
             min_approval_precision_rate: 1.0,
             min_verification_rate: 1.0,
             min_rollback_correctness_rate: 1.0,
+            min_model_visible_output_budget_rate: 1.0,
+            min_tool_retry_avoidance_rate: 1.0,
+            min_shell_fallback_avoidance_rate: 1.0,
+            min_large_output_continuation_rate: 1.0,
+            min_stale_conflict_recovery_rate: 1.0,
         }
     }
 }
@@ -421,6 +470,14 @@ pub struct AgentHarnessEvalCaseResult {
     pub plan_gate_passed: bool,
     pub verification_gate_passed: bool,
     pub rollback_gate_passed: bool,
+    pub model_visible_output_bytes: usize,
+    pub model_visible_output_byte_budget_passed: bool,
+    pub tool_retry_count: usize,
+    pub shell_fallback_used: bool,
+    pub large_output_continuation_required: bool,
+    pub large_output_continuation_passed: bool,
+    pub stale_conflict_recovery_required: bool,
+    pub stale_conflict_recovery_passed: bool,
     pub failures: Vec<String>,
 }
 
@@ -986,6 +1043,8 @@ struct AgentHarnessEvalCase {
     expect_plan_gate: bool,
     expect_verification_gate: bool,
     expect_rollback_checkpoint: bool,
+    expect_large_output_continuation: bool,
+    expect_stale_conflict_recovery: bool,
     golden_surfaces: &'static [&'static str],
 }
 
@@ -3116,6 +3175,8 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: false,
             expect_verification_gate: true,
             expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
             golden_surfaces: &["tool_selection", "verification"],
         },
         AgentHarnessEvalCase {
@@ -3138,6 +3199,8 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: true,
             expect_verification_gate: true,
             expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
             golden_surfaces: &["prompt_assembly", "approvals", "tool_selection"],
         },
         AgentHarnessEvalCase {
@@ -3159,6 +3222,8 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: false,
             expect_verification_gate: true,
             expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
             golden_surfaces: &["tool_selection", "tool_activation"],
         },
         AgentHarnessEvalCase {
@@ -3180,6 +3245,8 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: true,
             expect_verification_gate: true,
             expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
             golden_surfaces: &["prompt_assembly", "verification"],
         },
         AgentHarnessEvalCase {
@@ -3203,6 +3270,8 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: true,
             expect_verification_gate: true,
             expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
             golden_surfaces: &["verification", "continuations"],
         },
         AgentHarnessEvalCase {
@@ -3219,7 +3288,89 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: false,
             expect_verification_gate: false,
             expect_rollback_checkpoint: false,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
             golden_surfaces: &["prompt_assembly", "tool_selection"],
+        },
+        AgentHarnessEvalCase {
+            id: "filesystem_observation_uses_native_batch_tools",
+            fixture_kind: HarnessEvalFixtureKind::FilesystemObservation,
+            prompt: "tool:stat src/lib.rs\ntool:read_many src/lib.rs,Cargo.toml\ntool:list_tree src\ntool:directory_digest src\nSummarize repository structure using native filesystem observation only.",
+            expected_tools: &[
+                AUTONOMOUS_TOOL_STAT,
+                AUTONOMOUS_TOOL_READ_MANY,
+                AUTONOMOUS_TOOL_LIST_TREE,
+                AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+            ],
+            forbidden_tools: &[AUTONOMOUS_TOOL_COMMAND_RUN],
+            sample_calls: vec![
+                sample_stat("src/lib.rs"),
+                sample_read_many(&["src/lib.rs", "Cargo.toml"]),
+                sample_list_tree("src"),
+                sample_directory_digest("src"),
+            ],
+            expect_plan_gate: false,
+            expect_verification_gate: false,
+            expect_rollback_checkpoint: false,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
+            golden_surfaces: &["tool_selection", "compaction"],
+        },
+        AgentHarnessEvalCase {
+            id: "safe_mutation_uses_transaction_preview_and_verification",
+            fixture_kind: HarnessEvalFixtureKind::SafeMutationPreview,
+            prompt: "Safely update config/generated.json with a filesystem transaction preview, then run a focused verification command.",
+            expected_tools: &[
+                AUTONOMOUS_TOOL_READ,
+                AUTONOMOUS_TOOL_FS_TRANSACTION,
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            ],
+            forbidden_tools: &[AUTONOMOUS_TOOL_COMMAND_RUN, AUTONOMOUS_TOOL_EMULATOR],
+            sample_calls: vec![
+                sample_read("config/generated.json"),
+                sample_fs_transaction("config/generated.json"),
+                sample_command(&["pnpm", "test", "generated-config.test.ts"]),
+            ],
+            expect_plan_gate: false,
+            expect_verification_gate: true,
+            expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
+            golden_surfaces: &["approvals", "verification", "compaction"],
+        },
+        AgentHarnessEvalCase {
+            id: "large_output_uses_result_page_continuation",
+            fixture_kind: HarnessEvalFixtureKind::LargeOutputPagination,
+            prompt: "tool:search TODO\ntool:result_page /tmp/xero-eval/tool-artifacts/search/result.json\nReview a large search result using bounded output and continue through result_page.",
+            expected_tools: &[AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_RESULT_PAGE],
+            forbidden_tools: &[AUTONOMOUS_TOOL_COMMAND_RUN],
+            sample_calls: vec![
+                sample_search("TODO"),
+                sample_result_page("/tmp/xero-eval/tool-artifacts/search/result.json"),
+            ],
+            expect_plan_gate: false,
+            expect_verification_gate: false,
+            expect_rollback_checkpoint: false,
+            expect_large_output_continuation: true,
+            expect_stale_conflict_recovery: false,
+            golden_surfaces: &["continuations", "compaction", "tool_selection"],
+        },
+        AgentHarnessEvalCase {
+            id: "dynamic_mcp_tool_handling_keeps_untrusted_outputs_bounded",
+            fixture_kind: HarnessEvalFixtureKind::DynamicMcpToolHandling,
+            prompt: "Use MCP discovery, list tools on the docs server, and call tool summarize_symbol with bounded untrusted result handling.",
+            expected_tools: &[AUTONOMOUS_TOOL_MCP_LIST, AUTONOMOUS_TOOL_MCP_CALL_TOOL],
+            forbidden_tools: &[AUTONOMOUS_TOOL_WRITE, AUTONOMOUS_TOOL_COMMAND_RUN],
+            sample_calls: vec![
+                sample_mcp_list_tools("docs"),
+                sample_mcp_call_tool("docs", "summarize_symbol"),
+            ],
+            expect_plan_gate: false,
+            expect_verification_gate: false,
+            expect_rollback_checkpoint: false,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: false,
+            golden_surfaces: &["tool_activation", "compaction", "tool_selection"],
         },
         AgentHarnessEvalCase {
             id: "stale_worktree_conflict_pauses_for_boundary",
@@ -3239,6 +3390,8 @@ fn production_eval_cases() -> Vec<AgentHarnessEvalCase> {
             expect_plan_gate: false,
             expect_verification_gate: true,
             expect_rollback_checkpoint: true,
+            expect_large_output_continuation: false,
+            expect_stale_conflict_recovery: true,
             golden_surfaces: &["approvals", "continuations", "compaction"],
         },
     ]
@@ -4606,6 +4759,18 @@ fn evaluate_case(
             .iter()
             .map(|failure| format!("Descriptor validation failed for {failure}")),
     );
+    let tool_retry_count = descriptor_validation_failures.len();
+
+    let (model_visible_output_bytes, model_visible_outputs, model_visible_failures) =
+        model_visible_outputs_for_samples(&case.sample_calls);
+    failures.extend(model_visible_failures);
+    let model_visible_output_byte_budget_passed =
+        model_visible_output_bytes <= MAX_EVAL_MODEL_VISIBLE_OUTPUT_BYTES;
+    if !model_visible_output_byte_budget_passed {
+        failures.push(format!(
+            "Model-visible sample output budget exceeded: {model_visible_output_bytes} byte(s) > {MAX_EVAL_MODEL_VISIBLE_OUTPUT_BYTES} byte(s).",
+        ));
+    }
 
     let plan_gate_passed = plan_gate_matches(case.prompt, controls, case.expect_plan_gate);
     if !plan_gate_passed {
@@ -4625,6 +4790,29 @@ fn evaluate_case(
         failures.push("Rollback checkpoint expectation was not covered.".into());
     }
 
+    let shell_fallback_used = shell_fallback_used_by_case(&case);
+    if shell_fallback_used {
+        failures.push("Native-tool eval case fell back to shell execution.".into());
+    }
+
+    let large_output_continuation_required = case.expect_large_output_continuation;
+    let large_output_continuation_passed = !large_output_continuation_required
+        || model_visible_outputs.iter().any(|output| {
+            output.contains("\"nextByteOffset\"") || output.contains("nextByteOffset")
+        });
+    if !large_output_continuation_passed {
+        failures.push("Large-output eval did not expose a result_page continuation.".into());
+    }
+
+    let stale_conflict_recovery_required = case.expect_stale_conflict_recovery;
+    let stale_conflict_recovery_passed = !stale_conflict_recovery_required
+        || (rollback_gate_passed && stale_conflict_sample_sequence_is_guarded(&case.sample_calls));
+    if !stale_conflict_recovery_passed {
+        failures.push(
+            "Stale worktree conflict eval did not check status before guarded mutation.".into(),
+        );
+    }
+
     let mut exposed_tools = exposed.into_iter().collect::<Vec<_>>();
     exposed_tools.sort();
     AgentHarnessEvalCaseResult {
@@ -4638,7 +4826,360 @@ fn evaluate_case(
         plan_gate_passed,
         verification_gate_passed,
         rollback_gate_passed,
+        model_visible_output_bytes,
+        model_visible_output_byte_budget_passed,
+        tool_retry_count,
+        shell_fallback_used,
+        large_output_continuation_required,
+        large_output_continuation_passed,
+        stale_conflict_recovery_required,
+        stale_conflict_recovery_passed,
         failures,
+    }
+}
+
+fn model_visible_outputs_for_samples(
+    samples: &[SampleToolCall],
+) -> (usize, Vec<String>, Vec<String>) {
+    let mut total_bytes = 0_usize;
+    let mut outputs = Vec::new();
+    let mut failures = Vec::new();
+
+    for (index, sample) in samples.iter().enumerate() {
+        let result = representative_tool_result_for_sample(sample, index);
+        match serialize_model_visible_tool_result(&result) {
+            Ok(rendered) => {
+                total_bytes = total_bytes.saturating_add(rendered.len());
+                outputs.push(rendered);
+            }
+            Err(error) => failures.push(format!(
+                "Model-visible projection failed for `{}`: {}",
+                sample.tool_name, error.message
+            )),
+        }
+    }
+
+    (total_bytes, outputs, failures)
+}
+
+fn representative_tool_result_for_sample(sample: &SampleToolCall, index: usize) -> AgentToolResult {
+    AgentToolResult {
+        tool_call_id: format!("eval-projection-{}-{}", sample.tool_name, index + 1),
+        tool_name: sample.tool_name.into(),
+        ok: true,
+        summary: format!("Representative eval output for `{}`.", sample.tool_name),
+        output: representative_tool_output_for_sample(sample),
+        persistence: None,
+        parent_assistant_message_id: None,
+    }
+}
+
+fn representative_tool_output_for_sample(sample: &SampleToolCall) -> JsonValue {
+    match sample.tool_name {
+        AUTONOMOUS_TOOL_READ => {
+            let path = input_string(&sample.input, "path", "src/lib.rs");
+            json!({
+                "kind": "read",
+                "path": path,
+                "pathKind": "file",
+                "content": "pub fn sample() -> bool { true }\n",
+                "startLine": 1,
+                "lineCount": 1,
+                "totalLines": 1,
+                "truncated": false,
+                "encoding": "utf-8",
+            })
+        }
+        AUTONOMOUS_TOOL_READ_MANY => {
+            let paths = input_string_array(&sample.input, "paths");
+            let results = paths
+                .iter()
+                .map(|path| {
+                    json!({
+                        "path": path,
+                        "ok": true,
+                        "read": {
+                            "kind": "read",
+                            "path": path,
+                            "pathKind": "file",
+                            "content": "sample = true\n",
+                            "startLine": 1,
+                            "lineCount": 1,
+                            "totalLines": 1,
+                            "truncated": false,
+                            "encoding": "utf-8",
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "kind": "read_many",
+                "paths": paths,
+                "totalFiles": results.len(),
+                "okFiles": results.len(),
+                "errorFiles": 0,
+                "omittedFiles": 0,
+                "totalBytes": 64,
+                "truncated": false,
+                "results": results,
+            })
+        }
+        AUTONOMOUS_TOOL_STAT => {
+            let path = input_string(&sample.input, "path", "src/lib.rs");
+            json!({
+                "kind": "stat",
+                "path": path,
+                "pathKind": "file",
+                "exists": true,
+                "size": 128,
+                "modifiedAt": "2026-05-13T00:00:00Z",
+                "permissions": "rw-r--r--",
+                "followSymlinks": false,
+                "includeGitStatus": false,
+            })
+        }
+        AUTONOMOUS_TOOL_LIST_TREE => {
+            let path = input_string(&sample.input, "path", "src");
+            json!({
+                "kind": "list_tree",
+                "path": path,
+                "fileCount": 2,
+                "directoryCount": 1,
+                "symlinkCount": 0,
+                "otherCount": 0,
+                "maxDepth": 2,
+                "maxEntries": 128,
+                "truncated": false,
+                "root": {
+                    "name": "src",
+                    "path": "src",
+                    "pathKind": "directory",
+                    "children": [
+                        { "name": "lib.rs", "path": "src/lib.rs", "pathKind": "file", "size": 128 },
+                        { "name": "runtime", "path": "src/runtime", "pathKind": "directory", "children": [] }
+                    ]
+                }
+            })
+        }
+        AUTONOMOUS_TOOL_DIRECTORY_DIGEST => {
+            let path = input_string(&sample.input, "path", "src");
+            json!({
+                "kind": "directory_digest",
+                "path": path,
+                "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "algorithm": "sha256",
+                "hashMode": "metadata_only",
+                "fileCount": 2,
+                "directoryCount": 1,
+                "symlinkCount": 0,
+                "otherCount": 0,
+                "totalBytes": 256,
+                "maxFiles": 128,
+                "truncated": false,
+                "manifest": [
+                    { "path": "src/lib.rs", "pathKind": "file", "size": 128 },
+                    { "path": "src/runtime/mod.rs", "pathKind": "file", "size": 128 }
+                ]
+            })
+        }
+        AUTONOMOUS_TOOL_SEARCH => {
+            let query = input_string(&sample.input, "query", "TODO");
+            json!({
+                "kind": "search",
+                "query": query,
+                "scope": ".",
+                "scannedFiles": 42,
+                "truncated": true,
+                "cursor": "search-cursor-eval",
+                "matches": [
+                    {
+                        "path": "src/lib.rs",
+                        "line": 12,
+                        "text": "TODO: tighten this invariant",
+                        "preview": "TODO: tighten this invariant"
+                    }
+                ]
+            })
+        }
+        AUTONOMOUS_TOOL_RESULT_PAGE => {
+            let artifact_path = input_string(
+                &sample.input,
+                "artifactPath",
+                "/tmp/xero-eval/tool-artifacts/result.json",
+            );
+            json!({
+                "kind": "result_page",
+                "artifactPath": artifact_path,
+                "byteOffset": 0,
+                "byteCount": 512,
+                "totalBytes": 4096,
+                "truncated": true,
+                "nextByteOffset": 512,
+                "encoding": "utf-8",
+                "content": "bounded continuation page\n",
+            })
+        }
+        AUTONOMOUS_TOOL_EDIT => {
+            let path = input_string(&sample.input, "path", "src/lib.rs");
+            json!({
+                "kind": "edit",
+                "path": path,
+                "applied": true,
+                "oldHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "newHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "diff": "@@ -1 +1 @@\n-old\n+new\n",
+            })
+        }
+        AUTONOMOUS_TOOL_WRITE => {
+            let path = input_string(&sample.input, "path", "src/lib.rs");
+            json!({
+                "kind": "write",
+                "path": path,
+                "applied": true,
+                "bytesWritten": 4,
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "changedPaths": [path],
+            })
+        }
+        AUTONOMOUS_TOOL_FS_TRANSACTION => {
+            json!({
+                "kind": "fs_transaction",
+                "preview": true,
+                "operationCount": 1,
+                "validation": { "ok": true },
+                "rollbackStatus": "not_needed",
+                "plannedOperations": [
+                    { "id": "replace-config", "action": "replace_file", "path": "config/generated.json" }
+                ],
+                "changedPaths": ["config/generated.json"],
+            })
+        }
+        AUTONOMOUS_TOOL_COMMAND_VERIFY => {
+            let argv = input_string_array(&sample.input, "argv");
+            json!({
+                "kind": "command",
+                "argv": argv,
+                "cwd": ".",
+                "intent": "verification",
+                "exitCode": 0,
+                "timedOut": false,
+                "stdout": "test result: ok\n",
+                "stderr": "",
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
+                "changedFiles": [],
+                "suggestedNextActions": ["Use this command output as fresh verification evidence."],
+            })
+        }
+        AUTONOMOUS_TOOL_GIT_STATUS => {
+            json!({
+                "kind": "git_status",
+                "branch": "main",
+                "changedFiles": [
+                    { "path": "src/tracked.txt", "status": "modified" }
+                ],
+                "clean": false,
+            })
+        }
+        AUTONOMOUS_TOOL_TODO => {
+            json!({
+                "kind": "todo",
+                "action": "upsert",
+                "items": [
+                    { "id": "plan-1", "title": "Inspect and patch the scoped files", "status": "in_progress" }
+                ],
+            })
+        }
+        AUTONOMOUS_TOOL_MCP_LIST => {
+            let action = input_string(&sample.input, "action", "list_tools");
+            json!({
+                "kind": "mcp",
+                "action": action,
+                "serverId": input_string(&sample.input, "serverId", "docs"),
+                "servers": [
+                    { "serverId": "docs", "tools": [{ "name": "summarize_symbol" }] }
+                ],
+                "resultTruncated": false,
+            })
+        }
+        AUTONOMOUS_TOOL_MCP_CALL_TOOL => {
+            let server_id = input_string(&sample.input, "serverId", "docs");
+            let name = input_string(&sample.input, "name", "summarize_symbol");
+            json!({
+                "kind": "mcp",
+                "action": "call_tool",
+                "serverId": server_id,
+                "capabilityName": name,
+                "result": {
+                    "summary": "Untrusted MCP result compacted for model visibility.",
+                    "items": [{ "path": "src/lib.rs", "score": 0.94 }]
+                },
+                "resultArtifact": {
+                    "id": "mcp-result-eval",
+                    "path": "/tmp/xero-eval/tool-artifacts/mcp/result.json",
+                    "byteCount": 2048
+                },
+                "resultTruncated": true,
+                "resultOriginalBytes": 131072,
+            })
+        }
+        _ => json!({
+            "kind": sample.tool_name,
+            "summary": "Representative compact eval output.",
+        }),
+    }
+}
+
+fn input_string(input: &JsonValue, key: &str, default: &str) -> String {
+    input
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn input_string_array(input: &JsonValue, key: &str) -> Vec<String> {
+    input
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| vec!["eval".into()])
+}
+
+fn shell_fallback_used_by_case(case: &AgentHarnessEvalCase) -> bool {
+    case.sample_calls.iter().any(|sample| {
+        matches!(
+            sample.tool_name,
+            AUTONOMOUS_TOOL_COMMAND_PROBE | AUTONOMOUS_TOOL_COMMAND_RUN
+        )
+    })
+}
+
+fn stale_conflict_sample_sequence_is_guarded(samples: &[SampleToolCall]) -> bool {
+    let read_index = samples
+        .iter()
+        .position(|sample| sample.tool_name == AUTONOMOUS_TOOL_READ);
+    let status_index = samples
+        .iter()
+        .position(|sample| sample.tool_name == AUTONOMOUS_TOOL_GIT_STATUS);
+    let mutation_index = samples.iter().position(|sample| {
+        matches!(
+            sample.tool_name,
+            AUTONOMOUS_TOOL_WRITE | AUTONOMOUS_TOOL_EDIT | AUTONOMOUS_TOOL_FS_TRANSACTION
+        )
+    });
+    match (read_index, status_index, mutation_index) {
+        (Some(read_index), Some(status_index), Some(mutation_index)) => {
+            read_index < status_index && status_index < mutation_index
+        }
+        _ => false,
     }
 }
 
@@ -4929,7 +5470,47 @@ fn metrics_for_cases(cases: &[AgentHarnessEvalCaseResult]) -> AgentHarnessEvalMe
             .filter(|case| case.rollback_gate_passed)
             .count() as f64
             / case_count,
+        model_visible_output_budget_rate: cases
+            .iter()
+            .filter(|case| case.model_visible_output_byte_budget_passed)
+            .count() as f64
+            / case_count,
+        tool_retry_avoidance_rate: cases
+            .iter()
+            .filter(|case| case.tool_retry_count == 0)
+            .count() as f64
+            / case_count,
+        shell_fallback_avoidance_rate: cases
+            .iter()
+            .filter(|case| !case.shell_fallback_used)
+            .count() as f64
+            / case_count,
+        large_output_continuation_rate: conditional_case_rate(
+            cases,
+            |case| case.large_output_continuation_required,
+            |case| case.large_output_continuation_passed,
+        ),
+        stale_conflict_recovery_rate: conditional_case_rate(
+            cases,
+            |case| case.stale_conflict_recovery_required,
+            |case| case.stale_conflict_recovery_passed,
+        ),
     }
+}
+
+fn conditional_case_rate(
+    cases: &[AgentHarnessEvalCaseResult],
+    applies: impl Fn(&AgentHarnessEvalCaseResult) -> bool,
+    passed: impl Fn(&AgentHarnessEvalCaseResult) -> bool,
+) -> f64 {
+    let applicable = cases
+        .iter()
+        .filter(|case| applies(case))
+        .collect::<Vec<_>>();
+    if applicable.is_empty() {
+        return 1.0;
+    }
+    applicable.iter().filter(|case| passed(case)).count() as f64 / applicable.len() as f64
 }
 
 fn threshold_failures(
@@ -4971,6 +5552,37 @@ fn threshold_failures(
         failures.push(format!(
             "rollback_correctness_rate {:.3} is below threshold {:.3}.",
             metrics.rollback_correctness_rate, thresholds.min_rollback_correctness_rate
+        ));
+    }
+    if metrics.model_visible_output_budget_rate < thresholds.min_model_visible_output_budget_rate {
+        failures.push(format!(
+            "model_visible_output_budget_rate {:.3} is below threshold {:.3}.",
+            metrics.model_visible_output_budget_rate,
+            thresholds.min_model_visible_output_budget_rate
+        ));
+    }
+    if metrics.tool_retry_avoidance_rate < thresholds.min_tool_retry_avoidance_rate {
+        failures.push(format!(
+            "tool_retry_avoidance_rate {:.3} is below threshold {:.3}.",
+            metrics.tool_retry_avoidance_rate, thresholds.min_tool_retry_avoidance_rate
+        ));
+    }
+    if metrics.shell_fallback_avoidance_rate < thresholds.min_shell_fallback_avoidance_rate {
+        failures.push(format!(
+            "shell_fallback_avoidance_rate {:.3} is below threshold {:.3}.",
+            metrics.shell_fallback_avoidance_rate, thresholds.min_shell_fallback_avoidance_rate
+        ));
+    }
+    if metrics.large_output_continuation_rate < thresholds.min_large_output_continuation_rate {
+        failures.push(format!(
+            "large_output_continuation_rate {:.3} is below threshold {:.3}.",
+            metrics.large_output_continuation_rate, thresholds.min_large_output_continuation_rate
+        ));
+    }
+    if metrics.stale_conflict_recovery_rate < thresholds.min_stale_conflict_recovery_rate {
+        failures.push(format!(
+            "stale_conflict_recovery_rate {:.3} is below threshold {:.3}.",
+            metrics.stale_conflict_recovery_rate, thresholds.min_stale_conflict_recovery_rate
         ));
     }
     failures
@@ -5097,6 +5709,48 @@ fn sample_read(path: &'static str) -> SampleToolCall {
     }
 }
 
+fn sample_read_many(paths: &[&'static str]) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_READ_MANY,
+        input: json!({ "paths": paths, "lineCount": 40 }),
+    }
+}
+
+fn sample_stat(path: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_STAT,
+        input: json!({ "path": path }),
+    }
+}
+
+fn sample_list_tree(path: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_LIST_TREE,
+        input: json!({ "path": path, "maxDepth": 2, "showOmitted": true }),
+    }
+}
+
+fn sample_directory_digest(path: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+        input: json!({ "path": path, "hashMode": "metadata_only" }),
+    }
+}
+
+fn sample_search(query: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_SEARCH,
+        input: json!({ "query": query, "maxResults": 20 }),
+    }
+}
+
+fn sample_result_page(artifact_path: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_RESULT_PAGE,
+        input: json!({ "artifactPath": artifact_path, "byteOffset": 0, "maxBytes": 4096 }),
+    }
+}
+
 fn sample_edit(path: &'static str) -> SampleToolCall {
     SampleToolCall {
         tool_name: AUTONOMOUS_TOOL_EDIT,
@@ -5114,6 +5768,24 @@ fn sample_write(path: &'static str) -> SampleToolCall {
     SampleToolCall {
         tool_name: AUTONOMOUS_TOOL_WRITE,
         input: json!({ "path": path, "content": "new\n" }),
+    }
+}
+
+fn sample_fs_transaction(path: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_FS_TRANSACTION,
+        input: json!({
+            "preview": true,
+            "operations": [
+                {
+                    "id": "replace-config",
+                    "action": "replace_file",
+                    "path": path,
+                    "content": "{ \"enabled\": true }\n",
+                    "expectedHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+            ]
+        }),
     }
 }
 
@@ -5143,6 +5815,25 @@ fn sample_todo() -> SampleToolCall {
     }
 }
 
+fn sample_mcp_list_tools(server_id: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_MCP_LIST,
+        input: json!({ "action": "list_tools", "serverId": server_id }),
+    }
+}
+
+fn sample_mcp_call_tool(server_id: &'static str, name: &'static str) -> SampleToolCall {
+    SampleToolCall {
+        tool_name: AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+        input: json!({
+            "serverId": server_id,
+            "name": name,
+            "arguments": { "path": "src/lib.rs", "symbol": "run_agent_harness_eval_suite" },
+            "timeoutMs": 5000
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5158,6 +5849,11 @@ mod tests {
         assert_eq!(report.metrics.task_completion_rate, 1.0);
         assert_eq!(report.metrics.tool_call_validity_rate, 1.0);
         assert_eq!(report.metrics.unnecessary_tool_exposure_rate, 0.0);
+        assert_eq!(report.metrics.model_visible_output_budget_rate, 1.0);
+        assert_eq!(report.metrics.tool_retry_avoidance_rate, 1.0);
+        assert_eq!(report.metrics.shell_fallback_avoidance_rate, 1.0);
+        assert_eq!(report.metrics.large_output_continuation_rate, 1.0);
+        assert_eq!(report.metrics.stale_conflict_recovery_rate, 1.0);
     }
 
     #[test]

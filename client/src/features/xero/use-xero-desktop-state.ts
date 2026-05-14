@@ -182,8 +182,47 @@ const AGENT_WORKSPACE_LAYOUT_UI_STATE_KEY = 'agent-workspace.layout.v1'
 const AGENT_WORKSPACE_LAYOUT_PERSIST_DEBOUNCE_MS = 250
 const AGENT_WORKSPACE_MAX_PANES = 6
 const SPAWNED_AGENT_WORKSPACE_DEFAULT_RUNTIME_AGENT_ID: RuntimeAgentIdDto = 'engineer'
+const LAST_SELECTED_PROJECT_APP_STATE_KEY = 'project.lastSelectedProjectId.v1'
 
 let agentWorkspacePaneIdSequence = 0
+
+function normalizePersistedProjectId(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+
+  const projectId = value.trim()
+  return projectId.length > 0 ? projectId : null
+}
+
+async function readLastSelectedProjectId(adapter: XeroDesktopAdapter): Promise<string | null> {
+  if (!adapter.readAppUiState) {
+    return null
+  }
+
+  try {
+    const response = await adapter.readAppUiState({
+      key: LAST_SELECTED_PROJECT_APP_STATE_KEY,
+    })
+    return normalizePersistedProjectId(response.value)
+  } catch {
+    return null
+  }
+}
+
+async function persistLastSelectedProjectId(
+  adapter: XeroDesktopAdapter,
+  projectId: string,
+): Promise<void> {
+  if (!adapter.writeAppUiState) {
+    return
+  }
+
+  await adapter.writeAppUiState({
+    key: LAST_SELECTED_PROJECT_APP_STATE_KEY,
+    value: projectId,
+  })
+}
 
 function getRuntimeRunProjectionKey(runtimeRun: RuntimeRunView | null | undefined): string {
   if (!runtimeRun) {
@@ -2392,7 +2431,8 @@ export function useXeroDesktopState(
         return
       }
 
-      const preferredProjectId = activeProjectIdRef.current
+      const savedProjectId = source === 'startup' ? await readLastSelectedProjectId(adapter) : null
+      const preferredProjectId = activeProjectIdRef.current ?? savedProjectId
       const nextProjectId =
         preferredProjectId && nextProjects.some((project) => project.id === preferredProjectId)
           ? preferredProjectId
@@ -2447,6 +2487,14 @@ export function useXeroDesktopState(
       disposeListeners()
     }
   }, [adapter, applyRuntimeRunUpdate, bootstrap, handleAdapterEventError, loadProject, resetRepositoryDiffs])
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return
+    }
+
+    void persistLastSelectedProjectId(adapter, activeProjectId).catch(() => undefined)
+  }, [activeProjectId, adapter])
 
   useEffect(() => {
     if (!activeProjectId || typeof window === 'undefined' || typeof document === 'undefined') {

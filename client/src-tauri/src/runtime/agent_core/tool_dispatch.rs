@@ -552,12 +552,19 @@ impl AutonomousToolHandlerShared {
                     );
                 };
                 if operator_approved {
-                    tool_runtime.command_with_operator_approval_and_output_callback(
+                    tool_runtime.command_with_approval_and_output_callback_for_tool(
+                        &tool_call.tool_name,
                         command_request,
+                        true,
                         &mut emit_chunk,
                     )
                 } else {
-                    tool_runtime.command_with_output_callback(command_request, &mut emit_chunk)
+                    tool_runtime.command_with_approval_and_output_callback_for_tool(
+                        &tool_call.tool_name,
+                        command_request,
+                        false,
+                        &mut emit_chunk,
+                    )
                 }
             }
             request if operator_approved => tool_runtime.execute_approved(request),

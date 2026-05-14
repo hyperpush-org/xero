@@ -6,11 +6,14 @@ import { ArrowLeftRight, Plus, SplitSquareHorizontal, X } from 'lucide-react'
 import {
   CommandDialog,
   CommandEmpty,
+  CommandFooter,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
+  CommandMeta,
   CommandSeparator,
+  CommandShortcut,
 } from '@/components/ui/command'
 
 export interface AgentCommandPalettePane {
@@ -102,9 +105,10 @@ export const AgentCommandPalette = memo(function AgentCommandPalette({
       onOpenChange={setOpen}
       title="Agent command palette"
       description="Run a workspace command. Search by name or shortcut."
+      footer={<CommandFooter primaryLabel="Run" />}
     >
       <CommandInput
-        placeholder="Type a command or search..."
+        placeholder="Search workspace commands…"
         value={searchValue}
         onValueChange={setSearchValue}
       />
@@ -123,9 +127,11 @@ export const AgentCommandPalette = memo(function AgentCommandPalette({
           >
             <SplitSquareHorizontal className="size-4" />
             <span>Spawn pane</span>
-            <span className="ml-auto text-xs text-muted-foreground">
-              {spawnDisabled ? 'limit reached' : '⌘⇧N'}
-            </span>
+            {spawnDisabled ? (
+              <CommandMeta>limit reached</CommandMeta>
+            ) : (
+              <CommandShortcut>⌘⇧N</CommandShortcut>
+            )}
           </CommandItem>
           <CommandItem
             value="close focused pane"
@@ -137,7 +143,7 @@ export const AgentCommandPalette = memo(function AgentCommandPalette({
           >
             <X className="size-4" />
             <span>Close focused pane</span>
-            <span className="ml-auto text-xs text-muted-foreground">⌘W</span>
+            <CommandShortcut>⌘W</CommandShortcut>
           </CommandItem>
           <CommandItem
             value="cycle pane focus next"
@@ -146,7 +152,7 @@ export const AgentCommandPalette = memo(function AgentCommandPalette({
           >
             <ArrowLeftRight className="size-4" />
             <span>Cycle to next pane</span>
-            <span className="ml-auto text-xs text-muted-foreground">⌥→</span>
+            <CommandShortcut>⌥→</CommandShortcut>
           </CommandItem>
           <CommandItem
             value="cycle pane focus previous"
@@ -155,7 +161,7 @@ export const AgentCommandPalette = memo(function AgentCommandPalette({
           >
             <ArrowLeftRight className="size-4 -scale-x-100" />
             <span>Cycle to previous pane</span>
-            <span className="ml-auto text-xs text-muted-foreground">⌥←</span>
+            <CommandShortcut>⌥←</CommandShortcut>
           </CommandItem>
         </CommandGroup>
         {panes.length > 0 ? (
@@ -172,9 +178,11 @@ export const AgentCommandPalette = memo(function AgentCommandPalette({
                   <span>
                     Focus pane {pane.paneNumber} — {pane.sessionTitle || 'Untitled'}
                   </span>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {pane.isFocused ? 'focused' : `⌘${pane.paneNumber}`}
-                  </span>
+                  {pane.isFocused ? (
+                    <CommandMeta>focused</CommandMeta>
+                  ) : (
+                    <CommandShortcut>{`⌘${pane.paneNumber}`}</CommandShortcut>
+                  )}
                 </CommandItem>
               ))}
             </CommandGroup>

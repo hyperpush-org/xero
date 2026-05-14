@@ -37,6 +37,7 @@ use super::{
 use crate::{
     auth::now_timestamp,
     commands::{validate_non_empty, CommandError, CommandResult},
+    db::project_app_data_dir_for_repo,
     runtime::{
         cancelled_error,
         process_tree::{
@@ -67,7 +68,7 @@ const MAX_PROCESS_HIGHLIGHTS: usize = 32;
 const MAX_SYSTEM_PROCESS_RESULTS: usize = 200;
 const MAX_SYSTEM_TREE_PROCESSES: usize = 512;
 const MAX_SYSTEM_PORT_RESULTS: usize = 200;
-const ASYNC_JOB_ARTIFACT_DIR: &str = "xero-process-artifacts";
+const ASYNC_JOB_ARTIFACT_DIR: &str = "tool-artifacts/process";
 const REDACTED_PROCESS_OUTPUT_SUMMARY: &str =
     "Process output was redacted before durable persistence.";
 const INTERNAL_MARKER_PREFIX: &str = "__XERO_";
@@ -229,6 +230,7 @@ struct OwnedProcessLaunchConfig {
     persistent: bool,
     async_job: bool,
     timeout_ms: Option<u64>,
+    output_artifact_dir: PathBuf,
 }
 
 impl OwnedProcess {
@@ -644,7 +646,7 @@ impl OwnedProcess {
         let text = filter_internal_marker_text(&durable.text);
         let redacted = durable.redacted;
 
-        let dir = env::temp_dir().join(ASYNC_JOB_ARTIFACT_DIR);
+        let dir = self.launch_config.output_artifact_dir.clone();
         fs::create_dir_all(&dir).map_err(|error| {
             CommandError::system_fault(
                 "autonomous_tool_process_manager_artifact_failed",
@@ -1033,6 +1035,8 @@ impl AutonomousToolRuntime {
             persistent: request.persistent,
             async_job: options.async_job,
             timeout_ms: options.async_job.then_some(prepared.timeout_ms),
+            output_artifact_dir: project_app_data_dir_for_repo(&self.repo_root)
+                .join(ASYNC_JOB_ARTIFACT_DIR),
         };
         let wants_stdin = launch_config.interactive || launch_config.shell_mode;
         command
@@ -6048,7 +6052,15 @@ mod tests {
             .output_artifact
             .as_ref()
             .expect("async job output artifact");
-        assert!(std::path::Path::new(&artifact.path).is_file());
+        let artifact_path = std::path::Path::new(&artifact.path);
+        let expected_artifact_dir =
+            crate::db::project_app_data_dir_for_repo(tempdir.path()).join(ASYNC_JOB_ARTIFACT_DIR);
+        assert!(
+            artifact_path.starts_with(&expected_artifact_dir),
+            "async job artifact should live under project app-data: {}",
+            artifact.path
+        );
+        assert!(artifact_path.is_file());
         assert!(artifact.byte_count > 0);
         assert!(
             std::fs::read_to_string(&artifact.path)

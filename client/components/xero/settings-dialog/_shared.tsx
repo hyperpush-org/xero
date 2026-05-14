@@ -47,16 +47,21 @@ export function InlineCounts({ items, className, ...rest }: InlineCountsProps) {
     <div
       data-testid={rest["data-testid"]}
       className={cn(
-        "flex flex-wrap items-center gap-x-5 gap-y-1.5 text-[12.5px]",
+        "grid auto-cols-fr grid-flow-col overflow-hidden rounded-lg border border-border/60 bg-card/30 divide-x divide-border/50",
         className,
       )}
     >
       {items.map((item) => (
-        <div key={item.label} className="flex items-baseline gap-1.5">
-          <span className="text-muted-foreground">{item.label}</span>
+        <div
+          key={item.label}
+          className="flex min-w-0 flex-col gap-1 px-4 py-2.5"
+        >
+          <span className="truncate text-[10.5px] font-medium uppercase tracking-[0.1em] text-muted-foreground/80">
+            {item.label}
+          </span>
           <span
             className={cn(
-              "text-[14px] font-semibold tabular-nums leading-none",
+              "truncate text-[16px] font-semibold tabular-nums leading-tight",
               INLINE_TONE[item.tone ?? "neutral"],
             )}
           >
@@ -127,13 +132,18 @@ export function SubHeading({
   children,
   count,
   className,
+  id,
 }: {
   children: React.ReactNode
   count?: React.ReactNode
   className?: string
+  id?: string
 }) {
   return (
-    <h4 className={cn("text-[13.5px] font-semibold tracking-tight text-foreground", className)}>
+    <h4
+      id={id}
+      className={cn("text-[13.5px] font-semibold tracking-tight text-foreground", className)}
+    >
       {children}
       {count !== undefined && count !== null ? (
         <span className="ml-2 text-[12px] font-normal text-muted-foreground">{count}</span>

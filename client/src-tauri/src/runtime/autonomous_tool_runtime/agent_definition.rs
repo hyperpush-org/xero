@@ -10,14 +10,15 @@ use super::{
     tool_allowed_for_runtime_agent, tool_available_on_current_host, tool_effect_class,
     AutonomousAgentToolPolicy, AutonomousToolCatalogEntry, AutonomousToolEffectClass,
     AutonomousToolOutput, AutonomousToolResult, AutonomousToolRuntime, AUTONOMOUS_TOOL_CODE_INTEL,
-    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND,
-    AUTONOMOUS_TOOL_GIT_DIFF, AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER,
-    AUTONOMOUS_TOOL_HASH, AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LSP,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+    AUTONOMOUS_TOOL_ENVIRONMENT_CONTEXT, AUTONOMOUS_TOOL_FIND, AUTONOMOUS_TOOL_GIT_DIFF,
+    AUTONOMOUS_TOOL_GIT_STATUS, AUTONOMOUS_TOOL_HARNESS_RUNNER, AUTONOMOUS_TOOL_HASH,
+    AUTONOMOUS_TOOL_LIST, AUTONOMOUS_TOOL_LIST_TREE, AUTONOMOUS_TOOL_LSP,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
-    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_SUBAGENT, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
-    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
-    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY,
+    AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT,
+    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS,
+    AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
 };
 use crate::{
     auth::now_timestamp,
@@ -3690,6 +3691,8 @@ fn planning_tool_allowed(tool: &str) -> bool {
     matches!(
         tool,
         AUTONOMOUS_TOOL_READ
+            | AUTONOMOUS_TOOL_READ_MANY
+            | AUTONOMOUS_TOOL_STAT
             | AUTONOMOUS_TOOL_SEARCH
             | AUTONOMOUS_TOOL_FIND
             | AUTONOMOUS_TOOL_GIT_STATUS
@@ -3701,6 +3704,8 @@ fn planning_tool_allowed(tool: &str) -> bool {
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
             | AUTONOMOUS_TOOL_WORKSPACE_INDEX
             | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_LIST_TREE
+            | AUTONOMOUS_TOOL_DIRECTORY_DIGEST
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_TODO
     )
@@ -3710,6 +3715,8 @@ fn repository_recon_tool_allowed(tool: &str) -> bool {
     matches!(
         tool,
         AUTONOMOUS_TOOL_READ
+            | AUTONOMOUS_TOOL_READ_MANY
+            | AUTONOMOUS_TOOL_STAT
             | AUTONOMOUS_TOOL_SEARCH
             | AUTONOMOUS_TOOL_FIND
             | AUTONOMOUS_TOOL_GIT_STATUS
@@ -3720,6 +3727,8 @@ fn repository_recon_tool_allowed(tool: &str) -> bool {
             | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
             | AUTONOMOUS_TOOL_WORKSPACE_INDEX
             | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_LIST_TREE
+            | AUTONOMOUS_TOOL_DIRECTORY_DIGEST
             | AUTONOMOUS_TOOL_HASH
             | AUTONOMOUS_TOOL_COMMAND_PROBE
             | AUTONOMOUS_TOOL_CODE_INTEL
@@ -4098,6 +4107,8 @@ fn default_tool_policy(profile: &str) -> JsonValue {
             "allowedToolPacks": [],
             "allowedTools": [
                 AUTONOMOUS_TOOL_READ,
+                AUTONOMOUS_TOOL_READ_MANY,
+                AUTONOMOUS_TOOL_STAT,
                 AUTONOMOUS_TOOL_SEARCH,
                 AUTONOMOUS_TOOL_FIND,
                 AUTONOMOUS_TOOL_GIT_STATUS,
@@ -4109,6 +4120,8 @@ fn default_tool_policy(profile: &str) -> JsonValue {
                 AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
                 AUTONOMOUS_TOOL_WORKSPACE_INDEX,
                 AUTONOMOUS_TOOL_LIST,
+                AUTONOMOUS_TOOL_LIST_TREE,
+                AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
                 AUTONOMOUS_TOOL_HASH,
                 AUTONOMOUS_TOOL_TODO
             ],
@@ -4127,6 +4140,8 @@ fn default_tool_policy(profile: &str) -> JsonValue {
             "allowedToolPacks": [],
             "allowedTools": [
                 AUTONOMOUS_TOOL_READ,
+                AUTONOMOUS_TOOL_READ_MANY,
+                AUTONOMOUS_TOOL_STAT,
                 AUTONOMOUS_TOOL_SEARCH,
                 AUTONOMOUS_TOOL_FIND,
                 AUTONOMOUS_TOOL_GIT_STATUS,
@@ -4137,6 +4152,8 @@ fn default_tool_policy(profile: &str) -> JsonValue {
                 AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
                 AUTONOMOUS_TOOL_WORKSPACE_INDEX,
                 AUTONOMOUS_TOOL_LIST,
+                AUTONOMOUS_TOOL_LIST_TREE,
+                AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
                 AUTONOMOUS_TOOL_HASH,
                 AUTONOMOUS_TOOL_COMMAND_PROBE,
                 AUTONOMOUS_TOOL_CODE_INTEL,
@@ -4159,11 +4176,15 @@ fn default_tool_policy(profile: &str) -> JsonValue {
             "allowedToolPacks": [],
             "allowedTools": [
                 AUTONOMOUS_TOOL_READ,
+                AUTONOMOUS_TOOL_READ_MANY,
+                AUTONOMOUS_TOOL_STAT,
                 AUTONOMOUS_TOOL_SEARCH,
                 AUTONOMOUS_TOOL_FIND,
                 AUTONOMOUS_TOOL_GIT_STATUS,
                 AUTONOMOUS_TOOL_GIT_DIFF,
                 AUTONOMOUS_TOOL_LIST,
+                AUTONOMOUS_TOOL_LIST_TREE,
+                AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
                 AUTONOMOUS_TOOL_HASH,
                 AUTONOMOUS_TOOL_CODE_INTEL,
                 AUTONOMOUS_TOOL_LSP,

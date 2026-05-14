@@ -48,10 +48,7 @@ import type {
   UpsertNotificationRouteRequestDto,
 } from '@/src/lib/xero-model'
 import type { SessionContextSnapshotDto } from '@/src/lib/xero-model/session-context'
-import type {
-  AgentHandoffContextSummaryDto,
-  AgentKnowledgeInspectionDto,
-} from '@/src/lib/xero-model/agent-reports'
+import type { AgentHandoffContextSummaryDto } from '@/src/lib/xero-model/agent-reports'
 import {
   getRuntimeAgentDescriptorsForProjectOrigin,
   getRuntimeAgentLabel,
@@ -106,10 +103,6 @@ import {
   hasUsableRuntimeRunId,
 } from './agent-runtime/runtime-stream-helpers'
 import {
-  KnowledgeInspectionPanel,
-  type KnowledgeInspectionStatus,
-} from './agent-runtime/knowledge-inspection-panel'
-import {
   HandoffContextDialog,
   type HandoffContextDialogStatus,
 } from './agent-runtime/handoff-context-dialog'
@@ -127,7 +120,6 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
       | 'getSessionTranscript'
       | 'stageAgentAttachment'
       | 'discardAgentAttachment'
-      | 'getAgentKnowledgeInspection'
       | 'getAgentHandoffContextSummary'
     >
   >
@@ -1802,10 +1794,11 @@ export const AgentRuntime = memo(function AgentRuntime({
       streamStatus === 'complete' ||
       (renderableRuntimeRun?.isActive && runtimeStreamItems.length === 0),
   )
+  const conversationContinuityKey = `${conversationSessionKey}:${toolCallGroupingPreference}`
   const visibleTurnsWithPendingPrompt = useContinuousConversationTurns(
     visibleTurnsWithStableSubmittedPromptIds,
     {
-      sessionKey: conversationSessionKey,
+      sessionKey: conversationContinuityKey,
       preserveDuringTransition: preserveConversationDuringRuntimeTransition,
     },
   )
@@ -1818,44 +1811,6 @@ export const AgentRuntime = memo(function AgentRuntime({
   const hasSelectedAgentSession = Boolean(selectedAgentSessionId?.trim())
   const [codeUndoStates, setCodeUndoStates] = useState<Record<string, CodeUndoUiState>>({})
   const [returnSessionToHereStates, setReturnSessionToHereStates] = useState<Record<string, CodeUndoUiState>>({})
-  const [knowledgeInspectionOpen, setKnowledgeInspectionOpen] = useState(false)
-  const [knowledgeInspectionStatus, setKnowledgeInspectionStatus] =
-    useState<KnowledgeInspectionStatus>('idle')
-  const [knowledgeInspectionError, setKnowledgeInspectionError] = useState<string | null>(null)
-  const [knowledgeInspection, setKnowledgeInspection] =
-    useState<AgentKnowledgeInspectionDto | null>(null)
-  const getAgentKnowledgeInspectionFn = desktopAdapter?.getAgentKnowledgeInspection
-  const knowledgeInspectionProjectId = agent.project.id
-  const knowledgeInspectionSessionId = selectedAgentSessionId
-  const knowledgeInspectionRunId = renderableRuntimeRun?.runId ?? null
-  const refreshKnowledgeInspection = useCallback(async () => {
-    if (!getAgentKnowledgeInspectionFn) return
-    setKnowledgeInspectionStatus('loading')
-    setKnowledgeInspectionError(null)
-    try {
-      const result = await getAgentKnowledgeInspectionFn({
-        projectId: knowledgeInspectionProjectId,
-        agentSessionId: knowledgeInspectionSessionId,
-        runId: knowledgeInspectionRunId,
-      })
-      setKnowledgeInspection(result)
-      setKnowledgeInspectionStatus('ready')
-    } catch (error) {
-      setKnowledgeInspectionStatus('error')
-      setKnowledgeInspectionError(
-        error instanceof Error ? error.message : 'Failed to load knowledge inspection.',
-      )
-    }
-  }, [
-    getAgentKnowledgeInspectionFn,
-    knowledgeInspectionProjectId,
-    knowledgeInspectionRunId,
-    knowledgeInspectionSessionId,
-  ])
-  const handleOpenKnowledgeInspection = useCallback(() => {
-    setKnowledgeInspectionOpen(true)
-    void refreshKnowledgeInspection()
-  }, [refreshKnowledgeInspection])
 
   const [handoffSummaryOpen, setHandoffSummaryOpen] = useState(false)
   const [handoffSummaryStatus, setHandoffSummaryStatus] =
@@ -2350,6 +2305,13 @@ export const AgentRuntime = memo(function AgentRuntime({
   const scrollToLatestFrameRef = useRef<number | null>(null)
   const shouldAutoFollowRef = useRef(true)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const conversationRunScrollKey = [
+    agent.project.id,
+    selectedAgentSessionId ?? 'none',
+    renderableRuntimeRun?.runId ?? runtimeStream?.runId ?? 'no-run',
+  ].join(':')
+  const conversationRunScrollKeyRef = useRef<string | null>(null)
+  const shouldAutoFollowNewRun = Boolean(renderableRuntimeRun?.isActive)
   const latestVisibleTurn = visibleTurnsWithPendingPrompt.at(-1)
   const conversationScrollKey = [
     latestVisibleTurn?.id ?? 'none',
@@ -2365,6 +2327,15 @@ export const AgentRuntime = memo(function AgentRuntime({
     runtimeStream?.failure?.id ?? 'no-failure',
     streamIssue?.code ?? 'no-issue',
   ].join(':')
+  useEffect(() => {
+    if (conversationRunScrollKeyRef.current === conversationRunScrollKey) {
+      return
+    }
+
+    conversationRunScrollKeyRef.current = conversationRunScrollKey
+    shouldAutoFollowRef.current = shouldAutoFollowNewRun
+    setShowJumpToLatest(false)
+  }, [conversationRunScrollKey, shouldAutoFollowNewRun])
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto', options: { defer?: boolean } = {}) => {
     const run = () => {
       bottomSentinelRef.current?.scrollIntoView({
@@ -2698,7 +2669,9 @@ export const AgentRuntime = memo(function AgentRuntime({
       return
     }
 
-    setShowJumpToLatest(true)
+    const viewport = scrollViewportRef.current
+    const isNearBottom = viewport ? isRuntimeConversationNearBottom(viewport) : false
+    setShowJumpToLatest(hasConversationViewportContent && !isNearBottom)
   }, [conversationScrollKey, foregroundWorkReady, hasConversationViewportContent, scrollToLatest])
 
   const isCompact = density === 'compact'
@@ -2956,9 +2929,6 @@ export const AgentRuntime = memo(function AgentRuntime({
                       onReturnSessionToHere={
                         desktopAdapter?.returnSessionToHere ? handleReturnSessionToHere : undefined
                       }
-                      onOpenKnowledgeInspection={
-                        getAgentKnowledgeInspectionFn ? handleOpenKnowledgeInspection : undefined
-                      }
                       onOpenHandoffSummary={
                         getAgentHandoffContextSummaryFn ? handleOpenHandoffSummary : undefined
                       }
@@ -3048,14 +3018,6 @@ export const AgentRuntime = memo(function AgentRuntime({
         />
         </div>
       </div>
-      <KnowledgeInspectionPanel
-        open={knowledgeInspectionOpen}
-        onOpenChange={setKnowledgeInspectionOpen}
-        status={knowledgeInspectionStatus}
-        errorMessage={knowledgeInspectionError}
-        inspection={knowledgeInspection}
-        onRefresh={() => void refreshKnowledgeInspection()}
-      />
       <HandoffContextDialog
         open={handoffSummaryOpen}
         onOpenChange={setHandoffSummaryOpen}

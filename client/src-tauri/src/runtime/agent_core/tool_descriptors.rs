@@ -13,6 +13,22 @@ const PROMPT_CONTEXT_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_PROMPT_CONTEXT_CACHE_ENTRIES: usize = 32;
 const MAX_PROMPT_CONTEXT_WALK_FILES: usize = 5_000;
 const MAX_REPOSITORY_INSTRUCTION_FILES: usize = 32;
+const DESCRIPTOR_MAX_PATH_CHARS: u64 = 4_096;
+const DESCRIPTOR_MAX_GLOB_ITEMS: u64 = 64;
+const DESCRIPTOR_MAX_GLOB_CHARS: u64 = 512;
+const DESCRIPTOR_MAX_READ_LINE_COUNT: u64 = 400;
+const DESCRIPTOR_MAX_TEXT_FILE_BYTES: u64 = 512 * 1024;
+const DESCRIPTOR_MAX_READ_MANY_PATHS: u64 = 16;
+const DESCRIPTOR_MAX_READ_AROUND_PATTERN_CHARS: u64 = 256;
+const DESCRIPTOR_MAX_RESULT_PAGE_BYTES: u64 = 64 * 1024;
+const DESCRIPTOR_MAX_SEARCH_QUERY_CHARS: u64 = 256;
+const DESCRIPTOR_MAX_SEARCH_RESULTS: u64 = 100;
+const DESCRIPTOR_MAX_SEARCH_CONTEXT_LINES: u64 = 5;
+const DESCRIPTOR_MAX_FIND_DEPTH: u64 = 8;
+const DESCRIPTOR_MAX_LIST_TREE_DEPTH: u64 = 8;
+const DESCRIPTOR_MAX_LIST_TREE_ENTRIES: u64 = 1_000;
+const DESCRIPTOR_MAX_DIRECTORY_DIGEST_FILES: u64 = 5_000;
+const DESCRIPTOR_MAX_HASH_FILES: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1271,7 +1287,7 @@ fn tool_policy_fragment(
             "Available observe-only tools: {tool_names}\n\nUse tools only to inspect project information needed to answer. Use `project_context_search` and `project_context_get` to read durable context; Ask's default surface does not expose durable-context writes. If the user explicitly asks to save a note, use only an approved context-write action when Xero exposes one for this turn. `tool_search` and `tool_access` are filtered to Ask-safe observe-only capabilities; do not ask for repo mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Plan => format!(
-            "Available planning tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
+            "Available planning tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, durable context search/get, tool discovery, and `todo` for runtime-owned planning state. Use context retrieval before drafting when prior plans, decisions, constraints, project facts, questions, or handoffs may matter. Use `project_context_record` only after explicit acceptance, with `recordKind: \"plan\"` and `contentJson.schema: \"xero.plan_pack.v1\"`; Plan cannot use it for generic notes, drafts, or non-plan records. `tool_search` and `tool_access` are filtered to planning-safe capabilities; do not ask for repo mutation, shell commands, browser-control, MCP, skill, subagent, device, network, external-service, branch, stash, commit, push, deploy, or other durable-context write tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Engineer => format!(
             "Available tools: {tool_names}\n\nUse `project_context` to retrieve durable context before acting when prior decisions, constraints, handoffs, or reviewed memory may matter. If a relevant capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` for meaningful multi-step planning state. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
@@ -1280,7 +1296,7 @@ fn tool_policy_fragment(
             "Available tools: {tool_names}\n\nUse `project_context` to retrieve prior debugging records, constraints, handoffs, and reviewed troubleshooting memory before investigating related symptoms. If a relevant diagnostic, inspection, verification, or editing capability is not currently available, first call `tool_search` to find the smallest matching capability, then call `tool_access` to activate the smallest needed group or exact tool before proceeding. Use `todo` with `mode=debug_evidence` for symptom, reproduction, hypothesis, experiment, root_cause, fix, and verification ledger entries. Prefer read-only experiments before mutation, and keep every command tied to a concrete hypothesis or verification need. If the `lsp` tool reports an `installSuggestion`, ask the user before running any candidate install command; use the command tool only after consent and normal operator approval.{tool_application_guidance}{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::Crawl => format!(
-            "Available repository reconnaissance tools: {tool_names}\n\nUse repository read/search/find/list/hash, safe git status/diff, workspace index, code intelligence, environment context, and system diagnostics only for local repository mapping. `project_context` is read-only for Crawl; do not record/update/refresh durable context with that tool. `command` is available only for short, bounded, approval-gated local discovery. `tool_search` and `tool_access` are filtered to Crawl-safe reconnaissance capabilities; do not ask for mutation, browser-control, MCP, skill, subagent, device, network, or external-service tools.{browser_control_guidance}"
+            "Available repository reconnaissance tools: {tool_names}\n\nUse repository read/read_many/result_page/stat/search/find/list/list_tree/directory_digest/hash, safe git status/diff, workspace index, code intelligence, environment context, and system diagnostics only for local repository mapping. `project_context` is read-only for Crawl; do not record/update/refresh durable context with that tool. `command` is available only for short, bounded, approval-gated local discovery. `tool_search` and `tool_access` are filtered to Crawl-safe reconnaissance capabilities; do not ask for mutation, browser-control, MCP, skill, subagent, device, network, or external-service tools.{browser_control_guidance}"
         ),
         RuntimeAgentIdDto::AgentCreate => format!(
             "Available agent-design tools: {tool_names}\n\nUse tools only for read-only project context, tool-catalog inspection, or controlled agent-definition registry actions. `agent_definition` is the only persistence tool Agent Create may use, and save/update/archive/clone require explicit operator approval. Do not ask for repository mutation, command, browser-control, MCP, skill, subagent, device, or external-service tools.{browser_control_guidance}"
@@ -1360,6 +1376,11 @@ fn is_granular_edit_application_tool(tool_name: &str) -> bool {
         tool_name,
         AUTONOMOUS_TOOL_EDIT
             | AUTONOMOUS_TOOL_WRITE
+            | AUTONOMOUS_TOOL_COPY
+            | AUTONOMOUS_TOOL_FS_TRANSACTION
+            | AUTONOMOUS_TOOL_JSON_EDIT
+            | AUTONOMOUS_TOOL_TOML_EDIT
+            | AUTONOMOUS_TOOL_YAML_EDIT
             | AUTONOMOUS_TOOL_DELETE
             | AUTONOMOUS_TOOL_RENAME
             | AUTONOMOUS_TOOL_MKDIR
@@ -1373,6 +1394,10 @@ fn is_repository_discovery_batch_tool(tool_name: &str) -> bool {
         AUTONOMOUS_TOOL_SEARCH
             | AUTONOMOUS_TOOL_FIND
             | AUTONOMOUS_TOOL_LIST
+            | AUTONOMOUS_TOOL_LIST_TREE
+            | AUTONOMOUS_TOOL_DIRECTORY_DIGEST
+            | AUTONOMOUS_TOOL_READ_MANY
+            | AUTONOMOUS_TOOL_RESULT_PAGE
             | AUTONOMOUS_TOOL_TOOL_SEARCH
             | AUTONOMOUS_TOOL_WORKSPACE_INDEX
             | AUTONOMOUS_TOOL_CODE_INTEL
@@ -1381,7 +1406,10 @@ fn is_repository_discovery_batch_tool(tool_name: &str) -> bool {
 }
 
 fn is_granular_repository_discovery_tool(tool_name: &str) -> bool {
-    matches!(tool_name, AUTONOMOUS_TOOL_READ | AUTONOMOUS_TOOL_HASH)
+    matches!(
+        tool_name,
+        AUTONOMOUS_TOOL_READ | AUTONOMOUS_TOOL_STAT | AUTONOMOUS_TOOL_HASH
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2657,23 +2685,28 @@ pub(crate) fn plan_tool_exposure_for_prompt(
 fn add_startup_surface(plan: &mut ToolExposurePlan, options: &ToolRegistryOptions) {
     let startup_tools = [
         AUTONOMOUS_TOOL_READ,
+        AUTONOMOUS_TOOL_READ_MANY,
+        AUTONOMOUS_TOOL_RESULT_PAGE,
+        AUTONOMOUS_TOOL_STAT,
         AUTONOMOUS_TOOL_SEARCH,
         AUTONOMOUS_TOOL_FIND,
         AUTONOMOUS_TOOL_GIT_STATUS,
         AUTONOMOUS_TOOL_GIT_DIFF,
+        AUTONOMOUS_TOOL_LIST_TREE,
         AUTONOMOUS_TOOL_TOOL_ACCESS,
         AUTONOMOUS_TOOL_TOOL_SEARCH,
         AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
         AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
         AUTONOMOUS_TOOL_WORKSPACE_INDEX,
         AUTONOMOUS_TOOL_LIST,
+        AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
         AUTONOMOUS_TOOL_HASH,
     ];
     plan.add_tools(
         startup_tools,
         "startup_core",
         "small_startup_surface",
-        "Small startup surface for file read/search/status, tool discovery, durable context reads, and workspace-index status.",
+        "Small startup surface for file read/read_many/stat/search/list_tree/status, tool discovery, durable context reads, and workspace-index status.",
     );
     if tool_allowed_for_runtime_agent_with_policy(
         options.runtime_agent_id,
@@ -2740,6 +2773,11 @@ fn add_mutation_tools_for_style(
                 [
                     AUTONOMOUS_TOOL_EDIT,
                     AUTONOMOUS_TOOL_WRITE,
+                    AUTONOMOUS_TOOL_COPY,
+                    AUTONOMOUS_TOOL_FS_TRANSACTION,
+                    AUTONOMOUS_TOOL_JSON_EDIT,
+                    AUTONOMOUS_TOOL_TOML_EDIT,
+                    AUTONOMOUS_TOOL_YAML_EDIT,
                     AUTONOMOUS_TOOL_DELETE,
                     AUTONOMOUS_TOOL_RENAME,
                     AUTONOMOUS_TOOL_MKDIR,
@@ -2752,6 +2790,11 @@ fn add_mutation_tools_for_style(
                 [
                     AUTONOMOUS_TOOL_EDIT,
                     AUTONOMOUS_TOOL_WRITE,
+                    AUTONOMOUS_TOOL_COPY,
+                    AUTONOMOUS_TOOL_FS_TRANSACTION,
+                    AUTONOMOUS_TOOL_JSON_EDIT,
+                    AUTONOMOUS_TOOL_TOML_EDIT,
+                    AUTONOMOUS_TOOL_YAML_EDIT,
                     AUTONOMOUS_TOOL_DELETE,
                     AUTONOMOUS_TOOL_RENAME,
                     AUTONOMOUS_TOOL_MKDIR,
@@ -2793,8 +2836,13 @@ fn add_discovery_tools_for_style(
             plan.add_tools(
                 [
                     AUTONOMOUS_TOOL_READ,
+                    AUTONOMOUS_TOOL_READ_MANY,
+                    AUTONOMOUS_TOOL_RESULT_PAGE,
+                    AUTONOMOUS_TOOL_STAT,
                     AUTONOMOUS_TOOL_SEARCH,
                     AUTONOMOUS_TOOL_FIND,
+                    AUTONOMOUS_TOOL_LIST_TREE,
+                    AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
                     AUTONOMOUS_TOOL_HASH,
                 ],
                 "tool_application_style",
@@ -2848,17 +2896,47 @@ fn explicit_tool_names_from_prompt(prompt: &str) -> BTreeSet<String> {
             line if line.starts_with("tool:read ") => {
                 names.insert(AUTONOMOUS_TOOL_READ.into());
             }
+            line if line.starts_with("tool:read_many ") => {
+                names.insert(AUTONOMOUS_TOOL_READ_MANY.into());
+            }
+            line if line.starts_with("tool:result_page ") => {
+                names.insert(AUTONOMOUS_TOOL_RESULT_PAGE.into());
+            }
+            line if line.starts_with("tool:stat ") => {
+                names.insert(AUTONOMOUS_TOOL_STAT.into());
+            }
             line if line.starts_with("tool:search ") => {
                 names.insert(AUTONOMOUS_TOOL_SEARCH.into());
             }
             line if line.starts_with("tool:list ") => {
                 names.insert(AUTONOMOUS_TOOL_LIST.into());
             }
+            line if line.starts_with("tool:list_tree ") || line == "tool:list_tree" => {
+                names.insert(AUTONOMOUS_TOOL_LIST_TREE.into());
+            }
+            line if line.starts_with("tool:directory_digest ") => {
+                names.insert(AUTONOMOUS_TOOL_DIRECTORY_DIGEST.into());
+            }
             line if line.starts_with("tool:hash ") => {
                 names.insert(AUTONOMOUS_TOOL_HASH.into());
             }
             line if line.starts_with("tool:write ") => {
                 names.insert(AUTONOMOUS_TOOL_WRITE.into());
+            }
+            line if line.starts_with("tool:copy ") => {
+                names.insert(AUTONOMOUS_TOOL_COPY.into());
+            }
+            line if line.starts_with("tool:fs_transaction ") => {
+                names.insert(AUTONOMOUS_TOOL_FS_TRANSACTION.into());
+            }
+            line if line.starts_with("tool:json_edit ") => {
+                names.insert(AUTONOMOUS_TOOL_JSON_EDIT.into());
+            }
+            line if line.starts_with("tool:toml_edit ") => {
+                names.insert(AUTONOMOUS_TOOL_TOML_EDIT.into());
+            }
+            line if line.starts_with("tool:yaml_edit ") => {
+                names.insert(AUTONOMOUS_TOOL_YAML_EDIT.into());
             }
             line if line.starts_with("tool:mkdir ") => {
                 names.insert(AUTONOMOUS_TOOL_MKDIR.into());
@@ -3007,8 +3085,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                 &[
                     (
                         "path",
-                        string_schema(
+                        bounded_string_schema(
                             "Repo-relative file path to read. Absolute paths require systemPath=true and operator approval.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
                         ),
                     ),
                     (
@@ -3026,11 +3105,29 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "startLine",
-                        integer_schema("1-based starting line. Defaults to 1."),
+                        bounded_integer_schema("1-based starting line. Defaults to 1.", 1, None),
                     ),
                     (
                         "lineCount",
-                        integer_schema("Maximum number of lines to return."),
+                        bounded_integer_schema(
+                            "Maximum number of lines to return.",
+                            1,
+                            Some(DESCRIPTOR_MAX_READ_LINE_COUNT),
+                        ),
+                    ),
+                    (
+                        "cursor",
+                        bounded_string_schema(
+                            "Stable continuation cursor returned by a previous truncated read. Do not combine with startLine, aroundPattern, or byte ranges.",
+                            160,
+                        ),
+                    ),
+                    (
+                        "aroundPattern",
+                        bounded_string_schema(
+                            "Literal text to center the returned line window around. Do not combine with startLine, cursor, or byte ranges.",
+                            DESCRIPTOR_MAX_READ_AROUND_PATTERN_CHARS,
+                        ),
                     ),
                     (
                         "byteOffset",
@@ -3038,8 +3135,10 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "byteCount",
-                        integer_schema(
+                        bounded_integer_schema(
                             "Maximum bytes to return when byteOffset or byteCount is set.",
+                            1,
+                            Some(DESCRIPTOR_MAX_TEXT_FILE_BYTES),
                         ),
                     ),
                     (
@@ -3052,15 +3151,151 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             ),
         ),
         descriptor(
+            AUTONOMOUS_TOOL_READ_MANY,
+            "Read a bounded ordered set of small repo-relative files with per-file errors instead of failing the whole batch.",
+            object_schema(
+                &["paths"],
+                &[
+                    (
+                        "paths",
+                        bounded_string_array_schema(
+                            "Ordered repo-relative file paths to read.",
+                            1,
+                            DESCRIPTOR_MAX_READ_MANY_PATHS,
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "mode",
+                        enum_schema(
+                            "Read mode applied to each file. Defaults to auto.",
+                            &["auto", "text", "image", "binary_metadata"],
+                        ),
+                    ),
+                    (
+                        "startLine",
+                        bounded_integer_schema("1-based starting line for text reads.", 1, None),
+                    ),
+                    (
+                        "lineCount",
+                        bounded_integer_schema(
+                            "Maximum number of lines to return per text file.",
+                            1,
+                            Some(DESCRIPTOR_MAX_READ_LINE_COUNT),
+                        ),
+                    ),
+                    (
+                        "maxBytesPerFile",
+                        bounded_integer_schema(
+                            "Maximum source file bytes allowed for each file before it is returned as a per-file omission.",
+                            1,
+                            Some(DESCRIPTOR_MAX_TEXT_FILE_BYTES),
+                        ),
+                    ),
+                    (
+                        "maxTotalBytes",
+                        bounded_integer_schema(
+                            "Maximum total source bytes allowed across the batch before later files are returned as per-file omissions.",
+                            1,
+                            Some(DESCRIPTOR_MAX_TEXT_FILE_BYTES),
+                        ),
+                    ),
+                    (
+                        "includeLineHashes",
+                        boolean_schema("Include stable line hashes for text read results."),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_RESULT_PAGE,
+            "Read a bounded continuation slice from a project app-data tool artifact without rerunning the original tool.",
+            object_schema(
+                &["artifactPath"],
+                &[
+                    (
+                        "artifactPath",
+                        bounded_string_schema(
+                            "Absolute artifact path returned by a previous tool under this project's app-data tool-artifacts directory.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "byteOffset",
+                        integer_schema(
+                            "Byte offset to continue reading from. Defaults to 0; use nextByteOffset from the prior result_page output.",
+                        ),
+                    ),
+                    (
+                        "maxBytes",
+                        bounded_integer_schema(
+                            "Maximum bytes to return from the artifact slice.",
+                            1,
+                            Some(DESCRIPTOR_MAX_RESULT_PAGE_BYTES),
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_STAT,
+            "Inspect repo-relative path metadata without reading file content. Missing paths return kind=missing unless strict=true.",
+            object_schema(
+                &["path"],
+                &[
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative path to inspect. Use . for the repository root.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "followSymlinks",
+                        boolean_schema(
+                            "Follow the final symlink and report target metadata. Symlink targets must still resolve inside the imported repository.",
+                        ),
+                    ),
+                    (
+                        "includeGitStatus",
+                        boolean_schema(
+                            "Include matching git status entries for the path without returning a full repository status.",
+                        ),
+                    ),
+                    (
+                        "includeHash",
+                        boolean_schema(
+                            "Include SHA-256 for regular files up to the stat hash size limit.",
+                        ),
+                    ),
+                    (
+                        "strict",
+                        boolean_schema(
+                            "Return an error when the path is missing instead of a successful kind=missing observation.",
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
             AUTONOMOUS_TOOL_SEARCH,
             "Search repo-scoped files with regex or literal matching, globs, context lines, hidden/ignored controls, and deterministic capped results.",
             object_schema(
                 &["query"],
                 &[
-                    ("query", string_schema("Text or regex query to search for.")),
+                    (
+                        "query",
+                        bounded_string_schema(
+                            "Text or regex query to search for.",
+                            DESCRIPTOR_MAX_SEARCH_QUERY_CHARS,
+                        ),
+                    ),
                     (
                         "path",
-                        string_schema("Optional repo-relative directory scope."),
+                        bounded_string_schema(
+                            "Optional repo-relative directory scope.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
                     ),
                     (
                         "regex",
@@ -3082,47 +3317,101 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "includeGlobs",
-                        json!({
-                            "type": "array",
-                            "description": "Optional repo-relative glob allow-list.",
-                            "items": { "type": "string" }
-                        }),
+                        string_array_schema(
+                            "Optional repo-relative glob allow-list.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
                     ),
                     (
                         "excludeGlobs",
-                        json!({
-                            "type": "array",
-                            "description": "Optional repo-relative glob deny-list.",
-                            "items": { "type": "string" }
-                        }),
+                        string_array_schema(
+                            "Optional repo-relative glob deny-list.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
                     ),
                     (
                         "contextLines",
-                        integer_schema(
+                        bounded_integer_schema(
                             "Number of surrounding lines per match, capped by the runtime.",
+                            0,
+                            Some(DESCRIPTOR_MAX_SEARCH_CONTEXT_LINES),
                         ),
                     ),
                     (
                         "maxResults",
-                        integer_schema("Maximum matches to return, capped by the runtime."),
+                        bounded_integer_schema(
+                            "Maximum matches to return, capped by the runtime.",
+                            1,
+                            Some(DESCRIPTOR_MAX_SEARCH_RESULTS),
+                        ),
+                    ),
+                    (
+                        "filesOnly",
+                        boolean_schema(
+                            "Return matched-file summaries without individual match entries.",
+                        ),
+                    ),
+                    (
+                        "cursor",
+                        bounded_string_schema(
+                            "Stable continuation cursor returned by a previous truncated search with the same query and options.",
+                            180,
+                        ),
                     ),
                 ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_FIND,
-            "Find glob/pattern matches in repo-scoped files with optional bounded recursion depth.",
+            "Find repo-scoped paths by glob, exact name, extension, or path prefix with optional bounded recursion and pagination.",
             object_schema(
                 &["pattern"],
                 &[
-                    ("pattern", string_schema("Glob or path pattern to find.")),
+                    (
+                        "pattern",
+                        bounded_string_schema(
+                            "Glob or path pattern to find.",
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "mode",
+                        enum_schema(
+                            "Match mode. Defaults to glob for repo-relative path globbing.",
+                            &["glob", "name", "extension", "path_prefix"],
+                        ),
+                    ),
                     (
                         "path",
-                        string_schema("Optional repo-relative directory scope."),
+                        bounded_string_schema(
+                            "Optional repo-relative directory scope.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
                     ),
                     (
                         "maxDepth",
-                        integer_schema("Optional maximum recursion depth from the scope."),
+                        bounded_integer_schema(
+                            "Optional maximum recursion depth from the scope.",
+                            0,
+                            Some(DESCRIPTOR_MAX_FIND_DEPTH),
+                        ),
+                    ),
+                    (
+                        "maxResults",
+                        bounded_integer_schema(
+                            "Maximum paths to return, capped by the runtime.",
+                            1,
+                            Some(DESCRIPTOR_MAX_SEARCH_RESULTS),
+                        ),
+                    ),
+                    (
+                        "cursor",
+                        bounded_string_schema(
+                            "Stable continuation cursor returned by a previous truncated find with the same pattern and options.",
+                            180,
+                        ),
                     ),
                 ],
             ),
@@ -3160,8 +3449,10 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         "groups",
                         json!({
                             "type": "array",
-                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, harness_runner, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
-                            "items": { "type": "string" }
+                            "description": "Optional tool groups to request. Prefer fine-grained groups when possible. Known groups include core, mutation, command_readonly, command_mutating, command_session, command, process_manager, system_diagnostics_observe, system_diagnostics_privileged, system_diagnostics, macos, web_search_only, web_fetch, browser_observe, browser_control, web, emulator, solana, agent_ops, agent_builder, project_context_write, mcp_list, mcp_invoke, mcp, intelligence, notebook, powershell, environment, and skills.",
+                            "minItems": 0,
+                            "maxItems": 32,
+                            "items": { "type": "string", "maxLength": 128 }
                         }),
                     ),
                     (
@@ -3169,7 +3460,9 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         json!({
                             "type": "array",
                             "description": "Optional specific tool names to request.",
-                            "items": { "type": "string" }
+                            "minItems": 0,
+                            "maxItems": 64,
+                            "items": { "type": "string", "maxLength": 128 }
                         }),
                     ),
                     (
@@ -3190,7 +3483,13 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             object_schema(
                 &["path", "startLine", "endLine", "expected", "replacement"],
                 &[
-                    ("path", string_schema("Repo-relative file path to edit.")),
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative file path to edit.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
                     (
                         "startLine",
                         integer_schema("1-based first line to replace."),
@@ -3206,31 +3505,63 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                     ),
                     (
                         "expectedHash",
-                        string_schema("Optional lowercase SHA-256 expected current file hash."),
+                        sha256_schema("Optional lowercase SHA-256 expected current file hash."),
                     ),
                     (
                         "startLineHash",
-                        string_schema(
+                        sha256_schema(
                             "Optional SHA-256 hash for the current start line, from read includeLineHashes.",
                         ),
                     ),
                     (
                         "endLineHash",
-                        string_schema(
+                        sha256_schema(
                             "Optional SHA-256 hash for the current end line, from read includeLineHashes.",
                         ),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema("Validate and return the planned edit without writing."),
                     ),
                 ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_WRITE,
-            "Write a UTF-8 text file by repo-relative path.",
+            "Create or explicitly replace a UTF-8 repo-relative text file with preview and expected-hash guards.",
             object_schema(
                 &["path", "content"],
                 &[
-                    ("path", string_schema("Repo-relative file path to write.")),
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative file path to write.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
                     ("content", string_schema("Complete UTF-8 file contents.")),
+                    (
+                        "expectedHash",
+                        sha256_schema(
+                            "Optional lowercase SHA-256 expected current file hash when replacing an existing file.",
+                        ),
+                    ),
+                    (
+                        "createOnly",
+                        boolean_schema("Refuse the write if the target file already exists."),
+                    ),
+                    (
+                        "overwrite",
+                        boolean_schema(
+                            "Set true to replace an existing file; false explicitly refuses replacement.",
+                        ),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema(
+                            "Validate and return the planned create or replacement without writing.",
+                        ),
+                    ),
                 ],
             ),
         ),
@@ -3240,78 +3571,454 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
             patch_schema(),
         ),
         descriptor(
+            AUTONOMOUS_TOOL_COPY,
+            "Copy a repo-relative file or directory with preview, source guards, explicit overwrite, and no symlink following.",
+            object_schema(
+                &["from", "to"],
+                &[
+                    (
+                        "from",
+                        bounded_string_schema(
+                            "Existing repo-relative source file or directory.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "to",
+                        bounded_string_schema(
+                            "Repo-relative destination path.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "recursive",
+                        boolean_schema("Required when copying a directory."),
+                    ),
+                    (
+                        "expectedSourceHash",
+                        sha256_schema("Optional lowercase SHA-256 expected source file hash."),
+                    ),
+                    (
+                        "expectedSourceDigest",
+                        sha256_schema(
+                            "Required lowercase SHA-256 source tree digest for applying recursive directory copies; obtain it from preview.",
+                        ),
+                    ),
+                    (
+                        "overwrite",
+                        boolean_schema(
+                            "Set true to replace an existing file target after expectedTargetHash validation; existing directory targets are refused.",
+                        ),
+                    ),
+                    (
+                        "expectedTargetHash",
+                        sha256_schema(
+                            "Required lowercase SHA-256 hash of the existing target file when overwrite=true.",
+                        ),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema("Validate and return planned copy operations without writing."),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_FS_TRANSACTION,
+            "Preview or apply a bounded multi-step filesystem transaction with validation before mutation and rollback attempts after partial apply failure.",
+            object_schema(
+                &["operations"],
+                &[
+                    (
+                        "operations",
+                        json!({
+                            "type": "array",
+                            "description": "Ordered filesystem operations. Each item has an action plus the fields required by that action.",
+                            "minItems": 1,
+                            "maxItems": 32,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["action"],
+                                "properties": {
+                                    "id": { "type": "string", "maxLength": 128 },
+                                    "action": {
+                                        "type": "string",
+                                        "enum": ["create_file", "replace_file", "edit_file", "delete_file", "delete_directory", "rename", "copy", "mkdir"],
+                                        "description": "Operation to validate and apply."
+                                    },
+                                    "path": bounded_string_schema("Repo-relative path for create, replace, edit, delete, or mkdir.", DESCRIPTOR_MAX_PATH_CHARS),
+                                    "from": bounded_string_schema("Repo-relative copy source path.", DESCRIPTOR_MAX_PATH_CHARS),
+                                    "to": bounded_string_schema("Repo-relative copy destination path.", DESCRIPTOR_MAX_PATH_CHARS),
+                                    "fromPath": bounded_string_schema("Repo-relative rename source path.", DESCRIPTOR_MAX_PATH_CHARS),
+                                    "toPath": bounded_string_schema("Repo-relative rename destination path.", DESCRIPTOR_MAX_PATH_CHARS),
+                                    "content": { "type": "string", "description": "Complete UTF-8 content for create_file or replace_file." },
+                                    "startLine": integer_schema("1-based edit start line for exact range edits."),
+                                    "endLine": integer_schema("1-based edit end line for exact range edits."),
+                                    "expected": { "type": "string", "description": "Exact current text for range edit_file operations." },
+                                    "replacement": { "type": "string", "description": "Replacement text for range edits or search replacements." },
+                                    "search": { "type": "string", "description": "Search text for search/replace edit_file operations." },
+                                    "replace": { "type": "string", "description": "Replacement text for search/replace edit_file operations." },
+                                    "replaceAll": boolean_schema("Replace all search matches for search/replace edit_file operations."),
+                                    "recursive": boolean_schema("Required for copy directory operations."),
+                                    "expectedHash": sha256_schema("Lowercase SHA-256 guard for file replace, edit, delete, or rename source operations."),
+                                    "expectedSourceHash": sha256_schema("Lowercase SHA-256 guard for copy file sources."),
+                                    "expectedSourceDigest": sha256_schema("Lowercase SHA-256 guard from a copy directory transaction preview."),
+                                    "expectedTargetHash": sha256_schema("Lowercase SHA-256 guard for overwrite targets."),
+                                    "expectedDigest": sha256_schema("Lowercase SHA-256 guard from a delete_directory transaction preview."),
+                                    "overwrite": boolean_schema("Set true only for guarded file overwrite operations."),
+                                    "parents": boolean_schema("Create missing parent directories for mkdir; defaults to true."),
+                                    "existOk": boolean_schema("Treat existing mkdir target directory as success; defaults to true.")
+                                }
+                            }
+                        }),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema("Validate and summarize the transaction without writing."),
+                    ),
+                    (
+                        "stopOnFirstError",
+                        boolean_schema("Stop validation after the first operation error instead of collecting all operation errors."),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_JSON_EDIT,
+            "Apply parser-backed JSON edits with preview, expected-hash guards, semantic changes, and compact diffs.",
+            structured_edit_schema("JSON"),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_TOML_EDIT,
+            "Apply parser-backed TOML edits with preview, expected-hash guards, semantic changes, and compact diffs.",
+            structured_edit_schema("TOML"),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_YAML_EDIT,
+            "Apply parser-backed YAML edits with preview, expected-hash guards, semantic changes, and compact diffs.",
+            structured_edit_schema("YAML"),
+        ),
+        descriptor(
             AUTONOMOUS_TOOL_DELETE,
-            "Delete a repo-relative file or, with recursive=true, directory.",
+            "Delete a repo-relative file or digest-guarded directory, with preview support.",
             object_schema(
                 &["path"],
                 &[
-                    ("path", string_schema("Repo-relative path to delete.")),
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative path to delete.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
                     (
                         "recursive",
                         boolean_schema("Required for directory deletion."),
                     ),
                     (
                         "expectedHash",
-                        string_schema("Optional lowercase SHA-256 expected file hash."),
+                        sha256_schema("Optional lowercase SHA-256 expected file hash."),
+                    ),
+                    (
+                        "expectedDigest",
+                        sha256_schema(
+                            "Required lowercase SHA-256 delete-plan digest for applying recursive directory deletes; obtain it from preview.",
+                        ),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema(
+                            "Validate and summarize the delete without removing files.",
+                        ),
                     ),
                 ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_RENAME,
-            "Rename or move a repo-relative path.",
+            "Rename or move a repo-relative path with preview and guarded file-target overwrite.",
             object_schema(
                 &["fromPath", "toPath"],
                 &[
                     (
                         "fromPath",
-                        string_schema("Existing repo-relative source path."),
+                        bounded_string_schema(
+                            "Existing repo-relative source path.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
                     ),
                     (
                         "toPath",
-                        string_schema("New repo-relative destination path."),
+                        bounded_string_schema(
+                            "New repo-relative destination path.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
                     ),
                     (
                         "expectedHash",
-                        string_schema("Optional lowercase SHA-256 expected source file hash."),
+                        sha256_schema("Optional lowercase SHA-256 expected source file hash."),
+                    ),
+                    (
+                        "expectedTargetHash",
+                        sha256_schema(
+                            "Required lowercase SHA-256 hash of the existing target file when overwrite=true.",
+                        ),
+                    ),
+                    (
+                        "overwrite",
+                        boolean_schema(
+                            "Set true to replace an existing target file after expectedTargetHash validation; default refuses existing targets.",
+                        ),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema(
+                            "Validate and return the planned rename without moving files.",
+                        ),
                     ),
                 ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_MKDIR,
-            "Create a repo-relative directory and missing parents.",
+            "Create a repo-relative directory with explicit parent/existence flags and preview support.",
             object_schema(
                 &["path"],
-                &[(
-                    "path",
-                    string_schema("Repo-relative directory path to create."),
-                )],
+                &[
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative directory path to create.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "parents",
+                        boolean_schema(
+                            "Create missing parent directories; defaults to true for existing mkdir behavior.",
+                        ),
+                    ),
+                    (
+                        "existOk",
+                        boolean_schema(
+                            "Treat an existing target directory as success; defaults to true.",
+                        ),
+                    ),
+                    (
+                        "preview",
+                        boolean_schema(
+                            "Validate and list directories that would be created without creating them.",
+                        ),
+                    ),
+                ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_LIST,
-            "List repo-scoped files.",
+            "List repo-scoped paths as a flat, paginated listing. Use list_tree for tree-shaped summaries.",
             object_schema(
                 &[],
                 &[
                     (
                         "path",
-                        string_schema("Optional repo-relative directory or file scope."),
+                        bounded_string_schema(
+                            "Optional repo-relative directory or file scope.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
                     ),
                     (
                         "maxDepth",
-                        integer_schema("Maximum recursion depth from the scope."),
+                        bounded_integer_schema(
+                            "Maximum recursion depth from the scope.",
+                            0,
+                            Some(DESCRIPTOR_MAX_FIND_DEPTH),
+                        ),
+                    ),
+                    (
+                        "maxResults",
+                        bounded_integer_schema(
+                            "Maximum entries to return, capped by the runtime.",
+                            1,
+                            Some(DESCRIPTOR_MAX_LIST_TREE_ENTRIES),
+                        ),
+                    ),
+                    (
+                        "sortBy",
+                        enum_schema(
+                            "Stable flat-list sort key.",
+                            &["path", "name", "kind", "size", "modified"],
+                        ),
+                    ),
+                    (
+                        "sortDirection",
+                        enum_schema("Sort direction.", &["asc", "desc"]),
+                    ),
+                    (
+                        "cursor",
+                        bounded_string_schema(
+                            "Stable continuation cursor returned by a previous truncated list with the same scope and options.",
+                            180,
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_LIST_TREE,
+            "Return a compact deterministic repo-relative directory tree with omission counts.",
+            object_schema(
+                &[],
+                &[
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Optional repo-relative directory or file scope.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "maxDepth",
+                        bounded_integer_schema(
+                            "Maximum tree depth from the scope.",
+                            0,
+                            Some(DESCRIPTOR_MAX_LIST_TREE_DEPTH),
+                        ),
+                    ),
+                    (
+                        "maxEntries",
+                        bounded_integer_schema(
+                            "Maximum number of child entries included in the tree.",
+                            1,
+                            Some(DESCRIPTOR_MAX_LIST_TREE_ENTRIES),
+                        ),
+                    ),
+                    (
+                        "includeGlobs",
+                        string_array_schema(
+                            "Optional repo-relative glob allow-list for files; directories are still traversed so matching descendants can appear.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "excludeGlobs",
+                        string_array_schema(
+                            "Optional repo-relative glob deny-list.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "includeGitStatus",
+                        boolean_schema("Include matching git status entries for the tree scope."),
+                    ),
+                    (
+                        "showOmitted",
+                        boolean_schema(
+                            "Include omission counters for depth, entry cap, ignored directories, permissions, and filters.",
+                        ),
+                    ),
+                ],
+            ),
+        ),
+        descriptor(
+            AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+            "Compute a deterministic digest for a repo-relative directory or file set.",
+            object_schema(
+                &["path"],
+                &[
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative file or directory path to digest.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "includeGlobs",
+                        string_array_schema(
+                            "Optional repo-relative glob allow-list for files; directories are still traversed so matching descendants can contribute.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "excludeGlobs",
+                        string_array_schema(
+                            "Optional repo-relative glob deny-list.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "maxFiles",
+                        bounded_integer_schema(
+                            "Maximum number of files to include in the digest manifest.",
+                            1,
+                            Some(DESCRIPTOR_MAX_DIRECTORY_DIGEST_FILES),
+                        ),
+                    ),
+                    (
+                        "hashMode",
+                        enum_schema(
+                            "Digest mode. metadata_only avoids reading file content; content_hash hashes file bytes; git_index_aware salts the digest with scoped git status.",
+                            &["metadata_only", "content_hash", "git_index_aware"],
+                        ),
                     ),
                 ],
             ),
         ),
         descriptor(
             AUTONOMOUS_TOOL_HASH,
-            "Hash a repo-relative file with SHA-256.",
+            "Hash a repo-relative file, directory, or matched file set with SHA-256.",
             object_schema(
                 &["path"],
-                &[("path", string_schema("Repo-relative file path to hash."))],
+                &[
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative file or directory path to hash.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
+                    (
+                        "recursive",
+                        boolean_schema(
+                            "Hash descendants when path is a directory. Directories imply recursive file-set hashing.",
+                        ),
+                    ),
+                    (
+                        "includeGlobs",
+                        string_array_schema(
+                            "Optional repo-relative glob allow-list for files in file-set mode.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "excludeGlobs",
+                        string_array_schema(
+                            "Optional repo-relative glob deny-list for file-set mode.",
+                            DESCRIPTOR_MAX_GLOB_ITEMS,
+                            DESCRIPTOR_MAX_GLOB_CHARS,
+                        ),
+                    ),
+                    (
+                        "maxFiles",
+                        bounded_integer_schema(
+                            "Maximum number of files to hash in file-set mode.",
+                            1,
+                            Some(DESCRIPTOR_MAX_HASH_FILES),
+                        ),
+                    ),
+                    (
+                        "manifest",
+                        boolean_schema(
+                            "Persist a full JSON manifest artifact under OS app-data even for small file sets.",
+                        ),
+                    ),
+                ],
             ),
         ),
         descriptor(
@@ -3981,12 +4688,32 @@ fn string_schema(description: &str) -> JsonValue {
     })
 }
 
+fn bounded_string_schema(description: &str, max_length: u64) -> JsonValue {
+    json!({
+        "type": "string",
+        "description": description,
+        "minLength": 1,
+        "maxLength": max_length,
+    })
+}
+
 fn integer_schema(description: &str) -> JsonValue {
     json!({
         "type": "integer",
         "minimum": 0,
         "description": description,
     })
+}
+
+fn bounded_integer_schema(description: &str, minimum: u64, maximum: Option<u64>) -> JsonValue {
+    let mut schema = JsonMap::new();
+    schema.insert("type".into(), json!("integer"));
+    schema.insert("minimum".into(), json!(minimum));
+    schema.insert("description".into(), json!(description));
+    if let Some(maximum) = maximum {
+        schema.insert("maximum".into(), json!(maximum));
+    }
+    JsonValue::Object(schema)
 }
 
 fn boolean_schema(description: &str) -> JsonValue {
@@ -3996,17 +4723,60 @@ fn boolean_schema(description: &str) -> JsonValue {
     })
 }
 
+fn string_array_schema(description: &str, max_items: u64, max_item_length: u64) -> JsonValue {
+    json!({
+        "type": "array",
+        "description": description,
+        "minItems": 0,
+        "maxItems": max_items,
+        "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": max_item_length
+        }
+    })
+}
+
+fn bounded_string_array_schema(
+    description: &str,
+    min_items: u64,
+    max_items: u64,
+    max_item_length: u64,
+) -> JsonValue {
+    json!({
+        "type": "array",
+        "description": description,
+        "minItems": min_items,
+        "maxItems": max_items,
+        "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": max_item_length
+        }
+    })
+}
+
+fn sha256_schema(description: &str) -> JsonValue {
+    json!({
+        "type": "string",
+        "description": description,
+        "pattern": "^[a-f0-9]{64}$",
+        "minLength": 64,
+        "maxLength": 64,
+    })
+}
+
 fn patch_schema() -> JsonValue {
     let operation_schema = json!({
         "type": "object",
         "additionalProperties": false,
         "required": ["path", "search", "replace"],
         "properties": {
-            "path": string_schema("Repo-relative file path to patch."),
+            "path": bounded_string_schema("Repo-relative file path to patch.", DESCRIPTOR_MAX_PATH_CHARS),
             "search": string_schema("Exact current text to replace."),
             "replace": string_schema("Replacement text."),
             "replaceAll": boolean_schema("Replace every match instead of exactly one match."),
-            "expectedHash": string_schema("Optional lowercase SHA-256 expected current file hash for this file before any patch operations run.")
+            "expectedHash": sha256_schema("Optional lowercase SHA-256 expected current file hash for this file before any patch operations run.")
         }
     });
 
@@ -4015,7 +4785,13 @@ fn patch_schema() -> JsonValue {
             object_schema(
                 &["path", "search", "replace"],
                 &[
-                    ("path", string_schema("Repo-relative file path to patch.")),
+                    (
+                        "path",
+                        bounded_string_schema(
+                            "Repo-relative file path to patch.",
+                            DESCRIPTOR_MAX_PATH_CHARS,
+                        ),
+                    ),
                     ("search", string_schema("Exact current text to replace.")),
                     ("replace", string_schema("Replacement text.")),
                     (
@@ -4024,7 +4800,7 @@ fn patch_schema() -> JsonValue {
                     ),
                     (
                         "expectedHash",
-                        string_schema("Optional lowercase SHA-256 expected current file hash."),
+                        sha256_schema("Optional lowercase SHA-256 expected current file hash."),
                     ),
                     (
                         "preview",
@@ -4053,6 +4829,66 @@ fn patch_schema() -> JsonValue {
             ),
         ]
     })
+}
+
+fn structured_edit_schema(format_name: &str) -> JsonValue {
+    let operation_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "pointer"],
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["set", "delete", "append_unique", "sort_keys"],
+                "description": "Parser-backed semantic edit operation."
+            },
+            "pointer": {
+                "type": "string",
+                "description": "JSON Pointer path such as /scripts/build or /dependencies/serde. Use an empty string only for root-level sort_keys.",
+                "maxLength": 1024
+            },
+            "value": {
+                "description": "Structured value required for set and append_unique. Must be representable in the target format."
+            }
+        }
+    });
+    object_schema(
+        &["path", "operations"],
+        &[
+            (
+                "path",
+                bounded_string_schema(
+                    &format!("Repo-relative {format_name} file path to edit."),
+                    DESCRIPTOR_MAX_PATH_CHARS,
+                ),
+            ),
+            (
+                "operations",
+                json!({
+                    "type": "array",
+                    "description": "Bounded semantic edits applied in order after parsing the document.",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": operation_schema
+                }),
+            ),
+            (
+                "expectedHash",
+                sha256_schema("Optional lowercase SHA-256 expected current file hash."),
+            ),
+            (
+                "formattingMode",
+                enum_schema(
+                    "Structured edit formatting behavior. Currently normalize emits parser-normalized output.",
+                    &["normalize"],
+                ),
+            ),
+            (
+                "preview",
+                boolean_schema("Validate and return semantic changes plus compact diff without writing."),
+            ),
+        ],
+    )
 }
 
 fn enum_schema(description: &str, values: &[&str]) -> JsonValue {
@@ -5697,6 +6533,43 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
             });
             continue;
         }
+        if let Some(paths) = line.strip_prefix("tool:read_many ") {
+            let paths = paths
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .collect::<Vec<_>>();
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-read-many-{}", calls.len() + 1),
+                tool_name: AUTONOMOUS_TOOL_READ_MANY.into(),
+                input: json!({ "paths": paths, "lineCount": 40 }),
+            });
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("tool:stat ") {
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-stat-{}", calls.len() + 1),
+                tool_name: AUTONOMOUS_TOOL_STAT.into(),
+                input: json!({ "path": path.trim() }),
+            });
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("tool:list_tree ") {
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-list-tree-{}", calls.len() + 1),
+                tool_name: AUTONOMOUS_TOOL_LIST_TREE.into(),
+                input: json!({ "path": path.trim(), "maxDepth": 2, "showOmitted": true }),
+            });
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("tool:directory_digest ") {
+            calls.push(AgentToolCall {
+                tool_call_id: format!("tool-call-directory-digest-{}", calls.len() + 1),
+                tool_name: AUTONOMOUS_TOOL_DIRECTORY_DIGEST.into(),
+                input: json!({ "path": path.trim(), "hashMode": "metadata_only" }),
+            });
+            continue;
+        }
         if line == "tool:git_status" {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-git-status-{}", calls.len() + 1),
@@ -6640,6 +7513,11 @@ mod tests {
             AUTONOMOUS_TOOL_WRITE,
             AUTONOMOUS_TOOL_EDIT,
             AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_COPY,
+            AUTONOMOUS_TOOL_FS_TRANSACTION,
+            AUTONOMOUS_TOOL_JSON_EDIT,
+            AUTONOMOUS_TOOL_TOML_EDIT,
+            AUTONOMOUS_TOOL_YAML_EDIT,
             AUTONOMOUS_TOOL_DELETE,
             AUTONOMOUS_TOOL_COMMAND_PROBE,
             AUTONOMOUS_TOOL_COMMAND_VERIFY,
@@ -7315,6 +8193,11 @@ mod tests {
             AUTONOMOUS_TOOL_WRITE,
             AUTONOMOUS_TOOL_EDIT,
             AUTONOMOUS_TOOL_PATCH,
+            AUTONOMOUS_TOOL_COPY,
+            AUTONOMOUS_TOOL_FS_TRANSACTION,
+            AUTONOMOUS_TOOL_JSON_EDIT,
+            AUTONOMOUS_TOOL_TOML_EDIT,
+            AUTONOMOUS_TOOL_YAML_EDIT,
             AUTONOMOUS_TOOL_DELETE,
             AUTONOMOUS_TOOL_PROCESS_MANAGER,
             AUTONOMOUS_TOOL_MACOS_AUTOMATION,

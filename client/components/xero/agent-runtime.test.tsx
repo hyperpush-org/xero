@@ -1697,7 +1697,7 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText('Affected paths')).not.toBeInTheDocument()
   })
 
-  it('copies user prompts, agent responses, and the visible conversation', async () => {
+  it('copies user prompts and agent responses without a conversation copy action', async () => {
     const writeText = installClipboardWriteMock()
     renderRuntimeStreamItems([
       makeTranscriptItem({ sequence: 2, role: 'user', text: 'Please inspect the renderer.' }),
@@ -1714,16 +1714,7 @@ describe('AgentRuntime current UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy agent response' }))
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith('The renderer is selectable now.'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy visible conversation' }))
-    await waitFor(() =>
-      expect(writeText).toHaveBeenLastCalledWith(
-        [
-          'You:\nPlease inspect the renderer.',
-          'Thoughts:\nChecking the transcript controls.',
-          'Agent:\nThe renderer is selectable now.',
-        ].join('\n\n'),
-      ),
-    )
+    expect(screen.queryByRole('button', { name: 'Copy visible conversation' })).not.toBeInTheDocument()
   })
 
   it('shows an agent thinking row immediately while a submitted prompt is starting', () => {
@@ -2055,6 +2046,35 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
   })
 
+  it('does not auto-follow to the tail when mounting a restored terminal conversation', () => {
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
+    scrollIntoView.mockClear()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-04-29T00:49:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({ sequence: 1, role: 'user', text: 'What is this project about?' }),
+            makeTranscriptItem({ sequence: 2, text: 'This project is Xero.' }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('This project is Xero.')).toBeVisible()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
   it('pauses auto-follow immediately when the user wheels upward during streaming', () => {
     const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView)
     const initialItems: NonNullable<AgentPaneView['runtimeStreamItems']> = [
@@ -2303,6 +2323,56 @@ describe('AgentRuntime current UI', () => {
     expect(screen.queryByText('4 tool calls')).not.toBeInTheDocument()
     expect(screen.getByText('read tool-0.ts')).toBeVisible()
     expect(screen.getByText('read tool-3.ts')).toBeVisible()
+  })
+
+  it('replaces grouped tool rows in place when grouping is disabled after render', () => {
+    const runtimeStreamItems = [
+      makeTranscriptItem({ sequence: 2, role: 'user', text: 'Inspect several files.' }),
+      ...Array.from({ length: 4 }, (_, index) =>
+        makeToolItem({
+          sequence: index + 3,
+          toolCallId: `call-read-${index}`,
+          toolName: 'read',
+          toolState: 'succeeded',
+          detail: `Read tool ${index}.`,
+          toolSummary: {
+            kind: 'file' as const,
+            path: `client/src/tool-${index}.ts`,
+            scope: null,
+            lineCount: 12,
+            matchCount: null,
+            truncated: false,
+          },
+        }),
+      ),
+      makeTranscriptItem({ sequence: 10, text: 'Inspection complete.' }),
+    ]
+    const agent = makeAgent({
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: makeRuntimeRun(),
+      runtimeStreamStatus: 'complete',
+      runtimeStreamStatusLabel: 'Complete',
+      runtimeStreamItems,
+    })
+
+    const { rerender } = render(
+      <AgentRuntime agent={agent} toolCallGroupingPreference="grouped" />,
+    )
+
+    expect(screen.getByText('4 tool calls')).toBeVisible()
+    expect(screen.queryByText('read tool-0.ts')).not.toBeInTheDocument()
+
+    rerender(<AgentRuntime agent={agent} toolCallGroupingPreference="separate" />)
+
+    expect(screen.queryByText('4 tool calls')).not.toBeInTheDocument()
+    expect(screen.getByText('read tool-0.ts')).toBeVisible()
+    expect(screen.getByText('read tool-3.ts')).toBeVisible()
+
+    const conversationText =
+      screen.getByRole('list', { name: 'Agent conversation turns' }).textContent ?? ''
+    expect(conversationText.indexOf('read tool-0.ts')).toBeLessThan(
+      conversationText.indexOf('Inspection complete.'),
+    )
   })
 
   it('splits tool groups around edit tool calls and shows the edit diff', () => {
@@ -3320,6 +3390,46 @@ describe('AgentRuntime current UI', () => {
     )
     await waitFor(() => expect(screen.getByLabelText('Agent input')).toHaveValue(''))
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('YOLO')
+  })
+
+  it('queues runtime agent changes against the active run controls', async () => {
+    const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+          controlTruthSource: 'runtime_run',
+          selectedModelId: 'openai_codex',
+          selectedModelSelectionKey: 'openai_codex:openai_codex',
+          selectedThinkingEffort: 'medium',
+          selectedApprovalMode: 'suggest',
+          composerModelOptions: [makeComposerModelOption()],
+        })}
+        onUpdateRuntimeRunControls={onUpdateRuntimeRunControls}
+      />,
+    )
+
+    const agentSelector = screen.getByRole('combobox', { name: 'Agent selector' })
+    expect(agentSelector).not.toBeDisabled()
+
+    fireEvent.click(agentSelector)
+    fireEvent.click(await screen.findByRole('option', { name: /Engineer/i }))
+
+    await waitFor(() =>
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
+        controls: {
+          runtimeAgentId: 'engineer',
+          agentDefinitionId: null,
+          providerProfileId: 'openai_codex-default',
+          modelId: 'openai_codex',
+          thinkingEffort: 'medium',
+          approvalMode: 'suggest',
+          planModeRequired: false,
+        },
+      }),
+    )
   })
 
   it('opts owned-agent continuations into auto-compact from the composer', async () => {

@@ -127,6 +127,47 @@ describe('ProviderCredentialsList', () => {
     expect(within(getProviderCard('Amazon Bedrock')).getByRole('button', { name: /configure/i })).toBeInTheDocument()
   })
 
+  it('renders the real provider brand marks in the provider rows', () => {
+    render(
+      <ProviderCredentialsList
+        providerCredentials={makeSnapshot([])}
+        providerCredentialsLoadStatus="ready"
+        providerCredentialsLoadError={null}
+        providerCredentialsSaveStatus="idle"
+        providerCredentialsSaveError={null}
+      />,
+    )
+
+    expect(within(getProviderCard('OpenRouter')).getByRole('img', { name: 'OpenRouter' })).toBeInTheDocument()
+    expect(within(getProviderCard('DeepSeek')).getByRole('img', { name: 'DeepSeek' })).toBeInTheDocument()
+    expect(within(getProviderCard('GitHub Models')).getByRole('img', { name: 'GitHub' })).toBeInTheDocument()
+    expect(within(getProviderCard('Ollama')).getByRole('img', { name: 'Ollama' })).toBeInTheDocument()
+    expect(within(getProviderCard('Azure OpenAI')).getByRole('img', { name: 'Microsoft Azure' })).toBeInTheDocument()
+    expect(within(getProviderCard('Gemini AI Studio')).getByRole('img', { name: 'Google Gemini' })).toBeInTheDocument()
+    expect(within(getProviderCard('Amazon Bedrock')).getByRole('img', { name: 'Amazon Web Services' })).toBeInTheDocument()
+    expect(within(getProviderCard('Google Vertex AI')).getByRole('img', { name: 'Google Cloud' })).toBeInTheDocument()
+  })
+
+  it('keeps provider icon chrome on theme tokens instead of brand colors', () => {
+    render(
+      <ProviderCredentialsList
+        providerCredentials={makeSnapshot([])}
+        providerCredentialsLoadStatus="ready"
+        providerCredentialsLoadError={null}
+        providerCredentialsSaveStatus="idle"
+        providerCredentialsSaveError={null}
+      />,
+    )
+
+    const iconFrame = within(getProviderCard('OpenRouter'))
+      .getByRole('img', { name: 'OpenRouter' })
+      .parentElement
+
+    expect(iconFrame).toHaveClass('border-border/60')
+    expect(iconFrame).toHaveClass('bg-background/60')
+    expect(iconFrame?.className).not.toContain('#')
+  })
+
   it('shows Ready badge for an api_key provider with stored credential', () => {
     const credentials = makeSnapshot([
       makeCredential({ providerId: 'openrouter', readinessProof: 'stored_secret' }),
@@ -171,6 +212,28 @@ describe('ProviderCredentialsList', () => {
     }))
     expect(await within(card).findByText('OpenRouter is ready')).toBeInTheDocument()
     expect(within(card).getByText('1 passed')).toBeInTheDocument()
+  })
+
+  it('renders connected provider check as an icon-only button', () => {
+    const credentials = makeSnapshot([
+      makeCredential({ providerId: 'openrouter', readinessProof: 'stored_secret' }),
+    ])
+    render(
+      <ProviderCredentialsList
+        providerCredentials={credentials}
+        providerCredentialsLoadStatus="ready"
+        providerCredentialsLoadError={null}
+        providerCredentialsSaveStatus="idle"
+        providerCredentialsSaveError={null}
+        onCheckProviderProfile={vi.fn(async () => makeProviderDiagnostics())}
+      />,
+    )
+
+    const card = getProviderCard('OpenRouter')
+    const checkButton = within(card).getByRole('button', { name: 'Check OpenRouter' })
+
+    expect(checkButton).toHaveClass('w-8')
+    expect(within(checkButton).queryByText('Check')).not.toBeInTheDocument()
   })
 
   it('shows Signed in badge and Sign out button for OAuth provider with active session', () => {

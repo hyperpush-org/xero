@@ -15,7 +15,14 @@ import {
   AgentToolingSection,
   type AgentToolingSettingsAdapter,
 } from '@/components/xero/settings-dialog/agent-tooling-section'
-import type { AgentToolingSettingsDto } from '@/src/lib/xero-model'
+import type {
+  AgentToolingSettingsDto,
+  ProviderCredentialDto,
+  ProviderCredentialsSnapshotDto,
+  ProviderModelCatalogDto,
+  ProviderModelDto,
+  RuntimeProviderIdDto,
+} from '@/src/lib/xero-model'
 
 function makeSettings(overrides: Partial<AgentToolingSettingsDto> = {}): AgentToolingSettingsDto {
   return {
@@ -26,13 +33,77 @@ function makeSettings(overrides: Partial<AgentToolingSettingsDto> = {}): AgentTo
   }
 }
 
+function makeCredential(
+  providerId: RuntimeProviderIdDto,
+  overrides: Partial<ProviderCredentialDto> = {},
+): ProviderCredentialDto {
+  return {
+    providerId,
+    kind: 'api_key',
+    hasApiKey: true,
+    hasOauthAccessToken: false,
+    readinessProof: 'stored_secret',
+    updatedAt: '2026-05-10T10:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeModel(modelId: string, displayName?: string): ProviderModelDto {
+  return {
+    modelId,
+    displayName: displayName ?? modelId,
+    thinking: { supported: false, effortOptions: [] },
+  } as ProviderModelDto
+}
+
+function makeCatalog(
+  providerId: RuntimeProviderIdDto,
+  profileId: string,
+  models: ProviderModelDto[],
+): ProviderModelCatalogDto {
+  return {
+    contractVersion: 1,
+    profileId,
+    providerId,
+    configuredModelId: models[0]?.modelId ?? 'configured-model',
+    source: 'manual',
+    models,
+    contractDiagnostics: [],
+  } as ProviderModelCatalogDto
+}
+
+interface AdapterOverrides {
+  settings?: AgentToolingSettingsDto
+  updateError?: Error
+  credentials?: ProviderCredentialsSnapshotDto
+  catalogs?: Record<string, ProviderModelCatalogDto>
+}
+
+const DEFAULT_CREDENTIALS: ProviderCredentialsSnapshotDto = {
+  credentials: [makeCredential('anthropic'), makeCredential('openrouter')],
+}
+
+const DEFAULT_CATALOGS: Record<string, ProviderModelCatalogDto> = {
+  'anthropic-default': makeCatalog('anthropic', 'anthropic-default', [
+    makeModel('claude-opus-4-7', 'Claude Opus 4.7'),
+    makeModel('claude-sonnet-4-6', 'Claude Sonnet 4.6'),
+  ]),
+  'openrouter-default': makeCatalog('openrouter', 'openrouter-default', [
+    makeModel('kimi-k2', 'Kimi K2'),
+  ]),
+}
+
 function makeAdapter(
-  overrides: { settings?: AgentToolingSettingsDto; updateError?: Error } = {},
+  overrides: AdapterOverrides = {},
 ): AgentToolingSettingsAdapter & {
   agentToolingSettings: ReturnType<typeof vi.fn>
   agentToolingUpdateSettings: ReturnType<typeof vi.fn>
+  listProviderCredentials: ReturnType<typeof vi.fn>
+  getProviderModelCatalog: ReturnType<typeof vi.fn>
 } {
   let current: AgentToolingSettingsDto = overrides.settings ?? makeSettings()
+  const credentials = overrides.credentials ?? DEFAULT_CREDENTIALS
+  const catalogs = overrides.catalogs ?? DEFAULT_CATALOGS
   return {
     isDesktopRuntime: vi.fn(() => true),
     agentToolingSettings: vi.fn(async () => current),
@@ -48,6 +119,12 @@ function makeAdapter(
       }
       current = next
       return next
+    }),
+    listProviderCredentials: vi.fn(async () => credentials),
+    getProviderModelCatalog: vi.fn(async (profileId: string) => {
+      const catalog = catalogs[profileId]
+      if (!catalog) throw new Error(`Missing catalog ${profileId}`)
+      return catalog
     }),
   }
 }
@@ -157,11 +234,11 @@ describe('AgentToolingSection', () => {
     render(<AgentToolingSection adapter={adapter} />)
 
     const overrideList = await screen.findByLabelText('Per-model overrides')
-    expect(within(overrideList).getByText('claude-opus-4-7')).toBeVisible()
+    expect(within(overrideList).getByText('Claude Opus 4.7')).toBeVisible()
     expect(within(overrideList).getByText('Anthropic')).toBeVisible()
 
     fireEvent.click(
-      screen.getByRole('combobox', { name: 'Style for Anthropic claude-opus-4-7' }),
+      screen.getByRole('combobox', { name: 'Style for Anthropic Claude Opus 4.7' }),
     )
     fireEvent.click(await screen.findByRole('option', { name: 'Conservative' }))
 
@@ -191,7 +268,7 @@ describe('AgentToolingSection', () => {
     render(<AgentToolingSection adapter={adapter} />)
 
     const removeButton = await screen.findByRole('button', {
-      name: 'Remove override for OpenRouter kimi-k2',
+      name: 'Remove override for OpenRouter Kimi K2',
     })
     fireEvent.click(removeButton)
 
@@ -203,19 +280,25 @@ describe('AgentToolingSection', () => {
       }),
     )
     await waitFor(() =>
-      expect(screen.queryByText('kimi-k2')).not.toBeInTheDocument(),
+      expect(
+        screen.queryByRole('button', { name: /Remove override for OpenRouter/i }),
+      ).not.toBeInTheDocument(),
     )
   })
 
-  it('adds a new override via the form, defaulting the style to balanced', async () => {
+  it('adds a new override via the form, picking a configured model from the dropdown', async () => {
     const adapter = makeAdapter()
 
     render(<AgentToolingSection adapter={adapter} />)
-    await screen.findByRole('button', { name: /Add override/i })
+    await waitFor(() => expect(adapter.listProviderCredentials).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(adapter.getProviderModelCatalog).toHaveBeenCalledWith('anthropic-default', {
+        forceRefresh: false,
+      }),
+    )
 
-    fireEvent.change(screen.getByLabelText('Model id'), {
-      target: { value: 'claude-sonnet-4-6' },
-    })
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Model' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Claude Sonnet 4.6' }))
     fireEvent.click(screen.getByRole('button', { name: /Add override/i }))
 
     await waitFor(() =>
@@ -225,19 +308,20 @@ describe('AgentToolingSection', () => {
         ],
       }),
     )
-    expect((screen.getByLabelText('Model id') as HTMLInputElement).value).toBe('')
   })
 
-  it('blocks submitting an override when the model id is blank', async () => {
-    const adapter = makeAdapter()
+  it('falls back to a configure-providers hint when no provider credentials are set up', async () => {
+    const adapter = makeAdapter({
+      credentials: { credentials: [] },
+      catalogs: {},
+    })
 
     render(<AgentToolingSection adapter={adapter} />)
-    await screen.findByRole('button', { name: /Add override/i })
 
-    fireEvent.click(screen.getByRole('button', { name: /Add override/i }))
-
-    await screen.findByText('Enter a model id before saving the override.')
-    expect(adapter.agentToolingUpdateSettings).not.toHaveBeenCalled()
+    expect(
+      await screen.findByText(/Configure a provider in/i, { exact: false }),
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Add override/i })).not.toBeInTheDocument()
   })
 
   it('surfaces a load error from the adapter without crashing the panel', async () => {

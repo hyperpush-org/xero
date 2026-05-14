@@ -944,11 +944,29 @@ fn registered_model_visible_projection(
 
     match kind {
         "read" => Some(ModelVisibleProjection::ReadText),
+        "read_many" => Some(ModelVisibleProjection::CompactJson {
+            format: "read_many_compact_results_json",
+        }),
+        "result_page" => Some(ModelVisibleProjection::CompactJson {
+            format: "result_page_text_slice_json",
+        }),
+        "stat" => Some(ModelVisibleProjection::CompactJson {
+            format: "stat_metadata_summary_json",
+        }),
         "search" => Some(ModelVisibleProjection::CompactJson {
             format: "search_grouped_matches_json",
         }),
         "find" => Some(ModelVisibleProjection::CompactJson {
             format: "find_path_summary_json",
+        }),
+        "list_tree" => Some(ModelVisibleProjection::CompactJson {
+            format: "list_tree_summary_json",
+        }),
+        "directory_digest" => Some(ModelVisibleProjection::CompactJson {
+            format: "directory_digest_summary_json",
+        }),
+        "hash" => Some(ModelVisibleProjection::CompactJson {
+            format: "file_hash_summary_json",
         }),
         "git_status" => Some(ModelVisibleProjection::CompactJson {
             format: "git_status_summary_json",
@@ -980,13 +998,11 @@ fn registered_model_visible_projection(
             format: "edit_diff_block",
             max_chars: MODEL_VISIBLE_MAX_PATCH_CHARS,
         })),
-        "patch" => Some(ModelVisibleProjection::TextField(TextFieldProjection {
-            field: "diff",
-            label: "edit diff",
-            format: "edit_diff_block",
-            max_chars: MODEL_VISIBLE_MAX_PATCH_CHARS,
-        })),
-        "write" | "delete" | "rename" | "mkdir" | "hash" | "notebook_edit" => {
+        "patch" => Some(ModelVisibleProjection::CompactJson {
+            format: "patch_summary_json",
+        }),
+        "write" | "copy" | "fs_transaction" | "json_edit" | "toml_edit" | "yaml_edit"
+        | "delete" | "rename" | "mkdir" | "notebook_edit" => {
             Some(ModelVisibleProjection::CompactJson {
                 format: "mutation_summary_json",
             })
@@ -1454,6 +1470,9 @@ fn command_metadata_lines(output: &JsonValue) -> Vec<String> {
     if let Some(cwd) = json_str(output, "cwd") {
         lines.push(format!("cwd: {cwd}"));
     }
+    if let Some(intent) = json_str(output, "intent") {
+        lines.push(format!("intent: {intent}"));
+    }
     let mut fields = Vec::new();
     for key in ["operation", "sessionId", "processId"] {
         if let Some(value) = json_str(output, key) {
@@ -1477,6 +1496,35 @@ fn command_metadata_lines(output: &JsonValue) -> Vec<String> {
     }
     if !fields.is_empty() {
         lines.push(format!("status: {}", fields.join("; ")));
+    }
+    if let Some(changed_files) = output.get("changedFiles").and_then(JsonValue::as_array) {
+        if !changed_files.is_empty() {
+            let mut paths = changed_files
+                .iter()
+                .filter_map(|entry| json_str(entry, "path"))
+                .take(MODEL_VISIBLE_MAX_ITEMS)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if output
+                .get("changedFilesTruncated")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+            {
+                paths.push("...".into());
+            }
+            lines.push(format!("changedFiles: {}", paths.join(", ")));
+        }
+    }
+    if let Some(path) = output
+        .get("outputArtifact")
+        .and_then(|artifact| json_str(artifact, "path"))
+    {
+        lines.push(format!("outputArtifact: {path}"));
+    }
+    if let Some(actions) = string_array_values(output.get("suggestedNextActions"), 4) {
+        if !actions.is_empty() {
+            lines.push(format!("suggestedNextActions: {}", actions.join(" | ")));
+        }
     }
     lines
 }
@@ -1731,6 +1779,7 @@ fn text_field_metadata_lines(output: &JsonValue) -> Vec<String> {
         "replacements",
         "bytesWritten",
         "applied",
+        "preview",
     ] {
         if let Some(value) = output.get(key).filter(|value| !value.is_null()) {
             fields.push(format!("{key}={}", primitive_json_for_line(value)));
@@ -1998,12 +2047,23 @@ fn xero_compact_line(compact: &JsonValue, format: &str) -> String {
 fn read_metadata_suffix(output: &JsonValue) -> String {
     let mut parts = Vec::new();
     for (label, key) in [
+        ("pathKind", "pathKind"),
+        ("size", "size"),
+        ("modifiedAt", "modifiedAt"),
         ("encoding", "encoding"),
         ("lineEnding", "lineEnding"),
         ("mediaType", "mediaType"),
         ("sha256", "sha256"),
+        ("cursor", "cursor"),
+        ("nextCursor", "nextCursor"),
+        ("contentOmittedReason", "contentOmittedReason"),
     ] {
-        if let Some(value) = json_str(output, key) {
+        if let Some(value) = output.get(key).and_then(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| value.as_u64().map(|number| number.to_string()))
+        }) {
             parts.push(format!("{label}={value}"));
         }
     }
@@ -2075,6 +2135,9 @@ fn compact_tool_result_output(tool_name: &str, output: &JsonValue) -> JsonValue 
 
     match kind {
         "read" => compact_read_output(actual_output),
+        "read_many" => compact_read_many_output(actual_output),
+        "result_page" => compact_result_page_output(actual_output),
+        "stat" => compact_stat_output(actual_output),
         "search" => compact_search_output(actual_output),
         "find" => compact_find_output(actual_output),
         "git_status" => compact_fields(
@@ -2096,10 +2159,14 @@ fn compact_tool_result_output(tool_name: &str, output: &JsonValue) -> JsonValue 
         "web_fetch" => compact_web_fetch_output(actual_output),
         "edit" => compact_edit_like_output(actual_output),
         "patch" => compact_patch_output(actual_output),
-        "write" | "delete" | "rename" | "mkdir" | "hash" | "notebook_edit" => {
+        "write" | "copy" | "fs_transaction" | "json_edit" | "toml_edit" | "yaml_edit"
+        | "delete" | "rename" | "mkdir" | "notebook_edit" => {
             compact_mutation_summary_output(actual_output)
         }
+        "hash" => compact_hash_output(actual_output),
         "list" => compact_list_output(actual_output),
+        "list_tree" => compact_list_tree_output(actual_output),
+        "directory_digest" => compact_directory_digest_output(actual_output),
         "command" => compact_command_output(actual_output),
         "command_session" => compact_command_session_output(actual_output),
         "process_manager" => compact_process_manager_output(actual_output),
@@ -2141,10 +2208,16 @@ fn compact_read_output(output: &JsonValue) -> JsonValue {
         &[
             "kind",
             "path",
+            "pathKind",
+            "size",
+            "modifiedAt",
             "startLine",
             "lineCount",
             "totalLines",
             "truncated",
+            "cursor",
+            "nextCursor",
+            "contentOmittedReason",
             "contentKind",
             "totalBytes",
             "byteOffset",
@@ -2173,6 +2246,106 @@ fn compact_read_output(output: &JsonValue) -> JsonValue {
     compact
 }
 
+fn compact_read_many_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "paths",
+            "totalFiles",
+            "okFiles",
+            "errorFiles",
+            "omittedFiles",
+            "totalBytes",
+            "omittedBytes",
+            "truncated",
+            "maxBytesPerFile",
+            "maxTotalBytes",
+        ],
+    );
+
+    let results = output
+        .get("results")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            JsonValue::Array(
+                items
+                    .iter()
+                    .take(MODEL_VISIBLE_MAX_ITEMS)
+                    .map(|item| {
+                        let mut compact_item =
+                            compact_fields(item, &["path", "ok", "omittedBytes"]);
+                        if let Some(read) = item.get("read") {
+                            insert_value(&mut compact_item, "read", compact_read_output(read));
+                        }
+                        if let Some(error) = item.get("error") {
+                            insert_value(
+                                &mut compact_item,
+                                "error",
+                                compact_fields(error, &["code", "class", "message", "retryable"]),
+                            );
+                        }
+                        compact_item
+                    })
+                    .collect(),
+            )
+        });
+    insert_array(&mut compact, "results", results);
+    add_truncated_count(&mut compact, output, "results");
+    compact
+}
+
+fn compact_result_page_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "artifactPath",
+            "byteOffset",
+            "byteCount",
+            "totalBytes",
+            "truncated",
+            "nextByteOffset",
+            "encoding",
+        ],
+    );
+    insert_compact_text(
+        &mut compact,
+        output,
+        "content",
+        MODEL_VISIBLE_MAX_TEXT_CHARS,
+    );
+    compact
+}
+
+fn compact_stat_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "path",
+            "pathKind",
+            "exists",
+            "size",
+            "modifiedAt",
+            "permissions",
+            "symlinkTarget",
+            "resolvedPath",
+            "sha256",
+            "hashOmittedReason",
+            "followSymlinks",
+            "includeGitStatus",
+        ],
+    );
+    insert_array(
+        &mut compact,
+        "gitStatus",
+        compact_array_field(output, "gitStatus"),
+    );
+    add_truncated_count(&mut compact, output, "gitStatus");
+    compact
+}
+
 fn compact_search_output(output: &JsonValue) -> JsonValue {
     let mut compact = compact_fields(
         output,
@@ -2182,28 +2355,106 @@ fn compact_search_output(output: &JsonValue) -> JsonValue {
             "scope",
             "scannedFiles",
             "truncated",
+            "cursor",
+            "nextCursor",
+            "filesOnly",
+            "returnedMatches",
+            "skippedMatches",
             "totalMatches",
             "matchedFiles",
+            "omissions",
             "engine",
             "regex",
             "ignoreCase",
+            "includeHidden",
+            "includeIgnored",
+            "includeGlobs",
+            "excludeGlobs",
             "contextLines",
         ],
     );
+    let grouped_matches = output
+        .get("matches")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            let mut grouped = BTreeMap::<String, Vec<&JsonValue>>::new();
+            for item in items {
+                let path = json_str(item, "path").unwrap_or("unknown path").to_owned();
+                grouped.entry(path).or_default().push(item);
+            }
+            grouped
+        })
+        .unwrap_or_default();
     insert_array(
         &mut compact,
         "files",
         output
-            .get("matches")
+            .get("files")
             .and_then(JsonValue::as_array)
-            .map(|items| {
-                let mut grouped = BTreeMap::<String, Vec<&JsonValue>>::new();
-                for item in items {
-                    let path = json_str(item, "path").unwrap_or("unknown path").to_owned();
-                    grouped.entry(path).or_default().push(item);
-                }
+            .map(|files| {
                 JsonValue::Array(
-                    grouped
+                    files
+                        .iter()
+                        .take(40)
+                        .map(|file| {
+                            let path = json_str(file, "path").unwrap_or("unknown path");
+                            let matches = grouped_matches.get(path).cloned().unwrap_or_default();
+                            let visible = matches
+                                .iter()
+                                .take(5)
+                                .map(|item| {
+                                    let mut match_output = compact_fields(
+                                        item,
+                                        &["line", "column", "endColumn", "lineHash"],
+                                    );
+                                    insert_compact_text(
+                                        &mut match_output,
+                                        item,
+                                        "preview",
+                                        MODEL_VISIBLE_MAX_TEXT_CHARS / 8,
+                                    );
+                                    insert_compact_text(
+                                        &mut match_output,
+                                        item,
+                                        "matchText",
+                                        MODEL_VISIBLE_MAX_TEXT_CHARS / 8,
+                                    );
+                                    insert_array(
+                                        &mut match_output,
+                                        "contextBefore",
+                                        compact_text_line_array(item.get("contextBefore")),
+                                    );
+                                    insert_array(
+                                        &mut match_output,
+                                        "contextAfter",
+                                        compact_text_line_array(item.get("contextAfter")),
+                                    );
+                                    match_output
+                                })
+                                .collect::<Vec<_>>();
+                            let mut compact_file = compact_fields(
+                                file,
+                                &["path", "matchCount", "firstLine", "firstPreview"],
+                            );
+                            insert_value(
+                                &mut compact_file,
+                                "modelVisibleMatchCount",
+                                json!(visible.len()),
+                            );
+                            insert_value(
+                                &mut compact_file,
+                                "omittedMatchCount",
+                                json!(matches.len().saturating_sub(visible.len())),
+                            );
+                            insert_value(&mut compact_file, "matches", JsonValue::Array(visible));
+                            compact_file
+                        })
+                        .collect(),
+                )
+            })
+            .or_else(|| {
+                Some(JsonValue::Array(
+                    grouped_matches
                         .into_iter()
                         .take(40)
                         .map(|(path, matches)| {
@@ -2249,7 +2500,7 @@ fn compact_search_output(output: &JsonValue) -> JsonValue {
                             })
                         })
                         .collect(),
-                )
+                ))
             }),
     );
     add_truncated_count(&mut compact, output, "matches");
@@ -2259,7 +2510,23 @@ fn compact_search_output(output: &JsonValue) -> JsonValue {
 fn compact_find_output(output: &JsonValue) -> JsonValue {
     let mut compact = compact_fields(
         output,
-        &["kind", "pattern", "scope", "scannedFiles", "truncated"],
+        &[
+            "kind",
+            "pattern",
+            "mode",
+            "scope",
+            "scannedFiles",
+            "truncated",
+            "cursor",
+            "nextCursor",
+            "returnedMatches",
+            "skippedMatches",
+            "fileCount",
+            "directoryCount",
+            "symlinkCount",
+            "otherCount",
+            "omissions",
+        ],
     );
     insert_array(
         &mut compact,
@@ -2289,7 +2556,14 @@ fn compact_git_diff_output(output: &JsonValue) -> JsonValue {
 fn compact_tool_access_output(output: &JsonValue) -> JsonValue {
     let mut compact = compact_fields(
         output,
-        &["kind", "action", "grantedTools", "deniedTools", "message"],
+        &[
+            "kind",
+            "action",
+            "grantedTools",
+            "grantedToolDetails",
+            "deniedTools",
+            "message",
+        ],
     );
     insert_array(
         &mut compact,
@@ -2303,7 +2577,10 @@ fn compact_tool_access_output(output: &JsonValue) -> JsonValue {
                         .iter()
                         .take(MODEL_VISIBLE_MAX_ITEMS)
                         .map(|group| {
-                            compact_fields(group, &["name", "description", "tools", "riskClass"])
+                            compact_fields(
+                                group,
+                                &["name", "description", "tools", "riskClass", "toolSummaries"],
+                            )
                         })
                         .collect(),
                 )
@@ -2455,6 +2732,10 @@ fn compact_mutation_summary_output(output: &JsonValue) -> JsonValue {
             "oldSourceChars",
             "newSourceChars",
             "bytesWritten",
+            "contentBytes",
+            "lineCount",
+            "applied",
+            "preview",
             "oldHash",
             "newHash",
             "sha256",
@@ -2463,10 +2744,67 @@ fn compact_mutation_summary_output(output: &JsonValue) -> JsonValue {
             "existed",
             "created",
             "deleted",
+            "recursive",
+            "deletedCount",
+            "fileCount",
+            "directoryCount",
+            "symlinkCount",
+            "otherCount",
+            "bytesEstimated",
+            "bytesRemaining",
+            "digest",
+            "overwritten",
+            "sourceKind",
+            "sourceBytes",
+            "sourceHash",
+            "targetExisted",
+            "targetKind",
+            "targetBytes",
+            "targetHash",
+            "parents",
+            "existOk",
+            "copiedFiles",
+            "copiedBytes",
+            "createdDirectories",
+            "sourceDigest",
+            "omitted",
+            "operationCount",
+            "validation",
+            "rollbackStatus",
+            "format",
+            "formattingMode",
+            "operationsApplied",
+            "semanticChanges",
         ],
+    );
+    insert_array(
+        &mut compact,
+        "changedPaths",
+        compact_array_field(output, "changedPaths"),
+    );
+    insert_array(
+        &mut compact,
+        "createdPaths",
+        compact_array_field(output, "createdPaths"),
+    );
+    insert_array(
+        &mut compact,
+        "plannedOperations",
+        compact_array_field(output, "plannedOperations"),
+    );
+    insert_array(
+        &mut compact,
+        "operations",
+        compact_array_field(output, "operations"),
+    );
+    insert_array(
+        &mut compact,
+        "results",
+        compact_array_field(output, "results"),
     );
     insert_compact_text(&mut compact, output, "message", 1_000);
     insert_compact_text(&mut compact, output, "failure", 1_000);
+    insert_compact_text(&mut compact, output, "diff", MODEL_VISIBLE_MAX_PATCH_CHARS);
     compact
 }
 
@@ -2479,6 +2817,8 @@ fn compact_edit_like_output(output: &JsonValue) -> JsonValue {
             "startLine",
             "endLine",
             "replacementLen",
+            "applied",
+            "preview",
             "oldHash",
             "newHash",
             "lineEnding",
@@ -2500,8 +2840,11 @@ fn compact_patch_output(output: &JsonValue) -> JsonValue {
             "applied",
             "preview",
             "failure",
+            "rollbackStatus",
             "oldHash",
             "newHash",
+            "diffTruncated",
+            "artifactPath",
             "lineEnding",
             "bomPreserved",
         ],
@@ -2527,6 +2870,8 @@ fn compact_patch_output(output: &JsonValue) -> JsonValue {
                                     "bytesWritten",
                                     "oldHash",
                                     "newHash",
+                                    "guardStatus",
+                                    "changedRanges",
                                     "lineEnding",
                                     "bomPreserved",
                                 ],
@@ -2548,13 +2893,175 @@ fn compact_patch_output(output: &JsonValue) -> JsonValue {
 }
 
 fn compact_list_output(output: &JsonValue) -> JsonValue {
-    let mut compact = compact_fields(output, &["kind", "path", "truncated"]);
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "path",
+            "truncated",
+            "maxDepth",
+            "maxResults",
+            "sortBy",
+            "sortDirection",
+            "cursor",
+            "nextCursor",
+            "returnedEntries",
+            "skippedEntries",
+            "fileCount",
+            "directoryCount",
+            "symlinkCount",
+            "otherCount",
+            "omitted",
+        ],
+    );
     insert_array(
         &mut compact,
         "entries",
         compact_array_field(output, "entries"),
     );
     add_truncated_count(&mut compact, output, "entries");
+    compact
+}
+
+fn compact_list_tree_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "path",
+            "fileCount",
+            "directoryCount",
+            "symlinkCount",
+            "otherCount",
+            "maxDepth",
+            "maxEntries",
+            "truncated",
+            "omitted",
+        ],
+    );
+    if let Some(root) = output.get("root") {
+        insert_value(&mut compact, "root", compact_list_tree_node(root, 0));
+    }
+    insert_array(
+        &mut compact,
+        "gitStatus",
+        compact_array_field(output, "gitStatus"),
+    );
+    add_truncated_count(&mut compact, output, "gitStatus");
+    compact
+}
+
+fn compact_list_tree_node(node: &JsonValue, depth: usize) -> JsonValue {
+    let mut compact = compact_fields(node, &["name", "path", "pathKind", "size"]);
+    if depth >= 4 {
+        if let Some(children) = node.get("children").and_then(JsonValue::as_array) {
+            insert_value(&mut compact, "omittedChildren", json!(children.len()));
+        }
+        return compact;
+    }
+    if let Some(children) = node.get("children").and_then(JsonValue::as_array) {
+        insert_value(
+            &mut compact,
+            "children",
+            JsonValue::Array(
+                children
+                    .iter()
+                    .take(MODEL_VISIBLE_MAX_ITEMS)
+                    .map(|child| compact_list_tree_node(child, depth + 1))
+                    .collect(),
+            ),
+        );
+        if children.len() > MODEL_VISIBLE_MAX_ITEMS {
+            insert_value(
+                &mut compact,
+                "omittedChildren",
+                json!(children.len() - MODEL_VISIBLE_MAX_ITEMS),
+            );
+        }
+    }
+    compact
+}
+
+fn compact_directory_digest_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "path",
+            "digest",
+            "algorithm",
+            "hashMode",
+            "fileCount",
+            "directoryCount",
+            "symlinkCount",
+            "otherCount",
+            "totalBytes",
+            "maxFiles",
+            "truncated",
+            "omitted",
+        ],
+    );
+    insert_array(
+        &mut compact,
+        "manifest",
+        compact_directory_digest_manifest(output),
+    );
+    add_truncated_count(&mut compact, output, "manifest");
+    compact
+}
+
+fn compact_directory_digest_manifest(output: &JsonValue) -> Option<JsonValue> {
+    output
+        .get("manifest")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            JsonValue::Array(
+                items
+                    .iter()
+                    .take(MODEL_VISIBLE_MAX_ITEMS)
+                    .map(|item| {
+                        compact_fields(item, &["path", "pathKind", "size", "modifiedAt", "sha256"])
+                    })
+                    .collect(),
+            )
+        })
+}
+
+fn compact_hash_output(output: &JsonValue) -> JsonValue {
+    let mut compact = compact_fields(
+        output,
+        &[
+            "kind",
+            "path",
+            "pathKind",
+            "algorithm",
+            "mode",
+            "sha256",
+            "bytes",
+            "fileCount",
+            "maxFiles",
+            "truncated",
+            "omitted",
+            "artifactPath",
+        ],
+    );
+    insert_array(
+        &mut compact,
+        "files",
+        output
+            .get("files")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                JsonValue::Array(
+                    items
+                        .iter()
+                        .take(MODEL_VISIBLE_MAX_ITEMS)
+                        .map(|item| compact_fields(item, &["path", "sha256", "bytes"]))
+                        .collect(),
+                )
+            }),
+    );
+    add_truncated_count(&mut compact, output, "files");
     compact
 }
 
@@ -2565,6 +3072,7 @@ fn compact_command_output(output: &JsonValue) -> JsonValue {
             "kind",
             "argv",
             "cwd",
+            "intent",
             "stdoutTruncated",
             "stderrTruncated",
             "stdoutRedacted",
@@ -2572,8 +3080,30 @@ fn compact_command_output(output: &JsonValue) -> JsonValue {
             "exitCode",
             "timedOut",
             "spawned",
+            "changedFilesTruncated",
+            "outputArtifact",
+            "suggestedNextActions",
         ],
     );
+    insert_array(
+        &mut compact,
+        "changedFiles",
+        output
+            .get("changedFiles")
+            .and_then(JsonValue::as_array)
+            .map(|items| {
+                JsonValue::Array(
+                    items
+                        .iter()
+                        .take(MODEL_VISIBLE_MAX_ITEMS)
+                        .map(|item| {
+                            compact_fields(item, &["path", "staged", "unstaged", "untracked"])
+                        })
+                        .collect(),
+                )
+            }),
+    );
+    add_truncated_count(&mut compact, output, "changedFiles");
     insert_compact_text(&mut compact, output, "stdout", MODEL_VISIBLE_MAX_TEXT_CHARS);
     insert_compact_text(&mut compact, output, "stderr", MODEL_VISIBLE_MAX_TEXT_CHARS);
     compact
@@ -2793,7 +3323,16 @@ fn compact_macos_automation_output(output: &JsonValue) -> JsonValue {
 fn compact_mcp_output(output: &JsonValue) -> JsonValue {
     let mut compact = compact_fields(
         output,
-        &["kind", "action", "servers", "serverId", "capabilityName"],
+        &[
+            "kind",
+            "action",
+            "servers",
+            "serverId",
+            "capabilityName",
+            "resultArtifact",
+            "resultTruncated",
+            "resultOriginalBytes",
+        ],
     );
     insert_value(
         &mut compact,
@@ -3151,7 +3690,9 @@ fn compact_tool_search_output(output: &JsonValue) -> JsonValue {
                                     "schemaFields",
                                     "examples",
                                     "riskClass",
+                                    "effectClass",
                                     "runtimeAvailable",
+                                    "whyMatched",
                                     "source",
                                     "trust",
                                     "approvalStatus",
@@ -5255,10 +5796,15 @@ mod tests {
                 "output": {
                     "kind": "read",
                     "path": "package.json",
+                    "pathKind": "file",
+                    "size": 22,
+                    "modifiedAt": "2026-05-13T12:00:00Z",
                     "startLine": 1,
                     "lineCount": 3,
                     "totalLines": 3,
                     "truncated": false,
+                    "cursor": "read:v1:abc123:1",
+                    "nextCursor": null,
                     "content": "{\n  \"name\": \"xero\"\n}\n",
                     "contentKind": "text",
                     "encoding": "utf-8",
@@ -5277,9 +5823,1192 @@ mod tests {
         assert!(
             serialized.contains("[BEGIN read content: package.json]\n{\n  \"name\": \"xero\"\n}\n")
         );
+        assert!(serialized.contains("pathKind"));
+        assert!(serialized.contains("read:v1:abc123:1"));
+        assert!(serialized.contains("modifiedAt"));
         assert!(serialized.contains("xeroCompact: schema=xero.model_visible_tool_result.v1"));
         assert!(!serialized.contains("\\n  \\\"name\\\""));
         assert!(serde_json::from_str::<JsonValue>(&serialized).is_err());
+    }
+
+    #[test]
+    fn model_visible_write_result_keeps_guard_summary_and_compact_diff() {
+        let result = AgentToolResult {
+            tool_call_id: "call-write".into(),
+            tool_name: AUTONOMOUS_TOOL_WRITE.into(),
+            ok: true,
+            summary: "Previewed replace for `src/lib.rs` with 5 byte(s).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_WRITE,
+                "summary": "Previewed replace for `src/lib.rs` with 5 byte(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "write",
+                    "path": "src/lib.rs",
+                    "created": false,
+                    "bytesWritten": 5,
+                    "contentBytes": 5,
+                    "lineCount": 1,
+                    "applied": false,
+                    "preview": true,
+                    "oldHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "newHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "diff": "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+                    "content": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize write result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode write result");
+
+        assert_eq!(visible["output"]["path"], json!("src/lib.rs"));
+        assert_eq!(visible["output"]["preview"], json!(true));
+        assert_eq!(visible["output"]["applied"], json!(false));
+        assert!(visible["output"]["diff"]
+            .as_str()
+            .expect("compact diff")
+            .contains("+new"));
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("mutation_summary_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_delete_result_keeps_preview_digest_and_counts() {
+        let result = AgentToolResult {
+            tool_call_id: "call-delete".into(),
+            tool_name: AUTONOMOUS_TOOL_DELETE.into(),
+            ok: true,
+            summary: "Previewed delete for `target` with 4 path(s) and 11 byte(s).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_DELETE,
+                "summary": "Previewed delete for `target` with 4 path(s) and 11 byte(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "delete",
+                    "path": "target",
+                    "recursive": true,
+                    "existed": true,
+                    "applied": false,
+                    "preview": true,
+                    "deletedCount": 4,
+                    "fileCount": 2,
+                    "directoryCount": 2,
+                    "symlinkCount": 0,
+                    "otherCount": 0,
+                    "bytesEstimated": 11,
+                    "bytesRemaining": 11,
+                    "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "manifest": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize delete result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode delete result");
+
+        assert_eq!(visible["output"]["path"], json!("target"));
+        assert_eq!(visible["output"]["preview"], json!(true));
+        assert_eq!(visible["output"]["deletedCount"], json!(4));
+        assert_eq!(
+            visible["output"]["digest"],
+            json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_rename_result_keeps_preview_and_metadata_summary() {
+        let result = AgentToolResult {
+            tool_call_id: "call-rename".into(),
+            tool_name: AUTONOMOUS_TOOL_RENAME.into(),
+            ok: true,
+            summary: "Previewed rename `source.txt` to `target.txt`.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_RENAME,
+                "summary": "Previewed rename `source.txt` to `target.txt`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "rename",
+                    "fromPath": "source.txt",
+                    "toPath": "target.txt",
+                    "applied": false,
+                    "preview": true,
+                    "overwritten": true,
+                    "sourceKind": "file",
+                    "sourceBytes": 7,
+                    "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "targetExisted": true,
+                    "targetKind": "file",
+                    "targetBytes": 7,
+                    "targetHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "manifest": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize rename result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode rename result");
+
+        assert_eq!(visible["output"]["fromPath"], json!("source.txt"));
+        assert_eq!(visible["output"]["toPath"], json!("target.txt"));
+        assert_eq!(visible["output"]["preview"], json!(true));
+        assert_eq!(visible["output"]["overwritten"], json!(true));
+        assert_eq!(
+            visible["output"]["targetHash"].as_str().map(str::len),
+            Some(64)
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_mkdir_result_keeps_preview_and_created_paths() {
+        let result = AgentToolResult {
+            tool_call_id: "call-mkdir".into(),
+            tool_name: AUTONOMOUS_TOOL_MKDIR.into(),
+            ok: true,
+            summary: "Previewed mkdir for `a/b/c` with 3 path(s) to create.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_MKDIR,
+                "summary": "Previewed mkdir for `a/b/c` with 3 path(s) to create.",
+                "commandResult": null,
+                "output": {
+                    "kind": "mkdir",
+                    "path": "a/b/c",
+                    "created": true,
+                    "applied": false,
+                    "preview": true,
+                    "parents": true,
+                    "existOk": true,
+                    "createdPaths": ["a", "a/b", "a/b/c"],
+                    "manifest": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize mkdir result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode mkdir result");
+
+        assert_eq!(visible["output"]["path"], json!("a/b/c"));
+        assert_eq!(visible["output"]["preview"], json!(true));
+        assert_eq!(visible["output"]["createdPaths"][2], json!("a/b/c"));
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_copy_result_keeps_plan_summary() {
+        let result = AgentToolResult {
+            tool_call_id: "call-copy".into(),
+            tool_name: AUTONOMOUS_TOOL_COPY.into(),
+            ok: true,
+            summary: "Previewed copy `src` to `dst` with 1 file(s) and 5 byte(s).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_COPY,
+                "summary": "Previewed copy `src` to `dst` with 1 file(s) and 5 byte(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "copy",
+                    "fromPath": "src",
+                    "toPath": "dst",
+                    "recursive": true,
+                    "applied": false,
+                    "preview": true,
+                    "overwritten": false,
+                    "copiedFiles": 1,
+                    "copiedBytes": 5,
+                    "createdDirectories": 1,
+                    "sourceKind": "directory",
+                    "sourceDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "omitted": {"symlinks": 1, "existingTargets": 0, "unsupported": 0},
+                    "operations": [
+                        {"action": "create_directory", "fromPath": "src", "toPath": "dst", "overwritten": false},
+                        {"action": "copy_file", "fromPath": "src/a.txt", "toPath": "dst/a.txt", "bytes": 5, "overwritten": false}
+                    ],
+                    "content": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize copy result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode copy result");
+
+        assert_eq!(visible["output"]["fromPath"], json!("src"));
+        assert_eq!(visible["output"]["toPath"], json!("dst"));
+        assert_eq!(
+            visible["output"]["sourceDigest"].as_str().map(str::len),
+            Some(64)
+        );
+        assert_eq!(
+            visible["output"]["operations"][1]["toPath"],
+            json!("dst/a.txt")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_fs_transaction_result_keeps_changed_paths_and_rollback_summary() {
+        let result = AgentToolResult {
+            tool_call_id: "call-fs-transaction".into(),
+            tool_name: AUTONOMOUS_TOOL_FS_TRANSACTION.into(),
+            ok: true,
+            summary: "Previewed fs_transaction with 2 operation(s) and 2 changed path(s).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_FS_TRANSACTION,
+                "summary": "Previewed fs_transaction with 2 operation(s) and 2 changed path(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "fs_transaction",
+                    "applied": false,
+                    "preview": true,
+                    "operationCount": 2,
+                    "validation": {"ok": true, "validatedOperations": 2, "errors": []},
+                    "changedPaths": ["src/a.rs", "src/b.rs"],
+                    "plannedOperations": [
+                        {"index": 0, "id": "create", "action": "create_file", "ok": true, "status": "planned", "summary": "Previewed create for `src/a.rs`.", "changedPaths": ["src/a.rs"], "diff": "--- src/a.rs\n+++ src/a.rs\n@@\n+fn a() {}\n"},
+                        {"index": 1, "id": "copy", "action": "copy", "ok": true, "status": "planned", "summary": "Previewed copy.", "changedPaths": ["src/b.rs"], "sourceDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+                    ],
+                    "rollbackStatus": {"attempted": false, "succeeded": true, "attempts": []},
+                    "results": [],
+                    "diff": "--- src/a.rs\n+++ src/a.rs\n@@\n+fn a() {}\n",
+                    "content": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize fs_transaction result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode fs_transaction result");
+
+        assert_eq!(visible["output"]["operationCount"], json!(2));
+        assert_eq!(visible["output"]["changedPaths"][0], json!("src/a.rs"));
+        assert_eq!(
+            visible["output"]["plannedOperations"][1]["sourceDigest"]
+                .as_str()
+                .map(str::len),
+            Some(64)
+        );
+        assert_eq!(
+            visible["output"]["rollbackStatus"]["attempted"],
+            json!(false)
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_structured_edit_result_keeps_semantic_summary_and_diff() {
+        let result = AgentToolResult {
+            tool_call_id: "call-json-edit".into(),
+            tool_name: AUTONOMOUS_TOOL_JSON_EDIT.into(),
+            ok: true,
+            summary: "Previewed Json structured edit for `package.json` with 1 operation(s)."
+                .into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_JSON_EDIT,
+                "summary": "Previewed Json structured edit for `package.json` with 1 operation(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "json_edit",
+                    "path": "package.json",
+                    "format": "json",
+                    "operationsApplied": 1,
+                    "applied": false,
+                    "preview": true,
+                    "formattingMode": "normalize",
+                    "oldHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "newHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "diff": "--- package.json\n+++ package.json\n@@\n-old\n+new\n",
+                    "lineEnding": "lf",
+                    "bomPreserved": false,
+                    "semanticChanges": ["set /scripts/test"],
+                    "content": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize structured edit result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode structured edit result");
+
+        assert_eq!(visible["output"]["path"], json!("package.json"));
+        assert_eq!(visible["output"]["operationsApplied"], json!(1));
+        assert_eq!(
+            visible["output"]["semanticChanges"][0],
+            json!("set /scripts/test")
+        );
+        assert!(visible["output"]["diff"]
+            .as_str()
+            .expect("compact diff")
+            .contains("+new"));
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_edit_result_marks_preview_and_uses_diff_block() {
+        let result = AgentToolResult {
+            tool_call_id: "call-edit".into(),
+            tool_name: AUTONOMOUS_TOOL_EDIT.into(),
+            ok: true,
+            summary: "Previewed lines 2-2 in `src/lib.rs`.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_EDIT,
+                "summary": "Previewed lines 2-2 in `src/lib.rs`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "edit",
+                    "path": "src/lib.rs",
+                    "startLine": 2,
+                    "endLine": 2,
+                    "replacementLen": 4,
+                    "applied": false,
+                    "preview": true,
+                    "oldHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "newHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "diff": "--- src/lib.rs\n+++ src/lib.rs\n@@ -2,1 +2,1 @@\n-old\n+new\n",
+                    "content": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize edit result");
+
+        assert!(serialized.contains("tool result: edit call call-edit ok=true"));
+        assert!(serialized.contains("metadata: kind=edit; path=src/lib.rs; startLine=2; endLine=2; applied=false; preview=true"));
+        assert!(serialized.contains("[BEGIN edit diff]"));
+        assert!(serialized.contains("+new"));
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_read_many_result_compacts_each_file_without_binary_payloads() {
+        let result = AgentToolResult {
+            tool_call_id: "call-read-many".into(),
+            tool_name: AUTONOMOUS_TOOL_READ_MANY.into(),
+            ok: true,
+            summary: "Read 1 file(s) in one bounded batch; 1 file(s) returned per-file errors."
+                .into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_READ_MANY,
+                "summary": "Read 1 file(s) in one bounded batch; 1 file(s) returned per-file errors.",
+                "commandResult": null,
+                "output": {
+                    "kind": "read_many",
+                    "paths": ["src/a.txt", "image.png"],
+                    "totalFiles": 2,
+                    "okFiles": 1,
+                    "errorFiles": 1,
+                    "omittedFiles": 1,
+                    "totalBytes": 12,
+                    "omittedBytes": 2048,
+                    "truncated": true,
+                    "maxBytesPerFile": 1024,
+                    "maxTotalBytes": 4096,
+                    "results": [
+                        {
+                            "path": "src/a.txt",
+                            "ok": true,
+                            "read": {
+                                "kind": "read",
+                                "path": "src/a.txt",
+                                "startLine": 1,
+                                "lineCount": 1,
+                                "totalLines": 1,
+                                "truncated": false,
+                                "content": "hello\n",
+                                "contentKind": "text",
+                                "sha256": "abc123"
+                            }
+                        },
+                        {
+                            "path": "image.png",
+                            "ok": false,
+                            "omittedBytes": 2048,
+                            "error": {
+                                "code": "autonomous_tool_read_many_file_too_large",
+                                "class": "user_fixable",
+                                "message": "too large",
+                                "retryable": false
+                            },
+                            "read": {
+                                "kind": "read",
+                                "path": "image.png",
+                                "previewBase64": "SHOULD_NOT_APPEAR"
+                            }
+                        }
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: Some("assistant-1".into()),
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize read_many result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode read_many result");
+
+        assert_eq!(visible["output"]["kind"], json!("read_many"));
+        assert_eq!(
+            visible["output"]["results"][0]["read"]["content"],
+            json!("hello\n")
+        );
+        assert_eq!(
+            visible["output"]["results"][1]["error"]["code"],
+            json!("autonomous_tool_read_many_file_too_large")
+        );
+        assert!(serialized.contains("read_many_compact_results_json"));
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+        assert!(visible["output"]["results"][1]["read"]
+            .get("previewBase64")
+            .is_none());
+    }
+
+    #[test]
+    fn model_visible_result_page_keeps_bounded_content_and_continuation() {
+        let result = AgentToolResult {
+            tool_call_id: "call-result-page".into(),
+            tool_name: AUTONOMOUS_TOOL_RESULT_PAGE.into(),
+            ok: true,
+            summary: "Read 12 byte(s) from result artifact.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_RESULT_PAGE,
+                "summary": "Read 12 byte(s) from result artifact.",
+                "commandResult": null,
+                "output": {
+                    "kind": "result_page",
+                    "artifactPath": "/Users/sn0w/Library/Application Support/dev.sn0w.xero/projects/project/tool-artifacts/command/output.json",
+                    "byteOffset": 0,
+                    "byteCount": 12,
+                    "totalBytes": 1024,
+                    "truncated": true,
+                    "nextByteOffset": 12,
+                    "content": "hello world\n",
+                    "encoding": "utf-8-lossy",
+                    "rawManifest": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize result_page result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode result_page result");
+
+        assert_eq!(visible["output"]["kind"], json!("result_page"));
+        assert_eq!(visible["output"]["nextByteOffset"], json!(12));
+        assert_eq!(visible["output"]["content"], json!("hello world\n"));
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("result_page_text_slice_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_stat_result_uses_metadata_projection_without_content() {
+        let result = AgentToolResult {
+            tool_call_id: "call-stat".into(),
+            tool_name: AUTONOMOUS_TOOL_STAT.into(),
+            ok: true,
+            summary: "Stat inspected `src/lib.rs` as a file (42 byte(s)).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_STAT,
+                "summary": "Stat inspected `src/lib.rs` as a file (42 byte(s)).",
+                "commandResult": null,
+                "output": {
+                    "kind": "stat",
+                    "path": "src/lib.rs",
+                    "pathKind": "file",
+                    "exists": true,
+                    "size": 42,
+                    "modifiedAt": "2026-05-13T00:00:00Z",
+                    "permissions": {
+                        "readonly": false,
+                        "unixMode": "0644"
+                    },
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "followSymlinks": false,
+                    "includeGitStatus": true,
+                    "gitStatus": [
+                        {
+                            "path": "src/lib.rs",
+                            "staged": null,
+                            "unstaged": "modified",
+                            "untracked": false
+                        }
+                    ],
+                    "content": "SHOULD_NOT_APPEAR"
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: Some("assistant-1".into()),
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize stat result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode stat result");
+
+        assert_eq!(visible["output"]["kind"], json!("stat"));
+        assert_eq!(visible["output"]["pathKind"], json!("file"));
+        assert_eq!(
+            visible["output"]["sha256"],
+            json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert!(visible["output"].get("content").is_none());
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("stat_metadata_summary_json")
+        );
+    }
+
+    #[test]
+    fn model_visible_search_result_groups_large_match_sets_by_file() {
+        let matches = (1..=8)
+            .map(|line| {
+                json!({
+                    "path": "src/lib.rs",
+                    "line": line,
+                    "column": 1,
+                    "endColumn": 4,
+                    "preview": format!("hit {line}"),
+                    "matchText": "hit",
+                    "lineHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                })
+            })
+            .collect::<Vec<_>>();
+        let result = AgentToolResult {
+            tool_call_id: "call-search".into(),
+            tool_name: AUTONOMOUS_TOOL_SEARCH.into(),
+            ok: true,
+            summary: "Found 8 match(es) for `hit` across 1 file(s).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_SEARCH,
+                "summary": "Found 8 match(es) for `hit` across 1 file(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "search",
+                    "query": "hit",
+                    "scope": null,
+                    "files": [{
+                        "path": "src/lib.rs",
+                        "matchCount": 8,
+                        "firstLine": 1,
+                        "firstPreview": "hit 1"
+                    }],
+                    "matches": matches,
+                    "scannedFiles": 1,
+                    "truncated": false,
+                    "cursor": null,
+                    "nextCursor": "search:v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:8",
+                    "filesOnly": false,
+                    "returnedMatches": 8,
+                    "skippedMatches": 0,
+                    "totalMatches": 8,
+                    "matchedFiles": 1,
+                    "omissions": {
+                        "ignoredDirectories": 2,
+                        "filteredFiles": 1,
+                        "binaryFiles": 0,
+                        "oversizedFiles": 0,
+                        "unreadableFiles": 0
+                    },
+                    "engine": "ignore-walk-regex",
+                    "regex": false,
+                    "ignoreCase": false,
+                    "includeHidden": false,
+                    "includeIgnored": false,
+                    "contextLines": 0
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize search result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode search result");
+        let file = &visible["output"]["files"][0];
+
+        assert_eq!(file["path"], json!("src/lib.rs"));
+        assert_eq!(file["matchCount"], json!(8));
+        assert_eq!(file["firstLine"], json!(1));
+        assert_eq!(file["modelVisibleMatchCount"], json!(5));
+        assert_eq!(file["omittedMatchCount"], json!(3));
+        assert_eq!(visible["output"]["returnedMatches"], json!(8));
+        assert_eq!(
+            visible["output"]["nextCursor"],
+            json!("search:v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:8")
+        );
+        assert_eq!(
+            visible["output"]["omissions"]["ignoredDirectories"],
+            json!(2)
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("search_grouped_matches_json")
+        );
+    }
+
+    #[test]
+    fn model_visible_find_result_keeps_mode_counts_cursor_and_omissions() {
+        let result = AgentToolResult {
+            tool_call_id: "call-find".into(),
+            tool_name: AUTONOMOUS_TOOL_FIND.into(),
+            ok: true,
+            summary: "Found 2 path(s) matching `rs`.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_FIND,
+                "summary": "Found 2 path(s) matching `rs`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "find",
+                    "pattern": "rs",
+                    "mode": "extension",
+                    "scope": null,
+                    "matches": ["src/app.rs", "src/nested/deep.rs"],
+                    "scannedFiles": 3,
+                    "truncated": true,
+                    "cursor": null,
+                    "nextCursor": "find:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:2",
+                    "returnedMatches": 2,
+                    "skippedMatches": 0,
+                    "fileCount": 2,
+                    "directoryCount": 0,
+                    "symlinkCount": 0,
+                    "otherCount": 0,
+                    "omissions": {
+                        "ignoredDirectories": 1,
+                        "depthLimitedDirectories": 0,
+                        "permissionDenied": 0
+                    }
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize find result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode find result");
+
+        assert_eq!(visible["output"]["mode"], json!("extension"));
+        assert_eq!(visible["output"]["fileCount"], json!(2));
+        assert_eq!(
+            visible["output"]["nextCursor"],
+            json!("find:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:2")
+        );
+        assert_eq!(
+            visible["output"]["omissions"]["ignoredDirectories"],
+            json!(1)
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("find_path_summary_json")
+        );
+    }
+
+    #[test]
+    fn model_visible_list_result_keeps_pagination_counts_and_omissions() {
+        let result = AgentToolResult {
+            tool_call_id: "call-list".into(),
+            tool_name: AUTONOMOUS_TOOL_LIST.into(),
+            ok: true,
+            summary: "Listed 2 item(s) under `src`.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_LIST,
+                "summary": "Listed 2 item(s) under `src`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "list",
+                    "path": "src",
+                    "entries": [
+                        {"path": "src/b.txt", "kind": "file", "bytes": 5, "modifiedAt": "2026-05-13T12:00:00Z"},
+                        {"path": "src/a.txt", "kind": "file", "bytes": 2, "modifiedAt": "2026-05-13T12:00:01Z"}
+                    ],
+                    "truncated": true,
+                    "maxDepth": 2,
+                    "maxResults": 2,
+                    "sortBy": "size",
+                    "sortDirection": "desc",
+                    "cursor": null,
+                    "nextCursor": "list:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:2",
+                    "returnedEntries": 2,
+                    "skippedEntries": 0,
+                    "fileCount": 3,
+                    "directoryCount": 1,
+                    "symlinkCount": 0,
+                    "otherCount": 0,
+                    "omitted": {
+                        "depth": 1,
+                        "entryCap": 0,
+                        "ignoredDirectory": 1,
+                        "permission": 0
+                    }
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize list result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode list result");
+
+        assert_eq!(visible["output"]["sortBy"], json!("size"));
+        assert_eq!(
+            visible["output"]["nextCursor"],
+            json!("list:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:2")
+        );
+        assert_eq!(visible["output"]["fileCount"], json!(3));
+        assert_eq!(visible["output"]["omitted"]["ignoredDirectory"], json!(1));
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("list_path_summary_json")
+        );
+    }
+
+    #[test]
+    fn model_visible_list_tree_result_keeps_compact_tree_and_counts() {
+        let result = AgentToolResult {
+            tool_call_id: "call-list-tree".into(),
+            tool_name: AUTONOMOUS_TOOL_LIST_TREE.into(),
+            ok: true,
+            summary: "Listed tree for `src` with 1 file(s) and 2 directorie(s).".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_LIST_TREE,
+                "summary": "Listed tree for `src` with 1 file(s) and 2 directorie(s).",
+                "commandResult": null,
+                "output": {
+                    "kind": "list_tree",
+                    "path": "src",
+                    "fileCount": 1,
+                    "directoryCount": 2,
+                    "symlinkCount": 0,
+                    "otherCount": 0,
+                    "maxDepth": 2,
+                    "maxEntries": 20,
+                    "truncated": true,
+                    "omitted": {
+                        "depth": 1,
+                        "entryCap": 0,
+                        "ignoredDirectory": 0,
+                        "permission": 0,
+                        "filtered": 1
+                    },
+                    "root": {
+                        "name": "src",
+                        "path": "src",
+                        "pathKind": "directory",
+                        "children": [
+                            {
+                                "name": "tracked.txt",
+                                "path": "src/tracked.txt",
+                                "pathKind": "file",
+                                "size": 11,
+                                "content": "SHOULD_NOT_APPEAR"
+                            }
+                        ]
+                    },
+                    "gitStatus": [
+                        {
+                            "path": "src/tracked.txt",
+                            "staged": null,
+                            "unstaged": "modified",
+                            "untracked": false
+                        }
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize list_tree result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode list_tree result");
+
+        assert_eq!(visible["output"]["kind"], json!("list_tree"));
+        assert_eq!(
+            visible["output"]["root"]["children"][0]["path"],
+            json!("src/tracked.txt")
+        );
+        assert_eq!(visible["output"]["omitted"]["depth"], json!(1));
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("list_tree_summary_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_directory_digest_result_keeps_digest_and_manifest_summary() {
+        let result = AgentToolResult {
+            tool_call_id: "call-directory-digest".into(),
+            tool_name: AUTONOMOUS_TOOL_DIRECTORY_DIGEST.into(),
+            ok: true,
+            summary: "Computed content hash digest for `src`.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_DIRECTORY_DIGEST,
+                "summary": "Computed content hash digest for `src`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "directory_digest",
+                    "path": "src",
+                    "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "algorithm": "xero.directory_digest.v1.sha256",
+                    "hashMode": "content_hash",
+                    "fileCount": 1,
+                    "directoryCount": 2,
+                    "symlinkCount": 0,
+                    "otherCount": 0,
+                    "totalBytes": 17,
+                    "maxFiles": 20,
+                    "truncated": false,
+                    "omitted": {
+                        "maxFiles": 0,
+                        "ignoredDirectory": 0,
+                        "permission": 0,
+                        "filtered": 0
+                    },
+                    "manifest": [
+                        {
+                            "path": "src/nested/mod.rs",
+                            "pathKind": "file",
+                            "size": 17,
+                            "modifiedAt": "2026-05-13T00:00:00Z",
+                            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "content": "SHOULD_NOT_APPEAR"
+                        }
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize digest result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode digest result");
+
+        assert_eq!(
+            visible["output"]["digest"],
+            json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            visible["output"]["manifest"][0]["path"],
+            json!("src/nested/mod.rs")
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("directory_digest_summary_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_file_hash_result_keeps_digest_manifest_and_file_summary() {
+        let result = AgentToolResult {
+            tool_call_id: "call-file-hash".into(),
+            tool_name: AUTONOMOUS_TOOL_HASH.into(),
+            ok: true,
+            summary: "Hashed `src` as a SHA-256 file set digest.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_HASH,
+                "summary": "Hashed `src` as a SHA-256 file set digest.",
+                "commandResult": null,
+                "output": {
+                    "kind": "hash",
+                    "path": "src",
+                    "pathKind": "directory",
+                    "algorithm": "sha256",
+                    "mode": "file_set",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "bytes": 17,
+                    "fileCount": 1,
+                    "maxFiles": 20,
+                    "truncated": false,
+                    "omitted": {
+                        "maxFiles": 0,
+                        "ignoredDirectory": 0,
+                        "permission": 0,
+                        "filtered": 0,
+                        "unsupported": 0
+                    },
+                    "artifactPath": "/tmp/file-hash-manifest.json",
+                    "files": [
+                        {
+                            "path": "src/nested/mod.rs",
+                            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "bytes": 17,
+                            "content": "SHOULD_NOT_APPEAR"
+                        }
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize file_hash result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode file_hash");
+
+        assert_eq!(
+            visible["output"]["sha256"],
+            json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            visible["output"]["artifactPath"],
+            json!("/tmp/file-hash-manifest.json")
+        );
+        assert_eq!(
+            visible["output"]["files"][0]["path"],
+            json!("src/nested/mod.rs")
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("file_hash_summary_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_patch_result_keeps_guards_ranges_rollback_and_artifact() {
+        let result = AgentToolResult {
+            tool_call_id: "call-patch".into(),
+            tool_name: AUTONOMOUS_TOOL_PATCH.into(),
+            ok: true,
+            summary: "Patched `src/lib.rs`.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_PATCH,
+                "summary": "Patched `src/lib.rs`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "patch",
+                    "path": "src/lib.rs",
+                    "replacements": 1,
+                    "bytesWritten": 42,
+                    "applied": true,
+                    "preview": false,
+                    "rollbackStatus": {"attempted": false, "succeeded": true, "attempts": []},
+                    "oldHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "newHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "diff": "--- src/lib.rs\n+++ src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+                    "diffTruncated": true,
+                    "artifactPath": "/tmp/patch.diff",
+                    "files": [
+                        {
+                            "path": "src/lib.rs",
+                            "replacements": 1,
+                            "bytesWritten": 42,
+                            "oldHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "newHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "guardStatus": {
+                                "expectedHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+                                "currentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "matched": true
+                            },
+                            "changedRanges": [{"startLine": 10, "endLine": 12}],
+                            "lineEnding": "lf",
+                            "bomPreserved": false,
+                            "diff": "SHOULD_APPEAR_AS_DIFF_ONLY",
+                            "rawFullDiff": "SHOULD_NOT_APPEAR"
+                        }
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize patch result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode patch result");
+
+        assert_eq!(
+            visible["output"]["rollbackStatus"]["attempted"],
+            json!(false)
+        );
+        assert_eq!(visible["output"]["diffTruncated"], json!(true));
+        assert_eq!(visible["output"]["artifactPath"], json!("/tmp/patch.diff"));
+        assert_eq!(
+            visible["output"]["files"][0]["guardStatus"]["matched"],
+            json!(true)
+        );
+        assert_eq!(
+            visible["output"]["files"][0]["changedRanges"][0]["startLine"],
+            json!(10)
+        );
+        assert!(visible["output"]["files"][0]["diff"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("SHOULD_APPEAR_AS_DIFF_ONLY"));
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_tool_access_keeps_per_tool_metadata() {
+        let result = AgentToolResult {
+            tool_call_id: "call-tool-access".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_ACCESS.into(),
+            ok: true,
+            summary: "Available tool groups returned.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_TOOL_ACCESS,
+                "summary": "Available tool groups returned.",
+                "commandResult": null,
+                "output": {
+                    "kind": "tool_access",
+                    "action": "list",
+                    "grantedTools": ["read"],
+                    "grantedToolDetails": [
+                        {
+                            "toolName": "read",
+                            "effectClass": "observe",
+                            "riskClass": "observe",
+                            "runtimeAvailable": true,
+                            "allowedForAgent": true,
+                            "activationGroups": ["core"]
+                        }
+                    ],
+                    "deniedTools": [],
+                    "availableGroups": [
+                        {
+                            "name": "core",
+                            "description": "Always-on repository inspection.",
+                            "tools": ["read"],
+                            "riskClass": "observe",
+                            "toolSummaries": [
+                                {
+                                    "toolName": "read",
+                                    "effectClass": "observe",
+                                    "riskClass": "observe",
+                                    "runtimeAvailable": true,
+                                    "allowedForAgent": true,
+                                    "activationGroups": ["core"]
+                                }
+                            ],
+                            "internalNote": "SHOULD_NOT_APPEAR"
+                        }
+                    ],
+                    "message": "Available tool groups returned.",
+                    "availableToolPacks": [],
+                    "toolPackHealth": []
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize tool_access result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode tool_access result");
+
+        assert_eq!(
+            visible["output"]["availableGroups"][0]["toolSummaries"][0]["effectClass"],
+            json!("observe")
+        );
+        assert_eq!(
+            visible["output"]["grantedToolDetails"][0]["activationGroups"][0],
+            json!("core")
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("tool_access_summary_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_tool_search_keeps_why_matched_and_effect_class() {
+        let result = AgentToolResult {
+            tool_call_id: "call-tool-search".into(),
+            tool_name: AUTONOMOUS_TOOL_TOOL_SEARCH.into(),
+            ok: true,
+            summary: "Found 1 tool match.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_TOOL_SEARCH,
+                "summary": "Found 1 tool match.",
+                "commandResult": null,
+                "output": {
+                    "kind": "tool_search",
+                    "query": "hash",
+                    "truncated": false,
+                    "searchedCatalogSize": 10,
+                    "matches": [
+                        {
+                            "toolName": "file_hash",
+                            "group": "core",
+                            "catalogKind": "builtin",
+                            "description": "Hash files.",
+                            "score": 120,
+                            "toolPackIds": [],
+                            "activationGroups": ["core"],
+                            "activationTools": ["file_hash"],
+                            "schemaFields": ["path"],
+                            "examples": [],
+                            "riskClass": "observe",
+                            "effectClass": "observe",
+                            "runtimeAvailable": true,
+                            "whyMatched": ["tool name contains query"],
+                            "internalNote": "SHOULD_NOT_APPEAR"
+                        }
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize tool_search result");
+        let visible =
+            serde_json::from_str::<JsonValue>(&serialized).expect("decode tool_search result");
+
+        assert_eq!(
+            visible["output"]["matches"][0]["effectClass"],
+            json!("observe")
+        );
+        assert_eq!(
+            visible["output"]["matches"][0]["whyMatched"][0],
+            json!("tool name contains query")
+        );
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("tool_search_ranked_summary_json")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
     }
 
     #[test]
@@ -5428,14 +7157,81 @@ mod tests {
     }
 
     #[test]
+    fn model_visible_dynamic_mcp_result_uses_untrusted_summary_projection() {
+        let dynamic_tool = "mcp__fixture__echo__0123456789";
+        let result = AgentToolResult {
+            tool_call_id: "call-mcp".into(),
+            tool_name: dynamic_tool.into(),
+            ok: true,
+            summary: "Invoked MCP `tools/call` on server `fixture`.".into(),
+            output: json!({
+                "toolName": dynamic_tool,
+                "summary": "Invoked MCP `tools/call` on server `fixture`.",
+                "commandResult": null,
+                "output": {
+                    "kind": "mcp",
+                    "action": "call_tool",
+                    "servers": [],
+                    "serverId": "fixture",
+                    "capabilityName": "echo",
+                    "resultTruncated": true,
+                    "resultOriginalBytes": 70000,
+                    "resultArtifact": {
+                        "id": "artifact-1",
+                        "path": "/tmp/mcp-artifact.json",
+                        "byteCount": 70000
+                    },
+                    "result": {
+                        "xeroOmitted": true,
+                        "reason": "mcp_result_artifact",
+                        "artifactId": "artifact-1",
+                        "shape": "object",
+                        "rawManifest": "SHOULD_NOT_APPEAR"
+                    },
+                    "inputSchema": {
+                        "description": "SHOULD_NOT_APPEAR"
+                    }
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize dynamic MCP result");
+        let visible = serde_json::from_str::<JsonValue>(&serialized).expect("decode MCP JSON");
+
+        assert_eq!(
+            visible["output"]["xeroCompact"]["format"],
+            json!("mcp_untrusted_summary_json")
+        );
+        assert_eq!(visible["output"]["xeroBoundary"], json!(MCP_XERO_BOUNDARY));
+        assert_eq!(
+            visible["output"]["resultArtifact"]["id"],
+            json!("artifact-1")
+        );
+        assert_eq!(
+            visible["output"]["result"]["artifactId"],
+            json!("artifact-1")
+        );
+        assert!(!serialized.contains("SHOULD_NOT_APPEAR"));
+        assert!(visible["output"].get("inputSchema").is_none());
+    }
+
+    #[test]
     fn model_visible_projection_registry_covers_current_tool_inventory() {
         let inventory = [
             (AUTONOMOUS_TOOL_READ, "read", None),
+            (AUTONOMOUS_TOOL_READ_MANY, "read_many", None),
+            (AUTONOMOUS_TOOL_RESULT_PAGE, "result_page", None),
+            (AUTONOMOUS_TOOL_STAT, "stat", None),
             (AUTONOMOUS_TOOL_SEARCH, "search", None),
             (AUTONOMOUS_TOOL_FIND, "find", None),
             (AUTONOMOUS_TOOL_GIT_STATUS, "git_status", None),
             (AUTONOMOUS_TOOL_GIT_DIFF, "git_diff", None),
             (AUTONOMOUS_TOOL_LIST, "list", None),
+            (AUTONOMOUS_TOOL_LIST_TREE, "list_tree", None),
+            (AUTONOMOUS_TOOL_DIRECTORY_DIGEST, "directory_digest", None),
             (AUTONOMOUS_TOOL_HASH, "hash", None),
             (AUTONOMOUS_TOOL_TOOL_ACCESS, "tool_access", None),
             (AUTONOMOUS_TOOL_TOOL_SEARCH, "tool_search", None),
@@ -5486,6 +7282,11 @@ mod tests {
             (AUTONOMOUS_TOOL_EDIT, "edit", None),
             (AUTONOMOUS_TOOL_WRITE, "write", None),
             (AUTONOMOUS_TOOL_PATCH, "patch", None),
+            (AUTONOMOUS_TOOL_COPY, "copy", None),
+            (AUTONOMOUS_TOOL_FS_TRANSACTION, "fs_transaction", None),
+            (AUTONOMOUS_TOOL_JSON_EDIT, "json_edit", None),
+            (AUTONOMOUS_TOOL_TOML_EDIT, "toml_edit", None),
+            (AUTONOMOUS_TOOL_YAML_EDIT, "yaml_edit", None),
             (AUTONOMOUS_TOOL_DELETE, "delete", None),
             (AUTONOMOUS_TOOL_RENAME, "rename", None),
             (AUTONOMOUS_TOOL_MKDIR, "mkdir", None),
@@ -5679,6 +7480,65 @@ mod tests {
         assert!(serialized.contains("message=The test suite failed."));
         assert!(serialized.contains("rawJson: chars="));
         assert!(!serialized.contains("NOISY_VALUE_SHOULD_NOT_APPEAR"));
+    }
+
+    #[test]
+    fn model_visible_command_result_keeps_intent_artifact_changes_and_next_actions() {
+        let result = AgentToolResult {
+            tool_call_id: "call-command-metadata".into(),
+            tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+            ok: false,
+            summary: "Command failed.".into(),
+            output: json!({
+                "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                "summary": "Command failed.",
+                "commandResult": null,
+                "output": {
+                    "kind": "command",
+                    "argv": ["cargo", "test", "focused"],
+                    "cwd": ".",
+                    "intent": "read_only_verification",
+                    "stdout": "short stdout",
+                    "stderr": "short stderr",
+                    "stdoutTruncated": true,
+                    "stderrTruncated": false,
+                    "stdoutRedacted": false,
+                    "stderrRedacted": false,
+                    "exitCode": 101,
+                    "timedOut": false,
+                    "spawned": true,
+                    "changedFiles": [{
+                        "path": "src/lib.rs",
+                        "staged": null,
+                        "unstaged": "modified",
+                        "untracked": false
+                    }],
+                    "changedFilesTruncated": false,
+                    "outputArtifact": {
+                        "path": "/tmp/command-output.json",
+                        "byteCount": 4096,
+                        "stdoutBytes": 4096,
+                        "stderrBytes": 12,
+                        "redacted": false,
+                        "truncated": true
+                    },
+                    "suggestedNextActions": [
+                        "Use outputArtifact.path as the continuation for captured stdout/stderr details if the compact stream is insufficient."
+                    ]
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+
+        let serialized =
+            serialize_model_visible_tool_result(&result).expect("serialize command result");
+
+        assert!(serialized.contains("intent: read_only_verification"));
+        assert!(serialized.contains("changedFiles: src/lib.rs"));
+        assert!(serialized.contains("outputArtifact: /tmp/command-output.json"));
+        assert!(serialized.contains("suggestedNextActions: Use outputArtifact.path"));
+        assert!(serialized.contains("format=command_output_block"));
     }
 
     #[test]

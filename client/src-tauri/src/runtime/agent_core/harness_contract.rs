@@ -600,6 +600,107 @@ mod tests {
     }
 
     #[test]
+    fn contract_export_enforces_catalog_group_and_risk_invariants() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let contract =
+            export_harness_contract(root.path(), HarnessContractExportOptions::default())
+                .expect("export harness contract");
+        let tool_names = contract
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let allowed_risk_classes = [
+            "agent_definition_state",
+            "agent_delegation",
+            "browser_control",
+            "browser_observe",
+            "command",
+            "command_mutating",
+            "command_probe",
+            "command_verify",
+            "coordination_state",
+            "device_control",
+            "external_capability",
+            "external_capability_invoke",
+            "external_capability_observe",
+            "external_chain",
+            "external_chain_control",
+            "external_chain_mutation",
+            "external_chain_observe",
+            "external_chain_simulation",
+            "long_running_process",
+            "network",
+            "network_browser_control",
+            "observe",
+            "os_control",
+            "process_control",
+            "project_context_read",
+            "registry_control",
+            "runtime_state",
+            "secret_reference",
+            "skill_runtime",
+            "system_privileged",
+            "system_read",
+            "write",
+            "write_destructive",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+
+        for group in &contract.tool_groups {
+            assert!(
+                allowed_risk_classes.contains(group.risk_class.as_str()),
+                "unknown group risk class {} for {}",
+                group.risk_class,
+                group.name
+            );
+            assert!(
+                !group.description.contains(AUTONOMOUS_TOOL_HARNESS_RUNNER),
+                "reserved tool leaked into group description for {}",
+                group.name
+            );
+            for tool in &group.tools {
+                assert!(
+                    tool_names.contains(tool.as_str()),
+                    "group {} references unknown tool {}",
+                    group.name,
+                    tool
+                );
+                assert_ne!(
+                    tool, AUTONOMOUS_TOOL_HARNESS_RUNNER,
+                    "reserved harness runner must not be group-visible"
+                );
+            }
+        }
+
+        for tool in &contract.tools {
+            assert!(
+                tool.effect_class_known,
+                "tool {} has unknown effect class",
+                tool.name
+            );
+            if let Some(catalog) = tool.catalog.as_ref() {
+                assert!(
+                    allowed_risk_classes.contains(catalog.risk_class.as_str()),
+                    "unknown catalog risk class {} for {}",
+                    catalog.risk_class,
+                    tool.name
+                );
+            }
+            if let Some(descriptor) = tool.descriptor.as_ref() {
+                assert!(
+                    !descriptor
+                        .description
+                        .contains(AUTONOMOUS_TOOL_HARNESS_RUNNER),
+                    "reserved tool leaked into descriptor description for {}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn prompt_contract_snapshot_hashes_freeze_builtin_agent_policy() {
         let root = tempfile::tempdir().expect("temp dir");
         let contract =
@@ -622,59 +723,59 @@ mod tests {
         let expected = vec![
             (
                 "generalist:base".to_string(),
-                "15ee630c38ef9d910ba1e6c8e9ba80b4bb8b7787563d6f592ad6f1c6eb9aeb7c",
+                "9b8da9fc125f9a0e819f6c9bd608d8705beae3efd6eb85b082217aa7e82e3806",
             ),
             (
                 "generalist:custom_policy_skill_process_coordination".to_string(),
-                "9311241f86239793c39305022cfefe4b206cb474000763acbaffa51e9d2efa2c",
+                "6e49b026d612cbe9cf6add09e790bfe963b06adbe1730afdcfc7086aa2a85311",
             ),
             (
                 "ask:base".to_string(),
-                "c92cb8fe6ce7393e465e2ef4afb3ee3b732e6fd57bcfffc45ff9c2510317ac99",
+                "e183cec670576fe1751fb57c1417021f01323a721f341e658088446e59b5feec",
             ),
             (
                 "ask:custom_policy_skill_process_coordination".to_string(),
-                "d317c07a9ceabf383ca5fdf39c24824907da367d1eb4e9d143491673bbcae857",
+                "9468236f559c29c000e7e9a56d817e38d142e3af795c836c4710ba78eb07e356",
             ),
             (
                 "plan:base".to_string(),
-                "91942dad115b33c0780069fce3f665eba8c69064615134a2c038ba1404ceab09",
+                "c17a622d124bf889d96865e6c8e0698ac64f1586028ba7a5ae35f9068a68cc6a",
             ),
             (
                 "plan:custom_policy_skill_process_coordination".to_string(),
-                "b3cd66f12594415f79d218acac79b181e632f7ff7d1f30c7dafabdb7f494cc31",
+                "9b45c95a542fc9035e0bcb7ac974290e31f663758d10da63f47aec6f40288344",
             ),
             (
                 "engineer:base".to_string(),
-                "afca8ef8c12b5d4f6ecc521136459ec09dcb01dee7e062f10607f2e6e1ebc6d5",
+                "9fc7ed5135992a00afea5ebb1d61a8124721fcd2857bc0dce3f7af82329e4f08",
             ),
             (
                 "engineer:custom_policy_skill_process_coordination".to_string(),
-                "4bae5bbacacafd7b10709826c55baf31cc9f5e2b82aa375ef9462d366fa7dbce",
+                "1fdd0fb803a7e74bdd30dfb07e57c372b29db4a17ef7dc353d0bd05284a1ea20",
             ),
             (
                 "debug:base".to_string(),
-                "6c3466f66c46059affe8311c666760cf9d072e69222cdc8c597a2b9ec70dc25a",
+                "0bcf630a6ba8441e0db28aac73c81ad47cbc25953de225d9e24f02874558e381",
             ),
             (
                 "debug:custom_policy_skill_process_coordination".to_string(),
-                "e79effd107d9e3815bad4b5fdc00bb8d1baed53698214c674b53c501d6520c7b",
+                "8b2eb473366a9d85788e8fcd36b1d1d9ff54c4036e029231ec75cb166b409054",
             ),
             (
                 "crawl:base".to_string(),
-                "f94fd60d204db92608e5eb2f67528579d52a7661860c0d8ad4c9fd89b695f482",
+                "d036b3bc6706fb2becdf0271b0b64b8fa68aee79872e20a536bf8b4b4fd3a8a0",
             ),
             (
                 "crawl:custom_policy_skill_process_coordination".to_string(),
-                "86cda45dbdbaa44fe2e6b70352fb34e6ecaad3387255092311ed8ae149723d57",
+                "6adc6fe0dccc2f5e21d98052fa5c0cbeffea373e04bf34eef21fe1c402cf1b6a",
             ),
             (
                 "agent_create:base".to_string(),
-                "885d2007ec85d4128f8367f793d70c9654a8f1241d59550d27dc86fec6009996",
+                "b5443c57b055c74c92d424b23a0f329c2d6141907b71395de2e712e04e5540e7",
             ),
             (
                 "agent_create:custom_policy_skill_process_coordination".to_string(),
-                "93b13c9fedfd683a35f6ce37c4ef01fef6e0c225e395fab82c87d6e8b2723f0e",
+                "c6cd154dd79fd5b0446abce0d15cdd567a2e11adeb96bbd5c01df669c8590464",
             ),
         ];
 
@@ -704,43 +805,43 @@ mod tests {
         let expected = vec![
             (
                 "generalist:builtin_full".to_string(),
-                "bca7c1f189383eb464fe7c943084131c6ca3f5f6eb1c119007daca20133d0048",
+                "008bb5e6b862fd123d619c91402fc31ccf758ad2b5979cae12605e7b7a467aa7",
             ),
             (
                 "ask:builtin_full".to_string(),
-                "b87b7fdfcba585073f0b539e5b155150a3ca64cef195fd9f99fbb56f8debc981",
+                "1de99e299428cd7155cb47f524a0d97f9639c8eb78b9c224819553d6e769c31c",
             ),
             (
                 "plan:builtin_full".to_string(),
-                "ff632d12bac671b9c394701aad701a35850b47d71a9c8cc73ba8501aa6821c95",
+                "06c2ec663fb43fcb20b56b7cc1276f0f72d3a25150d2be81305132c913a23449",
             ),
             (
                 "engineer:builtin_full".to_string(),
-                "bca7c1f189383eb464fe7c943084131c6ca3f5f6eb1c119007daca20133d0048",
+                "008bb5e6b862fd123d619c91402fc31ccf758ad2b5979cae12605e7b7a467aa7",
             ),
             (
                 "debug:builtin_full".to_string(),
-                "bca7c1f189383eb464fe7c943084131c6ca3f5f6eb1c119007daca20133d0048",
+                "008bb5e6b862fd123d619c91402fc31ccf758ad2b5979cae12605e7b7a467aa7",
             ),
             (
                 "crawl:builtin_full".to_string(),
-                "d1dd724b9ae7d758f28fceb29569393e2a7fb838442561bb6a88c74a92bdbc1f",
+                "34df1b852210acfd7c8578ccb0e22bee5b39f541a5329209cfbe4d7fe966ebea",
             ),
             (
                 "agent_create:builtin_full".to_string(),
-                "ab51cda758dab0a43452b2ae48e3817638467bfe5cf390bee9acef9087084a1e",
+                "00075672d2046a1fcf338adf428cd74a891cd688d7c0dae58865ec2ee82a897f",
             ),
             (
                 "engineer:custom_observe_only".to_string(),
-                "dfaedd4c424bee8b90f94f0f9ed208ee4d2ff560268a2a279e7ab24d90835364",
+                "bfb55c4af286afbddd4fab9a7c43ada162e4d467439144f7a4980f2e3ac8bbc4",
             ),
             (
                 "engineer:custom_engineering".to_string(),
-                "bca7c1f189383eb464fe7c943084131c6ca3f5f6eb1c119007daca20133d0048",
+                "008bb5e6b862fd123d619c91402fc31ccf758ad2b5979cae12605e7b7a467aa7",
             ),
             (
                 "agent_create:custom_agent_builder".to_string(),
-                "ab51cda758dab0a43452b2ae48e3817638467bfe5cf390bee9acef9087084a1e",
+                "00075672d2046a1fcf338adf428cd74a891cd688d7c0dae58865ec2ee82a897f",
             ),
         ];
 

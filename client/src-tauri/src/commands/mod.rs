@@ -76,6 +76,7 @@ pub mod update_runtime_run_controls;
 pub mod upsert_mcp_server;
 pub mod upsert_notification_route;
 pub mod upsert_notification_route_credentials;
+pub mod wipe_data;
 pub mod workflow_agents;
 pub mod workspace_index;
 
@@ -287,6 +288,9 @@ pub use update_runtime_run_controls::update_runtime_run_controls;
 pub use upsert_mcp_server::upsert_mcp_server;
 pub use upsert_notification_route::upsert_notification_route;
 pub use upsert_notification_route_credentials::upsert_notification_route_credentials;
+pub use wipe_data::{
+    wipe_all_xero_data, wipe_project_data, WipeAllDataResponseDto, WipeProjectDataResponseDto,
+};
 pub use workflow_agents::{
     get_agent_authoring_catalog, get_agent_tool_pack_catalog, get_workflow_agent_detail,
     get_workflow_agent_graph_projection, list_workflow_agents, resolve_agent_authoring_skill,

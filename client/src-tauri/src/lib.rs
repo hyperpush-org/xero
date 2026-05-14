@@ -216,6 +216,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::development_storage::developer_storage_read_table,
             commands::list_projects::list_projects,
             commands::remove_project::remove_project,
+            commands::wipe_data::wipe_project_data,
+            commands::wipe_data::wipe_all_xero_data,
             commands::get_project_load_bundle::get_project_load_bundle,
             commands::project_state::create_project_state_backup,
             commands::project_state::list_project_state_backups,

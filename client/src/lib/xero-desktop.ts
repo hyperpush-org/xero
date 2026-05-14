@@ -524,6 +524,14 @@ import {
   type RestoreProjectStateBackupRequestDto,
 } from '@/src/lib/xero-model/project-state'
 import {
+  wipeAllDataResponseSchema,
+  wipeProjectDataRequestSchema,
+  wipeProjectDataResponseSchema,
+  type WipeAllDataResponseDto,
+  type WipeProjectDataRequestDto,
+  type WipeProjectDataResponseDto,
+} from '@/src/lib/xero-model/wipe-data'
+import {
   environmentDiscoveryStatusSchema,
   environmentProbeReportSchema,
   type EnvironmentDiscoveryStatusDto,
@@ -545,6 +553,8 @@ const COMMANDS = {
   createRepository: 'create_repository',
   listProjects: 'list_projects',
   removeProject: 'remove_project',
+  wipeProjectData: 'wipe_project_data',
+  wipeAllXeroData: 'wipe_all_xero_data',
   readAppUiState: 'read_app_ui_state',
   writeAppUiState: 'write_app_ui_state',
   readProjectUiState: 'read_project_ui_state',
@@ -992,6 +1002,8 @@ export interface XeroDesktopAdapter {
   createRepository(parentPath: string, name: string): Promise<ImportRepositoryResponseDto>
   listProjects(): Promise<ListProjectsResponseDto>
   removeProject(projectId: string): Promise<ListProjectsResponseDto>
+  wipeProjectData?(request: WipeProjectDataRequestDto): Promise<WipeProjectDataResponseDto>
+  wipeAllXeroData?(): Promise<WipeAllDataResponseDto>
   readAppUiState?(request: ReadAppUiStateRequestDto): Promise<AppUiStateResponseDto>
   writeAppUiState?(request: WriteAppUiStateRequestDto): Promise<AppUiStateResponseDto>
   readProjectUiState?(request: ReadProjectUiStateRequestDto): Promise<ProjectUiStateResponseDto>
@@ -2122,6 +2134,17 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
     return invokeTyped(COMMANDS.removeProject, listProjectsResponseSchema, {
       request: { projectId },
     })
+  },
+
+  wipeProjectData(request) {
+    const parsed = wipeProjectDataRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.wipeProjectData, wipeProjectDataResponseSchema, {
+      request: parsed,
+    })
+  },
+
+  wipeAllXeroData() {
+    return invokeTyped(COMMANDS.wipeAllXeroData, wipeAllDataResponseSchema)
   },
 
   readAppUiState(request) {

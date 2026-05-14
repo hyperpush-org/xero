@@ -593,11 +593,13 @@ pub fn delete_agent_session(
     let existing =
         read_agent_session_row(&connection, &database_path, project_id, agent_session_id)?
             .ok_or_else(|| missing_agent_session_error(project_id, agent_session_id))?;
-    if existing.status != AgentSessionStatus::Archived {
+    let can_delete_active_blank_session =
+        is_blank_new_agent_session(&connection, &database_path, &existing)?;
+    if existing.status != AgentSessionStatus::Archived && !can_delete_active_blank_session {
         return Err(CommandError::user_fixable(
             "agent_session_not_archived",
             format!(
-                "Xero cannot permanently delete agent session `{agent_session_id}` for project `{project_id}` because it is not archived. Archive it first."
+                "Xero cannot permanently delete agent session `{agent_session_id}` for project `{project_id}` because it is not archived or a blank new session. Archive it first."
             ),
         ));
     }
@@ -632,7 +634,6 @@ pub fn delete_agent_session(
             DELETE FROM agent_sessions
             WHERE project_id = ?1
               AND agent_session_id = ?2
-              AND status = 'archived'
             "#,
             params![project_id, agent_session_id],
         )
@@ -669,6 +670,61 @@ pub fn delete_agent_session(
     }
 
     Ok(())
+}
+
+fn is_blank_new_agent_session(
+    connection: &Connection,
+    database_path: &Path,
+    session: &AgentSessionRecord,
+) -> Result<bool, CommandError> {
+    if session.status != AgentSessionStatus::Active
+        || !session
+            .title
+            .trim()
+            .eq_ignore_ascii_case(DEFAULT_AGENT_SESSION_TITLE)
+        || !session.summary.trim().is_empty()
+        || session.last_run_id.is_some()
+        || session.last_runtime_kind.is_some()
+        || session.last_provider_id.is_some()
+        || session.lineage.is_some()
+    {
+        return Ok(false);
+    }
+
+    let dependent_count: i64 = connection
+        .query_row(
+            r#"
+            SELECT
+                (SELECT COUNT(*)
+                 FROM runtime_runs
+                 WHERE project_id = ?1
+                   AND agent_session_id = ?2)
+              + (SELECT COUNT(*)
+                 FROM agent_runs
+                 WHERE project_id = ?1
+                   AND agent_session_id = ?2)
+              + (SELECT COUNT(*)
+                 FROM agent_session_lineage
+                 WHERE project_id = ?1
+                   AND child_agent_session_id = ?2)
+            "#,
+            params![
+                session.project_id.as_str(),
+                session.agent_session_id.as_str()
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_query_failed",
+                format!(
+                    "Xero could not inspect blank agent-session state in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    Ok(dependent_count == 0)
 }
 
 fn prepare_code_history_for_agent_session_delete(
@@ -1497,6 +1553,84 @@ mod tests {
         )
         .expect("read deleted session");
         assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn deleting_active_blank_new_session_creates_selected_replacement() {
+        let project = import_test_project();
+        force_archive_session(
+            &project.database_path,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+            "2026-04-15T21:00:00Z",
+        );
+        let blank = create_agent_session(
+            &project.repo_root,
+            &AgentSessionCreateRecord {
+                project_id: project.project_id.clone(),
+                title: DEFAULT_AGENT_SESSION_TITLE.into(),
+                summary: String::new(),
+                selected: true,
+            },
+        )
+        .expect("create blank new session");
+
+        delete_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            &blank.agent_session_id,
+        )
+        .expect("delete active blank default session");
+
+        let active = list_agent_sessions(&project.repo_root, &project.project_id, false)
+            .expect("list active sessions");
+        assert_eq!(active.len(), 1);
+        let replacement = &active[0];
+        assert_ne!(replacement.agent_session_id, blank.agent_session_id);
+        assert_eq!(replacement.title, DEFAULT_AGENT_SESSION_TITLE);
+        assert_eq!(replacement.status, AgentSessionStatus::Active);
+        assert!(replacement.selected);
+
+        let deleted = get_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            &blank.agent_session_id,
+        )
+        .expect("read deleted session");
+        assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn deleting_active_nonblank_session_still_requires_archive() {
+        let project = import_test_project();
+
+        update_agent_session(
+            &project.repo_root,
+            &AgentSessionUpdateRecord {
+                project_id: project.project_id.clone(),
+                agent_session_id: DEFAULT_AGENT_SESSION_ID.to_string(),
+                title: Some("Planned Work".into()),
+                summary: None,
+                selected: None,
+            },
+        )
+        .expect("rename default session");
+
+        let error = delete_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect_err("active renamed session should not be deleted");
+
+        assert_eq!(error.code, "agent_session_not_archived");
+        assert!(get_agent_session(
+            &project.repo_root,
+            &project.project_id,
+            DEFAULT_AGENT_SESSION_ID,
+        )
+        .expect("read preserved session")
+        .is_some());
     }
 
     #[test]

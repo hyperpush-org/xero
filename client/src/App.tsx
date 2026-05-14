@@ -116,6 +116,61 @@ const loadWorkflowsSidebar = () => import('@/components/xero/workflows-sidebar')
 const loadAgentDockSidebar = () => import('@/components/xero/agent-dock-sidebar')
 const loadTerminalSidebar = () => import('@/components/xero/terminal-sidebar')
 const loadStartTargetsDialog = () => import('@/components/xero/start-targets-dialog')
+const ACTIVE_VIEW_APP_STATE_KEY = 'app.activeView.v1'
+
+function normalizePersistedActiveView(value: unknown): View | null {
+  if (value === 'workflow') {
+    return 'phases'
+  }
+
+  if (value === 'agent') {
+    return 'agent'
+  }
+
+  if (value === 'editor') {
+    return 'execution'
+  }
+
+  return null
+}
+
+function persistedActiveViewValue(view: View): 'workflow' | 'agent' | 'editor' {
+  if (view === 'agent') {
+    return 'agent'
+  }
+
+  if (view === 'execution') {
+    return 'editor'
+  }
+
+  return 'workflow'
+}
+
+async function readPersistedActiveView(adapter: XeroDesktopAdapter): Promise<View | null> {
+  if (!adapter.readAppUiState) {
+    return null
+  }
+
+  try {
+    const response = await adapter.readAppUiState({
+      key: ACTIVE_VIEW_APP_STATE_KEY,
+    })
+    return normalizePersistedActiveView(response.value)
+  } catch {
+    return null
+  }
+}
+
+async function persistActiveView(adapter: XeroDesktopAdapter, view: View): Promise<void> {
+  if (!adapter.writeAppUiState) {
+    return
+  }
+
+  await adapter.writeAppUiState({
+    key: ACTIVE_VIEW_APP_STATE_KEY,
+    value: persistedActiveViewValue(view),
+  })
+}
 
 const warmedSurfaceChunks = new Set<SurfacePreloadTarget>()
 
@@ -944,6 +999,7 @@ function AppBootLoadingOverlay({ active }: { active: boolean }) {
 export function XeroApp({ adapter }: XeroAppProps) {
   const resolvedAdapter = adapter ?? DefaultXeroDesktopAdapter
   const [activeView, setActiveViewRaw] = useState<View>('phases')
+  const [activeViewHydrated, setActiveViewHydrated] = useState(() => !resolvedAdapter.readAppUiState)
 
   // Tab switches simultaneously trigger the cross-fade of view panes AND the
   // auto-collapse of the project rail / sessions sidebar (both via useEffect
@@ -968,6 +1024,43 @@ export function XeroApp({ adapter }: XeroAppProps) {
     cancelLayoutShiftGuardRef.current = startLayoutShiftGuard()
     setActiveViewRaw(view)
   }, [])
+
+  useEffect(() => {
+    if (!resolvedAdapter.readAppUiState) {
+      setActiveViewHydrated(true)
+      return
+    }
+
+    let disposed = false
+    setActiveViewHydrated(false)
+    void readPersistedActiveView(resolvedAdapter)
+      .then((view) => {
+        if (disposed || !view) {
+          return
+        }
+        setActiveView(view)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (disposed) {
+          return
+        }
+        setActiveViewHydrated(true)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [resolvedAdapter, setActiveView])
+
+  useEffect(() => {
+    if (!activeViewHydrated) {
+      return
+    }
+
+    void persistActiveView(resolvedAdapter, activeView).catch(() => undefined)
+  }, [activeView, activeViewHydrated, resolvedAdapter])
+
   useEffect(() => {
     return () => {
       cancelLayoutShiftGuardRef.current?.()
@@ -1905,6 +1998,25 @@ export function XeroApp({ adapter }: XeroAppProps) {
       repairProjectState: resolvedAdapter.repairProjectState.bind(resolvedAdapter),
     }
   }, [resolvedAdapter])
+  const dangerAdapter = useMemo(() => {
+    if (!resolvedAdapter.wipeProjectData || !resolvedAdapter.wipeAllXeroData) {
+      return null
+    }
+    const wipeProject = resolvedAdapter.wipeProjectData.bind(resolvedAdapter)
+    const wipeAll = resolvedAdapter.wipeAllXeroData.bind(resolvedAdapter)
+    return {
+      wipeProject: async (projectId: string) => {
+        const response = await wipeProject({ projectId })
+        void retry()
+        return response
+      },
+      wipeAll: async () => {
+        const response = await wipeAll()
+        void retry()
+        return response
+      },
+    }
+  }, [resolvedAdapter, retry])
   const workflowAgentCreateActive =
     activeView === 'phases' && agentAuthoringSession?.mode === 'create'
   const pendingAgentDockRuntimeAgentId: RuntimeAgentIdDto | null =
@@ -3079,7 +3191,11 @@ export function XeroApp({ adapter }: XeroAppProps) {
       }
     : null
   const shouldAutoOpenOnboarding = !onboardingDismissed && !isLoading && projects.length === 0
-  const showOnboarding = (onboardingOpen || shouldAutoOpenOnboarding) && !onboardingDismissed && !isLoading
+  const showOnboarding =
+    (onboardingOpen || shouldAutoOpenOnboarding) &&
+    !onboardingDismissed &&
+    !isLoading &&
+    activeViewHydrated
   const isForegroundProjectSelection = pendingProjectSelectionId !== null
   const pendingProjectSelectionName = pendingProjectSelectionId
     ? projects.find((project) => project.id === pendingProjectSelectionId)?.name ?? null
@@ -3094,16 +3210,18 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const isProjectSelectionShellPending =
     pendingProjectSelectionId !== null && activeProjectId !== pendingProjectSelectionId
   const startupSurfacePrewarm = useStartupSurfacePrewarm(
-    !showOnboarding && !isLoading && !isBlockingProjectLoading,
+    activeViewHydrated && !showOnboarding && !isLoading && !isBlockingProjectLoading,
   )
   useIdleSurfacePreloads(
-    !showOnboarding &&
+    activeViewHydrated &&
+      !showOnboarding &&
       !isLoading &&
       !isBlockingProjectLoading &&
       startupSurfacePrewarm.ready,
   )
   const showStartupSurfacePrewarm = !startupSurfacePrewarm.ready
   const showAppBootLoading = !showOnboarding && (
+    !activeViewHydrated ||
     isLoading ||
     isBlockingProjectLoading ||
     showStartupSurfacePrewarm
@@ -3511,6 +3629,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onToolCallGroupingPreferenceChange={handleToolCallGroupingPreferenceChange}
                 memoryReviewAdapter={memoryReviewAdapter}
                 projectStateAdapter={projectStateAdapter}
+                dangerAdapter={dangerAdapter}
+                projects={projects}
                 projectStartTargets={activeProjectStartTargets}
                 onUpdateProjectStartTargets={handleUpdateProjectStartTargets}
                 resolveProjectRunnerSuggestRequest={resolveProjectRunnerSuggestRequest}

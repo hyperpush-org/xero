@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    env,
+    env, fs,
     io::Read,
     process::{Child, Command},
     sync::{
@@ -12,10 +12,11 @@ use std::{
 };
 
 use super::{
-    policy::{CommandPolicyDecision, PreparedCommandRequest},
+    policy::{command_tool_scope_escalation, CommandPolicyDecision, PreparedCommandRequest},
     repo_scope::display_relative_or_root,
-    AutonomousCommandOutput, AutonomousCommandOutputChunk, AutonomousCommandPolicyOutcome,
-    AutonomousCommandPolicyTrace, AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
+    AutonomousCommandOutput, AutonomousCommandOutputArtifact, AutonomousCommandOutputChunk,
+    AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
+    AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
     AutonomousCommandSessionOutput, AutonomousCommandSessionReadRequest,
     AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
     AutonomousCommandSessionStream, AutonomousToolCommandResult, AutonomousToolOutput,
@@ -25,9 +26,12 @@ use super::{
 };
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::{
-    commands::{CommandError, CommandResult},
+    commands::{CommandError, CommandResult, RepositoryStatusEntryDto},
+    db::project_app_data_dir_for_repo,
+    git::status,
     runtime::{
         cancelled_error,
         process_tree::{cleanup_process_group_after_root_exit, terminate_process_tree},
@@ -53,6 +57,7 @@ const MAX_COMMAND_SESSION_READ_BYTES: usize = 64 * 1024;
 const MAX_COMMAND_SESSIONS: usize = 8;
 const MAX_COMMAND_SESSION_STORED_CHUNKS: usize = 512;
 const MAX_COMMAND_SESSION_STORED_BYTES: usize = 1024 * 1024;
+const MAX_COMMAND_CHANGED_FILES: usize = 32;
 pub(super) const SAFE_COMMAND_ENV_KEYS: &[&str] = &[
     "PATH",
     "HOME",
@@ -408,72 +413,85 @@ impl AutonomousToolRuntime {
         self.command_with_approval(request, true)
     }
 
-    pub(crate) fn command_with_output_callback(
-        &self,
-        request: super::AutonomousCommandRequest,
-        on_chunk: impl FnMut(&AutonomousCommandOutputChunk),
-    ) -> CommandResult<AutonomousToolResult> {
-        self.command_with_approval_and_output_callback(request, false, on_chunk)
-    }
-
-    pub(crate) fn command_with_operator_approval_and_output_callback(
-        &self,
-        request: super::AutonomousCommandRequest,
-        on_chunk: impl FnMut(&AutonomousCommandOutputChunk),
-    ) -> CommandResult<AutonomousToolResult> {
-        self.command_with_approval_and_output_callback(request, true, on_chunk)
-    }
-
     fn command_with_approval(
         &self,
         request: super::AutonomousCommandRequest,
         operator_approved: bool,
     ) -> CommandResult<AutonomousToolResult> {
-        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+        self.command_with_approval_for_tool(AUTONOMOUS_TOOL_COMMAND, request, operator_approved)
+    }
+
+    pub(crate) fn command_with_approval_for_tool(
+        &self,
+        tool_name: &str,
+        request: super::AutonomousCommandRequest,
+        operator_approved: bool,
+    ) -> CommandResult<AutonomousToolResult> {
+        let decision = self.command_policy_decision_for_tool(tool_name, request)?;
 
         match decision {
             CommandPolicyDecision::Allow { prepared, policy } => {
-                self.spawn_command(prepared, policy)
+                self.spawn_command(tool_name, prepared, policy)
             }
             CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
                 let policy = operator_approved_policy(policy, &prepared.argv);
-                self.spawn_command(prepared, policy)
+                self.spawn_command(tool_name, prepared, policy)
             }
             CommandPolicyDecision::Escalate { prepared, policy } => {
-                self.unspawned_command_approval_result(prepared, policy)
+                self.unspawned_command_approval_result(tool_name, prepared, policy)
             }
         }
     }
 
-    fn command_with_approval_and_output_callback(
+    pub(crate) fn command_with_approval_and_output_callback_for_tool(
         &self,
+        tool_name: &str,
         request: super::AutonomousCommandRequest,
         operator_approved: bool,
-        mut on_chunk: impl FnMut(&AutonomousCommandOutputChunk),
+        on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
     ) -> CommandResult<AutonomousToolResult> {
-        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+        let decision = self.command_policy_decision_for_tool(tool_name, request)?;
 
         match decision {
             CommandPolicyDecision::Allow { prepared, policy } => {
-                self.spawn_command_streaming(prepared, policy, &mut on_chunk)
+                self.spawn_command_streaming(tool_name, prepared, policy, on_chunk)
             }
             CommandPolicyDecision::Escalate { prepared, policy } if operator_approved => {
                 let policy = operator_approved_policy(policy, &prepared.argv);
-                self.spawn_command_streaming(prepared, policy, &mut on_chunk)
+                self.spawn_command_streaming(tool_name, prepared, policy, on_chunk)
             }
             CommandPolicyDecision::Escalate { prepared, policy } => {
-                self.unspawned_command_approval_result(prepared, policy)
+                self.unspawned_command_approval_result(tool_name, prepared, policy)
             }
         }
+    }
+
+    fn command_policy_decision_for_tool(
+        &self,
+        tool_name: &str,
+        request: super::AutonomousCommandRequest,
+    ) -> CommandResult<CommandPolicyDecision> {
+        let decision = self.evaluate_command_policy(self.prepare_command_request(request)?)?;
+        Ok(match decision {
+            CommandPolicyDecision::Allow { prepared, policy } => {
+                if let Some(policy) = command_tool_scope_escalation(tool_name, &prepared, &policy) {
+                    CommandPolicyDecision::Escalate { prepared, policy }
+                } else {
+                    CommandPolicyDecision::Allow { prepared, policy }
+                }
+            }
+            escalated @ CommandPolicyDecision::Escalate { .. } => escalated,
+        })
     }
 
     fn spawn_command(
         &self,
+        tool_name: &str,
         prepared: PreparedCommandRequest,
         policy: AutonomousCommandPolicyTrace,
     ) -> CommandResult<AutonomousToolResult> {
         let sandbox_metadata = self.command_sandbox_metadata(
-            AUTONOMOUS_TOOL_COMMAND,
+            tool_name,
             &prepared,
             sandbox_approval_source_for_policy(&policy),
         )?;
@@ -516,8 +534,37 @@ impl AutonomousToolRuntime {
             sandbox_output.stderr_truncated,
             self.limits.max_command_excerpt_chars,
         );
+        let stdout_bytes = sandbox_output
+            .stdout
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes();
+        let stderr_bytes = sandbox_output
+            .stderr
+            .as_deref()
+            .unwrap_or_default()
+            .as_bytes();
 
         let exit_code = sandbox_output.exit_code;
+        let output_artifact = self.command_output_artifact_if_needed(
+            tool_name,
+            &prepared,
+            stdout_bytes,
+            stderr_bytes,
+            &stdout_excerpt,
+            &stderr_excerpt,
+            exit_code,
+        )?;
+        let (changed_files, changed_files_truncated) = self.changed_files_after_command();
+        let suggested_next_actions = command_suggested_next_actions(
+            true,
+            exit_code,
+            &policy,
+            stdout_excerpt.truncated || stderr_excerpt.truncated,
+            output_artifact.as_ref(),
+            changed_files.len(),
+            changed_files_truncated,
+        );
         let command_result = AutonomousToolCommandResult {
             exit_code,
             timed_out: false,
@@ -546,12 +593,13 @@ impl AutonomousToolRuntime {
         };
 
         Ok(AutonomousToolResult {
-            tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+            tool_name: tool_name.into(),
             summary,
             command_result: Some(command_result),
             output: AutonomousToolOutput::Command(AutonomousCommandOutput {
                 argv: redact_command_argv_for_persistence(&prepared.argv),
                 cwd: display_relative_or_root(&self.repo_root, &prepared.cwd),
+                intent: command_intent_label(&policy).into(),
                 stdout: stdout_excerpt.text,
                 stderr: stderr_excerpt.text,
                 stdout_truncated: stdout_excerpt.truncated,
@@ -562,6 +610,10 @@ impl AutonomousToolRuntime {
                 timed_out: false,
                 spawned: true,
                 policy,
+                changed_files,
+                changed_files_truncated,
+                output_artifact,
+                suggested_next_actions,
                 sandbox: Some(sandbox_output.metadata),
             }),
         })
@@ -569,12 +621,13 @@ impl AutonomousToolRuntime {
 
     fn spawn_command_streaming(
         &self,
+        tool_name: &str,
         prepared: PreparedCommandRequest,
         policy: AutonomousCommandPolicyTrace,
         on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
     ) -> CommandResult<AutonomousToolResult> {
         let sandbox_metadata = self.command_sandbox_metadata(
-            AUTONOMOUS_TOOL_COMMAND,
+            tool_name,
             &prepared,
             sandbox_approval_source_for_policy(&policy),
         )?;
@@ -719,6 +772,25 @@ impl AutonomousToolRuntime {
             stderr_capture.truncated,
             self.limits.max_command_excerpt_chars,
         );
+        let output_artifact = self.command_output_artifact_if_needed(
+            tool_name,
+            &prepared,
+            &stdout_capture.bytes,
+            &stderr_capture.bytes,
+            &stdout_excerpt,
+            &stderr_excerpt,
+            exit_code,
+        )?;
+        let (changed_files, changed_files_truncated) = self.changed_files_after_command();
+        let suggested_next_actions = command_suggested_next_actions(
+            true,
+            exit_code,
+            &policy,
+            stdout_excerpt.truncated || stderr_excerpt.truncated,
+            output_artifact.as_ref(),
+            changed_files.len(),
+            changed_files_truncated,
+        );
         let command_result = AutonomousToolCommandResult {
             exit_code,
             timed_out: false,
@@ -747,12 +819,13 @@ impl AutonomousToolRuntime {
         };
 
         Ok(AutonomousToolResult {
-            tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+            tool_name: tool_name.into(),
             summary,
             command_result: Some(command_result),
             output: AutonomousToolOutput::Command(AutonomousCommandOutput {
                 argv: redact_command_argv_for_persistence(&prepared.argv),
                 cwd: display_relative_or_root(&self.repo_root, &prepared.cwd),
+                intent: command_intent_label(&policy).into(),
                 stdout: stdout_excerpt.text,
                 stderr: stderr_excerpt.text,
                 stdout_truncated: stdout_excerpt.truncated,
@@ -763,6 +836,10 @@ impl AutonomousToolRuntime {
                 timed_out: false,
                 spawned: true,
                 policy,
+                changed_files,
+                changed_files_truncated,
+                output_artifact,
+                suggested_next_actions,
                 sandbox: Some(sandboxed_process.metadata),
             }),
         })
@@ -770,6 +847,7 @@ impl AutonomousToolRuntime {
 
     fn unspawned_command_approval_result(
         &self,
+        tool_name: &str,
         prepared: PreparedCommandRequest,
         policy: AutonomousCommandPolicyTrace,
     ) -> CommandResult<AutonomousToolResult> {
@@ -782,9 +860,11 @@ impl AutonomousToolRuntime {
             "Command `{}` requires operator review before Xero can run it.",
             render_command_for_summary(&prepared.argv)
         );
+        let suggested_next_actions =
+            command_suggested_next_actions(false, None, &policy, false, None, 0, false);
 
         Ok(AutonomousToolResult {
-            tool_name: AUTONOMOUS_TOOL_COMMAND.into(),
+            tool_name: tool_name.into(),
             summary: summary.clone(),
             command_result: Some(AutonomousToolCommandResult {
                 exit_code: None,
@@ -795,6 +875,7 @@ impl AutonomousToolRuntime {
             output: AutonomousToolOutput::Command(AutonomousCommandOutput {
                 argv: redact_command_argv_for_persistence(&prepared.argv),
                 cwd,
+                intent: command_intent_label(&policy).into(),
                 stdout: None,
                 stderr: None,
                 stdout_truncated: false,
@@ -805,9 +886,101 @@ impl AutonomousToolRuntime {
                 timed_out: false,
                 spawned: false,
                 policy,
+                changed_files: Vec::new(),
+                changed_files_truncated: false,
+                output_artifact: None,
+                suggested_next_actions,
                 sandbox: None,
             }),
         })
+    }
+
+    fn changed_files_after_command(&self) -> (Vec<RepositoryStatusEntryDto>, bool) {
+        let Ok(response) = status::load_repository_status_from_root(&self.repo_root) else {
+            return (Vec::new(), false);
+        };
+        let total = response.entries.len();
+        let mut entries = response
+            .entries
+            .into_iter()
+            .take(MAX_COMMAND_CHANGED_FILES)
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        (entries, total > MAX_COMMAND_CHANGED_FILES)
+    }
+
+    fn command_output_artifact_if_needed(
+        &self,
+        tool_name: &str,
+        prepared: &PreparedCommandRequest,
+        stdout_bytes: &[u8],
+        stderr_bytes: &[u8],
+        stdout_excerpt: &SanitizedCommandOutput,
+        stderr_excerpt: &SanitizedCommandOutput,
+        exit_code: Option<i32>,
+    ) -> CommandResult<Option<AutonomousCommandOutputArtifact>> {
+        let stdout_needs_artifact =
+            stdout_excerpt.truncated || stdout_bytes.len() > self.limits.max_command_excerpt_chars;
+        let stderr_needs_artifact =
+            stderr_excerpt.truncated || stderr_bytes.len() > self.limits.max_command_excerpt_chars;
+        if !stdout_needs_artifact && !stderr_needs_artifact {
+            return Ok(None);
+        }
+
+        let redacted = stdout_excerpt.redacted || stderr_excerpt.redacted;
+        let payload = json!({
+            "schema": "xero.command_output_artifact.v1",
+            "toolName": tool_name,
+            "argv": redact_command_argv_for_persistence(&prepared.argv),
+            "cwd": display_relative_or_root(&self.repo_root, &prepared.cwd),
+            "exitCode": exit_code,
+            "stdoutTruncated": stdout_excerpt.truncated,
+            "stderrTruncated": stderr_excerpt.truncated,
+            "stdoutRedacted": stdout_excerpt.redacted,
+            "stderrRedacted": stderr_excerpt.redacted,
+            "stdoutBytes": stdout_bytes.len(),
+            "stderrBytes": stderr_bytes.len(),
+            "stdout": command_artifact_stream_text(stdout_bytes, stdout_excerpt),
+            "stderr": command_artifact_stream_text(stderr_bytes, stderr_excerpt),
+        });
+        let bytes = serde_json::to_vec_pretty(&payload).map_err(|error| {
+            CommandError::system_fault(
+                "autonomous_tool_command_artifact_failed",
+                format!("Xero could not serialize command output artifact: {error}"),
+            )
+        })?;
+        let digest = sha256_hex(&bytes);
+        let artifact_dir = project_app_data_dir_for_repo(&self.repo_root)
+            .join("tool-artifacts")
+            .join("command");
+        fs::create_dir_all(&artifact_dir).map_err(|error| {
+            CommandError::system_fault(
+                "autonomous_tool_command_artifact_failed",
+                format!(
+                    "Xero could not create command artifact directory {}: {error}",
+                    artifact_dir.display()
+                ),
+            )
+        })?;
+        let artifact_path = artifact_dir.join(format!("output-{digest}.json"));
+        fs::write(&artifact_path, &bytes).map_err(|error| {
+            CommandError::system_fault(
+                "autonomous_tool_command_artifact_failed",
+                format!(
+                    "Xero could not write command artifact {}: {error}",
+                    artifact_path.display()
+                ),
+            )
+        })?;
+
+        Ok(Some(AutonomousCommandOutputArtifact {
+            path: artifact_path.to_string_lossy().into_owned(),
+            byte_count: bytes.len(),
+            stdout_bytes: stdout_bytes.len(),
+            stderr_bytes: stderr_bytes.len(),
+            redacted,
+            truncated: stdout_excerpt.truncated || stderr_excerpt.truncated,
+        }))
     }
 }
 
@@ -1402,6 +1575,58 @@ fn command_result_summary(argv: &[String], exit_code: Option<i32>) -> String {
     }
 }
 
+fn command_intent_label(policy: &AutonomousCommandPolicyTrace) -> &'static str {
+    match policy.profile {
+        AutonomousCommandPolicyProfile::ReadOnlyVerification => "read_only_verification",
+        AutonomousCommandPolicyProfile::GeneratedFileMutation => "generated_file_mutation",
+        AutonomousCommandPolicyProfile::DependencyInstallation => "dependency_installation",
+        AutonomousCommandPolicyProfile::ExternalNetwork => "external_network",
+        AutonomousCommandPolicyProfile::DestructiveOperation => "destructive_operation",
+        AutonomousCommandPolicyProfile::GeneralExecution => "general_execution",
+    }
+}
+
+fn command_suggested_next_actions(
+    spawned: bool,
+    exit_code: Option<i32>,
+    policy: &AutonomousCommandPolicyTrace,
+    stream_truncated: bool,
+    output_artifact: Option<&AutonomousCommandOutputArtifact>,
+    changed_file_count: usize,
+    changed_files_truncated: bool,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if !spawned {
+        actions.push(
+            "Request operator approval or choose a narrower native tool before retrying.".into(),
+        );
+        return actions;
+    }
+    if !matches!(exit_code, Some(0)) {
+        actions.push(
+            "Use the compact stdout/stderr evidence to fix the failure, then rerun a focused command_verify.".into(),
+        );
+    }
+    if output_artifact.is_some() || stream_truncated {
+        actions.push(
+            "Use outputArtifact.path as the continuation for captured stdout/stderr details if the compact stream is insufficient.".into(),
+        );
+    }
+    if changed_file_count > 0 || changed_files_truncated {
+        actions.push(
+            "Inspect changedFiles with git_diff or targeted native reads before summarizing repository effects.".into(),
+        );
+    } else if matches!(
+        policy.profile,
+        AutonomousCommandPolicyProfile::GeneratedFileMutation
+    ) {
+        actions.push(
+            "Run git_status before assuming the build command left no generated output.".into(),
+        );
+    }
+    actions
+}
+
 fn exit_classification_from_code(exit_code: Option<i32>) -> SandboxExitClassification {
     match exit_code {
         Some(0) => SandboxExitClassification::Success,
@@ -1448,11 +1673,35 @@ fn sanitize_command_output(
         };
     }
 
+    let excerpt_truncated = trimmed.chars().count() > excerpt_chars;
     SanitizedCommandOutput {
         text: Some(truncate_chars(trimmed, excerpt_chars)),
-        truncated,
+        truncated: truncated || excerpt_truncated,
         redacted: false,
     }
+}
+
+fn command_artifact_stream_text(bytes: &[u8], excerpt: &SanitizedCommandOutput) -> Option<String> {
+    if bytes.is_empty() {
+        return None;
+    }
+    if excerpt.redacted {
+        return Some(REDACTED_COMMAND_OUTPUT_SUMMARY.into());
+    }
+    let decoded = String::from_utf8_lossy(bytes).into_owned();
+    let collapsed = decoded.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {

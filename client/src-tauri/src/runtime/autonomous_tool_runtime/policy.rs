@@ -12,7 +12,7 @@ use super::{
     AutonomousProjectContextAction, AutonomousSafetyApprovalGrant, AutonomousSafetyPolicyAction,
     AutonomousSafetyPolicyDecision, AutonomousSystemDiagnosticsAction,
     AutonomousSystemDiagnosticsPolicyTrace, AutonomousToolRequest, AutonomousToolRuntime,
-    DEFAULT_COMMAND_TIMEOUT_MS,
+    AUTONOMOUS_TOOL_COMMAND_PROBE, AUTONOMOUS_TOOL_COMMAND_VERIFY, DEFAULT_COMMAND_TIMEOUT_MS,
 };
 use crate::commands::{
     validate_non_empty, CommandError, CommandErrorClass, CommandResult, RuntimeRunApprovalModeDto,
@@ -107,7 +107,7 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let command_decision = command_family_policy_decision(self, request)?;
+        let command_decision = command_family_policy_decision(self, tool_name, request)?;
         if let Some((action, code, explanation)) = command_decision {
             return Ok(safety_decision(action, code, explanation, &context));
         }
@@ -373,6 +373,11 @@ fn safety_policy_metadata(request: &AutonomousToolRequest) -> SafetyPolicyMetada
         AutonomousToolRequest::Edit(_)
         | AutonomousToolRequest::Write(_)
         | AutonomousToolRequest::Patch(_)
+        | AutonomousToolRequest::Copy(_)
+        | AutonomousToolRequest::FsTransaction(_)
+        | AutonomousToolRequest::JsonEdit(_)
+        | AutonomousToolRequest::TomlEdit(_)
+        | AutonomousToolRequest::YamlEdit(_)
         | AutonomousToolRequest::Delete(_)
         | AutonomousToolRequest::Rename(_)
         | AutonomousToolRequest::Mkdir(_)
@@ -521,6 +526,7 @@ fn mcp_action_is_observe(action: AutonomousMcpAction) -> bool {
 
 fn command_family_policy_decision(
     runtime: &AutonomousToolRuntime,
+    tool_name: &str,
     request: &AutonomousToolRequest,
 ) -> CommandResult<Option<(AutonomousSafetyPolicyAction, String, String)>> {
     let command_request = match request {
@@ -554,17 +560,129 @@ fn command_family_policy_decision(
     };
     let prepared = runtime.prepare_command_request(command_request)?;
     Ok(Some(match runtime.evaluate_command_policy(prepared)? {
-        CommandPolicyDecision::Allow { policy, .. } => (
-            AutonomousSafetyPolicyAction::Allow,
-            policy.code,
-            policy.reason,
-        ),
+        CommandPolicyDecision::Allow { prepared, policy } => {
+            if let Some(policy) = command_tool_scope_escalation(tool_name, &prepared, &policy) {
+                (
+                    AutonomousSafetyPolicyAction::RequireApproval,
+                    policy.code,
+                    policy.reason,
+                )
+            } else {
+                (
+                    AutonomousSafetyPolicyAction::Allow,
+                    policy.code,
+                    policy.reason,
+                )
+            }
+        }
         CommandPolicyDecision::Escalate { policy, .. } => (
             AutonomousSafetyPolicyAction::RequireApproval,
             policy.code,
             policy.reason,
         ),
     }))
+}
+
+pub(super) fn command_tool_scope_escalation(
+    tool_name: &str,
+    prepared: &PreparedCommandRequest,
+    policy: &AutonomousCommandPolicyTrace,
+) -> Option<AutonomousCommandPolicyTrace> {
+    match tool_name {
+        AUTONOMOUS_TOOL_COMMAND_PROBE if !command_probe_allows(prepared, policy) => {
+            Some(policy_trace(
+                AutonomousCommandPolicyOutcome::Escalated,
+                policy.approval_mode.clone(),
+                policy.profile,
+                "policy_escalated_command_probe_scope",
+                format!(
+                    "Xero requires operator review for command_probe `{}` because probes are limited to read-only repository discovery commands.",
+                    render_command_for_persistence(&prepared.argv)
+                ),
+            ))
+        }
+        AUTONOMOUS_TOOL_COMMAND_VERIFY if !command_verify_allows(prepared, policy) => {
+            Some(policy_trace(
+                AutonomousCommandPolicyOutcome::Escalated,
+                policy.approval_mode.clone(),
+                policy.profile,
+                "policy_escalated_command_verify_scope",
+                format!(
+                    "Xero requires operator review for command_verify `{}` because verification is limited to known test, lint, typecheck, build, format, and check commands.",
+                    render_command_for_persistence(&prepared.argv)
+                ),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn command_probe_allows(
+    prepared: &PreparedCommandRequest,
+    policy: &AutonomousCommandPolicyTrace,
+) -> bool {
+    if policy.profile != AutonomousCommandPolicyProfile::ReadOnlyVerification {
+        return false;
+    }
+    let program = executable_name(&prepared.argv[0]);
+    match program {
+        "pwd" | "ls" | "dir" | "echo" | "cat" | "type" | "head" | "tail" | "grep" | "rg" => true,
+        "find" => !prepared.argv.iter().any(|argument| argument == "-delete"),
+        "git" => git_subcommand(&prepared.argv).is_some_and(|subcommand| {
+            matches!(
+                subcommand,
+                "status" | "diff" | "log" | "show" | "rev-parse" | "grep" | "ls-files"
+            )
+        }),
+        "cargo" => git_subcommand(&prepared.argv)
+            .is_some_and(|subcommand| matches!(subcommand, "metadata" | "tree")),
+        _ => false,
+    }
+}
+
+fn command_verify_allows(
+    prepared: &PreparedCommandRequest,
+    policy: &AutonomousCommandPolicyTrace,
+) -> bool {
+    if !matches!(
+        policy.profile,
+        AutonomousCommandPolicyProfile::ReadOnlyVerification
+            | AutonomousCommandPolicyProfile::GeneratedFileMutation
+    ) {
+        return false;
+    }
+    let program = executable_name(&prepared.argv[0]);
+    match program {
+        "cargo" => git_subcommand(&prepared.argv).is_some_and(|subcommand| {
+            matches!(
+                subcommand,
+                "build" | "check" | "clippy" | "doc" | "fmt" | "test"
+            )
+        }),
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            git_subcommand(&prepared.argv).is_some_and(|subcommand| {
+                matches!(
+                    subcommand,
+                    "test"
+                        | "tests"
+                        | "lint"
+                        | "typecheck"
+                        | "check"
+                        | "build"
+                        | "run"
+                        | "run-script"
+                )
+            })
+        }
+        _ => false,
+    }
+}
+
+fn git_subcommand(argv: &[String]) -> Option<&str> {
+    argv.iter()
+        .skip(1)
+        .find(|argument| !argument.starts_with('-'))
+        .map(String::as_str)
 }
 
 struct SafetyDecisionContext<'a> {
@@ -655,6 +773,10 @@ fn repo_path_escape(request: &AutonomousToolRequest) -> Option<String> {
 fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
     match request {
         AutonomousToolRequest::Read(request) if !request.system_path => vec![request.path.as_str()],
+        AutonomousToolRequest::ReadMany(request) => {
+            request.paths.iter().map(String::as_str).collect()
+        }
+        AutonomousToolRequest::Stat(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Search(request) => {
             optional_repo_relative_path(request.path.as_deref())
         }
@@ -664,6 +786,10 @@ fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
         AutonomousToolRequest::List(request) => {
             optional_repo_relative_path(request.path.as_deref())
         }
+        AutonomousToolRequest::ListTree(request) => {
+            optional_repo_relative_path(request.path.as_deref())
+        }
+        AutonomousToolRequest::DirectoryDigest(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Hash(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Write(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Edit(request) => vec![request.path.as_str()],
@@ -677,6 +803,25 @@ fn repo_relative_paths(request: &AutonomousToolRequest) -> Vec<&str> {
             );
             paths
         }
+        AutonomousToolRequest::Copy(request) => vec![request.from.as_str(), request.to.as_str()],
+        AutonomousToolRequest::FsTransaction(request) => request
+            .operations
+            .iter()
+            .flat_map(|operation| {
+                [
+                    operation.path.as_deref(),
+                    operation.from.as_deref(),
+                    operation.to.as_deref(),
+                    operation.from_path.as_deref(),
+                    operation.to_path.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+            })
+            .collect(),
+        AutonomousToolRequest::JsonEdit(request)
+        | AutonomousToolRequest::TomlEdit(request)
+        | AutonomousToolRequest::YamlEdit(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Delete(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Rename(request) => {
             vec![request.from_path.as_str(), request.to_path.as_str()]
@@ -1621,6 +1766,10 @@ mod tests {
         let request = AutonomousToolRequest::Write(super::super::AutonomousWriteRequest {
             path: "../outside.txt".into(),
             content: "hello".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
         });
 
         let decision = runtime
@@ -1645,6 +1794,10 @@ mod tests {
             let request = AutonomousToolRequest::List(super::super::AutonomousListRequest {
                 path: Some(path.into()),
                 max_depth: Some(2),
+                max_results: None,
+                sort_by: None,
+                sort_direction: None,
+                cursor: None,
             });
 
             let decision = runtime
@@ -1686,6 +1839,45 @@ mod tests {
             AutonomousSafetyPolicyAction::RequireApproval
         );
         assert_eq!(decision.code, "policy_escalated_approval_mode");
+    }
+
+    #[test]
+    fn safety_policy_keeps_command_probe_readonly_and_verify_scoped() {
+        let tempdir = tempdir().expect("tempdir");
+        let runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
+        let probe_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["cargo".into(), "test".into()],
+            cwd: None,
+            timeout_ms: None,
+        });
+
+        let probe_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_PROBE,
+                &json!({"argv": ["cargo", "test"]}),
+                &probe_request,
+                false,
+                "input-hash",
+            )
+            .expect("probe policy");
+
+        assert_eq!(
+            probe_decision.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
+        assert_eq!(probe_decision.code, "policy_escalated_command_probe_scope");
+
+        let verify_decision = runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["cargo", "test"]}),
+                &probe_request,
+                false,
+                "input-hash",
+            )
+            .expect("verify policy");
+
+        assert_eq!(verify_decision.action, AutonomousSafetyPolicyAction::Allow);
     }
 
     fn prepared_command<const N: usize>(cwd: &Path, argv: [&str; N]) -> PreparedCommandRequest {

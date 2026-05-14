@@ -3,13 +3,18 @@ import { AlertTriangle, ArrowUpRight, Github, Loader2, LogOut } from "lucide-rea
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
 import type {
   GitHubAuthError,
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
 import { SectionHeader } from "./section-header"
+import { SubHeading } from "./_shared"
+import {
+  AccountDangerZone,
+  type DangerSettingsAdapter,
+  type DangerZoneProject,
+} from "./account-danger-zone"
 
 export interface AccountSectionProps {
   session: GitHubSessionView | null
@@ -17,6 +22,9 @@ export interface AccountSectionProps {
   error: GitHubAuthError | null
   onLogin: () => void
   onLogout: () => void
+  dangerAdapter?: DangerSettingsAdapter | null
+  dangerProjects?: DangerZoneProject[]
+  activeProjectId?: string | null
 }
 
 export function AccountSection({
@@ -25,6 +33,9 @@ export function AccountSection({
   error,
   onLogin,
   onLogout,
+  dangerAdapter = null,
+  dangerProjects = [],
+  activeProjectId = null,
 }: AccountSectionProps) {
   const authenticating = status === "authenticating"
   const loading = status === "loading"
@@ -33,20 +44,32 @@ export function AccountSection({
     <div className="flex flex-col gap-7">
       <SectionHeader
         title="Account"
-        description="Sign in with GitHub to associate your identity with this Xero install. The OAuth handshake happens on the Xero server — sign-in is optional."
+        description="Manage the identity tied to this Xero install and the destructive controls scoped to your local data."
       />
 
-      {session ? (
-        <ConnectedCard session={session} onLogout={onLogout} loading={loading} />
-      ) : (
-        <SignInCard
-          onLogin={onLogin}
-          authenticating={authenticating}
-          loading={loading}
-        />
-      )}
+      <div className="flex flex-col gap-3">
+        <SubHeading>Identity</SubHeading>
+        <p className="text-[12px] leading-[1.5] text-muted-foreground">
+          Sign in with GitHub to associate your identity with this Xero install. The OAuth
+          handshake happens on the Xero server — sign-in is optional.
+        </p>
+        {session ? (
+          <ConnectedCard session={session} onLogout={onLogout} loading={loading} />
+        ) : (
+          <SignInCard
+            onLogin={onLogin}
+            authenticating={authenticating}
+            loading={loading}
+          />
+        )}
+        {error ? <ErrorCallout error={error} /> : null}
+      </div>
 
-      {error ? <ErrorCallout error={error} /> : null}
+      <AccountDangerZone
+        projects={dangerProjects}
+        activeProjectId={activeProjectId}
+        adapter={dangerAdapter}
+      />
     </div>
   )
 }
@@ -73,10 +96,7 @@ function ConnectedCard({
       </Avatar>
 
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <p className="truncate text-[12.5px] font-semibold text-foreground">{displayName}</p>
-          <StatusPill tone="success" label="Connected" />
-        </div>
+        <p className="truncate text-[12.5px] font-semibold text-foreground">{displayName}</p>
         <p className="truncate text-[11.5px] text-muted-foreground">
           @{session.user.login}
           {session.user.email ? (
@@ -157,26 +177,6 @@ function ErrorCallout({ error }: { error: GitHubAuthError }) {
       <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
       <span>{error.message}</span>
     </div>
-  )
-}
-
-function StatusPill({ tone, label }: { tone: "success"; label: string }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-[0.08em]",
-        tone === "success" && "bg-success/10 text-success dark:text-success",
-      )}
-    >
-      <span
-        className={cn(
-          "size-1.5 rounded-full",
-          tone === "success" && "bg-success dark:bg-success",
-        )}
-        aria-hidden
-      />
-      {label}
-    </span>
   )
 }
 

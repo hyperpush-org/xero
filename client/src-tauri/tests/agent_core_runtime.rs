@@ -1264,6 +1264,9 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .collect::<BTreeSet<_>>();
     let mut expected_names = BTreeSet::from([
         "read",
+        "read_many",
+        "result_page",
+        "stat",
         "search",
         "find",
         "git_status",
@@ -1279,10 +1282,17 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "edit",
         "write",
         "patch",
+        "copy",
+        "fs_transaction",
+        "json_edit",
+        "toml_edit",
+        "yaml_edit",
         "delete",
         "rename",
         "mkdir",
         "list",
+        "list_tree",
+        "directory_digest",
         "file_hash",
         "command_probe",
         "command_verify",
@@ -1356,6 +1366,53 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         find.input_schema["properties"]["maxDepth"]["type"],
         "integer"
     );
+    let read_many = registry
+        .descriptor("read_many")
+        .expect("read_many descriptor");
+    assert_eq!(read_many.input_schema["required"], json!(["paths"]));
+    assert_eq!(
+        read_many.input_schema["properties"]["paths"]["maxItems"],
+        json!(16)
+    );
+    assert_eq!(
+        read_many.input_schema["properties"]["maxTotalBytes"]["maximum"],
+        json!(512 * 1024)
+    );
+    let stat = registry.descriptor("stat").expect("stat descriptor");
+    assert_eq!(stat.input_schema["required"], json!(["path"]));
+    assert_eq!(
+        stat.input_schema["properties"]["path"]["maxLength"],
+        json!(4096)
+    );
+    assert_eq!(
+        stat.input_schema["properties"]["includeHash"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        read.input_schema["properties"]["lineCount"]["maximum"],
+        json!(400)
+    );
+    assert_eq!(
+        registry
+            .descriptor("search")
+            .expect("search descriptor")
+            .input_schema["properties"]["maxResults"]["maximum"],
+        json!(100)
+    );
+    let list_tree = registry
+        .descriptor("list_tree")
+        .expect("list_tree descriptor");
+    assert_eq!(
+        list_tree.input_schema["properties"]["maxEntries"]["maximum"],
+        json!(1000)
+    );
+    let directory_digest = registry
+        .descriptor("directory_digest")
+        .expect("directory_digest descriptor");
+    assert_eq!(
+        directory_digest.input_schema["properties"]["maxFiles"]["maximum"],
+        json!(5000)
+    );
 
     let git_diff = registry
         .descriptor("git_diff")
@@ -1373,6 +1430,12 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
             .as_str()
             .expect("tool access groups description")
             .contains("process_manager")
+    );
+    assert!(
+        !tool_access.input_schema["properties"]["groups"]["description"]
+            .as_str()
+            .expect("tool access groups description")
+            .contains("harness_runner")
     );
     let project_context_search = registry
         .descriptor("project_context_search")
@@ -1452,10 +1515,18 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .contains(&json!("screenshot")));
     assert!(registry.descriptor("solana_cluster").is_some());
     assert!(registry.descriptor("patch").is_some());
+    assert!(registry.descriptor("copy").is_some());
+    assert!(registry.descriptor("fs_transaction").is_some());
+    assert!(registry.descriptor("json_edit").is_some());
+    assert!(registry.descriptor("toml_edit").is_some());
+    assert!(registry.descriptor("yaml_edit").is_some());
     assert!(registry.descriptor("delete").is_some());
     assert!(registry.descriptor("rename").is_some());
     assert!(registry.descriptor("mkdir").is_some());
     assert!(registry.descriptor("list").is_some());
+    assert!(registry.descriptor("list_tree").is_some());
+    assert!(registry.descriptor("directory_digest").is_some());
+    assert!(registry.descriptor("stat").is_some());
     assert!(registry.descriptor("file_hash").is_some());
 
     registry
@@ -1467,11 +1538,71 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         .expect("valid read call should decode");
     registry
         .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-read-many".into(),
+            tool_name: "read_many".into(),
+            input: json!({ "paths": ["src/tracked.txt", "Cargo.toml"], "lineCount": 20 }),
+        })
+        .expect("valid read_many call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-stat".into(),
+            tool_name: "stat".into(),
+            input: json!({ "path": "src/tracked.txt", "includeHash": true }),
+        })
+        .expect("valid stat call should decode");
+    registry
+        .validate_call(&AgentToolCall {
             tool_call_id: "tool-call-valid-find-depth".into(),
             tool_name: "find".into(),
             input: json!({ "pattern": "**/*.rs", "path": ".", "maxDepth": 1 }),
         })
         .expect("valid depth-bounded find call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-list-tree".into(),
+            tool_name: "list_tree".into(),
+            input: json!({ "path": "src", "maxDepth": 2, "maxEntries": 20, "showOmitted": true }),
+        })
+        .expect("valid list_tree call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-directory-digest".into(),
+            tool_name: "directory_digest".into(),
+            input: json!({ "path": "src", "hashMode": "content_hash", "maxFiles": 20 }),
+        })
+        .expect("valid directory_digest call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-copy".into(),
+            tool_name: "copy".into(),
+            input: json!({ "from": "src/a.rs", "to": "src/b.rs", "expectedSourceHash": "a".repeat(64), "preview": true }),
+        })
+        .expect("valid copy call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-fs-transaction".into(),
+            tool_name: "fs_transaction".into(),
+            input: json!({
+                "preview": true,
+                "operations": [
+                    { "action": "create_file", "path": "src/new.rs", "content": "fn main() {}\n" }
+                ]
+            }),
+        })
+        .expect("valid fs_transaction call should decode");
+    registry
+        .validate_call(&AgentToolCall {
+            tool_call_id: "tool-call-valid-json-edit".into(),
+            tool_name: "json_edit".into(),
+            input: json!({
+                "path": "package.json",
+                "preview": true,
+                "operations": [
+                    { "action": "set", "pointer": "/scripts/test", "value": "vitest" }
+                ]
+            }),
+        })
+        .expect("valid json_edit call should decode");
 
     let mut find_descriptor = registry
         .descriptors_v2()
@@ -1682,6 +1813,10 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     );
     let read_only_names = read_only.descriptor_names();
     assert!(read_only_names.contains("read"));
+    assert!(read_only_names.contains("read_many"));
+    assert!(read_only_names.contains("stat"));
+    assert!(read_only_names.contains("list_tree"));
+    assert!(read_only_names.contains("directory_digest"));
     assert!(read_only_names.contains("tool_access"));
     assert!(read_only_names.contains("project_context_search"));
     assert!(read_only_names.contains("project_context_get"));
@@ -1689,6 +1824,9 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     assert!(read_only_names.contains("todo"));
     assert!(read_only_names.contains("git_diff"));
     assert!(!read_only_names.contains("write"));
+    assert!(!read_only_names.contains("copy"));
+    assert!(!read_only_names.contains("fs_transaction"));
+    assert!(!read_only_names.contains("json_edit"));
     assert!(!read_only_names.contains("command_run"));
     assert!(!read_only_names.contains("emulator"));
     assert!(!read_only_names.contains("solana_cluster"));
@@ -1701,6 +1839,11 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     let implementation_names = implementation.descriptor_names();
     assert!(implementation_names.contains("write"));
     assert!(implementation_names.contains("patch"));
+    assert!(implementation_names.contains("copy"));
+    assert!(implementation_names.contains("fs_transaction"));
+    assert!(implementation_names.contains("json_edit"));
+    assert!(implementation_names.contains("toml_edit"));
+    assert!(implementation_names.contains("yaml_edit"));
     assert!(implementation_names.contains("command_probe"));
     assert!(implementation_names.contains("command_verify"));
     assert!(!implementation_names.contains("command_run"));
@@ -1733,6 +1876,10 @@ fn owned_agent_tool_registry_selects_contextual_toolsets() {
     );
     let audit_names = audit.descriptor_names();
     assert!(audit_names.contains("read"));
+    assert!(audit_names.contains("read_many"));
+    assert!(audit_names.contains("stat"));
+    assert!(audit_names.contains("list_tree"));
+    assert!(audit_names.contains("directory_digest"));
     assert!(audit_names.contains("git_diff"));
     assert!(audit_names.contains("command_verify"));
 
@@ -4866,6 +5013,95 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
 }
 
 #[test]
+fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+
+    let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            initial_controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Ask,
+                agent_definition_id: None,
+                provider_profile_id: None,
+                model_id: "test-model".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+            }),
+            initial_prompt: None,
+            initial_attachments: Vec::new(),
+        },
+    ))
+    .expect("start runtime run should create owned agent runtime");
+
+    let queued = tauri::async_runtime::block_on(update_runtime_run_controls(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateRuntimeRunControlsRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: runtime_run.run_id.clone(),
+            controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                provider_profile_id: None,
+                model_id: "test-model".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+            }),
+            prompt: None,
+            attachments: Vec::new(),
+            auto_compact: None,
+        },
+    ))
+    .expect("runtime agent switch should queue as pending controls");
+
+    assert_eq!(
+        queued.controls.active.runtime_agent_id,
+        RuntimeAgentIdDto::Ask
+    );
+    let pending = queued
+        .controls
+        .pending
+        .as_ref()
+        .expect("runtime agent switch should be pending");
+    assert_eq!(pending.runtime_agent_id, RuntimeAgentIdDto::Engineer);
+    assert_eq!(pending.agent_definition_id.as_deref(), Some("engineer"));
+    assert!(pending.agent_definition_version.unwrap_or(0) > 0);
+    assert!(pending.revision > queued.controls.active.revision);
+
+    tauri::async_runtime::block_on(update_runtime_run_controls(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateRuntimeRunControlsRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: runtime_run.run_id.clone(),
+            controls: None,
+            prompt: Some("Summarize the tracked file.".into()),
+            attachments: Vec::new(),
+            auto_compact: None,
+        },
+    ))
+    .expect("queued runtime agent switch should apply at the next prompt boundary");
+
+    let agent_run = wait_for_agent_run_status(
+        &repo_root,
+        &project_id,
+        &runtime_run.run_id,
+        db::project_store::AgentRunStatus::Completed,
+    );
+    assert_eq!(agent_run.run.runtime_agent_id, RuntimeAgentIdDto::Engineer);
+    assert_eq!(agent_run.run.agent_definition_id, "engineer");
+}
+
+#[test]
 fn start_agent_task_returns_running_before_background_driver_finishes() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
@@ -5050,6 +5286,10 @@ fn engineer_workflow_blocks_write_before_survey_reads() {
         .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
             path: "premature.txt".into(),
             content: "no\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
         }))
         .expect_err("write must be denied while engineer is in `survey`");
     assert_eq!(denied.code, "policy_denied");
@@ -5068,6 +5308,8 @@ fn engineer_workflow_blocks_write_before_survey_reads() {
                 mode: None,
                 start_line: None,
                 line_count: None,
+                cursor: None,
+                around_pattern: None,
                 byte_offset: None,
                 byte_count: None,
                 include_line_hashes: false,
@@ -5079,6 +5321,10 @@ fn engineer_workflow_blocks_write_before_survey_reads() {
         .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
             path: "still_no.txt".into(),
             content: "no\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
         }))
         .expect_err("write must still be denied before the implementation_plan todo closes");
     assert_eq!(still_denied.code, "policy_denied");
@@ -5104,6 +5350,10 @@ fn engineer_workflow_blocks_write_before_survey_reads() {
         .execute(AutonomousToolRequest::Write(AutonomousWriteRequest {
             path: "implemented.txt".into(),
             content: "ok\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
         }))
         .expect("write allowed in `implement` after gates pass");
 }
@@ -5135,6 +5385,7 @@ fn debug_workflow_blocks_edit_before_hypothesis_todo() {
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         }))
         .expect_err("edit must be denied in `reproduce` phase");
     assert_eq!(denied.code, "policy_denied");
@@ -5172,6 +5423,7 @@ fn debug_workflow_blocks_edit_before_hypothesis_todo() {
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         }))
         .expect_err("edit must still be denied before hypothesis todo closes");
     assert_eq!(still_denied.code, "policy_denied");
@@ -5203,6 +5455,7 @@ fn debug_workflow_blocks_edit_before_hypothesis_todo() {
             expected_hash: None,
             start_line_hash: None,
             end_line_hash: None,
+            preview: false,
         }))
         .expect("edit allowed in `fix` after both reproduce and hypothesize todos close");
 }

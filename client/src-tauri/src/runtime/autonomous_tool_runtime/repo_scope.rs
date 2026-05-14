@@ -47,7 +47,6 @@ static IMPORTED_REPO_ROOT_CACHE: LazyLock<Mutex<HashMap<RepoRootCacheKey, PathBu
 pub(super) struct WalkState {
     pub(super) scanned_files: usize,
     pub(super) truncated: bool,
-    pub(super) depth_limited: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

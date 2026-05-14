@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::AutonomousSubagentWriteScope;
+use crate::runtime::{AutonomousFsTransactionRequest, AutonomousSubagentWriteScope};
 use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
@@ -371,6 +371,11 @@ fn tool_name_is_file_write(tool_name: &str) -> bool {
         AUTONOMOUS_TOOL_EDIT
             | AUTONOMOUS_TOOL_WRITE
             | AUTONOMOUS_TOOL_PATCH
+            | AUTONOMOUS_TOOL_COPY
+            | AUTONOMOUS_TOOL_FS_TRANSACTION
+            | AUTONOMOUS_TOOL_JSON_EDIT
+            | AUTONOMOUS_TOOL_TOML_EDIT
+            | AUTONOMOUS_TOOL_YAML_EDIT
             | AUTONOMOUS_TOOL_DELETE
             | AUTONOMOUS_TOOL_RENAME
             | AUTONOMOUS_TOOL_MKDIR
@@ -2488,29 +2493,82 @@ pub(crate) fn record_file_change_event(
 ) -> CommandResult<()> {
     let code_change_group_id = code_change_group.map(|group| group.change_group_id.as_str());
     let history_metadata = code_change_group.and_then(|group| group.history_metadata.as_ref());
-    if let AutonomousToolOutput::Patch(output) = output {
-        if !output.applied {
+    match output {
+        AutonomousToolOutput::Patch(output) => {
+            if !output.applied {
+                return Ok(());
+            }
+            for file in &output.files {
+                record_single_file_change_event(
+                    repo_root,
+                    project_id,
+                    run_id,
+                    FileChangeEvent {
+                        operation: "patch",
+                        path: file.path.as_str(),
+                        to_path: None,
+                        old_hash: Some(file.old_hash.clone()),
+                        new_hash: Some(file.new_hash.clone()),
+                        tool_call_id,
+                        tool_name,
+                        code_change_group_id,
+                        history_metadata,
+                    },
+                )?;
+            }
             return Ok(());
         }
-        for file in &output.files {
-            record_single_file_change_event(
-                repo_root,
-                project_id,
-                run_id,
-                FileChangeEvent {
-                    operation: "patch",
-                    path: file.path.as_str(),
-                    to_path: None,
-                    old_hash: Some(file.old_hash.clone()),
-                    new_hash: Some(file.new_hash.clone()),
-                    tool_call_id,
-                    tool_name,
-                    code_change_group_id,
-                    history_metadata,
-                },
-            )?;
+        AutonomousToolOutput::Copy(output) => {
+            if !output.applied {
+                return Ok(());
+            }
+            for operation in &output.operations {
+                if operation.action == "copy_file" {
+                    record_single_file_change_event(
+                        repo_root,
+                        project_id,
+                        run_id,
+                        FileChangeEvent {
+                            operation: "copy",
+                            path: operation.to_path.as_str(),
+                            to_path: None,
+                            old_hash: None,
+                            new_hash: None,
+                            tool_call_id,
+                            tool_name,
+                            code_change_group_id,
+                            history_metadata,
+                        },
+                    )?;
+                }
+            }
+            return Ok(());
         }
-        return Ok(());
+        AutonomousToolOutput::FsTransaction(output) => {
+            if !output.applied {
+                return Ok(());
+            }
+            for path in &output.changed_paths {
+                record_single_file_change_event(
+                    repo_root,
+                    project_id,
+                    run_id,
+                    FileChangeEvent {
+                        operation: "fs_transaction",
+                        path: path.as_str(),
+                        to_path: None,
+                        old_hash: old_hash_for_path(write_observations, path),
+                        new_hash: file_hash_if_present(repo_root, path)?,
+                        tool_call_id,
+                        tool_name,
+                        code_change_group_id,
+                        history_metadata,
+                    },
+                )?;
+            }
+            return Ok(());
+        }
+        _ => {}
     }
 
     let (operation, path) = match output {
@@ -2519,6 +2577,9 @@ pub(crate) fn record_file_change_event(
             output.path.as_str(),
         ),
         AutonomousToolOutput::Edit(output) => ("edit", output.path.as_str()),
+        AutonomousToolOutput::JsonEdit(output)
+        | AutonomousToolOutput::TomlEdit(output)
+        | AutonomousToolOutput::YamlEdit(output) => ("structured_edit", output.path.as_str()),
         AutonomousToolOutput::NotebookEdit(output) => ("notebook_edit", output.path.as_str()),
         AutonomousToolOutput::Delete(output) => ("delete", output.path.as_str()),
         AutonomousToolOutput::Rename(output) => ("rename", output.from_path.as_str()),
@@ -2599,6 +2660,11 @@ pub(crate) fn output_records_own_file_change_event(output: &AutonomousToolOutput
         AutonomousToolOutput::Write(_)
             | AutonomousToolOutput::Edit(_)
             | AutonomousToolOutput::Patch(_)
+            | AutonomousToolOutput::Copy(_)
+            | AutonomousToolOutput::FsTransaction(_)
+            | AutonomousToolOutput::JsonEdit(_)
+            | AutonomousToolOutput::TomlEdit(_)
+            | AutonomousToolOutput::YamlEdit(_)
             | AutonomousToolOutput::NotebookEdit(_)
             | AutonomousToolOutput::Delete(_)
             | AutonomousToolOutput::Rename(_)
@@ -3625,11 +3691,33 @@ impl AgentWorkspaceGuard {
             AutonomousToolOutput::Read(output) => {
                 self.record_persisted_path_hash(output.path.as_str(), output.sha256.as_deref());
             }
+            AutonomousToolOutput::ReadMany(output) => {
+                for item in &output.results {
+                    if let Some(read) = item.read.as_ref() {
+                        self.record_persisted_path_hash(read.path.as_str(), read.sha256.as_deref());
+                    }
+                }
+            }
             AutonomousToolOutput::Hash(output) => {
-                self.record_persisted_path_hash(output.path.as_str(), Some(output.sha256.as_str()));
+                if output.path_kind == crate::runtime::AutonomousStatKind::File
+                    && output.file_count == 1
+                {
+                    self.record_persisted_path_hash(
+                        output.path.as_str(),
+                        Some(output.sha256.as_str()),
+                    );
+                }
             }
             AutonomousToolOutput::Edit(output) => {
                 self.record_persisted_path_hash(output.path.as_str(), output.new_hash.as_deref());
+            }
+            AutonomousToolOutput::JsonEdit(output)
+            | AutonomousToolOutput::TomlEdit(output)
+            | AutonomousToolOutput::YamlEdit(output) => {
+                self.record_persisted_path_hash(
+                    output.path.as_str(),
+                    Some(output.new_hash.as_str()),
+                );
             }
             AutonomousToolOutput::Patch(output) => {
                 if output.files.is_empty() {
@@ -3672,6 +3760,9 @@ fn path_is_inside_subagent_write_set(path: &str, owned: &str) -> bool {
 fn planned_file_change_paths(request: &AutonomousToolRequest) -> Vec<&str> {
     match request {
         AutonomousToolRequest::Edit(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::JsonEdit(request)
+        | AutonomousToolRequest::TomlEdit(request)
+        | AutonomousToolRequest::YamlEdit(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Write(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Patch(request) => request
             .operations
@@ -3681,6 +3772,8 @@ fn planned_file_change_paths(request: &AutonomousToolRequest) -> Vec<&str> {
             .collect(),
         AutonomousToolRequest::NotebookEdit(request) => vec![request.path.as_str()],
         AutonomousToolRequest::Delete(request) => vec![request.path.as_str()],
+        AutonomousToolRequest::Copy(request) => vec![request.from.as_str(), request.to.as_str()],
+        AutonomousToolRequest::FsTransaction(request) => fs_transaction_operation_paths(request),
         AutonomousToolRequest::Rename(request) => vec![request.from_path.as_str()],
         _ => Vec::new(),
     }
@@ -3691,6 +3784,8 @@ fn planned_code_workspace_epoch_paths(request: &AutonomousToolRequest) -> Vec<&s
         AutonomousToolRequest::Rename(request) => {
             vec![request.from_path.as_str(), request.to_path.as_str()]
         }
+        AutonomousToolRequest::Copy(request) => vec![request.from.as_str(), request.to.as_str()],
+        AutonomousToolRequest::FsTransaction(request) => fs_transaction_operation_paths(request),
         AutonomousToolRequest::Mkdir(request) => vec![request.path.as_str()],
         _ => planned_file_change_paths(request),
     }
@@ -3699,6 +3794,11 @@ fn planned_code_workspace_epoch_paths(request: &AutonomousToolRequest) -> Vec<&s
 fn planned_file_change_operations(request: &AutonomousToolRequest) -> Vec<(&str, &'static str)> {
     match request {
         AutonomousToolRequest::Edit(request) => vec![(request.path.as_str(), "edit")],
+        AutonomousToolRequest::JsonEdit(request)
+        | AutonomousToolRequest::TomlEdit(request)
+        | AutonomousToolRequest::YamlEdit(request) => {
+            vec![(request.path.as_str(), "structured_edit")]
+        }
         AutonomousToolRequest::Write(request) => {
             vec![(request.path.as_str(), "write")]
         }
@@ -3713,9 +3813,32 @@ fn planned_file_change_operations(request: &AutonomousToolRequest) -> Vec<(&str,
             vec![(request.path.as_str(), "notebook_edit")]
         }
         AutonomousToolRequest::Delete(request) => vec![(request.path.as_str(), "delete")],
+        AutonomousToolRequest::Copy(request) => vec![(request.to.as_str(), "copy")],
+        AutonomousToolRequest::FsTransaction(request) => fs_transaction_operation_paths(request)
+            .into_iter()
+            .map(|path| (path, "fs_transaction"))
+            .collect(),
         AutonomousToolRequest::Rename(request) => vec![(request.from_path.as_str(), "rename")],
         _ => Vec::new(),
     }
+}
+
+fn fs_transaction_operation_paths(request: &AutonomousFsTransactionRequest) -> Vec<&str> {
+    request
+        .operations
+        .iter()
+        .flat_map(|operation| {
+            [
+                operation.path.as_deref(),
+                operation.from.as_deref(),
+                operation.to.as_deref(),
+                operation.from_path.as_deref(),
+                operation.to_path.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+        })
+        .collect()
 }
 
 pub(crate) fn planned_file_reservation_operations(
@@ -3734,10 +3857,10 @@ pub(crate) fn planned_file_reservation_operations(
             ));
         };
         let operation = match operation {
-            "edit" | "patch" | "notebook_edit" => {
+            "edit" | "patch" | "structured_edit" | "notebook_edit" => {
                 project_store::AgentCoordinationReservationOperation::Editing
             }
-            "delete" | "rename" | "write" => {
+            "copy" | "delete" | "fs_transaction" | "rename" | "write" => {
                 project_store::AgentCoordinationReservationOperation::Writing
             }
             _ => project_store::AgentCoordinationReservationOperation::Editing,
@@ -3761,6 +3884,11 @@ fn old_hash_for_path(
 fn observed_paths_from_output(output: &AutonomousToolOutput) -> Vec<String> {
     match output {
         AutonomousToolOutput::Read(output) => vec![output.path.clone()],
+        AutonomousToolOutput::ReadMany(output) => output
+            .results
+            .iter()
+            .filter_map(|entry| entry.read.as_ref().map(|read| read.path.clone()))
+            .collect(),
         AutonomousToolOutput::Search(output) => output
             .matches
             .iter()
@@ -3774,7 +3902,20 @@ fn observed_paths_from_output(output: &AutonomousToolOutput) -> Vec<String> {
             .iter()
             .map(|entry| entry.path.clone())
             .collect(),
+        AutonomousToolOutput::ListTree(output) => {
+            let mut paths = Vec::new();
+            collect_list_tree_observed_paths(&output.root, &mut paths);
+            paths
+        }
+        AutonomousToolOutput::DirectoryDigest(output) => output
+            .manifest
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect(),
         AutonomousToolOutput::Edit(output) => vec![output.path.clone()],
+        AutonomousToolOutput::JsonEdit(output)
+        | AutonomousToolOutput::TomlEdit(output)
+        | AutonomousToolOutput::YamlEdit(output) => vec![output.path.clone()],
         AutonomousToolOutput::Write(output) => vec![output.path.clone()],
         AutonomousToolOutput::Patch(output) => {
             if output.files.is_empty() {
@@ -3783,11 +3924,27 @@ fn observed_paths_from_output(output: &AutonomousToolOutput) -> Vec<String> {
                 output.files.iter().map(|file| file.path.clone()).collect()
             }
         }
+        AutonomousToolOutput::Copy(output) => output
+            .operations
+            .iter()
+            .map(|operation| operation.to_path.clone())
+            .collect(),
+        AutonomousToolOutput::FsTransaction(output) => output.changed_paths.clone(),
         AutonomousToolOutput::NotebookEdit(output) => vec![output.path.clone()],
         AutonomousToolOutput::Delete(output) => vec![output.path.clone()],
         AutonomousToolOutput::Rename(output) => vec![output.from_path.clone()],
         AutonomousToolOutput::Hash(output) => vec![output.path.clone()],
         _ => Vec::new(),
+    }
+}
+
+fn collect_list_tree_observed_paths(
+    node: &crate::runtime::AutonomousListTreeNode,
+    paths: &mut Vec<String>,
+) {
+    paths.push(node.path.clone());
+    for child in &node.children {
+        collect_list_tree_observed_paths(child, paths);
     }
 }
 
@@ -3879,7 +4036,8 @@ mod tests {
     use crate::runtime::{
         AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput, AutonomousLineEnding,
         AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
-        AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOutput,
+        AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOmissions,
+        AutonomousSearchOutput, AutonomousStatKind,
     };
     use crate::{db, git::repository::CanonicalRepository, state::DesktopState};
     use tempfile::tempdir;
@@ -4337,6 +4495,7 @@ Repository map captured.
                 &AutonomousToolOutput::Search(AutonomousSearchOutput {
                     query: "before".into(),
                     scope: None,
+                    files: Vec::new(),
                     matches: vec![AutonomousSearchMatch {
                         path: "src/lib.rs".into(),
                         line: 1,
@@ -4350,8 +4509,14 @@ Repository map captured.
                     }],
                     scanned_files: 1,
                     truncated: false,
+                    cursor: None,
+                    next_cursor: None,
+                    files_only: false,
+                    returned_matches: 1,
+                    skipped_matches: 0,
                     total_matches: Some(1),
                     matched_files: Some(1),
+                    omissions: AutonomousSearchOmissions::default(),
                     engine: Some("test".into()),
                     regex: false,
                     ignore_case: false,
@@ -4403,11 +4568,17 @@ Repository map captured.
                 root,
                 &AutonomousToolOutput::Read(crate::runtime::AutonomousReadOutput {
                     path: "src/lib.rs".into(),
+                    path_kind: crate::runtime::AutonomousStatKind::File,
+                    size: Some(7),
+                    modified_at: None,
                     start_line: 1,
                     line_count: 1,
                     total_lines: 1,
                     truncated: false,
                     content: "before\n".into(),
+                    cursor: None,
+                    next_cursor: None,
+                    content_omitted_reason: None,
                     content_kind: Some(crate::runtime::AutonomousReadContentKind::Text),
                     total_bytes: Some(7),
                     byte_offset: None,
@@ -4432,6 +4603,10 @@ Repository map captured.
                 &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
                     path: "src/lib.rs".into(),
                     content: "after\n".into(),
+                    expected_hash: None,
+                    create_only: false,
+                    overwrite: Some(true),
+                    preview: false,
                 }),
                 false,
             )
@@ -4441,6 +4616,10 @@ Repository map captured.
             &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
                 path: "src/lib.rs".into(),
                 content: "after\n".into(),
+                expected_hash: None,
+                create_only: false,
+                overwrite: Some(true),
+                preview: false,
             }),
             &observations,
         )
@@ -4469,6 +4648,10 @@ Repository map captured.
             &AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
                 path: "notes/new.txt".into(),
                 content: "new\n".into(),
+                expected_hash: None,
+                create_only: false,
+                overwrite: None,
+                preview: false,
             }),
             &observations,
         )
@@ -4544,6 +4727,10 @@ Repository map captured.
         let request = AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
             path: "src/stale.rs".into(),
             content: "next\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: Some(true),
+            preview: false,
         });
         let error = guard
             .validate_code_workspace_epoch_intent(&canonical_root, project_id, &request)
@@ -4626,6 +4813,10 @@ Repository map captured.
         let request = AutonomousToolRequest::Write(crate::runtime::AutonomousWriteRequest {
             path: "src/stale.rs".into(),
             content: "next\n".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: Some(true),
+            preview: false,
         });
         guard
             .validate_code_workspace_epoch_intent(&canonical_root, project_id, &request)
@@ -4664,11 +4855,17 @@ Repository map captured.
                 &canonical_root,
                 &AutonomousToolOutput::Read(AutonomousReadOutput {
                     path: "src/stale.rs".into(),
+                    path_kind: AutonomousStatKind::File,
+                    size: Some(14),
+                    modified_at: None,
                     start_line: 1,
                     line_count: 1,
                     total_lines: 1,
                     truncated: false,
                     content: "after history\n".into(),
+                    cursor: None,
+                    next_cursor: None,
+                    content_omitted_reason: None,
                     content_kind: Some(AutonomousReadContentKind::Text),
                     total_bytes: Some(14),
                     byte_offset: None,

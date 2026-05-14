@@ -1,6 +1,6 @@
 "use client"
 
-import { Play } from "lucide-react"
+import { PlaySquare } from "lucide-react"
 
 import {
   StartTargetsEditor,
@@ -8,6 +8,9 @@ import {
   type SuggestedTarget,
 } from "@/components/xero/start-targets-editor"
 import type { StartTargetDto, StartTargetInputDto } from "@/src/lib/xero-desktop"
+
+import { SectionHeader } from "./section-header"
+import { EmptyPanel } from "./_shared"
 
 export type ProjectRunnerSuggestRequest = StartTargetsSuggestRequest
 
@@ -32,8 +35,16 @@ export function ProjectRunnerSection({
 }: ProjectRunnerSectionProps) {
   if (!projectId) {
     return (
-      <div className="p-6 text-[13px] text-muted-foreground">
-        Open a project to configure its start targets.
+      <div className="flex flex-col gap-7">
+        <SectionHeader
+          title="Project Runner"
+          description="Configure the shell commands Xero runs from the titlebar Play button. One target = a single root command. Add more for monorepos or multi-process apps."
+        />
+        <EmptyPanel
+          icon={<PlaySquare className="h-5 w-5 text-muted-foreground/70" />}
+          title="Select a project"
+          body="Start targets are scoped to the active project."
+        />
       </div>
     )
   }
@@ -41,18 +52,11 @@ export function ProjectRunnerSection({
   const projectName = projectLabel ?? projectId
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-6 overflow-auto p-6">
-      <div className="space-y-1">
-        <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
-          <Play className="h-4 w-4" />
-          Project runner
-        </div>
-        <p className="text-[12.5px] text-muted-foreground">
-          Configure the shell commands Xero runs from the titlebar Play button
-          for <span className="font-mono">{projectName}</span>. One target = a
-          single root command. Add more for monorepos or multi-process apps.
-        </p>
-      </div>
+    <div className="flex flex-col gap-7">
+      <SectionHeader
+        title="Project Runner"
+        description={`Configure the shell commands Xero runs from the titlebar Play button for ${projectName}. One target = a single root command. Add more for monorepos or multi-process apps.`}
+      />
 
       <StartTargetsEditor
         key={projectId}

@@ -3,21 +3,24 @@ import { openUrl } from "@tauri-apps/plugin-opener"
 import {
   Activity,
   AlertCircle,
-  BrainCircuit,
   Check,
   ChevronDown,
-  Cloud,
-  KeyRound,
   LoaderCircle,
   LogIn,
   LogOut,
-  Server,
+  Webhook,
 } from "lucide-react"
 import {
+  AWSIcon,
   AnthropicIcon,
+  AzureIcon,
+  DeepSeekIcon,
   GitHubIcon,
-  GoogleIcon,
+  GoogleCloudIcon,
+  GoogleGeminiIcon,
+  OllamaIcon,
   OpenAIIcon,
+  OpenRouterIcon,
 } from "@/components/xero/brand-icons"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -61,18 +64,44 @@ interface CredentialDraft {
   projectId: string
 }
 
-const PROVIDER_ICON_BY_ID: Record<SupportedProviderId, ElementType> = {
-  openai_codex: OpenAIIcon,
-  openrouter: KeyRound,
-  anthropic: AnthropicIcon,
-  github_models: GitHubIcon,
-  openai_api: OpenAIIcon,
-  deepseek: BrainCircuit,
-  ollama: Server,
-  azure_openai: OpenAIIcon,
-  gemini_ai_studio: GoogleIcon,
-  bedrock: Cloud,
-  vertex: GoogleIcon,
+interface ProviderIconConfig {
+  icon: ElementType
+}
+
+const PROVIDER_ICON_BY_ID: Record<SupportedProviderId, ProviderIconConfig> = {
+  openai_codex: {
+    icon: OpenAIIcon,
+  },
+  openrouter: {
+    icon: OpenRouterIcon,
+  },
+  anthropic: {
+    icon: AnthropicIcon,
+  },
+  github_models: {
+    icon: GitHubIcon,
+  },
+  openai_api: {
+    icon: Webhook,
+  },
+  deepseek: {
+    icon: DeepSeekIcon,
+  },
+  ollama: {
+    icon: OllamaIcon,
+  },
+  azure_openai: {
+    icon: AzureIcon,
+  },
+  gemini_ai_studio: {
+    icon: GoogleGeminiIcon,
+  },
+  bedrock: {
+    icon: AWSIcon,
+  },
+  vertex: {
+    icon: GoogleCloudIcon,
+  },
 }
 
 function errMsg(error: unknown, fallback: string): string {
@@ -459,7 +488,8 @@ export function ProviderCredentialsList({
     const providerId = preset.providerId
     if (!isSupportedProviderId(providerId)) return null
     const credential = findCredential(providerCredentials, providerId)
-    const Icon = PROVIDER_ICON_BY_ID[providerId]
+    const iconConfig = PROVIDER_ICON_BY_ID[providerId]
+    const Icon = iconConfig.icon
     const isOpen = openProviderId === providerId
     const draft = drafts[providerId] ?? createDraft(credential)
     const isSaving =
@@ -516,16 +546,17 @@ export function ProviderCredentialsList({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
                 onClick={() => handleCheckProvider(providerId, credential)}
                 disabled={!onCheckProviderProfile || isChecking}
+                aria-label={`Check ${preset.label}`}
+                title={`Check ${preset.label}`}
               >
                 {isChecking ? (
                   <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Activity className="h-3.5 w-3.5" />
                 )}
-                Check
               </Button>
             ) : null}
             {isOAuth ? (
