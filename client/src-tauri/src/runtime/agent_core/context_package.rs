@@ -1617,14 +1617,30 @@ fn active_coordination_prompt_summary(
         .any(|delivery| !is_history_mailbox_item_type(delivery.item.item_type))
     {
         lines.push("Temporary swarm mailbox:".into());
+        lines.push(format!(
+            "{} active item(s); mailbox is TTL-scoped coordination, not durable memory.",
+            context
+                .mailbox
+                .iter()
+                .filter(|delivery| !is_history_mailbox_item_type(delivery.item.item_type))
+                .count()
+        ));
         for delivery in context
             .mailbox
             .iter()
             .filter(|delivery| !is_history_mailbox_item_type(delivery.item.item_type))
         {
             let item = &delivery.item;
+            let promotion_hint = if mailbox_promotion_suggestion(item)["suggested"]
+                .as_bool()
+                .unwrap_or(false)
+            {
+                " Candidate for project-record promotion if it matters beyond TTL."
+            } else {
+                ""
+            };
             lines.push(format!(
-                "- {} {} from {} priority {} about {}: {}",
+                "- {} {} from {} priority {} about {}: {}{}",
                 item.created_at,
                 item.item_type.as_str(),
                 item.sender_run_id,
@@ -1633,7 +1649,8 @@ fn active_coordination_prompt_summary(
                     .first()
                     .map(String::as_str)
                     .unwrap_or("general work"),
-                item.title
+                item.title,
+                promotion_hint
             ));
         }
     }
@@ -2155,6 +2172,42 @@ fn coordination_mailbox_manifest_json(
         "createdAt": item.created_at,
         "expiresAt": item.expires_at,
         "promotedRecordId": item.promoted_record_id,
+        "promotionSuggestion": mailbox_promotion_suggestion(item),
+    })
+}
+
+fn mailbox_promotion_suggestion(item: &project_store::AgentMailboxItemRecord) -> JsonValue {
+    let suggested = match item.item_type {
+        project_store::AgentMailboxItemType::Blocker
+        | project_store::AgentMailboxItemType::VerificationNote
+        | project_store::AgentMailboxItemType::HandoffLiteSummary => true,
+        project_store::AgentMailboxItemType::Question
+        | project_store::AgentMailboxItemType::Answer
+        | project_store::AgentMailboxItemType::FileOwnershipNote => {
+            matches!(
+                item.priority,
+                project_store::AgentMailboxPriority::High
+                    | project_store::AgentMailboxPriority::Urgent
+            ) || item.status == project_store::AgentMailboxStatus::Resolved
+        }
+        project_store::AgentMailboxItemType::UndoConflictNotice
+        | project_store::AgentMailboxItemType::HistoryRewriteNotice
+        | project_store::AgentMailboxItemType::WorkspaceEpochAdvanced
+        | project_store::AgentMailboxItemType::ReservationInvalidated => false,
+        project_store::AgentMailboxItemType::HeadsUp
+        | project_store::AgentMailboxItemType::FindingInProgress => {
+            item.priority == project_store::AgentMailboxPriority::Urgent
+        }
+    };
+    json!({
+        "suggested": suggested,
+        "reason": if suggested {
+            "high-value temporary coordination may be useful beyond mailbox TTL; promote only as a project-record candidate with provenance."
+        } else {
+            "mailbox remains temporary coordination by default."
+        },
+        "targetVisibility": "memory_candidate",
+        "requiresAutomatedGovernance": true,
     })
 }
 
@@ -2170,7 +2223,9 @@ fn source_cited_working_set_context(
     if response.results.is_empty() {
         return None;
     }
-    let mut lines = Vec::new();
+    let mut lines = vec![
+        "Use this brief to decide which exact durable context to retrieve; current files and tool output remain authoritative.".into(),
+    ];
     let mut citations = Vec::new();
     for result in response.results.iter().take(3) {
         let citation = result.metadata.get("citation").unwrap_or(&JsonValue::Null);
@@ -2188,11 +2243,13 @@ fn source_cited_working_set_context(
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("Untitled durable context item");
         let citation_label = format!("{source_kind}:{source_id}");
+        let impact = memory_brief_impact_reason(result);
         lines.push(format!(
-            "- rank {} `{}`: {}. Retrieve exact content with `project_context_get` before relying on details.",
+            "- rank {} `{}`: {}. Why it may matter: {} Retrieve exact content with `project_context_get` before relying on details.",
             result.rank,
             citation_label,
-            truncate_chars(title, 120)
+            truncate_chars(title, 120),
+            impact
         ));
         citations.push(json!({
             "resultId": result.result_id,
@@ -2202,12 +2259,42 @@ fn source_cited_working_set_context(
             "title": title,
             "score": result.score,
             "redactionState": redaction_state_label(&result.redaction_state),
+            "selectionReason": impact,
         }));
     }
+    lines.extend(memory_brief_task_hints(response.results.as_slice()));
     Some(SourceCitedWorkingSetContext {
         prompt_summary: lines.join("\n"),
         citations,
     })
+}
+
+fn memory_brief_impact_reason(result: &project_store::AgentContextRetrievalResult) -> &'static str {
+    if result.source_kind == project_store::AgentRetrievalResultSourceKind::ApprovedMemory {
+        return "approved memory can capture durable preferences, decisions, troubleshooting, or session facts relevant to this turn.";
+    }
+    match result
+        .metadata
+        .get("recordKind")
+        .and_then(JsonValue::as_str)
+    {
+        Some("decision") => "prior decisions can constrain implementation choices.",
+        Some("constraint") => "constraints can affect what edits or answers are valid.",
+        Some("plan") => "plans can identify intended sequencing and pending work.",
+        Some("verification") => "verification notes can prevent repeating failed checks.",
+        Some("finding") | Some("diagnostic") => "findings and diagnostics can shorten debugging.",
+        Some("agent_handoff") => "handoff records can anchor continuation from the previous run.",
+        _ => "durable project context matched the task query.",
+    }
+}
+
+fn memory_brief_task_hints(results: &[project_store::AgentContextRetrievalResult]) -> Vec<String> {
+    if results.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        "Task-start retrieval hints: before edits, fetch relevant decisions, constraints, plans, and file facts; before debugging, fetch troubleshooting, diagnostics, prior failures, and verification notes; before answering, fetch project facts, constraints, and open questions; during handoff, fetch carried handoff IDs before relying on details.".into(),
+    ]
 }
 
 fn retrieval_result_manifest_json(
@@ -2363,6 +2450,13 @@ mod tests {
     }
 
     fn seed_retrievable_context(repo_root: &Path, project_id: &str) {
+        let context_package_path = repo_root.join("client/src-tauri/src/runtime/agent_core");
+        fs::create_dir_all(&context_package_path).expect("context package source dir");
+        fs::write(
+            context_package_path.join("context_package.rs"),
+            "pub fn context_package_fixture() {}\n",
+        )
+        .expect("context package source file");
         project_store::insert_project_record(
             repo_root,
             &project_store::NewProjectRecordRecord {
@@ -2557,6 +2651,10 @@ mod tests {
         assert!(first
             .system_prompt
             .contains("Source-cited working set for this turn"));
+        assert!(first.system_prompt.contains("Why it may matter"));
+        assert!(first
+            .system_prompt
+            .contains("Task-start retrieval hints: before edits"));
         assert!(first
             .system_prompt
             .contains("project_record:project-record-phase3"));

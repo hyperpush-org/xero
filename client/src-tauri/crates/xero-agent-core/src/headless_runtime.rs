@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
@@ -49,6 +49,7 @@ const LEGACY_HEADLESS_MINI_TOOLS: &[&str] = &["read_file", "write_file", "list_f
 pub enum HeadlessProviderExecutionConfig {
     Fake,
     OpenAiCompatible(OpenAiCompatibleHeadlessConfig),
+    OpenAiCodexResponses(OpenAiCodexHeadlessConfig),
 }
 
 impl HeadlessProviderExecutionConfig {
@@ -56,6 +57,7 @@ impl HeadlessProviderExecutionConfig {
         match self {
             Self::Fake => "fake_provider",
             Self::OpenAiCompatible(config) => config.provider_id.as_str(),
+            Self::OpenAiCodexResponses(config) => config.provider_id.as_str(),
         }
     }
 
@@ -63,6 +65,7 @@ impl HeadlessProviderExecutionConfig {
         match self {
             Self::Fake => "fake-model",
             Self::OpenAiCompatible(config) => config.model_id.as_str(),
+            Self::OpenAiCodexResponses(config) => config.model_id.as_str(),
         }
     }
 
@@ -76,6 +79,9 @@ impl HeadlessProviderExecutionConfig {
                     .is_some_and(|key| !key.trim().is_empty())
                     || is_local_http_endpoint(&config.base_url)
             }
+            Self::OpenAiCodexResponses(config) => {
+                !config.access_token.trim().is_empty() && !config.account_id.trim().is_empty()
+            }
         }
     }
 }
@@ -86,6 +92,19 @@ pub struct OpenAiCompatibleHeadlessConfig {
     pub model_id: String,
     pub base_url: String,
     pub api_key: Option<String>,
+    pub timeout_ms: u64,
+    pub workspace_root: Option<PathBuf>,
+    pub allow_workspace_writes: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiCodexHeadlessConfig {
+    pub provider_id: String,
+    pub model_id: String,
+    pub base_url: String,
+    pub access_token: String,
+    pub account_id: String,
+    pub session_id: Option<String>,
     pub timeout_ms: u64,
     pub workspace_root: Option<PathBuf>,
     pub allow_workspace_writes: bool,
@@ -349,8 +368,9 @@ where
         snapshot: RunSnapshot,
         provider_preflight: &ProviderPreflightSnapshot,
     ) -> CoreResult<()> {
-        let config = match &self.provider {
-            HeadlessProviderExecutionConfig::OpenAiCompatible(config) => config,
+        let provider_timeout_ms = match &self.provider {
+            HeadlessProviderExecutionConfig::OpenAiCompatible(config) => config.timeout_ms,
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => config.timeout_ms,
             HeadlessProviderExecutionConfig::Fake => {
                 return Err(CoreError::invalid_request(
                     "agent_core_provider_mismatch",
@@ -359,7 +379,9 @@ where
             }
         };
         let client = Client::builder()
-            .timeout(Duration::from_millis(normalize_timeout(config.timeout_ms)))
+            .timeout(Duration::from_millis(normalize_timeout(
+                provider_timeout_ms,
+            )))
             .build()
             .map_err(|error| {
                 CoreError::system_fault(
@@ -387,8 +409,10 @@ where
                     );
                 }
             }
+            let workspace_root = self.workspace_root();
             let tool_runtime = HeadlessProductionToolRuntime::new(
-                config,
+                workspace_root.as_ref(),
+                self.allow_workspace_writes(),
                 self.app_data_roots_for_project(&current.project_id),
             )?;
             self.record_tool_registry_snapshot(&current, turn_index, &tool_runtime)?;
@@ -398,12 +422,27 @@ where
                 &tool_runtime,
                 provider_preflight,
             )?;
-            let response = send_openai_compatible_chat(
-                &client,
-                config,
-                &chat_messages,
-                tool_runtime.openai_tool_definitions(),
-            )?;
+            let response = match &self.provider {
+                HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
+                    send_openai_compatible_chat(
+                        &client,
+                        config,
+                        &chat_messages,
+                        tool_runtime.openai_tool_definitions(),
+                    )?
+                }
+                HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                    send_openai_codex_responses(
+                        &client,
+                        config,
+                        &chat_messages,
+                        tool_runtime.openai_response_tool_definitions(),
+                    )?
+                }
+                HeadlessProviderExecutionConfig::Fake => {
+                    unreachable!("fake provider rejected above")
+                }
+            };
             let content = response.content_text();
             let tool_calls = response.tool_calls;
             let next_tool_call_count = tool_call_count + tool_calls.len() as u64;
@@ -983,6 +1022,21 @@ where
             HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
                 config.workspace_root.clone()
             }
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                config.workspace_root.clone()
+            }
+        }
+    }
+
+    fn allow_workspace_writes(&self) -> bool {
+        match &self.provider {
+            HeadlessProviderExecutionConfig::Fake => false,
+            HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
+                config.allow_workspace_writes
+            }
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                config.allow_workspace_writes
+            }
         }
     }
 
@@ -1075,6 +1129,46 @@ where
                         thinking_default_effort: None,
                     },
                 ))
+            }
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                Ok(crate::provider_preflight_snapshot(ProviderPreflightInput {
+                    profile_id: "benchmark-openai-codex-oauth".into(),
+                    provider_id: config.provider_id.clone(),
+                    model_id: config.model_id.clone(),
+                    source: ProviderPreflightSource::LiveProbe,
+                    checked_at: crate::now_timestamp(),
+                    age_seconds: Some(0),
+                    ttl_seconds: None,
+                    required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+                    capabilities: crate::provider_capability_catalog(
+                        ProviderCapabilityCatalogInput {
+                            provider_id: config.provider_id.clone(),
+                            model_id: config.model_id.clone(),
+                            catalog_source: "app_oauth_session".into(),
+                            fetched_at: Some(crate::now_timestamp()),
+                            last_success_at: Some(crate::now_timestamp()),
+                            cache_age_seconds: Some(0),
+                            cache_ttl_seconds: Some(crate::DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
+                            credential_proof: Some("app_data_openai_codex_session".into()),
+                            context_window_tokens: Some(272_000),
+                            max_output_tokens: Some(16_384),
+                            context_limit_source: Some("configured_default".into()),
+                            context_limit_confidence: Some("medium".into()),
+                            thinking_supported: true,
+                            thinking_efforts: vec!["low".into(), "medium".into(), "high".into()],
+                            thinking_default_effort: Some("medium".into()),
+                        },
+                    ),
+                    credential_ready: Some(self.provider.has_provider_credentials()),
+                    endpoint_reachable: Some(true),
+                    model_available: Some(true),
+                    streaming_route_available: Some(true),
+                    tool_schema_accepted: Some(true),
+                    reasoning_controls_accepted: None,
+                    attachments_accepted: None,
+                    context_limit_known: Some(true),
+                    provider_error: None,
+                }))
             }
         }
     }
@@ -1224,7 +1318,10 @@ where
             HeadlessProviderExecutionConfig::Fake => {
                 FakeProviderRuntime::new(self.store.clone()).start_run(request)
             }
-            HeadlessProviderExecutionConfig::OpenAiCompatible(_) => self.start_real_run(request),
+            HeadlessProviderExecutionConfig::OpenAiCompatible(_)
+            | HeadlessProviderExecutionConfig::OpenAiCodexResponses(_) => {
+                self.start_real_run(request)
+            }
         }
     }
 
@@ -1233,7 +1330,10 @@ where
             HeadlessProviderExecutionConfig::Fake => {
                 FakeProviderRuntime::new(self.store.clone()).continue_run(request)
             }
-            HeadlessProviderExecutionConfig::OpenAiCompatible(_) => self.continue_real_run(request),
+            HeadlessProviderExecutionConfig::OpenAiCompatible(_)
+            | HeadlessProviderExecutionConfig::OpenAiCodexResponses(_) => {
+                self.continue_real_run(request)
+            }
         }
     }
 
@@ -1397,10 +1497,11 @@ struct HeadlessProductionToolRuntime {
 
 impl HeadlessProductionToolRuntime {
     fn new(
-        config: &OpenAiCompatibleHeadlessConfig,
+        workspace_root: Option<&PathBuf>,
+        allow_workspace_writes: bool,
         app_data_roots: Vec<String>,
     ) -> CoreResult<Self> {
-        let workspace_root = config.workspace_root.as_ref().ok_or_else(|| {
+        let workspace_root = workspace_root.ok_or_else(|| {
             CoreError::invalid_request(
                 "agent_core_headless_workspace_missing",
                 "Production Tool Registry V2 dispatch requires a registered workspace root.",
@@ -1417,7 +1518,7 @@ impl HeadlessProductionToolRuntime {
         })?;
         Ok(Self {
             workspace_root,
-            allow_workspace_writes: config.allow_workspace_writes,
+            allow_workspace_writes,
             app_data_roots,
         })
     }
@@ -1443,6 +1544,13 @@ impl HeadlessProductionToolRuntime {
         self.descriptors()
             .into_iter()
             .map(openai_tool_definition_from_descriptor)
+            .collect()
+    }
+
+    fn openai_response_tool_definitions(&self) -> Vec<JsonValue> {
+        self.descriptors()
+            .into_iter()
+            .map(openai_response_tool_definition_from_descriptor)
             .collect()
     }
 
@@ -2076,6 +2184,334 @@ fn send_openai_compatible_chat(
     })
 }
 
+#[derive(Debug, Default)]
+struct PartialOpenAiResponseToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+fn send_openai_codex_responses(
+    client: &Client,
+    config: &OpenAiCodexHeadlessConfig,
+    messages: &[JsonValue],
+    tools: Vec<JsonValue>,
+) -> CoreResult<OpenAiProviderMessage> {
+    let url = openai_codex_responses_url(&config.base_url)?;
+    let mut body = json!({
+        "model": config.model_id,
+        "store": false,
+        "stream": true,
+        "instructions": openai_codex_instructions(messages),
+        "input": openai_codex_response_input(messages)?,
+        "text": { "verbosity": "medium" },
+        "include": ["reasoning.encrypted_content"],
+        "tool_choice": "auto",
+        "parallel_tool_calls": true,
+    });
+    if !tools.is_empty() {
+        body.as_object_mut()
+            .expect("OpenAI Codex request body is an object")
+            .insert("tools".into(), JsonValue::Array(tools));
+    }
+    let mut request = client
+        .post(url)
+        .bearer_auth(config.access_token.trim())
+        .header("chatgpt-account-id", config.account_id.trim())
+        .header("OpenAI-Beta", "responses=experimental")
+        .header("originator", "pi")
+        .header(
+            "user-agent",
+            format!("pi ({}; {})", std::env::consts::OS, std::env::consts::ARCH),
+        )
+        .header("accept", "text/event-stream")
+        .json(&body);
+    if let Some(session_id) = config
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+    {
+        request = request.header("session_id", session_id);
+    }
+    let response = request.send().map_err(|error| {
+        CoreError::system_fault(
+            "agent_core_provider_request_failed",
+            format!(
+                "Headless provider `{}` request failed: {error}",
+                config.provider_id
+            ),
+        )
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().unwrap_or_else(|_| String::new());
+        return Err(CoreError::invalid_request(
+            "agent_core_provider_status_failed",
+            format!(
+                "Headless provider `{}` returned HTTP {}: {}",
+                config.provider_id,
+                status.as_u16(),
+                truncate_text(&text, 2048)
+            ),
+        ));
+    }
+    parse_openai_codex_responses_sse(&config.provider_id, response)
+}
+
+fn openai_codex_responses_url(base_url: &str) -> CoreResult<String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(CoreError::invalid_request(
+            "agent_core_provider_base_url_missing",
+            "A provider base URL is required for headless OpenAI OAuth execution.",
+        ));
+    }
+    if trimmed.starts_with("http://") && !is_local_http_endpoint(trimmed) {
+        return Err(CoreError::invalid_request(
+            "agent_core_provider_base_url_insecure",
+            "Headless OpenAI OAuth HTTP endpoints are only allowed for localhost.",
+        ));
+    }
+    let url = if trimmed.ends_with("/codex/responses") {
+        trimmed.to_owned()
+    } else if trimmed.ends_with("/codex") {
+        format!("{trimmed}/responses")
+    } else {
+        format!("{trimmed}/codex/responses")
+    };
+    Ok(url)
+}
+
+fn openai_codex_instructions(messages: &[JsonValue]) -> String {
+    messages
+        .iter()
+        .find(|message| message.get("role").and_then(JsonValue::as_str) == Some("system"))
+        .and_then(|message| message.get("content").and_then(JsonValue::as_str))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn openai_codex_response_input(messages: &[JsonValue]) -> CoreResult<Vec<JsonValue>> {
+    let mut input = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        match message
+            .get("role")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+        {
+            "system" => {}
+            "user" => {
+                let content = message
+                    .get("content")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default();
+                input.push(json!({
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": content }],
+                }));
+            }
+            "assistant" => {
+                if let Some(content) = message
+                    .get("content")
+                    .and_then(JsonValue::as_str)
+                    .filter(|content| !content.trim().is_empty())
+                {
+                    input.push(json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": content,
+                            "annotations": [],
+                        }],
+                        "status": "completed",
+                        "id": format!("msg_{index}"),
+                    }));
+                }
+                for tool_call in message
+                    .get("tool_calls")
+                    .and_then(JsonValue::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let function = tool_call.get("function").unwrap_or(&JsonValue::Null);
+                    input.push(json!({
+                        "type": "function_call",
+                        "call_id": tool_call.get("id").and_then(JsonValue::as_str).unwrap_or("call"),
+                        "name": function.get("name").and_then(JsonValue::as_str).unwrap_or("unknown"),
+                        "arguments": function.get("arguments").and_then(JsonValue::as_str).unwrap_or("{}"),
+                    }));
+                }
+            }
+            "tool" => {
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": message
+                        .get("tool_call_id")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or("call"),
+                    "output": message
+                        .get("content")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default(),
+                }));
+            }
+            other => {
+                return Err(CoreError::invalid_request(
+                    "agent_core_provider_message_role_invalid",
+                    format!("Cannot encode provider message role `{other}` for OpenAI OAuth."),
+                ));
+            }
+        }
+    }
+    Ok(input)
+}
+
+fn parse_openai_codex_responses_sse(
+    provider_id: &str,
+    response: reqwest::blocking::Response,
+) -> CoreResult<OpenAiProviderMessage> {
+    let mut message = String::new();
+    let mut partial_calls = BTreeMap::<usize, PartialOpenAiResponseToolCall>::new();
+    let mut completed_call_count = 0_usize;
+    for line in BufReader::new(response).lines() {
+        let line = line.map_err(|error| {
+            CoreError::system_fault(
+                "agent_core_provider_stream_read_failed",
+                format!("Xero lost the {provider_id} Responses stream: {error}"),
+            )
+        })?;
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            continue;
+        }
+        let value: JsonValue = serde_json::from_str(data).map_err(|error| {
+            CoreError::system_fault(
+                "agent_core_provider_stream_decode_failed",
+                format!("Xero could not decode a {provider_id} Responses chunk: {error}"),
+            )
+        })?;
+        match value
+            .get("type")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+        {
+            "error" | "response.failed" => {
+                return Err(CoreError::invalid_request(
+                    "agent_core_provider_response_failed",
+                    truncate_text(&value.to_string(), 2048),
+                ));
+            }
+            "response.output_text.delta" => {
+                if let Some(delta) = value.get("delta").and_then(JsonValue::as_str) {
+                    message.push_str(delta);
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                let index = value
+                    .get("output_index")
+                    .and_then(JsonValue::as_u64)
+                    .unwrap_or(completed_call_count as u64) as usize;
+                if let Some(delta) = value.get("delta").and_then(JsonValue::as_str) {
+                    partial_calls
+                        .entry(index)
+                        .or_default()
+                        .arguments
+                        .push_str(delta);
+                }
+            }
+            "response.output_item.added" => {
+                apply_openai_codex_function_call_item(
+                    &mut partial_calls,
+                    &value,
+                    completed_call_count,
+                );
+            }
+            "response.output_item.done" => {
+                if apply_openai_codex_function_call_item(
+                    &mut partial_calls,
+                    &value,
+                    completed_call_count,
+                ) {
+                    completed_call_count = completed_call_count.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+    let tool_calls = partial_calls
+        .into_iter()
+        .map(|(index, partial)| {
+            let name = partial.name.ok_or_else(|| {
+                CoreError::invalid_request(
+                    "agent_core_provider_tool_name_missing",
+                    format!(
+                        "Xero received an OpenAI OAuth tool call at index {index} without a name."
+                    ),
+                )
+            })?;
+            let id = partial
+                .id
+                .unwrap_or_else(|| format!("{provider_id}-tool-call-{}", index + 1));
+            let arguments = if partial.arguments.trim().is_empty() {
+                JsonValue::Object(serde_json::Map::new())
+            } else {
+                serde_json::from_str(&partial.arguments).map_err(|error| {
+                    CoreError::invalid_request(
+                        "agent_core_provider_tool_arguments_invalid",
+                        format!(
+                            "Xero could not decode OpenAI OAuth tool call `{name}` arguments as JSON: {error}"
+                        ),
+                    )
+                })?
+            };
+            Ok(OpenAiToolCall {
+                id,
+                name,
+                arguments,
+            })
+        })
+        .collect::<CoreResult<Vec<_>>>()?;
+    Ok(OpenAiProviderMessage {
+        content: json!(message),
+        tool_calls,
+    })
+}
+
+fn apply_openai_codex_function_call_item(
+    partial_calls: &mut BTreeMap<usize, PartialOpenAiResponseToolCall>,
+    value: &JsonValue,
+    fallback_index: usize,
+) -> bool {
+    let Some(item) = value.get("item") else {
+        return false;
+    };
+    if item.get("type").and_then(JsonValue::as_str) != Some("function_call") {
+        return false;
+    }
+    let index = value
+        .get("output_index")
+        .and_then(JsonValue::as_u64)
+        .unwrap_or(fallback_index as u64) as usize;
+    let partial = partial_calls.entry(index).or_default();
+    if let Some(call_id) = item.get("call_id").and_then(JsonValue::as_str) {
+        partial.id = Some(call_id.to_string());
+    }
+    if let Some(name) = item.get("name").and_then(JsonValue::as_str) {
+        partial.name = Some(name.to_string());
+    }
+    if partial.arguments.is_empty() {
+        if let Some(arguments) = item.get("arguments").and_then(JsonValue::as_str) {
+            partial.arguments.push_str(arguments);
+        }
+    }
+    true
+}
+
 fn parse_openai_tool_calls(message: &JsonValue) -> CoreResult<Vec<OpenAiToolCall>> {
     let Some(calls) = message.get("tool_calls").and_then(JsonValue::as_array) else {
         return Ok(Vec::new());
@@ -2409,6 +2845,16 @@ fn openai_tool_definition_from_descriptor(descriptor: ToolDescriptorV2) -> JsonV
             "description": descriptor.description,
             "parameters": descriptor.input_schema,
         }
+    })
+}
+
+fn openai_response_tool_definition_from_descriptor(descriptor: ToolDescriptorV2) -> JsonValue {
+    json!({
+        "type": "function",
+        "name": descriptor.name,
+        "description": descriptor.description,
+        "parameters": descriptor.input_schema,
+        "strict": JsonValue::Null,
     })
 }
 
@@ -2900,4 +3346,56 @@ fn truncate_text(value: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     format!("{}...", &value[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_codex_responses_url_normalizes_backend_base() {
+        assert_eq!(
+            openai_codex_responses_url("https://chatgpt.com/backend-api").expect("url"),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            openai_codex_responses_url("https://chatgpt.com/backend-api/codex").expect("url"),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert_eq!(
+            openai_codex_responses_url("https://chatgpt.com/backend-api/codex/responses")
+                .expect("url"),
+            "https://chatgpt.com/backend-api/codex/responses"
+        );
+        assert!(openai_codex_responses_url("http://example.com").is_err());
+    }
+
+    #[test]
+    fn openai_codex_response_input_encodes_tool_round_trip() {
+        let input = openai_codex_response_input(&[
+            json!({"role": "system", "content": "system instructions"}),
+            json!({"role": "user", "content": "fix the file"}),
+            json!({
+                "role": "assistant",
+                "content": "I will inspect it.",
+                "tool_calls": [{
+                    "id": "call-1",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                }]
+            }),
+            json!({"role": "tool", "tool_call_id": "call-1", "content": "contents"}),
+        ])
+        .expect("input");
+
+        assert_eq!(input.len(), 4);
+        assert_eq!(input[0]["content"][0]["type"], json!("input_text"));
+        assert_eq!(input[1]["type"], json!("message"));
+        assert_eq!(input[2]["type"], json!("function_call"));
+        assert_eq!(input[2]["call_id"], json!("call-1"));
+        assert_eq!(input[3]["type"], json!("function_call_output"));
+        assert_eq!(input[3]["output"], json!("contents"));
+    }
 }

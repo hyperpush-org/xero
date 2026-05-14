@@ -13,8 +13,10 @@ import json
 import os
 import platform
 import shutil
+import sqlite3
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -82,18 +84,45 @@ def config_check(config: dict[str, Any]) -> dict[str, Any]:
     if missing:
         return {"status": "failed", "code": "config_missing_keys", "missing": missing}
     task_sets = config.get("taskSets") or {}
+    if not isinstance(task_sets, dict) or not task_sets:
+        return {"status": "failed", "code": "task_sets_invalid"}
     undeclared = [
         name
         for name, value in task_sets.items()
-        if not isinstance(value.get("taskIds", []), list)
+        if not isinstance(value, dict) or not isinstance(value.get("taskIds", []), list)
     ]
     if undeclared:
         return {"status": "failed", "code": "task_set_invalid", "taskSets": undeclared}
+    harnesses = config.get("harnesses") or {}
+    xero = harnesses.get("xero") or {}
+    opencode = harnesses.get("opencode") or {}
+    if not xero.get("agentImportPath"):
+        return {"status": "failed", "code": "xero_agent_import_path_missing"}
+    if opencode.get("preferredKind") == "fallback-installed-agent" and not opencode.get(
+        "fallbackImportPath"
+    ):
+        return {"status": "failed", "code": "opencode_fallback_import_path_missing"}
     return {"status": "passed", "code": "ok"}
 
 
 def provider_credential_check(config: dict[str, Any]) -> dict[str, Any]:
     model = config.get("model") or {}
+    provider = os.environ.get("XERO_PROVIDER_ID") or model.get("provider")
+    credential_mode = os.environ.get("XERO_CREDENTIAL_MODE") or model.get("credentialMode")
+    if provider == "openai_codex" or credential_mode == "app_openai_oauth":
+        root = model.get("oauthAppDataRoot") or os.environ.get("XERO_OPENAI_OAUTH_APP_DATA_ROOT")
+        account_id = model.get("oauthAccountId") or os.environ.get("XERO_OPENAI_OAUTH_ACCOUNT_ID")
+        if not root:
+            return {
+                "status": "failed",
+                "code": "openai_oauth_app_data_root_missing",
+                "message": "Set model.oauthAppDataRoot or XERO_OPENAI_OAUTH_APP_DATA_ROOT to the Xero app-data directory that contains the OpenAI OAuth session.",
+            }
+        root_check = check_path_not_legacy(root)
+        if root_check.get("status") != "passed":
+            return root_check
+        credential_store = Path(root) / "xero.db"
+        return openai_oauth_session_check(credential_store, account_id)
     credential_env = model.get("credentialEnv")
     if not credential_env:
         return {"status": "skipped", "code": "credential_env_not_configured"}
@@ -103,6 +132,119 @@ def provider_credential_check(config: dict[str, Any]) -> dict[str, Any]:
         "env": credential_env,
         "valueRedacted": True,
     }
+
+
+def openai_oauth_session_check(store: Path, account_id: str | None = None) -> dict[str, Any]:
+    if not store.is_file():
+        return {
+            "status": "failed",
+            "code": "openai_oauth_store_missing",
+            "credentialMode": "app_openai_oauth",
+            "store": str(store),
+            "valueRedacted": True,
+        }
+    try:
+        with sqlite3.connect(store) as connection:
+            row = select_openai_oauth_session(connection, account_id)
+    except sqlite3.Error as exc:
+        return {
+            "status": "failed",
+            "code": "openai_oauth_store_unreadable",
+            "credentialMode": "app_openai_oauth",
+            "store": str(store),
+            "message": str(exc),
+            "valueRedacted": True,
+        }
+    if row is None:
+        return {
+            "status": "failed",
+            "code": "openai_oauth_session_missing",
+            "credentialMode": "app_openai_oauth",
+            "store": str(store),
+            "accountSelected": bool(account_id),
+            "valueRedacted": True,
+        }
+    source, expires_at = row
+    if int(expires_at or 0) <= int(time.time()) + 60:
+        return {
+            "status": "failed",
+            "code": "openai_oauth_session_expired",
+            "credentialMode": "app_openai_oauth",
+            "store": str(store),
+            "source": source,
+            "accountSelected": bool(account_id),
+            "valueRedacted": True,
+        }
+    return {
+        "status": "passed",
+        "code": "ok",
+        "credentialMode": "app_openai_oauth",
+        "store": str(store),
+        "source": source,
+        "accountSelected": bool(account_id),
+        "valueRedacted": True,
+    }
+
+
+def select_openai_oauth_session(
+    connection: sqlite3.Connection, account_id: str | None
+) -> tuple[str, int] | None:
+    selectors = (
+        (
+            "provider_credentials",
+            """
+            SELECT oauth_expires_at
+            FROM provider_credentials
+            WHERE provider_id = 'openai_codex'
+              AND kind = 'oauth_session'
+              AND oauth_account_id = ?
+              AND oauth_session_id IS NOT NULL
+              AND oauth_access_token IS NOT NULL
+            LIMIT 1
+            """,
+            """
+            SELECT oauth_expires_at
+            FROM provider_credentials
+            WHERE provider_id = 'openai_codex'
+              AND kind = 'oauth_session'
+              AND oauth_session_id IS NOT NULL
+              AND oauth_access_token IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+        ),
+        (
+            "openai_codex_sessions",
+            """
+            SELECT expires_at
+            FROM openai_codex_sessions
+            WHERE account_id = ?
+              AND session_id IS NOT NULL
+              AND access_token IS NOT NULL
+            LIMIT 1
+            """,
+            """
+            SELECT expires_at
+            FROM openai_codex_sessions
+            WHERE session_id IS NOT NULL
+              AND access_token IS NOT NULL
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+        ),
+    )
+    for source, account_sql, latest_sql in selectors:
+        sql = account_sql if account_id else latest_sql
+        params = (account_id,) if account_id else ()
+        try:
+            row = connection.execute(sql, params).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                continue
+            raise
+        if row:
+            return source, int(row[0] or 0)
+    return None
 
 
 def harbor_help_check() -> dict[str, Any]:
@@ -195,7 +337,7 @@ def xero_fake_provider_fixture_check(
     state_root = Path(args.trial_app_data_root) / "preflight-xero-app-data"
     output_dir = Path(args.output_root) / "preflight-xero-fixture"
     dataset_id = ((config.get("benchmark") or {}).get("datasetId")) or "terminal-bench@2.0"
-    return run_command(
+    result = run_command(
         [
             xero_cli,
             "--json",
@@ -227,6 +369,56 @@ def xero_fake_provider_fixture_check(
         ],
         timeout=60,
     )
+    if result.get("status") != "passed":
+        return result
+
+    expected = [
+        "manifest.json",
+        "trajectory.json",
+        "xero-trace.json",
+        "final.diff",
+        "support-bundle.zip",
+        "stdout.txt",
+        "stderr.txt",
+    ]
+    missing = [name for name in expected if not (output_dir / name).is_file()]
+    if missing:
+        return {
+            **result,
+            "status": "failed",
+            "code": "xero_fixture_artifacts_missing",
+            "missingArtifacts": missing,
+        }
+
+    try:
+        manifest = json.loads((output_dir / "manifest.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            **result,
+            "status": "failed",
+            "code": "xero_fixture_manifest_invalid",
+            "message": str(exc),
+        }
+
+    if (manifest.get("harness") or {}).get("fakeProviderFixture") is not True:
+        return {
+            **result,
+            "status": "failed",
+            "code": "xero_fixture_not_labeled",
+        }
+    if ".xero" in json.dumps(manifest):
+        return {
+            **result,
+            "status": "failed",
+            "code": "xero_fixture_legacy_state_leak",
+        }
+
+    return {
+        **result,
+        "code": "ok",
+        "artifactDir": str(output_dir),
+        "verifiedArtifacts": expected,
+    }
 
 
 def main() -> int:

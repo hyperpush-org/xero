@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::AutonomousAgentWorkflowPolicy;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use xero_agent_core::{
     production_runtime_trace_metadata, validate_production_runtime_contract,
     ProductionRuntimeContract, RuntimeStoreDescriptor,
@@ -1351,7 +1352,7 @@ fn handoff_source_context_hash(
 }
 
 fn build_handoff_bundle(
-    _repo_root: &Path,
+    repo_root: &Path,
     source_snapshot: &AgentRunSnapshotRecord,
     pending_prompt: &str,
     source_context_hash: &str,
@@ -1393,6 +1394,13 @@ fn build_handoff_bundle(
         &mut redaction_count,
     );
     let durable_context = handoff_durable_context_instruction(source_context_hash);
+    let carried_context = handoff_carried_durable_context(
+        repo_root,
+        source_snapshot,
+        pending_prompt,
+        source_context_hash,
+        target_run_id,
+    )?;
     let recent_raw_tail = source_snapshot
         .messages
         .iter()
@@ -1534,8 +1542,9 @@ fn build_handoff_bundle(
         "verificationStatus": verification_status,
         "knownRisks": known_risks,
         "openQuestions": open_questions,
-        "approvedMemories": [],
-        "relevantProjectRecords": [],
+        "approvedMemories": carried_context.approved_memories,
+        "relevantProjectRecords": carried_context.relevant_project_records,
+        "durableContextRetrieval": carried_context.retrieval,
         "recentRawTailMessageReferences": recent_raw_tail,
         "sourceContextHash": source_context_hash,
         "activeCompaction": active_compaction.map(|compaction| json!({
@@ -1548,6 +1557,201 @@ fn build_handoff_bundle(
         "redactionCount": redaction_count,
         "agentSpecific": agent_specific,
     }))
+}
+
+#[derive(Debug, Clone)]
+struct HandoffCarriedDurableContext {
+    approved_memories: Vec<JsonValue>,
+    relevant_project_records: Vec<JsonValue>,
+    retrieval: JsonValue,
+}
+
+fn handoff_carried_durable_context(
+    repo_root: &Path,
+    source_snapshot: &AgentRunSnapshotRecord,
+    pending_prompt: &str,
+    source_context_hash: &str,
+    target_run_id: Option<&str>,
+) -> CommandResult<HandoffCarriedDurableContext> {
+    let response = match project_store::search_agent_context(
+        repo_root,
+        project_store::AgentContextRetrievalRequest {
+            query_id: format!(
+                "handoff-context-{}-{}",
+                sanitize_action_id(&source_snapshot.run.run_id),
+                project_store::generate_project_record_id()
+            ),
+            project_id: source_snapshot.run.project_id.clone(),
+            agent_session_id: Some(source_snapshot.run.agent_session_id.clone()),
+            run_id: Some(source_snapshot.run.run_id.clone()),
+            runtime_agent_id: source_snapshot.run.runtime_agent_id,
+            agent_definition_id: source_snapshot.run.agent_definition_id.clone(),
+            agent_definition_version: source_snapshot.run.agent_definition_version,
+            query_text: handoff_context_retrieval_query(source_snapshot, pending_prompt),
+            search_scope: project_store::AgentRetrievalSearchScope::HybridContext,
+            filters: project_store::AgentContextRetrievalFilters {
+                record_kinds: vec![
+                    project_store::ProjectRecordKind::AgentHandoff,
+                    project_store::ProjectRecordKind::Decision,
+                    project_store::ProjectRecordKind::Constraint,
+                    project_store::ProjectRecordKind::Plan,
+                    project_store::ProjectRecordKind::Finding,
+                    project_store::ProjectRecordKind::Verification,
+                    project_store::ProjectRecordKind::Question,
+                    project_store::ProjectRecordKind::ContextNote,
+                    project_store::ProjectRecordKind::Diagnostic,
+                ],
+                memory_kinds: default_handoff_memory_kinds(),
+                ..project_store::AgentContextRetrievalFilters::default()
+            },
+            limit_count: 8,
+            allow_keyword_fallback: true,
+            created_at: now_timestamp(),
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(HandoffCarriedDurableContext {
+                approved_memories: Vec::new(),
+                relevant_project_records: Vec::new(),
+                retrieval: json!({
+                    "schema": "xero.agent_handoff.durable_context_retrieval.v1",
+                    "sourceContextHash": source_context_hash,
+                    "targetRunId": target_run_id,
+                    "queryIds": [],
+                    "resultIds": [],
+                    "resultCount": 0,
+                    "selectionPolicy": "focused_hybrid_retrieval_from_goal_pending_work_changed_paths_and_open_questions",
+                    "status": "failed",
+                    "diagnostic": {
+                        "code": error.code,
+                        "message": error.message,
+                    },
+                    "guidance": "Target run should use project_context_search and project_context_get before relying on durable context.",
+                }),
+            });
+        }
+    };
+    let mut approved_memories = Vec::new();
+    let mut relevant_project_records = Vec::new();
+    for result in &response.results {
+        let carried = handoff_carried_result_json(result);
+        match result.source_kind {
+            project_store::AgentRetrievalResultSourceKind::ApprovedMemory => {
+                if approved_memories.len() < 3 {
+                    approved_memories.push(carried);
+                }
+            }
+            project_store::AgentRetrievalResultSourceKind::ProjectRecord
+            | project_store::AgentRetrievalResultSourceKind::Handoff => {
+                if relevant_project_records.len() < 5 {
+                    relevant_project_records.push(carried);
+                }
+            }
+            project_store::AgentRetrievalResultSourceKind::ContextManifest => {}
+        }
+    }
+    let result_ids = response
+        .result_logs
+        .iter()
+        .map(|result| result.result_id.clone())
+        .collect::<Vec<_>>();
+    Ok(HandoffCarriedDurableContext {
+        approved_memories,
+        relevant_project_records,
+        retrieval: json!({
+            "schema": "xero.agent_handoff.durable_context_retrieval.v1",
+            "sourceContextHash": source_context_hash,
+            "targetRunId": target_run_id,
+            "queryIds": [response.query.query_id],
+            "resultIds": result_ids,
+            "resultCount": response.results.len(),
+            "selectionPolicy": "focused_hybrid_retrieval_from_goal_pending_work_changed_paths_and_open_questions",
+            "guidance": "Target run should call project_context_get for carried IDs before relying on exact details.",
+            "diagnostic": response.diagnostic,
+        }),
+    })
+}
+
+fn handoff_context_retrieval_query(
+    source_snapshot: &AgentRunSnapshotRecord,
+    pending_prompt: &str,
+) -> String {
+    let mut parts = vec![
+        source_snapshot.run.prompt.clone(),
+        pending_prompt.to_string(),
+        source_snapshot
+            .messages
+            .iter()
+            .rev()
+            .take(3)
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        handoff_changed_paths(source_snapshot).join(" "),
+    ];
+    parts.extend(source_snapshot.events.iter().rev().take(6).map(|event| {
+        serde_json::from_str::<JsonValue>(&event.payload_json)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("summary")
+                    .and_then(JsonValue::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| event.payload_json.clone())
+    }));
+    parts.join("\n").chars().take(2_000).collect::<String>()
+}
+
+fn handoff_changed_paths(source_snapshot: &AgentRunSnapshotRecord) -> Vec<String> {
+    source_snapshot
+        .file_changes
+        .iter()
+        .rev()
+        .map(|change| change.path.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(16)
+        .collect()
+}
+
+fn default_handoff_memory_kinds() -> Vec<project_store::AgentMemoryKind> {
+    vec![
+        project_store::AgentMemoryKind::ProjectFact,
+        project_store::AgentMemoryKind::UserPreference,
+        project_store::AgentMemoryKind::Decision,
+        project_store::AgentMemoryKind::SessionSummary,
+        project_store::AgentMemoryKind::Troubleshooting,
+    ]
+}
+
+fn handoff_carried_result_json(result: &project_store::AgentContextRetrievalResult) -> JsonValue {
+    let citation = result.metadata.get("citation").unwrap_or(&JsonValue::Null);
+    let source_kind = match result.source_kind {
+        project_store::AgentRetrievalResultSourceKind::ProjectRecord => "project_record",
+        project_store::AgentRetrievalResultSourceKind::ApprovedMemory => "approved_memory",
+        project_store::AgentRetrievalResultSourceKind::Handoff => "handoff",
+        project_store::AgentRetrievalResultSourceKind::ContextManifest => "context_manifest",
+    };
+    json!({
+        "resultId": result.result_id,
+        "sourceKind": source_kind,
+        "sourceId": result.source_id,
+        "rank": result.rank,
+        "score": result.score,
+        "title": citation.get("title").cloned().unwrap_or(JsonValue::Null),
+        "snippet": result.snippet,
+        "redactionState": match result.redaction_state {
+            project_store::AgentContextRedactionState::Clean => "clean",
+            project_store::AgentContextRedactionState::Redacted => "redacted",
+            project_store::AgentContextRedactionState::Blocked => "blocked",
+        },
+        "selectionReason": "matched focused handoff retrieval query from goal, pending work, changed paths, latest plan, risks, or open questions",
+        "freshness": result.metadata.get("freshness").cloned().unwrap_or(JsonValue::Null),
+        "trust": result.metadata.get("trust").cloned().unwrap_or(JsonValue::Null),
+        "citation": citation,
+    })
 }
 
 fn handoff_durable_context_instruction(source_context_hash: &str) -> JsonValue {
@@ -3935,6 +4139,149 @@ mod tests {
             bundle["verificationStatus"]["evidence"][0]["summary"],
             redacted
         );
+    }
+
+    #[test]
+    fn handoff_bundle_carries_matching_approved_memory_and_project_records() {
+        project_store::agent_memory_lance::reset_connection_cache_for_tests();
+        project_store::project_record_lance::reset_connection_cache_for_tests();
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(repo_root.join("src")).expect("repo src dir");
+        fs::write(repo_root.join("src/parser.rs"), "pub fn parse() {}\n").expect("source file");
+        let project_id = "project-handoff-carryover";
+        create_project_database(&repo_root, project_id);
+        let mut snapshot = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-handoff-carryover-source".into(),
+                provider_id: "test-provider".into(),
+                model_id: "test-model".into(),
+                prompt: "Continue the parser release normalization work.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-09T00:00:00Z".into(),
+            },
+        )
+        .expect("insert source run");
+        snapshot.run.status = AgentRunStatus::Running;
+        snapshot.messages.push(project_store::AgentMessageRecord {
+            id: 1,
+            project_id: project_id.into(),
+            run_id: "run-handoff-carryover-source".into(),
+            role: AgentMessageRole::Assistant,
+            content: "Decision: parser release uses zero-copy token normalization. Next: continue parser verification.".into(),
+            provider_metadata_json: None,
+            created_at: "2026-05-09T00:01:00Z".into(),
+            attachments: Vec::new(),
+        });
+        snapshot
+            .file_changes
+            .push(project_store::AgentFileChangeRecord {
+                id: 1,
+                project_id: project_id.into(),
+                run_id: "run-handoff-carryover-source".into(),
+                trace_id: "trace-handoff-carryover-source".into(),
+                top_level_run_id: "run-handoff-carryover-source".into(),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "src/parser.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: Some("c".repeat(64)),
+                created_at: "2026-05-09T00:01:10Z".into(),
+            });
+
+        project_store::insert_agent_memory(
+            &repo_root,
+            &project_store::NewAgentMemoryRecord {
+                memory_id: "memory-handoff-carryover".into(),
+                project_id: project_id.into(),
+                agent_session_id: None,
+                scope: project_store::AgentMemoryScope::Project,
+                kind: project_store::AgentMemoryKind::ProjectFact,
+                text: "Parser release uses zero-copy token normalization.".into(),
+                review_state: project_store::AgentMemoryReviewState::Approved,
+                enabled: true,
+                confidence: Some(92),
+                source_run_id: Some("run-handoff-carryover-source".into()),
+                source_item_ids: vec!["agent_messages:1".into()],
+                diagnostic: Some(project_store::AgentRunDiagnosticRecord {
+                    code: "memory_promotion_gate_promoted".into(),
+                    message: "{\"decision\":\"promoted\"}".into(),
+                }),
+                created_at: "2026-05-09T00:01:30Z".into(),
+            },
+        )
+        .expect("insert approved memory");
+        project_store::insert_project_record(
+            &repo_root,
+            &project_store::NewProjectRecordRecord {
+                record_id: "record-handoff-carryover".into(),
+                project_id: project_id.into(),
+                record_kind: project_store::ProjectRecordKind::Decision,
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                agent_session_id: Some(project_store::DEFAULT_AGENT_SESSION_ID.into()),
+                run_id: "run-handoff-carryover-source".into(),
+                workflow_run_id: None,
+                workflow_step_id: None,
+                title: "Parser normalization decision".into(),
+                summary: "Parser release uses zero-copy token normalization.".into(),
+                text: "Decision: parser release uses zero-copy token normalization before the verification handoff.".into(),
+                content_json: Some(json!({
+                    "schema": "test.handoff_carryover.decision.v1",
+                    "decision": "zero-copy token normalization",
+                })),
+                schema_name: Some("test.handoff_carryover.decision.v1".into()),
+                schema_version: 1,
+                importance: project_store::ProjectRecordImportance::High,
+                confidence: Some(0.92),
+                tags: vec!["handoff-carryover".into()],
+                source_item_ids: vec!["agent_messages:1".into()],
+                related_paths: vec!["src/parser.rs".into()],
+                produced_artifact_refs: Vec::new(),
+                redaction_state: project_store::ProjectRecordRedactionState::Clean,
+                visibility: project_store::ProjectRecordVisibility::Retrieval,
+                created_at: "2026-05-09T00:01:40Z".into(),
+            },
+        )
+        .expect("insert project record");
+
+        let bundle = build_handoff_bundle(
+            &repo_root,
+            &snapshot,
+            "Continue parser release zero-copy normalization verification.",
+            "handoff-carryover-context-hash",
+            None,
+            Some("run-handoff-carryover-target"),
+        )
+        .expect("build handoff bundle");
+
+        assert!(bundle["approvedMemories"]
+            .as_array()
+            .expect("approved memories")
+            .iter()
+            .any(|item| item["sourceId"] == json!("memory-handoff-carryover")));
+        assert!(bundle["relevantProjectRecords"]
+            .as_array()
+            .expect("project records")
+            .iter()
+            .any(|item| item["sourceId"] == json!("record-handoff-carryover")));
+        assert!(!bundle["durableContextRetrieval"]["queryIds"]
+            .as_array()
+            .expect("query ids")
+            .is_empty());
+        assert!(!bundle["durableContextRetrieval"]["resultIds"]
+            .as_array()
+            .expect("result ids")
+            .is_empty());
     }
 
     #[test]

@@ -495,6 +495,52 @@ pub fn list_project_records(
         .collect::<Result<Vec<_>, _>>()
 }
 
+pub fn is_retrievable_project_record(record: &ProjectRecordRecord) -> bool {
+    project_record_retrieval_reason(record) == "retrievable"
+}
+
+pub fn project_record_retrieval_reason(record: &ProjectRecordRecord) -> &'static str {
+    project_record_retrieval_reason_from_parts(
+        project_record_redaction_state_sql_value(&record.redaction_state),
+        project_record_visibility_sql_value(&record.visibility),
+        &record.freshness_state,
+        record.superseded_by_id.as_deref(),
+        record.invalidated_at.as_deref(),
+    )
+}
+
+pub(crate) fn project_record_retrieval_reason_from_parts(
+    redaction_state: &str,
+    visibility: &str,
+    freshness_state: &str,
+    superseded_by_id: Option<&str>,
+    invalidated_at: Option<&str>,
+) -> &'static str {
+    if redaction_state
+        == project_record_redaction_state_sql_value(&ProjectRecordRedactionState::Blocked)
+    {
+        return "blocked";
+    }
+    if visibility == project_record_visibility_sql_value(&ProjectRecordVisibility::MemoryCandidate)
+    {
+        return "candidate_unreviewed";
+    }
+    if superseded_by_id.is_some() {
+        return "superseded";
+    }
+    match parse_freshness_state(freshness_state) {
+        FreshnessState::Current | FreshnessState::SourceUnknown => {}
+        FreshnessState::Stale => return "stale",
+        FreshnessState::SourceMissing => return "source_missing",
+        FreshnessState::Superseded => return "superseded",
+        FreshnessState::Blocked => return "blocked",
+    }
+    if invalidated_at.is_some() {
+        return "invalidated";
+    }
+    "retrievable"
+}
+
 pub fn delete_project_record(
     repo_root: &Path,
     project_id: &str,

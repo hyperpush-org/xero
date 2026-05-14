@@ -873,7 +873,7 @@ export function SettingsDialog({
               <button
                 type="button"
                 onClick={() => onOpenChange(false)}
-                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] font-medium text-muted-foreground hover:bg-accent/40 hover:text-foreground"
               >
                 <ArrowLeft className="h-4 w-4" />
                 Back to app
@@ -903,7 +903,7 @@ export function SettingsDialog({
                             void preloadSettingsSectionChunk(id)
                           }}
                           className={cn(
-                            "group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13.5px] leading-tight transition-colors",
+                            "group flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-[13.5px] leading-tight",
                             active
                               ? "bg-accent/60 text-foreground"
                               : "text-muted-foreground hover:bg-accent/30 hover:text-foreground",

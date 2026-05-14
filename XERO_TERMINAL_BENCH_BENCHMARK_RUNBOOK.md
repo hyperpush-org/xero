@@ -28,11 +28,22 @@ Checks that matter:
 - Docker or the selected sandbox provider is usable.
 - Xero CLI is available and reports a version.
 - OpenCode is available through Harbor built-in support, or the fallback adapter path is clearly labeled.
-- Provider credential environment variables are present, without printing secret values.
+- Provider credentials are present: API-key environment variables for API-key routes, or the app-data OpenAI OAuth store for `openai_codex`.
 - Trial state and output roots are outside legacy `.xero/` state.
 - Optional Xero fake-provider fixture writes the expected artifacts.
 
 Gate: all required preflight checks pass. If `opencode` is missing from Harbor, decide whether to use the labeled fallback before continuing.
+
+For Xero runs that should use the already logged-in OpenAI OAuth session, select the `openai_codex` provider path:
+
+```sh
+export XERO_PROVIDER_ID=openai_codex
+export XERO_OPENAI_OAUTH_APP_DATA_ROOT="$HOME/Library/Application Support/dev.sn0w.xero"
+# Optional when more than one OpenAI account is present:
+export XERO_OPENAI_OAUTH_ACCOUNT_ID="acct_..."
+```
+
+This uses the app-local `xero.db` OAuth session and does not require `OPENAI_API_KEY`. Keep the manifest labels: `credentialMode=app_openai_oauth` and `endpointClass=chatgpt-codex-oauth`.
 
 ### 2. Adapter Smoke
 
@@ -66,7 +77,7 @@ Hold constant:
 - Dataset id and resolved version.
 - Task ids.
 - Attempt count.
-- Model provider and model id.
+- Model provider, model id, credential mode, and endpoint class.
 - Temperature, reasoning effort, output limit, and context budget where supported.
 - Wall time and cost limits.
 - Sandbox and network policy.
@@ -176,4 +187,3 @@ The shareable summary should be shorter and clearly labeled as either fixed-mode
 6. Generate the engineering report.
 7. Triage failures.
 8. Decide whether to run the full benchmark.
-

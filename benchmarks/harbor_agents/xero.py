@@ -63,6 +63,7 @@ ADAPTER_VERSION = "xero-terminal-bench-harbor-adapter.v1"
 
 APPROVED_ENV_BY_PROVIDER: dict[str, tuple[str, ...]] = {
     "openai_api": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    "openai_codex": (),
     "openrouter": ("OPENROUTER_API_KEY",),
     "github_models": ("GITHUB_TOKEN",),
     "gemini_ai_studio": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
@@ -72,6 +73,8 @@ APPROVED_ENV_BY_PROVIDER: dict[str, tuple[str, ...]] = {
 
 PROVIDER_ALIASES = {
     "openai": "openai_api",
+    "codex": "openai_codex",
+    "openai_codex": "openai_codex",
     "google": "gemini_ai_studio",
     "gemini": "gemini_ai_studio",
     "github": "github_models",
@@ -282,6 +285,9 @@ class XeroInstalledAgent(BaseInstalledAgent):
             "--xero-source-revision": git_source_revision(self.xero_source_dir),
             "--api-key-env": api_env,
             "--base-url": os.environ.get("XERO_PROVIDER_BASE_URL"),
+            "--credential-mode": os.environ.get("XERO_CREDENTIAL_MODE"),
+            "--oauth-app-data-root": os.environ.get("XERO_OPENAI_OAUTH_APP_DATA_ROOT"),
+            "--oauth-account-id": os.environ.get("XERO_OPENAI_OAUTH_ACCOUNT_ID"),
             "--temperature": os.environ.get("XERO_TEMPERATURE"),
             "--reasoning-effort": os.environ.get("XERO_REASONING_EFFORT"),
             "--max-output-tokens": os.environ.get("XERO_MAX_OUTPUT_TOKENS"),

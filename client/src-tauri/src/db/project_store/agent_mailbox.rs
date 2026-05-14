@@ -1079,7 +1079,9 @@ fn mailbox_promotion_content_json(
         "schema": MAILBOX_PROMOTION_SCHEMA,
         "itemId": item.item_id,
         "itemType": item.item_type.as_str(),
+        "parentItemId": item.parent_item_id,
         "priority": item.priority.as_str(),
+        "status": item.status.as_str(),
         "senderRunId": item.sender_run_id,
         "senderAgentSessionId": item.sender_agent_session_id,
         "senderChildRunId": item.sender_child_run_id,
@@ -1088,10 +1090,35 @@ fn mailbox_promotion_content_json(
         "targetAgentSessionId": item.target_agent_session_id,
         "targetRunId": item.target_run_id,
         "targetRole": item.target_role,
+        "resolvedAt": item.resolved_at,
+        "resolvedByRunId": item.resolved_by_run_id,
+        "resolveReason": item.resolve_reason,
         "relatedPaths": item.related_paths,
+        "threading": {
+            "parentItemId": item.parent_item_id,
+            "promotedFromItemId": item.item_id,
+            "promotedAt": item.promoted_at,
+        },
+        "codeHistoryNotice": is_code_history_mailbox_item_type(item.item_type),
+        "currentFileWarning": if is_code_history_mailbox_item_type(item.item_type) {
+            "This promoted mailbox candidate came from temporary code-history coordination; current files and code-history tool output remain authoritative."
+        } else {
+            "This promoted mailbox candidate came from temporary coordination; current files and current tool output remain authoritative."
+        },
         "temporaryMailbox": true,
         "approvedMemoryAutomatically": false,
+        "requiresAutomatedGovernance": true,
     })
+}
+
+fn is_code_history_mailbox_item_type(item_type: AgentMailboxItemType) -> bool {
+    matches!(
+        item_type,
+        AgentMailboxItemType::HistoryRewriteNotice
+            | AgentMailboxItemType::UndoConflictNotice
+            | AgentMailboxItemType::WorkspaceEpochAdvanced
+            | AgentMailboxItemType::ReservationInvalidated
+    )
 }
 
 fn json_string_array(values: &[String], field: &'static str) -> CommandResult<String> {
@@ -1563,5 +1590,17 @@ mod tests {
             .iter()
             .any(|source| source.starts_with("agent_mailbox_items:")));
         assert!(candidate.tags.iter().any(|tag| tag == "swarm-mailbox"));
+        let content = candidate.content_json.expect("promotion content json");
+        assert_eq!(content["temporaryMailbox"], json!(true));
+        assert_eq!(content["approvedMemoryAutomatically"], json!(false));
+        assert_eq!(content["requiresAutomatedGovernance"], json!(true));
+        assert_eq!(
+            content["threading"]["promotedFromItemId"],
+            json!(promotion.item.item_id)
+        );
+        assert!(content["currentFileWarning"]
+            .as_str()
+            .expect("current file warning")
+            .contains("current files"));
     }
 }

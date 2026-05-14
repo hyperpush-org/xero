@@ -1,6 +1,8 @@
 import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
-from benchmarks.report import summarize, wilson
+from benchmarks.report import load_manifests, summarize, wilson
 
 
 def manifest(harness: str, task: str, status: str, wall: int = 1000):
@@ -17,6 +19,13 @@ def manifest(harness: str, task: str, status: str, wall: int = 1000):
         "metrics": {"wallTimeMs": wall},
         "_manifestPath": f"/tmp/{harness}/{task}/manifest.json",
     }
+
+
+def fake_fixture_manifest(task: str):
+    row = manifest("xero", task, "completed")
+    row["harness"]["fakeProviderFixture"] = True
+    row["_manifestPath"] = f"/tmp/xero/{task}/manifest.json"
+    return row
 
 
 class ReportTests(unittest.TestCase):
@@ -38,6 +47,46 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["harnesses"]["opencode"]["passAt1"], 1)
         self.assertIs(report["pairedOutcomes"]["task-1"]["xero"]["resolved"], True)
         self.assertIs(report["pairedOutcomes"]["task-2"]["xero"]["resolved"], False)
+
+    def test_summarize_excludes_fake_provider_fixtures_from_scores(self):
+        report = summarize(
+            [
+                fake_fixture_manifest("fixture-task"),
+                manifest("xero", "real-task", "completed", 100),
+            ]
+        )
+
+        self.assertEqual(report["manifestCount"], 2)
+        self.assertEqual(report["scoredManifestCount"], 1)
+        self.assertEqual(report["excludedManifestCount"], 1)
+        self.assertEqual(report["harnesses"]["xero"]["taskCount"], 1)
+        self.assertNotIn("fixture-task", report["pairedOutcomes"])
+        self.assertEqual(
+            report["excludedManifests"][0]["reason"],
+            "fake_provider_fixture",
+        )
+
+    def test_load_manifests_skips_harbor_collection_manifests(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            harbor_manifest = root / "trial" / "artifacts" / "manifest.json"
+            harbor_manifest.parent.mkdir(parents=True)
+            harbor_manifest.write_text('[{"source": "/logs/artifacts", "status": "ok"}]')
+            benchmark_manifest = root / "trial" / "agent" / "manifest.json"
+            benchmark_manifest.parent.mkdir(parents=True)
+            benchmark_manifest.write_text(
+                """{
+                  "benchmark": {"name": "terminal-bench", "datasetId": "terminal-bench@2.0", "taskId": "task-1"},
+                  "harness": {"name": "xero"},
+                  "run": {"status": "completed"},
+                  "verifier": {"resolved": true}
+                }"""
+            )
+
+            manifests = load_manifests(root)
+
+        self.assertEqual(len(manifests), 1)
+        self.assertEqual(manifests[0]["benchmark"]["taskId"], "task-1")
 
 
 if __name__ == "__main__":

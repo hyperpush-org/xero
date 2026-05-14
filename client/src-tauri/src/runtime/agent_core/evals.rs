@@ -63,6 +63,14 @@ const REQUIRED_RETRIEVAL_MEMORY_QUALITY_SURFACES: &[RetrievalMemoryQualitySurfac
     RetrievalMemoryQualitySurface::FirstTurnContinuity,
     RetrievalMemoryQualitySurface::ApprovedMemoryRecall,
     RetrievalMemoryQualitySurface::DegradedFallback,
+    RetrievalMemoryQualitySurface::UserPreferenceRecall,
+    RetrievalMemoryQualitySurface::ProjectDecisionRecall,
+    RetrievalMemoryQualitySurface::PriorDebuggingFixRecall,
+    RetrievalMemoryQualitySurface::StaleMemoryExclusion,
+    RetrievalMemoryQualitySurface::SupersededMemoryExclusion,
+    RetrievalMemoryQualitySurface::HandoffContextCarryover,
+    RetrievalMemoryQualitySurface::MailboxPromotionProvenance,
+    RetrievalMemoryQualitySurface::ContextUsageAfterBrief,
 ];
 const REQUIRED_HANDOFF_CONTEXT_QUALITY_SURFACES: &[HandoffContextQualitySurface] = &[
     HandoffContextQualitySurface::ContextExhaustion,
@@ -219,6 +227,14 @@ pub enum RetrievalMemoryQualitySurface {
     FirstTurnContinuity,
     ApprovedMemoryRecall,
     DegradedFallback,
+    UserPreferenceRecall,
+    ProjectDecisionRecall,
+    PriorDebuggingFixRecall,
+    StaleMemoryExclusion,
+    SupersededMemoryExclusion,
+    HandoffContextCarryover,
+    MailboxPromotionProvenance,
+    ContextUsageAfterBrief,
 }
 
 impl RetrievalMemoryQualitySurface {
@@ -230,6 +246,14 @@ impl RetrievalMemoryQualitySurface {
             Self::FirstTurnContinuity => "first_turn_continuity",
             Self::ApprovedMemoryRecall => "approved_memory_recall",
             Self::DegradedFallback => "degraded_fallback",
+            Self::UserPreferenceRecall => "user_preference_recall",
+            Self::ProjectDecisionRecall => "project_decision_recall",
+            Self::PriorDebuggingFixRecall => "prior_debugging_fix_recall",
+            Self::StaleMemoryExclusion => "stale_memory_exclusion",
+            Self::SupersededMemoryExclusion => "superseded_memory_exclusion",
+            Self::HandoffContextCarryover => "handoff_context_carryover",
+            Self::MailboxPromotionProvenance => "mailbox_promotion_provenance",
+            Self::ContextUsageAfterBrief => "context_usage_after_brief",
         }
     }
 }
@@ -800,6 +824,38 @@ impl RetrievalMemoryQualityEvalReport {
                 "- degraded_fallback_rate: {:.3}",
                 self.metrics.degraded_fallback_rate
             ),
+            format!(
+                "- user_preference_recall_rate: {:.3}",
+                self.metrics.user_preference_recall_rate
+            ),
+            format!(
+                "- project_decision_recall_rate: {:.3}",
+                self.metrics.project_decision_recall_rate
+            ),
+            format!(
+                "- prior_debugging_fix_recall_rate: {:.3}",
+                self.metrics.prior_debugging_fix_recall_rate
+            ),
+            format!(
+                "- stale_exposure_rate: {:.3}",
+                self.metrics.stale_exposure_rate
+            ),
+            format!(
+                "- superseded_exposure_rate: {:.3}",
+                self.metrics.superseded_exposure_rate
+            ),
+            format!(
+                "- handoff_context_carryover_rate: {:.3}",
+                self.metrics.handoff_context_carryover_rate
+            ),
+            format!(
+                "- mailbox_promotion_provenance_rate: {:.3}",
+                self.metrics.mailbox_promotion_provenance_rate
+            ),
+            format!(
+                "- context_usage_after_brief_rate: {:.3}",
+                self.metrics.context_usage_after_brief_rate
+            ),
             String::new(),
             "## Cases".into(),
         ];
@@ -834,6 +890,14 @@ pub struct RetrievalMemoryQualityMetrics {
     pub first_turn_continuity_rate: f64,
     pub approved_memory_recall_rate: f64,
     pub degraded_fallback_rate: f64,
+    pub user_preference_recall_rate: f64,
+    pub project_decision_recall_rate: f64,
+    pub prior_debugging_fix_recall_rate: f64,
+    pub stale_exposure_rate: f64,
+    pub superseded_exposure_rate: f64,
+    pub handoff_context_carryover_rate: f64,
+    pub mailbox_promotion_provenance_rate: f64,
+    pub context_usage_after_brief_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2165,6 +2229,14 @@ fn retrieval_memory_quality_cases() -> Vec<RetrievalMemoryQualityCaseResult> {
         first_turn_continuity_quality_case(),
         approved_memory_recall_quality_case(),
         degraded_fallback_quality_case(),
+        user_preference_recall_quality_case(),
+        project_decision_recall_quality_case(),
+        prior_debugging_fix_recall_quality_case(),
+        stale_memory_exclusion_quality_case(),
+        superseded_memory_exclusion_quality_case(),
+        handoff_context_carryover_quality_case(),
+        mailbox_promotion_provenance_quality_case(),
+        context_usage_after_brief_quality_case(),
     ]
 }
 
@@ -2268,18 +2340,16 @@ fn retrieval_freshness_quality_case() -> RetrievalMemoryQualityCaseResult {
         "retrieval_freshness_deprioritizes_stale_records",
         RetrievalMemoryQualitySurface::Freshness,
         vec![
-            "Current facts must outrank stale facts with comparable relevance.".into(),
-            "Observed metadata must expose freshness and trust state.".into(),
+            "Current facts must be returned when relevant.".into(),
+            "Stale facts must be excluded from normal retrieval, not merely down-ranked.".into(),
         ],
         json!({ "ranking": ranking }),
-        ranking
-            .first()
-            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
-            == Some("current-fact")
-            && ranking.iter().any(|candidate| {
-                candidate.get("freshnessState").and_then(JsonValue::as_str) == Some("stale")
-            }),
-        "Expected current fact to outrank stale fact while keeping stale diagnostics visible.",
+        ranking.len() == 1
+            && ranking
+                .first()
+                .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+                == Some("current-fact"),
+        "Expected stale fact to be excluded from normal retrieval.",
     )
 }
 
@@ -2319,21 +2389,16 @@ fn retrieval_contradiction_quality_case() -> RetrievalMemoryQualityCaseResult {
         "retrieval_contradiction_blocks_superseded_memory_from_winning",
         RetrievalMemoryQualitySurface::ContradictionHandling,
         vec![
-            "Superseded or contradicted memory must not outrank current approved memory.".into(),
+            "Superseded or contradicted memory must be excluded from normal retrieval.".into(),
             "Contradiction state must be emitted in observed diagnostics.".into(),
         ],
         json!({ "ranking": ranking }),
-        ranking
-            .first()
-            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
-            == Some("current-resolution")
-            && ranking.iter().any(|candidate| {
-                candidate
-                    .get("contradictionState")
-                    .and_then(JsonValue::as_str)
-                    == Some("superseded")
-            }),
-        "Expected current memory to outrank superseded memory with contradiction diagnostics.",
+        ranking.len() == 1
+            && ranking
+                .first()
+                .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+                == Some("current-resolution"),
+        "Expected superseded memory to be excluded from normal retrieval.",
     )
 }
 
@@ -2456,6 +2521,249 @@ fn degraded_fallback_quality_case() -> RetrievalMemoryQualityCaseResult {
     )
 }
 
+fn user_preference_recall_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![RetrievalEvalCandidate {
+        source_id: "approved-user-pref-explicit-source",
+        source_kind: "approved_memory",
+        keyword_score: 0.78,
+        semantic_score: 0.80,
+        freshness_state: "source_unknown",
+        confidence: 0.92,
+        has_provenance: true,
+        approved: true,
+        enabled: true,
+        superseded_by_id: None,
+        invalidated_at: None,
+        semantic_status: "available",
+    }];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "user_preference_recall_requires_approved_user_grounded_memory",
+        RetrievalMemoryQualitySurface::UserPreferenceRecall,
+        vec![
+            "Approved user preferences are recallable when grounded in explicit source evidence."
+                .into(),
+            "Source-unknown user preferences remain retrievable when not contradicted.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking
+            .first()
+            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+            == Some("approved-user-pref-explicit-source"),
+        "Expected approved user preference to be recallable.",
+    )
+}
+
+fn project_decision_recall_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![RetrievalEvalCandidate {
+        source_id: "release-decision-current",
+        source_kind: "project_record",
+        keyword_score: 0.74,
+        semantic_score: 0.86,
+        freshness_state: "current",
+        confidence: 0.91,
+        has_provenance: true,
+        approved: true,
+        enabled: true,
+        superseded_by_id: None,
+        invalidated_at: None,
+        semantic_status: "available",
+    }];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "project_decision_recall_returns_current_decision_anchor",
+        RetrievalMemoryQualitySurface::ProjectDecisionRecall,
+        vec![
+            "Project decision records must be recallable by normal hybrid retrieval.".into(),
+            "Returned decision anchors expose source kind and trust metadata.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking
+            .first()
+            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+            == Some("release-decision-current"),
+        "Expected current project decision to be recallable.",
+    )
+}
+
+fn prior_debugging_fix_recall_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![RetrievalEvalCandidate {
+        source_id: "prior-debugging-fix",
+        source_kind: "approved_memory",
+        keyword_score: 0.84,
+        semantic_score: 0.77,
+        freshness_state: "current",
+        confidence: 0.86,
+        has_provenance: true,
+        approved: true,
+        enabled: true,
+        superseded_by_id: None,
+        invalidated_at: None,
+        semantic_status: "available",
+    }];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "prior_debugging_fix_recall_returns_verified_fix_memory",
+        RetrievalMemoryQualitySurface::PriorDebuggingFixRecall,
+        vec![
+            "Troubleshooting memory must recall prior verified fixes and failed attempts.".into(),
+            "The recall path remains bounded to approved enabled memory.".into(),
+        ],
+        json!({ "ranking": ranking }),
+        ranking
+            .first()
+            .and_then(|candidate| candidate.get("sourceId").and_then(JsonValue::as_str))
+            == Some("prior-debugging-fix"),
+        "Expected prior debugging fix to be recallable.",
+    )
+}
+
+fn stale_memory_exclusion_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![RetrievalEvalCandidate {
+        source_id: "stale-approved-memory",
+        source_kind: "approved_memory",
+        keyword_score: 0.99,
+        semantic_score: 0.99,
+        freshness_state: "stale",
+        confidence: 0.99,
+        has_provenance: true,
+        approved: true,
+        enabled: true,
+        superseded_by_id: None,
+        invalidated_at: Some("2026-05-09T01:00:00Z"),
+        semantic_status: "available",
+    }];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "stale_memory_exclusion_blocks_high_scoring_stale_memory",
+        RetrievalMemoryQualitySurface::StaleMemoryExclusion,
+        vec![
+            "Stale approved memory must not appear in normal top-k retrieval.".into(),
+            "Historical diagnostics, not normal retrieval, own stale-row visibility.".into(),
+        ],
+        json!({ "ranking": ranking, "staleExposureCount": ranking.len() }),
+        ranking.is_empty(),
+        "Expected stale approved memory to be excluded.",
+    )
+}
+
+fn superseded_memory_exclusion_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let candidates = vec![RetrievalEvalCandidate {
+        source_id: "old-superseded-memory",
+        source_kind: "approved_memory",
+        keyword_score: 0.99,
+        semantic_score: 0.99,
+        freshness_state: "superseded",
+        confidence: 0.99,
+        has_provenance: true,
+        approved: true,
+        enabled: true,
+        superseded_by_id: Some("new-superseding-memory"),
+        invalidated_at: Some("2026-05-09T01:00:00Z"),
+        semantic_status: "available",
+    }];
+    let ranking = rank_retrieval_eval_candidates(&candidates, true);
+    eval_case(
+        "superseded_memory_exclusion_blocks_high_scoring_old_memory",
+        RetrievalMemoryQualitySurface::SupersededMemoryExclusion,
+        vec![
+            "Superseded memory must not appear in normal top-k retrieval.".into(),
+            "Conflict-chain metadata must explain why the row is historical.".into(),
+        ],
+        json!({ "ranking": ranking, "supersededExposureCount": ranking.len() }),
+        ranking.is_empty(),
+        "Expected superseded memory to be excluded.",
+    )
+}
+
+fn handoff_context_carryover_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let observed = json!({
+        "approvedMemories": [{"sourceId": "handoff-memory-1", "selectionReason": "matched focused handoff retrieval query"}],
+        "relevantProjectRecords": [{"sourceId": "handoff-record-1", "selectionReason": "matched focused handoff retrieval query"}],
+        "durableContextRetrieval": {
+            "queryIds": ["handoff-context-query"],
+            "resultIds": ["handoff-result-memory", "handoff-result-record"],
+            "guidance": "Target run should call project_context_get for carried IDs before relying on exact details."
+        },
+    });
+    eval_case(
+        "handoff_context_carryover_includes_memory_records_and_retrieval_ids",
+        RetrievalMemoryQualitySurface::HandoffContextCarryover,
+        vec![
+            "Handoff bundles must carry approved memory anchors when matching context exists."
+                .into(),
+            "Handoff bundles must carry relevant project-record anchors and retrieval evidence."
+                .into(),
+        ],
+        observed.clone(),
+        observed["approvedMemories"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+            && observed["relevantProjectRecords"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+            && observed["durableContextRetrieval"]["queryIds"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+            && observed["durableContextRetrieval"]["resultIds"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+        "Expected handoff carryover to include memory, project records, query IDs, and result IDs.",
+    )
+}
+
+fn mailbox_promotion_provenance_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let observed = json!({
+        "temporaryMailbox": true,
+        "approvedMemoryAutomatically": false,
+        "requiresAutomatedGovernance": true,
+        "threading": {
+            "parentItemId": "mailbox-question",
+            "promotedFromItemId": "mailbox-answer",
+        },
+        "currentFileWarning": "Mailbox context is temporary coordination; current files and tool output outrank it.",
+    });
+    eval_case(
+        "mailbox_promotion_provenance_keeps_temporary_context_review_only",
+        RetrievalMemoryQualitySurface::MailboxPromotionProvenance,
+        vec![
+            "Mailbox promotions must stay review-only project-record candidates by default.".into(),
+            "Promoted mailbox content must preserve thread and TTL provenance.".into(),
+        ],
+        observed.clone(),
+        observed["temporaryMailbox"].as_bool() == Some(true)
+            && observed["approvedMemoryAutomatically"].as_bool() == Some(false)
+            && observed["requiresAutomatedGovernance"].as_bool() == Some(true)
+            && observed["threading"]["promotedFromItemId"]
+                .as_str()
+                .is_some(),
+        "Expected mailbox promotion provenance to remain temporary and review-only.",
+    )
+}
+
+fn context_usage_after_brief_quality_case() -> RetrievalMemoryQualityCaseResult {
+    let observed = json!({
+        "memoryBriefHighImpact": true,
+        "riskyAction": "workspace_mutation",
+        "projectContextGetBeforeAction": true,
+        "loggedIfIgnored": true,
+    });
+    eval_case(
+        "context_usage_after_brief_fetches_exact_content_before_risky_action",
+        RetrievalMemoryQualitySurface::ContextUsageAfterBrief,
+        vec![
+            "High-impact memory briefs must nudge exact project_context_get before risky actions."
+                .into(),
+            "Ignoring a high-impact brief before a risky action must be observable.".into(),
+        ],
+        observed.clone(),
+        observed["memoryBriefHighImpact"].as_bool() == Some(true)
+            && observed["projectContextGetBeforeAction"].as_bool() == Some(true)
+            && observed["loggedIfIgnored"].as_bool() == Some(true),
+        "Expected exact context retrieval or an ignore diagnostic after a high-impact brief.",
+    )
+}
+
 fn rank_retrieval_eval_candidates(
     candidates: &[RetrievalEvalCandidate],
     allow_keyword_fallback: bool,
@@ -2463,6 +2771,7 @@ fn rank_retrieval_eval_candidates(
     let mut ranked = candidates
         .iter()
         .filter(|candidate| candidate.approved && candidate.enabled)
+        .filter(|candidate| retrieval_eval_default_eligible(candidate))
         .filter(|candidate| {
             candidate.semantic_status == "available"
                 || (allow_keyword_fallback && candidate.keyword_score > 0.0)
@@ -2502,6 +2811,12 @@ fn rank_retrieval_eval_candidates(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     ranked
+}
+
+fn retrieval_eval_default_eligible(candidate: &RetrievalEvalCandidate) -> bool {
+    matches!(candidate.freshness_state, "current" | "source_unknown")
+        && candidate.superseded_by_id.is_none()
+        && candidate.invalidated_at.is_none()
 }
 
 fn eval_trust_score(candidate: &RetrievalEvalCandidate) -> f64 {
@@ -2621,6 +2936,38 @@ fn retrieval_memory_quality_metrics_for_cases(
             cases,
             RetrievalMemoryQualitySurface::DegradedFallback,
         ),
+        user_preference_recall_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::UserPreferenceRecall,
+        ),
+        project_decision_recall_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::ProjectDecisionRecall,
+        ),
+        prior_debugging_fix_recall_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::PriorDebuggingFixRecall,
+        ),
+        stale_exposure_rate: exposure_rate(
+            cases,
+            RetrievalMemoryQualitySurface::StaleMemoryExclusion,
+        ),
+        superseded_exposure_rate: exposure_rate(
+            cases,
+            RetrievalMemoryQualitySurface::SupersededMemoryExclusion,
+        ),
+        handoff_context_carryover_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::HandoffContextCarryover,
+        ),
+        mailbox_promotion_provenance_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::MailboxPromotionProvenance,
+        ),
+        context_usage_after_brief_rate: surface_rate(
+            cases,
+            RetrievalMemoryQualitySurface::ContextUsageAfterBrief,
+        ),
     }
 }
 
@@ -2634,6 +2981,13 @@ fn surface_rate(
         .collect::<Vec<_>>();
     let count = surface_cases.len().max(1) as f64;
     surface_cases.iter().filter(|case| case.passed).count() as f64 / count
+}
+
+fn exposure_rate(
+    cases: &[RetrievalMemoryQualityCaseResult],
+    surface: RetrievalMemoryQualitySurface,
+) -> f64 {
+    1.0 - surface_rate(cases, surface)
 }
 
 fn no_redescription_continuity_cases() -> Vec<NoRedescriptionContinuityCaseResult> {

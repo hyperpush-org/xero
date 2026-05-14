@@ -19,18 +19,18 @@ use xero_agent_core::{
     DomainToolPackHealthReport, DomainToolPackHealthStatus, DomainToolPackManifest,
     EnvironmentSemanticIndexState, FileAgentCoreStore, HeadlessProviderExecutionConfig,
     HeadlessProviderRuntime, HeadlessRuntimeOptions, MessageRole, NewContextManifest,
-    NewMessageRecord, NewRunRecord, NewRuntimeEvent, OpenAiCompatibleHeadlessConfig,
-    OpenAiCompatibleProviderPreflightProbeRequest, PermissionProfileSandbox,
-    ProductionRuntimeContract, ProjectTrustState, ProviderCapabilityCatalog,
-    ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightRequiredFeatures,
-    ProviderPreflightSnapshot, ProviderPreflightSource, ProviderSelection, RunControls,
-    RunSnapshot, RunStatus, RunSummary, RuntimeEvent, RuntimeEventKind, RuntimeMessage,
-    RuntimeMessageProviderMetadata, RuntimeStoreDescriptor, RuntimeTrace, RuntimeTraceContext,
-    SandboxApprovalSource, SandboxExecutionContext, SandboxExecutionMetadata, SandboxPlatform,
-    SandboxedProcessRequest, SandboxedProcessRunner, StartRunRequest, ToolApprovalRequirement,
-    ToolCallInput, ToolDescriptorV2, ToolEffectClass, ToolExecutionContext, ToolMutability,
-    ToolSandbox, ToolSandboxRequirement, DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
-    DOMAIN_TOOL_PACK_CONTRACT_VERSION,
+    NewMessageRecord, NewRunRecord, NewRuntimeEvent, OpenAiCodexHeadlessConfig,
+    OpenAiCompatibleHeadlessConfig, OpenAiCompatibleProviderPreflightProbeRequest,
+    PermissionProfileSandbox, ProductionRuntimeContract, ProjectTrustState,
+    ProviderCapabilityCatalog, ProviderCapabilityCatalogInput, ProviderPreflightInput,
+    ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot, ProviderPreflightSource,
+    ProviderSelection, RunControls, RunSnapshot, RunStatus, RunSummary, RuntimeEvent,
+    RuntimeEventKind, RuntimeMessage, RuntimeMessageProviderMetadata, RuntimeStoreDescriptor,
+    RuntimeTrace, RuntimeTraceContext, SandboxApprovalSource, SandboxExecutionContext,
+    SandboxExecutionMetadata, SandboxPlatform, SandboxedProcessRequest, SandboxedProcessRunner,
+    StartRunRequest, ToolApprovalRequirement, ToolCallInput, ToolDescriptorV2, ToolEffectClass,
+    ToolExecutionContext, ToolMutability, ToolSandbox, ToolSandboxRequirement,
+    DEFAULT_PROVIDER_CATALOG_TTL_SECONDS, DOMAIN_TOOL_PACK_CONTRACT_VERSION,
 };
 
 const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.xero";
@@ -64,6 +64,9 @@ const EXTERNAL_AGENT_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const XERO_BENCHMARK_ADAPTER_VERSION: &str = "xero-terminal-bench-harbor-adapter.v1";
 const XERO_BENCHMARK_PROMPT_VERSION: &str = "xero-terminal-bench-prompt.v1";
 const XERO_BENCHMARK_TOOL_POLICY_VERSION: &str = "owned-agent-core-tool-registry-v2";
+const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
+const OPENAI_CODEX_DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
+const OPENAI_CODEX_OAUTH_REFRESH_SKEW_SECONDS: i64 = 60;
 
 const BENCHMARK_PROJECT_SCHEMA: &str = r#"
     PRAGMA foreign_keys = ON;
@@ -565,6 +568,9 @@ struct BenchmarkRunConfig {
     provider_id: String,
     model_id: String,
     profile_id: Option<String>,
+    credential_mode: Option<String>,
+    oauth_app_data_root: Option<PathBuf>,
+    oauth_account_id: Option<String>,
     api_key_env: Option<String>,
     base_url: Option<String>,
     temperature: Option<String>,
@@ -793,11 +799,23 @@ fn parse_benchmark_terminal_bench_config(
     let model_id = take_option(args, "--model")?
         .or_else(|| provider_catalog_entry(&provider_id).map(|entry| entry.default_model.into()))
         .ok_or_else(|| CliError::usage("Missing `--model`."))?;
+    let model_id = if provider_id == OPENAI_CODEX_PROVIDER_ID {
+        normalize_openai_codex_model_id(&model_id)
+    } else {
+        model_id
+    };
     let profile_id = take_option(args, "--profile-id")?;
+    let credential_mode = take_option(args, "--credential-mode")?
+        .or_else(|| (provider_id == OPENAI_CODEX_PROVIDER_ID).then(|| "app_openai_oauth".into()));
+    let oauth_app_data_root = take_option(args, "--oauth-app-data-root")?
+        .or_else(|| env::var("XERO_OPENAI_OAUTH_APP_DATA_ROOT").ok())
+        .map(PathBuf::from);
+    let oauth_account_id = take_option(args, "--oauth-account-id")?
+        .or_else(|| env::var("XERO_OPENAI_OAUTH_ACCOUNT_ID").ok());
     let base_url = take_option(args, "--base-url")?;
     let api_key_env = take_option(args, "--api-key-env")?.or_else(|| {
         let local_endpoint = base_url.as_deref().is_some_and(is_local_provider_base_url);
-        (!local_endpoint)
+        (provider_id != OPENAI_CODEX_PROVIDER_ID && !local_endpoint)
             .then(|| default_benchmark_api_key_env(&provider_id).map(str::to_owned))
             .flatten()
     });
@@ -850,8 +868,13 @@ fn parse_benchmark_terminal_bench_config(
         take_option(args, "--comparison-mode")?.unwrap_or_else(|| "fixed-model".into());
     let provider_account_class =
         take_option(args, "--provider-account-class")?.unwrap_or_else(|| "unspecified".into());
-    let endpoint_class =
-        take_option(args, "--endpoint-class")?.unwrap_or_else(|| "openai-compatible".into());
+    let endpoint_class = take_option(args, "--endpoint-class")?.unwrap_or_else(|| {
+        if provider_id == OPENAI_CODEX_PROVIDER_ID {
+            "chatgpt-codex-oauth".into()
+        } else {
+            "openai-compatible".into()
+        }
+    });
     let allow_fake_provider_fixture = take_bool_flag(args, "--allow-fake-provider-fixture");
     if provider_id == FAKE_PROVIDER_ID && !allow_fake_provider_fixture {
         return Err(CliError::usage(
@@ -878,6 +901,9 @@ fn parse_benchmark_terminal_bench_config(
         provider_id,
         model_id,
         profile_id,
+        credential_mode,
+        oauth_app_data_root,
+        oauth_account_id,
         api_key_env,
         base_url,
         temperature,
@@ -996,6 +1022,288 @@ fn default_benchmark_api_key_env(provider_id: &str) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BenchmarkOpenAiCodexSession {
+    account_id: String,
+    session_id: String,
+    access_token: String,
+    expires_at: i64,
+}
+
+fn load_benchmark_openai_codex_oauth_session(
+    config: &BenchmarkRunConfig,
+) -> Result<BenchmarkOpenAiCodexSession, CliError> {
+    let app_data_root = config
+        .oauth_app_data_root
+        .clone()
+        .or_else(|| default_app_data_root().ok())
+        .ok_or_else(|| {
+            CliError::benchmark(
+                "xero_benchmark_openai_oauth_root_missing",
+                "OpenAI OAuth benchmark runs need `--oauth-app-data-root` or `XERO_OPENAI_OAUTH_APP_DATA_ROOT` pointing at the app-data directory that contains your logged-in Xero OAuth session.",
+                2,
+            )
+        })?;
+    ensure_not_legacy_xero_state(&app_data_root, "OpenAI OAuth app-data root")?;
+    let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
+    if !database_path.is_file() {
+        return Err(CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_missing",
+            format!(
+                "Could not find OpenAI OAuth credential store `{}`.",
+                database_path.display()
+            ),
+            2,
+        ));
+    }
+    let connection = Connection::open(&database_path).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_open_failed",
+            format!(
+                "Could not open OpenAI OAuth credential store `{}`: {error}",
+                database_path.display()
+            ),
+            1,
+        )
+    })?;
+    let mut session = load_openai_codex_session_from_provider_credentials(
+        &connection,
+        config.oauth_account_id.as_deref(),
+    )?;
+    if session.is_none() {
+        session = load_openai_codex_session_from_legacy_sessions(
+            &connection,
+            config.oauth_account_id.as_deref(),
+        )?;
+    }
+    let session = session.ok_or_else(|| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_session_missing",
+            "No app-local OpenAI OAuth session was found. Log into OpenAI in Xero, then rerun the benchmark with the matching app-data root.",
+            2,
+        )
+    })?;
+
+    if session.expires_at
+        <= current_unix_timestamp().saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_SECONDS)
+    {
+        return Err(CliError::benchmark(
+            "xero_benchmark_openai_oauth_session_expired",
+            "The app-local OpenAI OAuth session is expired or too close to expiry. Refresh OpenAI login in Xero before starting a benchmark run.",
+            3,
+        ));
+    }
+    Ok(session)
+}
+
+fn load_openai_codex_session_from_provider_credentials(
+    connection: &Connection,
+    account_id: Option<&str>,
+) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
+    let sql = if account_id.is_some() {
+        "SELECT oauth_account_id, oauth_session_id, oauth_access_token, oauth_expires_at
+         FROM provider_credentials
+         WHERE provider_id = ?1 AND kind = 'oauth_session' AND oauth_account_id = ?2
+         LIMIT 1"
+    } else {
+        "SELECT oauth_account_id, oauth_session_id, oauth_access_token, oauth_expires_at
+         FROM provider_credentials
+         WHERE provider_id = ?1 AND kind = 'oauth_session'
+         ORDER BY updated_at DESC
+         LIMIT 1"
+    };
+    let mut statement = match connection.prepare(sql) {
+        Ok(statement) => statement,
+        Err(error) if is_missing_table_error(&error) => return Ok(None),
+        Err(error) => {
+            return Err(CliError::benchmark(
+                "xero_benchmark_openai_oauth_store_read_failed",
+                format!("Could not prepare provider_credentials OAuth read: {error}"),
+                1,
+            ));
+        }
+    };
+    let mut query = if let Some(account_id) = account_id {
+        statement.query(params![OPENAI_CODEX_PROVIDER_ID, account_id])
+    } else {
+        statement.query(params![OPENAI_CODEX_PROVIDER_ID])
+    }
+    .map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_read_failed",
+            format!("Could not query provider_credentials OAuth row: {error}"),
+            1,
+        )
+    })?;
+    let Some(row) = query.next().map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_read_failed",
+            format!("Could not read provider_credentials OAuth row: {error}"),
+            1,
+        )
+    })?
+    else {
+        return Ok(None);
+    };
+    oauth_session_from_row(row, "provider_credentials")
+}
+
+fn load_openai_codex_session_from_legacy_sessions(
+    connection: &Connection,
+    account_id: Option<&str>,
+) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
+    let sql = if account_id.is_some() {
+        "SELECT account_id, session_id, access_token, expires_at
+         FROM openai_codex_sessions
+         WHERE account_id = ?1
+         LIMIT 1"
+    } else {
+        "SELECT account_id, session_id, access_token, expires_at
+         FROM openai_codex_sessions
+         ORDER BY updated_at DESC
+         LIMIT 1"
+    };
+    let mut statement = match connection.prepare(sql) {
+        Ok(statement) => statement,
+        Err(error) if is_missing_table_error(&error) => return Ok(None),
+        Err(error) => {
+            return Err(CliError::benchmark(
+                "xero_benchmark_openai_oauth_store_read_failed",
+                format!("Could not prepare openai_codex_sessions read: {error}"),
+                1,
+            ));
+        }
+    };
+    let mut query = match account_id {
+        Some(account_id) => statement.query(params![account_id]),
+        None => statement.query([]),
+    }
+    .map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_read_failed",
+            format!("Could not query openai_codex_sessions row: {error}"),
+            1,
+        )
+    })?;
+    let Some(row) = query.next().map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_read_failed",
+            format!("Could not read openai_codex_sessions row: {error}"),
+            1,
+        )
+    })?
+    else {
+        return Ok(None);
+    };
+    oauth_session_from_row(row, "openai_codex_sessions")
+}
+
+fn oauth_session_from_row(
+    row: &rusqlite::Row<'_>,
+    source: &str,
+) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
+    let account_id = row.get::<_, Option<String>>(0).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_decode_failed",
+            format!("Could not decode `{source}` account id: {error}"),
+            1,
+        )
+    })?;
+    let session_id = row.get::<_, Option<String>>(1).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_decode_failed",
+            format!("Could not decode `{source}` session id: {error}"),
+            1,
+        )
+    })?;
+    let access_token = row.get::<_, Option<String>>(2).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_decode_failed",
+            format!("Could not decode `{source}` access token: {error}"),
+            1,
+        )
+    })?;
+    let expires_at = row.get::<_, Option<i64>>(3).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_decode_failed",
+            format!("Could not decode `{source}` expiry: {error}"),
+            1,
+        )
+    })?;
+    let Some(account_id) = account_id.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let Some(session_id) = session_id.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let Some(access_token) = access_token.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(BenchmarkOpenAiCodexSession {
+        account_id,
+        session_id,
+        access_token,
+        expires_at: expires_at.unwrap_or_default(),
+    }))
+}
+
+fn is_missing_table_error(error: &rusqlite::Error) -> bool {
+    error.to_string().contains("no such table")
+}
+
+fn normalize_openai_codex_model_id(model_id: &str) -> String {
+    let trimmed = model_id.trim();
+    if trimmed.is_empty() {
+        provider_catalog_entry(OPENAI_CODEX_PROVIDER_ID)
+            .map(|entry| entry.default_model)
+            .unwrap_or("gpt-5.4")
+            .into()
+    } else if let Some(model) = trimmed.strip_prefix("openai_codex/") {
+        model.into()
+    } else if let Some(model) = trimmed.strip_prefix("openai/") {
+        model.into()
+    } else {
+        trimmed.into()
+    }
+}
+
+fn default_app_data_root() -> Result<PathBuf, CliError> {
+    if let Some(path) = env::var_os("XERO_APP_DATA_DIR") {
+        if !path.is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return home_dir()
+            .map(|home| {
+                home.join("Library")
+                    .join("Application Support")
+                    .join(APP_DATA_DIRECTORY_NAME)
+            })
+            .ok_or_else(|| {
+                CliError::system_fault(
+                    "xero_cli_home_missing",
+                    "Could not determine the default Xero app-data directory.",
+                )
+            });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        default_headless_state_dir()
+            .map(|path| path.parent().map(Path::to_path_buf).unwrap_or(path))
+    }
+}
+
+fn current_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn resolve_benchmark_provider_execution(
     globals: &GlobalOptions,
     config: &BenchmarkRunConfig,
@@ -1008,6 +1316,35 @@ fn resolve_benchmark_provider_execution(
             execution_mode: "fake_provider_harness",
             execution: HeadlessProviderExecutionConfig::Fake,
             credential_proof: Some("fixture_only_none_required".into()),
+        });
+    }
+    if config.provider_id == OPENAI_CODEX_PROVIDER_ID {
+        let session = load_benchmark_openai_codex_oauth_session(config)?;
+        let execution =
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(OpenAiCodexHeadlessConfig {
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: normalize_openai_codex_model_id(&config.model_id),
+                base_url: config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| OPENAI_CODEX_DEFAULT_BASE_URL.into()),
+                access_token: session.access_token,
+                account_id: session.account_id,
+                session_id: Some(session.session_id),
+                timeout_ms: 0,
+                workspace_root: Some(config.workspace_root.clone()),
+                allow_workspace_writes: true,
+            });
+        return Ok(CliProviderExecution {
+            profile_id: config
+                .profile_id
+                .clone()
+                .unwrap_or_else(|| "benchmark-openai-codex-oauth".into()),
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            model_id: normalize_openai_codex_model_id(&config.model_id),
+            execution_mode: "real_provider",
+            execution,
+            credential_proof: Some("app_data_openai_codex_session".into()),
         });
     }
 
@@ -1032,7 +1369,10 @@ fn resolve_benchmark_provider_execution(
         base_url: config.base_url.clone(),
         recorded_at: now_timestamp(),
     };
-    let execution = openai_compatible_execution_config(globals, &profile, &config.model_id)?;
+    let mut execution = openai_compatible_execution_config(globals, &profile, &config.model_id)?;
+    if let HeadlessProviderExecutionConfig::OpenAiCompatible(execution_config) = &mut execution {
+        execution_config.workspace_root = Some(config.workspace_root.clone());
+    }
     Ok(CliProviderExecution {
         profile_id: profile.profile_id.clone(),
         provider_id: profile.provider_id.clone(),
@@ -1418,7 +1758,7 @@ fn benchmark_manifest_json(
             "harnessVersion": config.harness_version,
             "adapterVersion": config.adapter_version,
             "xeroCliVersion": env!("CARGO_PKG_VERSION"),
-            "xeroSourceRevision": config.xero_source_revision.clone().or_else(|| repository_head_sha(Path::new("."))),
+            "xeroSourceRevision": config.xero_source_revision.clone(),
             "promptVersion": config.prompt_version,
             "toolPolicyVersion": config.tool_policy_version,
             "comparisonMode": config.comparison_mode,
@@ -1469,7 +1809,18 @@ fn benchmark_manifest_json(
             "maxOutputTokens": config.max_output_tokens,
             "contextBudget": config.context_budget,
             "providerAccountClass": config.provider_account_class,
+            "credentialMode": config.credential_mode.clone().unwrap_or_else(|| {
+                if config.provider_id == OPENAI_CODEX_PROVIDER_ID {
+                    "app_openai_oauth".into()
+                } else if config.api_key_env.is_some() {
+                    "api_key_env".into()
+                } else {
+                    "none_or_local".into()
+                }
+            }),
             "credentialEnv": config.api_key_env,
+            "oauthAppDataRootConfigured": config.oauth_app_data_root.is_some(),
+            "oauthAccountSelected": config.oauth_account_id.is_some(),
             "baseUrlConfigured": config.base_url.is_some(),
         },
         "limits": {
@@ -4688,7 +5039,7 @@ fn provider_catalog() -> Vec<ProviderCatalogEntry> {
             label: "OpenAI Codex",
             default_model: "gpt-5.4",
             credential_kind: "app_session",
-            headless_status: "diagnostics_only",
+            headless_status: "benchmark_app_oauth_supported",
             catalog_kind: "model_provider",
             adapter_kind: None,
         },
@@ -4914,13 +5265,16 @@ struct CliProviderExecution {
 
 impl CliProviderExecution {
     fn with_project_workspace(mut self, store: &CliAgentStore) -> Self {
-        if let (
-            "real_provider",
-            Some(repo_root),
-            HeadlessProviderExecutionConfig::OpenAiCompatible(config),
-        ) = (self.execution_mode, store.repo_root(), &mut self.execution)
-        {
-            config.workspace_root = Some(repo_root.to_path_buf());
+        if let ("real_provider", Some(repo_root)) = (self.execution_mode, store.repo_root()) {
+            match &mut self.execution {
+                HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
+                    config.workspace_root = Some(repo_root.to_path_buf());
+                }
+                HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                    config.workspace_root = Some(repo_root.to_path_buf());
+                }
+                HeadlessProviderExecutionConfig::Fake => {}
+            }
         }
         self
     }
@@ -5311,6 +5665,18 @@ fn cli_provider_preflight_for_execution(
                 },
             ))
         }
+        HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => Ok(
+            cli_provider_preflight_snapshot(CliProviderPreflightSnapshotInput {
+                profile_id: &provider.profile_id,
+                provider_id: &provider.provider_id,
+                model_id: &config.model_id,
+                entry,
+                source: ProviderPreflightSource::LiveProbe,
+                credential_proof: provider.credential_proof.clone(),
+                credential_ready: cli_provider_execution_credentials_available(&provider.execution),
+                required_features,
+            }),
+        ),
     }
 }
 
@@ -5410,6 +5776,9 @@ fn cli_provider_execution_credentials_available(
                 .as_deref()
                 .is_some_and(|key| !key.trim().is_empty())
                 || is_local_provider_base_url(&config.base_url)
+        }
+        HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+            !config.access_token.trim().is_empty() && !config.account_id.trim().is_empty()
         }
     }
 }
@@ -11526,6 +11895,242 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_real_provider_runtime_uses_explicit_workspace_root() {
+        let workspace = unique_temp_dir("benchmark-explicit-workspace");
+        let state_dir = unique_temp_dir("benchmark-explicit-workspace-state");
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Text,
+            ci: false,
+            state_dir,
+        };
+        let config = BenchmarkRunConfig {
+            instruction: "Use the benchmark workspace.".into(),
+            workspace_root: workspace.clone(),
+            trial_app_data_root: unique_temp_dir("benchmark-explicit-workspace-app-data"),
+            output_dir: unique_temp_dir("benchmark-explicit-workspace-output"),
+            project_id: "benchmark-project".into(),
+            agent_session_id: "benchmark-session".into(),
+            run_id: "benchmark-run".into(),
+            benchmark_name: "terminal-bench".into(),
+            dataset_id: "terminal-bench@2.0".into(),
+            dataset_digest: None,
+            task_id: "workspace-root-task".into(),
+            attempt_index: 0,
+            provider_id: "openai_api".into(),
+            model_id: "test-model".into(),
+            profile_id: None,
+            credential_mode: None,
+            oauth_app_data_root: None,
+            oauth_account_id: None,
+            api_key_env: None,
+            base_url: Some("http://127.0.0.1:9/v1".into()),
+            temperature: None,
+            reasoning_effort: None,
+            max_output_tokens: None,
+            context_budget: None,
+            wall_time_seconds: None,
+            max_turns: None,
+            max_tool_calls: None,
+            max_command_calls: None,
+            max_cost_usd: None,
+            approval_mode: "strict".into(),
+            sandbox_policy: "harbor_task_sandbox".into(),
+            network_policy: "harbor_controlled".into(),
+            sandbox_provider: "harbor".into(),
+            environment_id: None,
+            image_digest: None,
+            prompt_version: XERO_BENCHMARK_PROMPT_VERSION.into(),
+            tool_policy_version: XERO_BENCHMARK_TOOL_POLICY_VERSION.into(),
+            adapter_version: XERO_BENCHMARK_ADAPTER_VERSION.into(),
+            harness_version: "harbor".into(),
+            xero_source_revision: None,
+            comparison_mode: "fixed-model".into(),
+            provider_account_class: "standard".into(),
+            endpoint_class: "openai-compatible".into(),
+            allow_fake_provider_fixture: false,
+        };
+
+        let provider = resolve_benchmark_provider_execution(&globals, &config)
+            .expect("benchmark real provider should resolve");
+        match provider.execution {
+            HeadlessProviderExecutionConfig::OpenAiCompatible(execution_config) => {
+                assert_eq!(
+                    execution_config.workspace_root.as_deref(),
+                    Some(workspace.as_path())
+                );
+            }
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(_) => {
+                panic!("expected OpenAI-compatible provider execution")
+            }
+            HeadlessProviderExecutionConfig::Fake => panic!("expected real provider execution"),
+        }
+    }
+
+    #[test]
+    fn benchmark_openai_codex_parse_defaults_to_oauth_mode() {
+        let workspace = unique_temp_dir("benchmark-openai-codex-parse-workspace");
+        let output_dir = unique_temp_dir("benchmark-openai-codex-parse-output");
+        let state_dir = unique_temp_dir("benchmark-openai-codex-parse-state");
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Text,
+            ci: false,
+            state_dir,
+        };
+        let mut args: Vec<String> = vec![
+            "--instruction".into(),
+            "Use OAuth.".into(),
+            "--workspace-root".into(),
+            workspace.to_string_lossy().to_string(),
+            "--output-dir".into(),
+            output_dir.to_string_lossy().to_string(),
+            "--task-id".into(),
+            "openai-oauth-task".into(),
+            "--dataset-id".into(),
+            "terminal-bench@2.0".into(),
+            "--provider".into(),
+            "openai_codex".into(),
+            "--model".into(),
+            "openai/gpt-5.4".into(),
+        ];
+
+        let config = parse_benchmark_terminal_bench_config(&globals, &mut args)
+            .expect("parse OpenAI OAuth benchmark config");
+
+        assert_eq!(config.provider_id, OPENAI_CODEX_PROVIDER_ID);
+        assert_eq!(config.model_id, "gpt-5.4");
+        assert_eq!(config.credential_mode.as_deref(), Some("app_openai_oauth"));
+        assert_eq!(config.endpoint_class, "chatgpt-codex-oauth");
+        assert_eq!(config.api_key_env, None);
+    }
+
+    #[test]
+    fn benchmark_openai_codex_oauth_uses_app_data_session() {
+        let workspace = unique_temp_dir("benchmark-openai-codex-workspace");
+        let app_data_root = unique_temp_dir("benchmark-openai-codex-app-data");
+        let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
+        let connection = Connection::open(&database_path).expect("open OAuth store");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE provider_credentials (
+                    provider_id              TEXT    PRIMARY KEY,
+                    kind                     TEXT    NOT NULL,
+                    api_key                  TEXT,
+                    oauth_account_id         TEXT,
+                    oauth_session_id         TEXT,
+                    oauth_access_token       TEXT,
+                    oauth_refresh_token      TEXT,
+                    oauth_expires_at         INTEGER,
+                    base_url                 TEXT,
+                    api_version              TEXT,
+                    region                   TEXT,
+                    scope_project_id         TEXT,
+                    default_model_id         TEXT,
+                    updated_at               TEXT    NOT NULL
+                );
+                "#,
+            )
+            .expect("create provider_credentials");
+        connection
+            .execute(
+                "INSERT INTO provider_credentials (
+                    provider_id,
+                    kind,
+                    oauth_account_id,
+                    oauth_session_id,
+                    oauth_access_token,
+                    oauth_expires_at,
+                    updated_at
+                ) VALUES (?1, 'oauth_session', ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    OPENAI_CODEX_PROVIDER_ID,
+                    "acct_123",
+                    "sess_123",
+                    "oauth-access-token",
+                    current_unix_timestamp() + 3600,
+                    now_timestamp(),
+                ],
+            )
+            .expect("insert OAuth session");
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Text,
+            ci: false,
+            state_dir: unique_temp_dir("benchmark-openai-codex-state"),
+        };
+        let config = BenchmarkRunConfig {
+            instruction: "Use the OpenAI OAuth session.".into(),
+            workspace_root: workspace.clone(),
+            trial_app_data_root: unique_temp_dir("benchmark-openai-codex-trial-app-data"),
+            output_dir: unique_temp_dir("benchmark-openai-codex-output"),
+            project_id: "benchmark-project".into(),
+            agent_session_id: "benchmark-session".into(),
+            run_id: "benchmark-run".into(),
+            benchmark_name: "terminal-bench".into(),
+            dataset_id: "terminal-bench@2.0".into(),
+            dataset_digest: None,
+            task_id: "openai-oauth-task".into(),
+            attempt_index: 0,
+            provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            model_id: "openai/gpt-5.4".into(),
+            profile_id: None,
+            credential_mode: Some("app_openai_oauth".into()),
+            oauth_app_data_root: Some(app_data_root),
+            oauth_account_id: Some("acct_123".into()),
+            api_key_env: None,
+            base_url: Some("http://127.0.0.1:9/backend-api".into()),
+            temperature: None,
+            reasoning_effort: Some("medium".into()),
+            max_output_tokens: None,
+            context_budget: None,
+            wall_time_seconds: None,
+            max_turns: None,
+            max_tool_calls: None,
+            max_command_calls: None,
+            max_cost_usd: None,
+            approval_mode: "strict".into(),
+            sandbox_policy: "harbor_task_sandbox".into(),
+            network_policy: "harbor_controlled".into(),
+            sandbox_provider: "harbor".into(),
+            environment_id: None,
+            image_digest: None,
+            prompt_version: XERO_BENCHMARK_PROMPT_VERSION.into(),
+            tool_policy_version: XERO_BENCHMARK_TOOL_POLICY_VERSION.into(),
+            adapter_version: XERO_BENCHMARK_ADAPTER_VERSION.into(),
+            harness_version: "harbor".into(),
+            xero_source_revision: None,
+            comparison_mode: "fixed-model".into(),
+            provider_account_class: "standard".into(),
+            endpoint_class: "chatgpt-codex-oauth".into(),
+            allow_fake_provider_fixture: false,
+        };
+
+        let provider = resolve_benchmark_provider_execution(&globals, &config)
+            .expect("benchmark OpenAI OAuth provider should resolve");
+
+        assert_eq!(provider.provider_id, OPENAI_CODEX_PROVIDER_ID);
+        assert_eq!(provider.model_id, "gpt-5.4");
+        assert_eq!(
+            provider.credential_proof.as_deref(),
+            Some("app_data_openai_codex_session")
+        );
+        match provider.execution {
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(execution_config) => {
+                assert_eq!(execution_config.provider_id, OPENAI_CODEX_PROVIDER_ID);
+                assert_eq!(execution_config.model_id, "gpt-5.4");
+                assert_eq!(execution_config.access_token, "oauth-access-token");
+                assert_eq!(execution_config.account_id, "acct_123");
+                assert_eq!(execution_config.session_id.as_deref(), Some("sess_123"));
+                assert_eq!(
+                    execution_config.workspace_root.as_deref(),
+                    Some(workspace.as_path())
+                );
+                assert!(execution_config.allow_workspace_writes);
+            }
+            other => panic!("expected OpenAI Codex OAuth execution, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn benchmark_terminal_bench_fake_fixture_writes_trial_artifacts_in_app_data() {
         let workspace = unique_temp_dir("benchmark-workspace");
         fs::write(workspace.join("README.md"), "benchmark workspace\n").expect("write workspace");
@@ -11579,6 +12184,7 @@ mod tests {
             read_json_file(&output_dir.join("manifest.json")).expect("read manifest");
         assert_eq!(manifest["run"]["status"], json!("completed"));
         assert_eq!(manifest["harness"]["fakeProviderFixture"], json!(true));
+        assert_eq!(manifest["harness"]["xeroSourceRevision"], JsonValue::Null);
         assert_eq!(manifest["benchmark"]["taskId"], json!("adapter-smoke-task"));
         assert!(!manifest.to_string().contains(".xero"));
     }

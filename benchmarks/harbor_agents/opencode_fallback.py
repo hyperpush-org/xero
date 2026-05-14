@@ -77,7 +77,7 @@ class OpenCodeFallbackAgent(BaseInstalledAgent):
         output_path = self.logs_dir / "opencode.jsonl"
         env = {
             "OPENCODE_CONFIG_DIR": str(config_dir),
-            "OPENCODE_DISABLE_AUTO_UPDATE": "1",
+            "OPENCODE_DISABLE_AUTOUPDATE": "1",
             "OPENCODE_FAKE_VCS": "git",
         }
         for key in (
@@ -122,4 +122,3 @@ class OpenCodeFallbackAgent(BaseInstalledAgent):
                         context.n_output_tokens = (context.n_output_tokens or 0) + tokens.get("output", 0)
                     if part.get("cost") is not None:
                         context.cost_usd = (context.cost_usd or 0) + part.get("cost", 0)
-

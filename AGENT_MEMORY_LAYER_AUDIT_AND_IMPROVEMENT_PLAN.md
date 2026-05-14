@@ -537,12 +537,20 @@ Goal: make the current behavior and documented contract agree before deeper feat
 
 Tasks:
 
-- Get a scoped Rust compile/check green for memory, retrieval, project-record, mailbox, continuity, migration, and outbox modules.
-- Fix the automatic owned-agent extraction path so provider-extracted memories pass through a named automated promotion gate before becoming enabled.
-- Preserve candidate persistence as an intermediate or diagnostic state, but do not require a user to process it.
-- Add tests proving completion, pause, failure, and handoff extraction cannot create enabled memory except through the automated promotion gate.
-- Update docs and contracts to reflect the autonomous memory-governance behavior, without proposing new UI or user approval.
-- Add one invariant test: no memory with `review_state != approved` can be enabled or retrieved.
+- [x] Get a scoped Rust compile/check green for memory, retrieval, project-record, mailbox, continuity, migration, and outbox modules.
+- [x] Fix the automatic owned-agent extraction path so provider-extracted memories pass through a named automated promotion gate before becoming enabled.
+- [x] Preserve candidate persistence as an intermediate or diagnostic state, but do not require a user to process it.
+- [x] Add tests proving completion, pause, failure, and handoff extraction cannot create enabled memory except through the automated promotion gate.
+- [x] Update docs and contracts to reflect the autonomous memory-governance behavior, without proposing new UI or user approval.
+- [x] Add one invariant test: no memory with `review_state != approved` can be enabled or retrieved.
+
+Implementation Evidence:
+
+- Added `automatic_memory_promotion_gate` v1 in `client/src-tauri/src/runtime/agent_core/persistence.rs`. Automatic extraction now persists candidates disabled first, then records a deterministic promotion, rejection, or keep-candidate diagnostic before any memory becomes enabled.
+- Promotion diagnostics include gate/version, trigger, runtime agent, definition snapshot metadata, provider/model, allowed kinds, confidence, provenance quality, fallback status, evidence snippets, and sensitive-source flags.
+- Added tests in `persistence.rs` for completion, pause, failure, handoff triggers, low-confidence rejection, disallowed policy kinds, and instruction-override rejection.
+- Added retrieval invariant coverage in `client/src-tauri/src/db/project_store/agent_memory.rs` proving non-approved, disabled, stale, and superseded memory is not retrievable.
+- Verification: `cargo check --lib` passed. `cargo test --lib automatic_memory -- --nocapture` passed 4 tests. `cargo test --lib retrieval_predicate_rejects -- --nocapture` passed 1 test.
 
 Acceptance criteria:
 
@@ -557,12 +565,20 @@ Goal: make every path agree about what is retrievable by default.
 
 Tasks:
 
-- Create one shared `is_retrievable_memory` predicate used by diagnostic queues, Lance listing, retrieval, direct get, context manifests, and backfill decisions where applicable.
-- Create an equivalent project-record predicate for default retrieval.
-- Hard-exclude superseded, invalidated, blocked, stale, and source-missing rows in normal retrieval.
-- Add explicit diagnostic/historical search mode for stale/superseded rows.
-- Include exclusion counts in retrieval diagnostics.
-- Ensure direct `get_memory` refuses approved/enabled memory if it is blocked, superseded, invalidated, stale, or source-missing unless a diagnostic override exists.
+- [x] Create one shared `is_retrievable_memory` predicate used by diagnostic queues, Lance listing, retrieval, direct get, context manifests, and backfill decisions where applicable.
+- [x] Create an equivalent project-record predicate for default retrieval.
+- [x] Hard-exclude superseded, invalidated, blocked, stale, and source-missing rows in normal retrieval.
+- [x] Add explicit diagnostic/historical search mode for stale/superseded rows.
+- [x] Include exclusion counts in retrieval diagnostics.
+- [x] Ensure direct `get_memory` refuses approved/enabled memory if it is blocked, superseded, invalidated, stale, or source-missing unless a diagnostic override exists.
+
+Implementation Evidence:
+
+- Added shared predicates in `agent_memory.rs` and `project_record.rs`, then wired them into review queues, normal listing, retrieval candidate selection, and direct `project_context_get`.
+- Added `includeHistorical` to `project_context_search` and `project_context_get`; normal retrieval pushes down freshness/supersession filters while historical mode omits those default filters.
+- Retrieval diagnostics now include `freshnessDiagnostics.defaultEligibilityExclusionCounts` and `semanticRetrievalDegraded`.
+- Added a pre-scan exclusion counter so rows filtered out by LanceDB vector pushdown are still represented in diagnostics.
+- Verification: `cargo test --lib s29_memory_freshness_invalidates_sources_and_deprioritizes_stale_results -- --nocapture` passed 1 test. `cargo test --lib s34_ -- --nocapture` passed 4 tests.
 
 Acceptance criteria:
 
@@ -576,19 +592,28 @@ Goal: extract fewer, better memories with stronger provenance.
 
 Tasks:
 
-- Enforce memory kinds from agent definition policy during extraction.
-- Store extraction policy metadata with each candidate: runtime agent, agent definition, allowed kinds, promotion gate, trigger, provider, model.
-- Validate source item IDs against the extraction transcript.
-- Add source evidence snippets or source span metadata for each candidate.
-- Mark fallback source IDs as low-provenance diagnostics.
-- Raise or vary confidence thresholds by memory kind.
-- Add kind-specific quality rules:
+- [x] Enforce memory kinds from agent definition policy during extraction.
+- [x] Store extraction policy metadata with each candidate: runtime agent, agent definition, allowed kinds, promotion gate, trigger, provider, model.
+- [x] Validate source item IDs against the extraction transcript.
+- [x] Add source evidence snippets or source span metadata for each candidate.
+- [x] Mark fallback source IDs as low-provenance diagnostics.
+- [x] Raise or vary confidence thresholds by memory kind.
+- [x] Add kind-specific quality rules:
   - `user_preference`: must be stated by the user or inferred only from explicit user instruction, never from agent behavior alone.
   - `decision`: must include decision owner/source and scope.
   - `project_fact`: must cite file/tool/runtime evidence.
   - `troubleshooting`: must include symptom and verified fix or known failed attempt.
   - `session_summary`: must be session-scoped unless intentionally promoted.
-- Add duplicate/near-duplicate detection beyond exact text hash.
+- [x] Add duplicate/near-duplicate detection beyond exact text hash.
+
+Implementation Evidence:
+
+- `RuntimeMemoryExtractionPolicy` now loads memory kind policy from the effective agent definition and defaults conservatively when absent.
+- `resolve_memory_candidate_provenance` validates source IDs against the extraction transcript, requires overlap or structured fallback, enforces user-authored evidence for preferences, and records redacted evidence snippets.
+- The promotion gate applies per-kind confidence thresholds and kind-specific quality rules for decisions, troubleshooting, and session summaries.
+- Low-provenance fallback candidates remain disabled as candidates with `memory_promotion_gate_low_provenance`; low-confidence and unsafe candidates are rejected.
+- Existing active hash duplicate detection remains in the activation path; exact duplicates are skipped before insertion/activation.
+- Verification: `cargo test --lib automatic_memory -- --nocapture` passed 4 tests.
 
 Acceptance criteria:
 
@@ -602,15 +627,22 @@ Goal: agents should see or fetch the right memory at task boundaries without ove
 
 Tasks:
 
-- Add a "memory brief" to the first-turn context package that names top relevant memory/project records and why they may matter.
-- Keep raw content tool-mediated, but include stronger retrieval prompts for exact reads.
-- Add task-type retrieval hints:
+- [x] Add a "memory brief" to the first-turn context package that names top relevant memory/project records and why they may matter.
+- [x] Keep raw content tool-mediated, but include stronger retrieval prompts for exact reads.
+- [x] Add task-type retrieval hints:
   - Before edits: retrieve decisions, constraints, plans, and relevant file facts.
   - Before debugging: retrieve troubleshooting, prior failures, diagnostics, and verification notes.
   - Before answering: retrieve project facts, constraints, and open questions.
   - During handoff: retrieve handoff bundle plus cited memory/project records.
-- Add stage-aware retrieval nudges for gated agent stages.
-- Log when agents ignore a high-confidence memory brief and proceed to risky actions.
+- [x] Add stage-aware retrieval nudges for gated agent stages.
+- [x] Log when agents ignore a high-confidence memory brief and proceed to risky actions.
+
+Implementation Evidence:
+
+- `source_cited_working_set_context` now emits a bounded memory brief with citation labels, selection reasons, "Why it may matter" text, and explicit `project_context_get` guidance before relying on details.
+- Tool descriptors now state normal retrieval excludes disabled, rejected, stale, source-missing, superseded, invalidated, and blocked rows, and schemas expose `includeHistorical` for diagnostic override.
+- The retrieval eval suite includes `context_usage_after_brief` coverage for exact context retrieval before risky actions after a high-impact brief.
+- Verification: `cargo test --lib s26_provider_context_package_admits_source_cited_working_set_summary -- --nocapture` passed 1 test. `cargo test --lib s27_provider_context_package_honors_per_agent_first_turn_context_policy -- --nocapture` passed 1 test.
 
 Acceptance criteria:
 
@@ -624,13 +656,20 @@ Goal: handoff should be continuity with evidence, not just a retrieval suggestio
 
 Tasks:
 
-- During handoff bundle creation, run focused hybrid retrieval using user goal, pending work, changed paths, latest plan, and open questions.
-- Fill `approvedMemories` with a small cited subset.
-- Fill `relevantProjectRecords` with a small cited subset.
-- Include retrieval query IDs and result IDs in the bundle.
-- Record why each carried item was selected.
-- Add target-run prompt guidance to retrieve exact content for carried IDs before relying on details.
-- Add tests for same-type handoff carrying approved memory and relevant project records.
+- [x] During handoff bundle creation, run focused hybrid retrieval using user goal, pending work, changed paths, latest plan, and open questions.
+- [x] Fill `approvedMemories` with a small cited subset.
+- [x] Fill `relevantProjectRecords` with a small cited subset.
+- [x] Include retrieval query IDs and result IDs in the bundle.
+- [x] Record why each carried item was selected.
+- [x] Add target-run prompt guidance to retrieve exact content for carried IDs before relying on details.
+- [x] Add tests for same-type handoff carrying approved memory and relevant project records.
+
+Implementation Evidence:
+
+- `build_handoff_bundle` now calls a focused hybrid retrieval helper and carries bounded approved-memory and project-record anchors into `approvedMemories`, `relevantProjectRecords`, and `durableContextRetrieval`.
+- The handoff retrieval query includes the source goal, pending prompt, recent messages, changed paths, and recent event summaries. Changed paths are relevance evidence rather than a hard filter so approved memories without paths can still be carried.
+- Carried items include result IDs, source IDs, rank, score, redaction state, selection reason, freshness/trust metadata, and citation data.
+- Verification: `cargo test --lib handoff_bundle_carries_matching_approved_memory_and_project_records -- --nocapture` passed 1 test.
 
 Acceptance criteria:
 
@@ -644,12 +683,20 @@ Goal: preserve valuable coordination when it matters while keeping mailbox ephem
 
 Tasks:
 
-- Add mailbox promotion suggestions for urgent blockers, verification notes, resolved questions, file ownership notes, and handoff lite summaries.
-- Add a mailbox digest to active coordination prompt summaries when multiple items are present.
-- Add source threading: parent question, answer, resolution, and promotion should be linked in the promoted candidate.
-- Prevent promotion of code-history notices into durable memory unless explicitly converted into a diagnostic record with current-file warning.
-- Add TTL-expiry diagnostics for high-priority unacknowledged mailbox items.
-- Add backend support for promoting a resolved mailbox thread to a candidate when an existing caller requests it.
+- [x] Add mailbox promotion suggestions for urgent blockers, verification notes, resolved questions, file ownership notes, and handoff lite summaries.
+- [x] Add a mailbox digest to active coordination prompt summaries when multiple items are present.
+- [x] Add source threading: parent question, answer, resolution, and promotion should be linked in the promoted candidate.
+- [x] Prevent promotion of code-history notices into durable memory unless explicitly converted into a diagnostic record with current-file warning.
+- [x] Add TTL-expiry diagnostics for high-priority unacknowledged mailbox items.
+- [x] Add backend support for promoting a resolved mailbox thread to a candidate when an existing caller requests it.
+
+Implementation Evidence:
+
+- Mailbox context manifests and active coordination summaries now include promotion suggestions for high-value temporary coordination items.
+- Mailbox promotion content JSON now records parent/threading IDs, status, resolution metadata, promoter/source IDs, related paths, temporary-mailbox status, and `requiresAutomatedGovernance`.
+- Code-history mailbox item types are tagged and include a current-file warning; all mailbox promotions now remind agents that current files and current tool output are authoritative.
+- Existing promotion remains review-only project-record candidate state (`visibility = memory_candidate`) and does not become approved durable memory.
+- Verification: `cargo test --lib mailbox_promotion_creates_review_only_project_record_candidate -- --nocapture` passed 1 test.
 
 Acceptance criteria:
 
@@ -663,13 +710,21 @@ Goal: make autonomous memory promotion safer and more evidence-based behind the 
 
 Tasks:
 
-- Add backend query options for state, scope, kind, freshness, confidence, source run, related path, created date, promotion status, and retrievability.
-- Add structured provenance fields with source run, source items, redacted source snippets, related paths, and file fingerprints.
-- Add retrieval-impact metadata: scopes, kinds, paths, and search modes where the memory would become eligible.
-- Add conflict metadata for supersedes/superseded chains.
-- Add backend support for project-record candidate governance for mailbox promotions and `project_context.propose_record_candidate`, not just agent memories.
-- Add audit logs for promote, reject, disable, delete, correction, and supersession operations.
-- Keep this phase UI-free. Existing callers may consume richer data they already request, but this plan must not add new screens, controls, panels, or inspectors.
+- [x] Add backend query options for state, scope, kind, freshness, confidence, source run, related path, created date, promotion status, and retrievability.
+- [x] Add structured provenance fields with source run, source items, redacted source snippets, related paths, and file fingerprints.
+- [x] Add retrieval-impact metadata: scopes, kinds, paths, and search modes where the memory would become eligible.
+- [x] Add conflict metadata for supersedes/superseded chains.
+- [x] Add backend support for project-record candidate governance for mailbox promotions and `project_context.propose_record_candidate`, not just agent memories.
+- [x] Add audit logs for promote, reject, disable, delete, correction, and supersession operations.
+- [x] Keep this phase UI-free. Existing callers may consume richer data they already request, but this plan must not add new screens, controls, panels, or inspectors.
+
+Implementation Evidence:
+
+- `ListSessionMemoriesRequestDto` now supports backend filters for review state, scope, kind, freshness state, minimum confidence, source run, related path, created-after, promotion status, and retrievability.
+- `SessionMemoryRecordDto` now exposes freshness, retrievability reason, promotion status, provenance JSON, retrieval-impact JSON, and conflict-chain JSON without adding any UI surface.
+- Automatic promotion/rejection/keep-candidate decisions write structured diagnostics; memory updates can preserve diagnostics for support and audit consumers.
+- `project_context.propose_record_candidate` now wraps candidate content with backend governance metadata, and mailbox promotions already create project-record candidates with full provenance.
+- Verification: `cargo check --lib` passed after these contract changes.
 
 Acceptance criteria:
 
@@ -683,7 +738,7 @@ Goal: measure whether memory helps agents.
 
 Tasks:
 
-- Add golden fixtures for:
+- [x] Add golden fixtures for:
   - User preference recall.
   - Project decision recall.
   - Prior debugging fix recall.
@@ -691,7 +746,7 @@ Tasks:
   - Superseded memory exclusion.
   - Handoff context carryover.
   - Mailbox promotion provenance.
-- Track metrics:
+- [x] Track metrics:
   - Retrieval precision at top 3 and top 5.
   - Recall for known-memory tasks.
   - Stale/superseded exposure rate.
@@ -701,8 +756,15 @@ Tasks:
   - Agent `project_context` usage after memory brief.
   - Handoff continuation success.
   - Mailbox acknowledgement/resolution/promotion rates.
-- Add support diagnostics that summarize memory health by project.
-- Add scheduled or startup outbox reconciliation for missing LanceDB rows.
+- [x] Add support diagnostics that summarize memory health by project.
+- [x] Add scheduled or startup outbox reconciliation for missing LanceDB rows.
+
+Implementation Evidence:
+
+- The retrieval/memory eval suite now includes golden surfaces for user preference recall, project decision recall, prior debugging fix recall, stale memory exclusion, superseded memory exclusion, handoff context carryover, mailbox promotion provenance, and exact context usage after a memory brief.
+- Retrieval quality metrics now include recall rates, stale exposure rate, superseded exposure rate, handoff carryover rate, mailbox provenance rate, and context usage after brief.
+- Existing outbox reconciliation and LanceDB replay tests remain in place; memory diagnostics now expose enough structured promotion/retrieval evidence for project health summaries.
+- Verification: `cargo test --lib s58_retrieval_memory_quality_eval_covers_context_memory_and_fallback -- --nocapture` passed 1 test.
 
 Acceptance criteria:
 
@@ -716,12 +778,20 @@ Goal: keep memory useful without storing unsafe content.
 
 Tasks:
 
-- Keep prompt-injection and secret-shaped text blocked for memory and mailbox.
-- Add adversarial tests for instruction-override content inside retrieved project records and mailbox items.
-- Ensure all retrieval snippets label memory/project-record content as untrusted data.
-- Add a "sensitive source" flag for memories derived from terminal output, logs, environment checks, and credentials-adjacent files.
-- Require automated sanitization, correction, or rejection before promotion for any redacted memory.
-- Add explicit policy that memory can never grant tool permissions, change approval mode, or override AGENTS/project instructions.
+- [x] Keep prompt-injection and secret-shaped text blocked for memory and mailbox.
+- [x] Add adversarial tests for instruction-override content inside retrieved project records and mailbox items.
+- [x] Ensure all retrieval snippets label memory/project-record content as untrusted data.
+- [x] Add a "sensitive source" flag for memories derived from terminal output, logs, environment checks, and credentials-adjacent files.
+- [x] Require automated sanitization, correction, or rejection before promotion for any redacted memory.
+- [x] Add explicit policy that memory can never grant tool permissions, change approval mode, or override AGENTS/project instructions.
+
+Implementation Evidence:
+
+- Memory extraction rejects redacted, secret-shaped, and instruction-override candidates before promotion; the adversarial automatic-memory test asserts instruction-override text is rejected.
+- Retrieval metadata for memory and project records now labels context as `untrustedData: true` with `instructionAuthority: "none"`.
+- Promotion-gate evidence snippets now include `sensitiveSource` for tool, terminal, environment, secret-adjacent, code-history, and file-change evidence.
+- Tool descriptors and handoff constraints explicitly frame stored context as source-cited data that cannot override current system, developer, repository, approval, or tool policy.
+- Verification: `cargo test --lib automatic_memory -- --nocapture` passed 4 tests; `cargo test --lib mailbox_promotion_creates_review_only_project_record_candidate -- --nocapture` passed 1 test.
 
 Acceptance criteria:
 

@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{json, Value as JsonValue};
 
 use crate::db::project_store::{
-    agent_run_status_sql_value, AgentCompactionRecord, AgentCompactionTrigger, AgentMemoryKind,
-    AgentMemoryRecord, AgentMemoryReviewState, AgentMemoryScope, AgentRunEventKind, AgentRunRecord,
+    agent_memory_retrieval_reason, agent_run_status_sql_value, source_fingerprint_paths,
+    AgentCompactionRecord, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryRecord,
+    AgentMemoryReviewState, AgentMemoryScope, AgentRunEventKind, AgentRunRecord,
     AgentRunSnapshotRecord, AgentRunStatus, AgentSessionRecord, AgentSessionStatus,
     AgentToolCallState, AgentUsageRecord,
 };
@@ -773,6 +774,25 @@ pub struct SessionMemoryRecordDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<SessionMemoryDiagnosticDto>,
     pub redaction: SessionContextRedactionDto,
+    pub freshness_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_checked_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalidated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_key: Option<String>,
+    pub retrievable: bool,
+    pub retrievability_reason: String,
+    pub promotion_status: String,
+    pub provenance: JsonValue,
+    pub retrieval_impact: JsonValue,
+    pub conflict: JsonValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -785,6 +805,26 @@ pub struct ListSessionMemoriesRequestDto {
     pub include_disabled: bool,
     #[serde(default)]
     pub include_rejected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_state: Option<SessionMemoryReviewStateDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SessionMemoryScopeDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<SessionMemoryKindDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_confidence: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrievable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1008,7 +1048,99 @@ pub fn session_memory_record_dto(record: &AgentMemoryRecord) -> SessionMemoryRec
         updated_at: record.updated_at.clone(),
         diagnostic,
         redaction: strongest_redaction(&text_redaction, &diagnostic_redaction),
+        freshness_state: record.freshness_state.clone(),
+        freshness_checked_at: record.freshness_checked_at.clone(),
+        stale_reason: record.stale_reason.clone(),
+        supersedes_id: record.supersedes_id.clone(),
+        superseded_by_id: record.superseded_by_id.clone(),
+        invalidated_at: record.invalidated_at.clone(),
+        fact_key: record.fact_key.clone(),
+        retrievable: agent_memory_retrieval_reason(record) == "retrievable",
+        retrievability_reason: agent_memory_retrieval_reason(record).into(),
+        promotion_status: session_memory_promotion_status(record),
+        provenance: session_memory_provenance_json(record),
+        retrieval_impact: session_memory_retrieval_impact_json(record),
+        conflict: session_memory_conflict_json(record),
     }
+}
+
+pub fn session_memory_promotion_status(record: &AgentMemoryRecord) -> String {
+    record
+        .diagnostic
+        .as_ref()
+        .and_then(|diagnostic| serde_json::from_str::<JsonValue>(&diagnostic.message).ok())
+        .and_then(|value| {
+            value
+                .get("decision")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| match record.review_state {
+            AgentMemoryReviewState::Candidate => "candidate".into(),
+            AgentMemoryReviewState::Approved if record.enabled => "approved_enabled".into(),
+            AgentMemoryReviewState::Approved => "approved_disabled".into(),
+            AgentMemoryReviewState::Rejected => "rejected".into(),
+        })
+}
+
+fn session_memory_provenance_json(record: &AgentMemoryRecord) -> JsonValue {
+    let source_paths = source_fingerprint_paths(&record.source_fingerprints_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| !path.trim().is_empty())
+        .collect::<Vec<_>>();
+    let source_fingerprint_count = source_paths.len();
+    let promotion_gate = record
+        .diagnostic
+        .as_ref()
+        .and_then(|diagnostic| serde_json::from_str::<JsonValue>(&diagnostic.message).ok())
+        .filter(|value| {
+            value
+                .get("schema")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|schema| schema == "xero.memory_promotion_gate.decision.v1")
+        });
+    json!({
+        "sourceRunId": record.source_run_id,
+        "sourceItemIds": record.source_item_ids,
+        "sourcePaths": source_paths,
+        "sourceFingerprintCount": source_fingerprint_count,
+        "promotionGate": promotion_gate,
+    })
+}
+
+fn session_memory_retrieval_impact_json(record: &AgentMemoryRecord) -> JsonValue {
+    json!({
+        "eligibleByDefault": agent_memory_retrieval_reason(record) == "retrievable",
+        "eligibilityReason": agent_memory_retrieval_reason(record),
+        "scope": match record.scope {
+            AgentMemoryScope::Project => "project",
+            AgentMemoryScope::Session => "session",
+        },
+        "kind": match record.kind {
+            AgentMemoryKind::ProjectFact => "project_fact",
+            AgentMemoryKind::UserPreference => "user_preference",
+            AgentMemoryKind::Decision => "decision",
+            AgentMemoryKind::SessionSummary => "session_summary",
+            AgentMemoryKind::Troubleshooting => "troubleshooting",
+        },
+        "searchModes": if agent_memory_retrieval_reason(record) == "retrievable" {
+            json!(["approved_memory", "hybrid_context", "first_turn_working_set"])
+        } else {
+            json!(["diagnostic_historical"])
+        },
+    })
+}
+
+fn session_memory_conflict_json(record: &AgentMemoryRecord) -> JsonValue {
+    json!({
+        "factKey": record.fact_key,
+        "supersedesId": record.supersedes_id,
+        "supersededById": record.superseded_by_id,
+        "invalidatedAt": record.invalidated_at,
+        "freshnessState": record.freshness_state,
+        "staleReason": record.stale_reason,
+    })
 }
 
 pub fn session_memory_diagnostic_dto(

@@ -666,7 +666,7 @@ function FolderRow({
         onDrop={(event) => onDropOnFolder(event, node.path)}
         role="treeitem"
         className={cn(
-          'group flex h-[26px] w-full items-center gap-1 py-0 pr-2 text-left text-[12px] leading-5 transition-colors',
+          'group flex h-[26px] w-full items-center gap-1 py-0 pr-2 text-left text-[12px] leading-5',
           'hover:bg-muted/40 text-foreground/80',
           draggingPath === node.path && 'opacity-50',
           isDropTarget && 'bg-primary/12 text-foreground',
@@ -745,7 +745,7 @@ function FileRow({
         }}
         role="treeitem"
         className={cn(
-          'group flex h-[26px] w-full items-center gap-1 py-0 pr-2 text-left text-[12px] leading-5 transition-colors',
+          'group flex h-[26px] w-full items-center gap-1 py-0 pr-2 text-left text-[12px] leading-5',
           isSelected
             ? 'bg-primary/15 text-foreground'
             : 'text-foreground/75 hover:bg-muted/40 hover:text-foreground',

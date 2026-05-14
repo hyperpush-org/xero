@@ -804,6 +804,16 @@ describe('SettingsDialog', () => {
     expect(screen.getByRole('button', { name: 'Project State' })).toBeVisible()
   })
 
+  it('keeps settings section tab hover states immediate', async () => {
+    render(<SettingsDialog {...makeSettingsDialogProps()} />)
+
+    expect(await screen.findByRole('heading', { name: 'Providers' })).toBeVisible()
+
+    for (const name of ['Account', 'Providers', 'Plugins', 'Workspace Index']) {
+      expect(screen.getByRole('button', { name }).className).not.toMatch(/\btransition-(?!none\b)[^\s]+/)
+    }
+  })
+
   it('shows local storage data from the development section with sensitive values redacted by default', async () => {
     render(
       <SettingsDialog

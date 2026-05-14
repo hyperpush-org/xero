@@ -24,7 +24,10 @@ use super::{
         AgentEmbeddingService, LOCAL_HASH_AGENT_EMBEDDING_PROVIDER,
     },
     agent_memory::refresh_agent_memory_rows,
-    agent_memory::{AgentMemoryKind, AgentMemoryReviewState, AgentMemoryScope},
+    agent_memory::{
+        agent_memory_retrieval_reason_from_parts, AgentMemoryKind, AgentMemoryReviewState,
+        AgentMemoryScope,
+    },
     agent_memory_lance::{self, AgentMemoryListFilterOwned, AgentMemoryRow, ProjectMemoryStore},
     freshness::{
         evaluate_freshness, freshness_metadata_json, freshness_update_changed,
@@ -33,8 +36,9 @@ use super::{
     },
     open_runtime_database,
     project_record::{
-        project_record_kind_sql_value, refresh_project_record_rows, ProjectRecordImportance,
-        ProjectRecordKind, ProjectRecordRedactionState,
+        project_record_kind_sql_value, project_record_retrieval_reason_from_parts,
+        refresh_project_record_rows, ProjectRecordImportance, ProjectRecordKind,
+        ProjectRecordRedactionState,
     },
     project_record_lance::{self, ProjectRecordRow, ProjectRecordStore},
     read_project_row, validate_non_empty_text,
@@ -50,6 +54,7 @@ pub struct AgentContextRetrievalFilters {
     pub agent_session_id: Option<String>,
     pub created_after: Option<String>,
     pub min_importance: Option<ProjectRecordImportance>,
+    pub include_historical: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +227,7 @@ fn search_agent_context_internal(
         freshness_diagnostics,
         collection.blocked_excluded_count,
         collection.freshness_reason_counts.clone(),
+        collection.eligibility_exclusion_counts.clone(),
         RetrievalStorageDiagnostics {
             scanned_project_records: collection.scanned_project_records,
             scanned_approved_memories: collection.scanned_approved_memories,
@@ -620,8 +626,36 @@ fn collect_candidates(
     let mut candidates = Vec::new();
     let mut blocked_excluded_count = 0_usize;
     let mut freshness_reason_counts = BTreeMap::new();
+    let mut eligibility_exclusion_counts = BTreeMap::new();
     let mut scanned_project_records = 0_usize;
     let mut scanned_approved_memories = 0_usize;
+    let precomputed_default_exclusions = !request.filters.include_historical;
+    if precomputed_default_exclusions {
+        if matches!(
+            request.search_scope,
+            AgentRetrievalSearchScope::ProjectRecords
+                | AgentRetrievalSearchScope::HybridContext
+                | AgentRetrievalSearchScope::Handoffs
+        ) {
+            let (blocked, counts) = default_project_record_exclusion_counts(record_store, request)?;
+            blocked_excluded_count = blocked_excluded_count.saturating_add(blocked);
+            merge_count_map(&mut eligibility_exclusion_counts, counts);
+        }
+        if matches!(
+            request.search_scope,
+            AgentRetrievalSearchScope::ApprovedMemory | AgentRetrievalSearchScope::HybridContext
+        ) {
+            let session_filter = request
+                .filters
+                .agent_session_id
+                .as_deref()
+                .or(request.agent_session_id.as_deref());
+            let (blocked, counts) =
+                default_memory_exclusion_counts(memory_store, request, session_filter)?;
+            blocked_excluded_count = blocked_excluded_count.saturating_add(blocked);
+            merge_count_map(&mut eligibility_exclusion_counts, counts);
+        }
+    }
     if matches!(
         request.search_scope,
         AgentRetrievalSearchScope::ProjectRecords
@@ -645,10 +679,25 @@ fn collect_candidates(
         };
         for row in rows {
             scanned_project_records += 1;
-            if row.redaction_state
-                == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked)
+            let retrieval_reason = project_record_retrieval_reason_from_parts(
+                &row.redaction_state,
+                &row.visibility,
+                &row.freshness_state,
+                row.superseded_by_id.as_deref(),
+                row.invalidated_at.as_deref(),
+            );
+            if retrieval_reason == "blocked" {
+                if !precomputed_default_exclusions {
+                    blocked_excluded_count += 1;
+                }
+            }
+            if !precomputed_default_exclusions
+                && !request.filters.include_historical
+                && retrieval_reason != "retrievable"
             {
-                blocked_excluded_count += 1;
+                *eligibility_exclusion_counts
+                    .entry(retrieval_reason.to_string())
+                    .or_insert(0) += 1;
             }
             if let Some(candidate) =
                 project_record_candidate(row, request, query_embedding, query_tokens)?
@@ -684,6 +733,26 @@ fn collect_candidates(
         };
         for row in rows {
             scanned_approved_memories += 1;
+            let retrieval_reason = agent_memory_retrieval_reason_from_parts(
+                &row.review_state,
+                row.enabled,
+                &row.freshness_state,
+                row.superseded_by_id.as_deref(),
+                row.invalidated_at.as_deref(),
+            );
+            if retrieval_reason == "blocked" {
+                if !precomputed_default_exclusions {
+                    blocked_excluded_count += 1;
+                }
+            }
+            if !precomputed_default_exclusions
+                && !request.filters.include_historical
+                && retrieval_reason != "retrievable"
+            {
+                *eligibility_exclusion_counts
+                    .entry(retrieval_reason.to_string())
+                    .or_insert(0) += 1;
+            }
             if let Some(candidate) = memory_candidate(row, request, query_embedding, query_tokens)?
             {
                 record_candidate_freshness_reason(&candidate, &mut freshness_reason_counts);
@@ -705,9 +774,164 @@ fn collect_candidates(
         candidates,
         blocked_excluded_count,
         freshness_reason_counts,
+        eligibility_exclusion_counts,
         scanned_project_records,
         scanned_approved_memories,
     })
+}
+
+fn default_project_record_exclusion_counts(
+    record_store: &ProjectRecordStore,
+    request: &AgentContextRetrievalRequest,
+) -> Result<(usize, BTreeMap<String, usize>), CommandError> {
+    let mut blocked_count = 0_usize;
+    let mut counts = BTreeMap::new();
+    for row in record_store.list_rows()? {
+        if !project_record_row_matches_non_eligibility_filters(&row, request)? {
+            continue;
+        }
+        let reason = project_record_retrieval_reason_from_parts(
+            &row.redaction_state,
+            &row.visibility,
+            &row.freshness_state,
+            row.superseded_by_id.as_deref(),
+            row.invalidated_at.as_deref(),
+        );
+        if reason == "blocked" {
+            blocked_count = blocked_count.saturating_add(1);
+        }
+        if reason != "retrievable" {
+            *counts.entry(reason.to_string()).or_insert(0) += 1;
+        }
+    }
+    Ok((blocked_count, counts))
+}
+
+fn default_memory_exclusion_counts(
+    memory_store: &ProjectMemoryStore,
+    request: &AgentContextRetrievalRequest,
+    session_filter: Option<&str>,
+) -> Result<(usize, BTreeMap<String, usize>), CommandError> {
+    let mut blocked_count = 0_usize;
+    let mut counts = BTreeMap::new();
+    let rows = memory_store.list_rows(
+        session_filter,
+        AgentMemoryListFilterOwned {
+            include_disabled: true,
+            include_rejected: true,
+        },
+    )?;
+    for row in rows {
+        if !memory_row_matches_non_eligibility_filters(&row, request) {
+            continue;
+        }
+        let reason = agent_memory_retrieval_reason_from_parts(
+            &row.review_state,
+            row.enabled,
+            &row.freshness_state,
+            row.superseded_by_id.as_deref(),
+            row.invalidated_at.as_deref(),
+        );
+        if reason == "blocked" {
+            blocked_count = blocked_count.saturating_add(1);
+        }
+        if reason != "retrievable" {
+            *counts.entry(reason.to_string()).or_insert(0) += 1;
+        }
+    }
+    Ok((blocked_count, counts))
+}
+
+fn merge_count_map(target: &mut BTreeMap<String, usize>, source: BTreeMap<String, usize>) {
+    for (reason, count) in source {
+        *target.entry(reason).or_insert(0) += count;
+    }
+}
+
+fn project_record_row_matches_non_eligibility_filters(
+    row: &ProjectRecordRow,
+    request: &AgentContextRetrievalRequest,
+) -> Result<bool, CommandError> {
+    if request.search_scope == AgentRetrievalSearchScope::Handoffs
+        && row.record_kind != project_record_kind_sql_value(&ProjectRecordKind::AgentHandoff)
+    {
+        return Ok(false);
+    }
+    if !request.filters.record_kinds.is_empty()
+        && !request
+            .filters
+            .record_kinds
+            .iter()
+            .any(|kind| project_record_kind_sql_value(kind) == row.record_kind)
+    {
+        return Ok(false);
+    }
+    if request
+        .filters
+        .runtime_agent_id
+        .is_some_and(|runtime_agent_id| row.runtime_agent_id != runtime_agent_id)
+        || request
+            .filters
+            .agent_session_id
+            .as_deref()
+            .is_some_and(|session_id| row.agent_session_id.as_deref() != Some(session_id))
+        || request
+            .filters
+            .created_after
+            .as_deref()
+            .is_some_and(|created_after| row.created_at.as_str() < created_after)
+        || request
+            .filters
+            .min_importance
+            .as_ref()
+            .is_some_and(|importance| {
+                importance_rank(&row.importance) < project_importance_rank(importance)
+            })
+    {
+        return Ok(false);
+    }
+    let tags = parse_string_array(&row.tags_json, "tags")?;
+    if !request.filters.tags.is_empty()
+        && !request
+            .filters
+            .tags
+            .iter()
+            .all(|filter| tags.iter().any(|tag| tag == filter))
+    {
+        return Ok(false);
+    }
+    let related_paths = parse_string_array(&row.related_paths_json, "relatedPaths")?;
+    if !request.filters.related_paths.is_empty()
+        && !request.filters.related_paths.iter().any(|filter| {
+            related_paths
+                .iter()
+                .any(|path| path == filter || path.ends_with(filter))
+        })
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn memory_row_matches_non_eligibility_filters(
+    row: &AgentMemoryRow,
+    request: &AgentContextRetrievalRequest,
+) -> bool {
+    request.filters.tags.is_empty()
+        && request.filters.related_paths.is_empty()
+        && request.filters.runtime_agent_id.is_none()
+        && request.filters.min_importance.is_none()
+        && (request.filters.memory_kinds.is_empty()
+            || request
+                .filters
+                .memory_kinds
+                .iter()
+                .any(|kind| kind == &row.kind))
+        && request
+            .filters
+            .created_after
+            .as_deref()
+            .is_none_or(|created_after| row.created_at.as_str() >= created_after)
 }
 
 fn vector_candidate_window(limit_count: u32) -> usize {
@@ -724,6 +948,11 @@ fn project_record_vector_filter_sql(request: &AgentContextRetrievalRequest) -> O
         ),
         "visibility <> 'memory_candidate'".to_string(),
     ];
+    if !request.filters.include_historical {
+        conditions.push("freshness_state IN ('current', 'source_unknown')".to_string());
+        conditions.push("superseded_by_id IS NULL".to_string());
+        conditions.push("invalidated_at IS NULL".to_string());
+    }
     if request.search_scope == AgentRetrievalSearchScope::Handoffs {
         conditions.push(format!(
             "record_kind = {}",
@@ -778,6 +1007,11 @@ fn memory_vector_filter_sql(
         "review_state = 'approved'".to_string(),
         "enabled = true".to_string(),
     ];
+    if !request.filters.include_historical {
+        conditions.push("freshness_state IN ('current', 'source_unknown')".to_string());
+        conditions.push("superseded_by_id IS NULL".to_string());
+        conditions.push("invalidated_at IS NULL".to_string());
+    }
     if let Some(session_id) = session_filter {
         conditions.push(format!(
             "(scope_kind = 'project' OR (scope_kind = 'session' AND agent_session_id = {}))",
@@ -824,6 +1058,17 @@ fn project_record_candidate(
     query_embedding: Option<&AgentEmbedding>,
     query_tokens: &BTreeSet<String>,
 ) -> Result<Option<SearchCandidate>, CommandError> {
+    if !request.filters.include_historical
+        && project_record_retrieval_reason_from_parts(
+            &row.redaction_state,
+            &row.visibility,
+            &row.freshness_state,
+            row.superseded_by_id.as_deref(),
+            row.invalidated_at.as_deref(),
+        ) != "retrievable"
+    {
+        return Ok(None);
+    }
     if row.redaction_state
         == project_record_redaction_state_value(&ProjectRecordRedactionState::Blocked)
         || row.visibility == "memory_candidate"
@@ -979,6 +1224,8 @@ fn project_record_candidate(
         created_at: row.created_at,
         semantic_status: semantic.status,
         metadata: json!({
+            "untrustedData": true,
+            "instructionAuthority": "none",
             "title": row.title,
             "recordKind": row.record_kind,
             "runtimeAgentId": row.runtime_agent_id.as_str(),
@@ -1030,6 +1277,17 @@ fn memory_candidate(
     query_embedding: Option<&AgentEmbedding>,
     query_tokens: &BTreeSet<String>,
 ) -> Result<Option<SearchCandidate>, CommandError> {
+    if !request.filters.include_historical
+        && agent_memory_retrieval_reason_from_parts(
+            &row.review_state,
+            row.enabled,
+            &row.freshness_state,
+            row.superseded_by_id.as_deref(),
+            row.invalidated_at.as_deref(),
+        ) != "retrievable"
+    {
+        return Ok(None);
+    }
     if row.review_state != AgentMemoryReviewState::Approved
         || !row.enabled
         || !request.filters.tags.is_empty()
@@ -1131,6 +1389,8 @@ fn memory_candidate(
         created_at: row.created_at,
         semantic_status: semantic.status,
         metadata: json!({
+            "untrustedData": true,
+            "instructionAuthority": "none",
             "scope": scope,
             "memoryKind": kind,
             "agentSessionId": row.agent_session_id,
@@ -1178,6 +1438,7 @@ struct CandidateCollection {
     candidates: Vec<SearchCandidate>,
     blocked_excluded_count: usize,
     freshness_reason_counts: BTreeMap<String, usize>,
+    eligibility_exclusion_counts: BTreeMap<String, usize>,
     scanned_project_records: usize,
     scanned_approved_memories: usize,
 }
@@ -1820,6 +2081,7 @@ fn retrieval_diagnostic(
     mut freshness: FreshnessRefreshSummary,
     blocked_excluded_count: usize,
     freshness_reason_counts: BTreeMap<String, usize>,
+    eligibility_exclusion_counts: BTreeMap<String, usize>,
     storage: RetrievalStorageDiagnostics,
     retrieval_semantics: &str,
     query_embedding: Option<&AgentEmbedding>,
@@ -1833,6 +2095,16 @@ fn retrieval_diagnostic(
         object.insert(
             "reasonCounts".into(),
             json!(freshness_reason_counts
+                .iter()
+                .map(|(reason, count)| json!({
+                    "reason": reason,
+                    "count": count,
+                }))
+                .collect::<Vec<_>>()),
+        );
+        object.insert(
+            "defaultEligibilityExclusionCounts".into(),
+            json!(eligibility_exclusion_counts
                 .iter()
                 .map(|(reason, count)| json!({
                     "reason": reason,
@@ -1856,6 +2128,8 @@ fn retrieval_diagnostic(
         .get("provider")
         .and_then(JsonValue::as_str)
         .unwrap_or("unavailable");
+    let semantic_retrieval_degraded =
+        degradation.degraded || embedding_provider == LOCAL_HASH_AGENT_EMBEDDING_PROVIDER;
     match base {
         Some(mut diagnostic) => {
             if let Some(object) = diagnostic.as_object_mut() {
@@ -1866,6 +2140,10 @@ fn retrieval_diagnostic(
                 object.insert("embeddingProvider".into(), json!(embedding_provider));
                 object.insert("embeddingDiagnostics".into(), embedding_json);
                 object.insert("degradedMode".into(), json!(degradation.degraded));
+                object.insert(
+                    "semanticRetrievalDegraded".into(),
+                    json!(semantic_retrieval_degraded),
+                );
                 object.insert("fallbackDiagnostics".into(), fallback_json);
                 Some(diagnostic)
             } else {
@@ -1878,6 +2156,7 @@ fn retrieval_diagnostic(
                     "embeddingProvider": embedding_provider,
                     "embeddingDiagnostics": embedding_json,
                     "degradedMode": degradation.degraded,
+                    "semanticRetrievalDegraded": semantic_retrieval_degraded,
                     "fallbackDiagnostics": fallback_json,
                 }))
             }
@@ -1890,6 +2169,7 @@ fn retrieval_diagnostic(
             "embeddingProvider": embedding_provider,
             "embeddingDiagnostics": embedding_json,
             "degradedMode": degradation.degraded,
+            "semanticRetrievalDegraded": semantic_retrieval_degraded,
             "fallbackDiagnostics": fallback_json,
         })),
     }
@@ -1937,6 +2217,7 @@ fn retrieval_filters_json(filters: &AgentContextRetrievalFilters) -> JsonValue {
         "agentSessionId": filters.agent_session_id.clone(),
         "createdAfter": filters.created_after.clone(),
         "minImportance": filters.min_importance.as_ref().map(project_record_importance_sql_value),
+        "includeHistorical": filters.include_historical,
     })
 }
 
@@ -2874,6 +3155,9 @@ mod tests {
             project_record_vector_filter_sql(&request).expect("project vector filter");
         assert!(project_filter.contains("redaction_state <> 'blocked'"));
         assert!(project_filter.contains("visibility <> 'memory_candidate'"));
+        assert!(project_filter.contains("freshness_state IN ('current', 'source_unknown')"));
+        assert!(project_filter.contains("superseded_by_id IS NULL"));
+        assert!(project_filter.contains("invalidated_at IS NULL"));
         assert!(project_filter.contains("record_kind IN ('decision')"));
         assert!(project_filter.contains("runtime_agent_id = 'engineer'"));
         assert!(project_filter.contains("agent_session_id = 'session-a'"));
@@ -2883,6 +3167,9 @@ mod tests {
             memory_vector_filter_sql(&request, Some("session-a")).expect("memory vector filter");
         assert!(memory_filter.contains("review_state = 'approved'"));
         assert!(memory_filter.contains("enabled = true"));
+        assert!(memory_filter.contains("freshness_state IN ('current', 'source_unknown')"));
+        assert!(memory_filter.contains("superseded_by_id IS NULL"));
+        assert!(memory_filter.contains("invalidated_at IS NULL"));
         assert!(memory_filter.contains("scope_kind = 'project'"));
         assert!(memory_filter.contains("agent_session_id = 'session-a'"));
         assert!(memory_filter.contains("memory_kind IN ('decision')"));
@@ -2891,6 +3178,7 @@ mod tests {
             None,
             FreshnessRefreshSummary::default(),
             0,
+            BTreeMap::new(),
             BTreeMap::new(),
             RetrievalStorageDiagnostics {
                 scanned_project_records: 24,
@@ -2926,6 +3214,42 @@ mod tests {
             diagnostic["storageDiagnostics"]["vectorCandidateWindow"],
             24
         );
+    }
+
+    #[test]
+    fn s34_include_historical_uses_explicit_diagnostic_vector_filters() {
+        let request = AgentContextRetrievalRequest {
+            query_id: "query-s34-historical".into(),
+            project_id: "project-s34".into(),
+            agent_session_id: Some("session-a".into()),
+            run_id: Some("run-a".into()),
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            query_text: "release blockers".into(),
+            search_scope: AgentRetrievalSearchScope::HybridContext,
+            filters: AgentContextRetrievalFilters {
+                include_historical: true,
+                record_kinds: vec![ProjectRecordKind::Decision],
+                memory_kinds: vec![AgentMemoryKind::Decision],
+                ..AgentContextRetrievalFilters::default()
+            },
+            limit_count: 3,
+            allow_keyword_fallback: true,
+            created_at: "2026-05-09T00:00:00Z".into(),
+        };
+
+        let project_filter =
+            project_record_vector_filter_sql(&request).expect("project vector filter");
+        assert!(!project_filter.contains("freshness_state IN ('current', 'source_unknown')"));
+        assert!(!project_filter.contains("superseded_by_id IS NULL"));
+        assert!(!project_filter.contains("invalidated_at IS NULL"));
+
+        let memory_filter =
+            memory_vector_filter_sql(&request, Some("session-a")).expect("memory vector filter");
+        assert!(!memory_filter.contains("freshness_state IN ('current', 'source_unknown')"));
+        assert!(!memory_filter.contains("superseded_by_id IS NULL"));
+        assert!(!memory_filter.contains("invalidated_at IS NULL"));
     }
 
     #[test]

@@ -18,7 +18,13 @@ def load_manifests(root: Path) -> list[dict[str, Any]]:
     for path in sorted(root.rglob("manifest.json")):
         try:
             payload = json.loads(path.read_text())
-        except json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not isinstance(payload.get("benchmark"), dict) or not isinstance(
+            payload.get("harness"), dict
+        ):
             continue
         payload["_manifestPath"] = str(path)
         manifests.append(payload)
@@ -65,9 +71,30 @@ def harness_name(manifest: dict[str, Any]) -> str:
     return name
 
 
+def excluded_manifest_reason(manifest: dict[str, Any]) -> str | None:
+    harness = manifest.get("harness") or {}
+    if harness.get("fakeProviderFixture") is True:
+        return "fake_provider_fixture"
+    return None
+
+
 def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
+    scored_manifests = [
+        manifest for manifest in manifests if excluded_manifest_reason(manifest) is None
+    ]
+    excluded_manifests = [
+        {
+            "reason": excluded_manifest_reason(manifest),
+            "harness": harness_name(manifest),
+            "taskId": (manifest.get("benchmark") or {}).get("taskId"),
+            "manifest": manifest.get("_manifestPath"),
+        }
+        for manifest in manifests
+        if excluded_manifest_reason(manifest) is not None
+    ]
+
     by_harness: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for manifest in manifests:
+    for manifest in scored_manifests:
         by_harness[harness_name(manifest)].append(manifest)
 
     harnesses: dict[str, Any] = {}
@@ -124,7 +151,7 @@ def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     paired: dict[str, dict[str, Any]] = defaultdict(dict)
-    for manifest in manifests:
+    for manifest in scored_manifests:
         bench = manifest.get("benchmark") or {}
         task_id = bench.get("taskId") or "unknown-task"
         paired[task_id][harness_name(manifest)] = {
@@ -133,7 +160,7 @@ def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
             "failureCategory": (manifest.get("run") or {}).get("failureCategory"),
         }
 
-    first = manifests[0] if manifests else {}
+    first = scored_manifests[0] if scored_manifests else (manifests[0] if manifests else {})
     return {
         "schema": "xero.benchmark.report.v1",
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -143,6 +170,9 @@ def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
         "harnesses": harnesses,
         "pairedOutcomes": dict(sorted(paired.items())),
         "manifestCount": len(manifests),
+        "scoredManifestCount": len(scored_manifests),
+        "excludedManifestCount": len(excluded_manifests),
+        "excludedManifests": excluded_manifests,
     }
 
 
@@ -186,6 +216,12 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"{name}={'pass' if row['resolved'] else 'fail'}" for name, row in outcomes.items()
         )
         lines.append(f"- `{task_id}`: {labels}")
+    if report.get("excludedManifests"):
+        lines.extend(["", "## Excluded Manifests", ""])
+        for row in report["excludedManifests"]:
+            lines.append(
+                f"- `{row.get('taskId') or 'unknown-task'}` ({row.get('harness')}): {row.get('reason')}"
+            )
     return "\n".join(lines) + "\n"
 
 

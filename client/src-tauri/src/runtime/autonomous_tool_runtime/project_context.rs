@@ -103,6 +103,8 @@ pub struct AutonomousProjectContextRequest {
     pub created_after: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_importance: Option<AutonomousProjectContextRecordImportance>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_historical: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,6 +140,7 @@ impl AutonomousProjectContextRequest {
             related_paths: Vec::new(),
             created_after: None,
             min_importance: None,
+            include_historical: false,
             limit: None,
             title: None,
             summary: None,
@@ -428,11 +431,12 @@ impl AutonomousToolRuntime {
                 format!("Project record `{record_id}` is blocked by redaction policy."),
             ));
         }
-        if record.visibility == project_store::ProjectRecordVisibility::MemoryCandidate {
+        if !request.include_historical && !project_store::is_retrievable_project_record(&record) {
+            let reason = project_store::project_record_retrieval_reason(&record);
             return Err(CommandError::user_fixable(
-                "project_context_record_candidate_unreviewed",
+                "project_context_record_not_retrievable",
                 format!(
-                    "Project record `{record_id}` is a review-only candidate and is not retrievable as durable context."
+                    "Project record `{record_id}` is not retrievable by default because it is `{reason}`. Use an explicit diagnostic/historical request only for audit work."
                 ),
             ));
         }
@@ -473,11 +477,13 @@ impl AutonomousToolRuntime {
         )?;
         let memory =
             project_store::get_agent_memory(&self.repo_root, &run_context.project_id, &memory_id)?;
-        if memory.review_state != project_store::AgentMemoryReviewState::Approved || !memory.enabled
-        {
+        if !request.include_historical && !project_store::is_retrievable_agent_memory(&memory) {
+            let reason = project_store::agent_memory_retrieval_reason(&memory);
             return Err(CommandError::user_fixable(
-                "project_context_memory_not_approved",
-                format!("Memory `{memory_id}` is not approved and enabled."),
+                "project_context_memory_not_retrievable",
+                format!(
+                    "Memory `{memory_id}` is not retrievable by default because it is `{reason}`. Use an explicit diagnostic/historical request only for audit work."
+                ),
             ));
         }
 
@@ -788,7 +794,17 @@ impl AutonomousToolRuntime {
         let (title, title_redacted) = redact_session_context_text(&title);
         let (summary, summary_redacted) = redact_session_context_text(&summary);
         let (text, text_redacted) = redact_session_context_text(&text);
-        let content_json = request.content_json.as_ref().map(redact_json_value);
+        let tags = context_record_tags(&request.tags, runtime_agent_id, &visibility);
+        let source_item_ids = candidate_source_item_ids(&request.source_item_ids, run_context);
+        let content_json = project_record_context_content_json(
+            request.content_json.as_ref().map(redact_json_value),
+            &visibility,
+            runtime_agent_id,
+            &source_item_ids,
+            &tags,
+            &request.related_paths,
+            request.confidence,
+        );
         let content_redacted = content_json
             .as_ref()
             .is_some_and(json_value_contains_redaction_marker);
@@ -801,8 +817,6 @@ impl AutonomousToolRuntime {
         } else {
             project_store::ProjectRecordRedactionState::Clean
         };
-        let tags = context_record_tags(&request.tags, runtime_agent_id, &visibility);
-        let source_item_ids = candidate_source_item_ids(&request.source_item_ids, run_context);
         let run_snapshot = project_store::load_agent_run(
             &self.repo_root,
             &run_context.project_id,
@@ -1063,7 +1077,12 @@ fn retrieval_filters_from_request(
         min_importance: request
             .min_importance
             .map(|importance| importance.to_project_store()),
+        include_historical: request.include_historical,
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn context_results_from_retrieval(
@@ -1469,6 +1488,37 @@ fn context_record_tags(
     }
     values.push(format!("runtime-agent:{}", runtime_agent_id.as_str()));
     dedupe_strings(values)
+}
+
+fn project_record_context_content_json(
+    content_json: Option<JsonValue>,
+    visibility: &project_store::ProjectRecordVisibility,
+    runtime_agent_id: RuntimeAgentIdDto,
+    source_item_ids: &[String],
+    tags: &[String],
+    related_paths: &[String],
+    confidence: Option<u8>,
+) -> Option<JsonValue> {
+    if *visibility != project_store::ProjectRecordVisibility::MemoryCandidate {
+        return content_json;
+    }
+    Some(json!({
+        "schema": "xero.project_record_candidate.governance.v1",
+        "candidateContent": content_json.unwrap_or(JsonValue::Null),
+        "governance": {
+            "reviewState": "candidate",
+            "visibility": "memory_candidate",
+            "runtimeAgentId": runtime_agent_id.as_str(),
+            "sourceItemIds": source_item_ids,
+            "relatedPaths": related_paths,
+            "tags": tags,
+            "confidence": confidence,
+            "retrievableByDefault": false,
+            "promotionStatus": "candidate",
+            "requiresAutomatedGovernance": true,
+            "policy": "Project-record candidates are not default-retrievable until promoted by an explicit backend governance path.",
+        }
+    }))
 }
 
 fn candidate_source_item_ids(

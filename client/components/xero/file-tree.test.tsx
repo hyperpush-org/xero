@@ -151,6 +151,22 @@ describe('FileTree virtualization', () => {
   })
 })
 
+describe('FileTree row hover motion', () => {
+  it('keeps explorer row hover states immediate', () => {
+    const root = makeTree([
+      makeFolder('/src', [makeFile('/src/app.tsx')]),
+      makeFile('/README.md'),
+    ])
+
+    renderFileTree(root, '/README.md')
+
+    const rows = within(screen.getByRole('tree')).getAllByRole('treeitem')
+    for (const row of rows) {
+      expect(row.className).not.toMatch(/\btransition-(?!none\b)[^\s]+/)
+    }
+  })
+})
+
 describe('FileTree keyboard navigation', () => {
   it('uses roving tabindex so the selected row owns the tab stop', () => {
     const root = makeTree([

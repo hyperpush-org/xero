@@ -17,31 +17,33 @@ use crate::{
         context_budget_with_source, estimate_tokens, evaluate_compaction_policy,
         memory_policy_decision, redact_session_context_text, resolve_context_limit,
         run_transcript_from_agent_snapshot, session_compaction_record_dto,
-        session_memory_diagnostic_dto, session_memory_record_dto, session_transcript_from_runs,
-        usage_totals_from_agent_usage, validate_context_snapshot_contract,
-        validate_export_payload_contract, validate_session_compaction_record_contract,
-        validate_session_memory_record_contract, validate_session_transcript_contract,
-        AgentSessionBranchResponseDto, AgentSessionLineageBoundaryKindDto,
-        BranchAgentSessionRequestDto, BrowserControlPreferenceDto, CommandError, CommandResult,
-        CompactSessionHistoryRequestDto, CompactSessionHistoryResponseDto,
-        CorrectSessionMemoryRequestDto, CorrectSessionMemoryResponseDto,
-        DeleteSessionMemoryRequestDto, ExportSessionTranscriptRequestDto,
-        ExtractSessionMemoryCandidatesRequestDto, ExtractSessionMemoryCandidatesResponseDto,
-        GetSessionContextSnapshotRequestDto, GetSessionMemoryReviewQueueRequestDto,
-        GetSessionTranscriptRequestDto, ListSessionMemoriesRequestDto,
-        ListSessionMemoriesResponseDto, RewindAgentSessionRequestDto,
-        SaveSessionTranscriptExportRequestDto, SearchSessionTranscriptsRequestDto,
-        SearchSessionTranscriptsResponseDto, SessionCompactionPolicyInput,
-        SessionContextCodeMapDto, SessionContextCodeSymbolDto, SessionContextContributorDto,
-        SessionContextContributorKindDto, SessionContextDependencyManifestDto,
-        SessionContextDispositionDto, SessionContextRedactionClassDto, SessionContextRedactionDto,
-        SessionContextSnapshotDiffDto, SessionContextSnapshotDto, SessionContextTaskPhaseDto,
-        SessionMemoryDiagnosticDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
-        SessionTranscriptActorDto, SessionTranscriptDto, SessionTranscriptExportFormatDto,
-        SessionTranscriptExportPayloadDto, SessionTranscriptExportResponseDto,
-        SessionTranscriptItemDto, SessionTranscriptItemKindDto, SessionTranscriptScopeDto,
-        SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto, SessionUsageTotalsDto,
-        UpdateSessionMemoryRequestDto, XERO_SESSION_CONTEXT_CONTRACT_VERSION,
+        session_memory_diagnostic_dto, session_memory_promotion_status, session_memory_record_dto,
+        session_transcript_from_runs, usage_totals_from_agent_usage,
+        validate_context_snapshot_contract, validate_export_payload_contract,
+        validate_session_compaction_record_contract, validate_session_memory_record_contract,
+        validate_session_transcript_contract, AgentSessionBranchResponseDto,
+        AgentSessionLineageBoundaryKindDto, BranchAgentSessionRequestDto,
+        BrowserControlPreferenceDto, CommandError, CommandResult, CompactSessionHistoryRequestDto,
+        CompactSessionHistoryResponseDto, CorrectSessionMemoryRequestDto,
+        CorrectSessionMemoryResponseDto, DeleteSessionMemoryRequestDto,
+        ExportSessionTranscriptRequestDto, ExtractSessionMemoryCandidatesRequestDto,
+        ExtractSessionMemoryCandidatesResponseDto, GetSessionContextSnapshotRequestDto,
+        GetSessionMemoryReviewQueueRequestDto, GetSessionTranscriptRequestDto,
+        ListSessionMemoriesRequestDto, ListSessionMemoriesResponseDto,
+        RewindAgentSessionRequestDto, SaveSessionTranscriptExportRequestDto,
+        SearchSessionTranscriptsRequestDto, SearchSessionTranscriptsResponseDto,
+        SessionCompactionPolicyInput, SessionContextCodeMapDto, SessionContextCodeSymbolDto,
+        SessionContextContributorDto, SessionContextContributorKindDto,
+        SessionContextDependencyManifestDto, SessionContextDispositionDto,
+        SessionContextRedactionClassDto, SessionContextRedactionDto, SessionContextSnapshotDiffDto,
+        SessionContextSnapshotDto, SessionContextTaskPhaseDto, SessionMemoryDiagnosticDto,
+        SessionMemoryKindDto, SessionMemoryRecordDto, SessionMemoryReviewStateDto,
+        SessionMemoryScopeDto, SessionTranscriptActorDto, SessionTranscriptDto,
+        SessionTranscriptExportFormatDto, SessionTranscriptExportPayloadDto,
+        SessionTranscriptExportResponseDto, SessionTranscriptItemDto, SessionTranscriptItemKindDto,
+        SessionTranscriptScopeDto, SessionTranscriptSearchResultSnippetDto, SessionUsageSourceDto,
+        SessionUsageTotalsDto, UpdateSessionMemoryRequestDto,
+        XERO_SESSION_CONTEXT_CONTRACT_VERSION,
     },
     db::project_store::{
         self, AgentCompactionTrigger, AgentMemoryKind, AgentMemoryListFilter,
@@ -446,17 +448,32 @@ pub fn list_session_memories<R: Runtime>(
     if let Some(agent_session_id) = request.agent_session_id.as_deref() {
         validate_non_empty(agent_session_id, "agentSessionId")?;
     }
+    if request
+        .min_confidence
+        .is_some_and(|confidence| confidence > 100)
+    {
+        return Err(CommandError::invalid_request("minConfidence"));
+    }
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let include_rejected = request.include_rejected
+        || request.review_state == Some(SessionMemoryReviewStateDto::Rejected);
+    let include_disabled = request.include_disabled
+        || request.retrievable == Some(false)
+        || request
+            .review_state
+            .as_ref()
+            .is_some_and(|state| *state != SessionMemoryReviewStateDto::Approved);
     let memories = project_store::list_agent_memories(
         &repo_root,
         &request.project_id,
         AgentMemoryListFilter {
             agent_session_id: request.agent_session_id.as_deref(),
-            include_disabled: request.include_disabled,
-            include_rejected: request.include_rejected,
+            include_disabled,
+            include_rejected,
         },
     )?
     .iter()
+    .filter(|memory| session_memory_matches_filters(memory, &request))
     .map(session_memory_record_dto)
     .collect::<Vec<_>>();
     for memory in &memories {
@@ -472,6 +489,89 @@ pub fn list_session_memories<R: Runtime>(
         agent_session_id: request.agent_session_id,
         memories,
     })
+}
+
+fn session_memory_matches_filters(
+    memory: &project_store::AgentMemoryRecord,
+    request: &ListSessionMemoriesRequestDto,
+) -> bool {
+    request
+        .review_state
+        .as_ref()
+        .is_none_or(|state| agent_memory_review_state_to_dto(&memory.review_state) == *state)
+        && request
+            .scope
+            .as_ref()
+            .is_none_or(|scope| agent_memory_scope_to_dto(&memory.scope) == *scope)
+        && request
+            .kind
+            .as_ref()
+            .is_none_or(|kind| agent_memory_kind_to_dto(&memory.kind) == *kind)
+        && request
+            .freshness_state
+            .as_deref()
+            .is_none_or(|state| memory.freshness_state == state)
+        && request
+            .min_confidence
+            .is_none_or(|minimum| memory.confidence.unwrap_or_default() >= minimum)
+        && request
+            .source_run_id
+            .as_deref()
+            .is_none_or(|source_run_id| memory.source_run_id.as_deref() == Some(source_run_id))
+        && request
+            .created_after
+            .as_deref()
+            .is_none_or(|created_after| memory.created_at.as_str() >= created_after)
+        && request
+            .promotion_status
+            .as_deref()
+            .is_none_or(|status| session_memory_promotion_status(memory) == status)
+        && request.retrievable.is_none_or(|retrievable| {
+            project_store::is_retrievable_agent_memory(memory) == retrievable
+        })
+        && request
+            .related_path
+            .as_deref()
+            .is_none_or(|path| memory_related_path_matches(memory, path))
+}
+
+fn memory_related_path_matches(
+    memory: &project_store::AgentMemoryRecord,
+    related_path: &str,
+) -> bool {
+    let related_path = related_path.trim();
+    if related_path.is_empty() {
+        return true;
+    }
+    project_store::source_fingerprint_paths(&memory.source_fingerprints_json)
+        .unwrap_or_default()
+        .iter()
+        .any(|path| path == related_path || path.ends_with(related_path))
+}
+
+fn agent_memory_review_state_to_dto(state: &AgentMemoryReviewState) -> SessionMemoryReviewStateDto {
+    match state {
+        AgentMemoryReviewState::Candidate => SessionMemoryReviewStateDto::Candidate,
+        AgentMemoryReviewState::Approved => SessionMemoryReviewStateDto::Approved,
+        AgentMemoryReviewState::Rejected => SessionMemoryReviewStateDto::Rejected,
+    }
+}
+
+fn agent_memory_scope_to_dto(scope: &AgentMemoryScope) -> SessionMemoryScopeDto {
+    match scope {
+        AgentMemoryScope::Project => SessionMemoryScopeDto::Project,
+        AgentMemoryScope::Session => SessionMemoryScopeDto::Session,
+    }
+}
+
+fn agent_memory_kind_to_dto(kind: &AgentMemoryKind) -> SessionMemoryKindDto {
+    match kind {
+        AgentMemoryKind::ProjectFact => SessionMemoryKindDto::ProjectFact,
+        AgentMemoryKind::UserPreference => SessionMemoryKindDto::UserPreference,
+        AgentMemoryKind::Decision => SessionMemoryKindDto::Decision,
+        AgentMemoryKind::SessionSummary => SessionMemoryKindDto::SessionSummary,
+        AgentMemoryKind::Troubleshooting => SessionMemoryKindDto::Troubleshooting,
+    }
 }
 
 #[tauri::command]

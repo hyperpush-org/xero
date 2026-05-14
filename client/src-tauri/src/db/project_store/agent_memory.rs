@@ -561,7 +561,11 @@ pub fn list_approved_agent_memories(
         validate_non_empty_text(agent_session_id, "agentSessionId")?;
     }
     let store = open_store_no_project_check(repo_root, project_id);
-    store.list_approved(agent_session_id)
+    Ok(store
+        .list_approved(agent_session_id)?
+        .into_iter()
+        .filter(is_retrievable_agent_memory)
+        .collect())
 }
 
 pub fn load_agent_memory_review_queue(
@@ -598,7 +602,7 @@ pub fn load_agent_memory_review_queue(
         if !memory.enabled {
             disabled_count += 1;
         }
-        if memory_review_retrieval_eligible(memory) {
+        if is_retrievable_agent_memory(memory) {
             retrievable_approved_count += 1;
         }
     }
@@ -816,7 +820,7 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
     let (text_preview, text_redacted) = memory_review_text_preview(&memory.text);
     let (fact_key, fact_key_redacted) =
         memory_review_optional_redacted_text(memory.fact_key.as_deref());
-    let retrieval_eligible = memory_review_retrieval_eligible(memory);
+    let retrieval_eligible = is_retrievable_agent_memory(memory);
     serde_json::json!({
         "memoryId": memory.memory_id,
         "scope": agent_memory_scope_fact_value(&memory.scope),
@@ -845,7 +849,7 @@ fn memory_review_queue_item(memory: &AgentMemoryRecord) -> serde_json::Value {
         },
         "retrieval": {
             "eligible": retrieval_eligible,
-            "reason": memory_review_retrieval_reason(memory),
+            "reason": agent_memory_retrieval_reason(memory),
         },
         "redaction": {
             "textPreviewRedacted": text_redacted,
@@ -888,36 +892,45 @@ fn memory_review_text_preview(text: &str) -> (serde_json::Value, bool) {
     }
 }
 
-fn memory_review_retrieval_eligible(memory: &AgentMemoryRecord) -> bool {
-    memory.review_state == AgentMemoryReviewState::Approved
-        && memory.enabled
-        && matches!(
-            parse_freshness_state(&memory.freshness_state),
-            FreshnessState::Current | FreshnessState::SourceUnknown
-        )
-        && memory.superseded_by_id.is_none()
-        && memory.invalidated_at.is_none()
+pub fn is_retrievable_agent_memory(memory: &AgentMemoryRecord) -> bool {
+    agent_memory_retrieval_reason(memory) == "retrievable"
 }
 
-fn memory_review_retrieval_reason(memory: &AgentMemoryRecord) -> &'static str {
-    if memory.review_state != AgentMemoryReviewState::Approved {
+pub fn agent_memory_retrieval_reason(memory: &AgentMemoryRecord) -> &'static str {
+    agent_memory_retrieval_reason_from_parts(
+        &memory.review_state,
+        memory.enabled,
+        &memory.freshness_state,
+        memory.superseded_by_id.as_deref(),
+        memory.invalidated_at.as_deref(),
+    )
+}
+
+pub(crate) fn agent_memory_retrieval_reason_from_parts(
+    review_state: &AgentMemoryReviewState,
+    enabled: bool,
+    freshness_state: &str,
+    superseded_by_id: Option<&str>,
+    invalidated_at: Option<&str>,
+) -> &'static str {
+    if *review_state != AgentMemoryReviewState::Approved {
         return "pending_or_rejected_review";
     }
-    if !memory.enabled {
+    if !enabled {
         return "disabled";
     }
-    if memory.superseded_by_id.is_some() {
+    if superseded_by_id.is_some() {
         return "superseded";
     }
-    if memory.invalidated_at.is_some() {
-        return "invalidated";
-    }
-    match parse_freshness_state(&memory.freshness_state) {
+    match parse_freshness_state(freshness_state) {
         FreshnessState::Current | FreshnessState::SourceUnknown => {}
         FreshnessState::Stale => return "stale",
         FreshnessState::SourceMissing => return "source_missing",
         FreshnessState::Superseded => return "superseded",
         FreshnessState::Blocked => return "blocked",
+    }
+    if invalidated_at.is_some() {
+        return "invalidated";
     }
     "retrievable"
 }
@@ -1309,6 +1322,58 @@ mod tests {
         let err = validate_new_agent_memory(&record).expect_err("enabled requires approved");
         assert_eq!(err.code, "invalid_request");
         assert!(err.message.contains("enabled"));
+    }
+
+    #[test]
+    fn retrieval_predicate_rejects_non_approved_or_contradicted_memory() {
+        let mut memory = AgentMemoryRecord {
+            id: 1,
+            memory_id: "memory-retrieval-contract".into(),
+            project_id: "project-retrieval-contract".into(),
+            agent_session_id: None,
+            scope: AgentMemoryScope::Project,
+            kind: AgentMemoryKind::ProjectFact,
+            text: "Durable memory retrieval predicate fixture.".into(),
+            text_hash: "a".repeat(64),
+            review_state: AgentMemoryReviewState::Approved,
+            enabled: true,
+            confidence: Some(90),
+            source_run_id: Some("run-retrieval-contract".into()),
+            source_item_ids: vec!["agent_messages:1".into()],
+            diagnostic: Some(AgentRunDiagnosticRecord {
+                code: "memory_promotion_gate_promoted".into(),
+                message: "{}".into(),
+            }),
+            freshness_state: FreshnessState::Current.as_str().into(),
+            freshness_checked_at: None,
+            stale_reason: None,
+            source_fingerprints_json: crate::db::project_store::source_fingerprints_empty_json(),
+            supersedes_id: None,
+            superseded_by_id: None,
+            invalidated_at: None,
+            fact_key: None,
+            created_at: "2026-05-09T00:00:00Z".into(),
+            updated_at: "2026-05-09T00:00:00Z".into(),
+        };
+        assert!(is_retrievable_agent_memory(&memory));
+
+        memory.review_state = AgentMemoryReviewState::Candidate;
+        assert_eq!(
+            agent_memory_retrieval_reason(&memory),
+            "pending_or_rejected_review"
+        );
+
+        memory.review_state = AgentMemoryReviewState::Approved;
+        memory.enabled = false;
+        assert_eq!(agent_memory_retrieval_reason(&memory), "disabled");
+
+        memory.enabled = true;
+        memory.freshness_state = FreshnessState::Stale.as_str().into();
+        assert_eq!(agent_memory_retrieval_reason(&memory), "stale");
+
+        memory.freshness_state = FreshnessState::Current.as_str().into();
+        memory.superseded_by_id = Some("memory-newer".into());
+        assert_eq!(agent_memory_retrieval_reason(&memory), "superseded");
     }
 
     #[test]
@@ -1750,24 +1815,19 @@ mod tests {
                 .source_id,
             "memory-s29-current"
         );
-        let stale_result = response
+        assert!(!response
             .results
             .iter()
-            .find(|result| result.source_id == "memory-s29-stale")
-            .expect("stale memory result");
-        assert_eq!(
-            stale_result.metadata["freshness"]["state"].as_str(),
-            Some("stale")
-        );
-        assert_eq!(
-            stale_result.metadata["trust"]["contradictionState"].as_str(),
-            Some("contradicted")
-        );
-        assert!(stale_result.metadata["freshness"]["staleReason"]
-            .as_str()
-            .expect("retrieval stale reason")
-            .contains("src/stale_memory.rs"));
+            .any(|result| result.source_id == "memory-s29-stale"));
         assert!(response.diagnostic.is_some());
+        let exclusions = response.diagnostic.as_ref().unwrap()["freshnessDiagnostics"]
+            ["defaultEligibilityExclusionCounts"]
+            .as_array()
+            .expect("eligibility exclusion counts");
+        assert!(exclusions.iter().any(|entry| {
+            entry["reason"] == serde_json::json!("stale")
+                && entry["count"].as_u64().unwrap_or_default() >= 1
+        }));
     }
 
     #[test]

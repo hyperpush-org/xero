@@ -29,7 +29,10 @@
         "reasoningEffort": { "type": "string" },
         "maxOutputTokens": { "type": "integer", "minimum": 1 },
         "contextBudget": { "type": "integer", "minimum": 1 },
+        "credentialMode": { "enum": ["api_key_env", "app_openai_oauth", "none_or_local"] },
         "credentialEnv": { "type": "string" },
+        "oauthAppDataRoot": { "type": "string" },
+        "oauthAccountId": { "type": "string" },
         "endpointClass": { "type": "string" },
         "providerAccountClass": { "type": "string" }
       }
