@@ -94,7 +94,7 @@ Gate: OpenCode produces Harbor-owned outcomes and stored artifacts for the froze
 
 ### 5. Xero Comparison Smoke
 
-Status: Completed on 2026-05-14 in product-mode route. The frozen comparison-smoke task ids were `log-summary-date-ranges`, `fix-git`, `cobol-modernization`, `db-wal-recovery`, and `polyglot-c-py`. Harbor oracle validated the set with 5/5 trials complete, zero exceptions, and mean reward 1.000. Harbor built-in `opencode` then ran the same ids with `opencode/gpt-5.5`, OpenCode CLI `1.14.50`, one attempt each, zero exceptions, and mean reward 0.000. Xero ran the same ids with `openai_codex`/`gpt-5.5`, app-data OAuth credentials, one attempt each, zero exceptions, and mean reward 0.800. Every Xero trial emitted `manifest.json`, `trajectory.json`, `xero-trace.json`, `final.diff`, `support-bundle.zip`, `stdout.txt`, and `stderr.txt`; no manifest pointed at legacy `.xero` state. The only Xero verifier failure was `db-wal-recovery`, categorized as model-quality/verifier-failed because the agent completed and Harbor's verifier returned reward 0.0. Result roots: `/tmp/xero-terminal-bench-step5/jobs/oracle-comparison-smoke-v2-20260514`, `/tmp/xero-terminal-bench-step5/jobs/opencode-gpt55-comparison-smoke-20260514`, and `/tmp/xero-terminal-bench-step5/jobs/xero-gpt55-comparison-smoke-20260514`.
+Status: Completed on 2026-05-14 in product-mode route, then rerun after the path-policy and read-only OAuth-store patches. The frozen comparison-smoke task ids were `log-summary-date-ranges`, `fix-git`, `cobol-modernization`, `db-wal-recovery`, and `polyglot-c-py`. Harbor oracle validated the set with 5/5 trials complete, zero exceptions, and mean reward 1.000. Harbor built-in `opencode` then ran the same ids with `opencode/gpt-5.5`, OpenCode CLI `1.14.50`, one attempt each, zero exceptions, and mean reward 0.000. Xero's first post-patch rerun with `openai_codex`/`gpt-5.5` had mean reward 0.600, with `db-wal-recovery` and `polyglot-c-py` verifier failures. After prompt v2 benchmark-hygiene guidance, Xero reran the same five task ids with zero exceptions and mean reward 0.800, passing `cobol-modernization`, `db-wal-recovery`, `fix-git`, and `polyglot-c-py`; only `log-summary-date-ranges` failed verifier counts. Every Xero trial emitted `manifest.json`, `trajectory.json`, `xero-trace.json`, `final.diff`, `support-bundle.zip`, `stdout.txt`, and `stderr.txt`; no manifest pointed at legacy `.xero` state. Result roots: `/tmp/xero-terminal-bench-rerun-20260514/jobs/xero-gpt55-comparison-smoke-rerun2-20260514` for the 0.600 rerun and `/tmp/xero-terminal-bench-smoke-v2-20260514/jobs/xero-gpt55-promptv2-same-smoke-20260514` for the prompt v2 rerun.
 
 Purpose: run the first real Xero scoring path against the same tasks.
 
@@ -111,6 +111,25 @@ The smoke set should contain 5 to 10 predeclared tasks covering:
 Gate: Xero and OpenCode ran the same task ids and attempts, every Xero trial has a manifest and trace, and every failure has a category.
 
 ## Triage After Smoke
+
+Status: Completed on 2026-05-14, then repeated against the post-patch rerun under `/tmp/xero-terminal-bench-rerun-20260514/jobs`.
+
+Findings:
+
+- Adapter/runtime basics were sound in the post-patch rerun: oracle, OpenCode, and Xero all ran the same five task ids, the same Terminal-Bench git commit and task checksums, one attempt each, Docker sandboxing, and zero Harbor exceptions.
+- Xero artifact contract was complete and parseable for all five trials: `manifest.json`, `trajectory.json`, `xero-trace.json`, `final.diff`, `support-bundle.zip`, `stdout.txt`, and `stderr.txt` were present; support bundles opened successfully; no trial-created `.xero/` directory was found.
+- Harness route matched the intended GPT-5.5 product-mode comparison: OpenCode used `opencode/gpt-5.5`, and Xero used `openai_codex`/`gpt-5.5` with app-data OAuth. A stale Xero capability default that still reported `gpt-5.4` in provider metadata was fixed so future artifacts advertise `gpt-5.5`.
+- The first rerun after path-policy patches exposed a real container credential root cause: SQLite could open the app-data OAuth database on a read-only bind mount, but preparing the provider credential query failed with `unable to open database file`. This was fixed in `xero-cli` by opening the benchmark OAuth store through a read-only immutable SQLite URI (`mode=ro&immutable=1`). A container-level OAuth read smoke then progressed past SQLite access.
+- The previous tool-policy friction did not recur: post-patch Xero traces contained no `agent_core_headless_path_denied`, `agent_core_headless_path_protected`, `agent_sandbox_path_denied`, `agent_sandbox_network_denied`, or `agent_sandbox_write_denied` markers.
+- The report generator was fixed to join Harbor verifier artifacts from each trial's `result.json` or `verifier/reward.txt` into Xero manifests before summarizing. The regenerated engineering report shows Xero pass@1 `0.600`, 3/5 successes, zero missing verifier outcomes, and `verifier_failed: 2`.
+- Triage of the two Xero verifier failures found harness-quality risks that can depress benchmark score even when the adapter is healthy. `polyglot-c-py` failed because Xero verified C compilation in place and left `/app/polyglot/cmain`; the verifier required only `main.py.c` in that directory. `db-wal-recovery` failed because Xero opened/probed the SQLite database before preserving the WAL evidence, then produced guessed records with stale WAL-updated values.
+- Prompt version `xero-terminal-bench-prompt.v2` adds benchmark hygiene guidance: use scratch locations such as `/tmp` for build outputs and verification debris, remove temporary workspace files before finishing, and copy fragile recovery inputs before probing them.
+- Artifact/reporting quality was improved for future triage: non-git workspaces now get a final file listing fallback instead of an empty `git diff` failure, and reports include the first verifier failure summary from `verifier/ctrf.json`.
+- Prompt v2 rerun evidence supports the harness-quality fix: `db-wal-recovery` passed after the fragile-input guidance, and `polyglot-c-py` passed with the final file listing showing only `polyglot/main.py.c` and no `polyglot/cmain` debris.
+- A new fast/easy verifier smoke avoided the HTML/filter tasks and used `vulnerable-secret`, `openssl-selfsigned-cert`, and `regex-log`. Oracle validated the set with 3/3 complete, zero exceptions, and mean reward 1.000 under `/tmp/xero-terminal-bench-smoke-v2-20260514/jobs/oracle-alt-fast-smoke-20260514`. Xero then ran the same ids with `openai_codex`/`gpt-5.5`, prompt v2, zero exceptions, and mean reward 1.000 under `/tmp/xero-terminal-bench-smoke-v2-20260514/jobs/xero-gpt55-promptv2-alt-fast-smoke-20260514`.
+- Remaining score failure in the prompt v2 five-task rerun is a verifier outcome, not an adapter failure: `log-summary-date-ranges` completed but counted `today,ERROR` as `414` instead of the expected `370`, likely because it counted severity words outside the intended severity field.
+
+Gate outcome: the 5-task comparison smoke is clean enough to trust the benchmark pipeline. Decide whether to broaden the task set or run the full benchmark based on evaluation budget and the expected variance from only five smoke tasks.
 
 Before any full run, cold-read the smoke results.
 
@@ -194,6 +213,6 @@ The shareable summary should be shorter and clearly labeled as either fixed-mode
 3. [x] Run oracle smoke.
 4. [x] Run OpenCode smoke.
 5. [x] Run Xero comparison smoke.
-6. [ ] Generate the engineering report.
-7. [ ] Triage failures.
+6. [x] Generate the engineering report.
+7. [x] Triage failures.
 8. [ ] Decide whether to run the full benchmark.

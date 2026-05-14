@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Xero/OpenCode benchmark reports from stored manifests only."""
+"""Generate Xero/OpenCode benchmark reports from stored artifacts only."""
 
 from __future__ import annotations
 
@@ -11,6 +11,112 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
+
+MAX_FAILURE_TRACE_CHARS = 2_000
+
+
+def _coerce_reward(value: Any) -> float | None:
+    try:
+        reward = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(reward) or math.isinf(reward):
+        return None
+    return reward
+
+
+def _reward_from_harbor_result(result_path: Path) -> float | None:
+    try:
+        payload = json.loads(result_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    verifier_result = payload.get("verifier_result")
+    if not isinstance(verifier_result, dict):
+        return None
+    rewards = verifier_result.get("rewards")
+    if not isinstance(rewards, dict):
+        return None
+    return _coerce_reward(rewards.get("reward"))
+
+
+def _reward_from_harbor_reward_file(reward_path: Path) -> float | None:
+    try:
+        return _coerce_reward(reward_path.read_text().strip())
+    except OSError:
+        return None
+
+
+def _verifier_test_details(trial_dir: Path) -> dict[str, Any]:
+    ctrf_path = trial_dir / "verifier" / "ctrf.json"
+    try:
+        payload = json.loads(ctrf_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    results = payload.get("results")
+    if not isinstance(results, dict):
+        return {}
+    details: dict[str, Any] = {"sourcePath": str(ctrf_path)}
+    summary = results.get("summary")
+    if isinstance(summary, dict):
+        details["summary"] = {
+            key: summary.get(key)
+            for key in ("tests", "passed", "failed", "skipped", "pending", "other")
+            if summary.get(key) is not None
+        }
+    tests = results.get("tests")
+    if isinstance(tests, list):
+        first_failure = next(
+            (
+                test
+                for test in tests
+                if isinstance(test, dict)
+                and str(test.get("status") or test.get("raw_status") or "").lower()
+                in {"failed", "call_failed", "error"}
+            ),
+            None,
+        )
+        if first_failure:
+            trace = first_failure.get("trace")
+            if isinstance(trace, str) and len(trace) > MAX_FAILURE_TRACE_CHARS:
+                trace = trace[:MAX_FAILURE_TRACE_CHARS] + "..."
+            details["firstFailure"] = {
+                "name": first_failure.get("name"),
+                "status": first_failure.get("status"),
+                "message": first_failure.get("message"),
+                "trace": trace,
+            }
+    return details
+
+
+def _attach_harbor_verifier(manifest: dict[str, Any], path: Path) -> None:
+    if manifest.get("verifier"):
+        return
+
+    trial_dir = path.parent.parent if path.parent.name == "agent" else path.parent
+    result_path = trial_dir / "result.json"
+    reward = _reward_from_harbor_result(result_path)
+    source_path = result_path
+    source = "harbor_result"
+    if reward is None:
+        reward_path = trial_dir / "verifier" / "reward.txt"
+        reward = _reward_from_harbor_reward_file(reward_path)
+        source_path = reward_path
+        source = "harbor_reward_file"
+    if reward is None:
+        return
+
+    manifest["verifier"] = {
+        "source": source,
+        "sourcePath": str(source_path),
+        "reward": reward,
+        "resolved": math.isclose(reward, 1.0),
+    }
+    verifier_tests = _verifier_test_details(trial_dir)
+    if verifier_tests:
+        manifest["verifier"]["tests"] = verifier_tests
 
 
 def load_manifests(root: Path) -> list[dict[str, Any]]:
@@ -26,6 +132,7 @@ def load_manifests(root: Path) -> list[dict[str, Any]]:
             payload.get("harness"), dict
         ):
             continue
+        _attach_harbor_verifier(payload, path)
         payload["_manifestPath"] = str(path)
         manifests.append(payload)
     return manifests
@@ -78,6 +185,14 @@ def excluded_manifest_reason(manifest: dict[str, Any]) -> str | None:
     return None
 
 
+def failure_category(manifest: dict[str, Any]) -> str | None:
+    if resolved(manifest):
+        return None
+    if not manifest.get("verifier"):
+        return "verifier_missing"
+    return (manifest.get("run") or {}).get("failureCategory") or "verifier_failed"
+
+
 def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
     scored_manifests = [
         manifest for manifest in manifests if excluded_manifest_reason(manifest) is None
@@ -124,13 +239,9 @@ def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         failures: dict[str, int] = defaultdict(int)
         for row in rows:
-            if not resolved(row):
-                if not row.get("verifier"):
-                    failures["verifier_missing"] += 1
-                else:
-                    failures[
-                        ((row.get("run") or {}).get("failureCategory") or "verifier_failed")
-                    ] += 1
+            category = failure_category(row)
+            if category:
+                failures[category] += 1
         harnesses[harness] = {
             "taskCount": len(rows),
             "successes": successes,
@@ -157,7 +268,14 @@ def summarize(manifests: list[dict[str, Any]]) -> dict[str, Any]:
         paired[task_id][harness_name(manifest)] = {
             "resolved": resolved(manifest),
             "manifest": manifest.get("_manifestPath"),
-            "failureCategory": (manifest.get("run") or {}).get("failureCategory"),
+            "failureCategory": failure_category(manifest),
+            "verifierReward": (manifest.get("verifier") or {}).get("reward"),
+            "verifierSummary": ((manifest.get("verifier") or {}).get("tests") or {}).get(
+                "summary"
+            ),
+            "firstVerifierFailure": ((manifest.get("verifier") or {}).get("tests") or {}).get(
+                "firstFailure"
+            ),
         }
 
     first = scored_manifests[0] if scored_manifests else (manifests[0] if manifests else {})
@@ -216,6 +334,13 @@ def markdown_report(report: dict[str, Any]) -> str:
             f"{name}={'pass' if row['resolved'] else 'fail'}" for name, row in outcomes.items()
         )
         lines.append(f"- `{task_id}`: {labels}")
+        for name, row in outcomes.items():
+            failure = row.get("firstVerifierFailure")
+            if not failure:
+                continue
+            failure_name = failure.get("name") or "unknown verifier test"
+            message = failure.get("message") or row.get("failureCategory") or "failed"
+            lines.append(f"  - `{name}` verifier: {failure_name}: {message}")
     if report.get("excludedManifests"):
         lines.extend(["", "## Excluded Manifests", ""])
         for row in report["excludedManifests"]:

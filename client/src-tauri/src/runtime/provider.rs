@@ -35,7 +35,7 @@ pub const OPENAI_COMPATIBLE_RUNTIME_KIND: &str = "openai_compatible";
 pub const DEEPSEEK_RUNTIME_KIND: &str = DEEPSEEK_PROVIDER_ID;
 pub const GEMINI_RUNTIME_KIND: &str = "gemini";
 pub const ANTHROPIC_RUNTIME_KIND: &str = ANTHROPIC_PROVIDER_ID;
-pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.4";
+pub const OPENAI_CODEX_DEFAULT_MODEL_ID: &str = "gpt-5.5";
 pub const OPENAI_CODEX_SUPPORTED_MODEL_IDS: &[&str] = &[
     "gpt-5.2",
     "gpt-5.3-codex",

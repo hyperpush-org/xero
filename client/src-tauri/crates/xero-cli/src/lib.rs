@@ -62,7 +62,7 @@ const WORKSPACE_EMBEDDING_MODEL: &str = "xero-local-hash-embedding";
 const WORKSPACE_EMBEDDING_VERSION: &str = "xero-local-hash-embedding.v1";
 const EXTERNAL_AGENT_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const XERO_BENCHMARK_ADAPTER_VERSION: &str = "xero-terminal-bench-harbor-adapter.v1";
-const XERO_BENCHMARK_PROMPT_VERSION: &str = "xero-terminal-bench-prompt.v1";
+const XERO_BENCHMARK_PROMPT_VERSION: &str = "xero-terminal-bench-prompt.v2";
 const XERO_BENCHMARK_TOOL_POLICY_VERSION: &str = "owned-agent-core-tool-registry-v2";
 const OPENAI_CODEX_PROVIDER_ID: &str = "openai_codex";
 const OPENAI_CODEX_DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -1056,17 +1056,16 @@ fn load_benchmark_openai_codex_oauth_session(
             2,
         ));
     }
-    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| {
-            CliError::benchmark(
-                "xero_benchmark_openai_oauth_store_open_failed",
-                format!(
-                    "Could not open OpenAI OAuth credential store `{}`: {error}",
-                    database_path.display()
-                ),
-                1,
-            )
-        })?;
+    let connection = open_immutable_read_only_sqlite(&database_path).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_openai_oauth_store_open_failed",
+            format!(
+                "Could not open OpenAI OAuth credential store `{}`: {error}",
+                database_path.display()
+            ),
+            1,
+        )
+    })?;
     let mut session = load_openai_codex_session_from_provider_credentials(
         &connection,
         config.oauth_account_id.as_deref(),
@@ -1095,6 +1094,39 @@ fn load_benchmark_openai_codex_oauth_session(
         ));
     }
     Ok(session)
+}
+
+fn open_immutable_read_only_sqlite(database_path: &Path) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(
+        sqlite_immutable_read_only_uri(database_path),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+}
+
+fn sqlite_immutable_read_only_uri(database_path: &Path) -> String {
+    format!(
+        "file:{}?mode=ro&immutable=1",
+        percent_encode_sqlite_uri_path(database_path)
+    )
+}
+
+fn percent_encode_sqlite_uri_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.as_bytes() {
+        match *byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'/'
+            | b'.'
+            | b'-'
+            | b'_'
+            | b'~' => encoded.push(char::from(*byte)),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    encoded
 }
 
 fn load_openai_codex_session_from_provider_credentials(
@@ -1997,6 +2029,28 @@ fn benchmark_stdout_text(
 }
 
 fn final_workspace_diff(repo_root: &Path) -> Result<String, CliError> {
+    let probe = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("rev-parse")
+        .arg("--is-inside-work-tree")
+        .output();
+    match probe {
+        Ok(output)
+            if output.status.success()
+                && String::from_utf8_lossy(&output.stdout).trim() == "true" =>
+        {
+            final_workspace_git_diff(repo_root)
+        }
+        Ok(output) => final_workspace_file_listing(
+            repo_root,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ),
+        Err(error) => final_workspace_file_listing(repo_root, &format!("git unavailable: {error}")),
+    }
+}
+
+fn final_workspace_git_diff(repo_root: &Path) -> Result<String, CliError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -2022,6 +2076,89 @@ fn final_workspace_diff(repo_root: &Path) -> Result<String, CliError> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn final_workspace_file_listing(repo_root: &Path, reason: &str) -> Result<String, CliError> {
+    let mut entries = Vec::new();
+    collect_workspace_file_listing(repo_root, repo_root, &mut entries, 5_000)?;
+    entries.sort();
+    let reason = if reason.is_empty() {
+        "git diff is unavailable for this workspace"
+    } else {
+        reason
+    };
+    let mut output = format!("# Non-git workspace final file listing\n# Reason: {reason}\n");
+    for entry in entries {
+        output.push_str(&entry);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn collect_workspace_file_listing(
+    root: &Path,
+    dir: &Path,
+    entries: &mut Vec<String>,
+    limit: usize,
+) -> Result<(), CliError> {
+    if entries.len() >= limit {
+        return Ok(());
+    }
+    let read_dir = fs::read_dir(dir).map_err(|error| {
+        CliError::benchmark(
+            "xero_benchmark_workspace_listing_failed",
+            format!(
+                "Could not list workspace directory `{}`: {error}",
+                dir.display()
+            ),
+            1,
+        )
+    })?;
+    for entry in read_dir {
+        if entries.len() >= limit {
+            entries.push(format!("... listing truncated at {limit} entries"));
+            break;
+        }
+        let entry = entry.map_err(|error| {
+            CliError::benchmark(
+                "xero_benchmark_workspace_listing_failed",
+                format!("Could not read a workspace directory entry: {error}"),
+                1,
+            )
+        })?;
+        let path = entry.path();
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|value| matches!(value, ".git" | ".xero"))
+        {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|error| {
+            CliError::benchmark(
+                "xero_benchmark_workspace_listing_failed",
+                format!(
+                    "Could not stat workspace path `{}`: {error}",
+                    path.display()
+                ),
+                1,
+            )
+        })?;
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .display()
+            .to_string();
+        if metadata.is_dir() {
+            entries.push(format!("dir  - {relative}/"));
+            collect_workspace_file_listing(root, &path, entries, limit)?;
+        } else if metadata.is_file() {
+            entries.push(format!("file {:>10} {relative}", metadata.len()));
+        } else {
+            entries.push(format!("other - {relative}"));
+        }
+    }
+    Ok(())
 }
 
 fn write_support_bundle(path: &Path, files: &[(&str, &Path)]) -> Result<(), CliError> {
@@ -11896,6 +12033,25 @@ mod tests {
     }
 
     #[test]
+    fn final_workspace_diff_lists_non_git_workspace_outputs() {
+        let workspace = unique_temp_dir("benchmark-non-git-final-diff");
+        fs::create_dir_all(workspace.join("polyglot")).expect("create workspace dir");
+        fs::write(workspace.join("polyglot/main.py.c"), "print(55)\n")
+            .expect("write deliverable");
+        fs::write(workspace.join("polyglot/cmain"), "compiled debris\n")
+            .expect("write build output");
+
+        let diff = final_workspace_diff(&workspace).expect("non-git fallback diff");
+
+        assert!(diff.contains("Non-git workspace final file listing"));
+        assert!(diff.contains("polyglot/main.py.c"));
+        assert!(
+            diff.contains("polyglot/cmain"),
+            "fallback listing should expose verification debris"
+        );
+    }
+
+    #[test]
     fn benchmark_real_provider_runtime_uses_explicit_workspace_root() {
         let workspace = unique_temp_dir("benchmark-explicit-workspace");
         let state_dir = unique_temp_dir("benchmark-explicit-workspace-state");
@@ -12002,6 +12158,16 @@ mod tests {
         assert_eq!(config.credential_mode.as_deref(), Some("app_openai_oauth"));
         assert_eq!(config.endpoint_class, "chatgpt-codex-oauth");
         assert_eq!(config.api_key_env, None);
+    }
+
+    #[test]
+    fn benchmark_openai_codex_oauth_uri_uses_immutable_read_only_mode() {
+        let uri = sqlite_immutable_read_only_uri(Path::new("/tmp/xero oauth?/xero.db"));
+
+        assert_eq!(
+            uri,
+            "file:/tmp/xero%20oauth%3F/xero.db?mode=ro&immutable=1"
+        );
     }
 
     #[test]

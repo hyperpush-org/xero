@@ -224,7 +224,7 @@ fn provider_static_capability(provider_id: &str) -> ProviderStaticCapability {
         "openai_codex" => ProviderStaticCapability {
             provider_id: "openai_codex",
             provider_label: "OpenAI Codex",
-            default_model_id: "gpt-5.4",
+            default_model_id: "gpt-5.5",
             runtime_family: "openai_codex",
             runtime_kind: "openai_codex",
             auth_method: "oauth",

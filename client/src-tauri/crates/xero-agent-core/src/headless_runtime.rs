@@ -3133,7 +3133,7 @@ fn headless_system_prompt(workspace_root: Option<&Path>) -> String {
         .map(|root| root.display().to_string())
         .unwrap_or_else(|| "the configured workspace".into());
     format!(
-        "You are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, and `command`. Keep writes inside the workspace, never touch .git or .xero, avoid network access unless the benchmark policy explicitly allows it, and finish with a concise summary."
+        "You are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables. Avoid network access unless the benchmark policy explicitly allows it, and finish with a concise summary."
     )
 }
 
@@ -3190,32 +3190,34 @@ fn resolve_workspace_path_for_root(
         )
     })?;
     let requested_path = Path::new(requested);
-    if requested_path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::Prefix(_) | Component::RootDir
-        )
-    }) {
-        return Err(CoreError::invalid_request(
-            "agent_core_headless_path_denied",
-            format!("Path `{requested}` must be relative to the workspace."),
-        ));
-    }
     if requested_path
         .components()
-        .next()
-        .and_then(|component| match component {
-            Component::Normal(value) => value.to_str(),
-            _ => None,
+        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(CoreError::invalid_request(
+            "agent_core_headless_path_denied",
+            format!("Path `{requested}` must stay inside the workspace."),
+        ));
+    }
+    let joined = if requested_path.is_absolute() {
+        requested_path.to_path_buf()
+    } else {
+        root.join(requested_path)
+    };
+    if requested_path
+        .components()
+        .any(|component| match component {
+            Component::Normal(value) => value
+                .to_str()
+                .is_some_and(|part| matches!(part, ".git" | ".xero")),
+            _ => false,
         })
-        .is_some_and(|first| matches!(first, ".git" | ".xero"))
     {
         return Err(CoreError::invalid_request(
             "agent_core_headless_path_protected",
             format!("Path `{requested}` targets protected workspace state."),
         ));
     }
-    let joined = root.join(requested_path);
     let check_path = if allow_missing_leaf {
         let mut candidate = joined.parent().unwrap_or(root.as_path()).to_path_buf();
         while !candidate.exists() && candidate != root {
@@ -3353,6 +3355,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn headless_workspace_path_accepts_absolute_paths_inside_root() {
+        let root = unique_test_dir("headless-absolute-root");
+        fs::create_dir_all(root.join("logs")).expect("create logs dir");
+
+        assert_eq!(
+            resolve_workspace_path_for_root(&root, &root.display().to_string(), false)
+                .expect("absolute root should resolve"),
+            root.clone()
+        );
+        assert_eq!(
+            resolve_workspace_path_for_root(
+                &root,
+                &root.join("logs").display().to_string(),
+                false
+            )
+            .expect("absolute child should resolve"),
+            root.join("logs")
+        );
+    }
+
+    #[test]
+    fn headless_workspace_path_rejects_absolute_paths_outside_root() {
+        let root = unique_test_dir("headless-absolute-root-deny");
+        let outside = root
+            .parent()
+            .expect("test root has parent")
+            .join("outside-file");
+
+        let error = resolve_workspace_path_for_root(&root, &outside.display().to_string(), true)
+            .expect_err("absolute outside path should be denied");
+
+        assert_eq!(error.code, "agent_core_headless_path_denied");
+    }
+
+    #[test]
+    fn headless_workspace_path_protects_absolute_legacy_state() {
+        let root = unique_test_dir("headless-absolute-protected");
+        fs::create_dir_all(root.join(".xero")).expect("create legacy state dir");
+
+        let error =
+            resolve_workspace_path_for_root(&root, &root.join(".xero").display().to_string(), false)
+                .expect_err("absolute protected state should be denied");
+
+        assert_eq!(error.code, "agent_core_headless_path_protected");
+    }
+
+    #[test]
+    fn headless_system_prompt_preserves_benchmark_workspace_hygiene() {
+        let prompt = headless_system_prompt(Some(Path::new("/app")));
+
+        assert!(prompt.contains("/tmp"));
+        assert!(prompt.contains("Before probing fragile recovery inputs"));
+        assert!(prompt.contains("remove temporary files"));
+        assert!(prompt.contains("leave only task-requested deliverables"));
+    }
+
+    #[test]
     fn openai_codex_responses_url_normalizes_backend_base() {
         assert_eq!(
             openai_codex_responses_url("https://chatgpt.com/backend-api").expect("url"),
@@ -3397,5 +3456,15 @@ mod tests {
         assert_eq!(input[2]["call_id"], json!("call-1"));
         assert_eq!(input[3]["type"], json!("function_call_output"));
         assert_eq!(input[3]["output"], json!("contents"));
+    }
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let path = std::env::temp_dir().join(format!("xero-{label}-{nanos}"));
+        fs::create_dir_all(&path).expect("create temp workspace");
+        fs::canonicalize(path).expect("canonical temp workspace")
     }
 }

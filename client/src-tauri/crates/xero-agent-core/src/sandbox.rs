@@ -1420,12 +1420,6 @@ fn normalize_user_path(path: &str) -> Result<NormalizedUserPath, String> {
         components.push(component.to_string());
     }
 
-    if components.is_empty() {
-        return Err(format!(
-            "Sandbox denied path `{path}` because it does not name a workspace file."
-        ));
-    }
-
     Ok(NormalizedUserPath {
         rendered: if is_absolute {
             slash_path
@@ -1657,6 +1651,24 @@ mod tests {
             denied.metadata.exit_classification,
             SandboxExitClassification::DeniedBySandbox
         );
+    }
+
+    #[test]
+    fn sandbox_allows_command_workspace_root_cwd_shorthand() {
+        let descriptor = descriptor(
+            "command",
+            ToolEffectClass::CommandExecution,
+            ToolMutability::Mutating,
+            ToolSandboxRequirement::WorkspaceWrite,
+        );
+
+        sandbox()
+            .evaluate(
+                &descriptor,
+                &call(json!({ "argv": ["true"], "cwd": "." })),
+                &ToolExecutionContext::default(),
+            )
+            .expect("workspace root cwd shorthand should be allowed");
     }
 
     #[test]
