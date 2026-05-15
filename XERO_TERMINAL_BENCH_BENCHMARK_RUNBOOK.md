@@ -147,6 +147,32 @@ Fix adapter/runtime/harness failures before running more tasks. Model-quality fa
 
 Run the full Terminal-Bench 2.0 comparison only after comparison-smoke is clean enough to trust the pipeline.
 
+Use the repo launcher to generate Harbor configs instead of hand-writing `/tmp/full-config.json`. The launcher pins the OpenCode GPT-5.5 medium route, applies the prewarmed OpenCode wrapper, mounts the logged-in OpenCode auth store, and carries the benchmark hygiene policy that prevented the failed full-run attempt from being clean:
+
+- Retry infrastructure/transport failures only: `EnvironmentStartTimeoutError` and `NonZeroAgentExitCodeError`.
+- Do not retry agent/verifier outcome failures: `AgentTimeoutError`, `VerifierTimeoutError`, reward-file errors, or verifier parse errors.
+- Give slow Docker starts and model runs explicit room with `environmentBuildTimeoutMultiplier=3`, `agentSetupTimeoutMultiplier=2`, and `agentTimeoutMultiplier=2`.
+- Apply the same timeout/retry policy to Xero and OpenCode when results are compared, and disclose the multipliers in any shareable result.
+
+Generate, review, and optionally launch the OpenCode full-run config:
+
+```sh
+python3 scripts/run_opencode_benchmark.py \
+  --config benchmarks/config/terminal_bench_opencode_smoke.json \
+  --task-set full-terminal-bench-2 \
+  --concurrency 3
+```
+
+Add `--detach` only when the generated config looks right and the machine is ready to spend the run.
+
+Every benchmark run must be followed by storage cleanup. Prefer launching with `--run` or `--detach`, because cleanup is enabled on exit by default for both modes. The cleanup step preserves the benchmark result directory unless `--delete-run-root-after-cleanup` is passed, but it prunes inactive Docker build/image/network debris and clears regenerated `uv`/Harbor task caches. If a run is started another way, run cleanup manually after the verifier/report artifacts have been captured:
+
+```sh
+python3 scripts/clean_benchmark_storage.py \
+  --run-root /tmp/path-to-benchmark-run \
+  --clean-tool-cache
+```
+
 For a public or leaderboard-adjacent claim, require:
 
 - Full dataset or explicitly named task set.

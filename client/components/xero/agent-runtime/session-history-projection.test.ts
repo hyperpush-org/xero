@@ -61,6 +61,59 @@ function makeMessageItem(
   }
 }
 
+function makeRunPromptItem(
+  runId: string,
+  sequence: number,
+  text: string,
+): SessionTranscriptItemDto {
+  return {
+    contractVersion: 1,
+    itemId: `${runId}:prompt`,
+    projectId: PROJECT_ID,
+    agentSessionId: SESSION_ID,
+    runId,
+    providerId: PROVIDER_ID,
+    modelId: MODEL_ID,
+    sourceKind: 'owned_agent',
+    sourceTable: 'agent_runs',
+    sourceId: runId,
+    sequence,
+    createdAt: '2026-05-08T10:00:00Z',
+    kind: 'message',
+    actor: 'user',
+    title: 'Run prompt',
+    text,
+    redaction: publicRedaction(),
+  }
+}
+
+function makeEventMessageDeltaItem(
+  runId: string,
+  sequence: number,
+  actor: 'user' | 'assistant',
+  text: string,
+): SessionTranscriptItemDto {
+  return {
+    contractVersion: 1,
+    itemId: `${runId}:event:${sequence}`,
+    projectId: PROJECT_ID,
+    agentSessionId: SESSION_ID,
+    runId,
+    providerId: PROVIDER_ID,
+    modelId: MODEL_ID,
+    sourceKind: 'owned_agent',
+    sourceTable: 'agent_events',
+    sourceId: `${sequence}`,
+    sequence,
+    createdAt: '2026-05-08T10:00:00Z',
+    kind: 'message',
+    actor,
+    title: 'Message delta',
+    text,
+    redaction: publicRedaction(),
+  }
+}
+
 function makeNonMessageItem(
   runId: string,
   sequence: number,
@@ -149,6 +202,75 @@ describe('buildHistoricalConversationTurns', () => {
       text: 'first answer',
       sequence: 2,
     })
+  })
+
+  it('uses durable agent messages for historical chat and drops raw owned-agent message deltas', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 7)],
+      [
+        makeRunPromptItem('run-A', 1, 'project overview request'),
+        makeMessageItem('run-A', 2, 'user', 'project overview request'),
+        makeEventMessageDeltaItem('run-A', 3, 'assistant', 'project overview request'),
+        makeEventMessageDeltaItem('run-A', 4, 'assistant', 'This'),
+        makeEventMessageDeltaItem('run-A', 5, 'assistant', ' project'),
+        makeEventMessageDeltaItem('run-A', 6, 'assistant', ' is Xero.'),
+        makeMessageItem('run-A', 7, 'assistant', 'This project is Xero.'),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toMatchObject({
+      kind: 'message',
+      role: 'user',
+      text: 'project overview request',
+    })
+    expect(turns[1]).toMatchObject({
+      kind: 'message',
+      role: 'assistant',
+      text: 'This project is Xero.',
+    })
+  })
+
+  it('falls back to the run prompt when a run has no persisted user message row', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 2)],
+      [
+        makeRunPromptItem('run-A', 1, 'legacy-free prompt fallback'),
+        makeMessageItem('run-A', 2, 'assistant', 'answer'),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns.map((turn) => turn.kind)).toEqual(['message', 'message'])
+    expect(turns[0]).toMatchObject({
+      role: 'user',
+      text: 'legacy-free prompt fallback',
+    })
+    expect(turns[1]).toMatchObject({ role: 'assistant', text: 'answer' })
+  })
+
+  it('does not surface orphan raw message deltas as historical chat turns', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'failed', '2026-05-08T09:00:00Z', 3)],
+      [
+        makeRunPromptItem('run-A', 1, 'prompt before failure'),
+        makeEventMessageDeltaItem('run-A', 2, 'assistant', 'partial'),
+        makeEventMessageDeltaItem('run-A', 3, 'assistant', ' answer'),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns).toEqual([
+      expect.objectContaining({
+        kind: 'message',
+        role: 'user',
+        text: 'prompt before failure',
+      }),
+    ])
   })
 
   it('inserts a handoff_notice turn between runs when the prior run handed off', () => {

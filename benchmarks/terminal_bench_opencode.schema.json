@@ -24,6 +24,7 @@
       "additionalProperties": false,
       "properties": {
         "provider": { "type": "string", "minLength": 1 },
+        "opencodeProvider": { "type": "string", "minLength": 1 },
         "modelId": { "type": "string", "minLength": 1 },
         "temperature": { "type": "number", "minimum": 0 },
         "reasoningEffort": { "type": "string" },
@@ -48,6 +49,28 @@
         "maxCostUsd": { "type": "number", "minimum": 0 },
         "attempts": { "type": "integer", "minimum": 1 },
         "concurrency": { "type": "integer", "minimum": 1 },
+        "timeoutMultiplier": { "type": "number", "minimum": 1 },
+        "agentTimeoutMultiplier": { "type": "number", "minimum": 1 },
+        "verifierTimeoutMultiplier": { "type": "number", "minimum": 1 },
+        "agentSetupTimeoutMultiplier": { "type": "number", "minimum": 1 },
+        "environmentBuildTimeoutMultiplier": { "type": "number", "minimum": 1 },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRetries": { "type": "integer", "minimum": 0 },
+            "includeExceptions": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "excludeExceptions": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            }
+          }
+        },
         "approvalMode": { "type": "string" },
         "sandboxPolicy": { "type": "string" },
         "networkPolicy": { "type": "string" }
@@ -93,6 +116,7 @@
           "properties": {
             "preferredKind": { "enum": ["harbor-built-in", "fallback-installed-agent"] },
             "agentName": { "type": "string" },
+            "prewarmedImportPath": { "type": "string" },
             "fallbackImportPath": { "type": "string" }
           }
         }

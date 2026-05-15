@@ -24,6 +24,25 @@
     "maxCostUsd": 25,
     "attempts": 1,
     "concurrency": 1,
+    "timeoutMultiplier": 1,
+    "agentTimeoutMultiplier": 2,
+    "verifierTimeoutMultiplier": 1,
+    "agentSetupTimeoutMultiplier": 2,
+    "environmentBuildTimeoutMultiplier": 3,
+    "retry": {
+      "maxRetries": 2,
+      "includeExceptions": [
+        "EnvironmentStartTimeoutError",
+        "NonZeroAgentExitCodeError"
+      ],
+      "excludeExceptions": [
+        "AgentTimeoutError",
+        "VerifierTimeoutError",
+        "RewardFileNotFoundError",
+        "RewardFileEmptyError",
+        "VerifierOutputParseError"
+      ]
+    },
     "approvalMode": "strict",
     "sandboxPolicy": "harbor_task_sandbox",
     "networkPolicy": "harbor_controlled"
@@ -61,6 +80,7 @@
     "opencode": {
       "preferredKind": "harbor-built-in",
       "agentName": "opencode",
+      "prewarmedImportPath": "benchmarks.harbor_agents.opencode_prewarmed:OpenCodePrewarmedAgent",
       "fallbackImportPath": "benchmarks.harbor_agents.opencode_fallback:OpenCodeFallbackAgent"
     }
   },

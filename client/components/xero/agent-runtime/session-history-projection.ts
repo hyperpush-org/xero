@@ -44,6 +44,7 @@ export function buildHistoricalConversationTurns(
   for (const run of transcript.runs) {
     runsById.set(run.runId, run)
   }
+  const displayPolicy = buildMessageDisplayPolicy(transcript.items)
 
   // The successor lookup is keyed off the run order returned by the transcript
   // so we can attach a trailing handoff_notice when the active run *is* the
@@ -55,7 +56,7 @@ export function buildHistoricalConversationTurns(
 
   const eligibleItems = transcript.items
     .filter((item) => item.runId !== activeRunId)
-    .filter((item) => isUserOrAssistantMessage(item))
+    .filter((item) => isDisplayableUserOrAssistantMessage(item, displayPolicy))
 
   const turns: ConversationTurn[] = []
   let previousRunId: string | null = null
@@ -115,11 +116,53 @@ export function buildHistoricalConversationTurns(
   return turns.slice(-MAX_HISTORICAL_CONVERSATION_TURNS)
 }
 
-function isUserOrAssistantMessage(item: SessionTranscriptItemDto): boolean {
+interface MessageDisplayPolicy {
+  runIdsWithUserMessages: Set<string>
+}
+
+function hasMessageText(item: SessionTranscriptItemDto): boolean {
+  return (item.text ?? '').trim().length > 0
+}
+
+function buildMessageDisplayPolicy(items: readonly SessionTranscriptItemDto[]): MessageDisplayPolicy {
+  const runIdsWithUserMessages = new Set<string>()
+
+  for (const item of items) {
+    if (item.kind !== 'message' || !hasMessageText(item)) {
+      continue
+    }
+
+    if (item.sourceTable === 'agent_messages' && item.actor === 'user') {
+      runIdsWithUserMessages.add(item.runId)
+    }
+  }
+
+  return {
+    runIdsWithUserMessages,
+  }
+}
+
+function isDisplayableUserOrAssistantMessage(
+  item: SessionTranscriptItemDto,
+  policy: MessageDisplayPolicy,
+): boolean {
   if (item.kind !== 'message') return false
   if (item.actor !== 'user' && item.actor !== 'assistant') return false
-  const text = item.text ?? ''
-  return text.length > 0
+  if (!hasMessageText(item)) return false
+
+  if (item.sourceTable === 'agent_messages') {
+    return true
+  }
+
+  if (item.sourceTable === 'agent_runs') {
+    return item.actor === 'user' && !policy.runIdsWithUserMessages.has(item.runId)
+  }
+
+  if (item.sourceTable === 'agent_events') {
+    return false
+  }
+
+  return true
 }
 
 function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn, { kind: 'message' }> {

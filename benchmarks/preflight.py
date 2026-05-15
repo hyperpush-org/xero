@@ -93,6 +93,10 @@ def config_check(config: dict[str, Any]) -> dict[str, Any]:
     missing = [key for key in required if key not in config]
     if missing:
         return {"status": "failed", "code": "config_missing_keys", "missing": missing}
+    limits = config.get("limits") or {}
+    policy_check = benchmark_policy_check(limits)
+    if policy_check.get("status") == "failed":
+        return policy_check
     task_sets = config.get("taskSets") or {}
     if not isinstance(task_sets, dict) or not task_sets:
         return {"status": "failed", "code": "task_sets_invalid"}
@@ -114,6 +118,59 @@ def config_check(config: dict[str, Any]) -> dict[str, Any]:
         "fallbackImportPath"
     ):
         return {"status": "failed", "code": "opencode_fallback_import_path_missing"}
+    return {"status": "passed", "code": "ok"}
+
+
+def benchmark_policy_check(limits: dict[str, Any]) -> dict[str, Any]:
+    retry = limits.get("retry")
+    if not isinstance(retry, dict):
+        return {"status": "failed", "code": "retry_policy_missing"}
+
+    include = set(retry.get("includeExceptions") or [])
+    required_include = {"EnvironmentStartTimeoutError", "NonZeroAgentExitCodeError"}
+    missing_include = sorted(required_include - include)
+    if missing_include:
+        return {
+            "status": "failed",
+            "code": "retry_include_exceptions_missing",
+            "missing": missing_include,
+        }
+
+    exclude = set(retry.get("excludeExceptions") or [])
+    required_exclude = {
+        "AgentTimeoutError",
+        "VerifierTimeoutError",
+        "RewardFileNotFoundError",
+        "RewardFileEmptyError",
+        "VerifierOutputParseError",
+    }
+    missing_exclude = sorted(required_exclude - exclude)
+    if missing_exclude:
+        return {
+            "status": "failed",
+            "code": "retry_exclude_exceptions_missing",
+            "missing": missing_exclude,
+        }
+
+    required_multipliers = [
+        "timeoutMultiplier",
+        "agentTimeoutMultiplier",
+        "verifierTimeoutMultiplier",
+        "agentSetupTimeoutMultiplier",
+        "environmentBuildTimeoutMultiplier",
+    ]
+    missing_multipliers = [
+        key
+        for key in required_multipliers
+        if not isinstance(limits.get(key), (int, float)) or limits[key] < 1
+    ]
+    if missing_multipliers:
+        return {
+            "status": "failed",
+            "code": "timeout_multipliers_missing",
+            "missing": missing_multipliers,
+        }
+
     return {"status": "passed", "code": "ok"}
 
 

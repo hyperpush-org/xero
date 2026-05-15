@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from benchmarks.preflight import (
+    benchmark_policy_check,
     config_check,
     harbor_help_check,
     opencode_path_check,
@@ -55,7 +56,28 @@ def valid_config():
         "schemaVersion": 1,
         "benchmark": {"name": "terminal-bench", "datasetId": "terminal-bench@2.0"},
         "model": {"provider": "openai_api", "modelId": "gpt-5.5"},
-        "limits": {"attempts": 1},
+        "limits": {
+            "attempts": 1,
+            "timeoutMultiplier": 1,
+            "agentTimeoutMultiplier": 2,
+            "verifierTimeoutMultiplier": 1,
+            "agentSetupTimeoutMultiplier": 2,
+            "environmentBuildTimeoutMultiplier": 3,
+            "retry": {
+                "maxRetries": 2,
+                "includeExceptions": [
+                    "EnvironmentStartTimeoutError",
+                    "NonZeroAgentExitCodeError",
+                ],
+                "excludeExceptions": [
+                    "AgentTimeoutError",
+                    "VerifierTimeoutError",
+                    "RewardFileNotFoundError",
+                    "RewardFileEmptyError",
+                    "VerifierOutputParseError",
+                ],
+            },
+        },
         "taskSets": {"comparison-smoke": {"description": "smoke", "taskIds": []}},
         "harnesses": {
             "xero": {
@@ -84,6 +106,24 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(
             config_check(config)["code"],
             "opencode_fallback_import_path_missing",
+        )
+
+    def test_config_check_requires_environment_start_retry_policy(self):
+        config = valid_config()
+        config["limits"]["retry"]["includeExceptions"] = ["NonZeroAgentExitCodeError"]
+
+        self.assertEqual(
+            config_check(config)["code"],
+            "retry_include_exceptions_missing",
+        )
+
+    def test_benchmark_policy_check_requires_explicit_timeout_multipliers(self):
+        limits = valid_config()["limits"]
+        del limits["environmentBuildTimeoutMultiplier"]
+
+        self.assertEqual(
+            benchmark_policy_check(limits)["code"],
+            "timeout_multipliers_missing",
         )
 
     def test_run_command_can_keep_full_output_for_harbor_agent_detection(self):
