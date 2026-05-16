@@ -24,6 +24,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Hydrate latest TUI downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          download_dir="public/downloads/tui/latest"
+          rm -rf "$download_dir"
+          mkdir -p "$download_dir"
+
+          tag="$(gh release list \
+            --repo "$RELEASE_REPO" \
+            --limit 1 \
+            --json tagName,isDraft \
+            --jq 'map(select(.isDraft == false)) | .[0].tagName // ""')"
+
+          if [ -z "$tag" ]; then
+            echo "No published release found; deploying landing page without TUI downloads."
+            touch "$download_dir/.gitkeep"
+            exit 0
+          fi
+
+          if ! gh release download "$tag" \
+            --repo "$RELEASE_REPO" \
+            --pattern 'xero-tui-*' \
+            --dir "$download_dir" \
+            --clobber; then
+            echo "No TUI assets found on $tag; deploying landing page without TUI downloads."
+            touch "$download_dir/.gitkeep"
+          fi
+
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
 

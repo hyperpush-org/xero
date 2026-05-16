@@ -8,7 +8,7 @@ import {
   nonEmptyOptionalTextSchema,
   normalizeOptionalText,
   optionalIsoTimestampSchema,
-} from './shared'
+} from '@xero/ui/model/shared'
 
 const notificationCorrelationKeyPattern = /^nfy:[a-f0-9]{32}$/
 const MAX_NOTIFICATION_BROKER_DISPATCHES = 250

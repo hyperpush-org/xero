@@ -113,13 +113,160 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_SERVER_TOKEN || secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only
 
+  build-tui:
+    name: Build TUI (${{ matrix.artifact_suffix }})
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact_suffix: macos-aarch64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            artifact_suffix: macos-x86_64
+          - platform: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact_suffix: linux-x86_64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_suffix: windows-x86_64
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: matrix.platform == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            pkg-config \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri -> target
+          shared-key: tui-${{ matrix.artifact_suffix }}
+
+      - name: Build TUI binary
+        working-directory: client/src-tauri
+        env:
+          XERO_SKIP_COOKIE_IMPORTER: "1"
+          XERO_SKIP_DICTATION_SHIM: "1"
+          XERO_SKIP_SIDECAR_FETCH: "1"
+        run: cargo build --release --package xero-desktop --bin xero-tui --target ${{ matrix.target }}
+
+      - name: Package TUI archive
+        if: matrix.platform != 'windows-latest'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          asset="xero-tui-${TARGET}.tar.gz"
+          out_dir="$RUNNER_TEMP/tui-dist"
+          staging="$RUNNER_TEMP/xero-tui-${TARGET}"
+          binary="client/src-tauri/target/${TARGET}/release/xero-tui"
+
+          test -x "$binary"
+          rm -rf "$out_dir" "$staging"
+          mkdir -p "$out_dir" "$staging"
+          cp "$binary" "$staging/xero-tui"
+          chmod 0755 "$staging/xero-tui"
+          tar -C "$staging" -czf "$out_dir/$asset" xero-tui
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            checksum="$(sha256sum "$out_dir/$asset" | awk '{print $1}')"
+          else
+            checksum="$(shasum -a 256 "$out_dir/$asset" | awk '{print $1}')"
+          fi
+          printf '%s  %s\n' "$checksum" "$asset" > "$out_dir/$asset.sha256"
+
+      - name: Package TUI archive (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          $asset = "xero-tui-$env:TARGET.zip"
+          $outDir = Join-Path $env:RUNNER_TEMP "tui-dist"
+          $staging = Join-Path $env:RUNNER_TEMP "xero-tui-$env:TARGET"
+          $binary = "client/src-tauri/target/$env:TARGET/release/xero-tui.exe"
+
+          if (!(Test-Path $binary)) {
+            Write-Error "Missing TUI binary at $binary"
+            exit 1
+          }
+
+          Remove-Item -Recurse -Force $outDir, $staging -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $outDir, $staging | Out-Null
+          Copy-Item -Path $binary -Destination (Join-Path $staging "xero-tui.exe") -Force
+          Compress-Archive -Path (Join-Path $staging "xero-tui.exe") -DestinationPath (Join-Path $outDir $asset) -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $outDir $asset)).Hash.ToLowerInvariant()
+          "$hash  $asset" | Out-File -FilePath (Join-Path $outDir "$asset.sha256") -Encoding ascii
+
+      - name: Upload TUI assets to release
+        if: matrix.platform != 'windows-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        shell: bash
+        run: gh release upload "$TAG" "$RUNNER_TEMP"/tui-dist/* --repo "$RELEASE_REPO" --clobber
+
+      - name: Upload TUI assets to release (Windows)
+        if: matrix.platform == 'windows-latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path (Join-Path $env:RUNNER_TEMP "tui-dist") -File |
+            ForEach-Object { $_.FullName }
+          gh release upload $env:TAG @files --repo $env:RELEASE_REPO --clobber
+
+      - name: Upload TUI assets for landing deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-release-${{ matrix.artifact_suffix }}
+          path: ${{ runner.temp }}/tui-dist/*
+          if-no-files-found: error
+          retention-days: 1
+
   deploy-landing:
     name: Deploy Landing
-    needs: create-release
+    needs:
+      - create-release
+      - build-tui
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download TUI assets for Fly hosting
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tui-release-*
+          merge-multiple: true
+          path: landing/public/downloads/tui/latest
 
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master

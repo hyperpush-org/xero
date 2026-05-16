@@ -279,6 +279,7 @@ fn archived_empty_sessions_have_a_valid_session_transcript_shape() {
         summary: "No runs yet.".into(),
         status: AgentSessionStatus::Archived,
         selected: false,
+        remote_visible: false,
         created_at: T0.into(),
         updated_at: "2026-04-26T10:05:00Z".into(),
         archived_at: Some("2026-04-26T10:05:00Z".into()),
@@ -825,6 +826,14 @@ fn memory(
     text: &str,
     created_at: &str,
 ) -> SessionMemoryRecordDto {
+    let retrievable = review_state == SessionMemoryReviewStateDto::Approved && enabled;
+    let promotion_status = match (&review_state, enabled) {
+        (SessionMemoryReviewStateDto::Candidate, _) => "candidate",
+        (SessionMemoryReviewStateDto::Approved, true) => "approved_enabled",
+        (SessionMemoryReviewStateDto::Approved, false) => "approved_disabled",
+        (SessionMemoryReviewStateDto::Rejected, _) => "rejected",
+    };
+
     SessionMemoryRecordDto {
         contract_version: XERO_SESSION_CONTEXT_CONTRACT_VERSION,
         memory_id: memory_id.into(),
@@ -845,6 +854,24 @@ fn memory(
         updated_at: created_at.into(),
         diagnostic: None,
         redaction: SessionContextRedactionDto::public(),
+        freshness_state: "source_unknown".into(),
+        freshness_checked_at: None,
+        stale_reason: None,
+        supersedes_id: None,
+        superseded_by_id: None,
+        invalidated_at: None,
+        fact_key: None,
+        retrievable,
+        retrievability_reason: if retrievable {
+            "retrievable"
+        } else {
+            "not_approved_or_disabled"
+        }
+        .into(),
+        promotion_status: promotion_status.into(),
+        provenance: json!({}),
+        retrieval_impact: json!({}),
+        conflict: json!({}),
     }
 }
 

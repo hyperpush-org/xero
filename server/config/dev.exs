@@ -70,6 +70,15 @@ config :xero, XeroWeb.Endpoint,
 # Enable dev routes for dashboard and mailbox
 config :xero, dev_routes: true
 
+# In dev the cloud web app and the API run on different localhost ports.
+# Set Domain to nil so the cookie is host-only (sent on the same host across
+# ports), allow plain HTTP, and 302 the OAuth callback back to the cloud dev
+# server by default.
+config :xero,
+  web_session_cookie_domain: nil,
+  web_session_cookie_secure: false,
+  web_app_url: System.get_env("XERO_WEB_APP_URL", "http://127.0.0.1:3002")
+
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 

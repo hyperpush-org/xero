@@ -9,7 +9,7 @@ import {
   phaseStatusSchema,
   safePercent,
   type PayloadBudgetDiagnosticDto,
-} from './shared'
+} from '@xero/ui/model/shared'
 import { providerModelThinkingEffortSchema } from './provider-models'
 
 export const projectOriginSchema = z.enum(['brownfield', 'greenfield', 'unknown'])

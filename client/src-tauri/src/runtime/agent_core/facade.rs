@@ -607,6 +607,10 @@ fn core_snapshot_from_desktop(
 ) -> CoreRunSnapshot {
     CoreRunSnapshot {
         trace_id: runtime_trace_id_for_run(&snapshot.run.project_id, &snapshot.run.run_id),
+        runtime_agent_id: snapshot.run.runtime_agent_id.as_str().to_string(),
+        agent_definition_id: snapshot.run.agent_definition_id.clone(),
+        agent_definition_version: i64::from(snapshot.run.agent_definition_version),
+        system_prompt: snapshot.run.system_prompt.clone(),
         project_id: snapshot.run.project_id.clone(),
         agent_session_id: snapshot.run.agent_session_id.clone(),
         run_id: snapshot.run.run_id.clone(),

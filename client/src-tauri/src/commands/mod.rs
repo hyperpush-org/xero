@@ -52,6 +52,7 @@ pub mod provider_diagnostics;
 pub mod provider_model_catalog;
 pub mod provider_preflight;
 pub mod record_notification_dispatch_outcome;
+pub mod remote_bridge;
 pub mod remove_mcp_server;
 pub mod remove_project;
 pub mod resolve_operator_action;
@@ -232,6 +233,12 @@ pub use provider_diagnostics::check_provider_profile;
 pub use provider_model_catalog::get_provider_model_catalog;
 pub use provider_preflight::preflight_provider_profile;
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
+pub use remote_bridge::{
+    bridge_poll_github_login, bridge_revoke_device, bridge_sign_in, bridge_sign_out, bridge_status,
+    set_session_remote_visibility, BridgePollGithubLoginRequestDto, BridgeRevokeDeviceRequestDto,
+    BridgeStatusResponseDto, SetSessionRemoteVisibilityRequestDto,
+    SetSessionRemoteVisibilityResponseDto,
+};
 pub use remove_mcp_server::remove_mcp_server;
 pub use remove_project::remove_project;
 pub use resolve_operator_action::resolve_operator_action;

@@ -12,7 +12,6 @@ const nav = [
   { label: "Product", href: "/#product" },
   { label: "Capabilities", href: "/#capabilities" },
   { label: "Models", href: "/#models" },
-  { label: "Workflow", href: "/#workflow" },
   { label: "Pricing", href: "/#pricing" },
 ]
 
@@ -71,18 +70,11 @@ export function SiteHeader() {
           >
             <Github className="h-4 w-4" />
           </Link>
-          <Button
-            size="sm"
-            disabled
-            aria-disabled
-            className="gap-1.5 bg-secondary/60 text-muted-foreground hover:bg-secondary/60 hover:text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Download
-            <span className="ml-1 inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/80 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
-              <span className="h-1 w-1 rounded-full bg-primary" />
-              Soon
-            </span>
+          <Button asChild size="sm" className="gap-1.5 bg-primary text-primary-foreground">
+            <Link href="/#download">
+              <Download className="h-3.5 w-3.5" />
+              Install TUI
+            </Link>
           </Button>
 
           <button

@@ -28,6 +28,7 @@ pub struct AgentSessionRecord {
     pub summary: String,
     pub status: AgentSessionStatus,
     pub selected: bool,
+    pub remote_visible: bool,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: Option<String>,
@@ -62,6 +63,7 @@ struct RawAgentSessionRow {
     summary: String,
     status: String,
     selected: i64,
+    remote_visible: i64,
     created_at: String,
     updated_at: String,
     archived_at: Option<String>,
@@ -123,10 +125,11 @@ pub fn create_agent_session(
                 summary,
                 status,
                 selected,
+                remote_visible,
                 created_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, 'active', ?5, 0, ?6, ?7)
             "#,
             params![
                 payload.project_id.as_str(),
@@ -213,6 +216,7 @@ pub(crate) fn read_agent_sessions_with_connection(
                 summary,
                 status,
                 selected,
+                remote_visible,
                 created_at,
                 updated_at,
                 archived_at,
@@ -246,12 +250,13 @@ pub(crate) fn read_agent_sessions_with_connection(
                     summary: row.get(3)?,
                     status: row.get(4)?,
                     selected: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
-                    archived_at: row.get(8)?,
-                    last_run_id: row.get(9)?,
-                    last_runtime_kind: row.get(10)?,
-                    last_provider_id: row.get(11)?,
+                    remote_visible: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    archived_at: row.get(9)?,
+                    last_run_id: row.get(10)?,
+                    last_runtime_kind: row.get(11)?,
+                    last_provider_id: row.get(12)?,
                 })
             },
         )
@@ -410,6 +415,51 @@ pub fn update_agent_session(
         &payload.agent_session_id,
     )?
     .ok_or_else(|| missing_agent_session_error(&payload.project_id, &payload.agent_session_id))
+}
+
+pub fn set_agent_session_remote_visibility(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    visible: bool,
+) -> Result<AgentSessionRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId", "agent_session_request_invalid")?;
+    validate_non_empty_text(
+        agent_session_id,
+        "agentSessionId",
+        "agent_session_request_invalid",
+    )?;
+
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    read_project_row(&connection, &database_path, repo_root, project_id)?;
+
+    let affected = connection
+        .execute(
+            r#"
+            UPDATE agent_sessions
+            SET remote_visible = ?3
+            WHERE project_id = ?1
+              AND agent_session_id = ?2
+            "#,
+            params![project_id, agent_session_id, if visible { 1 } else { 0 }],
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_session_remote_visibility_persist_failed",
+                format!(
+                    "Xero could not update remote visibility for agent session `{agent_session_id}` in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+
+    if affected == 0 {
+        return Err(missing_agent_session_error(project_id, agent_session_id));
+    }
+
+    read_agent_session_row(&connection, &database_path, project_id, agent_session_id)?
+        .ok_or_else(|| missing_agent_session_error(project_id, agent_session_id))
 }
 
 pub fn archive_agent_session(
@@ -1104,6 +1154,7 @@ pub(crate) fn read_agent_session_row(
             summary,
             status,
             selected,
+            remote_visible,
             created_at,
             updated_at,
             archived_at,
@@ -1123,12 +1174,13 @@ pub(crate) fn read_agent_session_row(
                 summary: row.get(3)?,
                 status: row.get(4)?,
                 selected: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                archived_at: row.get(8)?,
-                last_run_id: row.get(9)?,
-                last_runtime_kind: row.get(10)?,
-                last_provider_id: row.get(11)?,
+                remote_visible: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                archived_at: row.get(9)?,
+                last_run_id: row.get(10)?,
+                last_runtime_kind: row.get(11)?,
+                last_provider_id: row.get(12)?,
             })
         },
     );
@@ -1169,6 +1221,7 @@ pub(crate) fn read_selected_agent_session_row(
             summary,
             status,
             selected,
+            remote_visible,
             created_at,
             updated_at,
             archived_at,
@@ -1189,12 +1242,13 @@ pub(crate) fn read_selected_agent_session_row(
                 summary: row.get(3)?,
                 status: row.get(4)?,
                 selected: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                archived_at: row.get(8)?,
-                last_run_id: row.get(9)?,
-                last_runtime_kind: row.get(10)?,
-                last_provider_id: row.get(11)?,
+                remote_visible: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                archived_at: row.get(9)?,
+                last_run_id: row.get(10)?,
+                last_runtime_kind: row.get(11)?,
+                last_provider_id: row.get(12)?,
             })
         },
     );
@@ -1269,6 +1323,19 @@ fn decode_agent_session_row(
             ));
         }
     };
+    let remote_visible = match row.remote_visible {
+        0 => false,
+        1 => true,
+        other => {
+            return Err(CommandError::system_fault(
+                "agent_session_decode_failed",
+                format!(
+                    "Xero found malformed agent-session remote_visible flag `{other}` in {}.",
+                    database_path.display()
+                ),
+            ));
+        }
+    };
 
     let archived_at = decode_optional_non_empty_text(
         row.archived_at,
@@ -1317,6 +1384,7 @@ fn decode_agent_session_row(
         summary: row.summary,
         status,
         selected,
+        remote_visible,
         created_at: require_non_empty_owned(
             row.created_at,
             "created_at",

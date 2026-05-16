@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { optionalIsoTimestampSchema } from './shared'
+import { optionalIsoTimestampSchema } from '@xero/ui/model/shared'
 
 export const environmentProfileStatusSchema = z.enum([
   'pending',

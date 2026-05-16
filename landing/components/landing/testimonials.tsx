@@ -12,7 +12,7 @@ type Testimonial = {
 const testimonials: Testimonial[] = [
   {
     quote:
-      "I kicked off a Stripe-powered SaaS before a flight. Landed, opened my laptop, and Xero was waiting with a green PR and a deploy preview. It had pinged me on Telegram twice mid-air — I just hadn't replied yet.",
+      "I kicked off a Stripe-powered SaaS before a flight. Landed, opened my laptop, and Xero was waiting with a green PR and a deploy preview. It had pinged me on Telegram twice mid-air. I just hadn't replied yet.",
     name: "Maya Chen",
     role: "Founder, Northwind",
     initials: "MC",
@@ -39,7 +39,7 @@ const testimonials: Testimonial[] = [
   },
   {
     quote:
-      "Resumed a 3-day-old run this morning like it was a browser tab. The SQLite journal is genuinely magic — I stopped worrying about losing context entirely.",
+      "Resumed a 3-day-old run this morning like it was a browser tab. The SQLite journal is genuinely magic. I stopped worrying about losing context entirely.",
     name: "Jonas Keller",
     role: "Indie dev, shipyard.sh",
     initials: "JK",

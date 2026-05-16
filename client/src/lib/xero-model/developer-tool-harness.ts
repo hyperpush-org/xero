@@ -24,6 +24,7 @@ export const developerToolCatalogEntrySchema = z
     activationGroups: z.array(z.string()),
     toolPacks: z.array(developerToolPackSummarySchema),
     inputSchema: z.unknown().nullable().optional(),
+    runtimeUnavailableReason: z.string().nullable().optional(),
   })
   .strict()
 export type DeveloperToolCatalogEntryDto = z.infer<typeof developerToolCatalogEntrySchema>

@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { isoTimestampSchema, nonEmptyOptionalTextSchema } from './shared'
+import { isoTimestampSchema, nonEmptyOptionalTextSchema } from '@xero/ui/model/shared'
 import { providerModelCatalogSchema, providerPreflightSnapshotSchema } from './provider-models'
-import { runtimeProviderIdSchema } from './runtime'
+import { runtimeProviderIdSchema } from '@xero/ui/model/runtime'
 
 export const XERO_DIAGNOSTIC_CONTRACT_VERSION = 1
 export const XERO_DOCTOR_REPORT_CONTRACT_VERSION = 1

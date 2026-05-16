@@ -101,6 +101,7 @@ function makeAgentSession(projectId: string) {
     summary: 'Primary project session',
     status: 'active' as const,
     selected: true,
+    remoteVisible: false,
     createdAt: '2026-04-15T17:55:00Z',
     updatedAt: '2026-04-15T17:55:00Z',
     archivedAt: null,

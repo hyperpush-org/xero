@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 import { capabilityPermissionExplanationSchema } from './agent-reports'
-import { isoTimestampSchema } from './shared'
+import { isoTimestampSchema } from '@xero/ui/model/shared'
 import {
   skillSourceKindSchema,
   skillSourceScopeSchema,

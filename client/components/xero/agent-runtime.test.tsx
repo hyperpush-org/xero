@@ -824,6 +824,7 @@ describe('AgentRuntime current UI', () => {
               status: 'active',
               statusLabel: 'Active',
               selected: true,
+              remoteVisible: false,
               createdAt: '2026-05-01T11:00:00Z',
               updatedAt: '2026-05-01T11:00:00Z',
               archivedAt: null,

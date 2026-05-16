@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isoTimestampSchema, nonEmptyOptionalTextSchema, optionalIsoTimestampSchema } from './shared'
+import { isoTimestampSchema, nonEmptyOptionalTextSchema, optionalIsoTimestampSchema } from '@xero/ui/model/shared'
 
 export const skillSourceKindSchema = z.enum([
   'bundled',

@@ -92,7 +92,7 @@ export function Models() {
             Bring your own model
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-4xl lg:text-5xl">
-            Ten providers. Direct from your machine.
+            Ten providers. Keys stay on your machine.
           </h2>
         </div>
 

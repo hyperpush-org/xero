@@ -5,9 +5,23 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('.', import.meta.url)),
-    },
+    alias: [
+      // Specific aliases must come before the catch-all `@`. Vite picks the first match.
+      { find: '@/components/ui', replacement: fileURLToPath(new URL('../packages/ui/src/components/ui', import.meta.url)) },
+      { find: '@/lib/utils', replacement: fileURLToPath(new URL('../packages/ui/src/lib/utils.ts', import.meta.url)) },
+      { find: '@/lib/byte-budget-cache', replacement: fileURLToPath(new URL('../packages/ui/src/lib/byte-budget-cache.ts', import.meta.url)) },
+      { find: '@/lib/shiki', replacement: fileURLToPath(new URL('../packages/ui/src/lib/shiki.ts', import.meta.url)) },
+      { find: '@/lib/language-detection', replacement: fileURLToPath(new URL('../packages/ui/src/lib/language-detection.ts', import.meta.url)) },
+      // Sub-modules of xero-model that moved into the shared package. Listed
+      // individually so the remaining client-local files in xero-model/ still
+      // resolve via the catch-all `@` alias below.
+      { find: '@/src/lib/xero-model/runtime-stream', replacement: fileURLToPath(new URL('../packages/ui/src/model/runtime-stream.ts', import.meta.url)) },
+      { find: '@/src/lib/xero-model/runtime', replacement: fileURLToPath(new URL('../packages/ui/src/model/runtime.ts', import.meta.url)) },
+      { find: '@/src/lib/xero-model/shared', replacement: fileURLToPath(new URL('../packages/ui/src/model/shared.ts', import.meta.url)) },
+      { find: '@/src/lib/xero-model/code-history', replacement: fileURLToPath(new URL('../packages/ui/src/model/code-history.ts', import.meta.url)) },
+      { find: '@xero/ui', replacement: fileURLToPath(new URL('../packages/ui/src', import.meta.url)) },
+      { find: '@', replacement: fileURLToPath(new URL('.', import.meta.url)) },
+    ],
   },
   server: {
     host: '0.0.0.0',
@@ -47,6 +61,10 @@ export default defineConfig({
 
           if (/[/]src[/]lib[/]xero-desktop\.ts$/.test(normalizedId)) {
             return 'xero-desktop-adapter'
+          }
+
+          if (normalizedId.includes('/packages/ui/src/')) {
+            return 'xero-ui'
           }
 
           if (!normalizedId.includes('/node_modules/')) {

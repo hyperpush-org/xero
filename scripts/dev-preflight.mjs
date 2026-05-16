@@ -24,6 +24,7 @@ const repoRoot = resolve(scriptDir, '..')
 const composeFile = resolve(repoRoot, 'server/docker-compose.yml')
 const composeScript = resolve(scriptDir, 'docker-compose.mjs')
 const clientDir = resolve(repoRoot, 'client')
+const cloudDir = resolve(repoRoot, 'cloud')
 const landingDir = resolve(repoRoot, 'landing')
 const serverDir = resolve(repoRoot, 'server')
 const containerName = 'xero-postgres'
@@ -45,6 +46,11 @@ async function ensureNodeDeps() {
     label: 'landing site',
     dir: landingDir,
     requiredBins: ['next'],
+  })
+  await ensurePnpmDeps(logger, {
+    label: 'cloud app',
+    dir: cloudDir,
+    requiredBins: ['vite'],
   })
 }
 

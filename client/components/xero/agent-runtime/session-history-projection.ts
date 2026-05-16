@@ -5,7 +5,7 @@ import type {
   SessionTranscriptItemDto,
 } from '@/src/lib/xero-model'
 
-import type { ConversationTurn } from './conversation-section'
+import type { ConversationTurn } from '@xero/ui/components/transcript/conversation-section'
 
 const HANDED_OFF_RUN_STATUS = 'handed_off'
 const MAX_HISTORICAL_CONVERSATION_TURNS = 80

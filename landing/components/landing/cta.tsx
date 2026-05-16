@@ -1,7 +1,8 @@
 import Link from "next/link"
-import { Download, Github } from "lucide-react"
+import { Download, Github, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { siteConfig } from "@/lib/site"
+import { InstallCommand } from "@/components/landing/install-command"
+import { siteConfig, tuiInstallCommand, tuiPowerShellInstallCommand } from "@/lib/site"
 
 export function CTA() {
   return (
@@ -16,13 +17,23 @@ export function CTA() {
       />
       <div className="mx-auto w-full max-w-5xl px-4 py-24 text-center sm:px-6 lg:px-8 lg:py-32">
         <h2 className="mx-auto max-w-3xl font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl lg:text-6xl">
-          Build the agent. <br className="hidden sm:block" />
-          <span className="text-muted-foreground">Ship the project.</span>
+          Install Xero TUI. <br className="hidden sm:block" />
+          <span className="text-muted-foreground">Bring your own keys.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-pretty text-muted-foreground">
-          Free desktop app. No credit card. Bring keys for OpenAI, Anthropic,
-          Gemini, OpenRouter, GitHub, Azure, Bedrock, Vertex, or a local Ollama.
+          The terminal build is packaged by GitHub CI and served from this Fly
+          app. The installer picks the right archive, verifies its SHA-256
+          checksum, and drops `xero-tui` into your local bin directory.
         </p>
+
+        <div className="mx-auto mt-8 grid max-w-3xl gap-3">
+          <InstallCommand
+            command={tuiInstallCommand}
+            label="macOS and Linux"
+            tone="primary"
+          />
+          <InstallCommand command={tuiPowerShellInstallCommand} label="Windows PowerShell" />
+        </div>
 
         <div className="mt-8 flex flex-wrap justify-center gap-3">
           <Button
@@ -36,23 +47,25 @@ export function CTA() {
             </Link>
           </Button>
           <Button
+            asChild
             size="lg"
-            disabled
-            aria-disabled
-            className="h-11 gap-2 bg-secondary/60 px-5 text-muted-foreground hover:bg-secondary/60 hover:text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
+            variant="secondary"
+            className="h-11 gap-2 border border-border/70 bg-secondary/70 px-5 text-secondary-foreground hover:bg-secondary"
           >
-            <Download className="h-4 w-4" />
-            Download
-            <span className="ml-1 inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-              Coming soon
-            </span>
+            <Link href="/install.sh">
+              <Download className="h-4 w-4" />
+              View install script
+            </Link>
           </Button>
         </div>
 
-        <p className="mt-6 font-mono text-[11px] text-muted-foreground/70">
-          Desktop apps for macOS, Windows, and Linux are on the way.
-        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[11px] text-muted-foreground/70">
+          <span className="inline-flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+            Checksummed release archives
+          </span>
+          <span className="font-mono">/downloads/tui/latest</span>
+        </div>
       </div>
     </section>
   )

@@ -34,6 +34,8 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_020_PROJECT_START_COMMAND_SQL),
             M::up(MIGRATION_021_PROJECT_START_TARGETS_SQL),
             M::up_with_hook("", migrate_generalist_agent_label),
+            M::up_with_hook("", migrate_agent_session_remote_visibility),
+            M::up_with_hook("", migrate_agent_session_timestamps_to_rfc3339),
         ])
     });
 
@@ -3050,6 +3052,21 @@ fn migrate_agent_messages_allow_empty_assistant_metadata(
     Ok(())
 }
 
+fn migrate_agent_session_remote_visibility(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    if table_exists(transaction, "agent_sessions")? {
+        add_column_if_missing(
+            transaction,
+            "agent_sessions",
+            "remote_visible",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (remote_visible IN (0, 1))",
+        )?;
+    }
+
+    Ok(())
+}
+
 fn migrate_environment_lifecycle_schema(
     transaction: &Transaction<'_>,
 ) -> rusqlite_migration::HookResult {
@@ -3158,6 +3175,36 @@ fn table_exists(transaction: &Transaction<'_>, table: &str) -> rusqlite::Result<
         [table],
         |row| row.get::<_, bool>(0),
     )
+}
+
+fn migrate_agent_session_timestamps_to_rfc3339(
+    transaction: &Transaction<'_>,
+) -> rusqlite_migration::HookResult {
+    if !table_exists(transaction, "agent_sessions")? {
+        return Ok(());
+    }
+
+    for column in ["created_at", "updated_at", "archived_at"] {
+        repair_agent_session_timestamp_column(transaction, column)?;
+    }
+
+    Ok(())
+}
+
+fn repair_agent_session_timestamp_column(
+    transaction: &Transaction<'_>,
+    column: &str,
+) -> rusqlite::Result<()> {
+    transaction.execute_batch(&format!(
+        r#"
+        UPDATE agent_sessions
+        SET {column} = strftime('%Y-%m-%dT%H:%M:%fZ', CAST(rtrim({column}, 'Z') AS REAL), 'unixepoch')
+        WHERE {column} IS NOT NULL
+          AND {column} NOT LIKE '%T%'
+          AND {column} GLOB '[0-9]*.[0-9][0-9][0-9]Z'
+          AND {column} NOT GLOB '*[^0-9.Z]*';
+        "#
+    ))
 }
 
 fn agent_events_supports_current_event_kinds(
@@ -3481,6 +3528,79 @@ mod tests {
     #[test]
     fn migrations_run_to_latest_on_a_fresh_in_memory_connection() {
         let _connection = migrate_to_latest_in_memory();
+    }
+
+    #[test]
+    fn agent_session_timestamp_repair_migration_normalizes_cli_epoch_strings() {
+        let mut connection = Connection::open_in_memory().expect("open in-memory database");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE agent_sessions (
+                    project_id TEXT NOT NULL,
+                    agent_session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    selected INTEGER NOT NULL DEFAULT 0,
+                    remote_visible INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT,
+                    last_run_id TEXT,
+                    last_runtime_kind TEXT,
+                    last_provider_id TEXT,
+                    PRIMARY KEY (project_id, agent_session_id)
+                );
+                INSERT INTO agent_sessions (
+                    project_id,
+                    agent_session_id,
+                    title,
+                    summary,
+                    status,
+                    selected,
+                    created_at,
+                    updated_at,
+                    archived_at
+                )
+                VALUES (
+                    'project-1',
+                    'agent-session-main',
+                    'Main',
+                    '',
+                    'archived',
+                    0,
+                    '1778883026.123Z',
+                    '1778883027.000Z',
+                    '2026-05-15T22:10:28Z'
+                );
+                PRAGMA user_version = 29;
+                "#,
+            )
+            .expect("seed pre-repair schema");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("repair timestamps");
+
+        let timestamps = connection
+            .query_row(
+                "SELECT created_at, updated_at, archived_at FROM agent_sessions WHERE project_id = 'project-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("read repaired timestamps");
+
+        assert_eq!(timestamps.0, "2026-05-15T22:10:26.123Z");
+        assert_eq!(timestamps.1, "2026-05-15T22:10:27.000Z");
+        assert_eq!(timestamps.2, "2026-05-15T22:10:28Z");
     }
 
     #[test]

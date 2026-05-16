@@ -51,6 +51,18 @@ defmodule XeroWeb.Telemetry do
         tags: [:event],
         unit: {:native, :millisecond}
       ),
+      sum("xero.remote.oauth.login.count",
+        tags: [:kind],
+        description: "Remote OAuth logins completed by surface"
+      ),
+      sum("xero.remote.channel.join.count",
+        tags: [:kind, :topic],
+        description: "Remote channel joins"
+      ),
+      sum("xero.remote.frame.forwarded.bytes",
+        tags: [:direction],
+        description: "Opaque remote bytes forwarded by direction"
+      ),
 
       # Database Metrics
       summary("xero.repo.query.total_time",

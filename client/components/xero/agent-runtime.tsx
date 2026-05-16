@@ -75,11 +75,11 @@ import {
 import {
   ActionPromptDispatchProvider,
   type ActionPromptDispatchValue,
-} from './agent-runtime/action-prompt-card'
+} from '@xero/ui/components/transcript/action-prompt-card'
 import {
   RoutingSuggestionDispatchProvider,
   type RoutingSuggestionDispatchValue,
-} from './agent-runtime/routing-suggestion-card'
+} from '@xero/ui/components/transcript/routing-suggestion-card'
 import { ComposerDock, type ComposerPendingAttachment } from './agent-runtime/composer-dock'
 import { PlanTray } from './agent-runtime/plan-tray'
 import { AgentPaneDropOverlay } from './agent-runtime/agent-pane-drop-overlay'
@@ -93,7 +93,7 @@ import {
   type CodeUndoUiState,
   type ConversationTurn,
   type ReturnSessionToHereUiRequest,
-} from './agent-runtime/conversation-section'
+} from '@xero/ui/components/transcript/conversation-section'
 import { EmptySessionState } from './agent-runtime/empty-session-state'
 import {
   getToolCardTitle,

@@ -3,7 +3,7 @@ import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { cn } from '@/lib/utils'
-import { AppLogo } from './app-logo'
+import { AppLogo } from '@xero/ui/components/app-logo'
 
 interface UpdateScreenProps {
   status: 'checking' | 'downloading' | 'installing' | 'error'

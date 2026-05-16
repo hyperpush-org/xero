@@ -1,7 +1,7 @@
 import { ChevronRight, GitBranch, Hammer, Lightbulb, Search, ShieldCheck, Sparkles, Workflow } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
-import { AppLogo } from '../app-logo'
+import { AppLogo } from '@xero/ui/components/app-logo'
 
 interface EmptySessionStateProps {
   projectLabel: string

@@ -1099,7 +1099,8 @@ fn resolve_owned_runtime_run_control_state(
     initial_prompt: Option<&str>,
 ) -> CommandResult<RuntimeRunControlStateRecord> {
     let model_id = requested_controls
-        .map(|controls| controls.model_id.clone())
+        .map(|controls| controls.model_id.trim().to_owned())
+        .filter(|model_id| !model_id.is_empty())
         .unwrap_or_else(|| active_profile.model_id.clone());
     let thinking_effort = requested_controls.and_then(|controls| controls.thinking_effort.clone());
     let runtime_agent_id = definition_selection.runtime_agent_id;
@@ -1267,12 +1268,17 @@ pub(crate) fn update_owned_runtime_run_controls(
         .or_else(|| base_pending.and_then(|pending| pending.thinking_effort.clone()))
         .or_else(|| active.thinking_effort.clone());
     let approval_mode = match (&controls, &requested_definition) {
-        (Some(controls), Some(selection)) => selection
-            .allowed_approval_modes
-            .iter()
-            .any(|allowed| allowed == &controls.approval_mode)
-            .then(|| controls.approval_mode.clone())
-            .unwrap_or_else(|| selection.default_approval_mode.clone()),
+        (Some(controls), Some(selection)) => {
+            if selection
+                .allowed_approval_modes
+                .iter()
+                .any(|allowed| allowed == &controls.approval_mode)
+            {
+                controls.approval_mode.clone()
+            } else {
+                selection.default_approval_mode.clone()
+            }
+        }
         _ => base_pending
             .map(|pending| pending.approval_mode.clone())
             .unwrap_or_else(|| active.approval_mode.clone()),

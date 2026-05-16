@@ -12,6 +12,10 @@ defmodule Xero.GitHubAuth.Session do
     field :scope, :string, default: ""
     field :user, :map
     field :created_at, :string
+    field :kind, :string
+    field :account_id, :binary_id
+    field :device_id, :binary_id
+    field :csrf_token, :string
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -24,7 +28,11 @@ defmodule Xero.GitHubAuth.Session do
       :token_type,
       :scope,
       :user,
-      :created_at
+      :created_at,
+      :kind,
+      :account_id,
+      :device_id,
+      :csrf_token
     ])
     |> validate_required([
       :session_id,
@@ -32,7 +40,11 @@ defmodule Xero.GitHubAuth.Session do
       :token_type,
       :scope,
       :user,
-      :created_at
+      :created_at,
+      :kind,
+      :account_id,
+      :device_id
     ])
+    |> validate_inclusion(:kind, ["desktop", "web"])
   end
 end

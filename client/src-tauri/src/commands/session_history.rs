@@ -4723,6 +4723,7 @@ mod tests {
             summary: String::new(),
             status: project_store::AgentSessionStatus::Active,
             selected: true,
+            remote_visible: false,
             created_at: "2026-05-06T12:00:00Z".into(),
             updated_at: "2026-05-06T12:00:30Z".into(),
             archived_at: None,

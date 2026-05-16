@@ -24,18 +24,19 @@ export function Hero() {
             className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur hover:border-border hover:bg-secondary/70 hover:text-foreground"
           >
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-            Beta: custom agents, composable workflows, mobile approvals
+            Beta · agents, workflows, mobile approvals
             <ArrowRight className="h-3 w-3" />
           </Link>
 
           <h1 className="mt-6 font-sans text-4xl font-medium tracking-tight text-balance sm:text-6xl lg:text-7xl">
-            Build the agent.{" "}
-            <span className="text-muted-foreground">Build the workflow.</span>
+            Agents you design.{" "}
+            <span className="text-muted-foreground">Software they ship.</span>
           </h1>
 
           <p className="mx-auto mt-6 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Custom agents and visual workflows that ship whole projects,
-            pinging your phone only when a real call needs you.
+            A desktop runtime for the agents you actually build. Set each
+            one&apos;s tools, memory, and approval gates, then chain them into
+            workflows that take a project from brief to merged.
           </p>
 
           <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -50,17 +51,15 @@ export function Hero() {
               </Link>
             </Button>
             <Button
+              asChild
               size="lg"
-              disabled
-              aria-disabled
-              className="h-11 gap-2 bg-secondary/60 px-5 text-muted-foreground hover:bg-secondary/60 hover:text-muted-foreground disabled:opacity-100 disabled:pointer-events-auto disabled:cursor-not-allowed"
+              variant="secondary"
+              className="h-11 gap-2 border border-border/70 bg-secondary/70 px-5 text-secondary-foreground hover:bg-secondary"
             >
-              <Download className="h-4 w-4" />
-              Download
-              <span className="ml-1 inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                Coming soon
-              </span>
+              <Link href="#download">
+                <Download className="h-4 w-4" />
+                Install TUI
+              </Link>
             </Button>
           </div>
         </div>

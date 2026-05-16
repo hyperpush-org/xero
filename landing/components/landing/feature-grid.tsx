@@ -7,7 +7,7 @@ export function FeatureGrid() {
             Capabilities
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            What's in the build.
+            What ships in the box.
           </h2>
         </div>
 
@@ -16,7 +16,7 @@ export function FeatureGrid() {
           <BentoCard
             className="lg:col-span-7 lg:row-span-2"
             title="Agents you actually design"
-            caption="Pick the tools, memory, and approval rules per agent."
+            caption="Tools, memory, and approval rules, set per agent."
             visual={<AgentBlueprintVisual />}
             visualClassName="min-h-[360px]"
           />
@@ -31,28 +31,28 @@ export function FeatureGrid() {
           <BentoCard
             className="lg:col-span-5"
             title="Approve from your phone"
-            caption="Discord and Telegram, with the actual diff."
+            caption="Discord or Telegram, with the actual diff inline."
             visual={<PingWaveVisual />}
           />
 
           <BentoCard
             className="lg:col-span-4"
             title="Six-pane workspace"
-            caption="Mix roles and models per project."
+            caption="Mix agents, roles, and models in one project."
             visual={<DotMatrixVisual />}
           />
 
           <BentoCard
             className="lg:col-span-4"
             title="Branch & rewind"
-            caption="Fork sessions, roll back checkpoints."
+            caption="Fork a session, roll back to any checkpoint."
             visual={<BranchTreeVisual />}
           />
 
           <BentoCard
             className="lg:col-span-4"
             title="Run timeline"
-            caption="Every call, change, and approval."
+            caption="Replay every call, change, and approval."
             visual={<WaveformVisual />}
           />
         </div>
@@ -99,7 +99,7 @@ function BentoCard({
 
 /* ---------- Visuals ---------- */
 
-/* Hero card — blueprint of an agent. Annotated technical drawing
+/* Hero card: blueprint of an agent. Annotated technical drawing
    with a central core, three labeled sub-systems wired in, dimension marks. */
 function AgentBlueprintVisual() {
   return (
@@ -306,7 +306,7 @@ function SubSystem({
   )
 }
 
-/* Composable workflows — figure-eight loop with two branching choices */
+/* Composable workflows: figure-eight loop with two branching choices */
 function InfinityFlowVisual() {
   return (
     <svg viewBox="0 0 280 180" className="h-auto w-full max-w-[320px]" aria-hidden>
@@ -384,7 +384,7 @@ function InfinityFlowVisual() {
   )
 }
 
-/* Approve from your phone — radiating signal/ripple from a phone-shaped glyph */
+/* Approve from your phone: radiating signal/ripple from a phone-shaped glyph */
 function PingWaveVisual() {
   return (
     <svg viewBox="0 0 280 200" className="h-auto w-full max-w-[280px]" aria-hidden>
@@ -457,7 +457,7 @@ function PingWaveVisual() {
   )
 }
 
-/* Six-pane workspace — heatmap-style dot matrix */
+/* Six-pane workspace: heatmap-style dot matrix */
 function DotMatrixVisual() {
   // 8 cols × 5 rows of dots; six are "live" (gold), rest are dim
   const cols = 8
@@ -505,7 +505,7 @@ function DotMatrixVisual() {
   )
 }
 
-/* Branch & rewind — branching tree with a circular rewind arrow */
+/* Branch & rewind: branching tree with a circular rewind arrow */
 function BranchTreeVisual() {
   return (
     <svg viewBox="0 0 280 180" className="h-auto w-full max-w-[300px]" aria-hidden>
@@ -595,7 +595,7 @@ function BranchTreeVisual() {
   )
 }
 
-/* Run timeline — seismograph waveform with event markers */
+/* Run timeline: seismograph waveform with event markers */
 function WaveformVisual() {
   // Generate a deterministic-looking waveform
   const points: string[] = []
@@ -690,7 +690,7 @@ function WaveformVisual() {
   )
 }
 
-/* MCP / integrations — radial hub with spokes to symbolic nodes */
+/* MCP / integrations: radial hub with spokes to symbolic nodes */
 function HubSpokeVisual() {
   const cx = 140
   const cy = 100
@@ -782,7 +782,7 @@ function HubSpokeVisual() {
   )
 }
 
-/* Keys local — central key glyph with light beams to provider color swatches */
+/* Keys local: central key glyph with light beams to provider color swatches */
 function KeyRayVisual() {
   const cx = 140
   const cy = 100

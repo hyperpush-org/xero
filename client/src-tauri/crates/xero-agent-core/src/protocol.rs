@@ -3452,6 +3452,10 @@ mod tests {
             RuntimeTraceContext::for_context_manifest(&trace_id, "run-good", "manifest-good", 0);
         RuntimeTrace::from_snapshot(RunSnapshot {
             trace_id: trace_id.clone(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-real".into(),
             agent_session_id: "session-real".into(),
             run_id: "run-good".into(),
@@ -3654,6 +3658,9 @@ mod tests {
                 },
                 controls: Some(RunControls {
                     runtime_agent_id: "engineer".into(),
+                    agent_definition_id: None,
+                    agent_definition_version: None,
+                    thinking_effort: None,
                     approval_mode: "suggest".into(),
                     plan_mode_required: true,
                 }),
@@ -3778,6 +3785,10 @@ mod tests {
         let trace_id = runtime_trace_id_for_run("project-1", "run-secret");
         let snapshot = RunSnapshot {
             trace_id: trace_id.clone(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-1".into(),
             agent_session_id: "session-1".into(),
             run_id: "run-secret".into(),
@@ -3906,6 +3917,10 @@ mod tests {
             RuntimeTraceContext::for_context_manifest(&trace_id, "run-real", "manifest-real", 0);
         let trace = RuntimeTrace::from_snapshot(RunSnapshot {
             trace_id: trace_id.clone(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-real".into(),
             agent_session_id: "session-real".into(),
             run_id: "run-real".into(),
@@ -4119,6 +4134,10 @@ mod tests {
         mismatched_preflight["checkedAt"] = json!("2026-05-03T12:00:01Z");
         let trace = RuntimeTrace::from_snapshot(RunSnapshot {
             trace_id: trace_id.clone(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-1".into(),
             agent_session_id: "session-1".into(),
             run_id: "run-phase0".into(),
@@ -4254,6 +4273,10 @@ mod tests {
         let trace_id = runtime_trace_id_for_run("project-1", "run-missing-observability");
         let trace = RuntimeTrace::from_snapshot(RunSnapshot {
             trace_id: trace_id.clone(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-1".into(),
             agent_session_id: "session-1".into(),
             run_id: "run-missing-observability".into(),
@@ -4309,6 +4332,10 @@ mod tests {
         );
         let trace = RuntimeTrace::from_snapshot(RunSnapshot {
             trace_id: trace_id.clone(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-1".into(),
             agent_session_id: "session-1".into(),
             run_id: "run-legacy-tool".into(),
@@ -4469,6 +4496,10 @@ mod tests {
         };
         let trace = RuntimeTrace::from_snapshot(RunSnapshot {
             trace_id,
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: "project-1".into(),
             agent_session_id: "session-1".into(),
             run_id: "run-gap".into(),

@@ -15,6 +15,14 @@ defmodule XeroWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  socket "/socket/desktop", XeroWeb.RemoteDesktopSocket,
+    websocket: true,
+    longpoll: false
+
+  socket "/socket/web", XeroWeb.RemoteWebSocket,
+    websocket: true,
+    longpoll: false
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),

@@ -3,8 +3,8 @@ import {
   runtimeRunControlInputSchema,
   runtimeRunDiagnosticSchema,
   type RuntimeRunDiagnosticDto,
-} from './runtime'
-import { isoTimestampSchema, nonEmptyOptionalTextSchema, normalizeOptionalText, normalizeText } from './shared'
+} from '@xero/ui/model/runtime'
+import { isoTimestampSchema, nonEmptyOptionalTextSchema, normalizeOptionalText, normalizeText } from '@xero/ui/model/shared'
 
 export const autonomousRunStatusSchema = z.enum([
   'starting',

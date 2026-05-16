@@ -47,7 +47,13 @@ config :xero, XeroWeb.Endpoint, http: [port: String.to_integer(System.get_env("P
 
 # --- CORS (cors_plug) ---
 # Comma-separated list of allowed origins. "*" is allowed for dev only.
-default_cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "tauri://localhost"]
+default_cors_origins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "http://localhost:3002",
+  "http://127.0.0.1:3002",
+  "tauri://localhost"
+]
 
 cors_origins =
   System.get_env("CORS_ORIGINS", "")
@@ -65,6 +71,10 @@ config :cors_plug,
 # --- Rate limiting (Hammer) ---
 config :xero, Xero.RateLimiter,
   per_minute: String.to_integer(System.get_env("RATE_LIMIT_PER_MINUTE", "60"))
+
+if remote_jwt_signing_key = System.get_env("XERO_REMOTE_JWT_SIGNING_KEY") do
+  config :xero, Xero.Remote.Jwt, signing_key: remote_jwt_signing_key
+end
 
 # --- Oban background jobs ---
 oban_queues =

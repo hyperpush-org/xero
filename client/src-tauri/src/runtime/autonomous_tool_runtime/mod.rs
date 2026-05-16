@@ -4817,16 +4817,11 @@ pub enum AutonomousStructuredEditFormat {
     Yaml,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomousStructuredEditFormattingMode {
+    #[default]
     Normalize,
-}
-
-impl Default for AutonomousStructuredEditFormattingMode {
-    fn default() -> Self {
-        Self::Normalize
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

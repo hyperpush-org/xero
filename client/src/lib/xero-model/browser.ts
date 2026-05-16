@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { optionalIsoTimestampSchema } from './shared'
+import { optionalIsoTimestampSchema } from '@xero/ui/model/shared'
 
 export const browserControlPreferenceSchema = z.enum(['default', 'in_app_browser', 'native_browser'])
 

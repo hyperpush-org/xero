@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { isTauri } from "@tauri-apps/api/core"
+import { invoke, isTauri } from "@tauri-apps/api/core"
 import { openUrl } from "@tauri-apps/plugin-opener"
 
 export interface GitHubUser {
@@ -15,12 +15,6 @@ export interface GitHubSessionView {
   user: GitHubUser
   scope: string
   createdAt: string
-}
-
-export interface StartedGitHubLogin {
-  authorizationUrl: string
-  redirectUri: string
-  flowId: string
 }
 
 export interface GitHubAuthError {
@@ -39,16 +33,27 @@ export interface UseGitHubAuthResult {
   refresh: () => Promise<void>
 }
 
-const GITHUB_SESSION_ID_STORAGE_KEY = "xero.github.sessionId"
-const SERVER_BASE_URL =
-  (import.meta.env.VITE_XERO_SERVER_URL as string | undefined)?.replace(/\/+$/, "") ??
-  "http://127.0.0.1:4000"
+interface BridgeAccount {
+  githubLogin?: string | null
+  avatarUrl?: string | null
+}
 
-type FlowSessionResponse =
-  | { status: "pending" }
-  | { status: "ready"; sessionId: string; session: GitHubSessionView }
+interface BridgeStatusResponse {
+  signedIn: boolean
+  account?: BridgeAccount | null
+}
 
-/** React hook that asks the server to own GitHub OAuth for the current user. */
+interface BridgeAuthStatus {
+  signedIn: boolean
+  authorizationUrl?: string | null
+  flowId?: string | null
+  account?: BridgeAccount | null
+}
+
+const LOGIN_POLL_INTERVAL_MS = 1500
+const LOGIN_TIMEOUT_MS = 5 * 60 * 1000
+
+/** React hook backed by the shared desktop remote-bridge identity store. */
 export function useGitHubAuth(): UseGitHubAuthResult {
   const [session, setSession] = useState<GitHubSessionView | null>(null)
   const [status, setStatus] = useState<GitHubAuthStatus>("idle")
@@ -68,26 +73,14 @@ export function useGitHubAuth(): UseGitHubAuthResult {
     if (!isTauri()) {
       return
     }
-    const sessionId = window.localStorage.getItem(GITHUB_SESSION_ID_STORAGE_KEY)
-    if (!sessionId) {
-      setSession(null)
-      setStatus("idle")
-      setError(null)
-      return
-    }
+
+    setStatus((current) => (current === "authenticating" ? current : "loading"))
     try {
-      const response = await requestJson<{ session: GitHubSessionView | null }>("/api/github/session", {
-        headers: sessionHeaders(sessionId),
-      })
+      const response = await invoke<BridgeStatusResponse>("bridge_status")
       if (!mountedRef.current) return
-      if (response.session) {
-        setSession(response.session)
-        setStatus("ready")
-      } else {
-        window.localStorage.removeItem(GITHUB_SESSION_ID_STORAGE_KEY)
-        setSession(null)
-        setStatus("idle")
-      }
+      const nextSession = response.signedIn ? sessionFromBridgeAccount(response.account) : null
+      setSession(nextSession)
+      setStatus(nextSession ? "ready" : "idle")
       setError(null)
     } catch (caught) {
       if (!mountedRef.current) return
@@ -102,21 +95,20 @@ export function useGitHubAuth(): UseGitHubAuthResult {
   }, [refresh])
 
   const pollForCompletedLogin = useCallback(async (flowId: string, signal: AbortSignal) => {
-    const deadline = Date.now() + 5 * 60 * 1000
+    const deadline = Date.now() + LOGIN_TIMEOUT_MS
 
     while (!signal.aborted && Date.now() < deadline) {
       try {
-        const response = await requestJson<FlowSessionResponse>(
-          `/api/github/session?flowId=${encodeURIComponent(flowId)}`,
-          { signal },
-        )
+        const response = await invoke<BridgeAuthStatus>("bridge_poll_github_login", {
+          request: { flowId },
+        })
 
         if (!mountedRef.current || signal.aborted) return
 
-        if (response.status === "ready") {
-          window.localStorage.setItem(GITHUB_SESSION_ID_STORAGE_KEY, response.sessionId)
-          setSession(response.session)
-          setStatus("ready")
+        if (response.signedIn) {
+          const nextSession = sessionFromBridgeAccount(response.account)
+          setSession(nextSession)
+          setStatus(nextSession ? "ready" : "idle")
           setError(null)
           return
         }
@@ -127,7 +119,7 @@ export function useGitHubAuth(): UseGitHubAuthResult {
         return
       }
 
-      await delay(1500, signal)
+      await delay(LOGIN_POLL_INTERVAL_MS, signal)
     }
 
     if (!mountedRef.current || signal.aborted) return
@@ -152,20 +144,39 @@ export function useGitHubAuth(): UseGitHubAuthResult {
     setError(null)
     try {
       pollAbortRef.current?.abort()
-      const started = await requestJson<StartedGitHubLogin>("/api/github/login", { method: "POST" })
+      const started = await invoke<BridgeAuthStatus>("bridge_sign_in")
+      if (started.signedIn) {
+        const nextSession = sessionFromBridgeAccount(started.account)
+        setSession(nextSession)
+        setStatus(nextSession ? "ready" : "idle")
+        return
+      }
+
+      const flowId = started.flowId?.trim()
+      if (!flowId) {
+        throw {
+          code: "github_oauth_flow_missing",
+          message: "GitHub login did not return a flow id.",
+        } satisfies GitHubAuthError
+      }
+
       pollAbortRef.current = new AbortController()
-      void pollForCompletedLogin(started.flowId, pollAbortRef.current.signal)
-      try {
-        await openUrl(started.authorizationUrl)
-      } catch (openErr) {
-        console.warn("[github-auth] failed to open browser", openErr)
-        setError({
-          code: "github_open_browser_failed",
-          message:
-            "Could not open the system browser. Copy this URL into a browser to continue: " +
-            started.authorizationUrl,
-        })
-        setStatus("authenticating")
+      void pollForCompletedLogin(flowId, pollAbortRef.current.signal)
+
+      const authorizationUrl = started.authorizationUrl?.trim()
+      if (authorizationUrl) {
+        try {
+          await openUrl(authorizationUrl)
+        } catch (openErr) {
+          console.warn("[github-auth] failed to open browser", openErr)
+          setError({
+            code: "github_open_browser_failed",
+            message:
+              "Could not open the system browser. Copy this URL into a browser to continue: " +
+              authorizationUrl,
+          })
+          setStatus("authenticating")
+        }
       }
     } catch (caught) {
       if (!mountedRef.current) return
@@ -180,16 +191,11 @@ export function useGitHubAuth(): UseGitHubAuthResult {
       setStatus("idle")
       return
     }
+
     try {
-      const sessionId = window.localStorage.getItem(GITHUB_SESSION_ID_STORAGE_KEY)
-      if (sessionId) {
-        await requestJson<void>("/api/github/session", {
-          method: "DELETE",
-          headers: sessionHeaders(sessionId),
-        })
-      }
+      pollAbortRef.current?.abort()
+      await invoke<void>("bridge_sign_out")
       if (!mountedRef.current) return
-      window.localStorage.removeItem(GITHUB_SESSION_ID_STORAGE_KEY)
       setSession(null)
       setStatus("idle")
       setError(null)
@@ -203,44 +209,28 @@ export function useGitHubAuth(): UseGitHubAuthResult {
   return { session, status, error, login, logout, refresh }
 }
 
-async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  if (init.body && !headers.has("content-type")) {
-    headers.set("content-type", "application/json")
+function sessionFromBridgeAccount(
+  account: BridgeAccount | null | undefined,
+): GitHubSessionView | null {
+  const login = account?.githubLogin?.trim()
+  const avatarUrl = account?.avatarUrl?.trim() ?? ""
+  if (!login && !avatarUrl) {
+    return null
   }
 
-  const response = await fetch(`${SERVER_BASE_URL}${path}`, {
-    ...init,
-    headers,
-  })
-
-  if (response.status === 204) {
-    return undefined as T
+  const safeLogin = login || "github"
+  return {
+    user: {
+      id: 0,
+      login: safeLogin,
+      name: null,
+      email: null,
+      avatarUrl,
+      htmlUrl: `https://github.com/${encodeURIComponent(safeLogin)}`,
+    },
+    scope: "",
+    createdAt: "",
   }
-
-  const body = (await response.json().catch(() => null)) as unknown
-
-  if (!response.ok) {
-    if (
-      body &&
-      typeof body === "object" &&
-      "error" in body &&
-      isAuthError((body as { error: unknown }).error)
-    ) {
-      throw (body as { error: GitHubAuthError }).error
-    }
-
-    throw {
-      code: "github_server_error",
-      message: `Xero server returned HTTP ${response.status} for GitHub auth.`,
-    } satisfies GitHubAuthError
-  }
-
-  return body as T
-}
-
-function sessionHeaders(sessionId: string): Record<string, string> {
-  return { "x-xero-github-session-id": sessionId }
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -259,21 +249,31 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 
 function toAuthError(value: unknown): GitHubAuthError {
   if (isAuthError(value)) {
-    return value as GitHubAuthError
+    return value
+  }
+  if (value instanceof Error) {
+    return {
+      code: "github_auth_error",
+      message: value.message,
+    }
+  }
+  if (typeof value === "string" && value.trim()) {
+    return {
+      code: "github_auth_error",
+      message: value,
+    }
   }
   return {
-    code: "github_unknown_error",
-    message: typeof value === "string" ? value : "An unexpected error occurred.",
+    code: "github_auth_error",
+    message: "GitHub authentication failed.",
   }
 }
 
 function isAuthError(value: unknown): value is GitHubAuthError {
   return (
-    value !== null &&
+    !!value &&
     typeof value === "object" &&
-    "code" in value &&
-    "message" in value &&
-    typeof (value as { code: unknown }).code === "string" &&
-    typeof (value as { message: unknown }).message === "string"
+    typeof (value as GitHubAuthError).code === "string" &&
+    typeof (value as GitHubAuthError).message === "string"
   )
 }

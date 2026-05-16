@@ -20,6 +20,9 @@ fn non_tauri_fake_provider_run_receives_desktop_visible_events() {
             },
             controls: Some(RunControls {
                 runtime_agent_id: "engineer".into(),
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(1),
+                thinking_effort: None,
                 approval_mode: "yolo".into(),
                 plan_mode_required: false,
             }),
@@ -77,6 +80,9 @@ fn protocol_submission_trace_replays_run_timeline() {
                 },
                 controls: Some(RunControls {
                     runtime_agent_id: "engineer".into(),
+                    agent_definition_id: Some("engineer".into()),
+                    agent_definition_version: Some(1),
+                    thinking_effort: None,
                     approval_mode: "yolo".into(),
                     plan_mode_required: false,
                 }),

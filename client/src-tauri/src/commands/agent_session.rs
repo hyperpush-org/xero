@@ -217,6 +217,7 @@ pub(crate) fn agent_session_dto(record: &AgentSessionRecord) -> AgentSessionDto 
             AgentSessionStatus::Archived => AgentSessionStatusDto::Archived,
         },
         selected: record.selected,
+        remote_visible: record.remote_visible,
         created_at: record.created_at.clone(),
         updated_at: record.updated_at.clone(),
         archived_at: record.archived_at.clone(),

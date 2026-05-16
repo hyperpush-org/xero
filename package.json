@@ -7,14 +7,16 @@
     "pnpm": ">=9"
   },
   "scripts": {
-    "dev": "node scripts/dev-preflight.mjs && concurrently -n DB,PHX,TAURI,LANDING -c blue,green,magenta,cyan -k \"pnpm run dev:db:logs\" \"pnpm run dev:server\" \"pnpm run dev:tauri\" \"pnpm run dev:landing\"",
+    "dev": "node scripts/dev-preflight.mjs && concurrently -n DB,PHX,TAURI,LANDING,CLOUD -c blue,green,magenta,cyan,yellow -k \"pnpm run dev:db:logs\" \"pnpm run dev:server\" \"pnpm run dev:tauri\" \"pnpm run dev:landing\" \"pnpm run dev:cloud\"",
     "dev:preflight": "node scripts/dev-preflight.mjs",
     "dev:db": "node scripts/docker-compose.mjs -f server/docker-compose.yml up",
     "dev:db:logs": "node scripts/docker-compose.mjs -f server/docker-compose.yml logs -f --tail=20 postgres",
     "dev:server": "cd server && mix phx.server",
     "dev:tauri": "pnpm --dir ./client run tauri:dev",
     "dev:tauri:ios-grpc": "pnpm --dir ./client run tauri:dev:ios-grpc",
+    "dev:tui": "node ./client/scripts/xero-tui-dev.mjs",
     "dev:landing": "pnpm --dir ./landing run dev --port 3001",
+    "dev:cloud": "pnpm --dir ./cloud run dev",
     "start": "node scripts/build-tauri-if-stale.mjs && node scripts/launch-built-app.mjs",
     "start:build": "node scripts/build-tauri-if-stale.mjs",
     "start:rebuild": "node scripts/build-tauri-if-stale.mjs --rebuild",
@@ -30,5 +32,11 @@
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lightningcss"
+    ]
   }
 }

@@ -148,6 +148,11 @@ function makeTranscriptWithHandoff(): SessionTranscriptDto {
 }
 
 describe('useHistoricalConversationTurns', () => {
+  type ActiveRunHookProps = {
+    activeRunId: string | null
+    runtimeStreamStatus: AgentPaneView['runtimeStreamStatus']
+  }
+
   it('returns null while no transcript fetch has settled (so the pane falls back to the live stream)', () => {
     const { adapter } = makeAdapter(makeTranscriptWithHandoff())
     const { result } = renderHook(() =>
@@ -213,14 +218,12 @@ describe('useHistoricalConversationTurns', () => {
   it('suppresses history fetched before active run metadata arrives during stream attach', async () => {
     const transcript = makeTranscriptWithHandoff()
     const { adapter, getSessionTranscript } = makeAdapter(transcript)
+    const initialProps: ActiveRunHookProps = {
+      activeRunId: null,
+      runtimeStreamStatus: 'idle',
+    }
     const { result, rerender } = renderHook(
-      ({
-        activeRunId,
-        runtimeStreamStatus,
-      }: {
-        activeRunId: string | null
-        runtimeStreamStatus: AgentPaneView['runtimeStreamStatus']
-      }) =>
+      ({ activeRunId, runtimeStreamStatus }: ActiveRunHookProps) =>
         useHistoricalConversationTurns(
           makeAgentPane({
             activeRunId,
@@ -228,7 +231,7 @@ describe('useHistoricalConversationTurns', () => {
           }),
           adapter,
         ),
-      { initialProps: { activeRunId: null, runtimeStreamStatus: 'idle' as const } },
+      { initialProps },
     )
 
     await waitFor(() => {

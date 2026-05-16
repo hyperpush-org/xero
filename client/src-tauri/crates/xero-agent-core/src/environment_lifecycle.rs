@@ -1515,6 +1515,10 @@ mod tests {
     fn run_record(project_id: &str, run_id: &str) -> NewRunRecord {
         NewRunRecord {
             trace_id: None,
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "test system prompt".into(),
             project_id: project_id.into(),
             agent_session_id: "session-1".into(),
             run_id: run_id.into(),
@@ -1742,6 +1746,9 @@ mod tests {
                 },
                 controls: Some(RunControls {
                     runtime_agent_id: "engineer".into(),
+                    agent_definition_id: Some("engineer".into()),
+                    agent_definition_version: Some(1),
+                    thinking_effort: None,
                     approval_mode: "yolo".into(),
                     plan_mode_required: false,
                 }),

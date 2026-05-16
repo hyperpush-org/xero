@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isoTimestampSchema } from './shared'
+import { isoTimestampSchema } from '@xero/ui/model/shared'
 
 const nonnegativeIntSchema = z.number().int().nonnegative()
 const nullableTextSchema = z.string().trim().min(1).nullable()

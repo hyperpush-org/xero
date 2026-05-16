@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { isoTimestampSchema, nonEmptyOptionalTextSchema } from './shared'
-import { runtimeProviderIdSchema, type RuntimeProviderIdDto } from './runtime'
+import { isoTimestampSchema, nonEmptyOptionalTextSchema } from '@xero/ui/model/shared'
+import { runtimeProviderIdSchema, type RuntimeProviderIdDto } from '@xero/ui/model/runtime'
 
 export const providerCredentialKindSchema = z.preprocess(
   (value) => (value === 'o_auth_session' ? 'oauth_session' : value),

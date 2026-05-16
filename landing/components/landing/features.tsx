@@ -22,7 +22,7 @@ const rows: Row[] = [
     icon: <Bot className="h-3.5 w-3.5" />,
     title: "Agents you actually design.",
     description:
-      "Pick each agent's tools, memory, and where it has to stop and ask.",
+      "Pick each agent's tools, what it remembers, and the moments it has to stop and ask.",
     bullets: [
       "Per-agent tools, memory, approvals",
       "Project or global scope",
@@ -33,22 +33,22 @@ const rows: Row[] = [
   {
     tag: "Workflows",
     icon: <WorkflowIcon className="h-3.5 w-3.5" />,
-    title: "Chain agents. Ship whole projects.",
+    title: "Chain agents into one long run.",
     description:
-      "Compose agents into long workflows that drive a project end to end.",
+      "Compose agents into workflows with steps, branches, gates, and loops. Long autonomous runs that hand off cleanly between specialists.",
     bullets: [
       "Steps, branches, loops, gates",
-      "Long autonomous runs with handoffs",
-      "Human checkpoints only when it matters",
+      "Long autonomous runs with clean handoffs",
+      "Human checkpoints, only when one matters",
     ],
     visual: <WorkflowFlowVisual />,
   },
   {
     tag: "Solana workbench",
     icon: <SolanaGlyph className="h-3.5 w-3.5" />,
-    title: "A Solana workbench, wired in.",
+    title: "A Solana workbench your agents can drive.",
     description:
-      "Localnet to mainnet, funded personas, deploys, and tx inspection, all built into Xero and driveable by your agents.",
+      "Localnet to mainnet on one switch. Funded personas, deploys, and transaction inspection, all native to Xero and available to your agents.",
     bullets: [
       "Localnet · devnet · mainnet, one switch",
       "Funded personas with scenario replays",
@@ -67,7 +67,7 @@ export function Features() {
             What's different
           </p>
           <h2 className="mt-3 font-sans text-3xl font-medium tracking-tight text-balance sm:text-5xl">
-            Agents you design. Workflows that ship projects.
+            Built for the parts other agent tools skip.
           </h2>
         </div>
 
@@ -126,7 +126,7 @@ function FeatureRow({ row, reverse }: { row: Row; reverse: boolean }) {
 
 /* ---------- Visuals ---------- */
 
-/* 1) Agents you actually design — an HTML inspector panel mirroring how
+/* 1) Agents you actually design: an HTML inspector panel mirroring how
    you actually configure an agent in Xero. Header (identity + scope), tool
    toggles, memory meters, approval rules. Uses real DOM so typography,
    spacing, and color stay crisp at every viewport. */
@@ -350,7 +350,7 @@ function ApprovalRow({
   )
 }
 
-/* 2) Chain agents — an HTML stepper that reads like an actual workflow
+/* 2) Chain agents: an HTML stepper that reads like an actual workflow
    run. Vertical chain of agents handing off, with status icons, a human
    checkpoint, and a loop-back annotation. */
 function WorkflowFlowVisual() {
@@ -641,7 +641,7 @@ function StepIcon({
   )
 }
 
-/* 3) Solana workbench — an HTML "command center" panel showing the
+/* 3) Solana workbench: an HTML "command center" panel showing the
    workbench bits: cluster status, funded test personas with balances, and
    a live transaction feed with status. */
 function SolanaWorkbenchVisual() {

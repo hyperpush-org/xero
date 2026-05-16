@@ -2662,6 +2662,23 @@ export function XeroApp({ adapter }: XeroAppProps) {
     },
     [deleteAgentSession],
   )
+  const handleToggleSessionRemoteVisibility = useCallback(
+    async (agentSessionId: string, next: boolean) => {
+      if (!activeProjectId) return
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('set_session_remote_visibility', {
+          request: { projectId: activeProjectId, agentSessionId, visible: next },
+        })
+        // The desktop state subscription for agent sessions picks up the
+        // updated `remote_visible` column on the next snapshot, so no manual
+        // refresh is needed here.
+      } catch (caught) {
+        console.error('set_session_remote_visibility failed', caught)
+      }
+    },
+    [activeProjectId],
+  )
   const handleSearchAgentSessions = useCallback(
     async (query: string) => {
       if (!activeProjectId || !resolvedAdapter.searchSessionTranscripts) {
@@ -2974,6 +2991,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onLoadArchivedSessions={handleLoadArchivedAgentSessions}
           onRestoreSession={handleRestoreAgentSession}
           onDeleteSession={handleDeleteAgentSession}
+          onToggleRemoteVisibility={handleToggleSessionRemoteVisibility}
           onSearchSessions={
             resolvedAdapter.searchSessionTranscripts
               ? handleSearchAgentSessions

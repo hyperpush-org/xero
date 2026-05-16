@@ -17,6 +17,8 @@ import {
   Archive,
   ArchiveRestore,
   ChevronRight,
+  Cloud,
+  CloudOff,
   FileText,
   Loader2,
   MessageSquare,
@@ -49,6 +51,7 @@ interface AgentSessionsSidebarProps {
   onLoadArchivedSessions?: (projectId: string) => Promise<readonly AgentSessionView[]>
   onRestoreSession?: (agentSessionId: string) => Promise<void>
   onDeleteSession?: (agentSessionId: string) => Promise<void>
+  onToggleRemoteVisibility?: (agentSessionId: string, next: boolean) => Promise<void> | void
   onSearchSessions?: (query: string) => Promise<SessionTranscriptSearchResultSnippetDto[]>
   onOpenSearchResult?: (result: SessionTranscriptSearchResultSnippetDto) => void
   onReadProjectUiState?: (key: string) => Promise<unknown | null>
@@ -166,6 +169,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
   onLoadArchivedSessions,
   onRestoreSession,
   onDeleteSession,
+  onToggleRemoteVisibility,
   onSearchSessions,
   onOpenSearchResult,
   onReadProjectUiState,
@@ -659,6 +663,7 @@ export const AgentSessionsSidebar = memo(function AgentSessionsSidebar({
         onPreviewSession={handlePreviewSession}
         onArchiveSession={onArchiveSession}
         onTogglePin={togglePinSession}
+        onToggleRemoteVisibility={onToggleRemoteVisibility}
         canArchive={entry.state !== 'exiting'}
         paneNumber={sessionPaneAssignments?.[entry.session.agentSessionId] ?? null}
       />
@@ -1046,6 +1051,7 @@ export interface AgentSessionsSidebarItemProps {
   onPreviewSession?: (agentSessionId: string | null) => void
   onArchiveSession: (agentSessionId: string) => void
   onTogglePin: (agentSessionId: string) => void
+  onToggleRemoteVisibility?: (agentSessionId: string, next: boolean) => void
   compact?: 'icon' | 'list' | 'full'
   /** Pane number (1-based) when this session is loaded in a non-focused pane. */
   paneNumber?: number | null
@@ -1061,6 +1067,7 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
   onPreviewSession,
   onArchiveSession,
   onTogglePin,
+  onToggleRemoteVisibility,
   compact = 'full',
   paneNumber = null,
 }: AgentSessionsSidebarItemProps) {
@@ -1259,6 +1266,12 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
               className="h-2.5 w-2.5 shrink-0 -rotate-45 text-muted-foreground/70"
             />
           ) : null}
+          {session.remoteVisible ? (
+            <Cloud
+              aria-label="Shared to web"
+              className="h-2.5 w-2.5 shrink-0 text-primary/80"
+            />
+          ) : null}
           {paneNumber != null ? (
             <span
               aria-label={`Loaded in pane ${paneNumber}`}
@@ -1299,6 +1312,36 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
             <Pin className="h-3.5 w-3.5" />
           )}
         </Button>
+        {onToggleRemoteVisibility ? (
+          <Button
+            aria-label={
+              session.remoteVisible
+                ? `Stop sharing ${session.title} to the web`
+                : `Share ${session.title} to the web`
+            }
+            className="h-6 w-6 p-0 text-muted-foreground hover:bg-secondary hover:text-foreground"
+            disabled={isPending}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleRemoteVisibility(session.agentSessionId, !session.remoteVisible)
+            }}
+            onPointerDown={stopActionPreview}
+            size="icon-sm"
+            title={
+              session.remoteVisible
+                ? `Stop sharing ${session.title} to the web`
+                : `Share ${session.title} to the web`
+            }
+            type="button"
+            variant="ghost"
+          >
+            {session.remoteVisible ? (
+              <CloudOff className="h-3.5 w-3.5" />
+            ) : (
+              <Cloud className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        ) : null}
         {canArchive ? (
           <Button
             aria-label={archiveActionLabel}

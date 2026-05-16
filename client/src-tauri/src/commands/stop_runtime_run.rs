@@ -19,11 +19,19 @@ pub fn stop_runtime_run<R: Runtime>(
     state: State<'_, DesktopState>,
     request: StopRuntimeRunRequestDto,
 ) -> CommandResult<Option<RuntimeRunDto>> {
+    stop_runtime_run_blocking(app, state.inner().clone(), request)
+}
+
+pub(crate) fn stop_runtime_run_blocking<R: Runtime>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    request: StopRuntimeRunRequestDto,
+) -> CommandResult<Option<RuntimeRunDto>> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     validate_non_empty(&request.run_id, "runId")?;
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let repo_root = resolve_project_root(&app, &state, &request.project_id)?;
     let before =
         load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?;
 
@@ -44,10 +52,7 @@ pub fn stop_runtime_run<R: Runtime>(
     if let Some(snapshot) = before.as_ref().filter(|snapshot| {
         snapshot.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
     }) {
-        let _ = state
-            .inner()
-            .agent_run_supervisor()
-            .cancel(&snapshot.run.run_id)?;
+        let _ = state.agent_run_supervisor().cancel(&snapshot.run.run_id)?;
         if project_store::load_agent_run(&repo_root, &request.project_id, &snapshot.run.run_id)
             .is_ok()
         {

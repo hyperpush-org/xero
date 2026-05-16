@@ -5,7 +5,7 @@ use std::{
 };
 
 use rand::RngCore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
@@ -62,19 +62,70 @@ pub struct DeveloperToolCatalogRequestDto {
     pub skill_tool_enabled: Option<bool>,
 }
 
-#[tauri::command]
-pub fn developer_tool_catalog(
-    request: Option<DeveloperToolCatalogRequestDto>,
-) -> CommandResult<DeveloperToolCatalogResponseDto> {
-    let request = request.unwrap_or_default();
-    let skill_tool_enabled = request.skill_tool_enabled.unwrap_or(true);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeveloperToolHarnessHostKind {
+    Desktop,
+    Terminal,
+}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeveloperToolCatalogServiceOptions {
+    pub skill_tool_enabled: bool,
+    pub host_kind: DeveloperToolHarnessHostKind,
+}
+
+impl Default for DeveloperToolCatalogServiceOptions {
+    fn default() -> Self {
+        Self {
+            skill_tool_enabled: true,
+            host_kind: DeveloperToolHarnessHostKind::Desktop,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperToolRuntimeCapabilitiesDto {
+    pub browser_executor: bool,
+    pub emulator_executor: bool,
+    pub solana_executor: bool,
+    pub skill_tool: bool,
+    pub subagent_executor: bool,
+    pub model_runner: bool,
+}
+
+impl DeveloperToolRuntimeCapabilitiesDto {
+    fn terminal() -> Self {
+        Self {
+            browser_executor: false,
+            emulator_executor: false,
+            solana_executor: false,
+            skill_tool: false,
+            subagent_executor: false,
+            model_runner: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeveloperToolTerminalHostContext {
+    pub app_data_dir: PathBuf,
+    pub global_db_path: PathBuf,
+    pub project_id: String,
+    pub repo_root: PathBuf,
+    pub fixture_project: DeveloperToolHarnessProjectDto,
+    pub capabilities: DeveloperToolRuntimeCapabilitiesDto,
+}
+
+pub fn developer_tool_catalog_service(
+    options: DeveloperToolCatalogServiceOptions,
+) -> CommandResult<DeveloperToolCatalogResponseDto> {
     let descriptor_schemas: HashMap<String, serde_json::Value> = builtin_tool_descriptors()
         .into_iter()
         .map(|descriptor| (descriptor.name, descriptor.input_schema))
         .collect();
 
-    let entries = deferred_tool_catalog(skill_tool_enabled)
+    let entries = deferred_tool_catalog(options.skill_tool_enabled)
         .into_iter()
         .map(|entry| {
             let pack_ids = domain_tool_pack_ids_for_tool(entry.tool_name);
@@ -88,6 +139,8 @@ pub fn developer_tool_catalog(
                     })
                 })
                 .collect();
+            let (runtime_available, runtime_unavailable_reason) =
+                runtime_availability_for_host(entry.tool_name, options.host_kind);
             DeveloperToolCatalogEntryDto {
                 tool_name: entry.tool_name.to_owned(),
                 group: entry.group.to_owned(),
@@ -105,7 +158,7 @@ pub fn developer_tool_catalog(
                     .collect(),
                 risk_class: entry.risk_class.to_owned(),
                 effect_class: tool_effect_class(entry.tool_name).as_str().to_owned(),
-                runtime_available: tool_available_on_current_host(entry.tool_name),
+                runtime_available,
                 allowed_runtime_agents: allowed_runtime_agent_labels(entry.tool_name)
                     .into_iter()
                     .map(str::to_owned)
@@ -113,6 +166,7 @@ pub fn developer_tool_catalog(
                 activation_groups: tool_catalog_activation_groups(entry.tool_name),
                 tool_packs,
                 input_schema: descriptor_schemas.get(entry.tool_name).cloned(),
+                runtime_unavailable_reason,
             }
         })
         .collect();
@@ -122,18 +176,108 @@ pub fn developer_tool_catalog(
     Ok(DeveloperToolCatalogResponseDto {
         host_os: host.operating_system,
         host_os_label: host.operating_system_label,
-        skill_tool_enabled,
+        skill_tool_enabled: options.skill_tool_enabled,
         entries,
     })
+}
+
+#[tauri::command]
+pub fn developer_tool_catalog(
+    request: Option<DeveloperToolCatalogRequestDto>,
+) -> CommandResult<DeveloperToolCatalogResponseDto> {
+    let request = request.unwrap_or_default();
+    developer_tool_catalog_service(DeveloperToolCatalogServiceOptions {
+        skill_tool_enabled: request.skill_tool_enabled.unwrap_or(true),
+        host_kind: DeveloperToolHarnessHostKind::Desktop,
+    })
+}
+
+pub fn terminal_runtime_unavailable_reason(tool_name: &str) -> Option<String> {
+    let host = runtime_host_metadata();
+    if !tool_available_on_current_host(tool_name) {
+        return Some(format!(
+            "`{tool_name}` is not available on {}.",
+            host.operating_system_label
+        ));
+    }
+
+    let pack_ids = domain_tool_pack_ids_for_tool(tool_name);
+    if pack_ids.iter().any(|pack_id| pack_id == "browser") {
+        return Some(
+            "Browser tools require the Tauri desktop browser executor, which is not attached in terminal harness mode."
+                .into(),
+        );
+    }
+    if pack_ids.iter().any(|pack_id| pack_id == "emulator") {
+        return Some(
+            "Emulator tools require the Tauri desktop emulator executor, which is not attached in terminal harness mode."
+                .into(),
+        );
+    }
+    if pack_ids.iter().any(|pack_id| pack_id == "solana") {
+        return Some(
+            "Solana tools require the desktop Solana workbench state executor, which is not attached in terminal harness mode."
+                .into(),
+        );
+    }
+
+    match tool_effect_class(tool_name).as_str() {
+        "skill_runtime" => Some(
+            "The skill tool requires the desktop skill runtime cache/settings bridge, which is not attached in terminal harness mode."
+                .into(),
+        ),
+        "agent_delegation" => Some(
+            "Subagent delegation requires the desktop owned-agent runtime supervisor, which is not attached in terminal harness mode."
+                .into(),
+        ),
+        _ => None,
+    }
+}
+
+fn runtime_availability_for_host(
+    tool_name: &str,
+    host_kind: DeveloperToolHarnessHostKind,
+) -> (bool, Option<String>) {
+    match host_kind {
+        DeveloperToolHarnessHostKind::Desktop => {
+            if tool_available_on_current_host(tool_name) {
+                (true, None)
+            } else {
+                let host = runtime_host_metadata();
+                (
+                    false,
+                    Some(format!(
+                        "`{tool_name}` is not available on {}.",
+                        host.operating_system_label
+                    )),
+                )
+            }
+        }
+        DeveloperToolHarnessHostKind::Terminal => {
+            match terminal_runtime_unavailable_reason(tool_name) {
+                Some(reason) => (false, Some(reason)),
+                None => (true, None),
+            }
+        }
+    }
+}
+
+pub fn ensure_terminal_tool_available(tool_name: &str) -> CommandResult<()> {
+    if let Some(reason) = terminal_runtime_unavailable_reason(tool_name) {
+        return Err(CommandError::user_fixable(
+            "developer_tool_terminal_tool_unavailable",
+            format!("Tool `{tool_name}` is unavailable in terminal harness mode: {reason}"),
+        ));
+    }
+    Ok(())
 }
 
 const HARNESS_PROVIDER_ID: &str = "developer_harness";
 const HARNESS_MODEL_ID: &str = "developer_harness";
 
-#[tauri::command]
-pub fn developer_tool_synthetic_run<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, DesktopState>,
+pub fn developer_tool_synthetic_run_service(
+    repo_root: &Path,
+    tool_runtime: AutonomousToolRuntime,
     request: DeveloperToolSyntheticRunRequestDto,
 ) -> CommandResult<DeveloperToolSyntheticRunResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
@@ -144,15 +288,11 @@ pub fn developer_tool_synthetic_run<R: Runtime>(
         ));
     }
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let tool_runtime =
-        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
-
     let agent_session_id = match request.agent_session_id.as_deref() {
         Some(value) if !value.trim().is_empty() => value.trim().to_owned(),
         _ => {
             let session = project_store::create_agent_session(
-                &repo_root,
+                repo_root,
                 &AgentSessionCreateRecord {
                     project_id: request.project_id.clone(),
                     title: format!("Tool harness — {}", now_timestamp()),
@@ -192,7 +332,7 @@ pub fn developer_tool_synthetic_run<R: Runtime>(
     };
 
     let outcome = dispatch_synthetic_tool_calls(
-        &repo_root,
+        repo_root,
         &request.project_id,
         agent_session_id,
         run_id,
@@ -223,17 +363,25 @@ pub fn developer_tool_synthetic_run<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn developer_tool_dry_run<R: Runtime>(
+pub fn developer_tool_synthetic_run<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    request: DeveloperToolSyntheticRunRequestDto,
+) -> CommandResult<DeveloperToolSyntheticRunResponseDto> {
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
+    developer_tool_synthetic_run_service(&repo_root, tool_runtime, request)
+}
+
+pub fn developer_tool_dry_run_service(
+    repo_root: &Path,
+    tool_runtime: &AutonomousToolRuntime,
     request: DeveloperToolDryRunRequestDto,
 ) -> CommandResult<DeveloperToolDryRunResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.tool_name, "toolName")?;
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let tool_runtime =
-        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
     let registry_options = ToolRegistryOptions {
         skill_tool_enabled: tool_runtime.skill_tool_enabled(),
         runtime_agent_id: RuntimeAgentIdDto::Engineer,
@@ -251,8 +399,8 @@ pub fn developer_tool_dry_run<R: Runtime>(
     };
     let report = dry_run_tool_call(
         &tool_registry,
-        &tool_runtime,
-        &repo_root,
+        tool_runtime,
+        repo_root,
         &request.project_id,
         tool_call,
         request.operator_approved.unwrap_or(false),
@@ -276,6 +424,18 @@ pub fn developer_tool_dry_run<R: Runtime>(
         sandbox_decision: report.sandbox_decision,
         sandbox_denied: report.sandbox_denied,
     })
+}
+
+#[tauri::command]
+pub fn developer_tool_dry_run<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: DeveloperToolDryRunRequestDto,
+) -> CommandResult<DeveloperToolDryRunResponseDto> {
+    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let tool_runtime =
+        AutonomousToolRuntime::for_project(&app, state.inner(), &request.project_id)?;
+    developer_tool_dry_run_service(&repo_root, &tool_runtime, request)
 }
 
 fn generate_tool_call_id() -> String {
@@ -322,13 +482,10 @@ fn parse_stored_sequence(
     })
 }
 
-#[tauri::command]
-pub fn developer_tool_sequence_list<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, DesktopState>,
+pub fn developer_tool_sequence_list_service(
+    global_db_path: &Path,
 ) -> CommandResult<DeveloperToolSequenceListResponseDto> {
-    let global_db_path = state.global_db_path(&app)?;
-    let connection = open_global_database(&global_db_path)?;
+    let connection = open_global_database(global_db_path)?;
     let mut statement = connection
         .prepare(
             "SELECT id, name, payload, created_at, updated_at \
@@ -375,9 +532,16 @@ pub fn developer_tool_sequence_list<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn developer_tool_sequence_upsert<R: Runtime>(
+pub fn developer_tool_sequence_list<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+) -> CommandResult<DeveloperToolSequenceListResponseDto> {
+    let global_db_path = state.global_db_path(&app)?;
+    developer_tool_sequence_list_service(&global_db_path)
+}
+
+pub fn developer_tool_sequence_upsert_service(
+    global_db_path: &Path,
     request: DeveloperToolSequenceUpsertRequestDto,
 ) -> CommandResult<DeveloperToolSequenceRecordDto> {
     let name = request.name.trim().to_owned();
@@ -409,8 +573,7 @@ pub fn developer_tool_sequence_upsert<R: Runtime>(
         )
     })?;
 
-    let global_db_path = state.global_db_path(&app)?;
-    let connection = open_global_database(&global_db_path)?;
+    let connection = open_global_database(global_db_path)?;
     let now = now_timestamp();
     connection
         .execute(
@@ -447,6 +610,16 @@ pub fn developer_tool_sequence_upsert<R: Runtime>(
         created_at,
         updated_at,
     })
+}
+
+#[tauri::command]
+pub fn developer_tool_sequence_upsert<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, DesktopState>,
+    request: DeveloperToolSequenceUpsertRequestDto,
+) -> CommandResult<DeveloperToolSequenceRecordDto> {
+    let global_db_path = state.global_db_path(&app)?;
+    developer_tool_sequence_upsert_service(&global_db_path, request)
 }
 
 #[tauri::command]
@@ -602,6 +775,275 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn catalog_service_matches_desktop_wrapper() {
+        let wrapper = developer_tool_catalog(Some(DeveloperToolCatalogRequestDto {
+            skill_tool_enabled: Some(false),
+        }))
+        .expect("wrapper catalog");
+        let service = developer_tool_catalog_service(DeveloperToolCatalogServiceOptions {
+            skill_tool_enabled: false,
+            host_kind: DeveloperToolHarnessHostKind::Desktop,
+        })
+        .expect("service catalog");
+
+        assert_eq!(service.entries, wrapper.entries);
+        assert_eq!(service.skill_tool_enabled, wrapper.skill_tool_enabled);
+    }
+
+    #[test]
+    fn fixture_service_seeds_app_data_project_and_registry() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let global_db_path = crate::global_db::global_database_path(tempdir.path());
+
+        let project =
+            prepare_harness_fixture_project(tempdir.path(), &global_db_path).expect("fixture");
+
+        let root = PathBuf::from(&project.root_path);
+        assert!(root.starts_with(tempdir.path()));
+        assert!(!root
+            .components()
+            .any(|component| { component.as_os_str() == std::ffi::OsStr::new(".xero") }));
+        assert_eq!(
+            fs::read_to_string(root.join("sample.txt")).expect("sample"),
+            HARNESS_FIXTURE_SAMPLE
+        );
+        let records = registry::read_project_records(&global_db_path, HARNESS_FIXTURE_PROJECT_ID)
+            .expect("registry");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].root_path, project.root_path);
+    }
+
+    #[test]
+    fn sequence_service_validates_and_round_trips() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let global_db_path = crate::global_db::global_database_path(tempdir.path());
+        let call = DeveloperToolHarnessCallDto {
+            tool_name: "read".into(),
+            input: serde_json::json!({"path": "README.md"}),
+            tool_call_id: None,
+        };
+
+        let invalid_name = developer_tool_sequence_upsert_service(
+            &global_db_path,
+            DeveloperToolSequenceUpsertRequestDto {
+                id: None,
+                name: " ".into(),
+                calls: vec![call.clone()],
+                options: None,
+            },
+        )
+        .expect_err("name validation");
+        assert_eq!(invalid_name.code, "invalid_request");
+
+        let invalid_calls = developer_tool_sequence_upsert_service(
+            &global_db_path,
+            DeveloperToolSequenceUpsertRequestDto {
+                id: None,
+                name: "empty".into(),
+                calls: Vec::new(),
+                options: None,
+            },
+        )
+        .expect_err("call validation");
+        assert_eq!(invalid_calls.code, "developer_tool_sequence_no_calls");
+
+        let created = developer_tool_sequence_upsert_service(
+            &global_db_path,
+            DeveloperToolSequenceUpsertRequestDto {
+                id: None,
+                name: "smoke".into(),
+                calls: vec![call.clone()],
+                options: None,
+            },
+        )
+        .expect("create");
+        let updated = developer_tool_sequence_upsert_service(
+            &global_db_path,
+            DeveloperToolSequenceUpsertRequestDto {
+                id: Some(created.id.clone()),
+                name: "smoke updated".into(),
+                calls: vec![call],
+                options: Some(DeveloperToolHarnessRunOptionsDto {
+                    stop_on_failure: Some(false),
+                    approve_writes: Some(false),
+                    operator_approve_all: Some(false),
+                }),
+            },
+        )
+        .expect("update");
+        assert_eq!(created.id, updated.id);
+
+        let list = developer_tool_sequence_list_service(&global_db_path).expect("list");
+        assert_eq!(list.sequences.len(), 1);
+        assert_eq!(list.sequences[0].name, "smoke updated");
+
+        let deleted = developer_tool_sequence_delete_service(
+            &global_db_path,
+            DeveloperToolSequenceDeleteRequestDto { id: updated.id },
+        )
+        .expect("delete");
+        assert!(deleted.sequences.is_empty());
+    }
+
+    #[test]
+    fn terminal_catalog_marks_desktop_only_tools_with_reasons() {
+        let response = developer_tool_catalog_service(DeveloperToolCatalogServiceOptions {
+            skill_tool_enabled: false,
+            host_kind: DeveloperToolHarnessHostKind::Terminal,
+        })
+        .expect("terminal catalog");
+        let browser = response
+            .entries
+            .iter()
+            .find(|entry| entry.tool_name == "browser_control")
+            .expect("browser_control");
+
+        assert!(!browser.runtime_available);
+        assert!(browser
+            .runtime_unavailable_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Tauri desktop browser executor"));
+    }
+
+    #[test]
+    fn terminal_dry_run_and_synthetic_read_smoke() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let context = developer_tool_terminal_host_context(tempdir.path()).expect("context");
+
+        let dry_run = developer_tool_terminal_dry_run(
+            &context,
+            DeveloperToolDryRunRequestDto {
+                project_id: context.project_id.clone(),
+                tool_name: "read".into(),
+                input: serde_json::json!({"path": "README.md"}),
+                tool_call_id: None,
+                operator_approved: Some(false),
+            },
+        )
+        .expect("dry-run");
+        assert_eq!(dry_run.tool_name, "read");
+        assert!(dry_run.decoded);
+
+        let run = developer_tool_terminal_synthetic_run(
+            &context,
+            DeveloperToolSyntheticRunRequestDto {
+                project_id: context.project_id.clone(),
+                agent_session_id: None,
+                calls: vec![DeveloperToolHarnessCallDto {
+                    tool_name: "read".into(),
+                    input: serde_json::json!({"path": "README.md"}),
+                    tool_call_id: None,
+                }],
+                options: Some(DeveloperToolHarnessRunOptionsDto {
+                    stop_on_failure: Some(true),
+                    approve_writes: Some(false),
+                    operator_approve_all: Some(false),
+                }),
+            },
+        )
+        .expect("synthetic run");
+        assert!(!run.had_failure, "{run:#?}");
+        assert_eq!(run.results.len(), 1);
+        assert!(run.results[0].ok, "{:#?}", run.results[0]);
+    }
+
+    #[test]
+    fn synthetic_run_service_rejects_empty_calls() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let context = developer_tool_terminal_host_context(tempdir.path()).expect("context");
+        let runtime = developer_tool_terminal_runtime(&context).expect("runtime");
+
+        let error = developer_tool_synthetic_run_service(
+            &context.repo_root,
+            runtime,
+            DeveloperToolSyntheticRunRequestDto {
+                project_id: context.project_id.clone(),
+                agent_session_id: None,
+                calls: Vec::new(),
+                options: None,
+            },
+        )
+        .expect_err("empty calls rejected");
+
+        assert_eq!(error.code, "developer_tool_harness_no_calls");
+    }
+
+    #[test]
+    fn dry_run_invalid_payload_returns_decode_denial_shape() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let context = developer_tool_terminal_host_context(tempdir.path()).expect("context");
+
+        let dry_run = developer_tool_terminal_dry_run(
+            &context,
+            DeveloperToolDryRunRequestDto {
+                project_id: context.project_id.clone(),
+                tool_name: "read".into(),
+                input: serde_json::json!({}),
+                tool_call_id: None,
+                operator_approved: Some(false),
+            },
+        )
+        .expect("dry-run returns structured denial");
+
+        assert!(!dry_run.decoded);
+        assert_eq!(dry_run.policy_decision.action, "deny");
+        assert_eq!(
+            dry_run.sandbox_decision,
+            serde_json::json!({ "skipped": "policy_failed_to_decode" })
+        );
+    }
+
+    #[test]
+    fn synthetic_template_failure_reports_failing_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let context = developer_tool_terminal_host_context(tempdir.path()).expect("context");
+
+        let run = developer_tool_terminal_synthetic_run(
+            &context,
+            DeveloperToolSyntheticRunRequestDto {
+                project_id: context.project_id.clone(),
+                agent_session_id: None,
+                calls: vec![
+                    DeveloperToolHarnessCallDto {
+                        tool_name: "read".into(),
+                        input: serde_json::json!({"path": "README.md"}),
+                        tool_call_id: Some("first".into()),
+                    },
+                    DeveloperToolHarnessCallDto {
+                        tool_name: "read".into(),
+                        input: serde_json::json!({"path": "{{call[3].result.path}}"}),
+                        tool_call_id: Some("second".into()),
+                    },
+                ],
+                options: Some(DeveloperToolHarnessRunOptionsDto {
+                    stop_on_failure: Some(true),
+                    approve_writes: Some(false),
+                    operator_approve_all: Some(false),
+                }),
+            },
+        )
+        .expect("template failure is a structured run result");
+
+        assert!(run.had_failure);
+        assert!(run.stopped_early);
+        assert_eq!(run.results.len(), 2);
+        assert_eq!(
+            run.results[1].output["error"]["code"],
+            serde_json::json!("developer_tool_harness_template_unresolved")
+        );
+        assert!(run.results[1].summary.contains("call[3]"));
+    }
+
+    #[test]
+    fn terminal_rejects_unavailable_tools_before_dispatch() {
+        let error = ensure_terminal_tool_available("browser_control").expect_err("unavailable");
+
+        assert_eq!(error.code, "developer_tool_terminal_tool_unavailable");
+        assert!(error.message.contains("terminal harness mode"));
+    }
 }
 
 #[tauri::command]
@@ -610,9 +1052,16 @@ pub fn developer_tool_sequence_delete<R: Runtime>(
     state: State<'_, DesktopState>,
     request: DeveloperToolSequenceDeleteRequestDto,
 ) -> CommandResult<DeveloperToolSequenceListResponseDto> {
-    validate_non_empty(&request.id, "id")?;
     let global_db_path = state.global_db_path(&app)?;
-    let connection = open_global_database(&global_db_path)?;
+    developer_tool_sequence_delete_service(&global_db_path, request)
+}
+
+pub fn developer_tool_sequence_delete_service(
+    global_db_path: &Path,
+    request: DeveloperToolSequenceDeleteRequestDto,
+) -> CommandResult<DeveloperToolSequenceListResponseDto> {
+    validate_non_empty(&request.id, "id")?;
+    let connection = open_global_database(global_db_path)?;
     connection
         .execute(
             "DELETE FROM developer_tool_sequences WHERE id = ?1",
@@ -625,7 +1074,7 @@ pub fn developer_tool_sequence_delete<R: Runtime>(
             )
         })?;
 
-    developer_tool_sequence_list(app, state)
+    developer_tool_sequence_list_service(global_db_path)
 }
 
 #[tauri::command]
@@ -635,16 +1084,106 @@ pub fn developer_tool_harness_project<R: Runtime>(
 ) -> CommandResult<DeveloperToolHarnessProjectDto> {
     let registry_path = state.global_db_path(&app)?;
     let app_data_dir = state.app_data_dir(&app)?;
+    prepare_harness_fixture_project(&app_data_dir, &registry_path)
+}
+
+pub fn prepare_harness_fixture_project(
+    app_data_dir: &Path,
+    global_db_path: &Path,
+) -> CommandResult<DeveloperToolHarnessProjectDto> {
     let repo_root = app_data_dir.join(HARNESS_FIXTURE_DIRECTORY);
 
     seed_harness_fixture_repo(&repo_root)?;
-    ensure_harness_fixture_registered(&registry_path, &repo_root)?;
+    ensure_harness_fixture_registered(global_db_path, &repo_root)?;
 
     Ok(DeveloperToolHarnessProjectDto {
         project_id: HARNESS_FIXTURE_PROJECT_ID.to_owned(),
         display_name: HARNESS_FIXTURE_DISPLAY_NAME.to_owned(),
         root_path: repo_root.to_string_lossy().into_owned(),
     })
+}
+
+pub fn developer_tool_terminal_host_context(
+    app_data_dir: impl AsRef<Path>,
+) -> CommandResult<DeveloperToolTerminalHostContext> {
+    let app_data_dir = app_data_dir.as_ref().to_path_buf();
+    reject_legacy_xero_state_path(&app_data_dir, "app-data root")?;
+    let global_db_path = crate::global_db::global_database_path(&app_data_dir);
+    let fixture_project = prepare_harness_fixture_project(&app_data_dir, &global_db_path)?;
+    let records = registry::read_project_records(&global_db_path, HARNESS_FIXTURE_PROJECT_ID)?;
+    let record = records.into_iter().next().ok_or_else(|| {
+        CommandError::system_fault(
+            "developer_tool_terminal_fixture_registry_missing",
+            "Xero prepared the harness fixture project but could not find it in the app-data registry.",
+        )
+    })?;
+    let repo_root = PathBuf::from(record.root_path);
+    if !repo_root.is_dir() {
+        return Err(CommandError::user_fixable(
+            "developer_tool_terminal_fixture_root_missing",
+            format!(
+                "The harness fixture project root `{}` is missing.",
+                repo_root.display()
+            ),
+        ));
+    }
+    db::configure_project_database_paths(&global_db_path);
+    Ok(DeveloperToolTerminalHostContext {
+        app_data_dir,
+        global_db_path,
+        project_id: HARNESS_FIXTURE_PROJECT_ID.to_owned(),
+        repo_root,
+        fixture_project,
+        capabilities: DeveloperToolRuntimeCapabilitiesDto::terminal(),
+    })
+}
+
+pub fn developer_tool_terminal_runtime(
+    context: &DeveloperToolTerminalHostContext,
+) -> CommandResult<AutonomousToolRuntime> {
+    db::configure_project_database_paths(&context.global_db_path);
+    AutonomousToolRuntime::new(&context.repo_root).map(|runtime| {
+        runtime
+            .with_mcp_registry_path(context.global_db_path.clone())
+            .with_environment_profile_database_path(context.global_db_path.clone())
+            .with_skill_tool_disabled()
+    })
+}
+
+pub fn developer_tool_terminal_dry_run(
+    context: &DeveloperToolTerminalHostContext,
+    request: DeveloperToolDryRunRequestDto,
+) -> CommandResult<DeveloperToolDryRunResponseDto> {
+    ensure_terminal_tool_available(&request.tool_name)?;
+    let runtime = developer_tool_terminal_runtime(context)?;
+    developer_tool_dry_run_service(&context.repo_root, &runtime, request)
+}
+
+pub fn developer_tool_terminal_synthetic_run(
+    context: &DeveloperToolTerminalHostContext,
+    request: DeveloperToolSyntheticRunRequestDto,
+) -> CommandResult<DeveloperToolSyntheticRunResponseDto> {
+    for call in &request.calls {
+        ensure_terminal_tool_available(&call.tool_name)?;
+    }
+    let runtime = developer_tool_terminal_runtime(context)?;
+    developer_tool_synthetic_run_service(&context.repo_root, runtime, request)
+}
+
+fn reject_legacy_xero_state_path(path: &Path, label: &str) -> CommandResult<()> {
+    if path
+        .components()
+        .any(|component| component.as_os_str() == std::ffi::OsStr::new(".xero"))
+    {
+        return Err(CommandError::user_fixable(
+            "developer_tool_legacy_state_path_rejected",
+            format!(
+                "The developer tool harness cannot use repo-local `.xero` state for {label}: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn seed_harness_fixture_repo(repo_root: &Path) -> CommandResult<()> {

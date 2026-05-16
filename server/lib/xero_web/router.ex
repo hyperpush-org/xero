@@ -15,6 +15,10 @@ defmodule XeroWeb.Router do
     plug XeroWeb.RateLimitPlug
   end
 
+  pipeline :remote_api do
+    plug XeroWeb.RemoteAuthPlug
+  end
+
   scope "/", XeroWeb do
     pipe_through :browser
 
@@ -29,6 +33,14 @@ defmodule XeroWeb.Router do
     post "/github/login", GitHubAuthController, :start
     get "/github/session", GitHubAuthController, :session
     delete "/github/session", GitHubAuthController, :delete_session
+    post "/relay/token/refresh", GitHubAuthController, :refresh_relay_token
+  end
+
+  scope "/api", XeroWeb do
+    pipe_through [:api, :remote_api]
+
+    get "/devices", RemoteDeviceController, :index
+    post "/devices/:id/revoke", RemoteDeviceController, :revoke
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

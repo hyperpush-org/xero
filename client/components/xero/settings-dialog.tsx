@@ -61,7 +61,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Brain, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, PlaySquare, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, PlaySquare, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -72,6 +72,7 @@ import { cn } from "@/lib/utils"
 
 export type SettingsSection =
   | "account"
+  | "cloudAccount"
   | "providers"
   | "diagnostics"
   | "soul"
@@ -93,6 +94,7 @@ export type SettingsSection =
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   "account",
+  "cloudAccount",
   "providers",
   "diagnostics",
   "soul",
@@ -116,6 +118,10 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 const loadAccountSection = () =>
   import("@/components/xero/settings-dialog/account-section").then((module) => ({
     default: module.AccountSection,
+  }))
+const loadCloudAccountSection = () =>
+  import("@/components/xero/settings-dialog/cloud-account-section").then((module) => ({
+    default: module.CloudAccountSection,
   }))
 const loadAgentsSection = () =>
   import("@/components/xero/settings-dialog/agents-section").then((module) => ({
@@ -191,6 +197,7 @@ const loadProjectRunnerSection = () =>
   }))
 
 const LazyAccountSection = lazy(loadAccountSection)
+const LazyCloudAccountSection = lazy(loadCloudAccountSection)
 const LazyAgentsSection = lazy(loadAgentsSection)
 const LazyAgentToolingSection = lazy(loadAgentToolingSection)
 const LazyBrowserSection = lazy(loadBrowserSection)
@@ -212,6 +219,7 @@ const LazyProjectRunnerSection = lazy(loadProjectRunnerSection)
 
 const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> = {
   account: loadAccountSection,
+  cloudAccount: loadCloudAccountSection,
   providers: loadProvidersSection,
   diagnostics: loadDiagnosticsSection,
   soul: loadSoulSection,
@@ -265,7 +273,10 @@ interface NavGroup {
 const ACCOUNT_GROUP: NavGroup = {
   id: "account",
   label: "Account",
-  items: [{ id: "account", label: "Account", icon: UserRound }],
+  items: [
+    { id: "account", label: "Account", icon: UserRound },
+    { id: "cloudAccount", label: "Cloud account", icon: Cloud },
+  ],
 }
 
 const WORKSPACE_GROUP: NavGroup = {
@@ -629,6 +640,10 @@ export function SettingsDialog({
   }, [])
 
   const renderSectionContent = (renderedSection: SettingsSection) => {
+    if (renderedSection === "cloudAccount") {
+      return <LazyCloudAccountSection />
+    }
+
     if (renderedSection === "account") {
       return (
         <LazyAccountSection

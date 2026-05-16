@@ -26,6 +26,15 @@ use xero_desktop_lib::{
 fn seed_project(root: &TempDir) -> (String, PathBuf) {
     let repo_root = root.path().join("repo");
     fs::create_dir_all(&repo_root).expect("create repo root");
+    for path in [
+        "client/src-tauri/src/db/project_store/agent_retrieval.rs",
+        "client/src-tauri/src/runtime/agent_core/context_package.rs",
+    ] {
+        let full_path = repo_root.join(path);
+        fs::create_dir_all(full_path.parent().expect("fixture parent"))
+            .expect("create fixture parent");
+        fs::write(&full_path, format!("// fixture for {path}\n")).expect("write fixture file");
+    }
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
     let project_id = "project-continuity".to_string();
     let repository = CanonicalRepository {

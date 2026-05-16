@@ -1,6 +1,6 @@
 import { FolderPlus, Loader2, Lock } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { AppLogo } from "./app-logo"
+import { AppLogo } from "@xero/ui/components/app-logo"
 
 interface NoProjectEmptyStateProps {
   isDesktopRuntime: boolean

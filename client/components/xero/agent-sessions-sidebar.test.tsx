@@ -17,6 +17,7 @@ const sessions: AgentSessionView[] = [
     status: 'active',
     statusLabel: 'Active',
     selected: true,
+    remoteVisible: false,
     createdAt: '2026-04-15T20:00:00Z',
     updatedAt: '2026-04-15T20:00:00Z',
     archivedAt: null,

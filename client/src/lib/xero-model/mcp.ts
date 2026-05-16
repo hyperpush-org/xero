@@ -3,7 +3,7 @@ import {
   isoTimestampSchema,
   nonEmptyOptionalTextSchema,
   optionalIsoTimestampSchema,
-} from './shared'
+} from '@xero/ui/model/shared'
 
 export const mcpTransportKindSchema = z.enum(['stdio', 'http', 'sse'])
 

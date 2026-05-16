@@ -718,6 +718,7 @@ pub struct AgentSessionDto {
     pub summary: String,
     pub status: AgentSessionStatusDto,
     pub selected: bool,
+    pub remote_visible: bool,
     pub created_at: String,
     pub updated_at: String,
     pub archived_at: Option<String>,

@@ -82,6 +82,16 @@ pub(super) const SAFE_COMMAND_ENV_KEYS: &[&str] = &[
     "LOCALAPPDATA",
 ];
 
+struct CommandOutputArtifactRequest<'a> {
+    tool_name: &'a str,
+    prepared: &'a PreparedCommandRequest,
+    stdout_bytes: &'a [u8],
+    stderr_bytes: &'a [u8],
+    stdout_excerpt: &'a SanitizedCommandOutput,
+    stderr_excerpt: &'a SanitizedCommandOutput,
+    exit_code: Option<i32>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct ProcessSessionRegistry {
     sessions: Mutex<BTreeMap<String, Arc<ProcessSession>>>,
@@ -546,15 +556,16 @@ impl AutonomousToolRuntime {
             .as_bytes();
 
         let exit_code = sandbox_output.exit_code;
-        let output_artifact = self.command_output_artifact_if_needed(
-            tool_name,
-            &prepared,
-            stdout_bytes,
-            stderr_bytes,
-            &stdout_excerpt,
-            &stderr_excerpt,
-            exit_code,
-        )?;
+        let output_artifact =
+            self.command_output_artifact_if_needed(CommandOutputArtifactRequest {
+                tool_name,
+                prepared: &prepared,
+                stdout_bytes,
+                stderr_bytes,
+                stdout_excerpt: &stdout_excerpt,
+                stderr_excerpt: &stderr_excerpt,
+                exit_code,
+            })?;
         let (changed_files, changed_files_truncated) = self.changed_files_after_command();
         let suggested_next_actions = command_suggested_next_actions(
             true,
@@ -772,15 +783,16 @@ impl AutonomousToolRuntime {
             stderr_capture.truncated,
             self.limits.max_command_excerpt_chars,
         );
-        let output_artifact = self.command_output_artifact_if_needed(
-            tool_name,
-            &prepared,
-            &stdout_capture.bytes,
-            &stderr_capture.bytes,
-            &stdout_excerpt,
-            &stderr_excerpt,
-            exit_code,
-        )?;
+        let output_artifact =
+            self.command_output_artifact_if_needed(CommandOutputArtifactRequest {
+                tool_name,
+                prepared: &prepared,
+                stdout_bytes: &stdout_capture.bytes,
+                stderr_bytes: &stderr_capture.bytes,
+                stdout_excerpt: &stdout_excerpt,
+                stderr_excerpt: &stderr_excerpt,
+                exit_code,
+            })?;
         let (changed_files, changed_files_truncated) = self.changed_files_after_command();
         let suggested_next_actions = command_suggested_next_actions(
             true,
@@ -905,20 +917,23 @@ impl AutonomousToolRuntime {
             .into_iter()
             .take(MAX_COMMAND_CHANGED_FILES)
             .collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        entries.sort_by_key(|entry| entry.path.clone());
         (entries, total > MAX_COMMAND_CHANGED_FILES)
     }
 
     fn command_output_artifact_if_needed(
         &self,
-        tool_name: &str,
-        prepared: &PreparedCommandRequest,
-        stdout_bytes: &[u8],
-        stderr_bytes: &[u8],
-        stdout_excerpt: &SanitizedCommandOutput,
-        stderr_excerpt: &SanitizedCommandOutput,
-        exit_code: Option<i32>,
+        request: CommandOutputArtifactRequest<'_>,
     ) -> CommandResult<Option<AutonomousCommandOutputArtifact>> {
+        let CommandOutputArtifactRequest {
+            tool_name,
+            prepared,
+            stdout_bytes,
+            stderr_bytes,
+            stdout_excerpt,
+            stderr_excerpt,
+            exit_code,
+        } = request;
         let stdout_needs_artifact =
             stdout_excerpt.truncated || stdout_bytes.len() > self.limits.max_command_excerpt_chars;
         let stderr_needs_artifact =

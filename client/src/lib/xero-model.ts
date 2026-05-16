@@ -52,7 +52,7 @@ import {
   type RuntimeRunView,
   type RuntimeSessionDto,
   type RuntimeSessionView,
-} from './xero-model/runtime'
+} from '@xero/ui/model/runtime'
 
 export type { Phase, PhaseStatus, Project } from '@/components/xero/data'
 export {
@@ -64,7 +64,7 @@ export {
   safePercent,
   toolResultSummarySchema,
   webToolResultContentKindSchema,
-} from './xero-model/shared'
+} from '@xero/ui/model/shared'
 export type {
   BrowserComputerUseActionStatusDto,
   BrowserComputerUseSurfaceDto,
@@ -73,18 +73,18 @@ export type {
   PayloadBudgetDiagnosticDto,
   ToolResultSummaryDto,
   WebToolResultContentKindDto,
-} from './xero-model/shared'
+} from '@xero/ui/model/shared'
 export * from './xero-model/project'
 export * from './xero-model/operator-actions'
 export * from './xero-model/notifications'
-export * from './xero-model/runtime'
+export * from '@xero/ui/model/runtime'
 export * from './xero-model/provider-credentials'
 export * from './xero-model/provider-models'
 export * from './xero-model/diagnostics'
 export * from './xero-model/autonomous'
 export * from './xero-model/agent'
 export * from './xero-model/agent-definition'
-export * from './xero-model/runtime-stream'
+export * from '@xero/ui/model/runtime-stream'
 export * from './xero-model/mcp'
 export * from './xero-model/skills'
 export * from './xero-model/session-context'
@@ -94,7 +94,7 @@ export * from './xero-model/soul'
 export * from './xero-model/usage'
 export * from './xero-model/environment'
 export * from './xero-model/developer-storage'
-export * from './xero-model/code-history'
+export * from '@xero/ui/model/code-history'
 export * from './xero-model/wipe-data'
 
 export const projectSnapshotResponseSchema = z

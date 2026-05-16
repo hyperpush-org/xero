@@ -1,6 +1,6 @@
 import { ArrowRight, Bell, FolderGit2, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { AppLogo } from "@/components/xero/app-logo"
+import { AppLogo } from "@xero/ui/components/app-logo"
 
 interface WelcomeStepProps {
   onContinue: () => void

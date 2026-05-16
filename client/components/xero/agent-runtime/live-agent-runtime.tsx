@@ -3,7 +3,7 @@
 import { lazy, memo, Suspense, useEffect, useMemo, useState } from 'react'
 
 import type { AgentRuntimeDesktopAdapter, AgentRuntimeProps } from '@/components/xero/agent-runtime'
-import type { ConversationTurn } from '@/components/xero/agent-runtime/conversation-section'
+import type { ConversationTurn } from '@xero/ui/components/transcript/conversation-section'
 import { buildHistoricalConversationTurns } from '@/components/xero/agent-runtime/session-history-projection'
 import { Skeleton } from '@/components/ui/skeleton'
 import {

@@ -27,7 +27,7 @@ pub async fn start_runtime_run<R: Runtime + 'static>(
         })?
 }
 
-fn start_runtime_run_blocking<R: Runtime + 'static>(
+pub(crate) fn start_runtime_run_blocking<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: DesktopState,
     request: StartRuntimeRunRequestDto,

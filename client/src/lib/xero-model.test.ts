@@ -101,6 +101,7 @@ function makeSnapshot(overrides: Partial<ProjectSnapshotResponseDto> = {}): Proj
         summary: 'Primary project session',
         status: 'active',
         selected: true,
+        remoteVisible: false,
         createdAt: '2026-04-15T17:55:00Z',
         updatedAt: '2026-04-15T17:55:00Z',
         archivedAt: null,
@@ -404,6 +405,7 @@ describe('xero-model', () => {
     expect(project.phaseProgressPercent).toBe(33)
     expect(project.completedPhases).toBe(1)
     expect(project.repository?.headShaLabel).toBe('abc123')
+    expect(project.selectedAgentSession?.remoteVisible).toBe(false)
     expect(project.phases).toHaveLength(2)
     expect(project.phases[0].summary).toBe('Imported successfully')
     expect(project.phases[1].summary).toBeUndefined()

@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod commands;
 pub mod db;
+pub mod developer_tool_harness_terminal;
+pub mod developer_tool_harness_tui;
 pub mod environment;
 pub mod global_db;
 pub mod mcp;
@@ -29,6 +31,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
         .manage(commands::BrowserState::default())
         .manage(commands::DictationState::default())
         .manage(commands::EmulatorState::default())
+        .manage(commands::remote_bridge::RemoteBridgeRuntimeState::default())
         .manage(commands::project_assets::ProjectAssetState::default())
         .register_asynchronous_uri_scheme_protocol(
             commands::project_assets::URI_SCHEME,
@@ -93,6 +96,15 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                         &payload,
                     );
                 });
+            }
+
+            {
+                let app_handle = app.handle().clone();
+                if let Err(error) =
+                    commands::remote_bridge::start_remote_bridge_if_registered(&app_handle)
+                {
+                    eprintln!("[remote-bridge] startup skipped: {error}");
+                }
             }
 
             // One-shot backfill: rows written before pricing was wired in (or
@@ -189,6 +201,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                 use tauri::Manager;
                 commands::dictation::shutdown_on_close(window.app_handle());
                 commands::emulator::shutdown::shutdown_on_close(window.app_handle());
+                commands::remote_bridge::shutdown_on_close(window.app_handle());
             }
         })
         .plugin(tauri_plugin_dialog::init())
@@ -227,6 +240,12 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::project_state::read_project_ui_state,
             commands::project_state::write_app_ui_state,
             commands::project_state::write_project_ui_state,
+            commands::remote_bridge::bridge_status,
+            commands::remote_bridge::bridge_sign_in,
+            commands::remote_bridge::bridge_poll_github_login,
+            commands::remote_bridge::bridge_sign_out,
+            commands::remote_bridge::bridge_revoke_device,
+            commands::remote_bridge::set_session_remote_visibility,
             commands::project_records::list_project_context_records,
             commands::project_records::delete_project_context_record,
             commands::project_records::supersede_project_context_record,

@@ -816,6 +816,7 @@ describe('session context contract', () => {
       summary: 'Branched from historical context.',
       status: 'active',
       selected: true,
+      remoteVisible: true,
       createdAt,
       updatedAt: createdAt,
       archivedAt: null,

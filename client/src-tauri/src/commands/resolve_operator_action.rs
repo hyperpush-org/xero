@@ -16,12 +16,20 @@ pub fn resolve_operator_action<R: Runtime>(
     state: State<'_, DesktopState>,
     request: ResolveOperatorActionRequestDto,
 ) -> CommandResult<ResolveOperatorActionResponseDto> {
+    resolve_operator_action_blocking(app, state.inner().clone(), request)
+}
+
+pub(crate) fn resolve_operator_action_blocking<R: Runtime>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    request: ResolveOperatorActionRequestDto,
+) -> CommandResult<ResolveOperatorActionResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.action_id, "actionId")?;
 
     let decision = parse_operator_action_decision(&request.decision)?;
     let user_answer = normalize_optional_non_empty(request.user_answer, "userAnswer")?;
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let repo_root = resolve_project_root(&app, &state, &request.project_id)?;
 
     let resolved = project_store::resolve_operator_action(
         &repo_root,

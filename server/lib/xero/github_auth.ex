@@ -8,6 +8,7 @@ defmodule Xero.GitHubAuth do
 
   use GenServer
 
+  alias Xero.Remote
   alias Xero.GitHubAuth.Session
   alias Xero.Repo
 
@@ -39,14 +40,19 @@ defmodule Xero.GitHubAuth do
     GenServer.call(__MODULE__, :clear_in_memory_state_for_test)
   end
 
-  def start_login do
-    with {:ok, config} <- oauth_config() do
+  def start_login(kind \\ "desktop", attrs \\ %{}) do
+    with {:ok, config} <- oauth_config(),
+         {:ok, kind} <- login_kind(kind) do
       flow_id = random_token()
       state_token = random_token()
 
       flow = %{
         flow_id: flow_id,
         state: state_token,
+        kind: kind,
+        name: string_attr(attrs, "name"),
+        user_agent: string_attr(attrs, "user_agent"),
+        redirect_to: string_attr(attrs, "redirect_to"),
         status: :pending,
         inserted_at: DateTime.utc_now()
       }
@@ -57,7 +63,8 @@ defmodule Xero.GitHubAuth do
        %{
          authorization_url: authorization_url(config, state_token),
          redirect_uri: config.redirect_uri,
-         flow_id: flow_id
+         flow_id: flow_id,
+         kind: Atom.to_string(kind)
        }}
     end
   end
@@ -111,17 +118,18 @@ defmodule Xero.GitHubAuth do
 
   def logout(_session_id), do: :ok
 
-  def complete_state(state_token, session_id, stored_session)
+  def complete_state(state_token, session_id, stored_session, attrs \\ %{})
       when is_binary(state_token) and is_binary(session_id) do
-    GenServer.call(__MODULE__, {:complete_state, state_token, session_id, stored_session})
+    GenServer.call(__MODULE__, {:complete_state, state_token, session_id, stored_session, attrs})
   end
 
-  def public_session(%{user: user, scope: scope, created_at: created_at}) do
+  def public_session(%{user: user, scope: scope, created_at: created_at} = session) do
     %{
       "user" => user,
       "scope" => scope || "",
       "createdAt" => created_at
     }
+    |> merge_public_remote_session(session)
   end
 
   def stored_session(access_token, token_type, scope, user) do
@@ -133,6 +141,21 @@ defmodule Xero.GitHubAuth do
       created_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
   end
+
+  defp merge_public_remote_session(public, session) do
+    public
+    |> put_optional("kind", session_value(session, :kind))
+    |> put_optional("accountId", session_value(session, :account_id))
+    |> put_optional("deviceId", session_value(session, :device_id))
+    |> put_optional("relayToken", session_value(session, :relay_token))
+    |> put_optional("relayTokenExpiresAt", session_value(session, :relay_token_expires_at))
+    |> put_optional("csrfToken", session_value(session, :csrf_token))
+    |> put_optional("account", session_value(session, :account))
+  end
+
+  defp put_optional(map, _key, nil), do: map
+  defp put_optional(map, _key, ""), do: map
+  defp put_optional(map, key, value), do: Map.put(map, key, value)
 
   @impl true
   def handle_call(:reset, _from, _state) do
@@ -195,6 +218,8 @@ defmodule Xero.GitHubAuth do
   end
 
   def handle_call({:logout, session_id}, _from, state) do
+    _ = revoke_session_device(Map.get(state.sessions, session_id))
+
     case delete_session(session_id) do
       :ok ->
         {:reply, :ok, %{state | sessions: Map.delete(state.sessions, session_id)}}
@@ -204,7 +229,11 @@ defmodule Xero.GitHubAuth do
     end
   end
 
-  def handle_call({:complete_state, state_token, session_id, stored_session}, _from, state) do
+  def handle_call(
+        {:complete_state, state_token, session_id, stored_session, attrs},
+        _from,
+        state
+      ) do
     case Map.get(state.states, state_token) do
       nil ->
         {:reply,
@@ -213,23 +242,40 @@ defmodule Xero.GitHubAuth do
          state}
 
       flow_id ->
-        case persist_session(session_id, stored_session) do
-          :ok ->
-            flow =
-              state.flows
-              |> Map.fetch!(flow_id)
-              |> Map.merge(%{status: :complete, session_id: session_id, session: stored_session})
+        flow = Map.fetch!(state.flows, flow_id)
 
-            next_state = %{
-              state
-              | flows: Map.put(state.flows, flow_id, flow),
-                sessions: Map.put(state.sessions, session_id, stored_session)
-            }
+        with {:ok, linked} <-
+               Remote.complete_github_login(stored_session_user(stored_session), flow.kind, %{
+                 name: string_attr(attrs, "name") || flow.name,
+                 user_agent: string_attr(attrs, "user_agent") || flow.user_agent
+               }),
+             session <- remote_session(stored_session, flow.kind, linked),
+             :ok <- persist_session(session_id, session) do
+          flow =
+            flow
+            |> Map.merge(%{status: :complete, session_id: session_id, session: session})
 
-            {:reply, :ok, next_state}
+          next_state = %{
+            state
+            | flows: Map.put(state.flows, flow_id, flow),
+              sessions: Map.put(state.sessions, session_id, session)
+          }
 
-          {:error, error} ->
+          {:reply, :ok, next_state}
+        else
+          {:error, %{"code" => _code} = error} ->
             {:reply, {:error, error}, state}
+
+          {:error, reason} when is_atom(reason) ->
+            {:reply, {:error, remote_error(reason)}, state}
+
+          {:error, {:validation, _changeset}} ->
+            {:reply,
+             {:error,
+              error(
+                "github_remote_account_link_failed",
+                "Could not link the GitHub account to a remote relay device."
+              )}, state}
         end
     end
   end
@@ -252,12 +298,18 @@ defmodule Xero.GitHubAuth do
     {:reply, :ok, next_state}
   end
 
-  def handle_call({:flow_id_for_state, state_token}, _from, state) do
-    {:reply, Map.fetch(state.states, state_token), state}
+  def handle_call({:flow_for_state, state_token}, _from, state) do
+    reply =
+      with {:ok, flow_id} <- Map.fetch(state.states, state_token),
+           {:ok, flow} <- Map.fetch(state.flows, flow_id) do
+        {:ok, flow}
+      end
+
+    {:reply, reply, state}
   end
 
   defp complete_code_callback(state_token, code) do
-    with {:ok, _flow_id} <- flow_id_for_state(state_token),
+    with {:ok, flow} <- flow_for_state(state_token),
          {:ok, config} <- oauth_config(),
          {:ok, token} <- exchange_code_for_token(config, code),
          {:ok, user} <- fetch_github_user(token.access_token) do
@@ -265,7 +317,21 @@ defmodule Xero.GitHubAuth do
       session = stored_session(token.access_token, token.token_type, token.scope, user)
 
       case complete_state(state_token, session_id, session) do
-        :ok -> {:ok, public_session(session)}
+        :ok ->
+          case get_session(session_id) do
+            {:ok, completed_session} ->
+              {:ok,
+               %{
+                 session_id: session_id,
+                 kind: Atom.to_string(flow.kind),
+                 redirect_to: flow.redirect_to,
+                 session: public_session(completed_session)
+               }}
+
+            {:error, error} ->
+              {:error, error}
+          end
+
         {:error, error} -> {:error, error}
       end
     else
@@ -275,10 +341,10 @@ defmodule Xero.GitHubAuth do
     end
   end
 
-  defp flow_id_for_state(state_token) do
-    case GenServer.call(__MODULE__, {:flow_id_for_state, state_token}) do
-      {:ok, flow_id} ->
-        {:ok, flow_id}
+  defp flow_for_state(state_token) do
+    case GenServer.call(__MODULE__, {:flow_for_state, state_token}) do
+      {:ok, flow} ->
+        {:ok, flow}
 
       :error ->
         {:error,
@@ -304,6 +370,10 @@ defmodule Xero.GitHubAuth do
                   :scope,
                   :user,
                   :created_at,
+                  :kind,
+                  :account_id,
+                  :device_id,
+                  :csrf_token,
                   :updated_at
                 ]},
              conflict_target: :session_id
@@ -346,7 +416,11 @@ defmodule Xero.GitHubAuth do
          user: Map.get(stored_session, :user) || Map.get(stored_session, "user") || %{},
          created_at:
            Map.get(stored_session, :created_at) || Map.get(stored_session, "created_at") ||
-             DateTime.to_iso8601(DateTime.utc_now())
+             DateTime.to_iso8601(DateTime.utc_now()),
+         kind: Map.get(stored_session, :kind) || Map.get(stored_session, "kind") || "desktop",
+         account_id: Map.get(stored_session, :account_id) || Map.get(stored_session, "account_id"),
+         device_id: Map.get(stored_session, :device_id) || Map.get(stored_session, "device_id"),
+         csrf_token: Map.get(stored_session, :csrf_token) || Map.get(stored_session, "csrf_token")
        }}
     else
       {:error,
@@ -382,14 +456,26 @@ defmodule Xero.GitHubAuth do
            max_age: @session_token_max_age_seconds
          ) do
       {:ok, access_token} when is_binary(access_token) ->
-        {:ok,
-         %{
-           access_token: access_token,
-           token_type: session.token_type || "bearer",
-           scope: session.scope || "",
-           user: session.user || %{},
-           created_at: session.created_at
-         }}
+        stored_session = %{
+          access_token: access_token,
+          token_type: session.token_type || "bearer",
+          scope: session.scope || "",
+          user: session.user || %{},
+          created_at: session.created_at,
+          kind: session.kind || "desktop",
+          account_id: session.account_id,
+          device_id: session.device_id,
+          csrf_token: session.csrf_token
+        }
+
+        case refresh_public_relay_token(stored_session) do
+          %{relay_token: relay_token} = refreshed when is_binary(relay_token) ->
+            {:ok, refreshed}
+
+          _stale_session ->
+            _ = Repo.delete(session)
+            {:ok, nil}
+        end
 
       {:error, _reason} ->
         _ = Repo.delete(session)
@@ -397,10 +483,74 @@ defmodule Xero.GitHubAuth do
     end
   end
 
+  defp persisted_session_to_plain_map(session) do
+    %{
+      kind: session.kind || "desktop",
+      account_id: session.account_id,
+      device_id: session.device_id,
+      csrf_token: session.csrf_token,
+      user: session.user || %{},
+      scope: session.scope || "",
+      created_at: session.created_at
+    }
+  end
+
+  defp remote_session(stored_session, kind, linked) do
+    Map.merge(stored_session, %{
+      kind: Atom.to_string(kind),
+      account_id: linked.account.id,
+      device_id: linked.device.id,
+      relay_token: linked.token,
+      relay_token_expires_at: linked.token_expires_at,
+      csrf_token: linked.csrf_token,
+      account: %{
+        "id" => linked.account.id,
+        "githubUserId" => linked.account.github_user_id,
+        "githubLogin" => linked.account.github_login,
+        "githubAvatarUrl" => linked.account.github_avatar_url
+      }
+    })
+  end
+
+  defp refresh_public_relay_token(%{device_id: device_id} = session) when is_binary(device_id) do
+    case Remote.device_for_session(session) do
+      {:ok, device} ->
+        Map.merge(session, %{
+          relay_token: Remote.issue_relay_token(device),
+          relay_token_expires_at: Remote.relay_token_expires_at()
+        })
+
+      {:error, _reason} ->
+        session
+    end
+  end
+
+  defp refresh_public_relay_token(session), do: session
+
+  defp revoke_session_device(%{device_id: device_id} = session) when is_binary(device_id) do
+    with {:ok, device} <- Remote.device_for_session(session) do
+      Remote.revoke_device(device, device_id)
+    end
+  end
+
+  defp revoke_session_device(_session), do: :ok
+
+  defp stored_session_user(session) do
+    session_value(session, :user) || %{}
+  end
+
+  defp session_value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp session_value(_map, _key), do: nil
+
   defp delete_session(session_id) do
     case Repo.get(Session, session_id) do
       nil -> :ok
-      session -> Repo.delete(session) |> then(fn _result -> :ok end)
+      session ->
+        _ = revoke_session_device(persisted_session_to_plain_map(session))
+        Repo.delete(session) |> then(fn _result -> :ok end)
     end
   rescue
     exception ->
@@ -680,9 +830,37 @@ defmodule Xero.GitHubAuth do
     error("github_oauth_rejected", "GitHub rejected the login (#{code}): #{message}")
   end
 
+  defp remote_error(:invalid_kind) do
+    error("github_oauth_kind_invalid", "GitHub login kind must be desktop or web.")
+  end
+
+  defp remote_error(:missing_github_user_id) do
+    error("github_user_decode_failed", "GitHub user response did not include an id.")
+  end
+
+  defp remote_error(_reason) do
+    error("github_remote_account_link_failed", "Could not link the GitHub account.")
+  end
+
   defp error(code, message) do
     %{"code" => code, "message" => message}
   end
+
+  defp login_kind(kind) when kind in [:desktop, :web], do: {:ok, kind}
+  defp login_kind("desktop"), do: {:ok, :desktop}
+  defp login_kind("web"), do: {:ok, :web}
+  defp login_kind(_kind), do: {:error, remote_error(:invalid_kind)}
+
+  defp string_attr(attrs, key) when is_map(attrs) do
+    Map.get(attrs, key) || Map.get(attrs, known_attr_key(key))
+  end
+
+  defp string_attr(_attrs, _key), do: nil
+
+  defp known_attr_key("name"), do: :name
+  defp known_attr_key("user_agent"), do: :user_agent
+  defp known_attr_key("redirect_to"), do: :redirect_to
+  defp known_attr_key(_key), do: nil
 
   defp random_token do
     32

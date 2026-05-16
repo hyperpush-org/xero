@@ -31,7 +31,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { createSafeTauriUnlisten } from "@/src/lib/tauri-events"
 import { useProjectSelectionPreview } from "@/src/features/xero/project-selection-preview"
 import { AppleLogoIcon, SolanaLogoIcon } from "./brand-icons"
-import { AppLogo } from "./app-logo"
+import { AppLogo } from "@xero/ui/components/app-logo"
 import type { View } from "./data"
 import { ProjectContextMenu } from "./project-context-menu"
 import { StatusFooter, type StatusFooterProps } from "./status-footer"

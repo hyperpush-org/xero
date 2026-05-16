@@ -180,7 +180,9 @@ pnpm run db:reset
 pnpm run server:setup
 pnpm run dev:server   # Phoenix server on localhost:4000
 pnpm run dev:tauri    # Desktop app only (Tauri dev)
+pnpm run dev:tui      # Real Xero agent TUI terminal client + Cloud app
 pnpm run dev:landing  # Landing site on port 3001
+pnpm run dev:cloud    # Cloud app on port 3002
 ```
 
 `dev` uses `concurrently` to start:
@@ -189,6 +191,7 @@ pnpm run dev:landing  # Landing site on port 3001
 - `pnpm run dev:server`
 - `pnpm run dev:tauri`
 - `pnpm run dev:landing`
+- `pnpm run dev:cloud`
 
 ### Desktop app (`client/`) commands
 
@@ -281,11 +284,97 @@ OpenAI-compatible setup recipes cover LiteLLM, LM Studio, Mistral, Groq, Togethe
 
 ## Session Memory And Context
 
-Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, branch, rewind, selective code undo, and session rollback workflows. Reviewed memory has backend/runtime foundations, but the permanent memory-review UI remains a deferred surface. See `docs/session-memory-and-context.md` for shipped behavior, privacy guarantees, and support triage guidance.
+Xero supports session transcript search, Markdown/JSON export, context visualization, manual compact, opt-in auto-compact, branch, rewind, selective code undo, and session rollback workflows. Reviewed memory and project records live in the shared OS app-data `project_store`/Lance backend; `dev:tui` renders the review queue through a desktop-backed adapter rather than a copied terminal store. See `docs/session-memory-and-context.md` for shipped behavior, privacy guarantees, and support triage guidance.
 
 ## Agent Harness Benchmarking
 
 Xero's owned-agent harness should be compared with fixed-model, sandboxed benchmark runs rather than informal leaderboard screenshots. See `docs/agent-harness-benchmarking.md` for the research summary, benchmark choices, and implementation plan.
+
+## Xero Agent TUI And Tool Harness
+
+`pnpm run dev:tui` launches the real terminal-native Xero agent client (`xero-tui`). It is for owned-agent development workflows: selecting an app-data project, selecting or creating sessions, sending prompts through the shared headless runtime, inspecting runtime events/tool calls, and reaching project/git/provider/context command surfaces without opening a Tauri window. The development command runs the desktop-backed `xero-tui` binary so project records, memory review, and agent-definition authoring reuse existing desktop Rust services.
+
+Terminal file actions are wrappers over the shared owned-agent Tool Registry V2 where available (`xero file list|read|write|patch|delete|move|replace|tools`), so policy, sandboxing, rollback metadata, and path protections stay aligned with real agent tool calls.
+
+Inside `dev:tui`, the `:` command palette also exposes desktop-backed code-history recovery: `code-history list|selective-undo|session-rollback` and `conversation rewind` call the existing `project_store` rollback/session-lineage services. File-changing undo/rollback commands require explicit `--apply`.
+
+Project process surfaces use the same app-data `start_targets` contract as the desktop project runner: `xero process targets|add-target|remove-target|start|list|status|tail|stop`. The `dev:tui` palette also exposes the shared desktop project-runner PTY registry with `terminal open|list|read|write|resize|close`, including a retained output buffer for terminal-native reads.
+
+Provider and settings surfaces use the same app-data contracts as the desktop/backend paths: `xero provider list|login|remove|doctor|preflight`, `xero mcp list|add|login|remove|status|serve`, `xero environment status|profile|user-tools|save-tool|remove-tool`, `xero skills list|enable|disable|remove|plugins`, `xero plugins list|enable|disable|remove`, and `xero settings agent-tooling|browser-control|soul`. The `dev:tui` palette routes `skill-sources list|upsert-local-root|remove-local-root|github|project|reload`, `plugin-sources list|upsert-root|remove-root|reload`, and `environment start|refresh|resolve-permissions|verify-tool|save-tool-verified|remove-tool-verified` through the shared desktop settings/discovery/environment services.
+
+Agent definitions are exposed through the shared app-data contract with `xero agent-definition list|show|versions|diff|archive`. Inside `dev:tui`, the `:` command palette also routes `agent-definition draft|validate|preview|save|update|clone|attachable-skills --project-id ID --definition-file FILE` through the shared autonomous definition service, including validation, effective runtime preview, write approval review, skill attachment catalog, and JSON-file Stage snapshots.
+
+Approval notification state is visible through the same app-data tables used by desktop notification dispatch with `xero notification routes|upsert-route|remove-route|dispatches|replies`.
+
+Terminal-compatible Solana workbench operations are exposed in `dev:tui` through the existing desktop Solana module: `solana catalog|cluster-list|scenario-list|persona-roles|pda-scan|pda-derive|secrets-scan|doc-catalog|doc-snippets|wallet-scaffold-list|token-extension-matrix`.
+
+Maintenance usage totals are exposed with `xero usage summary`, reading the existing project `agent_usage` table.
+
+Project-state maintenance is exposed with `xero project-state list|backup|restore|repair` and gated destructive cleanup through `xero wipe project|all`. These commands operate under OS app-data and require explicit confirmations for restore/wipe paths.
+
+Fast development launch:
+
+```bash
+pnpm run dev:tui
+```
+
+Released TUI install:
+
+```bash
+curl -fsSL https://xeroshell.com/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://xeroshell.com/install.ps1 | iex
+```
+
+The install scripts download from the Fly-hosted landing app at
+`/downloads/tui/latest/`, verify the archive checksum, and install `xero-tui`
+locally. Set `XERO_INSTALL_DIR` to choose a different install directory.
+
+Headless launch verification:
+
+```bash
+pnpm run dev:tui -- --smoke
+pnpm run dev:tui -- --smoke-run
+```
+
+Direct Cargo form:
+
+```bash
+cd client/src-tauri
+cargo run --package xero-desktop --bin xero-tui
+cargo run --package xero-desktop --bin xero-tui -- --smoke
+cargo run --package xero-cli --bin xero -- tui --smoke # CLI-core smoke
+```
+
+The desktop developer tool harness remains available separately through the `tool-harness` binary. It is a developer/debug harness for cataloging and replaying individual backend tools; it is not the product TUI and does not own the `dev:tui` script.
+
+Direct Cargo form:
+
+```bash
+cd client/src-tauri
+cargo run --bin tool-harness -- fixture
+cargo run --bin tool-harness -- catalog
+cargo run --bin tool-harness -- dry-run read --input-json '{"path":"README.md"}'
+cargo run --bin tool-harness -- run read --input-json '{"path":"README.md"}'
+cargo run --bin tool-harness -- sequence list
+```
+
+Use `--json` on batch commands for scriptable output, and `--app-data-dir PATH` for isolated harness smoke tests. The terminal harness stores fixture and sequence state under OS app-data only; do not point it at repo-local `.xero` state.
+
+The agent TUI parity matrix lives in `docs/agent-tui-parity.md`. Desktop-only browser viewport, emulator live panes, graphical canvas gestures, window chrome, and microphone dictation remain explicit exclusions; renderer-independent workflows are exposed through terminal-native panes or CLI commands.
+
+Scoped verification for harness work:
+
+```bash
+cargo test --manifest-path client/src-tauri/Cargo.toml developer_tool_harness --lib --bins
+pnpm --dir client vitest run components/xero/settings-dialog/development-section/tool-harness/index.test.tsx
+```
+
+Run one Cargo command at a time so the shared build lock does not stall parallel agents.
 
 ## Agent System Release Gates
 

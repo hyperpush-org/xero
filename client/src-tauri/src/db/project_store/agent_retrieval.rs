@@ -686,10 +686,8 @@ fn collect_candidates(
                 row.superseded_by_id.as_deref(),
                 row.invalidated_at.as_deref(),
             );
-            if retrieval_reason == "blocked" {
-                if !precomputed_default_exclusions {
-                    blocked_excluded_count += 1;
-                }
+            if retrieval_reason == "blocked" && !precomputed_default_exclusions {
+                blocked_excluded_count += 1;
             }
             if !precomputed_default_exclusions
                 && !request.filters.include_historical
@@ -740,10 +738,8 @@ fn collect_candidates(
                 row.superseded_by_id.as_deref(),
                 row.invalidated_at.as_deref(),
             );
-            if retrieval_reason == "blocked" {
-                if !precomputed_default_exclusions {
-                    blocked_excluded_count += 1;
-                }
+            if retrieval_reason == "blocked" && !precomputed_default_exclusions {
+                blocked_excluded_count += 1;
             }
             if !precomputed_default_exclusions
                 && !request.filters.include_historical

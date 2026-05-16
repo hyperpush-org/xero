@@ -181,6 +181,7 @@ pub(crate) fn append_event(
         },
     )?;
     publish_agent_event(event.clone());
+    crate::commands::remote_bridge::forward_agent_event(repo_root, &event);
     publish_coordination_for_agent_event(repo_root, &event)?;
     Ok(event)
 }
@@ -2434,14 +2435,16 @@ fn prepare_automatic_memory_candidate(
             source_item_ids: provenance.source_item_ids,
             diagnostic: Some(memory_promotion_gate_diagnostic(
                 "memory_promotion_gate_candidate_prepared",
-                "kept_candidate",
-                &policy.trigger,
-                policy,
-                confidence,
-                provenance.provenance_quality,
-                provenance.source_item_fallback,
-                &provenance.evidence_snippets,
-                "Candidate persisted for automated promotion-gate evaluation.",
+                MemoryPromotionGateDiagnosticInput {
+                    decision: "kept_candidate",
+                    trigger: &policy.trigger,
+                    policy,
+                    confidence,
+                    provenance_quality: provenance.provenance_quality,
+                    source_item_fallback: provenance.source_item_fallback,
+                    evidence_snippets: &provenance.evidence_snippets,
+                    message: "Candidate persisted for automated promotion-gate evaluation.",
+                },
             )),
             created_at: created_at.into(),
         },
@@ -2561,29 +2564,45 @@ fn memory_promotion_decision(
         outcome,
         diagnostic: memory_promotion_gate_diagnostic(
             code,
-            decision,
-            &policy.trigger,
-            policy,
-            prepared.confidence,
-            prepared.provenance_quality,
-            prepared.source_item_fallback,
-            &prepared.evidence_snippets,
-            &message,
+            MemoryPromotionGateDiagnosticInput {
+                decision,
+                trigger: &policy.trigger,
+                policy,
+                confidence: prepared.confidence,
+                provenance_quality: prepared.provenance_quality,
+                source_item_fallback: prepared.source_item_fallback,
+                evidence_snippets: &prepared.evidence_snippets,
+                message: &message,
+            },
         ),
     }
 }
 
+struct MemoryPromotionGateDiagnosticInput<'a> {
+    decision: &'a str,
+    trigger: &'a str,
+    policy: &'a RuntimeMemoryExtractionPolicy,
+    confidence: u8,
+    provenance_quality: &'a str,
+    source_item_fallback: bool,
+    evidence_snippets: &'a [JsonValue],
+    message: &'a str,
+}
+
 fn memory_promotion_gate_diagnostic(
     code: impl Into<String>,
-    decision: &str,
-    trigger: &str,
-    policy: &RuntimeMemoryExtractionPolicy,
-    confidence: u8,
-    provenance_quality: &str,
-    source_item_fallback: bool,
-    evidence_snippets: &[JsonValue],
-    message: &str,
+    input: MemoryPromotionGateDiagnosticInput<'_>,
 ) -> project_store::AgentRunDiagnosticRecord {
+    let MemoryPromotionGateDiagnosticInput {
+        decision,
+        trigger,
+        policy,
+        confidence,
+        provenance_quality,
+        source_item_fallback,
+        evidence_snippets,
+        message,
+    } = input;
     let detail = json!({
         "schema": "xero.memory_promotion_gate.decision.v1",
         "gate": AUTOMATED_MEMORY_PROMOTION_GATE,
@@ -5082,8 +5101,13 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let app_data_dir = tempdir.path().join("app-data");
         let repo_root = tempdir.path().join("repo");
-        fs::create_dir_all(repo_root.join("client/src-tauri/src/runtime"))
+        fs::create_dir_all(repo_root.join("client/src-tauri/src/runtime/agent_core"))
             .expect("repo source dir");
+        fs::write(
+            repo_root.join("client/src-tauri/src/runtime/agent_core/persistence.rs"),
+            "fn persistence_fixture() {}\n",
+        )
+        .expect("write source fixture");
         let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
         let project_id = "project-current-problem-continuity";
         db::configure_project_database_paths(&app_data_dir.join("global.db"));

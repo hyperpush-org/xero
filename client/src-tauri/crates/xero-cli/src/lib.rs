@@ -4,6 +4,7 @@ use std::{
     io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -11,27 +12,41 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use xero_agent_core::{
     domain_tool_pack_health_report, domain_tool_pack_manifest, domain_tool_pack_manifests,
     provider_capability_catalog, provider_preflight_blockers, provider_preflight_snapshot,
     provider_preflight_snapshot_as_cached_probe, run_openai_compatible_provider_preflight_probe,
-    AgentCoreStore, AgentRuntimeFacade, ContextManifest, DomainToolPackHealthInput,
-    DomainToolPackHealthReport, DomainToolPackHealthStatus, DomainToolPackManifest,
-    EnvironmentSemanticIndexState, FileAgentCoreStore, HeadlessProviderExecutionConfig,
-    HeadlessProviderRuntime, HeadlessRuntimeOptions, MessageRole, NewContextManifest,
-    NewMessageRecord, NewRunRecord, NewRuntimeEvent, OpenAiCodexHeadlessConfig,
-    OpenAiCompatibleHeadlessConfig, OpenAiCompatibleProviderPreflightProbeRequest,
-    PermissionProfileSandbox, ProductionRuntimeContract, ProjectTrustState,
-    ProviderCapabilityCatalog, ProviderCapabilityCatalogInput, ProviderPreflightInput,
-    ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot, ProviderPreflightSource,
-    ProviderSelection, RunControls, RunSnapshot, RunStatus, RunSummary, RuntimeEvent,
-    RuntimeEventKind, RuntimeMessage, RuntimeMessageProviderMetadata, RuntimeStoreDescriptor,
-    RuntimeTrace, RuntimeTraceContext, SandboxApprovalSource, SandboxExecutionContext,
-    SandboxExecutionMetadata, SandboxPlatform, SandboxedProcessRequest, SandboxedProcessRunner,
-    StartRunRequest, ToolApprovalRequirement, ToolCallInput, ToolDescriptorV2, ToolEffectClass,
-    ToolExecutionContext, ToolMutability, ToolSandbox, ToolSandboxRequirement,
+    AgentCoreStore, AgentRuntimeFacade, ApprovalDecisionRequest, CancelRunRequest, ContextManifest,
+    ContinueRunRequest, DomainToolPackHealthInput, DomainToolPackHealthReport,
+    DomainToolPackHealthStatus, DomainToolPackManifest, EnvironmentSemanticIndexState,
+    FileAgentCoreStore, HeadlessProviderExecutionConfig, HeadlessProviderRuntime,
+    HeadlessRuntimeOptions, MessageRole, NewContextManifest, NewMessageRecord, NewRunRecord,
+    NewRuntimeEvent, OpenAiCodexHeadlessConfig, OpenAiCompatibleHeadlessConfig,
+    OpenAiCompatibleProviderPreflightProbeRequest, PermissionProfileSandbox,
+    ProductionRuntimeContract, ProjectTrustState, ProviderCapabilityCatalog,
+    ProviderCapabilityCatalogInput, ProviderPreflightInput, ProviderPreflightRequiredFeatures,
+    ProviderPreflightSnapshot, ProviderPreflightSource, ProviderSelection, ResumeRunRequest,
+    RunControls, RunSnapshot, RunStatus, RunSummary, RuntimeEvent, RuntimeEventKind,
+    RuntimeMessage, RuntimeMessageProviderMetadata, RuntimeStoreDescriptor, RuntimeTrace,
+    RuntimeTraceContext, SandboxApprovalSource, SandboxExecutionContext, SandboxExecutionMetadata,
+    SandboxPlatform, SandboxedProcessRequest, SandboxedProcessRunner, StartRunRequest,
+    ToolApprovalRequirement, ToolCallInput, ToolDescriptorV2, ToolEffectClass,
+    ToolExecutionContext, ToolMutability, ToolSandbox, ToolSandboxRequirement, UserInputRequest,
     DEFAULT_PROVIDER_CATALOG_TTL_SECONDS, DOMAIN_TOOL_PACK_CONTRACT_VERSION,
 };
+
+mod agent_definition_cli;
+mod file_cli;
+mod notification_cli;
+mod process_cli;
+mod project_cli;
+mod project_state_cli;
+mod remote_cli;
+mod settings_cli;
+mod skills_cli;
+mod tui;
+mod usage_cli;
 
 const APP_DATA_DIRECTORY_NAME: &str = "dev.sn0w.xero";
 const HEADLESS_DIRECTORY_NAME: &str = "headless";
@@ -81,6 +96,7 @@ const BENCHMARK_PROJECT_SCHEMA: &str = r#"
         active_phase INTEGER NOT NULL DEFAULT 0 CHECK (active_phase >= 0),
         branch TEXT,
         runtime TEXT,
+        start_targets TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
@@ -140,6 +156,7 @@ const BENCHMARK_PROJECT_SCHEMA: &str = r#"
         summary TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL,
         selected INTEGER NOT NULL DEFAULT 0,
+        remote_visible INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
         archived_at TEXT,
@@ -287,11 +304,32 @@ impl CliError {
     }
 }
 
-#[derive(Debug, Clone)]
+pub trait TuiCommandAdapter: Send + Sync {
+    fn invoke_json(&self, state_dir: &Path, args: &[String])
+        -> Option<Result<JsonValue, CliError>>;
+}
+
+#[derive(Clone)]
 struct GlobalOptions {
     output_mode: OutputMode,
     ci: bool,
     state_dir: PathBuf,
+    tui_adapter: Option<Arc<dyn TuiCommandAdapter>>,
+}
+
+impl std::fmt::Debug for GlobalOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GlobalOptions")
+            .field("output_mode", &self.output_mode)
+            .field("ci", &self.ci)
+            .field("state_dir", &self.state_dir)
+            .field(
+                "tui_adapter",
+                &self.tui_adapter.as_ref().map(|_| "attached"),
+            )
+            .finish()
+    }
 }
 
 pub fn run_from_env() -> i32 {
@@ -311,13 +349,51 @@ pub fn run_from_env() -> i32 {
     }
 }
 
+pub fn run_tui_from_env() -> i32 {
+    run_tui_from_env_with_optional_adapter(None)
+}
+
+pub fn run_tui_from_env_with_adapter(adapter: Arc<dyn TuiCommandAdapter>) -> i32 {
+    run_tui_from_env_with_optional_adapter(Some(adapter))
+}
+
+fn run_tui_from_env_with_optional_adapter(adapter: Option<Arc<dyn TuiCommandAdapter>>) -> i32 {
+    let mut args = env::args().collect::<Vec<_>>();
+    let output_mode = requested_output_mode(&args);
+    args.insert(1, "tui".into());
+    match run_with_args_and_adapter(args, adapter) {
+        Ok(response) => {
+            if response.emit {
+                emit_response(&response);
+            }
+            0
+        }
+        Err(error) => {
+            emit_error(&error, output_mode);
+            error.exit_code
+        }
+    }
+}
+
 pub fn run_with_args<I, S>(args: I) -> Result<CliResponse, CliError>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
+    run_with_args_and_adapter(args, None)
+}
+
+fn run_with_args_and_adapter<I, S>(
+    args: I,
+    adapter: Option<Arc<dyn TuiCommandAdapter>>,
+) -> Result<CliResponse, CliError>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     let raw_args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-    let (globals, command_args) = parse_global_options(raw_args)?;
+    let (mut globals, command_args) = parse_global_options(raw_args)?;
+    globals.tui_adapter = adapter;
     dispatch(globals, command_args)
 }
 
@@ -343,13 +419,42 @@ fn dispatch(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, Cl
         Some("agent") => dispatch_agent(globals, args[1..].to_vec()),
         Some("benchmark") => dispatch_benchmark(globals, args[1..].to_vec()),
         Some("conversation") => dispatch_conversation(globals, args[1..].to_vec()),
+        Some("project") => project_cli::dispatch_project(globals, args[1..].to_vec()),
+        Some("project-state") | Some("state") => {
+            project_state_cli::dispatch_project_state(globals, args[1..].to_vec())
+        }
+        Some("process") | Some("runner") => {
+            process_cli::dispatch_process(globals, args[1..].to_vec())
+        }
+        Some("session") => project_cli::dispatch_session(globals, args[1..].to_vec()),
         Some("provider") => dispatch_provider(globals, args[1..].to_vec()),
         Some("mcp") => dispatch_mcp(globals, args[1..].to_vec()),
         Some("workspace") => dispatch_workspace(globals, args[1..].to_vec()),
+        Some("file") => file_cli::dispatch_file(globals, args[1..].to_vec()),
+        Some("git") => project_cli::dispatch_git(globals, args[1..].to_vec()),
+        Some("agent-definition") | Some("agent-definitions") => {
+            agent_definition_cli::dispatch_agent_definition(globals, args[1..].to_vec())
+        }
+        Some("skill") | Some("skills") => skills_cli::dispatch_skill(globals, args[1..].to_vec()),
+        Some("plugin") | Some("plugins") => {
+            skills_cli::dispatch_plugin(globals, args[1..].to_vec())
+        }
+        Some("notification") | Some("notifications") => {
+            notification_cli::dispatch_notification(globals, args[1..].to_vec())
+        }
+        Some("remote") => remote_cli::dispatch_remote(globals, args[1..].to_vec()),
+        Some("mock-web") => remote_cli::dispatch_mock_web(globals, args[1..].to_vec()),
+        Some("environment") | Some("env") => {
+            settings_cli::dispatch_environment(globals, args[1..].to_vec())
+        }
+        Some("settings") => settings_cli::dispatch_settings(globals, args[1..].to_vec()),
+        Some("wipe") => project_state_cli::dispatch_wipe(globals, args[1..].to_vec()),
+        Some("usage") => usage_cli::dispatch_usage(globals, args[1..].to_vec()),
         Some("tool-pack") => dispatch_tool_pack(globals, args[1..].to_vec()),
         Some("commit-message") => command_commit_message(globals, args[1..].to_vec()),
         Some("suggest-command") => command_suggest_command(globals, args[1..].to_vec()),
         Some("daemon") => command_daemon(globals, args[1..].to_vec()),
+        Some("tui") => tui::command_tui(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!(
             "Unknown xero command `{other}`. Run `xero --help`."
         ))),
@@ -394,14 +499,24 @@ fn dispatch_conversation(
         Some("dump") => command_conversation_dump(globals, args[1..].to_vec()),
         Some("support-bundle") => command_conversation_support_bundle(globals, args[1..].to_vec()),
         Some("compact") => command_conversation_compact(globals, args[1..].to_vec()),
+        Some("continue") => command_conversation_continue(globals, args[1..].to_vec()),
+        Some("answer") => command_conversation_answer(globals, args[1..].to_vec()),
+        Some("approve") => command_conversation_approval(globals, args[1..].to_vec(), true),
+        Some("deny") | Some("reject") => {
+            command_conversation_approval(globals, args[1..].to_vec(), false)
+        }
+        Some("cancel") | Some("stop") => command_conversation_cancel(globals, args[1..].to_vec()),
+        Some("resume") => command_conversation_resume(globals, args[1..].to_vec()),
+        Some("search") => command_conversation_search(globals, args[1..].to_vec()),
+        Some("export") => command_conversation_export(globals, args[1..].to_vec()),
         Some("retry") => command_conversation_retry(globals, args[1..].to_vec()),
-        Some("clone") => command_conversation_clone(globals, args[1..].to_vec()),
+        Some("clone") | Some("branch") => command_conversation_clone(globals, args[1..].to_vec()),
         Some("stats") => command_conversation_stats(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!(
             "Unknown conversation command `{other}`."
         ))),
         None => Err(CliError::usage(
-            "Missing conversation command. Use list, show, dump, support-bundle, compact, retry, clone, or stats.",
+            "Missing conversation command. Use list, show, dump, support-bundle, compact, retry, clone, branch, or stats.",
         )),
     }
 }
@@ -410,13 +525,16 @@ fn dispatch_provider(globals: GlobalOptions, args: Vec<String>) -> Result<CliRes
     match args.first().map(String::as_str) {
         Some("list") => command_provider_list(globals, args[1..].to_vec()),
         Some("login") => command_provider_login(globals, args[1..].to_vec()),
+        Some("remove") | Some("logout") | Some("delete") => {
+            command_provider_remove(globals, args[1..].to_vec())
+        }
         Some("doctor") => command_provider_doctor(globals, args[1..].to_vec()),
         Some("preflight") => command_provider_preflight(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!(
             "Unknown provider command `{other}`."
         ))),
         None => Err(CliError::usage(
-            "Missing provider command. Use list, login, doctor, or preflight.",
+            "Missing provider command. Use list, login, remove, doctor, or preflight.",
         )),
     }
 }
@@ -426,10 +544,12 @@ fn dispatch_mcp(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse
         Some("list") => command_mcp_list(globals, args[1..].to_vec()),
         Some("add") => command_mcp_add(globals, args[1..].to_vec()),
         Some("login") => command_mcp_login(globals, args[1..].to_vec()),
+        Some("remove") | Some("delete") => command_mcp_remove(globals, args[1..].to_vec()),
+        Some("status") => command_mcp_status(globals, args[1..].to_vec()),
         Some("serve") => command_mcp_serve(globals, args[1..].to_vec()),
         Some(other) => Err(CliError::usage(format!("Unknown MCP command `{other}`."))),
         None => Err(CliError::usage(
-            "Missing MCP command. Use list, add, login, or serve.",
+            "Missing MCP command. Use list, add, login, remove, status, or serve.",
         )),
     }
 }
@@ -470,7 +590,7 @@ fn command_agent_exec(
     if take_help(&args) {
         return Ok(response(
             &globals,
-            "Usage: xero agent exec [PROMPT] [--project-id ID] [--session-id ID] [--run-id ID] --provider ID [--model ID]\nRuns a headless owned-agent turn through the shared Xero runtime. Use --provider fake_provider only for harness tests.",
+            "Usage: xero agent exec [PROMPT] [--project-id ID] [--session-id ID] [--run-id ID] [--runtime-agent-id ID] [--agent-definition-id ID] [--thinking-effort minimal|low|medium|high|x_high] --provider ID [--model ID]\nRuns a headless owned-agent turn through the shared Xero runtime. Use --provider fake_provider only for harness tests.",
             json!({ "command": "agent exec" }),
         ));
     }
@@ -482,6 +602,12 @@ fn command_agent_exec(
     let run_id = take_option(&mut args, "--run-id")?.unwrap_or_else(|| generate_id("run"));
     let provider_id = take_option(&mut args, "--provider")?;
     let model_id = take_option(&mut args, "--model")?;
+    let runtime_agent_id =
+        take_option(&mut args, "--runtime-agent-id")?.unwrap_or_else(|| "engineer".into());
+    let agent_definition_id = take_option(&mut args, "--agent-definition-id")?;
+    let thinking_effort = take_option(&mut args, "--thinking-effort")?
+        .map(|effort| normalize_cli_thinking_effort(&effort))
+        .transpose()?;
     reject_unknown_options(&args)?;
 
     let prompt = prompt_flag
@@ -493,7 +619,11 @@ fn command_agent_exec(
 
     let provider = resolve_cli_provider_execution(&globals, provider_id, model_id)?;
     let (project_id, store) = open_run_store_for_provider(&globals, project_id, &provider)?;
-    let provider = provider.with_project_workspace(&store);
+    let agent_definition = store
+        .resolve_agent_definition_for_run(agent_definition_id.as_deref(), &runtime_agent_id)?;
+    let provider = provider
+        .with_project_workspace(&store)
+        .with_workspace_writes(headless_runtime_agent_allows_writes(&runtime_agent_id));
     if provider.execution_mode == "real_provider" {
         ensure_cli_real_provider_runtime_contract(&project_id, &provider, &store)?;
     }
@@ -518,8 +648,18 @@ fn command_agent_exec(
                 model_id: provider.model_id.clone(),
             },
             controls: Some(RunControls {
-                runtime_agent_id: "engineer".into(),
-                approval_mode: if globals.ci { "strict" } else { "on_request" }.into(),
+                runtime_agent_id: runtime_agent_id.clone(),
+                agent_definition_id: Some(agent_definition.definition_id),
+                agent_definition_version: Some(agent_definition.version),
+                thinking_effort,
+                approval_mode: if globals.ci {
+                    "strict"
+                } else if headless_runtime_agent_allows_writes(&runtime_agent_id) {
+                    "on_request"
+                } else {
+                    "suggest"
+                }
+                .into(),
                 plan_mode_required: globals.ci,
             }),
         })
@@ -649,6 +789,7 @@ fn command_benchmark_terminal_bench(
         output_mode: globals.output_mode,
         ci: false,
         state_dir: config.trial_app_data_root.clone(),
+        tui_adapter: None,
     };
     let registered_project = ensure_benchmark_project_registered(
         &benchmark_globals,
@@ -696,6 +837,9 @@ fn command_benchmark_terminal_bench(
         },
         controls: Some(RunControls {
             runtime_agent_id: "engineer".into(),
+            agent_definition_id: Some("engineer".into()),
+            agent_definition_version: Some(1),
+            thinking_effort: None,
             approval_mode: config.approval_mode.clone(),
             plan_mode_required: config.approval_mode == "strict",
         }),
@@ -1030,6 +1174,49 @@ struct BenchmarkOpenAiCodexSession {
     expires_at: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum OpenAiCodexOAuthReadContext {
+    Cli,
+    Benchmark,
+}
+
+impl OpenAiCodexOAuthReadContext {
+    fn store_open_failed(self, database_path: &Path, error: rusqlite::Error) -> CliError {
+        let message = format!(
+            "Could not open OpenAI OAuth credential store `{}`: {error}",
+            database_path.display()
+        );
+        match self {
+            Self::Cli => CliError::system_fault("xero_cli_openai_oauth_store_open_failed", message),
+            Self::Benchmark => {
+                CliError::benchmark("xero_benchmark_openai_oauth_store_open_failed", message, 1)
+            }
+        }
+    }
+
+    fn store_read_failed(self, message: String) -> CliError {
+        match self {
+            Self::Cli => CliError::system_fault("xero_cli_openai_oauth_store_read_failed", message),
+            Self::Benchmark => {
+                CliError::benchmark("xero_benchmark_openai_oauth_store_read_failed", message, 1)
+            }
+        }
+    }
+
+    fn store_decode_failed(self, message: String) -> CliError {
+        match self {
+            Self::Cli => {
+                CliError::system_fault("xero_cli_openai_oauth_store_decode_failed", message)
+            }
+            Self::Benchmark => CliError::benchmark(
+                "xero_benchmark_openai_oauth_store_decode_failed",
+                message,
+                1,
+            ),
+        }
+    }
+}
+
 fn load_benchmark_openai_codex_oauth_session(
     config: &BenchmarkRunConfig,
 ) -> Result<BenchmarkOpenAiCodexSession, CliError> {
@@ -1057,23 +1244,18 @@ fn load_benchmark_openai_codex_oauth_session(
         ));
     }
     let connection = open_immutable_read_only_sqlite(&database_path).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_open_failed",
-            format!(
-                "Could not open OpenAI OAuth credential store `{}`: {error}",
-                database_path.display()
-            ),
-            1,
-        )
+        OpenAiCodexOAuthReadContext::Benchmark.store_open_failed(&database_path, error)
     })?;
     let mut session = load_openai_codex_session_from_provider_credentials(
         &connection,
         config.oauth_account_id.as_deref(),
+        OpenAiCodexOAuthReadContext::Benchmark,
     )?;
     if session.is_none() {
         session = load_openai_codex_session_from_legacy_sessions(
             &connection,
             config.oauth_account_id.as_deref(),
+            OpenAiCodexOAuthReadContext::Benchmark,
         )?;
     }
     let session = session.ok_or_else(|| {
@@ -1096,11 +1278,77 @@ fn load_benchmark_openai_codex_oauth_session(
     Ok(session)
 }
 
+fn load_cli_openai_codex_oauth_session(
+    globals: &GlobalOptions,
+) -> Result<BenchmarkOpenAiCodexSession, CliError> {
+    let app_data_root = cli_app_data_root(globals);
+    if app_data_root
+        .components()
+        .any(|component| component.as_os_str().to_string_lossy() == ".xero")
+    {
+        return Err(CliError::user_fixable(
+            "xero_cli_legacy_state_rejected",
+            format!(
+                "OpenAI Codex runs must use OS app-data state, not legacy repo-local `.xero` state (`{}`).",
+                app_data_root.display()
+            ),
+        ));
+    }
+
+    let database_path = app_data_root.join(GLOBAL_DATABASE_FILE);
+    if !database_path.is_file() {
+        return Err(CliError::user_fixable(
+            "xero_cli_openai_oauth_store_missing",
+            format!(
+                "Could not find the app-local OpenAI OAuth credential store `{}`. Sign in to OpenAI Codex in the Xero Tauri app, then retry.",
+                database_path.display()
+            ),
+        ));
+    }
+
+    let connection = open_read_only_sqlite(&database_path).map_err(|error| {
+        OpenAiCodexOAuthReadContext::Cli.store_open_failed(&database_path, error)
+    })?;
+    let mut session = load_openai_codex_session_from_provider_credentials(
+        &connection,
+        None,
+        OpenAiCodexOAuthReadContext::Cli,
+    )?;
+    if session.is_none() {
+        session = load_openai_codex_session_from_legacy_sessions(
+            &connection,
+            None,
+            OpenAiCodexOAuthReadContext::Cli,
+        )?;
+    }
+    let session = session.ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_openai_oauth_session_missing",
+            "No app-local OpenAI OAuth session was found. Sign in to OpenAI Codex in the Xero Tauri app, then retry.",
+        )
+    })?;
+
+    if session.expires_at
+        <= current_unix_timestamp().saturating_add(OPENAI_CODEX_OAUTH_REFRESH_SKEW_SECONDS)
+    {
+        return Err(CliError::user_fixable(
+            "xero_cli_openai_oauth_session_expired",
+            "The app-local OpenAI OAuth session is expired or too close to expiry. Refresh OpenAI Codex login in Xero, then retry.",
+        ));
+    }
+
+    Ok(session)
+}
+
 fn open_immutable_read_only_sqlite(database_path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(
         sqlite_immutable_read_only_uri(database_path),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )
+}
+
+fn open_read_only_sqlite(database_path: &Path) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
 fn sqlite_immutable_read_only_uri(database_path: &Path) -> String {
@@ -1115,14 +1363,9 @@ fn percent_encode_sqlite_uri_path(path: &Path) -> String {
     let mut encoded = String::with_capacity(path.len());
     for byte in path.as_bytes() {
         match *byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'/'
-            | b'.'
-            | b'-'
-            | b'_'
-            | b'~' => encoded.push(char::from(*byte)),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'-' | b'_' | b'~' => {
+                encoded.push(char::from(*byte))
+            }
             other => encoded.push_str(&format!("%{other:02X}")),
         }
     }
@@ -1132,6 +1375,7 @@ fn percent_encode_sqlite_uri_path(path: &Path) -> String {
 fn load_openai_codex_session_from_provider_credentials(
     connection: &Connection,
     account_id: Option<&str>,
+    context: OpenAiCodexOAuthReadContext,
 ) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
     let sql = if account_id.is_some() {
         "SELECT oauth_account_id, oauth_session_id, oauth_access_token, oauth_expires_at
@@ -1149,11 +1393,9 @@ fn load_openai_codex_session_from_provider_credentials(
         Ok(statement) => statement,
         Err(error) if is_missing_table_error(&error) => return Ok(None),
         Err(error) => {
-            return Err(CliError::benchmark(
-                "xero_benchmark_openai_oauth_store_read_failed",
-                format!("Could not prepare provider_credentials OAuth read: {error}"),
-                1,
-            ));
+            return Err(context.store_read_failed(format!(
+                "Could not prepare provider_credentials OAuth read: {error}"
+            )));
         }
     };
     let mut query = if let Some(account_id) = account_id {
@@ -1162,28 +1404,25 @@ fn load_openai_codex_session_from_provider_credentials(
         statement.query(params![OPENAI_CODEX_PROVIDER_ID])
     }
     .map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_read_failed",
-            format!("Could not query provider_credentials OAuth row: {error}"),
-            1,
-        )
+        context.store_read_failed(format!(
+            "Could not query provider_credentials OAuth row: {error}"
+        ))
     })?;
     let Some(row) = query.next().map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_read_failed",
-            format!("Could not read provider_credentials OAuth row: {error}"),
-            1,
-        )
+        context.store_read_failed(format!(
+            "Could not read provider_credentials OAuth row: {error}"
+        ))
     })?
     else {
         return Ok(None);
     };
-    oauth_session_from_row(row, "provider_credentials")
+    oauth_session_from_row(row, "provider_credentials", context)
 }
 
 fn load_openai_codex_session_from_legacy_sessions(
     connection: &Connection,
     account_id: Option<&str>,
+    context: OpenAiCodexOAuthReadContext,
 ) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
     let sql = if account_id.is_some() {
         "SELECT account_id, session_id, access_token, expires_at
@@ -1200,11 +1439,9 @@ fn load_openai_codex_session_from_legacy_sessions(
         Ok(statement) => statement,
         Err(error) if is_missing_table_error(&error) => return Ok(None),
         Err(error) => {
-            return Err(CliError::benchmark(
-                "xero_benchmark_openai_oauth_store_read_failed",
-                format!("Could not prepare openai_codex_sessions read: {error}"),
-                1,
-            ));
+            return Err(context.store_read_failed(format!(
+                "Could not prepare openai_codex_sessions read: {error}"
+            )));
         }
     };
     let mut query = match account_id {
@@ -1212,56 +1449,35 @@ fn load_openai_codex_session_from_legacy_sessions(
         None => statement.query([]),
     }
     .map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_read_failed",
-            format!("Could not query openai_codex_sessions row: {error}"),
-            1,
-        )
+        context.store_read_failed(format!(
+            "Could not query openai_codex_sessions row: {error}"
+        ))
     })?;
     let Some(row) = query.next().map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_read_failed",
-            format!("Could not read openai_codex_sessions row: {error}"),
-            1,
-        )
+        context.store_read_failed(format!("Could not read openai_codex_sessions row: {error}"))
     })?
     else {
         return Ok(None);
     };
-    oauth_session_from_row(row, "openai_codex_sessions")
+    oauth_session_from_row(row, "openai_codex_sessions", context)
 }
 
 fn oauth_session_from_row(
     row: &rusqlite::Row<'_>,
     source: &str,
+    context: OpenAiCodexOAuthReadContext,
 ) -> Result<Option<BenchmarkOpenAiCodexSession>, CliError> {
     let account_id = row.get::<_, Option<String>>(0).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_decode_failed",
-            format!("Could not decode `{source}` account id: {error}"),
-            1,
-        )
+        context.store_decode_failed(format!("Could not decode `{source}` account id: {error}"))
     })?;
     let session_id = row.get::<_, Option<String>>(1).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_decode_failed",
-            format!("Could not decode `{source}` session id: {error}"),
-            1,
-        )
+        context.store_decode_failed(format!("Could not decode `{source}` session id: {error}"))
     })?;
     let access_token = row.get::<_, Option<String>>(2).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_decode_failed",
-            format!("Could not decode `{source}` access token: {error}"),
-            1,
-        )
+        context.store_decode_failed(format!("Could not decode `{source}` access token: {error}"))
     })?;
     let expires_at = row.get::<_, Option<i64>>(3).map_err(|error| {
-        CliError::benchmark(
-            "xero_benchmark_openai_oauth_store_decode_failed",
-            format!("Could not decode `{source}` expiry: {error}"),
-            1,
-        )
+        context.store_decode_failed(format!("Could not decode `{source}` expiry: {error}"))
     })?;
     let Some(account_id) = account_id.filter(|value| !value.trim().is_empty()) else {
         return Ok(None);
@@ -1309,7 +1525,7 @@ fn default_app_data_root() -> Result<PathBuf, CliError> {
 
     #[cfg(target_os = "macos")]
     {
-        return home_dir()
+        home_dir()
             .map(|home| {
                 home.join("Library")
                     .join("Application Support")
@@ -1320,7 +1536,7 @@ fn default_app_data_root() -> Result<PathBuf, CliError> {
                     "xero_cli_home_missing",
                     "Could not determine the default Xero app-data directory.",
                 )
-            });
+            })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -2042,10 +2258,9 @@ fn final_workspace_diff(repo_root: &Path) -> Result<String, CliError> {
         {
             final_workspace_git_diff(repo_root)
         }
-        Ok(output) => final_workspace_file_listing(
-            repo_root,
-            String::from_utf8_lossy(&output.stderr).trim(),
-        ),
+        Ok(output) => {
+            final_workspace_file_listing(repo_root, String::from_utf8_lossy(&output.stderr).trim())
+        }
         Err(error) => final_workspace_file_listing(repo_root, &format!("git unavailable: {error}")),
     }
 }
@@ -2463,6 +2678,277 @@ fn command_conversation_compact(
     ))
 }
 
+fn command_conversation_continue(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let prompt = take_option(&mut args, "--prompt")?;
+    let run_id = take_run_id_arg(&mut args)?;
+    let prompt = prompt
+        .or_else(|| (!args.is_empty()).then(|| args.join(" ")))
+        .ok_or_else(|| CliError::usage("Missing continuation prompt."))?;
+    reject_unknown_options(&args)?;
+    let (store, snapshot) = load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+    let (runtime, provider_preflight) =
+        runtime_for_existing_snapshot(&globals, store, &snapshot, true)?;
+    let continued = runtime
+        .continue_run(ContinueRunRequest {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            prompt,
+        })
+        .map_err(core_error)?;
+    Ok(response(
+        &globals,
+        format!(
+            "Continued run {} with status {:?}.",
+            continued.run_id, continued.status
+        ),
+        json!({
+            "kind": "conversationContinue",
+            "providerPreflight": provider_preflight,
+            "snapshot": continued,
+        }),
+    ))
+}
+
+fn command_conversation_answer(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let text = take_option(&mut args, "--text")?;
+    let run_id = take_run_id_arg(&mut args)?;
+    let text = text
+        .or_else(|| (!args.is_empty()).then(|| args.join(" ")))
+        .ok_or_else(|| CliError::usage("Missing answer text."))?;
+    reject_unknown_options(&args)?;
+    let (store, snapshot) = load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+    let (runtime, provider_preflight) =
+        runtime_for_existing_snapshot(&globals, store, &snapshot, true)?;
+    let answered = runtime
+        .submit_user_input(UserInputRequest {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            text,
+        })
+        .map_err(core_error)?;
+    Ok(response(
+        &globals,
+        format!(
+            "Answered run {} with status {:?}.",
+            answered.run_id, answered.status
+        ),
+        json!({
+            "kind": "conversationAnswer",
+            "providerPreflight": provider_preflight,
+            "snapshot": answered,
+        }),
+    ))
+}
+
+fn command_conversation_approval(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+    approve: bool,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let action_id = take_option(&mut args, "--action-id")?
+        .ok_or_else(|| CliError::usage("Missing `--action-id`."))?;
+    let response_text = take_option(&mut args, "--response")?;
+    let run_id = take_run_id_arg(&mut args)?;
+    reject_unknown_options(&args)?;
+    let (store, snapshot) = load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+    let (runtime, provider_preflight) =
+        runtime_for_existing_snapshot(&globals, store, &snapshot, true)?;
+    let request = ApprovalDecisionRequest {
+        project_id: snapshot.project_id.clone(),
+        run_id: snapshot.run_id.clone(),
+        action_id,
+        response: response_text,
+    };
+    let updated = if approve {
+        runtime.approve_action(request)
+    } else {
+        runtime.reject_action(request)
+    }
+    .map_err(core_error)?;
+    Ok(response(
+        &globals,
+        format!(
+            "{} approval for run {}. Status {:?}.",
+            if approve { "Accepted" } else { "Rejected" },
+            updated.run_id,
+            updated.status
+        ),
+        json!({
+            "kind": if approve { "conversationApprove" } else { "conversationReject" },
+            "providerPreflight": provider_preflight,
+            "snapshot": updated,
+        }),
+    ))
+}
+
+fn command_conversation_cancel(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let run_id = take_run_id_arg(&mut args)?;
+    reject_unknown_options(&args)?;
+    let (store, snapshot) = load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+    let (runtime, _provider_preflight) =
+        runtime_for_existing_snapshot(&globals, store, &snapshot, false)?;
+    let cancelled = runtime
+        .cancel_run(CancelRunRequest {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+        })
+        .map_err(core_error)?;
+    Ok(response(
+        &globals,
+        format!("Cancelled run {}.", cancelled.run_id),
+        json!({ "kind": "conversationCancel", "snapshot": cancelled }),
+    ))
+}
+
+fn command_conversation_resume(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let response_text = take_option(&mut args, "--response")?;
+    let run_id = take_run_id_arg(&mut args)?;
+    let response_text = response_text
+        .or_else(|| (!args.is_empty()).then(|| args.join(" ")))
+        .ok_or_else(|| CliError::usage("Missing resume response."))?;
+    reject_unknown_options(&args)?;
+    let (store, snapshot) = load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+    let (runtime, provider_preflight) =
+        runtime_for_existing_snapshot(&globals, store, &snapshot, true)?;
+    let resumed = runtime
+        .resume_run(ResumeRunRequest {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            response: response_text,
+        })
+        .map_err(core_error)?;
+    Ok(response(
+        &globals,
+        format!(
+            "Resumed run {} with status {:?}.",
+            resumed.run_id, resumed.status
+        ),
+        json!({
+            "kind": "conversationResume",
+            "providerPreflight": provider_preflight,
+            "snapshot": resumed,
+        }),
+    ))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationSearchHit {
+    project_id: String,
+    run_id: String,
+    agent_session_id: String,
+    source: String,
+    index: usize,
+    role_or_kind: String,
+    preview: String,
+}
+
+fn command_conversation_search(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let run_id = take_option(&mut args, "--run-id")?;
+    let include_events = take_bool_flag(&mut args, "--include-events");
+    let query = take_option(&mut args, "--query")?
+        .or_else(|| (!args.is_empty()).then(|| args.join(" ")))
+        .ok_or_else(|| CliError::usage("Missing search query."))?;
+    reject_unknown_options(&args)?;
+    let snapshots = if let Some(run_id) = run_id {
+        let (_store, snapshot) =
+            load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+        vec![snapshot]
+    } else {
+        list_conversation_runs(&globals, project_id.as_deref())?
+            .into_iter()
+            .filter_map(|run| {
+                load_conversation_snapshot(&globals, Some(&run.project_id), &run.run_id)
+                    .ok()
+                    .map(|(_store, snapshot)| snapshot)
+            })
+            .collect()
+    };
+    let hits = search_conversation_snapshots(&snapshots, &query, include_events);
+    let text = if hits.is_empty() {
+        "No transcript matches found.".into()
+    } else {
+        hits.iter()
+            .map(|hit| {
+                format!(
+                    "{} {} {}[{}] {}",
+                    hit.project_id, hit.run_id, hit.source, hit.index, hit.preview
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(response(
+        &globals,
+        text,
+        json!({ "kind": "conversationSearch", "query": query, "includeEvents": include_events, "hits": hits }),
+    ))
+}
+
+fn command_conversation_export(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    let project_id = take_option(&mut args, "--project-id")?;
+    let format = take_option(&mut args, "--format")?.unwrap_or_else(|| "markdown".into());
+    let output = take_option(&mut args, "--output")?;
+    let run_id = take_run_id_arg(&mut args)?;
+    reject_unknown_options(&args)?;
+    let (store, snapshot) = load_conversation_snapshot(&globals, project_id.as_deref(), &run_id)?;
+    let trace = store
+        .export_trace(&snapshot.project_id, &snapshot.run_id)
+        .map_err(core_error)?;
+    let payload = match format.as_str() {
+        "markdown" | "md" => trace.to_markdown_summary().map_err(core_error)?,
+        "json" => serde_json::to_string_pretty(&trace).map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_conversation_export_encode_failed",
+                format!("Could not encode trace JSON: {error}"),
+            )
+        })?,
+        other => {
+            return Err(CliError::usage(format!(
+                "Unsupported export format `{other}`. Use markdown or json."
+            )));
+        }
+    };
+    if let Some(path) = output.as_deref() {
+        write_text_output(path, &payload)?;
+    }
+    Ok(response(
+        &globals,
+        payload.clone(),
+        json!({
+            "kind": "conversationExport",
+            "format": format,
+            "outputPath": output,
+            "bytes": payload.len(),
+            "snapshot": snapshot,
+        }),
+    ))
+}
+
 fn command_conversation_retry(
     globals: GlobalOptions,
     args: Vec<String>,
@@ -2490,7 +2976,10 @@ fn command_conversation_retry(
                 model_id: provider.model_id,
             },
             controls: Some(RunControls {
-                runtime_agent_id: "engineer".into(),
+                runtime_agent_id: snapshot.runtime_agent_id.clone(),
+                agent_definition_id: Some(snapshot.agent_definition_id.clone()),
+                agent_definition_version: Some(snapshot.agent_definition_version),
+                thinking_effort: None,
                 approval_mode: if globals.ci { "strict" } else { "on_request" }.into(),
                 plan_mode_required: globals.ci,
             }),
@@ -2652,6 +3141,57 @@ fn command_provider_login(
         &globals,
         text,
         json!({ "kind": "providerLogin", "profile": profile }),
+    ))
+}
+
+fn command_provider_remove(
+    globals: GlobalOptions,
+    mut args: Vec<String>,
+) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero provider remove [--profile PROFILE_ID] [PROVIDER_ID]\nRemoves a headless provider profile from the CLI app-data config. Secrets remain in environment variables.",
+            json!({ "command": "provider remove" }),
+        ));
+    }
+    let profile_id = take_option(&mut args, "--profile")?;
+    reject_unknown_options(&args)?;
+    let provider_id = args.first().cloned();
+    let mut config = load_config(&globals)?;
+    let removed = if let Some(profile_id) = profile_id {
+        config.providers.remove(&profile_id)
+    } else if let Some(provider_id) = provider_id {
+        let profile_id = config
+            .providers
+            .iter()
+            .find_map(|(id, profile)| (profile.provider_id == provider_id).then(|| id.clone()))
+            .ok_or_else(|| {
+                CliError::user_fixable(
+                    "xero_cli_provider_profile_missing",
+                    format!("No headless profile is configured for provider `{provider_id}`."),
+                )
+            })?;
+        config.providers.remove(&profile_id)
+    } else {
+        return Err(CliError::usage(
+            "Missing provider id or `--profile PROFILE_ID` for `xero provider remove`.",
+        ));
+    };
+    let removed = removed.ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_provider_profile_missing",
+            "The requested headless provider profile is not configured.",
+        )
+    })?;
+    save_config(&globals, &config)?;
+    Ok(response(
+        &globals,
+        format!(
+            "Removed headless provider profile `{}` for `{}`.",
+            removed.profile_id, removed.provider_id
+        ),
+        json!({ "kind": "providerRemove", "profile": removed }),
     ))
 }
 
@@ -3059,6 +3599,80 @@ fn command_mcp_login(
     ))
 }
 
+fn command_mcp_remove(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero mcp remove NAME\nRemoves a headless MCP server from the CLI app-data config.",
+            json!({ "command": "mcp remove" }),
+        ));
+    }
+    reject_unknown_options(&args)?;
+    let name = args
+        .first()
+        .cloned()
+        .ok_or_else(|| CliError::usage("Missing MCP server name. Use `xero mcp remove name`."))?;
+    let mut config = load_config(&globals)?;
+    let removed = config.mcp_servers.remove(&name).ok_or_else(|| {
+        CliError::user_fixable(
+            "xero_cli_mcp_server_not_found",
+            format!("MCP server `{name}` is not configured."),
+        )
+    })?;
+    save_config(&globals, &config)?;
+    Ok(response(
+        &globals,
+        format!("Removed headless MCP server `{name}`."),
+        json!({ "kind": "mcpRemove", "server": removed }),
+    ))
+}
+
+fn command_mcp_status(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, CliError> {
+    if take_help(&args) {
+        return Ok(response(
+            &globals,
+            "Usage: xero mcp status\nReports configured headless MCP server readiness from the CLI app-data config.",
+            json!({ "command": "mcp status" }),
+        ));
+    }
+    reject_unknown_options(&args)?;
+    let config = load_config(&globals)?;
+    let servers = config
+        .mcp_servers
+        .values()
+        .map(|server| {
+            json!({
+                "name": server.name,
+                "command": server.command,
+                "argCount": server.args.len(),
+                "envCount": server.env.len(),
+                "hasTokenEnv": server.token_env.is_some(),
+                "configured": true,
+            })
+        })
+        .collect::<Vec<_>>();
+    let text = if servers.is_empty() {
+        "No headless MCP servers configured.".into()
+    } else {
+        servers
+            .iter()
+            .map(|server| {
+                format!(
+                    "{} configured token_env={}",
+                    server["name"].as_str().unwrap_or_default(),
+                    server["hasTokenEnv"].as_bool().unwrap_or(false)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(response(
+        &globals,
+        text,
+        json!({ "kind": "mcpStatus", "servers": servers }),
+    ))
+}
+
 fn command_mcp_serve(globals: GlobalOptions, args: Vec<String>) -> Result<CliResponse, CliError> {
     if take_help(&args) {
         return Ok(response(
@@ -3378,6 +3992,124 @@ fn load_conversation_snapshot(
     Ok((CliAgentStore::Harness(harness), snapshot))
 }
 
+fn runtime_for_existing_snapshot(
+    globals: &GlobalOptions,
+    store: CliAgentStore,
+    snapshot: &RunSnapshot,
+    with_preflight: bool,
+) -> Result<
+    (
+        HeadlessProviderRuntime<CliAgentStore>,
+        Option<ProviderPreflightSnapshot>,
+    ),
+    CliError,
+> {
+    let provider = resolve_runtime_for_existing_snapshot(globals, snapshot)?;
+    let provider_preflight = if with_preflight {
+        Some(ensure_cli_provider_preflight_for_run(globals, &provider)?)
+    } else {
+        None
+    };
+    Ok((
+        HeadlessProviderRuntime::new(
+            store,
+            provider.execution,
+            HeadlessRuntimeOptions {
+                ci_mode: globals.ci,
+                provider_preflight: provider_preflight.clone(),
+                ..HeadlessRuntimeOptions::default()
+            },
+        ),
+        provider_preflight,
+    ))
+}
+
+fn take_run_id_arg(args: &mut Vec<String>) -> Result<String, CliError> {
+    if args.is_empty() {
+        Err(CliError::usage("Missing run id."))
+    } else {
+        Ok(args.remove(0))
+    }
+}
+
+fn search_conversation_snapshots(
+    snapshots: &[RunSnapshot],
+    query: &str,
+    include_events: bool,
+) -> Vec<ConversationSearchHit> {
+    let needle = query.to_ascii_lowercase();
+    snapshots
+        .iter()
+        .flat_map(|snapshot| {
+            let mut hits = Vec::new();
+            for (index, message) in snapshot.messages.iter().enumerate() {
+                if message.content.to_ascii_lowercase().contains(&needle) {
+                    hits.push(ConversationSearchHit {
+                        project_id: snapshot.project_id.clone(),
+                        run_id: snapshot.run_id.clone(),
+                        agent_session_id: snapshot.agent_session_id.clone(),
+                        source: "message".into(),
+                        index,
+                        role_or_kind: message_role_wire(&message.role).into(),
+                        preview: truncate_single_line(&message.content, 180),
+                    });
+                }
+            }
+            if include_events {
+                for (index, event) in snapshot.events.iter().enumerate() {
+                    let haystack = event.payload.to_string();
+                    if haystack.to_ascii_lowercase().contains(&needle) {
+                        hits.push(ConversationSearchHit {
+                            project_id: snapshot.project_id.clone(),
+                            run_id: snapshot.run_id.clone(),
+                            agent_session_id: snapshot.agent_session_id.clone(),
+                            source: "event".into(),
+                            index,
+                            role_or_kind: runtime_event_kind_wire(&event.event_kind).into(),
+                            preview: truncate_single_line(&haystack, 180),
+                        });
+                    }
+                }
+            }
+            hits
+        })
+        .collect()
+}
+
+fn truncate_single_line(value: &str, limit: usize) -> String {
+    let single = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single.chars().count() <= limit {
+        return single;
+    }
+    let mut truncated = single
+        .chars()
+        .take(limit.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('~');
+    truncated
+}
+
+fn write_text_output(path: &str, payload: &str) -> Result<(), CliError> {
+    let path = PathBuf::from(path);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_output_prepare_failed",
+                format!("Could not create `{}`: {error}", parent.display()),
+            )
+        })?;
+    }
+    fs::write(&path, payload).map_err(|error| {
+        CliError::system_fault(
+            "xero_cli_output_write_failed",
+            format!("Could not write `{}`: {error}", path.display()),
+        )
+    })
+}
+
 fn list_conversation_runs(
     globals: &GlobalOptions,
     project_id: Option<&str>,
@@ -3499,6 +4231,12 @@ enum CliAgentStore {
     AppData(AppDataProjectAgentStore),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentDefinitionForRun {
+    definition_id: String,
+    version: i64,
+}
+
 impl CliAgentStore {
     fn path(&self) -> &Path {
         match self {
@@ -3511,6 +4249,29 @@ impl CliAgentStore {
         match self {
             Self::Harness(_) => None,
             Self::AppData(store) => Some(store.repo_root.as_path()),
+        }
+    }
+
+    fn resolve_agent_definition_for_run(
+        &self,
+        requested_definition_id: Option<&str>,
+        runtime_agent_id: &str,
+    ) -> Result<AgentDefinitionForRun, CliError> {
+        match self {
+            Self::Harness(_) => {
+                let definition_id = requested_definition_id
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(runtime_agent_id)
+                    .to_owned();
+                Ok(AgentDefinitionForRun {
+                    definition_id,
+                    version: 1,
+                })
+            }
+            Self::AppData(store) => store
+                .resolve_agent_definition_for_run(requested_definition_id, runtime_agent_id)
+                .map_err(core_error),
         }
     }
 }
@@ -3644,6 +4405,42 @@ impl AppDataProjectAgentStore {
 
     fn path(&self) -> &Path {
         self.database_path.as_path()
+    }
+
+    fn resolve_agent_definition_for_run(
+        &self,
+        requested_definition_id: Option<&str>,
+        runtime_agent_id: &str,
+    ) -> xero_agent_core::CoreResult<AgentDefinitionForRun> {
+        let definition_id = requested_definition_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(runtime_agent_id);
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT definition_id, current_version FROM agent_definitions WHERE definition_id = ?1 AND lifecycle_state != 'archived'",
+                params![definition_id],
+                |row| {
+                    Ok(AgentDefinitionForRun {
+                        definition_id: row.get(0)?,
+                        version: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                self.query_error("agent_core_app_data_agent_definition_read_failed", error)
+            })?
+            .ok_or_else(|| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_app_data_agent_definition_missing",
+                    format!(
+                        "App-data project `{}` does not contain active agent definition `{definition_id}`.",
+                        self.project_id
+                    ),
+                )
+            })
     }
 
     fn connection(&self) -> xero_agent_core::CoreResult<Connection> {
@@ -3885,6 +4682,9 @@ impl AgentCoreStore for AppDataProjectAgentStore {
         validate_core_required(&run.prompt, "prompt")?;
         validate_core_required(&run.provider_id, "providerId")?;
         validate_core_required(&run.model_id, "modelId")?;
+        validate_core_required(&run.runtime_agent_id, "runtimeAgentId")?;
+        validate_core_required(&run.agent_definition_id, "agentDefinitionId")?;
+        validate_core_required(&run.system_prompt, "systemPrompt")?;
         if run.project_id != self.project_id {
             return Err(xero_agent_core::CoreError::invalid_request(
                 "agent_core_app_data_project_mismatch",
@@ -3975,9 +4775,12 @@ impl AgentCoreStore for AppDataProjectAgentStore {
                     last_heartbeat_at,
                     updated_at
                 )
-                VALUES ('engineer', 'engineer', 1, ?1, ?2, ?3, ?4, ?5, ?6, 'starting', ?7, ?8, ?9, ?9, ?9)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'starting', ?10, ?11, ?12, ?12, ?12)
                 "#,
                 params![
+                    run.runtime_agent_id,
+                    run.agent_definition_id,
+                    run.agent_definition_version,
                     run.project_id,
                     run.agent_session_id,
                     run.run_id,
@@ -3985,7 +4788,7 @@ impl AgentCoreStore for AppDataProjectAgentStore {
                     run.provider_id,
                     run.model_id,
                     run.prompt,
-                    "Xero CLI production runtime.",
+                    run.system_prompt,
                     now,
                 ],
             )
@@ -3998,7 +4801,7 @@ impl AgentCoreStore for AppDataProjectAgentStore {
         let run = connection
             .query_row(
                 r#"
-                SELECT trace_id, project_id, agent_session_id, run_id, provider_id, model_id, status, prompt
+                SELECT trace_id, runtime_agent_id, agent_definition_id, agent_definition_version, system_prompt, project_id, agent_session_id, run_id, provider_id, model_id, status, prompt
                 FROM agent_runs
                 WHERE project_id = ?1 AND run_id = ?2
                 "#,
@@ -4008,11 +4811,15 @@ impl AgentCoreStore for AppDataProjectAgentStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
                     ))
                 },
             )
@@ -4030,13 +4837,17 @@ impl AgentCoreStore for AppDataProjectAgentStore {
             read_app_data_context_manifests(&connection, self, &run.0, project_id, run_id)?;
         Ok(RunSnapshot {
             trace_id: run.0,
-            project_id: run.1,
-            agent_session_id: run.2,
-            run_id: run.3,
-            provider_id: run.4,
-            model_id: run.5,
-            status: parse_core_run_status(&run.6),
-            prompt: run.7,
+            runtime_agent_id: run.1,
+            agent_definition_id: run.2,
+            agent_definition_version: run.3,
+            system_prompt: run.4,
+            project_id: run.5,
+            agent_session_id: run.6,
+            run_id: run.7,
+            provider_id: run.8,
+            model_id: run.9,
+            status: parse_core_run_status(&run.10),
+            prompt: run.11,
             messages,
             events,
             context_manifests,
@@ -4123,6 +4934,8 @@ impl AgentCoreStore for AppDataProjectAgentStore {
         validate_core_required(&manifest.manifest_id, "manifestId")?;
         let connection = self.connection()?;
         let trace_id = run_trace_id(&connection, self, &manifest.project_id, &manifest.run_id)?;
+        let run_identity =
+            app_data_run_identity(&connection, self, &manifest.project_id, &manifest.run_id)?;
         let recorded_after_event_id =
             latest_app_data_event_id(&connection, self, &manifest.project_id, &manifest.run_id)?;
         let manifest_json = serde_json::to_string(&manifest.manifest).map_err(|error| {
@@ -4161,13 +4974,16 @@ impl AgentCoreStore for AppDataProjectAgentStore {
                     manifest_json,
                     created_at
                 )
-                VALUES (?1, ?2, ?3, ?4, 'engineer', 'engineer', 1, ?5, ?6, 'provider_turn', 'continue_now', 'cli_app_data_runtime', NULL, 0, 'unknown', ?7, '[]', '[]', '[]', '[]', 'clean', ?8, ?9)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'provider_turn', 'continue_now', 'cli_app_data_runtime', NULL, 0, 'unknown', ?10, '[]', '[]', '[]', '[]', 'clean', ?11, ?12)
                 "#,
                 params![
                     manifest.manifest_id,
                     manifest.project_id,
                     manifest.agent_session_id,
                     manifest.run_id,
+                    run_identity.runtime_agent_id,
+                    run_identity.agent_definition_id,
+                    run_identity.agent_definition_version,
                     manifest.provider_id,
                     manifest.model_id,
                     context_hash,
@@ -4403,6 +5219,34 @@ fn run_trace_id(
             |row| row.get(0),
         )
         .map_err(|error| store.query_error("agent_core_app_data_run_trace_read_failed", error))
+}
+
+#[derive(Debug, Clone)]
+struct AppDataRunIdentity {
+    runtime_agent_id: String,
+    agent_definition_id: String,
+    agent_definition_version: i64,
+}
+
+fn app_data_run_identity(
+    connection: &Connection,
+    store: &AppDataProjectAgentStore,
+    project_id: &str,
+    run_id: &str,
+) -> xero_agent_core::CoreResult<AppDataRunIdentity> {
+    connection
+        .query_row(
+            "SELECT runtime_agent_id, agent_definition_id, agent_definition_version FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![project_id, run_id],
+            |row| {
+                Ok(AppDataRunIdentity {
+                    runtime_agent_id: row.get(0)?,
+                    agent_definition_id: row.get(1)?,
+                    agent_definition_version: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|error| store.query_error("agent_core_app_data_run_identity_read_failed", error))
 }
 
 fn latest_app_data_event_id(
@@ -4788,6 +5632,7 @@ fn parse_global_options(raw_args: Vec<String>) -> Result<(GlobalOptions, Vec<Str
             output_mode,
             ci,
             state_dir,
+            tui_adapter: None,
         },
         command_args,
     ))
@@ -4861,14 +5706,29 @@ fn root_help() -> String {
         "  agent exec",
         "  agent host",
         "  benchmark terminal-bench",
-        "  conversation list|show|dump|support-bundle|compact|retry|clone|stats",
-        "  provider list|login|doctor|preflight",
-        "  mcp list|add|login|serve",
+        "  conversation list|show|dump|support-bundle|compact|continue|answer|approve|deny|cancel|resume|search|export|retry|clone|branch|stats",
+        "  project list|import|create|remove|snapshot|select",
+        "  project-state list|backup|restore|repair",
+        "  process targets|add-target|remove-target|start|list|status|tail|stop",
+        "  session list|create|rename|auto-name|archive|restore|delete|resume|select",
+        "  provider list|login|remove|doctor|preflight",
+        "  mcp list|add|login|remove|status|serve",
         "  workspace index|status|query|explain|reset",
+        "  file list|read|write|patch|delete|move|replace|tools",
+        "  git status|diff|stage|unstage|discard|commit|fetch|pull|push",
+        "  agent-definition list|show|versions|diff|archive",
+        "  skills list|enable|disable|remove|plugins",
+        "  plugins list|enable|disable|remove",
+        "  notification routes|upsert-route|remove-route|dispatches|replies",
+        "  environment status|profile|user-tools|save-tool|remove-tool",
+        "  settings agent-tooling|browser-control|soul",
+        "  usage summary",
+        "  wipe project|all",
         "  tool-pack list|doctor",
         "  commit-message",
         "  suggest-command",
         "  daemon",
+        "  tui",
     ]
     .join("\n")
 }
@@ -4885,26 +5745,113 @@ fn root_help_json() -> JsonValue {
             "conversation dump",
             "conversation support-bundle",
             "conversation compact",
+            "conversation continue",
+            "conversation answer",
+            "conversation approve",
+            "conversation deny",
+            "conversation cancel",
+            "conversation resume",
+            "conversation search",
+            "conversation export",
             "conversation retry",
             "conversation clone",
+            "conversation branch",
             "conversation stats",
+            "project list",
+            "project import",
+            "project create",
+            "project remove",
+            "project snapshot",
+            "project select",
+            "project-state list",
+            "project-state backup",
+            "project-state restore",
+            "project-state repair",
+            "process targets",
+            "process add-target",
+            "process remove-target",
+            "process start",
+            "process list",
+            "process status",
+            "process tail",
+            "process stop",
+            "session list",
+            "session create",
+            "session rename",
+            "session auto-name",
+            "session archive",
+            "session restore",
+            "session delete",
+            "session resume",
+            "session select",
             "provider list",
             "provider login",
+            "provider remove",
             "provider doctor",
             "provider preflight",
             "mcp list",
             "mcp add",
             "mcp login",
+            "mcp remove",
+            "mcp status",
             "mcp serve",
             "workspace index",
             "workspace status",
             "workspace query",
             "workspace explain",
             "workspace reset",
+            "file list",
+            "file read",
+            "file write",
+            "file patch",
+            "file delete",
+            "file move",
+            "file replace",
+            "file tools",
+            "git status",
+            "git diff",
+            "git stage",
+            "git unstage",
+            "git discard",
+            "git commit",
+            "git fetch",
+            "git pull",
+            "git push",
+            "agent-definition list",
+            "agent-definition show",
+            "agent-definition versions",
+            "agent-definition diff",
+            "agent-definition archive",
+            "skills list",
+            "skills enable",
+            "skills disable",
+            "skills remove",
+            "skills plugins",
+            "plugins list",
+            "plugins enable",
+            "plugins disable",
+            "plugins remove",
+            "notification routes",
+            "notification upsert-route",
+            "notification remove-route",
+            "notification dispatches",
+            "notification replies",
+            "environment status",
+            "environment profile",
+            "environment user-tools",
+            "environment save-tool",
+            "environment remove-tool",
+            "settings agent-tooling",
+            "settings browser-control",
+            "settings soul",
+            "usage summary",
+            "wipe project",
+            "wipe all",
             "tool-pack list",
             "tool-pack doctor",
             "commit-message",
-            "suggest-command"
+            "suggest-command",
+            "tui"
         ]
     })
 }
@@ -5042,13 +5989,9 @@ fn generate_id(prefix: &str) -> String {
 }
 
 fn now_timestamp() -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let seconds = millis / 1_000;
-    let remainder = millis % 1_000;
-    format!("{seconds}.{remainder:03}Z")
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("rfc3339 timestamp formatting should succeed")
 }
 
 fn last_assistant_message(snapshot: &RunSnapshot) -> Option<String> {
@@ -5416,6 +6359,36 @@ impl CliProviderExecution {
         }
         self
     }
+
+    fn with_workspace_writes(mut self, allow_workspace_writes: bool) -> Self {
+        match &mut self.execution {
+            HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
+                config.allow_workspace_writes &= allow_workspace_writes;
+            }
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                config.allow_workspace_writes &= allow_workspace_writes;
+            }
+            HeadlessProviderExecutionConfig::Fake => {}
+        }
+        self
+    }
+}
+
+fn headless_runtime_agent_allows_writes(runtime_agent_id: &str) -> bool {
+    !matches!(runtime_agent_id, "ask" | "plan" | "agent_create")
+}
+
+fn normalize_cli_thinking_effort(value: &str) -> Result<String, CliError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "minimal" => Ok("minimal".into()),
+        "low" => Ok("low".into()),
+        "medium" => Ok("medium".into()),
+        "high" => Ok("high".into()),
+        "x_high" | "xhigh" => Ok("xhigh".into()),
+        _ => Err(CliError::usage(
+            "Invalid --thinking-effort. Use minimal, low, medium, high, or x_high.",
+        )),
+    }
 }
 
 fn resolve_cli_provider_execution(
@@ -5439,6 +6412,9 @@ fn resolve_cli_provider_execution(
     }
     if let Some(provider_id) = explicit_provider {
         ensure_owned_agent_provider(provider_id)?;
+    }
+    if explicit_provider == Some(OPENAI_CODEX_PROVIDER_ID) {
+        return resolve_cli_openai_codex_provider_execution(globals, model_id);
     }
 
     let config = load_config(globals)?;
@@ -5517,6 +6493,49 @@ fn find_provider_profile<'a>(config: &'a CliConfig, selector: &str) -> Option<&'
             .providers
             .values()
             .find(|profile| profile.provider_id == selector)
+    })
+}
+
+fn resolve_cli_openai_codex_provider_execution(
+    globals: &GlobalOptions,
+    model_id: Option<String>,
+) -> Result<CliProviderExecution, CliError> {
+    if globals.ci {
+        return Err(CliError::user_fixable(
+            "xero_cli_provider_unavailable_in_ci",
+            "Headless CI mode currently allows only `--provider fake_provider` because real-provider writes require explicit non-interactive approval policy.",
+        ));
+    }
+
+    let session = load_cli_openai_codex_oauth_session(globals)?;
+    let model_id = normalize_openai_codex_model_id(
+        model_id
+            .as_deref()
+            .or_else(|| {
+                provider_catalog_entry(OPENAI_CODEX_PROVIDER_ID).map(|entry| entry.default_model)
+            })
+            .unwrap_or("gpt-5.5"),
+    );
+
+    Ok(CliProviderExecution {
+        profile_id: "openai_codex-app-oauth".into(),
+        provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+        model_id: model_id.clone(),
+        execution_mode: "real_provider",
+        execution: HeadlessProviderExecutionConfig::OpenAiCodexResponses(
+            OpenAiCodexHeadlessConfig {
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id,
+                base_url: OPENAI_CODEX_DEFAULT_BASE_URL.into(),
+                access_token: session.access_token,
+                account_id: session.account_id,
+                session_id: Some(session.session_id),
+                timeout_ms: 0,
+                workspace_root: env::current_dir().ok(),
+                allow_workspace_writes: true,
+            },
+        ),
+        credential_proof: Some("app_data_openai_codex_session".into()),
     })
 }
 
@@ -6245,6 +7264,13 @@ fn external_agent_approval_source(allow_subprocess: bool) -> Option<ExternalAgen
         .map(|_| ExternalAgentApprovalSource::Environment)
 }
 
+fn external_agent_system_prompt(request: &ExternalAgentRunRequest) -> String {
+    format!(
+        "External agent session hosted by Xero. Provenance: {} ({})",
+        request.adapter.label, request.adapter.provider_id
+    )
+}
+
 fn host_external_agent_run(
     globals: &GlobalOptions,
     store: &FileAgentCoreStore,
@@ -6261,9 +7287,14 @@ fn host_external_agent_run(
     }
 
     let sandbox_metadata = external_agent_sandbox_metadata(globals, &request)?;
+    let system_prompt = external_agent_system_prompt(&request);
     let snapshot = store
         .insert_run(NewRunRecord {
             trace_id: None,
+            runtime_agent_id: "external".into(),
+            agent_definition_id: "external".into(),
+            agent_definition_version: 1,
+            system_prompt: system_prompt.clone(),
             project_id: request.project_id.clone(),
             agent_session_id: request.agent_session_id.clone(),
             run_id: request.run_id.clone(),
@@ -6319,10 +7350,7 @@ fn host_external_agent_run(
             project_id: snapshot.project_id.clone(),
             run_id: snapshot.run_id.clone(),
             role: MessageRole::System,
-            content: format!(
-                "External agent session hosted by Xero. Provenance: {} ({})",
-                request.adapter.label, request.adapter.provider_id
-            ),
+            content: system_prompt,
             provider_metadata: None,
         })
         .map_err(core_error)?;
@@ -6773,6 +7801,16 @@ impl McpServerSession {
             mcp_string_arg(arguments, "sessionId").unwrap_or_else(|| generate_id("mcp-session"));
         let run_id = mcp_string_arg(arguments, "runId").unwrap_or_else(|| generate_id("mcp-run"));
         let model_id = mcp_string_arg(arguments, "modelId");
+        let runtime_agent_id =
+            mcp_string_arg(arguments, "runtimeAgentId").unwrap_or_else(|| "engineer".into());
+        let agent_definition_id = mcp_string_arg(arguments, "agentDefinitionId");
+        let thinking_effort = match mcp_string_arg(arguments, "thinkingEffort")
+            .map(|effort| normalize_cli_thinking_effort(&effort))
+            .transpose()
+        {
+            Ok(effort) => effort,
+            Err(error) => return mcp_tool_error(error.code, error.message),
+        };
         let provider = match resolve_cli_provider_execution(&self.globals, provider_id, model_id) {
             Ok(provider) => provider,
             Err(error) => return mcp_tool_error(error.code, error.message),
@@ -6782,7 +7820,15 @@ impl McpServerSession {
                 Ok(resolved) => resolved,
                 Err(error) => return mcp_tool_error(error.code, error.message),
             };
-        let provider = provider.with_project_workspace(&store);
+        let agent_definition = match store
+            .resolve_agent_definition_for_run(agent_definition_id.as_deref(), &runtime_agent_id)
+        {
+            Ok(definition) => definition,
+            Err(error) => return mcp_tool_error(error.code, error.message),
+        };
+        let provider = provider
+            .with_project_workspace(&store)
+            .with_workspace_writes(headless_runtime_agent_allows_writes(&runtime_agent_id));
         if provider.execution_mode == "real_provider" {
             if let Err(error) =
                 ensure_cli_real_provider_runtime_contract(&project_id, &provider, &store)
@@ -6815,11 +7861,16 @@ impl McpServerSession {
                 model_id: provider.model_id,
             },
             controls: Some(RunControls {
-                runtime_agent_id: "mcp_harness".into(),
+                runtime_agent_id: runtime_agent_id.clone(),
+                agent_definition_id: Some(agent_definition.definition_id),
+                agent_definition_version: Some(agent_definition.version),
+                thinking_effort,
                 approval_mode: if self.globals.ci {
                     "strict"
-                } else {
+                } else if headless_runtime_agent_allows_writes(&runtime_agent_id) {
                     "on_request"
+                } else {
+                    "suggest"
                 }
                 .into(),
                 plan_mode_required: self.globals.ci,
@@ -7149,6 +8200,9 @@ fn mcp_tool_definitions() -> Vec<JsonValue> {
                     "projectId": { "type": "string", "description": "Durable project id. Real-provider runs may omit this only when the current directory belongs to a registered app-data project." },
                     "sessionId": { "type": "string", "description": "Optional agent session id." },
                     "runId": { "type": "string", "description": "Optional run id." },
+                    "runtimeAgentId": { "type": "string", "description": "Runtime agent id to run, such as ask, engineer, debug, or plan. Defaults to engineer." },
+                    "agentDefinitionId": { "type": "string", "description": "Agent definition id to persist for the run. Defaults to runtimeAgentId." },
+                    "thinkingEffort": { "type": "string", "enum": ["minimal", "low", "medium", "high", "x_high", "xhigh"], "description": "Optional model thinking effort." },
                     "providerId": { "type": "string", "description": "Owned-agent provider id. Use fake_provider only for explicit harness tests." },
                     "modelId": { "type": "string", "description": "Model id for the owned-agent provider." }
                 },
@@ -8389,6 +9443,7 @@ fn open_workspace_index_database(
                 active_phase INTEGER NOT NULL DEFAULT 0 CHECK (active_phase >= 0),
                 branch TEXT,
                 runtime TEXT,
+                start_targets TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
@@ -9564,6 +10619,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn now_timestamp_emits_rfc3339_for_app_data_rows() {
+        let timestamp = now_timestamp();
+
+        assert!(timestamp.contains('T'));
+        assert!(timestamp.ends_with('Z'));
+        assert!(!timestamp.starts_with("unix:"));
+    }
+
+    #[test]
     fn fake_provider_harness_agent_exec_persists_headless_run_for_conversation_show() {
         let state_dir = unique_temp_dir("agent-exec");
         let exec = run_with_args([
@@ -9607,6 +10671,66 @@ mod tests {
     }
 
     #[test]
+    fn conversation_search_and_export_reuse_canonical_trace_snapshot() {
+        let state_dir = unique_temp_dir("conversation-search-export");
+        run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--project-id",
+            "project-1",
+            "--session-id",
+            "session-1",
+            "--run-id",
+            "run-search",
+            "--provider",
+            "fake_provider",
+            "Find the needle phrase.",
+        ])
+        .expect("agent exec should succeed");
+
+        let search = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "search",
+            "--run-id",
+            "run-search",
+            "needle",
+        ])
+        .expect("conversation search should succeed");
+        assert_eq!(search.json["kind"], json!("conversationSearch"));
+        assert!(search.json["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .any(|hit| hit["runId"] == json!("run-search")));
+
+        let output_path = state_dir.join("trace.md");
+        let export = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "export",
+            "--output",
+            output_path.to_str().expect("output path"),
+            "run-search",
+        ])
+        .expect("conversation export should succeed");
+        assert_eq!(export.json["kind"], json!("conversationExport"));
+        assert!(fs::read_to_string(output_path)
+            .expect("exported markdown")
+            .contains("run-search"));
+    }
+
+    #[test]
     fn agent_exec_requires_explicit_provider_when_unconfigured() {
         let state_dir = unique_temp_dir("agent-exec-provider-required");
         let error = run_with_args([
@@ -9620,6 +10744,78 @@ mod tests {
         .expect_err("unconfigured real provider should be rejected");
 
         assert_eq!(error.code, "xero_cli_provider_required");
+    }
+
+    #[test]
+    fn openai_codex_resolves_app_data_oauth_without_headless_profile() {
+        let app_data_root = unique_temp_dir("openai-codex-app-oauth");
+        let state_dir = app_data_root.join(HEADLESS_DIRECTORY_NAME);
+        fs::create_dir_all(&state_dir).expect("create headless state");
+        seed_openai_codex_oauth_session(
+            &app_data_root,
+            "acct_app",
+            "sess_app",
+            "app-oauth-access-token",
+            current_unix_timestamp() + 3600,
+        );
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Text,
+            ci: false,
+            state_dir: state_dir.clone(),
+            tui_adapter: None,
+        };
+
+        let provider = resolve_cli_provider_execution(
+            &globals,
+            Some(OPENAI_CODEX_PROVIDER_ID.into()),
+            Some("openai/gpt-5.5".into()),
+        )
+        .expect("OpenAI Codex should reuse the app-local OAuth session");
+
+        assert_eq!(provider.profile_id, "openai_codex-app-oauth");
+        assert_eq!(provider.provider_id, OPENAI_CODEX_PROVIDER_ID);
+        assert_eq!(provider.model_id, "gpt-5.5");
+        assert_eq!(
+            provider.credential_proof.as_deref(),
+            Some("app_data_openai_codex_session")
+        );
+        assert!(
+            !state_dir.join(CLI_CONFIG_FILE).exists(),
+            "OpenAI Codex app OAuth must not require a headless CLI profile"
+        );
+        match provider.execution {
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
+                assert_eq!(config.base_url, OPENAI_CODEX_DEFAULT_BASE_URL);
+                assert_eq!(config.access_token, "app-oauth-access-token");
+                assert_eq!(config.account_id, "acct_app");
+                assert_eq!(config.session_id.as_deref(), Some("sess_app"));
+            }
+            other => panic!("expected OpenAI Codex OAuth execution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_codex_missing_app_oauth_points_to_tauri_login() {
+        let app_data_root = unique_temp_dir("openai-codex-missing-oauth");
+        let state_dir = app_data_root.join(HEADLESS_DIRECTORY_NAME);
+        fs::create_dir_all(&state_dir).expect("create headless state");
+        let globals = GlobalOptions {
+            output_mode: OutputMode::Text,
+            ci: false,
+            state_dir,
+            tui_adapter: None,
+        };
+
+        let error = resolve_cli_provider_execution(
+            &globals,
+            Some(OPENAI_CODEX_PROVIDER_ID.into()),
+            Some("gpt-5.5".into()),
+        )
+        .expect_err("missing app OAuth should be a login-state error");
+
+        assert_eq!(error.code, "xero_cli_openai_oauth_store_missing");
+        assert!(error.message.contains("Xero Tauri app"));
+        assert!(!error.message.contains("provider login openai_codex"));
     }
 
     #[test]
@@ -9876,6 +11072,103 @@ mod tests {
             show.json["snapshot"]["traceId"],
             output.json["snapshot"]["traceId"]
         );
+    }
+
+    #[test]
+    fn real_provider_agent_exec_honors_selected_ask_agent() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-ask");
+        let workspace = unique_temp_dir("agent-exec-real-provider-ask-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "This is the whole project, not just landing."
+                }
+            }]
+        })]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-ask",
+            "--run-id",
+            "run-ask",
+            "--runtime-agent-id",
+            "ask",
+            "--agent-definition-id",
+            "ask",
+            "--thinking-effort",
+            "x_high",
+            "What is this project about?",
+        ])
+        .expect("ask real provider run should succeed");
+        server.join();
+
+        assert_eq!(output.json["snapshot"]["runtimeAgentId"], json!("ask"));
+        assert_eq!(output.json["snapshot"]["agentDefinitionId"], json!("ask"));
+        assert!(output.json["snapshot"]["systemPrompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("You are Xero's Ask agent")));
+        let registry = output.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .find(|event| event["eventKind"] == json!("tool_registry_snapshot"))
+            .expect("tool registry snapshot");
+        let descriptor_names = registry["payload"]["descriptorNames"]
+            .as_array()
+            .expect("descriptor names");
+        assert!(descriptor_names.iter().any(|name| name == "read"));
+        assert!(descriptor_names.iter().any(|name| name == "list"));
+        assert!(descriptor_names
+            .iter()
+            .all(|name| !matches!(name.as_str(), Some("write" | "patch" | "command"))));
+
+        let project_database =
+            workspace_project_database_path_for_app_root(&state_dir, "project-real");
+        let connection = Connection::open(project_database).expect("open project database");
+        let persisted = connection
+            .query_row(
+                "SELECT runtime_agent_id, agent_definition_id, agent_definition_version, system_prompt FROM agent_runs WHERE project_id = 'project-real' AND run_id = 'run-ask'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .expect("persisted ask run");
+        assert_eq!(persisted.0, "ask");
+        assert_eq!(persisted.1, "ask");
+        assert_eq!(persisted.2, 1);
+        assert!(persisted.3.contains("You are Xero's Ask agent"));
     }
 
     #[test]
@@ -10564,6 +11857,22 @@ mod tests {
             .iter()
             .any(|message| message["role"] == json!("user")));
 
+        let branched = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "branch",
+            "run-facade",
+        ])
+        .expect("conversation branch should fork through the facade");
+        assert_eq!(branched.json["kind"], json!("conversationClone"));
+        assert_ne!(
+            branched.json["snapshot"]["agentSessionId"],
+            json!("session-facade")
+        );
+
         let retried = run_with_args([
             "xero",
             "--json",
@@ -10817,6 +12126,7 @@ mod tests {
             output_mode: OutputMode::Json,
             ci: false,
             state_dir,
+            tui_adapter: None,
         };
         let messages = [
             json!({
@@ -10936,6 +12246,7 @@ mod tests {
             output_mode: OutputMode::Json,
             ci: false,
             state_dir: state_dir.clone(),
+            tui_adapter: None,
         };
         let messages = [
             json!({
@@ -11021,6 +12332,7 @@ mod tests {
             output_mode: OutputMode::Json,
             ci: false,
             state_dir: state_dir.clone(),
+            tui_adapter: None,
         };
         let messages = [
             json!({
@@ -11202,6 +12514,119 @@ mod tests {
             external["capabilities"]["capabilities"]["toolCalls"]["status"],
             json!("not_applicable")
         );
+    }
+
+    #[test]
+    fn provider_remove_deletes_headless_profile_from_cli_config() {
+        let state_dir = unique_temp_dir("provider-remove");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openrouter",
+            "--profile",
+            "remove-me",
+            "--api-key-env",
+            "OPENROUTER_API_KEY",
+        ])
+        .expect("provider login should succeed");
+
+        let removed = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "remove",
+            "--profile",
+            "remove-me",
+        ])
+        .expect("provider remove should succeed");
+        assert_eq!(removed.json["kind"], json!("providerRemove"));
+        assert_eq!(removed.json["profile"]["profileId"], json!("remove-me"));
+
+        let listed = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "list",
+        ])
+        .expect("provider list should succeed");
+        let openrouter = listed.json["providers"]
+            .as_array()
+            .expect("providers")
+            .iter()
+            .find(|provider| provider["providerId"] == json!("openrouter"))
+            .expect("openrouter");
+        assert_eq!(openrouter["profiles"], json!([]));
+    }
+
+    #[test]
+    fn mcp_status_and_remove_reuse_cli_config() {
+        let state_dir = unique_temp_dir("mcp-status-remove");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "mcp",
+            "add",
+            "local-tools",
+            "--command",
+            "node",
+            "--arg",
+            "server.mjs",
+        ])
+        .expect("mcp add should succeed");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "mcp",
+            "login",
+            "local-tools",
+            "--token-env",
+            "LOCAL_TOOLS_TOKEN",
+        ])
+        .expect("mcp login should succeed");
+
+        let status = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "mcp",
+            "status",
+        ])
+        .expect("mcp status should succeed");
+        assert_eq!(status.json["servers"][0]["name"], json!("local-tools"));
+        assert_eq!(status.json["servers"][0]["hasTokenEnv"], json!(true));
+
+        let removed = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "mcp",
+            "remove",
+            "local-tools",
+        ])
+        .expect("mcp remove should succeed");
+        assert_eq!(removed.json["kind"], json!("mcpRemove"));
+
+        let empty = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "mcp",
+            "status",
+        ])
+        .expect("mcp status should succeed");
+        assert_eq!(empty.json["servers"], json!([]));
     }
 
     #[test]
@@ -11568,6 +12993,61 @@ mod tests {
             .expect("seed project row");
     }
 
+    fn seed_openai_codex_oauth_session(
+        app_data_root: &Path,
+        account_id: &str,
+        session_id: &str,
+        access_token: &str,
+        expires_at: i64,
+    ) {
+        fs::create_dir_all(app_data_root).expect("create app-data root");
+        let connection =
+            Connection::open(app_data_root.join(GLOBAL_DATABASE_FILE)).expect("open OAuth store");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS provider_credentials (
+                    provider_id              TEXT    PRIMARY KEY,
+                    kind                     TEXT    NOT NULL,
+                    api_key                  TEXT,
+                    oauth_account_id         TEXT,
+                    oauth_session_id         TEXT,
+                    oauth_access_token       TEXT,
+                    oauth_refresh_token      TEXT,
+                    oauth_expires_at         INTEGER,
+                    base_url                 TEXT,
+                    api_version              TEXT,
+                    region                   TEXT,
+                    scope_project_id         TEXT,
+                    default_model_id         TEXT,
+                    updated_at               TEXT    NOT NULL
+                );
+                "#,
+            )
+            .expect("create provider_credentials");
+        connection
+            .execute(
+                "INSERT INTO provider_credentials (
+                    provider_id,
+                    kind,
+                    oauth_account_id,
+                    oauth_session_id,
+                    oauth_access_token,
+                    oauth_expires_at,
+                    updated_at
+                ) VALUES (?1, 'oauth_session', ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    OPENAI_CODEX_PROVIDER_ID,
+                    account_id,
+                    session_id,
+                    access_token,
+                    expires_at,
+                    now_timestamp(),
+                ],
+            )
+            .expect("insert OAuth session");
+    }
+
     fn seed_global_project_registration_only(state_dir: &Path, project_id: &str, repo_root: &Path) {
         let repo_root = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
         fs::create_dir_all(state_dir).expect("create app-data root");
@@ -11803,6 +13283,17 @@ mod tests {
             updated_at
         )
         VALUES ('engineer', 1, 'Engineer', 'Build', 'built_in', 'active', 'engineering', '2026-05-01T00:00:00Z');
+        INSERT OR IGNORE INTO agent_definitions (
+            definition_id,
+            current_version,
+            display_name,
+            short_label,
+            scope,
+            lifecycle_state,
+            base_capability_profile,
+            updated_at
+        )
+        VALUES ('ask', 1, 'Ask', 'Ask', 'built_in', 'active', 'observe_only', '2026-05-01T00:00:00Z');
         INSERT OR IGNORE INTO agent_definition_versions (
             definition_id,
             version,
@@ -11811,6 +13302,14 @@ mod tests {
             created_at
         )
         VALUES ('engineer', 1, '{"id":"engineer","version":1}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
+        INSERT OR IGNORE INTO agent_definition_versions (
+            definition_id,
+            version,
+            snapshot_json,
+            validation_report_json,
+            created_at
+        )
+        VALUES ('ask', 1, '{"id":"ask","version":1}', '{"status":"valid","source":"seed"}', '2026-05-01T00:00:00Z');
         CREATE TABLE IF NOT EXISTS agent_sessions (
             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             agent_session_id TEXT NOT NULL,
@@ -11818,6 +13317,7 @@ mod tests {
             summary TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             selected INTEGER NOT NULL DEFAULT 0,
+            remote_visible INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             archived_at TEXT,
@@ -12036,8 +13536,7 @@ mod tests {
     fn final_workspace_diff_lists_non_git_workspace_outputs() {
         let workspace = unique_temp_dir("benchmark-non-git-final-diff");
         fs::create_dir_all(workspace.join("polyglot")).expect("create workspace dir");
-        fs::write(workspace.join("polyglot/main.py.c"), "print(55)\n")
-            .expect("write deliverable");
+        fs::write(workspace.join("polyglot/main.py.c"), "print(55)\n").expect("write deliverable");
         fs::write(workspace.join("polyglot/cmain"), "compiled debris\n")
             .expect("write build output");
 
@@ -12059,6 +13558,7 @@ mod tests {
             output_mode: OutputMode::Text,
             ci: false,
             state_dir,
+            tui_adapter: None,
         };
         let config = BenchmarkRunConfig {
             instruction: "Use the benchmark workspace.".into(),
@@ -12132,6 +13632,7 @@ mod tests {
             output_mode: OutputMode::Text,
             ci: false,
             state_dir,
+            tui_adapter: None,
         };
         let mut args: Vec<String> = vec![
             "--instruction".into(),
@@ -12164,10 +13665,7 @@ mod tests {
     fn benchmark_openai_codex_oauth_uri_uses_immutable_read_only_mode() {
         let uri = sqlite_immutable_read_only_uri(Path::new("/tmp/xero oauth?/xero.db"));
 
-        assert_eq!(
-            uri,
-            "file:/tmp/xero%20oauth%3F/xero.db?mode=ro&immutable=1"
-        );
+        assert_eq!(uri, "file:/tmp/xero%20oauth%3F/xero.db?mode=ro&immutable=1");
     }
 
     #[test]
@@ -12223,6 +13721,7 @@ mod tests {
             output_mode: OutputMode::Text,
             ci: false,
             state_dir: unique_temp_dir("benchmark-openai-codex-state"),
+            tui_adapter: None,
         };
         let config = BenchmarkRunConfig {
             instruction: "Use the OpenAI OAuth session.".into(),

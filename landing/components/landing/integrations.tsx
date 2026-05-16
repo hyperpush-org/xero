@@ -19,26 +19,26 @@ export function Integrations() {
             Step away. Approve from your phone.
           </h2>
           <p className="mt-4 max-w-xl text-pretty text-muted-foreground">
-            When an agent needs a call, it posts to{" "}
+            When an agent hits a decision only you can make, it posts to{" "}
             <span className="text-foreground">Discord</span> or{" "}
-            <span className="text-foreground">Telegram</span> with the diff,
-            command, or tradeoff inline. Reply in a sentence and the session
-            keeps going.
+            <span className="text-foreground">Telegram</span> with the actual
+            diff, command, or tradeoff. Reply in a line and the run picks up
+            where it stopped.
           </p>
 
           <ul className="mt-8 space-y-3">
             {[
               {
                 title: "Diff in the message",
-                copy: "Notifications carry the actual change or command, not a generic \"need input\".",
+                copy: "Each notification carries the real change or command, not a vague \"needs input\".",
               },
               {
                 title: "Approve from anywhere",
-                copy: "Phone, laptop, watch, wherever Discord or Telegram already lives.",
+                copy: "Phone, laptop, watch, anywhere Discord or Telegram already lives.",
               },
               {
                 title: "Per-tool rules",
-                copy: "Decide which actions auto-run and which wait for you, per session and per tool.",
+                copy: "Choose what auto-runs and what waits for you, set per tool and per session.",
               },
             ].map((f) => (
               <li key={f.title} className="flex gap-3">

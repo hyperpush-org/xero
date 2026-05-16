@@ -4,7 +4,7 @@ import {
   nonEmptyOptionalTextSchema,
   normalizeOptionalText,
   normalizeText,
-} from './shared'
+} from '@xero/ui/model/shared'
 
 export const operatorApprovalStatusSchema = z.enum(['pending', 'approved', 'rejected'])
 export const verificationRecordStatusSchema = z.enum(['pending', 'passed', 'failed'])

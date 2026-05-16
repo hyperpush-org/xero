@@ -18,12 +18,12 @@
 //! and removes the entry from the registry. Status changes go out as
 //! `terminal:status` events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, LazyLock, Mutex,
 };
 use std::thread;
@@ -59,6 +59,9 @@ pub const TERMINAL_TITLE_EVENT: &str = "terminal:title";
 
 const DETECTION_FILE_CAP_BYTES: usize = 4 * 1024;
 const TERMINAL_TITLE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const MAX_TERMINAL_BUFFER_BYTES: usize = 256 * 1024;
+const DEFAULT_TERMINAL_READ_BYTES: usize = 64 * 1024;
+const MAX_TERMINAL_READ_BYTES: usize = 512 * 1024;
 
 const SUGGEST_SYSTEM_PROMPT: &str = "You suggest the shell commands a developer would run to start this project locally. Return a JSON array of {\"name\": \"...\", \"command\": \"...\"} objects and nothing else. No markdown fences, no prose, no explanation.\n\nIMPORTANT — root orchestrator detection: if the root `package.json` (or `Makefile`/`Procfile`/`mprocs.yaml`/`turbo.json` task) defines a script that fans out to multiple services in one command (via `concurrently`, `npm-run-all`, `turbo run dev`, `nx run-many`, `pnpm -r run`, `make -j`, `mprocs`, `overmind`, `foreman`, `honcho`, etc.), include it as the FIRST target named `all` (or `dev` if that matches the script name). This is the single-command \"run everything\" entry the user reaches for most often.\n\nIn addition to (not instead of) the orchestrator, for monorepos (pnpm/yarn/npm workspaces, Turborepo, Nx, Lerna, Rush, Cargo workspaces, Go workspaces) propose one target per runnable service or app so users can launch them individually. Name each per-service target after the package (e.g. `web`, `api`, `worker`) and inline a `cd <relative-path> && <cmd>` so each command runs from the project root.\n\nFor single-app projects, return one target named `start`.\n\nEach `name` must be short, lowercase, unique, and filename-safe. Each `command` must be a single line of shell.";
 
@@ -148,6 +151,16 @@ pub struct TerminalResizeRequestDto {
     pub rows: u16,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TerminalReadRequestDto {
+    pub terminal_id: String,
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    #[serde(default)]
+    pub max_bytes: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenTerminalResponseDto {
@@ -155,6 +168,39 @@ pub struct OpenTerminalResponseDto {
     pub shell: String,
     pub cwd: String,
     pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputChunkDto {
+    pub sequence: u64,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalReadResponseDto {
+    pub terminal_id: String,
+    pub running: bool,
+    pub next_sequence: u64,
+    pub chunks: Vec<TerminalOutputChunkDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSummaryDto {
+    pub terminal_id: String,
+    pub shell: String,
+    pub cwd: String,
+    pub started_at: String,
+    pub title: String,
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalListResponseDto {
+    pub terminals: Vec<TerminalSummaryDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -179,12 +225,64 @@ struct TerminalTitleEventPayload {
     title: String,
 }
 
+#[derive(Clone)]
+struct TerminalEventSink {
+    data: Arc<dyn Fn(TerminalDataEventPayload) + Send + Sync>,
+    exit: Arc<dyn Fn(TerminalExitEventPayload) + Send + Sync>,
+    title: Arc<dyn Fn(TerminalTitleEventPayload) + Send + Sync>,
+}
+
+impl TerminalEventSink {
+    fn none() -> Self {
+        Self {
+            data: Arc::new(|_| {}),
+            exit: Arc::new(|_| {}),
+            title: Arc::new(|_| {}),
+        }
+    }
+
+    fn tauri<R: Runtime + 'static>(app: AppHandle<R>) -> Self {
+        let data_app = app.clone();
+        let exit_app = app.clone();
+        Self {
+            data: Arc::new(move |payload| {
+                let _ = data_app.emit(TERMINAL_DATA_EVENT, payload);
+            }),
+            exit: Arc::new(move |payload| {
+                let _ = exit_app.emit(TERMINAL_EXIT_EVENT, payload);
+            }),
+            title: Arc::new(move |payload| {
+                let _ = app.emit(TERMINAL_TITLE_EVENT, payload);
+            }),
+        }
+    }
+
+    fn emit_data(&self, payload: TerminalDataEventPayload) {
+        (self.data)(payload);
+    }
+
+    fn emit_exit(&self, payload: TerminalExitEventPayload) {
+        (self.exit)(payload);
+    }
+
+    fn emit_title(&self, payload: TerminalTitleEventPayload) {
+        (self.title)(payload);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
 struct TerminalHandle {
     alive: AtomicBool,
+    terminal_id: String,
+    shell: String,
+    cwd: String,
+    started_at: String,
+    title: Mutex<Option<String>>,
+    next_sequence: AtomicU64,
+    output: Mutex<TerminalOutputBuffer>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     process: TerminalProcessHandle,
@@ -198,6 +296,57 @@ type TerminalRegistry = HashMap<String, Arc<TerminalHandle>>;
 
 static TERMINALS: LazyLock<Mutex<TerminalRegistry>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+struct TerminalOutputBuffer {
+    chunks: VecDeque<TerminalOutputChunkDto>,
+    retained_bytes: usize,
+}
+
+impl TerminalOutputBuffer {
+    fn new() -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            retained_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, sequence: u64, data: String) {
+        self.retained_bytes = self.retained_bytes.saturating_add(data.len());
+        self.chunks
+            .push_back(TerminalOutputChunkDto { sequence, data });
+        while self.retained_bytes > MAX_TERMINAL_BUFFER_BYTES {
+            let Some(removed) = self.chunks.pop_front() else {
+                self.retained_bytes = 0;
+                break;
+            };
+            self.retained_bytes = self.retained_bytes.saturating_sub(removed.data.len());
+        }
+    }
+
+    fn read_after(
+        &self,
+        after_sequence: Option<u64>,
+        max_bytes: usize,
+    ) -> Vec<TerminalOutputChunkDto> {
+        let mut chunks = Vec::new();
+        let mut bytes = 0usize;
+        for chunk in self.chunks.iter().filter(|chunk| {
+            after_sequence
+                .map(|after| chunk.sequence > after)
+                .unwrap_or(true)
+        }) {
+            if !chunks.is_empty() && bytes.saturating_add(chunk.data.len()) > max_bytes {
+                break;
+            }
+            bytes = bytes.saturating_add(chunk.data.len());
+            chunks.push(chunk.clone());
+            if bytes >= max_bytes {
+                break;
+            }
+        }
+        chunks
+    }
+}
+
 fn lock_terminals() -> Result<std::sync::MutexGuard<'static, TerminalRegistry>, CommandError> {
     TERMINALS.lock().map_err(|_| {
         CommandError::system_fault(
@@ -207,8 +356,8 @@ fn lock_terminals() -> Result<std::sync::MutexGuard<'static, TerminalRegistry>, 
     })
 }
 
-fn spawn_terminal_title_watcher<R: Runtime + 'static>(
-    app: AppHandle<R>,
+fn spawn_terminal_title_watcher(
+    sink: TerminalEventSink,
     terminal_id: String,
     handle: Arc<TerminalHandle>,
     shell: String,
@@ -224,13 +373,13 @@ fn spawn_terminal_title_watcher<R: Runtime + 'static>(
 
             if let Some(title) = title {
                 if last_title.as_deref() != Some(title.as_str()) {
-                    let _ = app.emit(
-                        TERMINAL_TITLE_EVENT,
-                        TerminalTitleEventPayload {
-                            terminal_id: terminal_id.clone(),
-                            title: title.clone(),
-                        },
-                    );
+                    if let Ok(mut current_title) = handle.title.lock() {
+                        *current_title = Some(title.clone());
+                    }
+                    sink.emit_title(TerminalTitleEventPayload {
+                        terminal_id: terminal_id.clone(),
+                        title: title.clone(),
+                    });
                     last_title = Some(title);
                 }
             }
@@ -683,10 +832,32 @@ fn terminal_open_blocking<R: Runtime + 'static>(
             .unwrap_or_else(|| ".".to_owned())
     };
 
-    let shell = detect_user_shell();
     let cols = request.cols.unwrap_or(120).max(1);
     let rows = request.rows.unwrap_or(32).max(1);
 
+    terminal_open_in_cwd(cwd, cols, rows, TerminalEventSink::tauri(app))
+}
+
+pub fn terminal_open_for_cwd(
+    cwd: &Path,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> CommandResult<OpenTerminalResponseDto> {
+    terminal_open_in_cwd(
+        cwd.to_string_lossy().into_owned(),
+        cols.unwrap_or(120).max(1),
+        rows.unwrap_or(32).max(1),
+        TerminalEventSink::none(),
+    )
+}
+
+fn terminal_open_in_cwd(
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    sink: TerminalEventSink,
+) -> CommandResult<OpenTerminalResponseDto> {
+    let shell = detect_user_shell();
     let pty_system = NativePtySystem::default();
     let pair = pty_system
         .openpty(PtySize {
@@ -739,9 +910,17 @@ fn terminal_open_blocking<R: Runtime + 'static>(
 
     let terminal_id = format!("term-{}", current_epoch_micros());
     let started_at = now_timestamp();
+    let shell_title = process_label_from_path(&shell).unwrap_or_else(|| "terminal".to_owned());
 
     let handle = Arc::new(TerminalHandle {
         alive: AtomicBool::new(true),
+        terminal_id: terminal_id.clone(),
+        shell: shell.clone(),
+        cwd: cwd.clone(),
+        started_at: started_at.clone(),
+        title: Mutex::new(Some(shell_title)),
+        next_sequence: AtomicU64::new(0),
+        output: Mutex::new(TerminalOutputBuffer::new()),
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         process: TerminalProcessHandle {
@@ -754,16 +933,18 @@ fn terminal_open_blocking<R: Runtime + 'static>(
     }
 
     spawn_terminal_title_watcher(
-        app.clone(),
+        sink.clone(),
         terminal_id.clone(),
         Arc::clone(&handle),
         shell.clone(),
         shell_pid,
     );
 
-    // Stream output to the frontend.
-    let app_for_reader = app.clone();
+    // Stream output to renderer-specific subscribers and retain a bounded
+    // replay buffer for terminal-native clients such as dev:tui.
     let terminal_id_reader = terminal_id.clone();
+    let handle_for_reader = Arc::clone(&handle);
+    let sink_for_reader = sink.clone();
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -771,13 +952,16 @@ fn terminal_open_blocking<R: Runtime + 'static>(
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let _ = app_for_reader.emit(
-                        TERMINAL_DATA_EVENT,
-                        TerminalDataEventPayload {
-                            terminal_id: terminal_id_reader.clone(),
-                            data: chunk,
-                        },
-                    );
+                    let sequence = handle_for_reader
+                        .next_sequence
+                        .fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut output) = handle_for_reader.output.lock() {
+                        output.push(sequence, chunk.clone());
+                    }
+                    sink_for_reader.emit_data(TerminalDataEventPayload {
+                        terminal_id: terminal_id_reader.clone(),
+                        data: chunk,
+                    });
                 }
                 Err(_) => break,
             }
@@ -785,9 +969,9 @@ fn terminal_open_blocking<R: Runtime + 'static>(
     });
 
     // Watch the child to emit an exit event and clean up the registry.
-    let app_for_waiter = app.clone();
     let terminal_id_waiter = terminal_id.clone();
     let handle_for_waiter = Arc::clone(&handle);
+    let sink_for_waiter = sink.clone();
     thread::spawn(move || {
         let exit_code = child
             .wait()
@@ -797,13 +981,10 @@ fn terminal_open_blocking<R: Runtime + 'static>(
         if let Ok(mut registry) = TERMINALS.lock() {
             registry.remove(&terminal_id_waiter);
         }
-        let _ = app_for_waiter.emit(
-            TERMINAL_EXIT_EVENT,
-            TerminalExitEventPayload {
-                terminal_id: terminal_id_waiter,
-                exit_code,
-            },
-        );
+        sink_for_waiter.emit_exit(TerminalExitEventPayload {
+            terminal_id: terminal_id_waiter,
+            exit_code,
+        });
     });
 
     Ok(OpenTerminalResponseDto {
@@ -820,6 +1001,10 @@ pub fn terminal_write<R: Runtime>(
     _state: State<'_, DesktopState>,
     request: TerminalWriteRequestDto,
 ) -> CommandResult<()> {
+    terminal_write_direct(request)
+}
+
+pub fn terminal_write_direct(request: TerminalWriteRequestDto) -> CommandResult<()> {
     let handle = {
         let registry = lock_terminals()?;
         registry.get(&request.terminal_id).cloned()
@@ -846,12 +1031,73 @@ pub fn terminal_write<R: Runtime>(
     Ok(())
 }
 
+pub fn terminal_read_buffer(
+    request: TerminalReadRequestDto,
+) -> CommandResult<TerminalReadResponseDto> {
+    let handle = {
+        let registry = lock_terminals()?;
+        registry.get(&request.terminal_id).cloned()
+    };
+    let Some(handle) = handle else {
+        return Err(CommandError::user_fixable(
+            "terminal_not_found",
+            "This terminal has already exited.",
+        ));
+    };
+    let max_bytes = request
+        .max_bytes
+        .unwrap_or(DEFAULT_TERMINAL_READ_BYTES)
+        .clamp(1, MAX_TERMINAL_READ_BYTES);
+    let chunks = handle
+        .output
+        .lock()
+        .map_err(|_| {
+            CommandError::system_fault(
+                "terminal_output_poisoned",
+                "Xero could not read terminal output — internal lock poisoned.",
+            )
+        })?
+        .read_after(request.after_sequence, max_bytes);
+    Ok(TerminalReadResponseDto {
+        terminal_id: request.terminal_id,
+        running: handle.alive.load(Ordering::Relaxed),
+        next_sequence: handle.next_sequence.load(Ordering::Relaxed),
+        chunks,
+    })
+}
+
+pub fn terminal_list_active() -> CommandResult<TerminalListResponseDto> {
+    let registry = lock_terminals()?;
+    let mut terminals = registry
+        .values()
+        .map(|handle| TerminalSummaryDto {
+            terminal_id: handle.terminal_id.clone(),
+            shell: handle.shell.clone(),
+            cwd: handle.cwd.clone(),
+            started_at: handle.started_at.clone(),
+            title: handle
+                .title
+                .lock()
+                .ok()
+                .and_then(|title| title.clone())
+                .unwrap_or_else(|| "terminal".to_owned()),
+            running: handle.alive.load(Ordering::Relaxed),
+        })
+        .collect::<Vec<_>>();
+    terminals.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+    Ok(TerminalListResponseDto { terminals })
+}
+
 #[tauri::command]
 pub fn terminal_resize<R: Runtime>(
     _app: AppHandle<R>,
     _state: State<'_, DesktopState>,
     request: TerminalResizeRequestDto,
 ) -> CommandResult<()> {
+    terminal_resize_direct(request)
+}
+
+pub fn terminal_resize_direct(request: TerminalResizeRequestDto) -> CommandResult<()> {
     let handle = {
         let registry = lock_terminals()?;
         registry.get(&request.terminal_id).cloned()
@@ -883,7 +1129,7 @@ pub fn terminal_resize<R: Runtime>(
 
 #[tauri::command]
 pub async fn terminal_close(request: TerminalIdRequestDto) -> CommandResult<()> {
-    tauri::async_runtime::spawn_blocking(move || terminal_close_blocking(request))
+    tauri::async_runtime::spawn_blocking(move || terminal_close_direct(request))
         .await
         .map_err(|error| {
             CommandError::system_fault(
@@ -893,7 +1139,7 @@ pub async fn terminal_close(request: TerminalIdRequestDto) -> CommandResult<()> 
         })?
 }
 
-fn terminal_close_blocking(request: TerminalIdRequestDto) -> CommandResult<()> {
+pub fn terminal_close_direct(request: TerminalIdRequestDto) -> CommandResult<()> {
     let handle = {
         let mut registry = lock_terminals()?;
         registry.remove(&request.terminal_id)
@@ -1230,6 +1476,22 @@ mod tests {
         kill_terminal_process(&process);
 
         assert_eq!(kills.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn terminal_output_buffer_replays_initial_and_incremental_chunks() {
+        let mut buffer = TerminalOutputBuffer::new();
+        buffer.push(0, "hello".into());
+        buffer.push(1, " world".into());
+
+        let initial = buffer.read_after(None, 64);
+        assert_eq!(initial.len(), 2);
+        assert_eq!(initial[0].sequence, 0);
+        assert_eq!(initial[0].data, "hello");
+
+        let incremental = buffer.read_after(Some(0), 64);
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].sequence, 1);
     }
 
     #[test]

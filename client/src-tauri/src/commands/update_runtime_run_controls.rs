@@ -50,7 +50,7 @@ pub async fn update_runtime_run_controls<R: Runtime + 'static>(
     })?
 }
 
-fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
+pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: DesktopState,
     request: UpdateRuntimeRunControlsRequestDto,

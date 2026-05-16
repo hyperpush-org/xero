@@ -25,6 +25,8 @@ pub struct DeveloperToolCatalogEntryDto {
     pub activation_groups: Vec<String>,
     pub tool_packs: Vec<DeveloperToolPackSummaryDto>,
     pub input_schema: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

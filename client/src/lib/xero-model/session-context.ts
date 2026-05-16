@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { codePatchAvailabilitySchema } from './code-history'
-import { isoTimestampSchema, nonEmptyOptionalTextSchema } from './shared'
-import { agentSessionLineageSchema, agentSessionSchema } from './runtime'
+import { codePatchAvailabilitySchema } from '@xero/ui/model/code-history'
+import { isoTimestampSchema, nonEmptyOptionalTextSchema } from '@xero/ui/model/shared'
+import { agentSessionLineageSchema, agentSessionSchema } from '@xero/ui/model/runtime'
 
 export const XERO_SESSION_CONTEXT_CONTRACT_VERSION = 1
 

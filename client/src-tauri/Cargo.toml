@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/xero-agent-core", "crates/xero-cli"]
+members = [".", "crates/xero-agent-core", "crates/xero-cli", "crates/xero-remote-bridge"]
 exclude = ["crates/cookie-importer"]
 resolver = "2"
 
@@ -18,6 +18,14 @@ path = "src/main.rs"
 [[bin]]
 name = "xero-harness-evals"
 path = "src/bin/xero_harness_evals.rs"
+
+[[bin]]
+name = "tool-harness"
+path = "src/bin/tool_harness.rs"
+
+[[bin]]
+name = "xero-tui"
+path = "src/bin/xero_tui.rs"
 
 [lib]
 name = "xero_desktop_lib"
@@ -60,6 +68,7 @@ arc-swap = "1"
 base64 = "0.22"
 bs58 = "0.5"
 byteorder = "1"
+crossterm = "0.28"
 csv = "1"
 dirs = "5"
 ed25519-dalek = { version = "2", default-features = false, features = ["fast", "std", "rand_core"] }
@@ -76,6 +85,7 @@ pulldown-cmark = "0.12"
 prost = { version = "0.13", optional = true }
 quick-xml = "0.36"
 rand = "0.8"
+ratatui = { version = "0.29", default-features = false, features = ["crossterm", "scrolling-regions"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -102,6 +112,8 @@ url = "2"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 xero-agent-core = { path = "crates/xero-agent-core" }
+xero-cli = { path = "crates/xero-cli" }
+xero-remote-bridge = { path = "crates/xero-remote-bridge" }
 tauri-plugin-updater = { version = "2.10", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-process = "2.3"
 portable-pty = "0.8"

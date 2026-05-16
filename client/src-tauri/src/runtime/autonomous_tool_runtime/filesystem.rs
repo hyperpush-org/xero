@@ -603,16 +603,16 @@ impl AutonomousToolRuntime {
         } else {
             Vec::new()
         };
-        let summary = stat_summary(
-            &display_path,
+        let summary = stat_summary(StatSummaryInput {
+            path: &display_path,
             kind,
-            metadata.len(),
-            request.include_hash,
-            sha256.as_deref(),
-            &hash_omitted_reason,
-            request.include_git_status,
-            git_status.len(),
-        );
+            size: metadata.len(),
+            include_hash: request.include_hash,
+            sha256: sha256.as_deref(),
+            hash_omitted_reason: &hash_omitted_reason,
+            include_git_status: request.include_git_status,
+            git_status_count: git_status.len(),
+        });
 
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_STAT.into(),
@@ -1897,7 +1897,7 @@ impl AutonomousToolRuntime {
                             ),
                         )
                     })?;
-                entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+                entries.sort_by_key(|entry| entry.file_name());
                 for entry in entries {
                     let child_from = entry.path();
                     let child_relative = self.repo_relative_path(&child_from)?;
@@ -2062,20 +2062,20 @@ impl AutonomousToolRuntime {
         }
 
         if !validation_errors.is_empty() {
-            let output = fs_transaction_output(
-                request.preview,
-                false,
-                request.operations.len(),
-                planned.len(),
-                validation_errors.clone(),
-                planned.iter().map(fs_transaction_planned_result).collect(),
-                Vec::new(),
-                AutonomousFsTransactionRollbackStatus {
+            let output = fs_transaction_output(FsTransactionOutputInput {
+                preview: request.preview,
+                applied: false,
+                operation_count: request.operations.len(),
+                validated_operations: planned.len(),
+                validation_errors: validation_errors.clone(),
+                planned_operations: planned.iter().map(fs_transaction_planned_result).collect(),
+                results: Vec::new(),
+                rollback_status: AutonomousFsTransactionRollbackStatus {
                     attempted: false,
                     succeeded: true,
                     attempts: Vec::new(),
                 },
-            );
+            });
             return Ok(AutonomousToolResult {
                 tool_name: AUTONOMOUS_TOOL_FS_TRANSACTION.into(),
                 summary: format!(
@@ -2093,20 +2093,20 @@ impl AutonomousToolRuntime {
             .map(fs_transaction_planned_result)
             .collect::<Vec<_>>();
         if request.preview {
-            let output = fs_transaction_output(
-                true,
-                false,
-                request.operations.len(),
-                planned.len(),
-                Vec::new(),
-                planned_results,
-                Vec::new(),
-                AutonomousFsTransactionRollbackStatus {
+            let output = fs_transaction_output(FsTransactionOutputInput {
+                preview: true,
+                applied: false,
+                operation_count: request.operations.len(),
+                validated_operations: planned.len(),
+                validation_errors: Vec::new(),
+                planned_operations: planned_results,
+                results: Vec::new(),
+                rollback_status: AutonomousFsTransactionRollbackStatus {
                     attempted: false,
                     succeeded: true,
                     attempts: Vec::new(),
                 },
-            );
+            });
             return Ok(AutonomousToolResult {
                 tool_name: AUTONOMOUS_TOOL_FS_TRANSACTION.into(),
                 summary: format!(
@@ -2127,16 +2127,16 @@ impl AutonomousToolRuntime {
                 Err(error) => {
                     results.push(fs_transaction_apply_error_result(operation, error));
                     let rollback_status = self.rollback_fs_transaction_backup(backup).status();
-                    let output = fs_transaction_output(
-                        false,
-                        false,
-                        request.operations.len(),
-                        planned.len(),
-                        Vec::new(),
-                        planned_results,
+                    let output = fs_transaction_output(FsTransactionOutputInput {
+                        preview: false,
+                        applied: false,
+                        operation_count: request.operations.len(),
+                        validated_operations: planned.len(),
+                        validation_errors: Vec::new(),
+                        planned_operations: planned_results,
                         results,
                         rollback_status,
-                    );
+                    });
                     return Ok(AutonomousToolResult {
                         tool_name: AUTONOMOUS_TOOL_FS_TRANSACTION.into(),
                         summary: format!(
@@ -2150,20 +2150,20 @@ impl AutonomousToolRuntime {
             }
         }
 
-        let output = fs_transaction_output(
-            false,
-            true,
-            request.operations.len(),
-            planned.len(),
-            Vec::new(),
-            planned_results,
+        let output = fs_transaction_output(FsTransactionOutputInput {
+            preview: false,
+            applied: true,
+            operation_count: request.operations.len(),
+            validated_operations: planned.len(),
+            validation_errors: Vec::new(),
+            planned_operations: planned_results,
             results,
-            AutonomousFsTransactionRollbackStatus {
+            rollback_status: AutonomousFsTransactionRollbackStatus {
                 attempted: false,
                 succeeded: true,
                 attempts: Vec::new(),
             },
-        );
+        });
         Ok(AutonomousToolResult {
             tool_name: AUTONOMOUS_TOOL_FS_TRANSACTION.into(),
             summary: format!(
@@ -2664,7 +2664,7 @@ impl AutonomousToolRuntime {
                     ),
                 )
             })?;
-            entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
                 let child_path = entry.path();
                 let repo_relative = self.repo_relative_path(&child_path)?;
@@ -3193,7 +3193,7 @@ impl AutonomousToolRuntime {
             }
         };
         let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
-        entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+        entries.sort_by_key(|entry| entry.file_name());
 
         for entry in entries {
             let child_path = entry.path();
@@ -3419,7 +3419,7 @@ impl AutonomousToolRuntime {
                 }
             };
             let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
-            entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
                 let child_path = entry.path();
                 let repo_relative = self.repo_relative_path(&child_path)?;
@@ -4827,7 +4827,7 @@ fn fs_transaction_source_digest_from_output(output: &AutonomousToolOutput) -> Op
     }
 }
 
-fn fs_transaction_output(
+struct FsTransactionOutputInput {
     preview: bool,
     applied: bool,
     operation_count: usize,
@@ -4836,7 +4836,19 @@ fn fs_transaction_output(
     planned_operations: Vec<AutonomousFsTransactionOperationResult>,
     results: Vec<AutonomousFsTransactionOperationResult>,
     rollback_status: AutonomousFsTransactionRollbackStatus,
-) -> AutonomousFsTransactionOutput {
+}
+
+fn fs_transaction_output(input: FsTransactionOutputInput) -> AutonomousFsTransactionOutput {
+    let FsTransactionOutputInput {
+        preview,
+        applied,
+        operation_count,
+        validated_operations,
+        validation_errors,
+        planned_operations,
+        results,
+        rollback_status,
+    } = input;
     let changed_paths = planned_operations
         .iter()
         .flat_map(|operation| operation.changed_paths.iter().cloned())
@@ -5023,7 +5035,7 @@ fn copy_fs_transaction_backup_entry(from: &Path, to: &Path) -> CommandResult<()>
                         ),
                     )
                 })?;
-            entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+            entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
                 copy_fs_transaction_backup_entry(&entry.path(), &to.join(entry.file_name()))?;
             }
@@ -5712,16 +5724,28 @@ fn system_time_to_rfc3339(value: SystemTime) -> Option<String> {
     datetime.format(&Rfc3339).ok()
 }
 
-fn stat_summary(
-    path: &str,
+struct StatSummaryInput<'a> {
+    path: &'a str,
     kind: AutonomousStatKind,
     size: u64,
     include_hash: bool,
-    sha256: Option<&str>,
-    hash_omitted_reason: &Option<String>,
+    sha256: Option<&'a str>,
+    hash_omitted_reason: &'a Option<String>,
     include_git_status: bool,
     git_status_count: usize,
-) -> String {
+}
+
+fn stat_summary(input: StatSummaryInput<'_>) -> String {
+    let StatSummaryInput {
+        path,
+        kind,
+        size,
+        include_hash,
+        sha256,
+        hash_omitted_reason,
+        include_git_status,
+        git_status_count,
+    } = input;
     let kind_label = match kind {
         AutonomousStatKind::File => "file",
         AutonomousStatKind::Directory => "directory",

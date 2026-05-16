@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { normalizeOptionalText } from './shared'
+import { normalizeOptionalText } from '@xero/ui/model/shared'
 
 export const dictationPlatformSchema = z.enum(['macos', 'unsupported'])
 export const dictationEngineSchema = z.enum(['modern', 'legacy'])

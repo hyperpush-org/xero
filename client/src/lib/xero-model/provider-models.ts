@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { estimateUtf16Bytes } from '@/lib/byte-budget-cache'
-import { optionalIsoTimestampSchema } from './shared'
-import { runtimeProviderIdSchema } from './runtime'
+import { optionalIsoTimestampSchema } from '@xero/ui/model/shared'
+import { runtimeProviderIdSchema } from '@xero/ui/model/runtime'
 import {
   sessionContextLimitConfidenceSchema,
   sessionContextLimitSourceSchema,

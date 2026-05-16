@@ -23,7 +23,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <>
         <p>
           Xero is a desktop app. Your projects, sessions, and journals stay on your machine. The
-          API keys you paste live in the operating system keychain — we never receive them, and they
+          API keys you paste live in the operating system keychain. We never receive them, and they
           aren&apos;t written in plain text on disk.
         </p>
         <p>
@@ -65,12 +65,12 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <>
         <p>
           The website you&apos;re reading uses standard analytics to understand which pages get used
-          (Vercel Analytics) — page-level only, no personal identifiers, no cross-site tracking.
+          (Vercel Analytics): page-level only, no personal identifiers, no cross-site tracking.
         </p>
         <p>
           The desktop app sends optional, anonymized crash reports if you opt in. You can disable
           them under{" "}
-          <span className="font-mono text-xs text-foreground">Settings → Diagnostics</span> — they
+          <span className="font-mono text-xs text-foreground">Settings → Diagnostics</span>. They
           contain stack traces and version info, never your prompts or files.
         </p>
         <p>
@@ -90,7 +90,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <>
         <p>
           Each provider you connect has its own privacy and data-retention policy. Xero is a thin
-          client over their APIs — your prompts and outputs are subject to whichever provider you
+          client over their APIs. Your prompts and outputs are subject to whichever provider you
           chose for that call.
         </p>
         <p>
@@ -120,8 +120,8 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <>
         <p>
           The data Xero holds about you (locally) is yours. Delete the app and the journals go with
-          it. For anything we hold server-side — emails to support, the analytics record of your
-          page views — you can request access or deletion at{" "}
+          it. For anything we hold server-side, such as emails to support or the analytics record
+          of your page views, you can request access or deletion at{" "}
           <Link
             href={mailto()}
             className="underline underline-offset-2 hover:text-foreground"

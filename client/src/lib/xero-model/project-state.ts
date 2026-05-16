@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isoTimestampSchema } from './shared'
+import { isoTimestampSchema } from '@xero/ui/model/shared'
 
 export const projectStateBackupIdSchema = z
   .string()

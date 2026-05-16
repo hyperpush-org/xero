@@ -1,4 +1,4 @@
-import type { RuntimeProviderIdDto } from './runtime'
+import type { RuntimeProviderIdDto } from '@xero/ui/model/runtime'
 
 export type ProviderBaseUrlMode = 'none' | 'optional' | 'required'
 export type ProviderApiVersionMode = 'none' | 'optional' | 'required'

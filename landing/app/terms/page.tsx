@@ -23,7 +23,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <p>
         These terms cover your use of the Xero desktop app and the website at{" "}
         <span className="font-mono text-xs text-foreground">{siteDomain}</span>. By installing the app or
-        using the site you agree to them. If you don&apos;t agree, don&apos;t use them — that&apos;s
+        using the site you agree to them. If you don&apos;t agree, don&apos;t use them. That&apos;s
         the whole enforcement mechanism.
       </p>
     ),
@@ -51,7 +51,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     title: "3. Your content stays yours",
     body: (
       <p>
-        Anything you write, paste, or generate inside Xero — prompts, code, diffs, journals — stays
+        Anything you write, paste, or generate inside Xero (prompts, code, diffs, journals) stays
         your property. We don&apos;t claim a license to your content. We don&apos;t see it: the
         desktop app is local-first and the model traffic is provider-direct.
       </p>
@@ -65,7 +65,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
         <p>
           When you connect a provider key, your use of that provider is governed by their terms,
           not ours. Xero is a client over their APIs. Costs they bill, rate limits they enforce,
-          policies they publish — those are between you and them.
+          policies they publish. Those are between you and them.
         </p>
         <p>
           Same for any third-party tools you wire into an agent (MCP servers, browser sites,
@@ -87,7 +87,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
           <li>Anything illegal where you are or where the affected systems live</li>
         </ul>
         <p>
-          You&apos;re the operator. Agents do what you tell them to do — the responsibility for
+          You&apos;re the operator. Agents do what you tell them to do. The responsibility for
           what they do is yours.
         </p>
       </>
@@ -100,7 +100,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
       <p>
         Xero is in beta. Things break, schemas change, journals occasionally need a migration. Keep
         backups of anything you can&apos;t afford to lose. We&apos;ll tell you when something
-        ships, and we&apos;ll fix what we break — but we won&apos;t promise zero-downtime upgrades
+        ships, and we&apos;ll fix what we break, but we won&apos;t promise zero-downtime upgrades
         before v1.
       </p>
     ),
@@ -111,7 +111,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     body: (
       <p>
         The app and the site are provided <em>as is</em>, without warranty of any kind, express or
-        implied — including merchantability, fitness for a particular purpose, and
+        implied, including merchantability, fitness for a particular purpose, and
         non-infringement. We do our best, and we still ship software.
       </p>
     ),
@@ -133,7 +133,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     title: "9. Changes",
     body: (
       <p>
-        We may update these terms as the product grows — for example when the optional Solana
+        We may update these terms as the product grows, for example when the optional Solana
         bundle ships. Material changes will be announced on this page with a new last-updated date.
         Keep using Xero after a change and you&apos;re agreeing to the updated terms.
       </p>
@@ -144,7 +144,7 @@ const sections: { id: string; title: string; body: React.ReactNode }[] = [
     title: "10. Contact",
     body: (
       <p>
-        Anything to flag — including a takedown, a security report, or just a question? Email{" "}
+        Anything to flag, including a takedown, a security report, or just a question? Email{" "}
         <Link
           href={mailto()}
           className="underline underline-offset-2 hover:text-foreground"

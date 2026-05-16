@@ -60,6 +60,9 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+config :xero, Xero.Remote.Jwt,
+  signing_key: System.get_env("XERO_REMOTE_JWT_SIGNING_KEY") || "dev-remote-jwt-signing-key"
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

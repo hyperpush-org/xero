@@ -42,3 +42,6 @@ export function mailto(subject?: string) {
   const query = subject ? `?subject=${encodeURIComponent(subject)}` : ""
   return `mailto:${siteConfig.supportEmail}${query}`
 }
+
+export const tuiInstallCommand = `curl -fsSL ${absoluteUrl("/install.sh")} | sh`
+export const tuiPowerShellInstallCommand = `irm ${absoluteUrl("/install.ps1")} | iex`

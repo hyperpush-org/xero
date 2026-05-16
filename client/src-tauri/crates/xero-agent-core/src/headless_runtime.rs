@@ -38,10 +38,28 @@ const DEFAULT_HEADLESS_MAX_PROVIDER_TURNS: usize = 8;
 const DEFAULT_HEADLESS_COMMAND_TIMEOUT_MS: u64 = 120_000;
 const MAX_HEADLESS_COMMAND_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const MAX_TOOL_OUTPUT_BYTES: usize = 128 * 1024;
+const HEADLESS_LIST_LIMIT: usize = 200;
+const SKIPPED_WORKSPACE_DIRS: &[&str] = &[
+    ".git",
+    ".xero",
+    ".next",
+    ".turbo",
+    ".cache",
+    ".yarn",
+    ".pnpm-store",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+];
 const HEADLESS_TOOL_READ: &str = "read";
 const HEADLESS_TOOL_LIST: &str = "list";
 const HEADLESS_TOOL_WRITE: &str = "write";
 const HEADLESS_TOOL_PATCH: &str = "patch";
+const HEADLESS_TOOL_DELETE: &str = "delete";
+const HEADLESS_TOOL_MOVE: &str = "move";
+const HEADLESS_TOOL_REPLACE: &str = "replace";
 const HEADLESS_TOOL_COMMAND: &str = "command";
 const LEGACY_HEADLESS_MINI_TOOLS: &[&str] = &["read_file", "write_file", "list_files"];
 
@@ -140,6 +158,66 @@ pub struct HeadlessProviderRuntime<S = FileAgentCoreStore> {
     options: HeadlessRuntimeOptions,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadlessRunIdentity {
+    runtime_agent_id: String,
+    agent_definition_id: String,
+    agent_definition_version: i64,
+    system_prompt: String,
+    thinking_effort: Option<String>,
+}
+
+impl HeadlessRunIdentity {
+    fn from_request(request: &StartRunRequest, workspace_root: Option<&Path>) -> Self {
+        let runtime_agent_id = request
+            .controls
+            .as_ref()
+            .map(|controls| controls.runtime_agent_id.trim())
+            .filter(|id| !id.is_empty())
+            .unwrap_or("engineer")
+            .to_owned();
+        let agent_definition_id = request
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.agent_definition_id.as_deref())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(runtime_agent_id.as_str())
+            .to_owned();
+        let agent_definition_version = request
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.agent_definition_version)
+            .filter(|version| *version > 0)
+            .unwrap_or(1);
+        let thinking_effort = request.controls.as_ref().and_then(|controls| {
+            normalize_headless_thinking_effort(controls.thinking_effort.as_deref())
+        });
+        let system_prompt = headless_system_prompt_for_agent(&runtime_agent_id, workspace_root);
+        Self {
+            runtime_agent_id,
+            agent_definition_id,
+            agent_definition_version,
+            system_prompt,
+            thinking_effort,
+        }
+    }
+
+    fn from_snapshot(snapshot: &RunSnapshot) -> Self {
+        Self {
+            runtime_agent_id: snapshot.runtime_agent_id.clone(),
+            agent_definition_id: snapshot.agent_definition_id.clone(),
+            agent_definition_version: snapshot.agent_definition_version,
+            system_prompt: snapshot.system_prompt.clone(),
+            thinking_effort: None,
+        }
+    }
+
+    fn allows_workspace_writes(&self) -> bool {
+        headless_agent_allows_workspace_writes(&self.runtime_agent_id)
+    }
+}
+
 impl<S> HeadlessProviderRuntime<S>
 where
     S: AgentCoreStore,
@@ -162,6 +240,8 @@ where
 
     fn start_real_run(&self, request: StartRunRequest) -> CoreResult<RunSnapshot> {
         self.validate_selected_provider(&request.provider)?;
+        let workspace_root = self.workspace_root();
+        let identity = HeadlessRunIdentity::from_request(&request, workspace_root.as_deref());
         let runtime_contract = ProductionRuntimeContract::real_provider(
             "headless_provider_runtime",
             request.project_id.clone(),
@@ -190,6 +270,10 @@ where
 
         let snapshot = self.store.insert_run(NewRunRecord {
             trace_id: None,
+            runtime_agent_id: identity.runtime_agent_id.clone(),
+            agent_definition_id: identity.agent_definition_id.clone(),
+            agent_definition_version: identity.agent_definition_version,
+            system_prompt: identity.system_prompt.clone(),
             project_id: request.project_id,
             agent_session_id: request.agent_session_id,
             run_id: request.run_id,
@@ -211,6 +295,10 @@ where
                 "providerId": snapshot.provider_id,
                 "modelId": snapshot.model_id,
                 "execution": "production_real_provider",
+                "runtimeAgentId": identity.runtime_agent_id.clone(),
+                "agentDefinitionId": identity.agent_definition_id.clone(),
+                "agentDefinitionVersion": identity.agent_definition_version,
+                "thinkingEffort": identity.thinking_effort.clone(),
                 "providerPreflight": preflight.clone(),
             }),
         })?;
@@ -247,7 +335,7 @@ where
             project_id: snapshot.project_id.clone(),
             run_id: snapshot.run_id.clone(),
             role: MessageRole::System,
-            content: headless_system_prompt(self.workspace_root().as_deref()),
+            content: identity.system_prompt.clone(),
             provider_metadata: None,
         })?;
         self.store.append_message(NewMessageRecord {
@@ -300,7 +388,7 @@ where
         let started = self
             .store
             .load_run(&snapshot.project_id, &snapshot.run_id)?;
-        self.drive_real_turn(started, &preflight)?;
+        self.drive_real_turn(started, &preflight, &identity)?;
         self.store.load_run(&snapshot.project_id, &snapshot.run_id)
     }
 
@@ -359,7 +447,8 @@ where
             }),
         })?;
         let snapshot = self.store.load_run(&request.project_id, &request.run_id)?;
-        self.drive_real_turn(snapshot, &preflight)?;
+        let identity = HeadlessRunIdentity::from_snapshot(&snapshot);
+        self.drive_real_turn(snapshot, &preflight, &identity)?;
         self.store.load_run(&request.project_id, &request.run_id)
     }
 
@@ -367,6 +456,7 @@ where
         &self,
         snapshot: RunSnapshot,
         provider_preflight: &ProviderPreflightSnapshot,
+        identity: &HeadlessRunIdentity,
     ) -> CoreResult<()> {
         let provider_timeout_ms = match &self.provider {
             HeadlessProviderExecutionConfig::OpenAiCompatible(config) => config.timeout_ms,
@@ -412,7 +502,7 @@ where
             let workspace_root = self.workspace_root();
             let tool_runtime = HeadlessProductionToolRuntime::new(
                 workspace_root.as_ref(),
-                self.allow_workspace_writes(),
+                self.allow_workspace_writes() && identity.allows_workspace_writes(),
                 self.app_data_roots_for_project(&current.project_id),
             )?;
             self.record_tool_registry_snapshot(&current, turn_index, &tool_runtime)?;
@@ -422,6 +512,10 @@ where
                 &tool_runtime,
                 provider_preflight,
             )?;
+            let project_id = current.project_id.clone();
+            let run_id = current.run_id.clone();
+            let trace_id = current.trace_id.clone();
+            let store = &self.store;
             let response = match &self.provider {
                 HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
                     send_openai_compatible_chat(
@@ -429,6 +523,7 @@ where
                         config,
                         &chat_messages,
                         tool_runtime.openai_tool_definitions(),
+                        identity.thinking_effort.as_deref(),
                     )?
                 }
                 HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
@@ -437,6 +532,27 @@ where
                         config,
                         &chat_messages,
                         tool_runtime.openai_response_tool_definitions(),
+                        identity.thinking_effort.as_deref(),
+                        |text, reasoning| {
+                            // Best-effort progress event for the TUI's
+                            // inline preview. Errors here would only
+                            // bubble up as a missing preview update; the
+                            // final message is still persisted below.
+                            let _ = store.append_event(NewRuntimeEvent {
+                                project_id: project_id.clone(),
+                                run_id: run_id.clone(),
+                                event_kind: RuntimeEventKind::MessageDelta,
+                                trace: Some(RuntimeTraceContext::for_provider_turn(
+                                    &trace_id, &run_id, turn_index,
+                                )),
+                                payload: json!({
+                                    "role": "assistant",
+                                    "text": text,
+                                    "reasoningText": reasoning,
+                                    "inProgress": true,
+                                }),
+                            });
+                        },
                     )?
                 }
                 HeadlessProviderExecutionConfig::Fake => {
@@ -445,6 +561,12 @@ where
             };
             let content = response.content_text();
             let tool_calls = response.tool_calls;
+            let reasoning_text = response.reasoning;
+            let reasoning_for_metadata = if reasoning_text.trim().is_empty() {
+                None
+            } else {
+                Some(reasoning_text.clone())
+            };
             let next_tool_call_count = tool_call_count + tool_calls.len() as u64;
             if self
                 .options
@@ -500,12 +622,22 @@ where
 
             if tool_calls.is_empty() {
                 if !content.trim().is_empty() {
+                    let assistant_provider_message_id =
+                        provider_assistant_message_id(&current.run_id, turn_index);
+                    let provider_metadata = reasoning_for_metadata.as_ref().map(|reasoning| {
+                        RuntimeMessageProviderMetadata::assistant_turn(
+                            assistant_provider_message_id.clone(),
+                            Some(reasoning.clone()),
+                            None,
+                            Vec::new(),
+                        )
+                    });
                     self.store.append_message(NewMessageRecord {
                         project_id: current.project_id.clone(),
                         run_id: current.run_id.clone(),
                         role: MessageRole::Assistant,
                         content,
-                        provider_metadata: None,
+                        provider_metadata,
                     })?;
                 }
                 self.store.update_run_status(
@@ -538,8 +670,10 @@ where
                 run_id: current.run_id.clone(),
                 role: MessageRole::Assistant,
                 content: content.clone(),
-                provider_metadata: Some(RuntimeMessageProviderMetadata::assistant_tool_calls(
+                provider_metadata: Some(RuntimeMessageProviderMetadata::assistant_turn(
                     assistant_provider_message_id.clone(),
+                    reasoning_for_metadata.clone(),
+                    None,
                     tool_calls
                         .iter()
                         .map(RuntimeProviderToolCallMetadata::from)
@@ -872,6 +1006,61 @@ where
             {
                 self.record_headless_file_changed(snapshot, path.clone(), "patch", json!({}))?;
             }
+        } else if tool_name == HEADLESS_TOOL_DELETE {
+            self.record_headless_file_changed(
+                snapshot,
+                provider_payload["output"]["path"].clone(),
+                "delete",
+                json!({
+                    "kind": provider_payload["output"]["kind"].clone(),
+                    "recursive": provider_payload["output"]["recursive"].clone(),
+                    "fileReservation": provider_payload["output"]["fileReservation"].clone(),
+                    "rollback": provider_payload["output"]["rollback"].clone(),
+                }),
+            )?;
+        } else if tool_name == HEADLESS_TOOL_MOVE {
+            self.record_headless_file_changed(
+                snapshot,
+                provider_payload["output"]["from"].clone(),
+                "move_from",
+                json!({
+                    "to": provider_payload["output"]["to"].clone(),
+                    "kind": provider_payload["output"]["kind"].clone(),
+                    "fileReservation": provider_payload["output"]["fileReservation"].clone(),
+                    "rollback": provider_payload["output"]["rollback"].clone(),
+                }),
+            )?;
+            self.record_headless_file_changed(
+                snapshot,
+                provider_payload["output"]["to"].clone(),
+                "move_to",
+                json!({
+                    "from": provider_payload["output"]["from"].clone(),
+                    "kind": provider_payload["output"]["kind"].clone(),
+                    "fileReservation": provider_payload["output"]["fileReservation"].clone(),
+                    "rollback": provider_payload["output"]["rollback"].clone(),
+                }),
+            )?;
+        } else if tool_name == HEADLESS_TOOL_REPLACE {
+            for changed_file in provider_payload["output"]["changedFiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                self.record_headless_file_changed(
+                    snapshot,
+                    changed_file["path"].clone(),
+                    "replace",
+                    json!({
+                        "replacements": changed_file["replacements"].clone(),
+                        "occurrences": changed_file["occurrences"].clone(),
+                        "truncated": changed_file["truncated"].clone(),
+                        "fileReservation": changed_file["fileReservation"].clone(),
+                        "rollback": changed_file["rollback"].clone(),
+                        "dryRun": provider_payload["output"]["dryRun"].clone(),
+                    }),
+                )?;
+            }
         }
         self.store.append_event(NewRuntimeEvent {
             project_id: snapshot.project_id.clone(),
@@ -1180,6 +1369,10 @@ where
         let run_id = generate_headless_id("run-fork");
         let forked = self.store.insert_run(NewRunRecord {
             trace_id: None,
+            runtime_agent_id: source.runtime_agent_id.clone(),
+            agent_definition_id: source.agent_definition_id.clone(),
+            agent_definition_version: source.agent_definition_version,
+            system_prompt: source.system_prompt.clone(),
             project_id: request.project_id.clone(),
             agent_session_id: request.target_agent_session_id.clone(),
             run_id: run_id.clone(),
@@ -1459,6 +1652,9 @@ struct LimitedOutput {
 struct OpenAiProviderMessage {
     content: JsonValue,
     tool_calls: Vec<OpenAiToolCall>,
+    /// Reasoning ("thinking") text accumulated from the provider stream.
+    /// Empty for providers that don't expose reasoning summaries.
+    reasoning: String,
 }
 
 impl OpenAiProviderMessage {
@@ -1489,14 +1685,14 @@ fn provider_tool_result_message_id(run_id: &str, turn_index: usize, tool_call_id
 }
 
 #[derive(Debug, Clone)]
-struct HeadlessProductionToolRuntime {
+pub struct HeadlessProductionToolRuntime {
     workspace_root: PathBuf,
     allow_workspace_writes: bool,
     app_data_roots: Vec<String>,
 }
 
 impl HeadlessProductionToolRuntime {
-    fn new(
+    pub fn new(
         workspace_root: Option<&PathBuf>,
         allow_workspace_writes: bool,
         app_data_roots: Vec<String>,
@@ -1523,11 +1719,14 @@ impl HeadlessProductionToolRuntime {
         })
     }
 
-    fn descriptors(&self) -> Vec<ToolDescriptorV2> {
+    pub fn descriptors(&self) -> Vec<ToolDescriptorV2> {
         let mut descriptors = vec![headless_read_descriptor(), headless_list_descriptor()];
         if self.allow_workspace_writes {
             descriptors.push(headless_write_descriptor());
             descriptors.push(headless_patch_descriptor());
+            descriptors.push(headless_delete_descriptor());
+            descriptors.push(headless_move_descriptor());
+            descriptors.push(headless_replace_descriptor());
             descriptors.push(headless_command_descriptor());
         }
         descriptors
@@ -1554,7 +1753,7 @@ impl HeadlessProductionToolRuntime {
             .collect()
     }
 
-    fn dispatch_batch(
+    pub fn dispatch_batch(
         &self,
         project_id: &str,
         run_id: &str,
@@ -1672,6 +1871,45 @@ impl HeadlessProductionToolRuntime {
                     },
                 ))
                 .map_err(tool_execution_error_to_core_error)?;
+
+            let delete_runtime = self.clone();
+            registry
+                .register(StaticToolHandler::new_cancellable(
+                    headless_delete_descriptor(),
+                    move |context, call, control| {
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        let output = delete_runtime.delete(context, call)?;
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        Ok(output)
+                    },
+                ))
+                .map_err(tool_execution_error_to_core_error)?;
+
+            let move_runtime = self.clone();
+            registry
+                .register(StaticToolHandler::new_cancellable(
+                    headless_move_descriptor(),
+                    move |context, call, control| {
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        let output = move_runtime.move_path(context, call)?;
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        Ok(output)
+                    },
+                ))
+                .map_err(tool_execution_error_to_core_error)?;
+
+            let replace_runtime = self.clone();
+            registry
+                .register(StaticToolHandler::new_cancellable(
+                    headless_replace_descriptor(),
+                    move |context, call, control| {
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        let output = replace_runtime.replace_text(context, call)?;
+                        control.ensure_not_cancelled(&call.tool_name)?;
+                        Ok(output)
+                    },
+                ))
+                .map_err(tool_execution_error_to_core_error)?;
         }
 
         Ok(registry)
@@ -1706,8 +1944,7 @@ impl HeadlessProductionToolRuntime {
             .unwrap_or(".");
         let start = resolve_workspace_path_for_root(&self.workspace_root, prefix, false)
             .map_err(core_error_to_tool_execution_error)?;
-        let mut files = Vec::new();
-        collect_workspace_files(&self.workspace_root, &start, &mut files, 200)
+        let listing = collect_workspace_listing(&self.workspace_root, &start, HEADLESS_LIST_LIMIT)
             .map_err(core_error_to_tool_execution_error)?;
         Ok(ToolHandlerOutput::new(
             format!("Listed files below `{prefix}` through Tool Registry V2."),
@@ -1715,8 +1952,12 @@ impl HeadlessProductionToolRuntime {
                 "ok": true,
                 "root": self.workspace_root.display().to_string(),
                 "path": prefix,
-                "files": files,
-                "truncated": files.len() >= 200,
+                "directories": listing.directories,
+                "files": listing.files,
+                "entries": listing.entries,
+                "skippedDirectories": listing.skipped_directories,
+                "omittedEntryCount": listing.omitted_entry_count,
+                "truncated": listing.truncated,
             }),
         ))
     }
@@ -1810,6 +2051,268 @@ impl HeadlessProductionToolRuntime {
                 "exitCode": applied.exit_code,
                 "patchBytes": patch.len(),
                 "patchRedacted": true,
+            }),
+        ))
+    }
+
+    fn delete(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+    ) -> Result<ToolHandlerOutput, ToolExecutionError> {
+        let path = required_tool_string(&call.input, "path")?;
+        let recursive = call
+            .input
+            .get("recursive")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let resolved = resolve_workspace_path_for_root(&self.workspace_root, path, false)
+            .map_err(core_error_to_tool_execution_error)?;
+        let metadata = fs::metadata(&resolved).map_err(|error| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_delete_metadata_failed",
+                format!("Xero could not inspect `{path}` before deleting it: {error}"),
+            )
+        })?;
+        let rollback = rollback_checkpoint_metadata(path, &resolved);
+        let file_reservation = file_reservation_metadata(context, call, path);
+        let kind = if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        };
+        if metadata.is_dir() {
+            if !recursive {
+                return Err(ToolExecutionError::invalid_input(
+                    "agent_core_headless_delete_directory_requires_recursive",
+                    format!("Refusing to delete directory `{path}` without recursive=true."),
+                ));
+            }
+            fs::remove_dir_all(&resolved).map_err(|error| {
+                ToolExecutionError::retryable(
+                    "agent_core_headless_delete_failed",
+                    format!("Xero could not recursively delete `{path}`: {error}"),
+                )
+            })?;
+        } else {
+            fs::remove_file(&resolved).map_err(|error| {
+                ToolExecutionError::retryable(
+                    "agent_core_headless_delete_failed",
+                    format!("Xero could not delete `{path}`: {error}"),
+                )
+            })?;
+        }
+        Ok(ToolHandlerOutput::new(
+            format!("Deleted `{path}` through Tool Registry V2."),
+            json!({
+                "ok": true,
+                "path": path,
+                "kind": kind,
+                "recursive": recursive,
+                "rollback": rollback,
+                "fileReservation": file_reservation,
+            }),
+        ))
+    }
+
+    fn move_path(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+    ) -> Result<ToolHandlerOutput, ToolExecutionError> {
+        let from = required_tool_string(&call.input, "from")?;
+        let to = required_tool_string(&call.input, "to")?;
+        if from == to {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_core_headless_move_noop",
+                "`from` and `to` must be different paths.",
+            ));
+        }
+        let from_resolved = resolve_workspace_path_for_root(&self.workspace_root, from, false)
+            .map_err(core_error_to_tool_execution_error)?;
+        let to_resolved = resolve_workspace_path_for_root(&self.workspace_root, to, true)
+            .map_err(core_error_to_tool_execution_error)?;
+        if to_resolved.exists() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_core_headless_move_target_exists",
+                format!("Refusing to overwrite existing path `{to}`."),
+            ));
+        }
+        let metadata = fs::metadata(&from_resolved).map_err(|error| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_move_metadata_failed",
+                format!("Xero could not inspect `{from}` before moving it: {error}"),
+            )
+        })?;
+        if let Some(parent) = to_resolved.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                ToolExecutionError::retryable(
+                    "agent_core_headless_move_prepare_failed",
+                    format!(
+                        "Xero could not prepare `{}` for moving `{from}`: {error}",
+                        parent.display()
+                    ),
+                )
+            })?;
+        }
+        fs::rename(&from_resolved, &to_resolved).map_err(|error| {
+            ToolExecutionError::retryable(
+                "agent_core_headless_move_failed",
+                format!("Xero could not move `{from}` to `{to}`: {error}"),
+            )
+        })?;
+        let kind = if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        };
+        Ok(ToolHandlerOutput::new(
+            format!("Moved `{from}` to `{to}` through Tool Registry V2."),
+            json!({
+                "ok": true,
+                "from": from,
+                "to": to,
+                "kind": kind,
+                "rollback": {
+                    "kind": "file_move_rollback",
+                    "from": to,
+                    "to": from
+                },
+                "fileReservation": file_reservation_metadata(context, call, from),
+            }),
+        ))
+    }
+
+    fn replace_text(
+        &self,
+        context: &ToolExecutionContext,
+        call: &ToolCallInput,
+    ) -> Result<ToolHandlerOutput, ToolExecutionError> {
+        let root_path = call
+            .input
+            .get("path")
+            .and_then(JsonValue::as_str)
+            .unwrap_or(".");
+        let search = required_tool_string(&call.input, "search")?;
+        let replacement = call
+            .input
+            .get("replacement")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                ToolExecutionError::invalid_input(
+                    "agent_core_headless_replace_missing_replacement",
+                    "Missing required string field `replacement`.",
+                )
+            })?;
+        let dry_run = call
+            .input
+            .get("dryRun")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let max_replacements = call
+            .input
+            .get("maxReplacements")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(500)
+            .clamp(1, 5_000) as usize;
+        if search.is_empty() {
+            return Err(ToolExecutionError::invalid_input(
+                "agent_core_headless_replace_empty_search",
+                "`search` cannot be empty.",
+            ));
+        }
+        let start = resolve_workspace_path_for_root(&self.workspace_root, root_path, false)
+            .map_err(core_error_to_tool_execution_error)?;
+        let mut candidates = Vec::new();
+        if start.is_dir() {
+            candidates = collect_workspace_listing(&self.workspace_root, &start, 2_000)
+                .map_err(core_error_to_tool_execution_error)?
+                .files;
+        } else {
+            let relative = start
+                .strip_prefix(&self.workspace_root)
+                .map_err(|error| {
+                    ToolExecutionError::invalid_input(
+                        "agent_core_headless_replace_path_invalid",
+                        format!("Replacement path `{root_path}` is not in workspace: {error}"),
+                    )
+                })?
+                .to_string_lossy()
+                .to_string();
+            candidates.push(relative);
+        }
+
+        let mut replacements_remaining = max_replacements;
+        let mut changed_files = Vec::new();
+        let mut total_replacements = 0usize;
+        let mut skipped_files = Vec::new();
+        for path in candidates {
+            if replacements_remaining == 0 {
+                break;
+            }
+            let resolved = resolve_workspace_path_for_root(&self.workspace_root, &path, true)
+                .map_err(core_error_to_tool_execution_error)?;
+            let Ok(content) = fs::read_to_string(&resolved) else {
+                skipped_files.push(json!({
+                    "path": path,
+                    "reason": "non_utf8_or_unreadable"
+                }));
+                continue;
+            };
+            let occurrences = content.matches(search).count();
+            if occurrences == 0 {
+                continue;
+            }
+            let replacements_for_file = occurrences.min(replacements_remaining);
+            let mut replaced = String::with_capacity(content.len());
+            let mut cursor = content.as_str();
+            for _ in 0..replacements_for_file {
+                let Some(index) = cursor.find(search) else {
+                    break;
+                };
+                replaced.push_str(&cursor[..index]);
+                replaced.push_str(replacement);
+                cursor = &cursor[index + search.len()..];
+            }
+            replaced.push_str(cursor);
+            let rollback = rollback_checkpoint_metadata(&path, &resolved);
+            let file_reservation = file_reservation_metadata(context, call, &path);
+            if !dry_run {
+                fs::write(&resolved, replaced.as_bytes()).map_err(|error| {
+                    ToolExecutionError::retryable(
+                        "agent_core_headless_replace_write_failed",
+                        format!("Xero could not write replacements to `{path}`: {error}"),
+                    )
+                })?;
+            }
+            changed_files.push(json!({
+                "path": path,
+                "replacements": replacements_for_file,
+                "occurrences": occurrences,
+                "truncated": occurrences > replacements_for_file,
+                "rollback": rollback,
+                "fileReservation": file_reservation,
+            }));
+            total_replacements = total_replacements.saturating_add(replacements_for_file);
+            replacements_remaining = replacements_remaining.saturating_sub(replacements_for_file);
+        }
+        Ok(ToolHandlerOutput::new(
+            format!(
+                "{} {} replacement(s) across {} file(s) through Tool Registry V2.",
+                if dry_run { "Previewed" } else { "Applied" },
+                total_replacements,
+                changed_files.len()
+            ),
+            json!({
+                "ok": true,
+                "path": root_path,
+                "dryRun": dry_run,
+                "replacements": total_replacements,
+                "changedFiles": changed_files,
+                "skippedFiles": skipped_files,
+                "truncated": replacements_remaining == 0,
+                "searchRedacted": true,
+                "replacementRedacted": true,
             }),
         ))
     }
@@ -2117,15 +2620,33 @@ fn send_openai_compatible_chat(
     config: &OpenAiCompatibleHeadlessConfig,
     messages: &[JsonValue],
     tools: Vec<JsonValue>,
+    thinking_effort: Option<&str>,
 ) -> CoreResult<OpenAiProviderMessage> {
     let url = openai_compatible_chat_url(&config.base_url)?;
-    let body = json!({
+    let mut body = json!({
         "model": config.model_id,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
         "stream": false,
     });
+    if let Some(effort) = thinking_effort {
+        if config.provider_id == "deepseek" {
+            body.as_object_mut()
+                .expect("OpenAI-compatible request body is an object")
+                .insert("thinking".into(), json!({ "type": "enabled" }));
+            body.as_object_mut()
+                .expect("OpenAI-compatible request body is an object")
+                .insert(
+                    "reasoning_effort".into(),
+                    json!(deepseek_headless_effort(effort)),
+                );
+        } else if config.provider_id == "openrouter" {
+            body.as_object_mut()
+                .expect("OpenAI-compatible request body is an object")
+                .insert("reasoning".into(), json!({ "effort": effort }));
+        }
+    }
     let mut request = client.post(url).json(&body);
     if let Some(api_key) = config
         .api_key
@@ -2181,6 +2702,7 @@ fn send_openai_compatible_chat(
     Ok(OpenAiProviderMessage {
         content: message.get("content").cloned().unwrap_or(JsonValue::Null),
         tool_calls: parse_openai_tool_calls(&message)?,
+        reasoning: String::new(),
     })
 }
 
@@ -2191,12 +2713,17 @@ struct PartialOpenAiResponseToolCall {
     arguments: String,
 }
 
-fn send_openai_codex_responses(
+fn send_openai_codex_responses<F>(
     client: &Client,
     config: &OpenAiCodexHeadlessConfig,
     messages: &[JsonValue],
     tools: Vec<JsonValue>,
-) -> CoreResult<OpenAiProviderMessage> {
+    thinking_effort: Option<&str>,
+    on_progress: F,
+) -> CoreResult<OpenAiProviderMessage>
+where
+    F: FnMut(&str, &str),
+{
     let url = openai_codex_responses_url(&config.base_url)?;
     let mut body = json!({
         "model": config.model_id,
@@ -2213,6 +2740,17 @@ fn send_openai_codex_responses(
         body.as_object_mut()
             .expect("OpenAI Codex request body is an object")
             .insert("tools".into(), JsonValue::Array(tools));
+    }
+    if let Some(effort) = thinking_effort {
+        body.as_object_mut()
+            .expect("OpenAI Codex request body is an object")
+            .insert(
+                "reasoning".into(),
+                json!({
+                    "effort": clamp_openai_codex_headless_effort(&config.model_id, effort),
+                    "summary": "auto",
+                }),
+            );
     }
     let mut request = client
         .post(url)
@@ -2256,7 +2794,7 @@ fn send_openai_codex_responses(
             ),
         ));
     }
-    parse_openai_codex_responses_sse(&config.provider_id, response)
+    parse_openai_codex_responses_sse(&config.provider_id, response, on_progress)
 }
 
 fn openai_codex_responses_url(base_url: &str) -> CoreResult<String> {
@@ -2368,13 +2906,25 @@ fn openai_codex_response_input(messages: &[JsonValue]) -> CoreResult<Vec<JsonVal
     Ok(input)
 }
 
-fn parse_openai_codex_responses_sse(
+/// Lower bound between progress callbacks. The TUI polls every 200ms, so
+/// emitting twice that fast keeps the inline preview fresh without
+/// hammering the event log.
+const STREAM_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+fn parse_openai_codex_responses_sse<F>(
     provider_id: &str,
     response: reqwest::blocking::Response,
-) -> CoreResult<OpenAiProviderMessage> {
+    mut on_progress: F,
+) -> CoreResult<OpenAiProviderMessage>
+where
+    F: FnMut(&str, &str),
+{
     let mut message = String::new();
+    let mut reasoning = String::new();
     let mut partial_calls = BTreeMap::<usize, PartialOpenAiResponseToolCall>::new();
     let mut completed_call_count = 0_usize;
+    let mut last_progress = Instant::now() - STREAM_PROGRESS_INTERVAL;
+    let mut dirty = false;
     for line in BufReader::new(response).lines() {
         let line = line.map_err(|error| {
             CoreError::system_fault(
@@ -2409,6 +2959,26 @@ fn parse_openai_codex_responses_sse(
             "response.output_text.delta" => {
                 if let Some(delta) = value.get("delta").and_then(JsonValue::as_str) {
                     message.push_str(delta);
+                    dirty = true;
+                }
+            }
+            "response.reasoning_summary_text.delta" | "response.reasoning.delta" => {
+                if let Some(delta) = value.get("delta").and_then(JsonValue::as_str) {
+                    reasoning.push_str(delta);
+                    dirty = true;
+                }
+            }
+            "response.reasoning_summary_part.added" => {
+                // The model is starting a new summary block. Insert a
+                // soft separator so consecutive summaries don't read as
+                // one run-on paragraph.
+                if !reasoning.is_empty() && !reasoning.ends_with("\n\n") {
+                    if reasoning.ends_with('\n') {
+                        reasoning.push('\n');
+                    } else {
+                        reasoning.push_str("\n\n");
+                    }
+                    dirty = true;
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -2442,6 +3012,15 @@ fn parse_openai_codex_responses_sse(
             }
             _ => {}
         }
+        if dirty && last_progress.elapsed() >= STREAM_PROGRESS_INTERVAL {
+            on_progress(&message, &reasoning);
+            last_progress = Instant::now();
+            dirty = false;
+        }
+    }
+    // Flush any tail that arrived inside the last interval.
+    if dirty {
+        on_progress(&message, &reasoning);
     }
     let tool_calls = partial_calls
         .into_iter()
@@ -2479,6 +3058,7 @@ fn parse_openai_codex_responses_sse(
     Ok(OpenAiProviderMessage {
         content: json!(message),
         tool_calls,
+        reasoning,
     })
 }
 
@@ -2792,6 +3372,120 @@ fn headless_patch_descriptor() -> ToolDescriptorV2 {
     }
 }
 
+fn headless_delete_descriptor() -> ToolDescriptorV2 {
+    ToolDescriptorV2 {
+        name: HEADLESS_TOOL_DELETE.into(),
+        description:
+            "Delete a file, or recursively delete a directory, inside the registered workspace."
+                .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "recursive": { "type": "boolean" }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+        capability_tags: vec!["workspace".into(), "filesystem".into(), "mutation".into()],
+        application_metadata: ToolApplicationMetadata::granular("edit"),
+        effect_class: ToolEffectClass::WorkspaceMutation,
+        mutability: ToolMutability::Mutating,
+        sandbox_requirement: ToolSandboxRequirement::WorkspaceWrite,
+        approval_requirement: ToolApprovalRequirement::Policy,
+        telemetry_attributes: BTreeMap::from([
+            ("xero.tool.kind".into(), "workspace_file_delete".into()),
+            ("xero.tool.registry".into(), "tool_registry_v2".into()),
+        ]),
+        result_truncation: ToolResultTruncationContract {
+            max_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+            preserve_json_shape: false,
+        },
+    }
+}
+
+fn headless_move_descriptor() -> ToolDescriptorV2 {
+    ToolDescriptorV2 {
+        name: HEADLESS_TOOL_MOVE.into(),
+        description: "Move or rename a file or directory inside the registered workspace.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" }
+            },
+            "required": ["from", "to"],
+            "additionalProperties": false
+        }),
+        capability_tags: vec!["workspace".into(), "filesystem".into(), "mutation".into()],
+        application_metadata: ToolApplicationMetadata::granular("edit"),
+        effect_class: ToolEffectClass::WorkspaceMutation,
+        mutability: ToolMutability::Mutating,
+        sandbox_requirement: ToolSandboxRequirement::WorkspaceWrite,
+        approval_requirement: ToolApprovalRequirement::Policy,
+        telemetry_attributes: BTreeMap::from([
+            ("xero.tool.kind".into(), "workspace_file_move".into()),
+            ("xero.tool.registry".into(), "tool_registry_v2".into()),
+        ]),
+        result_truncation: ToolResultTruncationContract {
+            max_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+            preserve_json_shape: false,
+        },
+    }
+}
+
+fn headless_replace_descriptor() -> ToolDescriptorV2 {
+    ToolDescriptorV2 {
+        name: HEADLESS_TOOL_REPLACE.into(),
+        description: "Replace text in one UTF-8 file or across a bounded workspace subtree.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "search": { "type": "string" },
+                "replacement": { "type": "string" },
+                "dryRun": { "type": "boolean" },
+                "maxReplacements": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5000
+                }
+            },
+            "required": ["search", "replacement"],
+            "additionalProperties": false
+        }),
+        capability_tags: vec![
+            "workspace".into(),
+            "filesystem".into(),
+            "search".into(),
+            "mutation".into(),
+        ],
+        application_metadata: ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: ToolApplicationKind::Declarative,
+            dispatch_safety: ToolBatchDispatchSafety::ToolOwnedAtomic,
+            safety_requirements: vec![
+                "bounded_results".into(),
+                "supports_dry_run".into(),
+                "validates_targets_before_writing".into(),
+                "reports_diff".into(),
+            ],
+        },
+        effect_class: ToolEffectClass::WorkspaceMutation,
+        mutability: ToolMutability::Mutating,
+        sandbox_requirement: ToolSandboxRequirement::WorkspaceWrite,
+        approval_requirement: ToolApprovalRequirement::Policy,
+        telemetry_attributes: BTreeMap::from([
+            ("xero.tool.kind".into(), "workspace_text_replace".into()),
+            ("xero.tool.registry".into(), "tool_registry_v2".into()),
+        ]),
+        result_truncation: ToolResultTruncationContract {
+            max_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+            preserve_json_shape: true,
+        },
+    }
+}
+
 fn headless_command_descriptor() -> ToolDescriptorV2 {
     ToolDescriptorV2 {
         name: HEADLESS_TOOL_COMMAND.into(),
@@ -2886,6 +3580,32 @@ fn redacted_headless_tool_input(tool_name: &str, input: &JsonValue) -> (JsonValu
                         "changedFiles": patch_changed_paths(patch),
                     }),
                 );
+                return (JsonValue::Object(redacted), true);
+            }
+        }
+        HEADLESS_TOOL_REPLACE => {
+            let mut touched = false;
+            if let Some(search) = object.get("search").and_then(JsonValue::as_str) {
+                redacted.insert(
+                    "search".into(),
+                    json!({
+                        "redacted": true,
+                        "bytes": search.len(),
+                    }),
+                );
+                touched = true;
+            }
+            if let Some(replacement) = object.get("replacement").and_then(JsonValue::as_str) {
+                redacted.insert(
+                    "replacement".into(),
+                    json!({
+                        "redacted": true,
+                        "bytes": replacement.len(),
+                    }),
+                );
+                touched = true;
+            }
+            if touched {
                 return (JsonValue::Object(redacted), true);
             }
         }
@@ -3129,12 +3849,84 @@ fn tool_execution_error_to_core_error(error: ToolExecutionError) -> CoreError {
 }
 
 fn headless_system_prompt(workspace_root: Option<&Path>) -> String {
+    headless_system_prompt_for_agent("engineer", workspace_root)
+}
+
+fn headless_system_prompt_for_agent(
+    runtime_agent_id: &str,
+    workspace_root: Option<&Path>,
+) -> String {
     let workspace = workspace_root
         .map(|root| root.display().to_string())
         .unwrap_or_else(|| "the configured workspace".into());
-    format!(
-        "You are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables. Avoid network access unless the benchmark policy explicitly allows it, and finish with a concise summary."
-    )
+    match runtime_agent_id {
+        "ask" => format!(
+            "xero-owned-agent-v1\n\nYou are Xero's Ask agent. Answer the user's question in chat using audited observe-only tools only when grounding is needed.\n\nAsk is answer-only in observable effect. Do not edit, write, patch, delete, rename, create directories, run shell commands, start or stop processes, control browsers or devices, invoke external services, install or invoke skills, spawn subagents, or mutate app state. Do not request approval to escape this boundary.\n\nUse the production Tool Registry V2 observe-only tools to inspect files in {workspace}: `read` and `list`. For broad project questions, survey the repository root first, prefer root-level README/package/Cargo/workspace files before descending into a subdirectory, and treat folders such as `landing/` as one component until root context proves otherwise.\n\nFinal response contract: answer directly, cite project facts or uncertainty when relevant, name important files, symbols, decisions, or constraints when helpful, and do not include secrets."
+        ),
+        "plan" => format!(
+            "xero-owned-agent-v1\n\nYou are Xero's Plan agent. Turn ambiguous user intent into a clear implementation plan without mutating repository files.\n\nPlan is planning-only in observable effect. Do not edit, write, patch, delete, rename, create directories, run shell commands, start or stop processes, or mutate external services.\n\nUse the production Tool Registry V2 observe-only tools to inspect files in {workspace}: `read` and `list`. For broad project questions, survey root context before choosing a subsystem.\n\nFinal response contract: summarize the plan, context used, risks, and a deterministic handoff for implementation."
+        ),
+        "debug" => format!(
+            "xero-owned-agent-v1\n\nYou are Xero's Debug agent. Reproduce, gather evidence, test hypotheses, isolate root cause, fix when needed, and verify.\n\nUse the production Tool Registry V2 tools in {workspace}: `read`, `list`, and, when available, `write`, `patch`, `delete`, `move`, `replace`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables.\n\nFinal response contract: provide symptom, root cause, fix, files changed, verification, and residual risk."
+        ),
+        _ => format!(
+            "xero-owned-agent-v1\n\nYou are Xero's headless owned-agent runtime. Use the production Tool Registry V2 tools when you need to inspect, edit, patch, or verify files in {workspace}: `read`, `list`, and, when available, `write`, `patch`, `delete`, `move`, `replace`, and `command`. Keep task deliverables inside the workspace, never touch .git or .xero, and use scratch locations such as /tmp for build outputs, compiled binaries, downloaded helpers, and verification debris when the command runner allows it. Before probing fragile recovery inputs, copy them first and work from the copies when possible. Before finishing, remove temporary files you created inside the workspace and leave only task-requested deliverables. Avoid network access unless the benchmark policy explicitly allows it, and finish with a concise summary."
+        ),
+    }
+}
+
+fn headless_agent_allows_workspace_writes(runtime_agent_id: &str) -> bool {
+    !matches!(runtime_agent_id, "ask" | "plan" | "agent_create")
+}
+
+fn normalize_headless_thinking_effort(effort: Option<&str>) -> Option<String> {
+    Some(match effort?.trim().to_ascii_lowercase().as_str() {
+        "minimal" => "minimal".into(),
+        "low" => "low".into(),
+        "medium" => "medium".into(),
+        "high" => "high".into(),
+        "x_high" | "xhigh" => "xhigh".into(),
+        _ => return None,
+    })
+}
+
+fn deepseek_headless_effort(effort: &str) -> &'static str {
+    if effort == "xhigh" {
+        "max"
+    } else {
+        "high"
+    }
+}
+
+fn clamp_openai_codex_headless_effort(model_id: &str, effort: &str) -> &'static str {
+    let effort = match effort {
+        "minimal" => "minimal",
+        "low" => "low",
+        "medium" => "medium",
+        "high" => "high",
+        "xhigh" => "xhigh",
+        _ => "medium",
+    };
+    let model_id = model_id.rsplit('/').next().unwrap_or(model_id);
+    let model_id = model_id.trim().to_ascii_lowercase();
+    if ["gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"]
+        .iter()
+        .any(|prefix| model_id.starts_with(prefix))
+        && effort == "minimal"
+    {
+        return "low";
+    }
+    if model_id == "gpt-5.1" && effort == "xhigh" {
+        return "high";
+    }
+    if model_id == "gpt-5.1-codex-mini" {
+        return if effort == "high" || effort == "xhigh" {
+            "high"
+        } else {
+            "medium"
+        };
+    }
+    effort
 }
 
 fn openai_compatible_chat_url(base_url: &str) -> CoreResult<String> {
@@ -3242,43 +4034,122 @@ fn resolve_workspace_path_for_root(
     Ok(joined)
 }
 
-fn collect_workspace_files(
+#[derive(Debug, Default)]
+struct WorkspaceListing {
+    directories: Vec<String>,
+    files: Vec<String>,
+    entries: Vec<JsonValue>,
+    skipped_directories: Vec<String>,
+    omitted_entry_count: usize,
+    truncated: bool,
+}
+
+fn collect_workspace_listing(
     root: &Path,
     dir: &Path,
-    out: &mut Vec<String>,
+    limit: usize,
+) -> CoreResult<WorkspaceListing> {
+    let mut listing = WorkspaceListing::default();
+    collect_workspace_entries(root, dir, &mut listing, limit)?;
+    Ok(listing)
+}
+
+fn collect_workspace_entries(
+    root: &Path,
+    dir: &Path,
+    listing: &mut WorkspaceListing,
     limit: usize,
 ) -> CoreResult<()> {
-    if out.len() >= limit {
-        return Ok(());
+    let entries = sorted_workspace_entries(dir)?;
+    let mut directories = Vec::new();
+
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if path.is_dir() && skipped_workspace_dir(&name) {
+            if let Some(relative) = workspace_relative_path(root, &path) {
+                listing.skipped_directories.push(relative);
+            }
+            continue;
+        }
+
+        if path.is_dir() {
+            if let Some(relative) = workspace_relative_path(root, &path) {
+                push_workspace_listing_entry(listing, limit, "directory", &relative);
+                directories.push(path);
+            }
+        } else if let Some(relative) = workspace_relative_path(root, &path) {
+            push_workspace_listing_entry(listing, limit, "file", &relative);
+        }
     }
-    for entry in fs::read_dir(dir).map_err(|error| {
-        CoreError::invalid_request(
-            "agent_core_headless_list_failed",
-            format!("Xero could not list `{}`: {error}", dir.display()),
-        )
-    })? {
-        if out.len() >= limit {
+
+    for directory in directories {
+        if listing.truncated {
             break;
         }
-        let entry = entry.map_err(|error| {
+        collect_workspace_entries(root, &directory, listing, limit)?;
+    }
+
+    Ok(())
+}
+
+fn sorted_workspace_entries(dir: &Path) -> CoreResult<Vec<fs::DirEntry>> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|error| {
+            CoreError::invalid_request(
+                "agent_core_headless_list_failed",
+                format!("Xero could not list `{}`: {error}", dir.display()),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
             CoreError::invalid_request(
                 "agent_core_headless_list_failed",
                 format!("Xero could not read a directory entry: {error}"),
             )
         })?;
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if matches!(name.as_ref(), ".git" | ".xero" | "target" | "node_modules") {
-            continue;
-        }
-        if path.is_dir() {
-            collect_workspace_files(root, &path, out, limit)?;
-        } else if let Ok(relative) = path.strip_prefix(root) {
-            out.push(relative.to_string_lossy().to_string());
-        }
+    entries.sort_by(|left, right| {
+        left.file_name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .cmp(&right.file_name().to_string_lossy().to_ascii_lowercase())
+            .then_with(|| left.file_name().cmp(&right.file_name()))
+    });
+    Ok(entries)
+}
+
+fn push_workspace_listing_entry(
+    listing: &mut WorkspaceListing,
+    limit: usize,
+    kind: &str,
+    path: &str,
+) {
+    if listing.entries.len() >= limit {
+        listing.truncated = true;
+        listing.omitted_entry_count = listing.omitted_entry_count.saturating_add(1);
+        return;
     }
-    Ok(())
+    if kind == "directory" {
+        listing.directories.push(path.to_owned());
+    } else {
+        listing.files.push(path.to_owned());
+    }
+    listing.entries.push(json!({
+        "path": path,
+        "kind": kind,
+    }));
+}
+
+fn workspace_relative_path(root: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(root)
+        .ok()
+        .map(|relative| relative.to_string_lossy().to_string())
+        .filter(|relative| !relative.is_empty())
+}
+
+fn skipped_workspace_dir(name: &str) -> bool {
+    SKIPPED_WORKSPACE_DIRS.contains(&name)
 }
 
 fn compact_summary_from_snapshot(snapshot: &RunSnapshot) -> String {
@@ -3365,12 +4236,8 @@ mod tests {
             root.clone()
         );
         assert_eq!(
-            resolve_workspace_path_for_root(
-                &root,
-                &root.join("logs").display().to_string(),
-                false
-            )
-            .expect("absolute child should resolve"),
+            resolve_workspace_path_for_root(&root, &root.join("logs").display().to_string(), false)
+                .expect("absolute child should resolve"),
             root.join("logs")
         );
     }
@@ -3394,9 +4261,12 @@ mod tests {
         let root = unique_test_dir("headless-absolute-protected");
         fs::create_dir_all(root.join(".xero")).expect("create legacy state dir");
 
-        let error =
-            resolve_workspace_path_for_root(&root, &root.join(".xero").display().to_string(), false)
-                .expect_err("absolute protected state should be denied");
+        let error = resolve_workspace_path_for_root(
+            &root,
+            &root.join(".xero").display().to_string(),
+            false,
+        )
+        .expect_err("absolute protected state should be denied");
 
         assert_eq!(error.code, "agent_core_headless_path_protected");
     }
@@ -3409,6 +4279,81 @@ mod tests {
         assert!(prompt.contains("Before probing fragile recovery inputs"));
         assert!(prompt.contains("remove temporary files"));
         assert!(prompt.contains("leave only task-requested deliverables"));
+    }
+
+    #[test]
+    fn ask_headless_identity_uses_observe_only_prompt_and_tools() {
+        let request = StartRunRequest {
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-ask".into(),
+            prompt: "What is this project about?".into(),
+            provider: ProviderSelection {
+                provider_id: "openai_api".into(),
+                model_id: "test-model".into(),
+            },
+            controls: Some(crate::RunControls {
+                runtime_agent_id: "ask".into(),
+                agent_definition_id: Some("ask".into()),
+                agent_definition_version: Some(1),
+                thinking_effort: Some("x_high".into()),
+                approval_mode: "suggest".into(),
+                plan_mode_required: false,
+            }),
+        };
+
+        let identity = HeadlessRunIdentity::from_request(&request, Some(Path::new("/repo")));
+
+        assert_eq!(identity.runtime_agent_id, "ask");
+        assert_eq!(identity.agent_definition_id, "ask");
+        assert_eq!(identity.thinking_effort.as_deref(), Some("xhigh"));
+        assert!(!identity.allows_workspace_writes());
+        assert!(identity.system_prompt.contains("You are Xero's Ask agent"));
+        assert!(identity
+            .system_prompt
+            .contains("survey the repository root first"));
+    }
+
+    #[test]
+    fn headless_list_is_deterministic_root_first_and_skips_build_artifacts() {
+        let root = unique_test_dir("headless-list-root-first");
+        fs::create_dir_all(root.join("client/src")).expect("create client dir");
+        fs::create_dir_all(root.join("landing/.next/cache")).expect("create landing build dir");
+        fs::create_dir_all(root.join("server/lib")).expect("create server dir");
+        fs::write(root.join("package.json"), "{}\n").expect("write root package");
+        fs::write(root.join("client/package.json"), "{}\n").expect("write client package");
+        fs::write(root.join("landing/.next/cache/build.txt"), "ignored\n")
+            .expect("write ignored build file");
+        fs::write(root.join("server/mix.exs"), "[]\n").expect("write server file");
+
+        let runtime =
+            HeadlessProductionToolRuntime::new(Some(&root), false, Vec::new()).expect("runtime");
+        let output = runtime
+            .list(&ToolCallInput {
+                tool_call_id: "call-list".into(),
+                tool_name: "list".into(),
+                input: json!({ "path": "." }),
+            })
+            .expect("list output")
+            .output;
+        let directories = output["directories"].as_array().expect("directories");
+        let files = output["files"].as_array().expect("files");
+        let skipped = output["skippedDirectories"]
+            .as_array()
+            .expect("skipped directories");
+
+        assert!(directories.iter().any(|path| path == "client"));
+        assert!(directories.iter().any(|path| path == "landing"));
+        assert!(directories.iter().any(|path| path == "server"));
+        assert!(files.iter().any(|path| path == "package.json"));
+        assert!(files.iter().any(|path| path == "client/package.json"));
+        assert!(files.iter().all(|path| {
+            !path
+                .as_str()
+                .expect("file path")
+                .contains("landing/.next/cache/build.txt")
+        }));
+        assert!(skipped.iter().any(|path| path == "landing/.next"));
     }
 
     #[test]

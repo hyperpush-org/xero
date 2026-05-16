@@ -4280,7 +4280,10 @@ mod tests {
 
     use crate::{
         commands::{RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto},
-        db::{configure_connection, database_path_for_repo, migrations::migrations},
+        db::{
+            configure_connection, database_path_for_project_in_app_data, database_path_for_repo,
+            migrations::migrations,
+        },
         mcp::{
             default_mcp_registry, persist_mcp_registry, McpConnectionState, McpConnectionStatus,
             McpServerRecord, McpTransport,
@@ -4292,7 +4295,8 @@ mod tests {
     };
 
     fn create_project_database(repo_root: &Path, project_id: &str) {
-        let database_path = database_path_for_repo(repo_root);
+        let app_data_dir = repo_root.parent().expect("repo parent").join("app-data");
+        let database_path = database_path_for_project_in_app_data(&app_data_dir, project_id);
         fs::create_dir_all(database_path.parent().expect("database parent"))
             .expect("create database dir");
         let mut connection = Connection::open(&database_path).expect("open project database");

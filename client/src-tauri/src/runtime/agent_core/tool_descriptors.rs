@@ -6824,7 +6824,7 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
             calls.push(AgentToolCall {
                 tool_call_id: format!("tool-call-write-{}", calls.len() + 1),
                 tool_name: "write".into(),
-                input: json!({ "path": path, "content": content }),
+                input: json!({ "path": path, "content": content, "overwrite": true }),
             });
             continue;
         }

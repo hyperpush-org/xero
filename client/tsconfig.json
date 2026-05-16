@@ -18,7 +18,18 @@
     "baseUrl": ".",
     "types": ["vite/client", "vitest/globals"],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@/components/ui/*": ["../packages/ui/src/components/ui/*"],
+      "@/lib/utils": ["../packages/ui/src/lib/utils.ts"],
+      "@/lib/byte-budget-cache": ["../packages/ui/src/lib/byte-budget-cache.ts"],
+      "@/lib/shiki": ["../packages/ui/src/lib/shiki.ts"],
+      "@/lib/language-detection": ["../packages/ui/src/lib/language-detection.ts"],
+      "@/src/lib/xero-model/runtime-stream": ["../packages/ui/src/model/runtime-stream.ts"],
+      "@/src/lib/xero-model/runtime": ["../packages/ui/src/model/runtime.ts"],
+      "@/src/lib/xero-model/shared": ["../packages/ui/src/model/shared.ts"],
+      "@/src/lib/xero-model/code-history": ["../packages/ui/src/model/code-history.ts"],
+      "@xero/ui": ["../packages/ui/src/index.ts"],
+      "@xero/ui/*": ["../packages/ui/src/*"]
     }
   },
   "include": [

@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { AppLogo } from './app-logo'
+import { AppLogo } from '@xero/ui/components/app-logo'
 
 interface LoadingScreenProps {
   className?: string

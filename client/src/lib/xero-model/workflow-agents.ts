@@ -15,8 +15,8 @@ import {
   customAgentWorkflowStructureSchema,
   validateCanonicalCustomAgentDefinition,
 } from './agent-definition'
-import { isoTimestampSchema } from './shared'
-import { runtimeAgentIdSchema, runtimeRunApprovalModeSchema } from './runtime'
+import { isoTimestampSchema } from '@xero/ui/model/shared'
+import { runtimeAgentIdSchema, runtimeRunApprovalModeSchema } from '@xero/ui/model/runtime'
 import { skillSourceKindSchema, skillSourceScopeSchema, skillSourceStateSchema, skillTrustStateSchema } from './skills'
 
 const addDuplicateStringIssues = (
