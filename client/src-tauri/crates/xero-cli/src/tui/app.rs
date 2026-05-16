@@ -163,6 +163,18 @@ fn initial_selected_agent_index(agents: &[AgentEntry], stored_agent_id: Option<&
         .unwrap_or(0)
 }
 
+fn merge_missing_default_agents(mut agents: Vec<AgentEntry>) -> Vec<AgentEntry> {
+    for fallback in default_agent_catalog() {
+        if !agents
+            .iter()
+            .any(|entry| entry.definition_id == fallback.definition_id)
+        {
+            agents.push(fallback);
+        }
+    }
+    agents
+}
+
 /// Mirrors `ProviderModelThinkingEffortDto` on the desktop side so cycling
 /// in the TUI feeds the same downstream provider plumbing. Persisted with
 /// the snake-case `x_high` spelling the rest of the codebase uses.
@@ -1797,7 +1809,7 @@ fn load_agents(
     if agents.is_empty() {
         Ok(default_agent_catalog())
     } else {
-        Ok(agents)
+        Ok(merge_missing_default_agents(agents))
     }
 }
 
@@ -3585,6 +3597,21 @@ mod tests {
             ),
             ("generalist", "Agent")
         );
+    }
+
+    #[test]
+    fn agent_catalog_merges_missing_agent_builtin() {
+        let agents = vec![AgentEntry {
+            definition_id: "ask".into(),
+            display_name: "Ask".into(),
+        }];
+        let merged = merge_missing_default_agents(agents);
+        let agent = merged
+            .iter()
+            .find(|entry| entry.definition_id == "generalist")
+            .expect("generalist fallback");
+
+        assert_eq!(agent.label(), "Agent");
     }
 
     #[test]

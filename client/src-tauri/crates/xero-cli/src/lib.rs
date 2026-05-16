@@ -4237,6 +4237,86 @@ struct AgentDefinitionForRun {
     version: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BuiltinAgentDefinitionSeed {
+    definition_id: &'static str,
+    version: i64,
+    display_name: &'static str,
+    short_label: &'static str,
+    base_capability_profile: &'static str,
+    updated_at: &'static str,
+    snapshot_json: &'static str,
+}
+
+fn builtin_agent_definition_seed(definition_id: &str) -> Option<BuiltinAgentDefinitionSeed> {
+    Some(match definition_id {
+        "ask" => BuiltinAgentDefinitionSeed {
+            definition_id: "ask",
+            version: 1,
+            display_name: "Ask",
+            short_label: "Ask",
+            base_capability_profile: "observe_only",
+            updated_at: "2026-05-01T00:00:00Z",
+            snapshot_json: r#"{"id":"ask","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"observe_only","label":"Ask","shortLabel":"Ask","attachedSkills":[]}"#,
+        },
+        "plan" => BuiltinAgentDefinitionSeed {
+            definition_id: "plan",
+            version: 1,
+            display_name: "Plan",
+            short_label: "Plan",
+            base_capability_profile: "planning",
+            updated_at: "2026-05-06T00:00:00Z",
+            snapshot_json: r#"{"id":"plan","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"planning","label":"Plan","shortLabel":"Plan","attachedSkills":[]}"#,
+        },
+        "engineer" => BuiltinAgentDefinitionSeed {
+            definition_id: "engineer",
+            version: 1,
+            display_name: "Engineer",
+            short_label: "Build",
+            base_capability_profile: "engineering",
+            updated_at: "2026-05-01T00:00:00Z",
+            snapshot_json: r#"{"id":"engineer","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","label":"Engineer","shortLabel":"Build","attachedSkills":[]}"#,
+        },
+        "debug" => BuiltinAgentDefinitionSeed {
+            definition_id: "debug",
+            version: 1,
+            display_name: "Debug",
+            short_label: "Debug",
+            base_capability_profile: "debugging",
+            updated_at: "2026-05-01T00:00:00Z",
+            snapshot_json: r#"{"id":"debug","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"debugging","label":"Debug","shortLabel":"Debug","attachedSkills":[]}"#,
+        },
+        "crawl" => BuiltinAgentDefinitionSeed {
+            definition_id: "crawl",
+            version: 1,
+            display_name: "Crawl",
+            short_label: "Crawl",
+            base_capability_profile: "repository_recon",
+            updated_at: "2026-05-06T00:00:00Z",
+            snapshot_json: r#"{"id":"crawl","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"repository_recon","label":"Crawl","shortLabel":"Crawl","attachedSkills":[]}"#,
+        },
+        "agent_create" => BuiltinAgentDefinitionSeed {
+            definition_id: "agent_create",
+            version: 1,
+            display_name: "Agent Create",
+            short_label: "Create",
+            base_capability_profile: "agent_builder",
+            updated_at: "2026-05-01T00:00:00Z",
+            snapshot_json: r#"{"id":"agent_create","version":1,"scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"agent_builder","label":"Agent Create","shortLabel":"Create","attachedSkills":[]}"#,
+        },
+        "generalist" => BuiltinAgentDefinitionSeed {
+            definition_id: "generalist",
+            version: 1,
+            display_name: "Agent",
+            short_label: "Agent",
+            base_capability_profile: "engineering",
+            updated_at: "2026-05-12T00:00:00Z",
+            snapshot_json: r#"{"schema":"xero.agent_definition.v1","id":"generalist","version":1,"displayName":"Agent","shortLabel":"Agent","description":"A do-anything agent with the full engineering toolset that recognises when a specialist agent would handle the task better and offers to route.","taskPurpose":"Handle any user request directly, or suggest routing to Plan, Engineer, or Debug when the request fits a specialist's scope.","scope":"built_in","lifecycleState":"active","baseCapabilityProfile":"engineering","defaultApprovalMode":"suggest","allowedApprovalModes":["suggest","auto_edit","yolo"],"promptPolicy":"generalist","toolPolicy":"engineering","outputContract":"answer","attachedSkills":[]}"#,
+        },
+        _ => return None,
+    })
+}
+
 impl CliAgentStore {
     fn path(&self) -> &Path {
         match self {
@@ -4417,6 +4497,28 @@ impl AppDataProjectAgentStore {
             .filter(|id| !id.is_empty())
             .unwrap_or(runtime_agent_id);
         let connection = self.connection()?;
+        let existing = self.query_agent_definition_for_run(&connection, definition_id)?;
+        if let Some(definition) = existing {
+            return Ok(definition);
+        }
+        self.backfill_builtin_agent_definition(&connection, definition_id)?;
+        self.query_agent_definition_for_run(&connection, definition_id)?
+            .ok_or_else(|| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_app_data_agent_definition_missing",
+                    format!(
+                        "App-data project `{}` does not contain active agent definition `{definition_id}`.",
+                        self.project_id
+                    ),
+                )
+            })
+    }
+
+    fn query_agent_definition_for_run(
+        &self,
+        connection: &Connection,
+        definition_id: &str,
+    ) -> xero_agent_core::CoreResult<Option<AgentDefinitionForRun>> {
         connection
             .query_row(
                 "SELECT definition_id, current_version FROM agent_definitions WHERE definition_id = ?1 AND lifecycle_state != 'archived'",
@@ -4431,16 +4533,73 @@ impl AppDataProjectAgentStore {
             .optional()
             .map_err(|error| {
                 self.query_error("agent_core_app_data_agent_definition_read_failed", error)
-            })?
-            .ok_or_else(|| {
-                xero_agent_core::CoreError::invalid_request(
-                    "agent_core_app_data_agent_definition_missing",
-                    format!(
-                        "App-data project `{}` does not contain active agent definition `{definition_id}`.",
-                        self.project_id
-                    ),
-                )
             })
+    }
+
+    fn backfill_builtin_agent_definition(
+        &self,
+        connection: &Connection,
+        definition_id: &str,
+    ) -> xero_agent_core::CoreResult<()> {
+        let Some(seed) = builtin_agent_definition_seed(definition_id) else {
+            return Ok(());
+        };
+        connection
+            .execute(
+                r#"
+                INSERT OR IGNORE INTO agent_definitions (
+                    definition_id,
+                    current_version,
+                    display_name,
+                    short_label,
+                    scope,
+                    lifecycle_state,
+                    base_capability_profile,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, 'built_in', 'active', ?5, ?6)
+                "#,
+                params![
+                    seed.definition_id,
+                    seed.version,
+                    seed.display_name,
+                    seed.short_label,
+                    seed.base_capability_profile,
+                    seed.updated_at,
+                ],
+            )
+            .map_err(|error| {
+                self.write_error(
+                    "agent_core_app_data_builtin_definition_backfill_failed",
+                    error,
+                )
+            })?;
+        connection
+            .execute(
+                r#"
+                INSERT OR IGNORE INTO agent_definition_versions (
+                    definition_id,
+                    version,
+                    snapshot_json,
+                    validation_report_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, '{"status":"valid","source":"cli_builtin_backfill"}', ?4)
+                "#,
+                params![
+                    seed.definition_id,
+                    seed.version,
+                    seed.snapshot_json,
+                    seed.updated_at,
+                ],
+            )
+            .map_err(|error| {
+                self.write_error(
+                    "agent_core_app_data_builtin_definition_version_backfill_failed",
+                    error,
+                )
+            })?;
+        Ok(())
     }
 
     fn connection(&self) -> xero_agent_core::CoreResult<Connection> {
@@ -11169,6 +11328,80 @@ mod tests {
         assert_eq!(persisted.1, "ask");
         assert_eq!(persisted.2, 1);
         assert!(persisted.3.contains("You are Xero's Ask agent"));
+    }
+
+    #[test]
+    fn real_provider_agent_exec_backfills_missing_generalist_definition() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-generalist");
+        let workspace = unique_temp_dir("agent-exec-real-provider-generalist-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Generalist run completed."
+                }
+            }]
+        })]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-agent",
+            "--run-id",
+            "run-agent",
+            "--runtime-agent-id",
+            "generalist",
+            "--agent-definition-id",
+            "generalist",
+            "What is this project about?",
+        ])
+        .expect("generalist real provider run should succeed");
+        server.join();
+
+        assert_eq!(
+            output.json["snapshot"]["runtimeAgentId"],
+            json!("generalist")
+        );
+        assert_eq!(
+            output.json["snapshot"]["agentDefinitionId"],
+            json!("generalist")
+        );
+
+        let project_database =
+            workspace_project_database_path_for_app_root(&state_dir, "project-real");
+        let connection = Connection::open(project_database).expect("open project database");
+        let persisted = connection
+            .query_row(
+                "SELECT display_name FROM agent_definitions WHERE definition_id = 'generalist'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("backfilled generalist definition");
+        assert_eq!(persisted, "Agent");
     }
 
     #[test]
