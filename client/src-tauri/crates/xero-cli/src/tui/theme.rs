@@ -13,11 +13,6 @@ pub const TOOL_DOT: &str = "\u{25AA}"; // ▪
 /// pop on every reasonable terminal.
 const COMPOSER_BG_LIFT: u8 = 0x10;
 
-/// Lift for the decorative halo around the command palette. Sits one
-/// step brighter than [`COMPOSER_BG_LIFT`] so the overlay reads as a
-/// raised "card" against the elevated composer surface.
-const OVERLAY_BORDER_LIFT: u8 = 0x22;
-
 pub const BG: Color = Color::Rgb(0x12, 0x12, 0x12);
 pub const FG: Color = Color::Rgb(0xf8, 0xf9, 0xfa);
 pub const MUTED: Color = Color::Rgb(0xa8, 0xae, 0xb5);
@@ -43,17 +38,6 @@ pub fn composer_bg() -> Style {
 
 pub fn composer_bg_color() -> Color {
     lifted(BG, COMPOSER_BG_LIFT)
-}
-
-/// Halo color used as the decorative "border" around overlay surfaces
-/// (currently the command palette). Slightly brighter than the composer
-/// elevation so the overlay visibly sits above it.
-pub fn overlay_border() -> Style {
-    Style::default().fg(FG).bg(overlay_border_color())
-}
-
-pub fn overlay_border_color() -> Color {
-    lifted(BG, OVERLAY_BORDER_LIFT)
 }
 
 fn lifted(color: Color, amount: u8) -> Color {

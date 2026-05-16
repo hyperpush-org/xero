@@ -8,6 +8,7 @@ mod palette;
 mod project;
 mod runtime;
 mod slash;
+mod text_edit;
 mod theme;
 mod transcript;
 

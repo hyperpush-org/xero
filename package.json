@@ -17,6 +17,7 @@
     "dev:tui": "node ./client/scripts/xero-tui-dev.mjs",
     "dev:landing": "pnpm --dir ./landing run dev --port 3001",
     "dev:cloud": "pnpm --dir ./cloud run dev",
+    "stop:all": "node scripts/stop-all.mjs",
     "start": "node scripts/build-tauri-if-stale.mjs && node scripts/launch-built-app.mjs",
     "start:build": "node scripts/build-tauri-if-stale.mjs",
     "start:rebuild": "node scripts/build-tauri-if-stale.mjs --rebuild",

@@ -10,7 +10,10 @@ use std::{
 
 use crossterm::{
     cursor::MoveTo,
-    event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear as CrosstermClear, ClearType as CrosstermClearType,
@@ -31,7 +34,9 @@ use super::{
     composer, footer,
     palette::{self, PaletteState},
     project::ResolvedProject,
-    runtime, slash, theme, transcript,
+    runtime, slash, text_edit,
+    text_edit::TextEdit,
+    theme, transcript,
 };
 
 #[derive(Debug, Clone)]
@@ -116,6 +121,8 @@ pub struct AgentEntry {
     pub display_name: String,
 }
 
+const DEFAULT_SELECTED_AGENT_DEFINITION_ID: &str = "generalist";
+
 impl AgentEntry {
     pub fn label(&self) -> &str {
         if self.display_name.is_empty() {
@@ -136,7 +143,7 @@ fn default_agent_catalog() -> Vec<AgentEntry> {
         ("engineer", "Engineer"),
         ("debug", "Debug"),
         ("agent_create", "Agent Create"),
-        ("generalist", "Generalist"),
+        ("generalist", "Agent"),
     ]
     .into_iter()
     .map(|(definition_id, display_name)| AgentEntry {
@@ -144,6 +151,16 @@ fn default_agent_catalog() -> Vec<AgentEntry> {
         display_name: display_name.into(),
     })
     .collect()
+}
+
+fn initial_selected_agent_index(agents: &[AgentEntry], stored_agent_id: Option<&str>) -> usize {
+    agents
+        .iter()
+        .position(|entry| entry.definition_id == DEFAULT_SELECTED_AGENT_DEFINITION_ID)
+        .or_else(|| {
+            stored_agent_id.and_then(|id| agents.iter().position(|entry| entry.definition_id == id))
+        })
+        .unwrap_or(0)
 }
 
 /// Mirrors `ProviderModelThinkingEffortDto` on the desktop side so cycling
@@ -200,6 +217,8 @@ pub struct App {
     pub selected_agent: usize,
     pub thinking_effort: ThinkingEffort,
     pub composer: String,
+    pub composer_cursor: usize,
+    pub composer_desired_column: Option<usize>,
     pub slash_selected: usize,
     pub palette: Option<PaletteState>,
     pub status: Option<String>,
@@ -271,11 +290,8 @@ impl App {
         let identity_path = remote_identity_path(globals);
         let signed_in_handle = load_signed_in_handle(&identity_path);
 
-        let selected_agent = stored
-            .runtime_agent_id
-            .as_deref()
-            .and_then(|id| agents.iter().position(|entry| entry.definition_id == id))
-            .unwrap_or(0);
+        let selected_agent =
+            initial_selected_agent_index(&agents, stored.runtime_agent_id.as_deref());
         let thinking_effort = stored
             .thinking_effort
             .as_deref()
@@ -310,6 +326,8 @@ impl App {
             selected_agent,
             thinking_effort,
             composer: String::new(),
+            composer_cursor: 0,
+            composer_desired_column: None,
             slash_selected: 0,
             palette: None,
             status,
@@ -365,6 +383,22 @@ impl App {
         self.persist_preferences();
     }
 
+    pub(crate) fn replace_composer(&mut self, value: impl Into<String>) {
+        self.composer = value.into();
+        self.composer_cursor = self.composer.len();
+        self.composer_desired_column = None;
+    }
+
+    pub(crate) fn clear_composer(&mut self) {
+        self.composer.clear();
+        self.composer_cursor = 0;
+        self.composer_desired_column = None;
+    }
+
+    pub(crate) fn composer_cursor(&self) -> usize {
+        text_edit::clamped_cursor(&self.composer, self.composer_cursor)
+    }
+
     /// Called whenever a persisted preference changes — the file is small
     /// so we write it eagerly rather than batching.
     fn persist_preferences(&self) {
@@ -414,7 +448,7 @@ impl App {
     }
 
     pub fn reset_for_new_session(&mut self, active_session_id: Option<String>) {
-        self.composer.clear();
+        self.clear_composer();
         self.slash_selected = 0;
         self.palette = None;
         self.run_detail = None;
@@ -448,6 +482,7 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
     let _ = runtime::mode(&globals);
 
     enable_raw_mode().map_err(tui_io_error)?;
+    let keyboard_enhancement_pushed = push_keyboard_enhancements();
     let backend = CrosstermBackend::new(io::stdout());
     // Inline viewport: only the bottom rows belong to ratatui. Everything
     // we want to live in scrollback (welcome banner, user prompts,
@@ -465,6 +500,7 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
 
     let result = event_loop(&globals, &mut terminal, &mut app);
 
+    let keyboard_enhancement_result = pop_keyboard_enhancements(keyboard_enhancement_pushed);
     disable_raw_mode().map_err(tui_io_error)?;
     terminal.show_cursor().map_err(tui_io_error)?;
     // Drop the inline viewport so the cursor lands below it and the user
@@ -476,12 +512,38 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
     println!();
 
     result?;
+    keyboard_enhancement_result?;
     Ok(CliResponse {
         output_mode: globals.output_mode,
         text: String::new(),
         json: json!({ "kind": "tui", "status": "closed" }),
         emit: false,
     })
+}
+
+fn push_keyboard_enhancements() -> bool {
+    if !matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) {
+        return false;
+    }
+    execute!(
+        io::stdout(),
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
+    )
+    .is_ok()
+}
+
+fn pop_keyboard_enhancements(pushed: bool) -> Result<(), CliError> {
+    if !pushed {
+        return Ok(());
+    }
+    execute!(io::stdout(), PopKeyboardEnhancementFlags).map_err(tui_io_error)
 }
 
 /// Inline viewport heights. We use a few sizes:
@@ -507,16 +569,18 @@ fn desired_inline_height(app: &App, terminal_height: u16) -> u16 {
     if app.palette.is_some() {
         return terminal_height.max(INLINE_HEIGHT_IDLE);
     }
+    let composer_required_height = composer::height(app).saturating_add(2);
     let running = matches!(
         app.run_detail.as_ref().map(|detail| detail.status.as_str()),
         Some("running")
     );
-    match (running, slash::is_visible(app)) {
+    let fixed_height = match (running, slash::is_visible(app)) {
         (true, true) => INLINE_HEIGHT_RUNNING.max(INLINE_HEIGHT_SLASH),
         (true, false) => INLINE_HEIGHT_RUNNING,
         (false, true) => INLINE_HEIGHT_SLASH,
         (false, false) => INLINE_HEIGHT_IDLE,
-    }
+    };
+    fixed_height.max(composer_required_height)
 }
 
 /// Swap in a fresh `Terminal` with a new inline viewport height when
@@ -826,6 +890,9 @@ fn handle_composer_key(
         KeyCode::Down if slash::is_visible(app) => {
             slash::move_selection(app, 1);
         }
+        KeyCode::Tab if slash::is_visible(app) => {
+            slash::complete_selection(app);
+        }
         KeyCode::Tab => {
             app.cycle_agent();
         }
@@ -834,31 +901,43 @@ fn handle_composer_key(
         }
         KeyCode::Esc => {
             if !app.composer.is_empty() {
-                app.composer.clear();
+                app.clear_composer();
                 slash::reset_selection(app);
             } else if active_run.is_some() {
                 app.status = Some("Interrupt is not wired yet — Esc clears input only.".into());
             }
         }
-        KeyCode::Backspace => {
-            app.composer.pop();
-            slash::clamp_selection(app);
-        }
         KeyCode::Enter => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
-                app.composer.push('\n');
+                let edit = TextEdit::Insert('\n');
+                let _ = text_edit::apply_edit_at_cursor(
+                    &mut app.composer,
+                    &mut app.composer_cursor,
+                    &mut app.composer_desired_column,
+                    edit,
+                );
                 slash::clamp_selection(app);
             } else {
-                let mut submission = app.composer.trim().to_owned();
+                let raw_submission = app.composer.clone();
+                let mut submission = raw_submission.trim().to_owned();
                 if submission.is_empty() {
                     return KeyOutcome::Continue;
                 }
                 if submission.starts_with('/') {
-                    if let Some(selected) = slash::selected_submission(app, &submission) {
-                        submission = selected;
+                    if let Some(selected) = slash::selected_action(app, &raw_submission) {
+                        match selected {
+                            slash::SelectedAction::Submit(selected) => {
+                                submission = selected;
+                            }
+                            slash::SelectedAction::Complete(completion) => {
+                                app.replace_composer(completion);
+                                slash::reset_selection(app);
+                                return KeyOutcome::Continue;
+                            }
+                        }
                     }
                 }
-                app.composer.clear();
+                app.clear_composer();
                 slash::reset_selection(app);
                 if submission.starts_with('/') {
                     return handle_slash_command(app, &submission, globals);
@@ -873,13 +952,56 @@ fn handle_composer_key(
                 }
             }
         }
-        KeyCode::Char(ch) => {
-            app.composer.push(ch);
-            slash::reset_selection(app);
-        }
-        _ => {}
+        _ => handle_composer_text_edit(app, key),
     }
     KeyOutcome::Continue
+}
+
+fn handle_composer_text_edit(app: &mut App, key: KeyEvent) {
+    let edit = text_edit::edit_for_key(key);
+    let outcome = text_edit::apply_edit_at_cursor(
+        &mut app.composer,
+        &mut app.composer_cursor,
+        &mut app.composer_desired_column,
+        edit,
+    );
+    if !outcome.changed {
+        return;
+    }
+    if outcome.text_changed {
+        match edit {
+            TextEdit::Insert(_) => slash::reset_selection(app),
+            TextEdit::Backspace
+            | TextEdit::Delete
+            | TextEdit::DeletePreviousWord
+            | TextEdit::DeleteToLineStart => {
+                slash::clamp_selection(app);
+            }
+            TextEdit::MoveLeft
+            | TextEdit::MoveRight
+            | TextEdit::MovePreviousWord
+            | TextEdit::MoveNextWord
+            | TextEdit::MoveUp
+            | TextEdit::MoveDown
+            | TextEdit::MoveToLineStart
+            | TextEdit::MoveToLineEnd
+            | TextEdit::Ignore => {}
+        }
+    } else if matches!(
+        edit,
+        TextEdit::MoveLeft
+            | TextEdit::MoveRight
+            | TextEdit::MovePreviousWord
+            | TextEdit::MoveNextWord
+            | TextEdit::MoveUp
+            | TextEdit::MoveDown
+            | TextEdit::MoveToLineStart
+            | TextEdit::MoveToLineEnd
+    ) {
+        if !slash::is_visible(app) {
+            slash::clamp_selection(app);
+        }
+    }
 }
 
 fn handle_slash_command(app: &mut App, submission: &str, globals: &GlobalOptions) -> KeyOutcome {
@@ -1105,7 +1227,7 @@ fn palette_result_to_key_outcome(app: &mut App, result: palette::KeyResult) -> K
     }
 }
 
-fn slash_dialog_alias(command: &str) -> Option<&'static str> {
+pub(crate) fn slash_dialog_alias(command: &str) -> Option<&'static str> {
     Some(match command {
         "session" | "sessions" => "sessions",
         "provider" | "providers" => "providers",
@@ -2281,6 +2403,8 @@ pub(crate) fn test_only_empty_app() -> App {
         selected_agent: 0,
         thinking_effort: ThinkingEffort::High,
         composer: String::new(),
+        composer_cursor: 0,
+        composer_desired_column: None,
         slash_selected: 0,
         palette: None,
         status: None,
@@ -2385,6 +2509,28 @@ mod tests {
         buffer_to_string(terminal.backend().buffer())
     }
 
+    fn render_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
+        terminal.draw(|frame| render(frame, app)).expect("draw");
+        buffer_rows(terminal.backend().buffer())
+    }
+
+    fn rendered_cursor_cell(app: &App, width: u16, height: u16) -> (usize, String) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
+        terminal.draw(|frame| render(frame, app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .enumerate()
+            .find_map(|(row_index, row)| {
+                row.iter()
+                    .find(|cell| cell.fg == theme::composer_bg_color() && cell.bg == theme::FG)
+                    .map(|cell| (row_index, cell.symbol().to_owned()))
+            })
+            .expect("rendered cursor cell")
+    }
+
     fn terminal_history_to_string(terminal: &Terminal<TestBackend>) -> String {
         format!(
             "{}{}",
@@ -2408,6 +2554,18 @@ mod tests {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
     }
 
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_char(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    fn modified_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
     fn empty_app() -> App {
         let project = super::super::project::ResolvedProject {
             project_id: None,
@@ -2425,6 +2583,8 @@ mod tests {
             selected_agent: 0,
             thinking_effort: ThinkingEffort::High,
             composer: String::new(),
+            composer_cursor: 0,
+            composer_desired_column: None,
             slash_selected: 0,
             palette: None,
             status: None,
@@ -2445,6 +2605,169 @@ mod tests {
             signed_in_handle: None,
             login_flow_id: None,
         }
+    }
+
+    #[test]
+    fn composer_option_backspace_deletes_previous_word() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("run tests now");
+        let mut active_run = None;
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Backspace, KeyModifiers::ALT),
+            &mut active_run,
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer, "run tests ");
+    }
+
+    #[test]
+    fn composer_command_backspace_clears_current_line() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("first line\nsecond line");
+        let mut active_run = None;
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Backspace, KeyModifiers::SUPER),
+            &mut active_run,
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer, "first line\n");
+    }
+
+    #[test]
+    fn composer_control_fallbacks_match_terminal_text_editing() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("run tests now");
+        let mut active_run = None;
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            &mut active_run,
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer, "run tests ");
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            &mut active_run,
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn composer_left_arrow_moves_cursor_for_mid_input_insert() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("helo");
+        let mut active_run = None;
+
+        let outcome = dispatch_key(&mut app, key(KeyCode::Left), &mut active_run, &globals);
+        assert!(matches!(outcome, KeyOutcome::Continue));
+
+        let outcome = dispatch_key(&mut app, key_char('l'), &mut active_run, &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer, "hello");
+        assert_eq!(app.composer_cursor, "hell".len());
+        let text = render_to_string(&app, 100, desired_inline_height(&app, 40));
+        let (_, cursor_symbol) = rendered_cursor_cell(&app, 100, desired_inline_height(&app, 40));
+        assert!(
+            text.contains("hello"),
+            "composer should render text without injecting cursor glyphs"
+        );
+        assert_eq!(
+            cursor_symbol, "o",
+            "composer should highlight the character under the cursor"
+        );
+    }
+
+    #[test]
+    fn composer_option_arrows_move_cursor_by_word() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("run tests now");
+        let mut active_run = None;
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Left, KeyModifiers::ALT),
+            &mut active_run,
+            &globals,
+        );
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer_cursor, "run tests ".len());
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Right, KeyModifiers::ALT),
+            &mut active_run,
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer_cursor, "run tests now".len());
+    }
+
+    #[test]
+    fn composer_command_arrows_move_cursor_to_line_boundaries() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("first line\nsecond line");
+        app.composer_cursor = "first line\nsecond".len();
+        let mut active_run = None;
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Left, KeyModifiers::SUPER),
+            &mut active_run,
+            &globals,
+        );
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer_cursor, "first line\n".len());
+
+        let outcome = dispatch_key(
+            &mut app,
+            modified_key(KeyCode::Right, KeyModifiers::META),
+            &mut active_run,
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer_cursor, "first line\nsecond line".len());
+    }
+
+    #[test]
+    fn composer_up_down_arrows_move_between_lines() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.replace_composer("abcd\nef\nghij");
+        app.composer_cursor = "abcd\nef".len();
+        let mut active_run = None;
+
+        let outcome = dispatch_key(&mut app, key(KeyCode::Up), &mut active_run, &globals);
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer_cursor, "ab".len());
+
+        let outcome = dispatch_key(&mut app, key(KeyCode::Down), &mut active_run, &globals);
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer_cursor, "abcd\nef".len());
     }
 
     #[test]
@@ -2479,7 +2802,7 @@ mod tests {
     fn slash_dialog_command_opens_settings_palette() {
         let globals = test_only_globals();
         let mut app = empty_app();
-        app.composer = "/settings".into();
+        app.replace_composer("/settings");
         let mut active_run = None;
 
         let outcome = dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
@@ -2502,7 +2825,7 @@ mod tests {
         globals.tui_adapter = Some(Arc::new(adapter));
         let mut app = empty_app();
         app.project.project_id = Some("project-1".into());
-        app.composer = "/session list".into();
+        app.replace_composer("/session list");
         let mut active_run = None;
 
         let outcome = dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
@@ -2530,7 +2853,7 @@ mod tests {
         globals.tui_adapter = Some(Arc::new(adapter));
         let mut app = empty_app();
         app.project.project_id = Some("project-1".into());
-        app.composer = "/new".into();
+        app.replace_composer("/new");
         app.welcome_committed = true;
         app.committed_messages = 2;
         app.streamed_text_rows = 3;
@@ -2597,7 +2920,7 @@ mod tests {
     #[test]
     fn slash_input_renders_inline_select_and_filters_results() {
         let mut app = empty_app();
-        app.composer = "/prov".into();
+        app.replace_composer("/prov");
 
         let text = render_to_string(&app, 100, INLINE_HEIGHT_SLASH);
 
@@ -2616,7 +2939,7 @@ mod tests {
     #[test]
     fn slash_partial_enter_uses_selected_inline_suggestion() {
         let mut app = empty_app();
-        app.composer = "/prov".into();
+        app.replace_composer("/prov");
 
         let selected = slash::selected_submission(&app, "/prov");
 
@@ -2642,6 +2965,74 @@ mod tests {
     }
 
     #[test]
+    fn multiline_composer_grows_inline_viewport_past_idle_height() {
+        let mut app = empty_app();
+        app.replace_composer("\n\n\n");
+
+        assert_eq!(composer::height(&app), 8);
+        assert_eq!(desired_inline_height(&app, 40), 10);
+    }
+
+    #[test]
+    fn composer_first_multiline_row_keeps_gap_before_agent_footer() {
+        let mut app = empty_app();
+        app.replace_composer("\n");
+
+        let rows = render_rows(&app, 100, desired_inline_height(&app, 40));
+        let (cursor_row, _) = rendered_cursor_cell(&app, 100, desired_inline_height(&app, 40));
+        let footer_row = rows
+            .iter()
+            .position(|row| row.contains("think:high"))
+            .expect("agent footer row");
+
+        assert_eq!(
+            footer_row,
+            cursor_row + 2,
+            "composer should keep one blank row between cursor and agent labels"
+        );
+    }
+
+    #[test]
+    fn long_multiline_composer_keeps_cursor_row_visible() {
+        let mut app = empty_app();
+        app.replace_composer("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight");
+
+        let text = render_to_string(&app, 100, desired_inline_height(&app, 40));
+        let (_, cursor_symbol) = rendered_cursor_cell(&app, 100, desired_inline_height(&app, 40));
+
+        assert!(
+            text.contains("eight"),
+            "composer should render the last input row with the cursor"
+        );
+        assert_eq!(
+            cursor_symbol, " ",
+            "cursor at end of line should render as a highlighted trailing cell"
+        );
+        assert!(
+            !text.contains("one"),
+            "composer should scroll to the bottom slice once input exceeds visible rows"
+        );
+    }
+
+    #[test]
+    fn long_multiline_composer_keeps_moved_cursor_row_visible() {
+        let mut app = empty_app();
+        app.replace_composer("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight");
+        app.composer_cursor = "one".len();
+
+        let text = render_to_string(&app, 100, desired_inline_height(&app, 40));
+
+        assert!(
+            text.contains("one"),
+            "composer should render the moved cursor row"
+        );
+        assert!(
+            !text.contains("eight"),
+            "composer should scroll to the cursor row instead of pinning to the bottom"
+        );
+    }
+
+    #[test]
     fn inline_viewport_omits_box_drawing_borders() {
         let app = empty_app();
         let text = render_to_string(&app, 100, 8);
@@ -2658,7 +3049,7 @@ mod tests {
     #[test]
     fn short_viewport_keeps_composer_and_footer_visible() {
         let mut app = empty_app();
-        app.composer = "one\ntwo\nthree\nfour\nfive".into();
+        app.replace_composer("one\ntwo\nthree\nfour\nfive");
         let text = render_to_string(&app, 60, 4);
         assert!(
             text.contains("think:high"),
@@ -3174,19 +3565,26 @@ mod tests {
             .map(|entry| entry.label().to_owned())
             .collect();
         // Same names users see in the desktop UI.
-        for expected in [
-            "Ask",
-            "Plan",
-            "Engineer",
-            "Debug",
-            "Agent Create",
-            "Generalist",
-        ] {
+        for expected in ["Ask", "Plan", "Engineer", "Debug", "Agent Create", "Agent"] {
             assert!(
                 labels.iter().any(|label| label == expected),
                 "missing seeded agent `{expected}` (have: {labels:?})",
             );
         }
+    }
+
+    #[test]
+    fn startup_agent_selection_prefers_agent() {
+        let agents = default_agent_catalog();
+        let selected = initial_selected_agent_index(&agents, Some("ask"));
+
+        assert_eq!(
+            (
+                agents[selected].definition_id.as_str(),
+                agents[selected].label()
+            ),
+            ("generalist", "Agent")
+        );
     }
 
     #[test]

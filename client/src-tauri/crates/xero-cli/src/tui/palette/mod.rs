@@ -25,15 +25,16 @@ mod usage;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
     Frame,
 };
 use serde_json::Value as JsonValue;
 
 use crate::GlobalOptions;
 
-use super::{app::App, theme};
+use super::{app::App, text_edit, text_edit::TextEdit, theme};
 
 /// A registered palette entry. Maps a typed-id (`"sessions"` or
 /// `"provider list"`) to a human title and an action.
@@ -125,7 +126,126 @@ pub enum PaletteState {
 #[derive(Debug, Default)]
 pub struct BrowseState {
     pub input: String,
+    pub input_cursor: usize,
+    pub input_desired_column: Option<usize>,
     pub selected: usize,
+    /// When `Some`, restrict matches to a single category. Tab cycles
+    /// between categories; backspace on empty input clears the filter.
+    pub category_filter: Option<Category>,
+}
+
+/// Logical grouping that drives the section headers and the category
+/// filter chip. Derived from each command's `id` in [`category_for`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Category {
+    Session,
+    Project,
+    Workspace,
+    Git,
+    Provider,
+    Mcp,
+    Agent,
+    Process,
+    Environment,
+    Notification,
+    Settings,
+    Danger,
+}
+
+impl Category {
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Session => "Sessions & Runs",
+            Category::Project => "Project",
+            Category::Workspace => "Workspace & Files",
+            Category::Git => "Git",
+            Category::Provider => "Providers & Auth",
+            Category::Mcp => "MCP",
+            Category::Agent => "Agents & Skills",
+            Category::Process => "Processes",
+            Category::Environment => "Environment",
+            Category::Notification => "Notifications",
+            Category::Settings => "Settings & Info",
+            Category::Danger => "Danger Zone",
+        }
+    }
+
+    /// Ordering used when rendering category sections.
+    fn order(self) -> u8 {
+        match self {
+            Category::Session => 0,
+            Category::Project => 1,
+            Category::Workspace => 2,
+            Category::Git => 3,
+            Category::Provider => 4,
+            Category::Mcp => 5,
+            Category::Agent => 6,
+            Category::Process => 7,
+            Category::Environment => 8,
+            Category::Notification => 9,
+            Category::Settings => 10,
+            Category::Danger => 11,
+        }
+    }
+
+    fn all() -> &'static [Category] {
+        &[
+            Category::Session,
+            Category::Project,
+            Category::Workspace,
+            Category::Git,
+            Category::Provider,
+            Category::Mcp,
+            Category::Agent,
+            Category::Process,
+            Category::Environment,
+            Category::Notification,
+            Category::Settings,
+            Category::Danger,
+        ]
+    }
+}
+
+pub(crate) fn category_for(id: &str) -> Category {
+    let root = id.split_whitespace().next().unwrap_or("");
+    match root {
+        "sessions" | "new" | "session" | "conversation" => Category::Session,
+        "register" | "project" | "project-state" => Category::Project,
+        "files" | "file" | "workspace" => Category::Workspace,
+        "git" | "commit-message" => Category::Git,
+        "providers" | "provider" | "auth" | "login" | "logout" | "remote" => Category::Provider,
+        "mcp" => Category::Mcp,
+        "agents" | "agent" | "agent-definition" | "skills" | "plugins" => Category::Agent,
+        "processes" | "process" => Category::Process,
+        "environment" | "tool-pack" | "suggest-command" => Category::Environment,
+        "notification" => Category::Notification,
+        "settings" | "context" | "usage" | "events" | "recovery" => Category::Settings,
+        "wipe" | "quit" => Category::Danger,
+        _ => Category::Settings,
+    }
+}
+
+/// Curated commands shown under the "Essentials" header when the input
+/// is empty and no category filter is active. Order is intentional.
+const ESSENTIALS: &[&str] = &[
+    "sessions",
+    "new",
+    "providers",
+    "files",
+    "git",
+    "agents",
+    "context",
+    "settings",
+];
+
+/// One scored match produced by [`scored_matches`]. Highlight is a pair
+/// of (offset, length) into the rendered title — the renderer uses it
+/// to draw matched chars in the accent color.
+#[derive(Clone, Copy)]
+pub(crate) struct MatchHit {
+    pub command: &'static Command,
+    pub score: i32,
+    pub highlight: Option<(usize, usize)>,
 }
 
 /// Outcome of handling a key inside the palette overlay.
@@ -1002,21 +1122,168 @@ pub fn open() -> PaletteState {
     PaletteState::Browse(BrowseState::default())
 }
 
-/// Filter the registry by the current input — case-insensitive substring
-/// match against id, title, or hint.
+/// Backwards-compatible filter used by tests and the slash module.
+#[allow(dead_code)]
 pub(crate) fn filtered(input: &str) -> Vec<&'static Command> {
-    if input.trim().is_empty() {
-        return COMMANDS.iter().collect();
-    }
-    let needle = input.to_lowercase();
-    COMMANDS
-        .iter()
-        .filter(|cmd| {
-            cmd.id.to_lowercase().contains(&needle)
-                || cmd.title.to_lowercase().contains(&needle)
-                || cmd.hint.to_lowercase().contains(&needle)
-        })
+    scored_matches(input, None)
+        .into_iter()
+        .map(|hit| hit.command)
         .collect()
+}
+
+/// Score the registry against `input` and an optional category filter.
+/// Returns matches ordered by score desc, then by category, then by id.
+pub(crate) fn scored_matches(input: &str, category: Option<Category>) -> Vec<MatchHit> {
+    let trimmed = input.trim();
+    let mut hits: Vec<MatchHit> = COMMANDS
+        .iter()
+        .filter(|cmd| category.is_none_or(|c| category_for(cmd.id) == c))
+        .filter_map(|cmd| score_command(cmd, trimmed))
+        .collect();
+    hits.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| {
+                category_for(a.command.id)
+                    .order()
+                    .cmp(&category_for(b.command.id).order())
+            })
+            .then_with(|| a.command.id.cmp(b.command.id))
+    });
+    hits
+}
+
+fn score_command(cmd: &'static Command, needle: &str) -> Option<MatchHit> {
+    if needle.is_empty() {
+        return Some(MatchHit {
+            command: cmd,
+            score: 0,
+            highlight: None,
+        });
+    }
+    let needle_lo = needle.to_lowercase();
+    let id_lo = cmd.id.to_lowercase();
+    let title_lo = cmd.title.to_lowercase();
+    let hint_lo = cmd.hint.to_lowercase();
+
+    // Tier 1 — exact id match.
+    if id_lo == needle_lo {
+        return Some(MatchHit {
+            command: cmd,
+            score: 10_000,
+            highlight: Some((0, cmd.title.len())),
+        });
+    }
+    // Tier 2 — id or title prefix.
+    if let Some(stripped) = id_lo.strip_prefix(&needle_lo) {
+        let hl_len = cmd
+            .title
+            .len()
+            .saturating_sub(cmd.id.len() - needle_lo.len());
+        let _ = stripped;
+        return Some(MatchHit {
+            command: cmd,
+            score: 8_000 - id_lo.len() as i32,
+            highlight: Some((0, hl_len.min(cmd.title.len()))),
+        });
+    }
+    if title_lo.starts_with(&needle_lo) {
+        return Some(MatchHit {
+            command: cmd,
+            score: 7_500 - title_lo.len() as i32,
+            highlight: Some((0, needle_lo.len().min(cmd.title.len()))),
+        });
+    }
+    // Tier 3 — acronym (e.g. "pl" → "project list").
+    if let Some(score) = acronym_score(&id_lo, &needle_lo) {
+        return Some(MatchHit {
+            command: cmd,
+            score: 6_000 + score,
+            highlight: None,
+        });
+    }
+    // Tier 4 — substring matches.
+    if let Some(pos) = id_lo.find(&needle_lo) {
+        let hl = highlight_in_title(cmd, &id_lo, pos, needle_lo.len());
+        return Some(MatchHit {
+            command: cmd,
+            score: 4_000 - pos as i32,
+            highlight: hl,
+        });
+    }
+    if let Some(pos) = title_lo.find(&needle_lo) {
+        return Some(MatchHit {
+            command: cmd,
+            score: 3_000 - pos as i32,
+            highlight: Some((pos, needle_lo.len())),
+        });
+    }
+    if hint_lo.contains(&needle_lo) {
+        return Some(MatchHit {
+            command: cmd,
+            score: 1_500,
+            highlight: None,
+        });
+    }
+    // Tier 5 — loose fuzzy (every char of needle appears in id in order).
+    fuzzy_score(&id_lo, &needle_lo).map(|score| MatchHit {
+        command: cmd,
+        score,
+        highlight: None,
+    })
+}
+
+fn acronym_score(id: &str, needle: &str) -> Option<i32> {
+    let words: Vec<&str> = id
+        .split(|c: char| c.is_whitespace() || c == '-' || c == '_')
+        .filter(|w| !w.is_empty())
+        .collect();
+    if needle.chars().count() > words.len() || needle.is_empty() {
+        return None;
+    }
+    for (i, ch) in needle.chars().enumerate() {
+        if !words[i].starts_with(ch) {
+            return None;
+        }
+    }
+    Some(200 - (words.len() as i32 - needle.chars().count() as i32))
+}
+
+fn fuzzy_score(haystack: &str, needle: &str) -> Option<i32> {
+    let mut hi = 0;
+    let mut last = None;
+    let mut gap_penalty: i32 = 0;
+    let hay: Vec<char> = haystack.chars().collect();
+    let nd: Vec<char> = needle.chars().collect();
+    for ch in nd.iter().copied() {
+        while hi < hay.len() && hay[hi] != ch {
+            hi += 1;
+        }
+        if hi >= hay.len() {
+            return None;
+        }
+        if let Some(prev) = last {
+            gap_penalty += (hi - prev - 1) as i32;
+        }
+        last = Some(hi);
+        hi += 1;
+    }
+    Some(500 - gap_penalty.min(500))
+}
+
+fn highlight_in_title(
+    cmd: &Command,
+    id_lo: &str,
+    pos_in_id: usize,
+    len: usize,
+) -> Option<(usize, usize)> {
+    let title_lo = cmd.title.to_lowercase();
+    if title_lo == id_lo {
+        return Some((pos_in_id, len));
+    }
+    title_lo
+        .find(&id_lo[pos_in_id..pos_in_id + len])
+        .map(|p| (p, len))
 }
 
 /// Handle a key while the palette is open. The caller owns mutation of
@@ -1039,10 +1306,19 @@ fn browse_key(
     key: KeyEvent,
     globals: &GlobalOptions,
 ) -> KeyResult {
-    let matches = filtered(&browse.input);
+    let matches = scored_matches(&browse.input, browse.category_filter);
     let count = matches.len();
     match key.code {
-        KeyCode::Esc => KeyResult::Close { status: None },
+        KeyCode::Esc => {
+            if browse.category_filter.is_some() {
+                browse.category_filter = None;
+                browse.selected = 0;
+                app.palette = Some(PaletteState::Browse(browse));
+                KeyResult::Continue
+            } else {
+                KeyResult::Close { status: None }
+            }
+        }
         KeyCode::Up => {
             if count > 0 {
                 browse.selected = browse.selected.saturating_sub(1);
@@ -1057,28 +1333,102 @@ fn browse_key(
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
-        KeyCode::Backspace => {
-            browse.input.pop();
+        KeyCode::PageUp => {
+            browse.selected = browse.selected.saturating_sub(8);
+            app.palette = Some(PaletteState::Browse(browse));
+            KeyResult::Continue
+        }
+        KeyCode::PageDown => {
+            if count > 0 {
+                browse.selected = (browse.selected + 8).min(count - 1);
+            }
+            app.palette = Some(PaletteState::Browse(browse));
+            KeyResult::Continue
+        }
+        KeyCode::Home => {
             browse.selected = 0;
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
-        KeyCode::Char(ch) => {
-            browse.input.push(ch);
+        KeyCode::End => {
+            if count > 0 {
+                browse.selected = count - 1;
+            }
+            app.palette = Some(PaletteState::Browse(browse));
+            KeyResult::Continue
+        }
+        KeyCode::Tab => {
+            browse.category_filter = cycle_category(browse.category_filter, false);
+            browse.selected = 0;
+            app.palette = Some(PaletteState::Browse(browse));
+            KeyResult::Continue
+        }
+        KeyCode::BackTab => {
+            browse.category_filter = cycle_category(browse.category_filter, true);
             browse.selected = 0;
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
         KeyCode::Enter => {
-            let Some(command) = matches.get(browse.selected).copied() else {
+            let Some(hit) = matches.get(browse.selected) else {
                 app.palette = Some(PaletteState::Browse(browse));
                 return KeyResult::Continue;
             };
-            activate_command(command, app, globals)
+            activate_command(hit.command, app, globals)
         }
         _ => {
+            handle_browse_text_edit(&mut browse, key);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
+        }
+    }
+}
+
+fn cycle_category(current: Option<Category>, backward: bool) -> Option<Category> {
+    let all = Category::all();
+    let idx = current
+        .and_then(|c| all.iter().position(|other| *other == c))
+        .map(|p| p as isize);
+    let next_idx = match (idx, backward) {
+        (None, false) => 0,
+        (None, true) => all.len() as isize - 1,
+        (Some(p), false) => p + 1,
+        (Some(p), true) => p - 1,
+    };
+    if next_idx < 0 || next_idx >= all.len() as isize {
+        None
+    } else {
+        Some(all[next_idx as usize])
+    }
+}
+
+fn handle_browse_text_edit(browse: &mut BrowseState, key: KeyEvent) {
+    let edit = text_edit::edit_for_key(key);
+    let outcome = text_edit::apply_edit_at_cursor(
+        &mut browse.input,
+        &mut browse.input_cursor,
+        &mut browse.input_desired_column,
+        edit,
+    );
+    if !outcome.changed {
+        return;
+    }
+    if outcome.text_changed {
+        match edit {
+            TextEdit::Insert(_)
+            | TextEdit::Backspace
+            | TextEdit::Delete
+            | TextEdit::DeletePreviousWord
+            | TextEdit::DeleteToLineStart => browse.selected = 0,
+            TextEdit::MoveLeft
+            | TextEdit::MoveRight
+            | TextEdit::MovePreviousWord
+            | TextEdit::MoveNextWord
+            | TextEdit::MoveUp
+            | TextEdit::MoveDown
+            | TextEdit::MoveToLineStart
+            | TextEdit::MoveToLineEnd
+            | TextEdit::Ignore => {}
         }
     }
 }
@@ -1322,18 +1672,20 @@ const VERTICAL_PAD_ROWS: u16 = 1;
 /// a rect of this size inside the viewport. The returned dimensions include
 /// the 1-cell decorative halo on every side.
 pub fn desired_size(app: &App, viewport: Rect) -> (u16, u16) {
-    const MIN_WIDTH: u16 = 36;
-    const MAX_WIDTH: u16 = 72;
-    let width = viewport.width.saturating_mul(50) / 100;
+    const MIN_WIDTH: u16 = 56;
+    const MAX_WIDTH: u16 = 96;
+    let width = viewport.width.saturating_mul(60) / 100;
     let width = width.clamp(MIN_WIDTH.min(viewport.width), MAX_WIDTH);
-    let content_height = match app.palette.as_ref() {
-        Some(PaletteState::Browse(browse)) => {
-            let rows = filtered(&browse.input).len().max(1) as u16;
-            // 2 rows for input + spacer + rows
-            2 + rows
+
+    let max_height = viewport.height.saturating_mul(85) / 100;
+    let preferred_height = match app.palette.as_ref() {
+        Some(PaletteState::Browse(_)) => {
+            // Browse view: take as much vertical space as we can comfortably
+            // afford so longer lists need less scrolling. Floor at 22 rows
+            // so even short terminals keep the list, strip, and footer.
+            max_height.max(22)
         }
         Some(PaletteState::Detail(detail)) => {
-            // 1 header + 1 spacer + body lines + 1 hint
             let body = match &detail.data {
                 DetailData::Rows(rows) => rows
                     .iter()
@@ -1343,16 +1695,11 @@ pub fn desired_size(app: &App, viewport: Rect) -> (u16, u16) {
                 DetailData::Empty(_) => 1,
             }
             .max(1) as u16;
-            3 + body
+            body + 6
         }
         None => 0,
     };
-    // +2 rows / +2 cols for the halo (1 on each side) plus the inner
-    // vertical padding above/below the content.
-    let max_height = viewport.height.saturating_mul(90) / 100;
-    let height = (content_height + 2 * VERTICAL_PAD_ROWS + 2)
-        .min(max_height)
-        .max(7);
+    let height = preferred_height.min(max_height).max(10);
     (width, height)
 }
 
@@ -1363,27 +1710,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if area.width <= 2 || area.height <= 2 {
         return;
     }
-    // Paint a 1-cell decorative halo (lighter than composer bg) around
-    // the surface so the overlay reads as a raised card.
-    let border = Paragraph::new("").style(theme::overlay_border());
-    frame.render_widget(border, area);
-
-    // The surface sits inset by 1 cell on every side; the halo color
-    // shows through on the resulting ring.
-    let surface_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width - 2,
-        height: area.height - 2,
-    };
-    let surface = Paragraph::new("").style(theme::composer_bg());
-    frame.render_widget(surface, surface_area);
+    // Thin gold-rounded border around the overlay surface. Using a Block
+    // (rather than painting a halo rectangle) draws actual box-drawing
+    // characters in the accent color — same gold as the inline ▎ stripe.
+    let bg = theme::composer_bg_color();
+    let card = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().bg(bg))
+        .border_style(Style::default().fg(theme::ACCENT).bg(bg));
+    let surface_area = card.inner(area);
+    frame.render_widget(card, area);
 
     // Carve out a top-padded inner rect for the actual content so text
     // doesn't crowd the surface's top/bottom edges.
     let inner = inner_rect(surface_area);
     match state {
-        PaletteState::Browse(browse) => render_browse(frame, inner, browse),
+        PaletteState::Browse(browse) => render_browse(frame, inner, app, browse),
         PaletteState::Detail(detail) => render_detail(frame, inner, detail),
     }
 }
@@ -1398,60 +1741,460 @@ fn inner_rect(surface_area: Rect) -> Rect {
     }
 }
 
-fn render_browse(frame: &mut Frame<'_>, area: Rect, browse: &BrowseState) {
+fn render_browse(frame: &mut Frame<'_>, area: Rect, app: &App, browse: &BrowseState) {
     let bg = theme::composer_bg_color();
+    let matches = scored_matches(&browse.input, browse.category_filter);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1), // title bar
+            Constraint::Length(1), // input
+            Constraint::Length(1), // spacer
+            Constraint::Min(3),    // command list
+            Constraint::Length(1), // spacer above footer
+            Constraint::Length(1), // footer hints
+        ])
         .split(area);
 
-    let input_text = if browse.input.is_empty() {
-        Span::styled("Type a command...", theme::dim().bg(bg))
-    } else {
-        Span::styled(browse.input.clone(), theme::fg().bg(bg))
-    };
-    let input_line = Line::from(vec![
-        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
-        input_text,
-    ]);
-    frame.render_widget(
-        Paragraph::new(input_line).style(theme::composer_bg()),
-        chunks[0],
-    );
+    render_palette_title_bar(frame, chunks[0], app, browse, bg);
+    render_palette_input(frame, chunks[1], browse, bg);
+    frame.render_widget(blank_paragraph(bg), chunks[2]);
+    render_palette_list(frame, chunks[3], browse, &matches, bg);
+    frame.render_widget(blank_paragraph(bg), chunks[4]);
+    render_palette_footer(frame, chunks[5], browse, bg);
+}
 
-    let matches = filtered(&browse.input);
-    let visible_capacity = chunks[1].height as usize;
-    let mut lines = Vec::with_capacity(visible_capacity.max(1));
-    if matches.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  No commands match.",
-            theme::dim().bg(bg),
-        )));
+fn render_palette_title_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    _app: &App,
+    browse: &BrowseState,
+    bg: Color,
+) {
+    let mut spans = vec![
+        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
+        Span::styled(
+            "Command Palette",
+            theme::accent().bg(bg).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if let Some(category) = browse.category_filter {
+        spans.push(Span::styled("  ", theme::dim().bg(bg)));
+        spans.push(Span::styled(" ", theme::fg().bg(theme::ACCENT)));
+        spans.push(Span::styled(
+            format!(" {} ", category.label()),
+            Style::default().fg(theme::BG).bg(theme::ACCENT),
+        ));
+        spans.push(Span::styled(" ", theme::fg().bg(theme::ACCENT)));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        area,
+    );
+}
+
+fn render_palette_input(frame: &mut Frame<'_>, area: Rect, browse: &BrowseState, bg: Color) {
+    let mut spans = vec![
+        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
+        Span::styled("❯ ", theme::dim().bg(bg)),
+    ];
+    if browse.input.is_empty() {
+        spans.push(Span::styled("Search commands…", theme::dim().bg(bg)));
     } else {
-        let start = browse
-            .selected
-            .saturating_sub(visible_capacity.saturating_sub(1));
-        let end = (start + visible_capacity).min(matches.len());
-        for (idx, command) in matches.iter().enumerate().skip(start).take(end - start) {
-            let row_style = if idx == browse.selected {
+        let cursor = text_edit::clamped_cursor(&browse.input, browse.input_cursor);
+        let text_style = theme::fg().bg(bg).add_modifier(Modifier::BOLD);
+        if cursor > 0 {
+            spans.push(Span::styled(browse.input[..cursor].to_string(), text_style));
+        }
+        if cursor < browse.input.len() {
+            let cursor_char_end = browse.input[cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(index, _)| cursor + index)
+                .unwrap_or(browse.input.len());
+            spans.push(Span::styled(
+                browse.input[cursor..cursor_char_end].to_string(),
+                Style::default().fg(bg).bg(theme::FG),
+            ));
+            if cursor_char_end < browse.input.len() {
+                spans.push(Span::styled(
+                    browse.input[cursor_char_end..].to_string(),
+                    text_style,
+                ));
+            }
+        } else {
+            spans.push(Span::styled(" ", Style::default().fg(bg).bg(theme::FG)));
+        }
+    }
+    let count = scored_matches(&browse.input, browse.category_filter).len();
+    let right = if browse.input.trim().is_empty() {
+        format!("{} commands", commands().len())
+    } else if count == 1 {
+        "1 match".to_owned()
+    } else {
+        format!("{count} matches")
+    };
+    let used = spans_width(&spans);
+    if (used + right.chars().count()) + 2 <= area.width as usize {
+        let pad = area.width as usize - used - right.chars().count();
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+        spans.push(Span::styled(
+            right,
+            if count == 0 {
+                theme::error().bg(bg)
+            } else {
+                theme::muted().bg(bg)
+            },
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        area,
+    );
+}
+
+fn render_palette_list(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    browse: &BrowseState,
+    matches: &[MatchHit],
+    bg: Color,
+) {
+    let capacity = area.height as usize;
+    if capacity == 0 {
+        return;
+    }
+    if matches.is_empty() {
+        let lines = vec![
+            Line::from(vec![Span::raw("")]),
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled("No commands match.", theme::dim().bg(bg)),
+            ]),
+            Line::from(vec![Span::raw("")]),
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    "Try a shorter query, or press Esc to clear.",
+                    theme::dim().bg(bg),
+                ),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines).style(Style::default().bg(bg)), area);
+        return;
+    }
+
+    let rows = build_list_rows(browse, matches);
+    // Find the slice that keeps the selected command on screen.
+    let selected_row = rows
+        .iter()
+        .position(|row| matches!(row, BrowseRow::Command { match_index, .. } if *match_index == browse.selected))
+        .unwrap_or(0);
+    let start = compute_visible_start(selected_row, rows.len(), capacity);
+    let end = (start + capacity).min(rows.len());
+
+    let mut lines = Vec::with_capacity(capacity);
+    let width = area.width as usize;
+    for row in &rows[start..end] {
+        lines.push(render_browse_row(row, browse.selected, width, bg));
+    }
+    // Scroll affordance when there are rows above/below the visible slice.
+    if !lines.is_empty() {
+        if start > 0 {
+            lines[0] = overlay_scroll_indicator(lines.remove(0), '\u{25B4}', width, bg);
+        }
+        if end < rows.len() {
+            let last = lines.len() - 1;
+            let line = lines.remove(last);
+            lines.insert(last, overlay_scroll_indicator(line, '\u{25BE}', width, bg));
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().bg(bg))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_palette_footer(frame: &mut Frame<'_>, area: Rect, browse: &BrowseState, bg: Color) {
+    let separator = Span::styled("  ·  ", theme::dim().bg(bg));
+    let mut spans = vec![
+        Span::styled(" ", theme::dim().bg(bg)),
+        Span::styled("↑↓", theme::accent().bg(bg)),
+        Span::styled(" navigate", theme::dim().bg(bg)),
+        separator.clone(),
+        Span::styled("⏎", theme::accent().bg(bg)),
+        Span::styled(" run", theme::dim().bg(bg)),
+        separator.clone(),
+        Span::styled("Tab", theme::accent().bg(bg)),
+        Span::styled(" category", theme::dim().bg(bg)),
+        separator.clone(),
+        Span::styled("Esc", theme::accent().bg(bg)),
+        Span::styled(
+            if browse.category_filter.is_some() {
+                " clear filter"
+            } else {
+                " close"
+            },
+            theme::dim().bg(bg),
+        ),
+    ];
+    let used = spans_width(&spans);
+    if (used + 2) <= area.width as usize {
+        spans.push(Span::styled(
+            " ".repeat(area.width as usize - used),
+            Style::default().bg(bg),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        area,
+    );
+}
+
+#[derive(Clone)]
+enum BrowseRow {
+    /// A blank visual break above a section header.
+    Spacer,
+    /// A category section header. Not selectable.
+    Header { label: String },
+    /// A real command row. `match_index` is the index into the matches
+    /// slice (used to figure out the selected command).
+    Command { match_index: usize, hit: MatchHit },
+}
+
+fn build_list_rows(browse: &BrowseState, matches: &[MatchHit]) -> Vec<BrowseRow> {
+    let mut rows: Vec<BrowseRow> = Vec::new();
+    let scoring = !browse.input.trim().is_empty();
+
+    let push_header = |rows: &mut Vec<BrowseRow>, label: String| {
+        if !rows.is_empty() {
+            rows.push(BrowseRow::Spacer);
+        }
+        rows.push(BrowseRow::Header { label });
+    };
+
+    if scoring {
+        // Scored search: pure flat list, no headers. The bottom context
+        // strip carries the category for the selected hit.
+        for (idx, hit) in matches.iter().enumerate() {
+            rows.push(BrowseRow::Command {
+                match_index: idx,
+                hit: *hit,
+            });
+        }
+        return rows;
+    }
+
+    if browse.category_filter.is_none() {
+        // Empty input: curated quick row first, then every category.
+        let essential_indices: Vec<usize> = ESSENTIALS
+            .iter()
+            .filter_map(|id| matches.iter().position(|hit| hit.command.id == *id))
+            .collect();
+        if !essential_indices.is_empty() {
+            push_header(&mut rows, "Quick".to_owned());
+            for idx in &essential_indices {
+                rows.push(BrowseRow::Command {
+                    match_index: *idx,
+                    hit: matches[*idx],
+                });
+            }
+        }
+        let mut last_category: Option<Category> = None;
+        for (idx, hit) in matches.iter().enumerate() {
+            if essential_indices.contains(&idx) {
+                continue;
+            }
+            let category = category_for(hit.command.id);
+            if Some(category) != last_category {
+                push_header(&mut rows, category.label().to_owned());
+                last_category = Some(category);
+            }
+            rows.push(BrowseRow::Command {
+                match_index: idx,
+                hit: *hit,
+            });
+        }
+    } else {
+        // Category filter active, no input.
+        if let Some(category) = browse.category_filter {
+            push_header(&mut rows, category.label().to_owned());
+        }
+        for (idx, hit) in matches.iter().enumerate() {
+            rows.push(BrowseRow::Command {
+                match_index: idx,
+                hit: *hit,
+            });
+        }
+    }
+    rows
+}
+
+fn render_browse_row(
+    row: &BrowseRow,
+    selected_index: usize,
+    width: usize,
+    bg: Color,
+) -> Line<'static> {
+    match row {
+        BrowseRow::Spacer => Line::from(Span::styled(String::new(), Style::default().bg(bg))),
+        BrowseRow::Header { label } => {
+            // Subtle uppercase section label, no horizontal rule — the
+            // single blank row before it (added by build_list_rows) gives
+            // the visual break.
+            let text = format!("   {}", label.to_uppercase());
+            Line::from(Span::styled(
+                text,
+                theme::dim().bg(bg).add_modifier(Modifier::BOLD),
+            ))
+        }
+        BrowseRow::Command { match_index, hit } => {
+            let selected = *match_index == selected_index;
+            let command = hit.command;
+            let prefix_style = if selected {
                 theme::accent().bg(bg)
+            } else {
+                theme::dim().bg(bg)
+            };
+            let title_style = if selected {
+                theme::accent().bg(bg).add_modifier(Modifier::BOLD)
             } else {
                 theme::fg().bg(bg)
             };
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!("{:<14}", command.title), row_style),
-                Span::raw("  "),
-                Span::styled(command.hint, theme::muted().bg(bg)),
-            ]));
+            let hint_style = if selected {
+                theme::fg().bg(bg)
+            } else {
+                theme::muted().bg(bg)
+            };
+
+            let title_column = 26;
+            let title_display = pad_to(command.title, title_column);
+            let mut spans = vec![Span::styled(
+                if selected { " ▎ " } else { "   " },
+                prefix_style,
+            )];
+            push_highlighted_title(&mut spans, &title_display, hit.highlight, title_style, bg);
+            let hint_room = width.saturating_sub(3 + title_column + 2);
+            let hint = truncate(command.hint, hint_room);
+            spans.push(Span::styled(format!("  {hint}"), hint_style));
+            // Pad the row to the full width so the selected-row background
+            // tint extends all the way to the right edge.
+            let used = spans_width(&spans);
+            if used + 1 < width {
+                spans.push(Span::styled(
+                    " ".repeat(width - used),
+                    Style::default().bg(bg),
+                ));
+            }
+            Line::from(spans)
         }
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(theme::composer_bg())
-            .wrap(Wrap { trim: false }),
-        chunks[1],
-    );
+}
+
+fn push_highlighted_title(
+    spans: &mut Vec<Span<'static>>,
+    title: &str,
+    highlight: Option<(usize, usize)>,
+    base: Style,
+    bg: Color,
+) {
+    let Some((start, len)) = highlight else {
+        spans.push(Span::styled(title.to_owned(), base));
+        return;
+    };
+    let end = (start + len).min(title.len());
+    if start >= title.len() {
+        spans.push(Span::styled(title.to_owned(), base));
+        return;
+    }
+    if start > 0 {
+        spans.push(Span::styled(title[..start].to_owned(), base));
+    }
+    spans.push(Span::styled(
+        title[start..end].to_owned(),
+        theme::accent().bg(bg).add_modifier(Modifier::BOLD),
+    ));
+    if end < title.len() {
+        spans.push(Span::styled(title[end..].to_owned(), base));
+    }
+}
+
+fn overlay_scroll_indicator(
+    line: Line<'static>,
+    glyph: char,
+    width: usize,
+    bg: Color,
+) -> Line<'static> {
+    let mut spans = line.spans;
+    let used = spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>();
+    if used + 2 < width {
+        let pad = width - used - 2;
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+        spans.push(Span::styled(format!(" {glyph} "), theme::dim().bg(bg)));
+    }
+    Line::from(spans)
+}
+
+fn compute_visible_start(selected: usize, total: usize, capacity: usize) -> usize {
+    if total <= capacity {
+        return 0;
+    }
+    let half = capacity / 2;
+    if selected < half {
+        0
+    } else if selected + half >= total {
+        total.saturating_sub(capacity)
+    } else {
+        selected.saturating_sub(half)
+    }
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+fn blank_line(bg: Color) -> Line<'static> {
+    Line::from(Span::styled(String::new(), Style::default().bg(bg)))
+}
+
+fn blank_paragraph(bg: Color) -> Paragraph<'static> {
+    Paragraph::new("").style(Style::default().bg(bg))
+}
+
+fn pad_to(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        s.chars().take(width).collect()
+    } else {
+        let mut out = String::with_capacity(width);
+        out.push_str(s);
+        for _ in 0..(width - len) {
+            out.push(' ');
+        }
+        out
+    }
+}
+
+fn truncate(s: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return s.to_owned();
+    }
+    if width <= 1 {
+        return "…".to_owned();
+    }
+    let mut out: String = chars[..width - 1].iter().collect();
+    out.push('…');
+    out
 }
 
 fn render_detail(frame: &mut Frame<'_>, area: Rect, detail: &DetailState) {
@@ -1459,40 +2202,68 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, detail: &DetailState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(1), // title bar
+            Constraint::Length(1), // hint subtitle (or blank)
+            Constraint::Length(1), // spacer
+            Constraint::Min(1),    // body
+            Constraint::Length(1), // footer
         ])
         .split(area);
 
-    let header = Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
-        Span::styled(detail.title.clone(), theme::accent().bg(bg)),
-    ]);
+        Span::styled(
+            detail.title.clone(),
+            theme::accent().bg(bg).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let kind_label = format!(" {} ", category_for(detail.command_id).label());
+    let used = spans_width(&header_spans) + kind_label.chars().count();
+    if used + 2 <= chunks[0].width as usize {
+        let pad = chunks[0].width as usize - used;
+        header_spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+        header_spans.push(Span::styled(kind_label, theme::muted().bg(bg)));
+    }
     frame.render_widget(
-        Paragraph::new(header).style(theme::composer_bg()),
+        Paragraph::new(Line::from(header_spans)).style(Style::default().bg(bg)),
         chunks[0],
     );
-    frame.render_widget(Paragraph::new("").style(theme::composer_bg()), chunks[1]);
+
+    let hint_text = detail.hint.clone().unwrap_or_else(|| "—".to_owned());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(hint_text, theme::dim().bg(bg)),
+        ]))
+        .style(Style::default().bg(bg)),
+        chunks[1],
+    );
+
+    frame.render_widget(blank_paragraph(bg), chunks[2]);
 
     let body_lines: Vec<Line<'static>> = match &detail.data {
         DetailData::Rows(rows) => rows
             .iter()
             .enumerate()
             .flat_map(|(idx, row)| {
-                let title_style = if idx == detail.selected {
+                let selected = idx == detail.selected;
+                let prefix_style = if selected {
                     theme::accent().bg(bg)
+                } else {
+                    theme::dim().bg(bg)
+                };
+                let title_style = if selected {
+                    theme::accent().bg(bg).add_modifier(Modifier::BOLD)
                 } else {
                     theme::fg().bg(bg)
                 };
                 let mut out = vec![Line::from(vec![
-                    Span::raw("  "),
+                    Span::styled(if selected { " ▎ " } else { "   " }, prefix_style),
                     Span::styled(row.title.clone(), title_style),
                 ])];
                 if let Some(subtitle) = row.subtitle.clone() {
                     out.push(Line::from(vec![
-                        Span::raw("    "),
+                        Span::raw("     "),
                         Span::styled(subtitle, theme::muted().bg(bg)),
                     ]));
                 }
@@ -1508,26 +2279,43 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, detail: &DetailState) {
                 ])
             })
             .collect(),
-        DetailData::Empty(text) => vec![Line::from(vec![
-            Span::raw("  "),
-            Span::styled(text.clone(), theme::dim().bg(bg)),
-        ])],
+        DetailData::Empty(text) => vec![
+            blank_line(bg),
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(text.clone(), theme::dim().bg(bg)),
+            ]),
+        ],
     };
     frame.render_widget(
         Paragraph::new(body_lines)
-            .style(theme::composer_bg())
+            .style(Style::default().bg(bg))
             .wrap(Wrap { trim: false }),
-        chunks[2],
+        chunks[3],
     );
 
-    let hint = detail
-        .hint
-        .clone()
-        .unwrap_or_else(|| "esc back   ctrl+p /commands".to_owned());
+    let separator = Span::styled("  ·  ", theme::dim().bg(bg));
+    let mut spans = vec![
+        Span::styled(" ", Style::default().bg(bg)),
+        Span::styled("↑↓", theme::accent().bg(bg)),
+        Span::styled(" navigate", theme::dim().bg(bg)),
+        separator.clone(),
+        Span::styled("⏎", theme::accent().bg(bg)),
+        Span::styled(" select", theme::dim().bg(bg)),
+        separator.clone(),
+        Span::styled("Esc", theme::accent().bg(bg)),
+        Span::styled(" back to palette", theme::dim().bg(bg)),
+    ];
+    let used = spans_width(&spans);
+    if used + 2 <= chunks[4].width as usize {
+        spans.push(Span::styled(
+            " ".repeat(chunks[4].width as usize - used),
+            Style::default().bg(bg),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint, theme::dim().bg(bg))))
-            .style(theme::composer_bg()),
-        chunks[3],
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        chunks[4],
     );
 }
 
@@ -1675,6 +2463,10 @@ mod tests {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
     }
 
+    fn modified_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
     #[test]
     fn esc_in_browse_closes_palette() {
         let mut app = super::super::app::test_only_empty_app();
@@ -1701,6 +2493,102 @@ mod tests {
                 assert!(matches.iter().any(|cmd| cmd.id == "providers"));
             }
             PaletteState::Detail(_) => panic!("expected browse state"),
+        }
+    }
+
+    #[test]
+    fn browse_input_supports_word_and_line_delete_shortcuts() {
+        let mut app = super::super::app::test_only_empty_app();
+        let globals = super::super::app::test_only_globals();
+        app.palette = Some(PaletteState::Browse(BrowseState {
+            input: "provider login".into(),
+            input_cursor: "provider login".len(),
+            input_desired_column: None,
+            selected: 3,
+            category_filter: None,
+        }));
+
+        let outcome = handle_key(
+            &mut app,
+            modified_key(KeyCode::Backspace, KeyModifiers::ALT),
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyResult::Continue));
+        match app.palette.as_ref().expect("palette open") {
+            PaletteState::Browse(browse) => {
+                assert_eq!(browse.input, "provider ");
+                assert_eq!(browse.selected, 0);
+            }
+            PaletteState::Detail(_) => panic!("expected browse state"),
+        }
+
+        let outcome = handle_key(
+            &mut app,
+            modified_key(KeyCode::Backspace, KeyModifiers::META),
+            &globals,
+        );
+
+        assert!(matches!(outcome, KeyResult::Continue));
+        match app.palette.as_ref().expect("palette open") {
+            PaletteState::Browse(browse) => {
+                assert!(browse.input.is_empty());
+                assert_eq!(browse.selected, 0);
+            }
+            PaletteState::Detail(_) => panic!("expected browse state"),
+        }
+    }
+
+    #[test]
+    fn scored_matches_rank_prefix_above_substring() {
+        let hits = scored_matches("git", None);
+        let first = hits.first().expect("matches");
+        assert_eq!(first.command.id, "git", "exact id match should win");
+        let next: Vec<&str> = hits.iter().take(4).map(|h| h.command.id).collect();
+        assert!(
+            next.iter().all(|id| id.starts_with("git") || *id == "git"),
+            "top hits should be git*-prefixed, got {next:?}",
+        );
+    }
+
+    #[test]
+    fn acronym_matches_multiword_command() {
+        let hits = scored_matches("pl", None);
+        assert!(
+            hits.iter().any(|hit| hit.command.id == "project list"),
+            "acronym `pl` should surface `project list`",
+        );
+    }
+
+    #[test]
+    fn category_filter_restricts_results() {
+        let hits = scored_matches("", Some(Category::Git));
+        assert!(!hits.is_empty(), "git category should have entries");
+        assert!(
+            hits.iter()
+                .all(|hit| category_for(hit.command.id) == Category::Git),
+            "category filter should restrict by category",
+        );
+    }
+
+    #[test]
+    fn tab_cycles_into_first_category() {
+        let mut app = super::super::app::test_only_empty_app();
+        let globals = super::super::app::test_only_globals();
+        app.palette = Some(open());
+        let _ = handle_key(&mut app, key(KeyCode::Tab), &globals);
+        match app.palette.as_ref().expect("palette open") {
+            PaletteState::Browse(browse) => {
+                assert_eq!(browse.category_filter, Some(Category::Session));
+            }
+            PaletteState::Detail(_) => panic!("expected browse"),
+        }
+        // Esc clears the category filter rather than closing the palette.
+        let outcome = handle_key(&mut app, key(KeyCode::Esc), &globals);
+        assert!(matches!(outcome, KeyResult::Continue));
+        match app.palette.as_ref().expect("palette open") {
+            PaletteState::Browse(browse) => assert!(browse.category_filter.is_none()),
+            PaletteState::Detail(_) => panic!("expected browse"),
         }
     }
 

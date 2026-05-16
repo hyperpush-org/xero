@@ -172,7 +172,8 @@ cd server && mix setup
 ### Root commands
 
 ```bash
-pnpm run dev          # Preflight, Postgres logs, Phoenix server, Tauri desktop, and landing site
+pnpm run dev          # Preflight, Postgres logs, Phoenix server, Tauri desktop, landing site, and cloud app
+pnpm run stop:all     # Stop Xero dev servers and the local Postgres container
 pnpm run dev:preflight
 pnpm run db:up
 pnpm run db:down

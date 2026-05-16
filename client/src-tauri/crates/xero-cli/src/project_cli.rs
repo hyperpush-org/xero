@@ -1042,7 +1042,10 @@ struct ProjectStateSeed<'a> {
     kind: ProjectKind,
 }
 
-fn ensure_project_state(globals: &GlobalOptions, seed: ProjectStateSeed<'_>) -> Result<(), CliError> {
+fn ensure_project_state(
+    globals: &GlobalOptions,
+    seed: ProjectStateSeed<'_>,
+) -> Result<(), CliError> {
     let ProjectStateSeed {
         project_id,
         repository_id,
@@ -1334,7 +1337,9 @@ pub(crate) fn take_project_id_option_or_selected(
 
 fn take_project_arg(args: &mut Vec<String>, command: &str) -> Result<String, CliError> {
     if args.is_empty() {
-        Err(CliError::usage(format!("Missing project id for `{command}`.")))
+        Err(CliError::usage(format!(
+            "Missing project id for `{command}`."
+        )))
     } else {
         Ok(args.remove(0))
     }
@@ -1342,7 +1347,9 @@ fn take_project_arg(args: &mut Vec<String>, command: &str) -> Result<String, Cli
 
 fn take_session_arg(args: &mut Vec<String>, command: &str) -> Result<String, CliError> {
     if args.is_empty() {
-        Err(CliError::usage(format!("Missing session id for `{command}`.")))
+        Err(CliError::usage(format!(
+            "Missing session id for `{command}`."
+        )))
     } else {
         Ok(args.remove(0))
     }

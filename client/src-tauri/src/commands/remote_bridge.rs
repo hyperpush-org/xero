@@ -817,7 +817,7 @@ fn remote_available_agents() -> Vec<JsonValue> {
         json!({ "id": "debug", "label": "Debug" }),
         json!({ "id": "crawl", "label": "Crawl" }),
         json!({ "id": "agent_create", "label": "Agent Create" }),
-        json!({ "id": "generalist", "label": "Generalist" }),
+        json!({ "id": "generalist", "label": "Agent" }),
     ]
 }
 

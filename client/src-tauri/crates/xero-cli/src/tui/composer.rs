@@ -6,6 +6,7 @@
 
 use ratatui::{
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
     Frame,
@@ -15,15 +16,16 @@ use super::{app::App, slash, theme};
 
 const VISIBLE_INPUT_ROWS: usize = 2;
 const MAX_INPUT_ROWS: usize = 6;
+const INPUT_FOOTER_GAP_ROWS: u16 = 1;
 /// Empty rows inserted above and below the content so text doesn't crowd
 /// the composer's top/bottom edges.
 const VERTICAL_PAD_ROWS: u16 = 1;
 
 pub fn height(app: &App) -> u16 {
-    let typed_rows = app.composer.split('\n').count().max(1);
+    let typed_rows = input_rows(&app.composer).len();
     let input_rows = typed_rows.clamp(VISIBLE_INPUT_ROWS, MAX_INPUT_ROWS) as u16;
-    // top pad + input + slash suggestions + agent footer + bottom pad
-    input_rows + slash::visible_rows(app) + 1 + 2 * VERTICAL_PAD_ROWS
+    // top pad + input + slash suggestions + input/footer gap + agent footer + bottom pad
+    input_rows + slash::visible_rows(app) + INPUT_FOOTER_GAP_ROWS + 1 + 2 * VERTICAL_PAD_ROWS
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -46,17 +48,26 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(surface, surface_area);
 
     let bg = theme::composer_bg_color();
-    let typed_rows = app.composer.split('\n').collect::<Vec<_>>();
+    let typed_rows = input_rows(&app.composer);
+    let cursor = app.composer_cursor();
+    let cursor_row = cursor_row_index(&typed_rows, cursor);
     let footer_rows = u16::from(area.height >= 2);
     let top_pad_rows = u16::from(area.height >= 4);
     let bottom_pad_rows = u16::from(area.height >= 5);
-    let suggestion_rows = slash::visible_rows(app).min(
-        area.height
-            .saturating_sub(footer_rows + top_pad_rows + bottom_pad_rows + 1),
+    let input_footer_gap_rows = u16::from(
+        footer_rows > 0
+            && area.height
+                >= footer_rows + top_pad_rows + bottom_pad_rows + INPUT_FOOTER_GAP_ROWS + 1,
     );
+    let suggestion_rows =
+        slash::visible_rows(app).min(area.height.saturating_sub(
+            footer_rows + top_pad_rows + bottom_pad_rows + input_footer_gap_rows + 1,
+        ));
     let available_input_rows = area
         .height
-        .saturating_sub(footer_rows + top_pad_rows + bottom_pad_rows + suggestion_rows)
+        .saturating_sub(
+            footer_rows + top_pad_rows + bottom_pad_rows + suggestion_rows + input_footer_gap_rows,
+        )
         .max(1) as usize;
     let visible_rows = typed_rows
         .len()
@@ -70,7 +81,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         lines.push(stripe_only_line(bg));
     }
 
-    for index in 0..visible_rows {
+    let first_visible_row = cursor_row
+        .saturating_add(1)
+        .saturating_sub(visible_rows)
+        .min(typed_rows.len().saturating_sub(visible_rows));
+    for visible_index in 0..visible_rows {
+        let index = first_visible_row + visible_index;
         let mut spans = vec![Span::styled(
             format!("{} ", theme::STRIPE_GLYPH),
             theme::accent().bg(bg),
@@ -78,22 +94,26 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         let body_style = theme::fg().bg(bg);
         if index < typed_rows.len() {
             let row = typed_rows[index];
-            if index == typed_rows.len() - 1 {
-                spans.push(Span::styled(format!("{}\u{2581}", row), body_style));
+            if app.composer.is_empty() {
+                spans.push(Span::styled(
+                    placeholder_for(app).to_string(),
+                    theme::dim().bg(bg),
+                ));
+            } else if index == cursor_row {
+                push_cursor_row(&mut spans, row, cursor, body_style);
             } else {
-                spans.push(Span::styled(row.to_string(), body_style));
+                spans.push(Span::styled(row.text.to_string(), body_style));
             }
-        } else if index == 0 && app.composer.is_empty() {
-            spans.push(Span::styled(
-                placeholder_for(app).to_string(),
-                theme::dim().bg(bg),
-            ));
         }
         lines.push(Line::from(spans));
     }
 
     if suggestion_rows > 0 {
         lines.extend(slash::suggestion_lines(app, suggestion_rows as usize, bg));
+    }
+
+    for _ in 0..input_footer_gap_rows {
+        lines.push(stripe_only_line(bg));
     }
 
     if footer_rows > 0 {
@@ -109,6 +129,83 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .style(theme::composer_bg())
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, surface_area);
+}
+
+#[derive(Clone, Copy)]
+struct InputRow<'a> {
+    start: usize,
+    end: usize,
+    text: &'a str,
+}
+
+fn input_rows(input: &str) -> Vec<InputRow<'_>> {
+    if input.is_empty() {
+        return vec![InputRow {
+            start: 0,
+            end: 0,
+            text: "",
+        }];
+    }
+
+    let mut rows = Vec::new();
+    let mut start = 0;
+    for segment in input.split_inclusive('\n') {
+        let content_len = segment
+            .strip_suffix('\n')
+            .map(str::len)
+            .unwrap_or(segment.len());
+        let end = start + content_len;
+        rows.push(InputRow {
+            start,
+            end,
+            text: &input[start..end],
+        });
+        start += segment.len();
+    }
+    if input.ends_with('\n') {
+        rows.push(InputRow {
+            start: input.len(),
+            end: input.len(),
+            text: "",
+        });
+    }
+    rows
+}
+
+fn cursor_row_index(rows: &[InputRow<'_>], cursor: usize) -> usize {
+    rows.iter()
+        .position(|row| cursor >= row.start && cursor <= row.end)
+        .unwrap_or_else(|| rows.len().saturating_sub(1))
+}
+
+fn push_cursor_row(spans: &mut Vec<Span<'static>>, row: InputRow<'_>, cursor: usize, style: Style) {
+    let cursor = cursor.clamp(row.start, row.end);
+    let split_at = cursor - row.start;
+    if split_at > 0 {
+        spans.push(Span::styled(row.text[..split_at].to_string(), style));
+    }
+    if split_at < row.text.len() {
+        let cursor_char_end = row.text[split_at..]
+            .char_indices()
+            .nth(1)
+            .map(|(index, _)| split_at + index)
+            .unwrap_or(row.text.len());
+        spans.push(Span::styled(
+            row.text[split_at..cursor_char_end].to_string(),
+            cursor_style(),
+        ));
+        if cursor_char_end < row.text.len() {
+            spans.push(Span::styled(row.text[cursor_char_end..].to_string(), style));
+        }
+    } else {
+        spans.push(Span::styled(" ", cursor_style()));
+    }
+}
+
+fn cursor_style() -> Style {
+    Style::default()
+        .fg(theme::composer_bg_color())
+        .bg(theme::FG)
 }
 
 fn stripe_only_line(bg: ratatui::style::Color) -> Line<'static> {

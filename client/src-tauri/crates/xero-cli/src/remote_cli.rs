@@ -8,9 +8,9 @@ use xero_remote_bridge::{
 };
 
 use super::{
-    cli_app_data_root, default_headless_state_dir, response, take_bool_flag, take_help, take_option,
-    validate_required_cli, workspace_project_database_path, CliError, CliResponse, GlobalOptions,
-    OutputMode,
+    cli_app_data_root, default_headless_state_dir, response, take_bool_flag, take_help,
+    take_option, validate_required_cli, workspace_project_database_path, CliError, CliResponse,
+    GlobalOptions, OutputMode,
 };
 
 const REMOTE_DIR: &str = "remote";
@@ -735,10 +735,7 @@ fn mock_web_state() -> Result<MockWebState, CliError> {
     let identity_path = cli_app_data_root(&globals_for_path)
         .join(REMOTE_DIR)
         .join(MOCK_WEB_IDENTITY_FILE);
-    let stored_identity = FileIdentityStore::new(identity_path)
-        .load()
-        .ok()
-        .flatten();
+    let stored_identity = FileIdentityStore::new(identity_path).load().ok().flatten();
 
     let (token, account_id, device_id) = if let Some(identity) = stored_identity {
         let token = identity
