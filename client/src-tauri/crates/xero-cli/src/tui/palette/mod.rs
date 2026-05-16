@@ -1307,7 +1307,6 @@ fn browse_key(
     globals: &GlobalOptions,
 ) -> KeyResult {
     let matches = scored_matches(&browse.input, browse.category_filter);
-    let count = matches.len();
     match key.code {
         KeyCode::Esc => {
             if browse.category_filter.is_some() {
@@ -1320,40 +1319,32 @@ fn browse_key(
             }
         }
         KeyCode::Up => {
-            if count > 0 {
-                browse.selected = browse.selected.saturating_sub(1);
-            }
+            move_visual_selection(&mut browse, &matches, -1);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
         KeyCode::Down => {
-            if count > 0 {
-                browse.selected = (browse.selected + 1).min(count - 1);
-            }
+            move_visual_selection(&mut browse, &matches, 1);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
         KeyCode::PageUp => {
-            browse.selected = browse.selected.saturating_sub(8);
+            move_visual_selection(&mut browse, &matches, -8);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
         KeyCode::PageDown => {
-            if count > 0 {
-                browse.selected = (browse.selected + 8).min(count - 1);
-            }
+            move_visual_selection(&mut browse, &matches, 8);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
         KeyCode::Home => {
-            browse.selected = 0;
+            select_visual_endpoint(&mut browse, &matches, false);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
         KeyCode::End => {
-            if count > 0 {
-                browse.selected = count - 1;
-            }
+            select_visual_endpoint(&mut browse, &matches, true);
             app.palette = Some(PaletteState::Browse(browse));
             KeyResult::Continue
         }
@@ -1382,6 +1373,44 @@ fn browse_key(
             KeyResult::Continue
         }
     }
+}
+
+fn move_visual_selection(browse: &mut BrowseState, matches: &[MatchHit], offset: isize) {
+    let order = visual_command_indices(browse, matches);
+    if order.is_empty() {
+        browse.selected = 0;
+        return;
+    }
+
+    let current = order
+        .iter()
+        .position(|match_index| *match_index == browse.selected)
+        .unwrap_or(0);
+    let next = if offset.is_negative() {
+        current.saturating_sub(offset.unsigned_abs())
+    } else {
+        (current + offset as usize).min(order.len() - 1)
+    };
+    browse.selected = order[next];
+}
+
+fn select_visual_endpoint(browse: &mut BrowseState, matches: &[MatchHit], last: bool) {
+    let order = visual_command_indices(browse, matches);
+    let Some(selected) = (if last { order.last() } else { order.first() }) else {
+        browse.selected = 0;
+        return;
+    };
+    browse.selected = *selected;
+}
+
+fn visual_command_indices(browse: &BrowseState, matches: &[MatchHit]) -> Vec<usize> {
+    build_list_rows(browse, matches)
+        .into_iter()
+        .filter_map(|row| match row {
+            BrowseRow::Command { match_index, .. } => Some(match_index),
+            BrowseRow::Spacer | BrowseRow::Header { .. } => None,
+        })
+        .collect()
 }
 
 fn cycle_category(current: Option<Category>, backward: bool) -> Option<Category> {
@@ -1667,6 +1696,8 @@ fn has_option(args: &[String], option: &str) -> bool {
 /// Empty rows inserted above and below the palette content so text doesn't
 /// hug the elevated surface's top/bottom edges — mirrors the composer.
 const VERTICAL_PAD_ROWS: u16 = 1;
+const PALETTE_LEFT_GUTTER: &str = "   ";
+const RIGHT_LABEL_PAD: usize = 2;
 
 /// Preferred overlay size for the current palette state. The caller centers
 /// a rect of this size inside the viewport. The returned dimensions include
@@ -1772,7 +1803,7 @@ fn render_palette_title_bar(
     bg: Color,
 ) {
     let mut spans = vec![
-        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
+        Span::styled(PALETTE_LEFT_GUTTER, Style::default().bg(bg)),
         Span::styled(
             "Command Palette",
             theme::accent().bg(bg).add_modifier(Modifier::BOLD),
@@ -1795,7 +1826,7 @@ fn render_palette_title_bar(
 
 fn render_palette_input(frame: &mut Frame<'_>, area: Rect, browse: &BrowseState, bg: Color) {
     let mut spans = vec![
-        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
+        Span::styled(PALETTE_LEFT_GUTTER, Style::default().bg(bg)),
         Span::styled("❯ ", theme::dim().bg(bg)),
     ];
     if browse.input.is_empty() {
@@ -1835,8 +1866,9 @@ fn render_palette_input(frame: &mut Frame<'_>, area: Rect, browse: &BrowseState,
         format!("{count} matches")
     };
     let used = spans_width(&spans);
-    if (used + right.chars().count()) + 2 <= area.width as usize {
-        let pad = area.width as usize - used - right.chars().count();
+    let right_width = right.chars().count();
+    if used + right_width + RIGHT_LABEL_PAD <= area.width as usize {
+        let pad = area.width as usize - used - right_width - RIGHT_LABEL_PAD;
         spans.push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
         spans.push(Span::styled(
             right,
@@ -1845,6 +1877,10 @@ fn render_palette_input(frame: &mut Frame<'_>, area: Rect, browse: &BrowseState,
             } else {
                 theme::muted().bg(bg)
             },
+        ));
+        spans.push(Span::styled(
+            " ".repeat(RIGHT_LABEL_PAD),
+            Style::default().bg(bg),
         ));
     }
     frame.render_widget(
@@ -2405,6 +2441,7 @@ pub(crate) fn array_field<'a>(value: &'a JsonValue, key: &str) -> &'a [JsonValue
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
 
     #[test]
     fn registry_lists_every_expected_command() {
@@ -2461,6 +2498,31 @@ mod tests {
 
     fn key_char(ch: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    fn selected_id(browse: &BrowseState) -> &'static str {
+        scored_matches(&browse.input, browse.category_filter)
+            .get(browse.selected)
+            .map(|hit| hit.command.id)
+            .expect("selected command")
+    }
+
+    fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+        buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect()
+    }
+
+    fn rendered_browse_rows(width: u16, height: u16) -> Vec<String> {
+        let mut app = super::super::app::test_only_empty_app();
+        app.palette = Some(open());
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
+        terminal
+            .draw(|frame| render(frame, Rect::new(0, 0, width, height), &app))
+            .expect("draw");
+        buffer_rows(terminal.backend().buffer())
     }
 
     fn modified_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -2590,6 +2652,88 @@ mod tests {
             PaletteState::Browse(browse) => assert!(browse.category_filter.is_none()),
             PaletteState::Detail(_) => panic!("expected browse"),
         }
+    }
+
+    #[test]
+    fn up_from_first_session_command_moves_into_quick_section() {
+        let mut app = super::super::app::test_only_empty_app();
+        let globals = super::super::app::test_only_globals();
+        let selected = scored_matches("", None)
+            .iter()
+            .position(|hit| hit.command.id == "conversation answer")
+            .expect("conversation answer command");
+        app.palette = Some(PaletteState::Browse(BrowseState {
+            input: String::new(),
+            input_cursor: 0,
+            input_desired_column: None,
+            selected,
+            category_filter: None,
+        }));
+
+        let outcome = handle_key(&mut app, key(KeyCode::Up), &globals);
+
+        assert!(matches!(outcome, KeyResult::Continue));
+        match app.palette.as_ref().expect("palette open") {
+            PaletteState::Browse(browse) => assert_eq!(selected_id(browse), "settings"),
+            PaletteState::Detail(_) => panic!("expected browse"),
+        }
+    }
+
+    #[test]
+    fn down_from_quick_section_moves_into_first_session_command() {
+        let mut app = super::super::app::test_only_empty_app();
+        let globals = super::super::app::test_only_globals();
+        let selected = scored_matches("", None)
+            .iter()
+            .position(|hit| hit.command.id == "settings")
+            .expect("settings command");
+        app.palette = Some(PaletteState::Browse(BrowseState {
+            input: String::new(),
+            input_cursor: 0,
+            input_desired_column: None,
+            selected,
+            category_filter: None,
+        }));
+
+        let outcome = handle_key(&mut app, key(KeyCode::Down), &globals);
+
+        assert!(matches!(outcome, KeyResult::Continue));
+        match app.palette.as_ref().expect("palette open") {
+            PaletteState::Browse(browse) => {
+                assert_eq!(selected_id(browse), "conversation answer");
+            }
+            PaletteState::Detail(_) => panic!("expected browse"),
+        }
+    }
+
+    #[test]
+    fn browse_header_renders_without_decorative_stripe() {
+        let rows = rendered_browse_rows(100, 30);
+        let title_row = rows
+            .iter()
+            .find(|row| row.contains("Command Palette"))
+            .expect("title row");
+        let input_row = rows
+            .iter()
+            .find(|row| row.contains("Search commands"))
+            .expect("input row");
+
+        assert!(!title_row.contains(theme::STRIPE_GLYPH));
+        assert!(!input_row.contains(theme::STRIPE_GLYPH));
+    }
+
+    #[test]
+    fn command_count_label_keeps_right_padding() {
+        let rows = rendered_browse_rows(100, 30);
+        let count_row = rows
+            .iter()
+            .find(|row| row.contains("commands"))
+            .expect("count row");
+
+        assert!(
+            count_row.contains("commands  "),
+            "expected two cells after count label: `{count_row}`",
+        );
     }
 
     #[test]

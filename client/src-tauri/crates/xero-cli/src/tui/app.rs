@@ -16,13 +16,15 @@ use crossterm::{
     },
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, Clear as CrosstermClear, ClearType as CrosstermClearType,
+        disable_raw_mode, enable_raw_mode, Clear as CrosstermClear,
+        ClearType as CrosstermClearType, EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
 use ratatui::{
     backend::{Backend, ClearType, CrosstermBackend},
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Position, Rect, Size},
+    text::Line,
     widgets::{Clear, Paragraph, Widget, Wrap},
     Frame, Terminal, TerminalOptions, Viewport,
 };
@@ -258,8 +260,7 @@ pub struct App {
     pub streamed_reasoning_rows: usize,
     /// Current height of the inline viewport. We grow it when a run is
     /// streaming (to host the spinner + in-flight tool row) and shrink it
-    /// back when the run goes idle so the composer stays flush against
-    /// the previous response.
+    /// back when the run goes idle while preserving the conversation gap.
     pub inline_height: u16,
     /// `true` when the most-recently emitted scrollback row was blank.
     /// Used to collapse adjacent blank rows from independent emit calls
@@ -495,33 +496,10 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
 
     enable_raw_mode().map_err(tui_io_error)?;
     let keyboard_enhancement_pushed = push_keyboard_enhancements();
-    let backend = CrosstermBackend::new(io::stdout());
-    // Inline viewport: only the bottom rows belong to ratatui. Everything
-    // we want to live in scrollback (welcome banner, user prompts,
-    // assistant responses, tool pills) gets emitted via
-    // `terminal.insert_before(...)`. The user's terminal then owns the
-    // history and its native scrolling does the work — no manual scroll
-    // state, no alt-screen tricks.
-    let mut terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Inline(app.inline_height),
-        },
-    )
-    .map_err(tui_io_error)?;
-
-    let result = event_loop(&globals, &mut terminal, &mut app);
+    let result = run_terminal_session(&globals, &mut app);
 
     let keyboard_enhancement_result = pop_keyboard_enhancements(keyboard_enhancement_pushed);
     disable_raw_mode().map_err(tui_io_error)?;
-    terminal.show_cursor().map_err(tui_io_error)?;
-    // Drop the inline viewport so the cursor lands below it and the user
-    // doesn't see the composer hanging around after we exit.
-    terminal
-        .clear()
-        .and_then(|_| terminal.flush())
-        .map_err(tui_io_error)?;
-    println!();
 
     result?;
     keyboard_enhancement_result?;
@@ -531,6 +509,58 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
         json: json!({ "kind": "tui", "status": "closed" }),
         emit: false,
     })
+}
+
+fn run_terminal_session(globals: &GlobalOptions, app: &mut App) -> Result<(), CliError> {
+    let backend = CrosstermBackend::new(io::stdout());
+    // Inline viewport: only the bottom rows belong to ratatui. Everything
+    // we want to live in scrollback (welcome banner, user prompts,
+    // assistant responses, tool pills) gets emitted via
+    // `terminal.insert_before(...)`. The user's terminal then owns the
+    // history and its native scrolling does the work.
+    match Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(app.inline_height),
+        },
+    ) {
+        Ok(mut terminal) => run_inline_terminal_session(globals, &mut terminal, app),
+        Err(_) => run_fullscreen_terminal_session(globals, app),
+    }
+}
+
+fn run_inline_terminal_session(
+    globals: &GlobalOptions,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<(), CliError> {
+    let result = event_loop(globals, terminal, app);
+    let _ = terminal.show_cursor();
+    // Drop the inline viewport so the cursor lands below it and the user
+    // doesn't see the composer hanging around after we exit.
+    let _ = terminal.clear().and_then(|_| terminal.flush());
+    println!();
+    result
+}
+
+fn run_fullscreen_terminal_session(globals: &GlobalOptions, app: &mut App) -> Result<(), CliError> {
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen).map_err(tui_io_error)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Err(tui_io_error(error));
+        }
+    };
+
+    let result = fullscreen_event_loop(globals, &mut terminal, app);
+    let _ = terminal.show_cursor();
+    let _ = terminal.clear().and_then(|_| terminal.flush());
+    let leave_result = execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(tui_io_error);
+    result?;
+    leave_result
 }
 
 fn push_keyboard_enhancements() -> bool {
@@ -563,13 +593,14 @@ fn pop_keyboard_enhancements(pushed: bool) -> Result<(), CliError> {
 ///     and in-flight tool row above the composer block.
 ///   - `INLINE_HEIGHT_SLASH` (12 rows): lets composer-owned slash command
 ///     suggestions behave like an inline select list.
-///   - `INLINE_HEIGHT_IDLE` (8 rows): composer + one row of breathing
+///   - `INLINE_HEIGHT_IDLE` (9 rows): composer + one row of breathing
 ///     room above it + composer-to-footer gap + footer. Drops the
 ///     reserved spinner rows but keeps a visual buffer so the
 ///     composer doesn't clamp directly against the last response.
 pub const INLINE_HEIGHT_RUNNING: u16 = 10;
 pub const INLINE_HEIGHT_SLASH: u16 = 12;
-pub const INLINE_HEIGHT_IDLE: u16 = 8;
+pub const INLINE_HEIGHT_IDLE: u16 = 9;
+const CONVERSATION_COMPOSER_GAP_ROWS: u16 = 1;
 const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(1_000);
 
 /// Inline viewport height the next render wants. Grows for an active
@@ -581,7 +612,13 @@ fn desired_inline_height(app: &App, terminal_height: u16) -> u16 {
     if app.palette.is_some() {
         return terminal_height.max(INLINE_HEIGHT_IDLE);
     }
-    let composer_required_height = composer::height(app).saturating_add(2);
+    desired_bottom_panel_height(app, terminal_height)
+}
+
+fn desired_bottom_panel_height(app: &App, _terminal_height: u16) -> u16 {
+    let composer_required_height = composer::height(app)
+        .saturating_add(CONVERSATION_COMPOSER_GAP_ROWS)
+        .saturating_add(2);
     let running = matches!(
         app.run_detail.as_ref().map(|detail| detail.status.as_str()),
         Some("running")
@@ -638,8 +675,8 @@ fn event_loop(
             terminal_size = current_terminal_size(terminal)?;
         }
         // Grow / shrink the inline viewport to match the current run
-        // state. When idle, we drop the spinner-area rows so the
-        // composer sits flush against the last response.
+        // state. When idle, we drop the spinner-area rows while keeping
+        // the base-background gap above the composer.
         ensure_inline_height(terminal, app)?;
         // Push any new transcript content into the terminal's scrollback
         // *before* drawing the inline viewport. The terminal owns the
@@ -662,6 +699,39 @@ fn event_loop(
                     reflow_terminal_view(terminal, app)?;
                     terminal_size = current_terminal_size(terminal)?;
                 }
+            }
+            _ => {}
+        };
+    }
+}
+
+fn fullscreen_event_loop(
+    globals: &GlobalOptions,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> Result<(), CliError> {
+    let mut active_run: Option<PromptJob> = None;
+    let mut last_login_poll_at: Option<Instant> = None;
+    loop {
+        poll_active_run(globals, app, &mut active_run);
+        poll_pending_login(globals, app, &mut last_login_poll_at);
+        if app.take_tui_reset_requested() {
+            active_run = None;
+            terminal.clear().map_err(tui_io_error)?;
+        }
+        terminal
+            .draw(|frame| render_fullscreen(frame, app))
+            .map_err(tui_io_error)?;
+        if !event::poll(Duration::from_millis(200)).map_err(tui_io_error)? {
+            continue;
+        }
+        match event::read().map_err(tui_io_error)? {
+            CrosstermEvent::Key(key) => match dispatch_key(app, key, &mut active_run, globals) {
+                KeyOutcome::Continue => {}
+                KeyOutcome::Quit => return Ok(()),
+            },
+            CrosstermEvent::Resize(_, _) => {
+                terminal.autoresize().map_err(tui_io_error)?;
             }
             _ => {}
         };
@@ -1445,10 +1515,7 @@ fn start_prompt_job(
         let _ = sender.send(invoke_json(&globals_clone, &borrowed));
     });
 
-    app.status = Some(format!(
-        "Run {} started via {} as {}.",
-        run_id, provider_id, runtime_agent_id
-    ));
+    app.status = None;
     let started_at = Instant::now();
     app.run_detail = Some(RunDetail {
         run_id: run_id.clone(),
@@ -1498,7 +1565,7 @@ fn poll_active_run(globals: &GlobalOptions, app: &mut App, active_run: &mut Opti
             let mut detail = run_detail_from_snapshot(&snapshot);
             detail.started_at = started_at;
             app.run_detail = Some(detail);
-            app.status = Some(format!("Run completed: {}", job.run_id));
+            app.status = None;
             app.active_run_id = None;
             *active_run = None;
         }
@@ -1863,27 +1930,50 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(Clear, root);
     let canvas = ratatui::widgets::Paragraph::new("").style(theme::base());
     frame.render_widget(canvas, root);
+    render_inline_surface(frame, root, app);
+    render_palette(frame, root, app);
+}
 
+fn render_fullscreen(frame: &mut Frame<'_>, app: &App) {
+    let root = frame.area();
+    frame.render_widget(Clear, root);
+    let canvas = ratatui::widgets::Paragraph::new("").style(theme::base());
+    frame.render_widget(canvas, root);
+
+    let terminal_height = root.height;
+    let bottom_height = desired_bottom_panel_height(app, terminal_height).min(root.height);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(bottom_height)])
+        .split(root);
+    render_fullscreen_history(frame, chunks[0], app);
+    render_inline_surface(frame, chunks[1], app);
+    render_palette(frame, root, app);
+}
+
+fn render_inline_surface(frame: &mut Frame<'_>, root: Rect, app: &App) {
     let footer_height = u16::from(root.height > 0);
     let gap_height = u16::from(root.height > footer_height + 1);
     let composer_natural = composer::height(app);
-    // Only insert a row of padding above the composer when the viewport
-    // has at least one row to spare beyond the composer's natural height
-    // — short viewports keep every row for the composer agent footer.
-    let streaming_gap_height =
-        u16::from(root.height > composer_natural + footer_height + gap_height);
+    // Keep a base-background row between scrollback conversation content
+    // and the elevated composer whenever the panel has room for the full
+    // composer, composer/footer gap, and footer.
+    let conversation_gap_height = CONVERSATION_COMPOSER_GAP_ROWS.min(
+        root.height
+            .saturating_sub(composer_natural + footer_height + gap_height),
+    );
     let composer_height = composer_natural.min(
         root.height
-            .saturating_sub(footer_height + gap_height + streaming_gap_height),
+            .saturating_sub(footer_height + gap_height + conversation_gap_height),
     );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),                       // streaming indicator
-            Constraint::Length(streaming_gap_height), // padding above composer
-            Constraint::Length(composer_height),      // composer
-            Constraint::Length(gap_height),           // composer-to-footer gap
-            Constraint::Length(footer_height),        // footer
+            Constraint::Min(0),                          // streaming indicator
+            Constraint::Length(conversation_gap_height), // conversation-to-composer gap
+            Constraint::Length(composer_height),         // composer
+            Constraint::Length(gap_height),              // composer-to-footer gap
+            Constraint::Length(footer_height),           // footer
         ])
         .split(root);
 
@@ -1900,12 +1990,97 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     if chunks[4].height > 0 {
         footer::render(frame, chunks[4], app);
     }
+}
 
+fn render_palette(frame: &mut Frame<'_>, root: Rect, app: &App) {
     if app.palette.is_some() {
         let palette_area = palette_dialog_area(app, root);
         frame.render_widget(Clear, palette_area);
         palette::render(frame, palette_area, app);
     }
+}
+
+fn render_fullscreen_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let lines = fullscreen_history_lines(app, area.width, area.height);
+    let start = lines.len().saturating_sub(area.height as usize);
+    let visible = lines.into_iter().skip(start).collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(visible)
+            .style(theme::base())
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn fullscreen_history_lines(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
+    let Some(detail) = app.run_detail.as_ref() else {
+        return transcript::welcome_banner_lines(
+            width,
+            height,
+            env!("CARGO_PKG_VERSION"),
+            app.signed_in_handle.as_deref(),
+        );
+    };
+
+    let mut lines = Vec::new();
+    for (idx, message) in detail
+        .messages
+        .iter()
+        .filter(|message| !transcript::is_hidden_role(&message.role))
+        .enumerate()
+    {
+        if idx > 0 {
+            let blank_rows = if message.role == "user" { 2 } else { 1 };
+            for _ in 0..blank_rows {
+                lines.push(Line::raw(""));
+            }
+        }
+        let mut message_lines = transcript::message_lines(message, width);
+        let pills = transcript::tool_pill_lines(&message.tool_calls);
+        if !pills.is_empty()
+            && !message_lines.is_empty()
+            && !is_blank_line(message_lines.last().unwrap())
+        {
+            message_lines.push(Line::raw(""));
+        }
+        lines.extend(message_lines);
+        lines.extend(pills);
+    }
+
+    if detail.status == "running" {
+        if let Some(reasoning) = detail
+            .in_progress_reasoning
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+        {
+            lines.push(Line::raw(""));
+            lines.extend(completed_stream_rows(
+                transcript::assistant_thinking_lines(reasoning, width),
+                reasoning,
+                width,
+            ));
+        }
+        if let Some(text) = detail
+            .in_progress_text
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+        {
+            lines.push(Line::raw(""));
+            lines.extend(completed_stream_rows(
+                transcript::assistant_markdown_wrapped_lines(text, width),
+                text,
+                width,
+            ));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    lines
 }
 
 fn palette_dialog_area(app: &App, root: Rect) -> Rect {
@@ -2280,14 +2455,20 @@ fn write_scrollback(
 
 pub fn smoke_snapshot(globals: &GlobalOptions) -> Result<JsonValue, CliError> {
     let project = super::project::resolve(globals);
-    let app = App::new(globals, project);
-    let mut terminal =
-        Terminal::new(ratatui::backend::TestBackend::new(100, 32)).map_err(|error| {
-            CliError::system_fault(
-                "xero_tui_smoke_terminal_failed",
-                format!("Could not create TUI test backend: {error}"),
-            )
-        })?;
+    let mut app = App::new(globals, project);
+    let mut terminal = Terminal::with_options(
+        ratatui::backend::TestBackend::new(100, 32),
+        TerminalOptions {
+            viewport: Viewport::Inline(app.inline_height),
+        },
+    )
+    .map_err(|error| {
+        CliError::system_fault(
+            "xero_tui_smoke_terminal_failed",
+            format!("Could not create TUI test backend: {error}"),
+        )
+    })?;
+    commit_pending_history(&mut terminal, &mut app)?;
     terminal
         .draw(|frame| render(frame, &app))
         .map_err(|error| {
@@ -2296,11 +2477,12 @@ pub fn smoke_snapshot(globals: &GlobalOptions) -> Result<JsonValue, CliError> {
                 format!("Could not render TUI smoke frame: {error}"),
             )
         })?;
-    let buffer_text = terminal
-        .backend()
-        .buffer()
+    let backend = terminal.backend();
+    let buffer_text = backend
+        .scrollback()
         .content
         .iter()
+        .chain(backend.buffer().content.iter())
         .map(|cell| cell.symbol())
         .collect::<String>();
     // The ASCII wordmark uses full-block glyphs rather than the literal
@@ -2367,7 +2549,7 @@ pub fn smoke_fake_provider_run(globals: &GlobalOptions) -> Result<JsonValue, Cli
     let snapshot = value.get("snapshot").cloned().unwrap_or(value);
     let detail = run_detail_from_snapshot(&snapshot);
     app.run_detail = Some(detail.clone());
-    app.status = Some(format!("Fake-provider smoke run completed: {}", run_id));
+    app.status = None;
 
     let mut terminal =
         Terminal::new(ratatui::backend::TestBackend::new(100, 32)).map_err(|error| {
@@ -2788,7 +2970,7 @@ mod tests {
         // and welcome logo now live in the terminal's scrollback (emitted
         // via insert_before), not in this buffer.
         let app = empty_app();
-        let text = render_to_string(&app, 100, 8);
+        let text = render_to_string(&app, 100, desired_inline_height(&app, 40));
         assert!(
             text.contains(super::super::theme::STRIPE_GLYPH),
             "missing gold stripe glyph"
@@ -2977,12 +3159,31 @@ mod tests {
     }
 
     #[test]
+    fn idle_inline_viewport_keeps_gap_above_composer() {
+        let app = empty_app();
+        let rows = render_rows(&app, 100, desired_inline_height(&app, 40));
+        let first_composer_row = rows
+            .iter()
+            .position(|row| row.contains(super::super::theme::STRIPE_GLYPH))
+            .expect("composer row");
+
+        assert!(
+            first_composer_row > 0,
+            "composer should not render on the first viewport row"
+        );
+        assert!(
+            rows[first_composer_row - 1].trim().is_empty(),
+            "composer should keep one blank base row above its surface"
+        );
+    }
+
+    #[test]
     fn multiline_composer_grows_inline_viewport_past_idle_height() {
         let mut app = empty_app();
         app.replace_composer("\n\n\n");
 
         assert_eq!(composer::height(&app), 8);
-        assert_eq!(desired_inline_height(&app, 40), 10);
+        assert_eq!(desired_inline_height(&app, 40), 11);
     }
 
     #[test]
@@ -3047,7 +3248,7 @@ mod tests {
     #[test]
     fn inline_viewport_omits_box_drawing_borders() {
         let app = empty_app();
-        let text = render_to_string(&app, 100, 8);
+        let text = render_to_string(&app, 100, desired_inline_height(&app, 40));
         for symbol in [
             "\u{2500}", "\u{2502}", "\u{2510}", "\u{2514}", "\u{2518}", "\u{250C}",
         ] {
@@ -3675,6 +3876,73 @@ mod tests {
     }
 
     #[test]
+    fn start_prompt_job_does_not_render_run_status_in_footer() {
+        let adapter = RecordingAdapter::default();
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(adapter));
+        let mut app = empty_app();
+        app.status = Some("Previous footer status".into());
+        app.providers = vec![ProviderRow {
+            provider_id: "openai_codex".into(),
+            default_model: "gpt-5.5".into(),
+            credential_kind: "app_session".into(),
+        }];
+
+        let job = start_prompt_job(&globals, &mut app, "What is this project about?")
+            .expect("start prompt");
+
+        assert!(app.status.is_none());
+        let viewport = render_to_string(&app, 100, desired_inline_height(&app, 40));
+        assert!(
+            !viewport.contains("started via"),
+            "footer should not render run-start status"
+        );
+        assert!(
+            !viewport.contains("Previous footer status"),
+            "run start should clear stale footer status"
+        );
+        let result = job.receiver.recv().expect("prompt result");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn completed_prompt_job_does_not_render_run_status_in_footer() {
+        let globals = test_only_globals();
+        let mut app = empty_app();
+        app.status = Some("Previous footer status".into());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(Ok(json!({
+                "snapshot": {
+                    "runId": "tui-run-test",
+                    "status": "completed",
+                    "messages": [],
+                    "events": []
+                }
+            })))
+            .expect("send prompt result");
+        let mut active_run = Some(PromptJob {
+            project_id: None,
+            run_id: "tui-run-test".into(),
+            receiver,
+        });
+
+        poll_active_run(&globals, &mut app, &mut active_run);
+
+        assert!(active_run.is_none());
+        assert!(app.status.is_none());
+        let viewport = render_to_string(&app, 100, desired_inline_height(&app, 40));
+        assert!(
+            !viewport.contains("Run completed: tui-run-test"),
+            "footer should not render run-completed status"
+        );
+        assert!(
+            !viewport.contains("Previous footer status"),
+            "run completion should clear stale footer status"
+        );
+    }
+
+    #[test]
     fn one_plus_one_golden_inline_viewport_and_scrollback() {
         // The viewport asserts the composer + footer state; the scroll-
         // back assertions cover the conversation content emitted via
@@ -3710,7 +3978,7 @@ mod tests {
             started_at: None,
         });
 
-        let viewport = render_to_string(&app, 100, 8);
+        let viewport = render_to_string(&app, 100, desired_inline_height(&app, 40));
         assert!(viewport.contains("Ask"), "viewport missing agent label");
         assert!(
             viewport.contains("think:"),
