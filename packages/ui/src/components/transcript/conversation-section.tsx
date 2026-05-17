@@ -2175,7 +2175,7 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
             className={cn(
               'rounded-2xl px-3.5 py-2',
               'bg-primary/10 text-foreground',
-              'ring-1 ring-inset ring-primary/15',
+              'ring-1 ring-inset ring-primary/40',
               'whitespace-pre-wrap break-words text-[14px] leading-relaxed select-text',
               'agent-user-bubble-enter',
             )}
@@ -2606,8 +2606,8 @@ function UserAvatar({ avatarUrl, login }: UserAvatarProps) {
       className={cn(
         'mt-[2px] flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full',
         showImage
-          ? 'ring-1 ring-border/50'
-          : 'bg-primary/15 text-primary ring-1 ring-primary/25',
+          ? 'ring-1 ring-primary/40'
+          : 'bg-primary/15 text-primary ring-1 ring-primary/40',
       )}
     >
       {showImage ? (
@@ -2629,7 +2629,7 @@ function AgentAvatar({ pulse = false }: { pulse?: boolean }) {
     <span
       aria-hidden="true"
       className={cn(
-        'mt-[2px] relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-card/80 ring-1 ring-border/50',
+        'mt-[2px] relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-card/80 ring-1 ring-primary/40',
         pulse && 'agent-avatar-pulse',
       )}
     >

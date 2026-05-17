@@ -5310,6 +5310,7 @@ fn engineer_workflow_blocks_write_before_survey_reads() {
                 line_count: None,
                 cursor: None,
                 around_pattern: None,
+                max_bytes_per_file: None,
                 byte_offset: None,
                 byte_count: None,
                 include_line_hashes: false,

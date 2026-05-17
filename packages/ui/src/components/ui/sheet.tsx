@@ -46,17 +46,21 @@ function SheetOverlay({
 
 function SheetContent({
   className,
+  overlayClassName,
   children,
+  forceMount,
   side = 'right',
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
+  overlayClassName?: string
   side?: 'top' | 'right' | 'bottom' | 'left'
 }) {
   return (
-    <SheetPortal>
-      <SheetOverlay />
+    <SheetPortal forceMount={forceMount}>
+      <SheetOverlay forceMount={forceMount} className={overlayClassName} />
       <SheetPrimitive.Content
         data-slot="sheet-content"
+        forceMount={forceMount}
         className={cn(
           'bg-background motion-panel-animation data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg',
           side === 'right' &&

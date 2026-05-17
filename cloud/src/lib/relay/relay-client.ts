@@ -54,11 +54,15 @@ export function joinSessionChannel(
 	computerId: string,
 	sessionId: string,
 	lastSeq?: number,
+	onJoined?: (channel: Channel) => void,
 ): Channel {
 	const channel = socketInstance.channel(`session:${computerId}:${sessionId}`, {
 		last_seq: lastSeq ?? 0,
 	});
-	channel.join();
+	const join = channel.join();
+	if (onJoined) {
+		join.receive("ok", () => onJoined(channel));
+	}
 	return channel;
 }
 
@@ -70,9 +74,5 @@ export function pushInboundCommand(
 	channel: Channel,
 	command: InboundCommand,
 ): void {
-	channel.push("frame", {
-		encoding: "json",
-		direction: "inbound",
-		payload: command,
-	});
+	channel.push("frame", command);
 }

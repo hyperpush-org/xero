@@ -44,6 +44,8 @@ function SessionView() {
 	const visibleSessions = useAccountVisibleSessions(
 		session.relayToken,
 		session.accountId,
+		session.devices,
+		session.deviceId,
 	);
 	const transcript = useSessionStore((state) => state.transcripts[key]);
 	const turns = transcript?.turns ?? [];
@@ -68,7 +70,7 @@ function SessionView() {
 			device_id: session.deviceId,
 			kind: "send_message",
 			payload: {
-				text: draftPrompt.trim(),
+				message: draftPrompt.trim(),
 				agent: resolvedAgentId,
 				modelId: resolvedModelId,
 			},
@@ -149,7 +151,7 @@ function SessionView() {
 					/>
 				</div>
 			</div>
-			<div className="border-t border-border bg-background px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 sm:px-6">
+			<div className="bg-background px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 sm:px-6">
 				<div className="mx-auto max-w-3xl">
 					<WebComposer
 						draftPrompt={draftPrompt}

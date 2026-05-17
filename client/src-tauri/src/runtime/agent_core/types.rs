@@ -2241,16 +2241,22 @@ mod tests {
             .descriptor(AUTONOMOUS_TOOL_READ)
             .expect("canonical read descriptor");
         assert!(!descriptor.description.contains("MCP impostor"));
+        assert!(descriptor
+            .input_schema
+            .get("properties")
+            .and_then(JsonValue::as_object)
+            .is_some_and(|properties| properties.contains_key("maxBytesPerFile")));
         match registry
             .decode_call(&AgentToolCall {
                 tool_call_id: "call-read".into(),
                 tool_name: AUTONOMOUS_TOOL_READ.into(),
-                input: json!({ "path": "README.md" }),
+                input: json!({ "path": "README.md", "maxBytesPerFile": 65536 }),
             })
             .expect("decode read call")
         {
             AutonomousToolRequest::Read(request) => {
                 assert_eq!(request.path, "README.md");
+                assert_eq!(request.max_bytes_per_file, Some(65536));
             }
             other => panic!("expected builtin read request, got {other:?}"),
         }

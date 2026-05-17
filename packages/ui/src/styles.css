@@ -1028,13 +1028,17 @@
     background: var(--background);
   }
 
-  html {
+  /* Rounded window chrome only applies to the Tauri desktop shell, which sets
+   * a `platform-*` class on <html>. Web hosts (the cloud app) must stay flat —
+   * otherwise the html clip-path leaves the browser canvas visible outside the
+   * rounded rect, which reads as a dark frame around the app. */
+  html:is(.platform-macos, .platform-windows) {
     border-radius: var(--window-corner-radius);
     clip-path: inset(0 round var(--window-corner-radius));
   }
 
-  body,
-  #root,
+  html:is(.platform-macos, .platform-windows) body,
+  html:is(.platform-macos, .platform-windows) #root,
   .xero-window-shell {
     border-radius: var(--window-corner-radius);
   }

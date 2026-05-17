@@ -968,4 +968,76 @@ describe('runtime stream event coalescing', () => {
 
     cleanup()
   })
+
+  it('requests a full replay and clears cached items when forced', async () => {
+    let stream: RuntimeStreamView | null = {
+      ...makeRuntimeStream(),
+      lastSequence: 42,
+      items: [
+        {
+          id: 'transcript:run-1:42',
+          kind: 'transcript',
+          runId: 'run-1',
+          sequence: 42,
+          createdAt: '2026-04-16T13:30:42Z',
+          role: 'assistant',
+          text: 'Cached tail item.',
+        },
+      ],
+    }
+    const adapter = {
+      subscribeRuntimeStream: vi.fn(
+        async (projectId, agentSessionId, itemKinds) => ({
+          response: {
+            projectId,
+            agentSessionId,
+            runtimeKind: 'openai_codex',
+            runId: 'run-1',
+            sessionId: 'runtime-session-1',
+            flowId: 'flow-1',
+            subscribedItemKinds: itemKinds,
+          },
+          unsubscribe: vi.fn(),
+        }),
+      ),
+    } as Pick<XeroDesktopAdapter, 'subscribeRuntimeStream'> as XeroDesktopAdapter
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+
+    const cleanup = attachRuntimeStreamSubscription({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeSession: makeRuntimeSession(),
+      runId: 'run-1',
+      forceFullReplay: true,
+      adapter,
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(stream?.items).toHaveLength(0)
+    expect(adapter.subscribeRuntimeStream).toHaveBeenCalledWith(
+      'project-1',
+      'agent-session-main',
+      ACTIVE_RUNTIME_STREAM_ITEM_KINDS,
+      expect.any(Function),
+      expect.any(Function),
+      {
+        afterSequence: null,
+        replayLimit: null,
+      },
+    )
+
+    cleanup()
+  })
 })

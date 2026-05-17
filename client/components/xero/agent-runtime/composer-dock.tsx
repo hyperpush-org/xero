@@ -132,7 +132,7 @@ const composerInlineTriggerClassName =
   'flex h-7 w-fit min-w-0 items-center gap-1 rounded-md border-0 bg-transparent px-2 text-[12px] font-medium text-muted-foreground/90 whitespace-nowrap shadow-none transition-colors outline-none hover:bg-muted/60 hover:text-foreground focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-muted/60 data-[state=open]:text-foreground dark:bg-transparent dark:hover:bg-muted/60 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg]:text-muted-foreground/70'
 
 const composerInlineSelectContentClassName =
-  'max-h-72 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90'
+  'max-h-72 min-w-44 border-border/70 bg-card/95 text-foreground shadow-xl backdrop-blur supports-[backdrop-filter]:bg-card/90 [&_[data-slot=select-item]]:px-2.5 [&_[data-slot=select-item]]:pr-9'
 
 function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
   switch (agentId) {
@@ -602,7 +602,7 @@ export function ComposerDock({
       </TooltipTrigger>
       <TooltipContent side="top" className="flex items-center gap-1.5">
         <span>{sendButtonLabel}</span>
-        <kbd className="rounded border border-background/30 bg-background/10 px-1 py-0.5 font-sans text-[10px] leading-none">
+        <kbd className="rounded border border-border/60 bg-foreground/10 px-1 py-0.5 font-sans text-[10px] leading-none">
           ⏎
         </kbd>
       </TooltipContent>

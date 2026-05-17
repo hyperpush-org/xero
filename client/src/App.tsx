@@ -2670,14 +2670,18 @@ export function XeroApp({ adapter }: XeroAppProps) {
         await invoke('set_session_remote_visibility', {
           request: { projectId: activeProjectId, agentSessionId, visible: next },
         })
-        // The desktop state subscription for agent sessions picks up the
-        // updated `remote_visible` column on the next snapshot, so no manual
-        // refresh is needed here.
+        await retry()
       } catch (caught) {
         console.error('set_session_remote_visibility failed', caught)
+        const code = typeof caught === 'object' && caught !== null && 'code' in caught
+          ? String((caught as { code?: unknown }).code ?? '')
+          : ''
+        if (next && code === 'remote_bridge_not_signed_in') {
+          openSettings('cloudAccount')
+        }
       }
     },
-    [activeProjectId],
+    [activeProjectId, openSettings, retry],
   )
   const handleSearchAgentSessions = useCallback(
     async (query: string) => {
@@ -2991,7 +2995,6 @@ export function XeroApp({ adapter }: XeroAppProps) {
           onLoadArchivedSessions={handleLoadArchivedAgentSessions}
           onRestoreSession={handleRestoreAgentSession}
           onDeleteSession={handleDeleteAgentSession}
-          onToggleRemoteVisibility={handleToggleSessionRemoteVisibility}
           onSearchSessions={
             resolvedAdapter.searchSessionTranscripts
               ? handleSearchAgentSessions
@@ -3129,6 +3132,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onCreateAgentByHand={handleStartAgentAuthoringCreate}
                 onStartWorkflowAgentCreate={handleStartWorkflowAgentCreate}
                 onCreateSession={handleCreateAgentSession}
+                onToggleRemoteVisibility={handleToggleSessionRemoteVisibility}
                 pendingInitialRuntimeAgent={pendingInitialRuntimeAgent}
                 onClearPendingInitialRuntimeAgent={handleClearPendingInitialRuntimeAgent}
                 isCreatingSession={isCreatingAgentSession}
@@ -3537,6 +3541,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 onClose={() => setAgentDockOpen(false)}
                 onSelectSession={handleSelectAgentSession}
                 onCreateSession={handleCreateAgentSession}
+                onToggleRemoteVisibility={handleToggleSessionRemoteVisibility}
                 desktopAdapter={resolvedAdapter}
                 accountAvatarUrl={githubSession?.user.avatarUrl ?? null}
                 accountLogin={githubSession?.user.login ?? null}

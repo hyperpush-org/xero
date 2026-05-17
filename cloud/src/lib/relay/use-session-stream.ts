@@ -1,11 +1,12 @@
 import type { Channel, Socket } from "phoenix";
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import type { AccountDevice } from "../auth/session";
 import { decodeRelayFrame } from "./envelope";
 import {
 	getRelaySocket,
 	joinAccountChannel,
 	joinSessionChannel,
+	pushInboundCommand,
 } from "./relay-client";
 import {
 	type SessionTranscript,
@@ -13,19 +14,26 @@ import {
 	useSessionStore,
 	type VisibleSessionSummary,
 } from "./session-store";
-import { projectStreamItemsToTurns } from "./stream-projection";
+import { projectRemotePayloadToTurns } from "./stream-projection";
+import {
+	type RemoteVisibleSessionUpdate,
+	remoteVisibleSessionUpdateFromEnvelope,
+} from "./visible-sessions";
 
 interface SessionSnapshotPayload {
 	schema: string;
 	projectId: string;
 	session: {
 		agentSessionId: string;
+		agent_session_id?: string;
 		title?: string | null;
 		lastActivityAt?: string | null;
+		updated_at?: string | null;
 	};
 	availableAgents?: { id: string; label: string }[];
 	availableModels?: { id: string; label: string }[];
 	transcript?: unknown[];
+	runs?: unknown[];
 }
 
 interface UseSessionStreamOptions {
@@ -46,7 +54,7 @@ export function useSessionStream({
 	relayToken,
 	accountId,
 }: UseSessionStreamOptions): { channel: Channel | null } {
-	const channelRef = useRef<Channel | null>(null);
+	const [channel, setChannel] = useState<Channel | null>(null);
 	const setVisibleSessions = useSessionStore((s) => s.setVisibleSessions);
 	const replaceWithSnapshot = useSessionStore((s) => s.replaceWithSnapshot);
 	const appendTurn = useSessionStore((s) => s.appendTurn);
@@ -65,17 +73,14 @@ export function useSessionStream({
 		);
 
 		const sessionChannel = joinSessionChannel(socket, computerId, sessionId);
-		channelRef.current = sessionChannel;
+		setChannel(sessionChannel);
 
 		sessionChannel.on("frame", (rawFrame: unknown) => {
 			const envelope = decodeRelayFrame(rawFrame);
 			if (!envelope) return;
 			if (envelope.kind === "snapshot") {
 				const snapshot = envelope.payload as SessionSnapshotPayload;
-				const initialItems = Array.isArray(snapshot.transcript)
-					? snapshot.transcript
-					: [];
-				const initialTurns = projectStreamItemsToTurns(initialItems as never[]);
+				const initialTurns = projectRemotePayloadToTurns(snapshot);
 				const next: SessionTranscript = {
 					turns: initialTurns,
 					lastSeq: envelope.seq,
@@ -85,10 +90,7 @@ export function useSessionStream({
 				};
 				replaceWithSnapshot(key, next);
 			} else if (envelope.kind === "event") {
-				const items = Array.isArray(envelope.payload)
-					? envelope.payload
-					: [envelope.payload];
-				const turns = projectStreamItemsToTurns(items as never[]);
+				const turns = projectRemotePayloadToTurns(envelope.payload);
 				for (const turn of turns) {
 					appendTurn(key, turn, envelope.seq);
 				}
@@ -99,7 +101,7 @@ export function useSessionStream({
 			setLive(key, false);
 			sessionChannel.leave();
 			accountChannel.leave();
-			channelRef.current = null;
+			setChannel((current) => (current === sessionChannel ? null : current));
 		};
 	}, [
 		accountId,
@@ -112,13 +114,15 @@ export function useSessionStream({
 		setVisibleSessions,
 	]);
 
-	return { channel: channelRef.current };
+	return { channel };
 }
 
 /** Subscribe an account channel just for the visible-sessions list (used by the drawer). */
 export function useAccountVisibleSessions(
 	relayToken: string,
 	accountId: string,
+	devices: readonly AccountDevice[] = [],
+	webDeviceId?: string | null,
 ): VisibleSessionSummary[] {
 	const visibleSessions = useSessionStore((s) => s.visibleSessions);
 	const setVisibleSessions = useSessionStore((s) => s.setVisibleSessions);
@@ -126,6 +130,30 @@ export function useAccountVisibleSessions(
 	useEffect(() => {
 		if (!relayToken || !accountId) return;
 		const socket = getRelaySocket(relayToken);
+		const visibleByComputer = new Map<string, VisibleSessionSummary[]>();
+		const commitVisibleSessions = () => {
+			setVisibleSessions(
+				Array.from(visibleByComputer.values())
+					.flat()
+					.sort(compareVisibleSessions),
+			);
+		};
+		const applyUpdate = (update: RemoteVisibleSessionUpdate) => {
+			if (update.kind === "replace") {
+				visibleByComputer.set(update.computerId, update.sessions);
+				commitVisibleSessions();
+				return;
+			}
+			const current = visibleByComputer.get(update.summary.computerId) ?? [];
+			visibleByComputer.set(update.summary.computerId, [
+				update.summary,
+				...current.filter(
+					(session) => session.sessionId !== update.summary.sessionId,
+				),
+			]);
+			commitVisibleSessions();
+		};
+
 		const channel = joinAccountChannel(socket, accountId);
 		channel.on(
 			"visible_sessions",
@@ -133,12 +161,64 @@ export function useAccountVisibleSessions(
 				setVisibleSessions(payload.sessions ?? []);
 			},
 		);
+		const sessionListChannels = devices
+			.filter((device) => device.kind === "desktop" && !device.revoked_at)
+			.map((device) => {
+				const sessionListChannel = joinSessionChannel(
+					socket,
+					device.id,
+					"__sessions__",
+					0,
+					(joinedChannel) => {
+						if (!webDeviceId) return;
+						pushInboundCommand(joinedChannel, {
+							v: 1,
+							seq: Date.now(),
+							computer_id: device.id,
+							session_id: "__sessions__",
+							device_id: webDeviceId,
+							kind: "list_sessions",
+							payload: {},
+						});
+					},
+				);
+				sessionListChannel.on("frame", (rawFrame: unknown) => {
+					const envelope = decodeRelayFrame(rawFrame);
+					if (!envelope) return;
+					const update = remoteVisibleSessionUpdateFromEnvelope(
+						envelope,
+						devices,
+					);
+					if (update) applyUpdate(update);
+				});
+				return sessionListChannel;
+			});
 		return () => {
 			channel.leave();
+			for (const sessionListChannel of sessionListChannels) {
+				sessionListChannel.leave();
+			}
 		};
-	}, [accountId, relayToken, setVisibleSessions]);
+	}, [accountId, devices, relayToken, setVisibleSessions, webDeviceId]);
 
 	return visibleSessions;
+}
+
+function compareVisibleSessions(
+	left: VisibleSessionSummary,
+	right: VisibleSessionSummary,
+): number {
+	return (
+		safeTimestamp(right.lastActivityAt) - safeTimestamp(left.lastActivityAt) ||
+		left.title.localeCompare(right.title) ||
+		left.sessionId.localeCompare(right.sessionId)
+	);
+}
+
+function safeTimestamp(value: string | null): number {
+	if (!value) return 0;
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 export type { AccountDevice };

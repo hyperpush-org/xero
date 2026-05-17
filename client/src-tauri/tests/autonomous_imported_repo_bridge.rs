@@ -486,6 +486,7 @@ fn imported_repo_bridge_executes_repo_scoped_tool_operations_and_surfaces_git_ch
             line_count: Some(2),
             cursor: None,
             around_pattern: None,
+            max_bytes_per_file: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,

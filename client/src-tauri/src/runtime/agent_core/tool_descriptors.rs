@@ -3116,6 +3116,14 @@ pub(crate) fn builtin_tool_descriptors() -> Vec<AgentToolDescriptor> {
                         ),
                     ),
                     (
+                        "maxBytesPerFile",
+                        bounded_integer_schema(
+                            "Optional source file byte budget hint for this read. Use byteOffset/byteCount for exact byte-range slices.",
+                            1,
+                            Some(DESCRIPTOR_MAX_TEXT_FILE_BYTES),
+                        ),
+                    ),
+                    (
                         "cursor",
                         bounded_string_schema(
                             "Stable continuation cursor returned by a previous truncated read. Do not combine with startLine, aroundPattern, or byte ranges.",

@@ -672,6 +672,17 @@ impl AutonomousToolRuntime {
         if request.byte_offset.is_some() || request.byte_count.is_some() {
             return self.read_byte_range(request, target, read_metadata, metadata.len(), mode);
         }
+        if let Some(max_bytes_per_file) = request.max_bytes_per_file {
+            let max_bytes_per_file = max_bytes_per_file.min(self.limits.max_text_file_bytes);
+            if metadata.len() > max_bytes_per_file as u64 {
+                return Ok(Self::read_size_limit_metadata_result(
+                    target.display_path,
+                    read_metadata,
+                    metadata.len(),
+                    max_bytes_per_file,
+                ));
+            }
+        }
 
         if metadata.len() > MAX_BINARY_READ_BYTES {
             return Ok(self.binary_metadata_result(
@@ -836,6 +847,7 @@ impl AutonomousToolRuntime {
             line_count: request.line_count,
             cursor: None,
             around_pattern: None,
+            max_bytes_per_file: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: request.include_line_hashes,
@@ -4383,6 +4395,50 @@ impl AutonomousToolRuntime {
         }
     }
 
+    fn read_size_limit_metadata_result(
+        display_path: String,
+        metadata: ReadResultMetadata,
+        total_bytes: u64,
+        max_bytes_per_file: usize,
+    ) -> AutonomousToolResult {
+        AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_READ.into(),
+            summary: format!(
+                "Read metadata for `{display_path}` and omitted content because the file is {total_bytes} byte(s), above the {max_bytes_per_file} byte read limit."
+            ),
+            command_result: None,
+            output: AutonomousToolOutput::Read(AutonomousReadOutput {
+                path: display_path,
+                path_kind: metadata.path_kind,
+                size: metadata.size,
+                modified_at: metadata.modified_at,
+                start_line: 0,
+                line_count: 0,
+                total_lines: 0,
+                truncated: true,
+                content: String::new(),
+                cursor: None,
+                next_cursor: None,
+                content_omitted_reason: Some("max_bytes_per_file_exceeded".into()),
+                content_kind: Some(AutonomousReadContentKind::BinaryMetadata),
+                total_bytes: Some(total_bytes),
+                byte_offset: None,
+                byte_count: None,
+                sha256: None,
+                line_hashes: Vec::new(),
+                encoding: None,
+                line_ending: None,
+                has_bom: None,
+                media_type: None,
+                image_width: None,
+                image_height: None,
+                preview_base64: None,
+                preview_bytes: None,
+                binary_excerpt_base64: None,
+            }),
+        }
+    }
+
     fn read_decoded_text_file(&self, path: &Path) -> CommandResult<DecodedText> {
         let metadata = fs::metadata(path).map_err(|error| {
             CommandError::retryable(
@@ -5818,6 +5874,12 @@ fn validate_read_request_shape(request: &AutonomousReadRequest) -> CommandResult
             ));
         }
     }
+    if matches!(request.max_bytes_per_file, Some(0)) {
+        return Err(CommandError::user_fixable(
+            "autonomous_tool_read_file_byte_limit_invalid",
+            "Xero requires read maxBytesPerFile to be at least 1.",
+        ));
+    }
     Ok(())
 }
 
@@ -7073,6 +7135,16 @@ mod tests {
         assert_eq!(binary_output.total_bytes, Some(4));
         assert!(binary_output.binary_excerpt_base64.is_some());
 
+        let mut limited_request = read_request("log.txt");
+        limited_request.max_bytes_per_file = Some(4);
+        let limited_output = read_output(runtime.read(limited_request));
+        assert_eq!(
+            limited_output.content_omitted_reason.as_deref(),
+            Some("max_bytes_per_file_exceeded")
+        );
+        assert!(limited_output.truncated);
+        assert_eq!(limited_output.content, "");
+
         let mut range_request = read_request("log.txt");
         range_request.byte_offset = Some(4);
         range_request.byte_count = Some(4);
@@ -7156,6 +7228,7 @@ mod tests {
                 line_count: None,
                 cursor: None,
                 around_pattern: None,
+                max_bytes_per_file: None,
                 byte_offset: None,
                 byte_count: None,
                 include_line_hashes: false,
@@ -7171,6 +7244,7 @@ mod tests {
             line_count: None,
             cursor: None,
             around_pattern: None,
+            max_bytes_per_file: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,
@@ -7287,6 +7361,7 @@ mod tests {
             line_count: None,
             cursor: None,
             around_pattern: None,
+            max_bytes_per_file: None,
             byte_offset: None,
             byte_count: None,
             include_line_hashes: false,

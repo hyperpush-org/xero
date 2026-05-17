@@ -4760,6 +4760,16 @@ describe('useXeroDesktopState', () => {
 
     expect(screen.getByTestId('active-project')).toHaveTextContent('orchestra')
     expect(screen.getByTestId('stream-item-count')).toHaveTextContent('0')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select project 1' }))
+
+    await waitFor(() => expect(screen.getByTestId('active-project-id')).toHaveTextContent('project-1'))
+    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(3))
+    expect(screen.getByTestId('stream-item-count')).toHaveTextContent('0')
+    expect((setup.subscribeRuntimeStream.mock.calls[2] as unknown[])[5]).toEqual({
+      afterSequence: null,
+      replayLimit: null,
+    })
   })
 
   it('surfaces subscribe failures and malformed stream payloads without clearing the selected project', async () => {

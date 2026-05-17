@@ -1728,6 +1728,7 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "mode",
                 "startLine",
                 "lineCount",
+                "maxBytesPerFile",
                 "byteOffset",
                 "byteCount",
                 "includeLineHashes",
@@ -4519,6 +4520,8 @@ pub struct AutonomousReadRequest {
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub around_pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes_per_file: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byte_offset: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

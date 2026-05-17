@@ -479,12 +479,14 @@ function createDictationAdapter(options: {
 function makeTranscriptItem(options: {
   sequence: number
   role?: 'user' | 'assistant'
+  runId?: string
   text: string
 }) {
+  const runId = options.runId ?? 'run-1'
   return {
-    id: `transcript:run-1:${options.sequence}`,
+    id: `transcript:${runId}:${options.sequence}`,
     kind: 'transcript' as const,
-    runId: 'run-1',
+    runId,
     sequence: options.sequence,
     createdAt: `2026-04-29T00:48:${String(options.sequence).padStart(2, '0')}Z`,
     role: options.role ?? 'assistant',
@@ -2074,6 +2076,92 @@ describe('AgentRuntime current UI', () => {
 
     expect(screen.getByText('This project is Xero.')).toBeVisible()
     expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('resets restored conversation scroll when switching projects', () => {
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-04-29T00:49:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({ sequence: 1, role: 'user', text: 'What is this project about?' }),
+            makeTranscriptItem({ sequence: 2, text: 'This project is Xero.' }),
+          ],
+        })}
+      />,
+    )
+
+    const viewport = screen.getByLabelText('Agent conversation viewport')
+    setScrollMetrics(viewport, {
+      scrollTop: 520,
+      scrollHeight: 1_200,
+      clientHeight: 360,
+    })
+    fireEvent.scroll(viewport)
+
+    expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeVisible()
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          project: makeProject({
+            id: 'project-2',
+            name: 'Orchestra',
+            selectedAgentSessionId: 'agent-session-other',
+            repository: {
+              id: 'repo-2',
+              projectId: 'project-2',
+              rootPath: '/tmp/Orchestra',
+              displayName: 'Orchestra',
+              branch: null,
+              branchLabel: 'No branch',
+              headSha: null,
+              headShaLabel: 'No HEAD',
+              isGitRepo: true,
+            },
+          }),
+          runtimeSession: makeRuntimeSession({
+            projectId: 'project-2',
+            sessionId: 'session-2',
+            isSignedOut: false,
+          }),
+          runtimeRun: makeRuntimeRun({
+            projectId: 'project-2',
+            agentSessionId: 'agent-session-other',
+            runId: 'run-2',
+            status: 'stopped',
+            statusLabel: 'Stopped',
+            isActive: false,
+            isTerminal: true,
+            stoppedAt: '2026-04-29T00:50:00Z',
+          }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            makeTranscriptItem({
+              runId: 'run-2',
+              sequence: 1,
+              role: 'user',
+              text: 'Summarize this repository.',
+            }),
+            makeTranscriptItem({ runId: 'run-2', sequence: 2, text: 'Fresh project overview.' }),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByText('Fresh project overview.')).toBeVisible()
+    expect(screen.queryByText('This project is Xero.')).not.toBeInTheDocument()
+    expect(viewport.scrollTop).toBe(0)
   })
 
   it('pauses auto-follow immediately when the user wheels upward during streaming', () => {

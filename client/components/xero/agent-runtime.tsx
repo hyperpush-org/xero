@@ -1,11 +1,13 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
 import {
   ArrowDown,
   Check,
   ChevronDown,
   ChevronRight,
+  Cloud,
+  CloudOff,
   Loader2,
   Plus,
   SplitSquareHorizontal,
@@ -169,6 +171,8 @@ export interface AgentRuntimeProps {
   accountLogin?: string | null
   onCreateSession?: () => void
   isCreatingSession?: boolean
+  /** Toggle whether the active session is shared to the cloud web UI. */
+  onToggleRemoteVisibility?: (agentSessionId: string, next: boolean) => Promise<void> | void
   /** Active and known custom agent definitions visible to the composer selector. */
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   /** Open the Settings → Agents tab so the user can manage custom agents. */
@@ -1600,6 +1604,7 @@ export const AgentRuntime = memo(function AgentRuntime({
   accountLogin = null,
   onCreateSession,
   isCreatingSession = false,
+  onToggleRemoteVisibility,
   customAgentDefinitions = [],
   onOpenAgentManagement,
   onCreateAgentByHand,
@@ -2327,7 +2332,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     runtimeStream?.failure?.id ?? 'no-failure',
     streamIssue?.code ?? 'no-issue',
   ].join(':')
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (conversationRunScrollKeyRef.current === conversationRunScrollKey) {
       return
     }
@@ -2335,6 +2340,12 @@ export const AgentRuntime = memo(function AgentRuntime({
     conversationRunScrollKeyRef.current = conversationRunScrollKey
     shouldAutoFollowRef.current = shouldAutoFollowNewRun
     setShowJumpToLatest(false)
+    if (!shouldAutoFollowNewRun) {
+      const viewport = scrollViewportRef.current
+      if (viewport) {
+        viewport.scrollTop = 0
+      }
+    }
   }, [conversationRunScrollKey, shouldAutoFollowNewRun])
   const scrollToLatest = useCallback((behavior: ScrollBehavior = 'auto', options: { defer?: boolean } = {}) => {
     const run = () => {
@@ -2735,6 +2746,39 @@ export const AgentRuntime = memo(function AgentRuntime({
               ) : null}
               <span className="truncate font-semibold text-foreground">{projectLabel}</span>
               <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+              {onToggleRemoteVisibility && selectedAgentSessionId ? (
+                <button
+                  type="button"
+                  aria-label={
+                    selectedAgentSession?.remoteVisible
+                      ? `Stop sharing ${sessionLabel} to the web`
+                      : `Share ${sessionLabel} to the web`
+                  }
+                  title={
+                    selectedAgentSession?.remoteVisible
+                      ? `Stop sharing ${sessionLabel} to the web`
+                      : `Share ${sessionLabel} to the web`
+                  }
+                  onClick={() => {
+                    void onToggleRemoteVisibility(
+                      selectedAgentSessionId,
+                      !selectedAgentSession?.remoteVisible,
+                    )
+                  }}
+                  className={cn(
+                    'inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md transition-colors',
+                    selectedAgentSession?.remoteVisible
+                      ? 'text-primary hover:bg-primary/10'
+                      : 'text-muted-foreground/70 hover:bg-secondary/50 hover:text-foreground',
+                  )}
+                >
+                  {selectedAgentSession?.remoteVisible ? (
+                    <Cloud className="h-3.5 w-3.5" />
+                  ) : (
+                    <CloudOff className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              ) : null}
               {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>

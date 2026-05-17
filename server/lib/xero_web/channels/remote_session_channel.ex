@@ -85,6 +85,14 @@ defmodule XeroWeb.RemoteSessionChannel do
        do: :ok
 
   defp authorize_session_join(
+         %{assigns: %{device_kind: :web}},
+         _desktop_device_id,
+         "__sessions__",
+         _payload
+       ),
+       do: :ok
+
+  defp authorize_session_join(
          %{assigns: %{device_kind: :web}} = socket,
          desktop_device_id,
          session_id,

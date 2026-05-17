@@ -920,6 +920,7 @@ export function useXeroDesktopState(
     source: Extract<RefreshSource, 'runtime_run:updated' | 'runtime_stream:action_required'>
   } | null>(null)
   const runtimeActionRefreshKeysRef = useRef<Record<string, Set<string>>>({})
+  const runtimeStreamSubscriptionProjectIdRef = useRef<string | null>(null)
   const previousRuntimeAuthRef = useRef<Record<string, boolean>>({})
 
   const trimRuntimeStreamSessionCache = useCallback((protectedKey: string | null = null) => {
@@ -955,6 +956,19 @@ export function useXeroDesktopState(
       return nextStreams
     },
     [highChurnStore, trimRuntimeStreamSessionCache],
+  )
+
+  const clearRuntimeStreamCacheForProject = useCallback(
+    (projectId: string) => {
+      const sessionKeyPrefix = `${projectId}::`
+      for (const cacheKey of Object.keys(runtimeStreamsBySessionRef.current)) {
+        if (cacheKey.startsWith(sessionKeyPrefix)) {
+          delete runtimeStreamsBySessionRef.current[cacheKey]
+        }
+      }
+      setRuntimeStreams((currentStreams) => removeRuntimeStreamsForProject(currentStreams, projectId))
+    },
+    [setRuntimeStreams],
   )
 
   useEffect(() => {
@@ -2634,6 +2648,9 @@ export function useXeroDesktopState(
       const requestId = projectSelectionRequestRef.current + 1
       projectSelectionRequestRef.current = requestId
       setPendingProjectSelectionId(projectId)
+      if (projectId !== activeProjectIdRef.current) {
+        clearRuntimeStreamCacheForProject(projectId)
+      }
 
       const cachedProject = projectDetailsRef.current[projectId] ?? null
       const projectSummary = projects.find((project) => project.id === projectId)
@@ -2679,7 +2696,7 @@ export function useXeroDesktopState(
         }
       }
     },
-    [errorMessage, loadProject, projects, resetRepositoryDiffs],
+    [clearRuntimeStreamCacheForProject, errorMessage, loadProject, projects, resetRepositoryDiffs],
   )
 
   const retry = useCallback(async () => {
@@ -3343,18 +3360,28 @@ export function useXeroDesktopState(
     .join('|')
 
   useEffect(() => {
+    const previousSubscriptionProjectId = runtimeStreamSubscriptionProjectIdRef.current
+    const forceFullReplay = Boolean(
+      activeProjectId &&
+        previousSubscriptionProjectId !== null &&
+        previousSubscriptionProjectId !== activeProjectId,
+    )
     const cleanups = activeRuntimeSubscriptionTargets.map((target) =>
       attachRuntimeStreamSubscription({
         projectId: target.projectId,
         agentSessionId: target.agentSessionId,
         runtimeSession: target.runtimeSession,
         runId: target.runId,
+        forceFullReplay,
         adapter,
         runtimeActionRefreshKeysRef,
         updateRuntimeStream,
         scheduleRuntimeMetadataRefresh,
       }),
     )
+    if (activeRuntimeSubscriptionTargets.length > 0) {
+      runtimeStreamSubscriptionProjectIdRef.current = activeProjectId
+    }
 
     return () => {
       for (const cleanup of cleanups) {
@@ -3362,6 +3389,7 @@ export function useXeroDesktopState(
       }
     }
   }, [
+    activeProjectId,
     activeRuntimeSubscriptionKey,
     adapter,
     scheduleRuntimeMetadataRefresh,

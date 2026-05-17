@@ -249,13 +249,18 @@ impl IdentityStore for FileIdentityStore {
 #[serde(rename_all = "camelCase")]
 pub struct PairedDevice {
     pub id: String,
+    #[serde(alias = "account_id")]
     pub account_id: String,
     pub kind: String,
     pub name: Option<String>,
     #[serde(default)]
+    #[serde(alias = "user_agent")]
     pub user_agent: Option<String>,
+    #[serde(alias = "last_seen")]
     pub last_seen: Option<String>,
+    #[serde(alias = "created_at")]
     pub created_at: String,
+    #[serde(alias = "revoked_at")]
     pub revoked_at: Option<String>,
 }
 
@@ -418,6 +423,7 @@ pub enum PhoenixSocketKind {
 pub struct PhoenixChannelClient {
     socket: WebSocket<MaybeTlsStream<std::net::TcpStream>>,
     next_ref: u64,
+    channel_join_refs: HashMap<String, String>,
 }
 
 pub struct DesktopRelayConnection {
@@ -499,6 +505,7 @@ impl PhoenixChannelClient {
         Ok(Self {
             socket,
             next_ref: 0,
+            channel_join_refs: HashMap::new(),
         })
     }
 
@@ -522,7 +529,11 @@ impl PhoenixChannelClient {
                     .cloned()
                     .unwrap_or(JsonValue::Null);
                 return match status {
-                    Some("ok") => Ok(response),
+                    Some("ok") => {
+                        self.channel_join_refs
+                            .insert(topic.to_owned(), reference.clone());
+                        Ok(response)
+                    }
                     _ => Err(BridgeError::HttpStatus {
                         status: 400,
                         body: message.4.to_string(),
@@ -535,7 +546,7 @@ impl PhoenixChannelClient {
     pub fn push(&mut self, topic: &str, event: &str, payload: JsonValue) -> BridgeResult<String> {
         let reference = self.next_reference();
         self.send(PhoenixMessage(
-            None,
+            self.channel_join_refs.get(topic).cloned(),
             Some(reference.clone()),
             topic.to_owned(),
             event.to_owned(),
@@ -828,6 +839,7 @@ impl Default for DesktopBridgeLoopOptions {
     }
 }
 
+const CONTROL_SESSION_IDS: [&str; 2] = ["__sessions__", "__new__"];
 const MAX_SESSION_REPLAY_FRAMES: usize = 512;
 const RELAY_TOKEN_REFRESH_SKEW_SECONDS: i64 = 120;
 
@@ -1270,7 +1282,7 @@ where
         connection.set_read_timeout(Some(options.read_timeout))?;
         connection.join_control()?;
         let mut joined_sessions = BTreeSet::new();
-        for session_id in self.visibility_store.visible_sessions()? {
+        for session_id in initial_desktop_session_ids(self.visibility_store.visible_sessions()?) {
             connection.join_session(&session_id)?;
             joined_sessions.insert(session_id);
         }
@@ -1317,9 +1329,8 @@ where
                 let authorized = is_control_session_id(session_id)
                     || self.visibility_store.is_visible(session_id)?;
                 connection.authorize_session_join(join_ref, auth_topic, authorized)?;
-                if authorized {
+                if authorized && joined_sessions.insert(session_id.to_owned()) {
                     let _reply = connection.join_session(session_id)?;
-                    joined_sessions.insert(session_id.to_owned());
                 }
             }
             "session_attached" => {
@@ -1519,6 +1530,19 @@ fn relay_token_refresh_auth(identity: &DesktopIdentity) -> Option<RelayTokenRefr
     }
 }
 
+fn initial_desktop_session_ids(visible_sessions: Vec<String>) -> Vec<String> {
+    let mut session_ids = Vec::new();
+    for session_id in CONTROL_SESSION_IDS {
+        session_ids.push(session_id.to_owned());
+    }
+    for session_id in visible_sessions {
+        if !session_ids.iter().any(|existing| existing == &session_id) {
+            session_ids.push(session_id);
+        }
+    }
+    session_ids
+}
+
 fn required_json_string<'a>(value: &'a JsonValue, key: &'static str) -> BridgeResult<&'a str> {
     value
         .get(key)
@@ -1528,7 +1552,7 @@ fn required_json_string<'a>(value: &'a JsonValue, key: &'static str) -> BridgeRe
 }
 
 fn is_control_session_id(session_id: &str) -> bool {
-    matches!(session_id, "__sessions__" | "__new__")
+    CONTROL_SESSION_IDS.contains(&session_id)
 }
 
 fn session_id_from_topic(topic: &str) -> Option<String> {
@@ -1540,7 +1564,9 @@ fn session_id_from_topic(topic: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
     use std::time::Duration;
+    use tungstenite::Message;
 
     #[test]
     fn envelope_msgpack_round_trips() {
@@ -1627,6 +1653,121 @@ mod tests {
     }
 
     #[test]
+    fn initial_desktop_session_ids_include_control_topics_once() {
+        assert_eq!(
+            initial_desktop_session_ids(vec![
+                "__sessions__".into(),
+                "session-1".into(),
+                "__new__".into(),
+                "session-1".into(),
+            ]),
+            vec![
+                "__sessions__".to_string(),
+                "__new__".to_string(),
+                "session-1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn account_device_decodes_server_snake_case_and_serializes_camel_case() {
+        let device: AccountDevice = serde_json::from_value(json!({
+            "id": "web-1",
+            "account_id": "account-1",
+            "kind": "web",
+            "name": "Xero Web",
+            "user_agent": "browser",
+            "last_seen": "2026-05-17T06:59:00Z",
+            "created_at": "2026-05-17T06:00:00Z",
+            "revoked_at": null,
+        }))
+        .expect("decode server device");
+
+        assert_eq!(device.account_id, "account-1");
+        assert_eq!(device.user_agent.as_deref(), Some("browser"));
+
+        let encoded = serde_json::to_value(&device).expect("encode device");
+        assert_eq!(encoded["accountId"], "account-1");
+        assert_eq!(encoded["userAgent"], "browser");
+        assert_eq!(encoded["createdAt"], "2026-05-17T06:00:00Z");
+        assert!(encoded.get("account_id").is_none());
+    }
+
+    #[test]
+    fn phoenix_channel_pushes_include_the_join_ref() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake relay");
+        let relay_url = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket");
+            let mut socket = tungstenite::accept(stream).expect("accept websocket handshake");
+
+            let join_message = read_text_message(&mut socket);
+            let join: PhoenixMessage = serde_json::from_str(&join_message).expect("join json");
+            assert_eq!(join.0.as_deref(), Some("1"));
+            assert_eq!(join.1.as_deref(), Some("1"));
+            assert_eq!(join.2, "session:desktop-1:session-1");
+            assert_eq!(join.3, "phx_join");
+
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&PhoenixMessage(
+                        join.0.clone(),
+                        join.1.clone(),
+                        join.2.clone(),
+                        "phx_reply".into(),
+                        json!({"status": "ok", "response": {}}),
+                    ))
+                    .expect("join reply json")
+                    .into(),
+                ))
+                .expect("send join reply");
+
+            let push_message = read_text_message(&mut socket);
+            let push: PhoenixMessage = serde_json::from_str(&push_message).expect("push json");
+            assert_eq!(push.0.as_deref(), Some("1"));
+            assert_eq!(push.1.as_deref(), Some("2"));
+            assert_eq!(push.2, "session:desktop-1:session-1");
+            assert_eq!(push.3, "frame");
+
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&PhoenixMessage(
+                        push.0.clone(),
+                        push.1.clone(),
+                        push.2.clone(),
+                        "phx_reply".into(),
+                        json!({"status": "ok", "response": {}}),
+                    ))
+                    .expect("push reply json")
+                    .into(),
+                ))
+                .expect("send push reply");
+        });
+
+        let mut client = PhoenixChannelClient::connect(
+            &BridgeConfig {
+                relay_url,
+                device_name: Some("Xero Test Web".into()),
+            },
+            "token",
+            PhoenixSocketKind::Web,
+        )
+        .expect("connect fake relay");
+
+        client
+            .join("session:desktop-1:session-1", json!({}))
+            .expect("join session");
+        client
+            .push_and_wait("session:desktop-1:session-1", "frame", json!({"ok": true}))
+            .expect("push frame");
+
+        server.join().expect("fake relay thread");
+    }
+
+    #[test]
     fn bridge_forward_gates_by_remote_visibility() {
         let temp = tempfile_path("bridge-forward");
         let identity_store = FileIdentityStore::new(temp.join("identity.json"));
@@ -1698,8 +1839,7 @@ mod tests {
             })
             .expect("identity");
         let visibility = MemorySessionVisibilityStore::default();
-        let bridge =
-            RemoteBridge::new(BridgeConfig::local_default(), identity_store, visibility);
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store, visibility);
 
         // Hidden session -> snapshot is a no-op.
         let hidden = bridge
@@ -1787,6 +1927,17 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique)
+    }
+
+    fn read_text_message(socket: &mut WebSocket<std::net::TcpStream>) -> String {
+        loop {
+            match socket.read().expect("read websocket message") {
+                Message::Text(text) => return text.to_string(),
+                Message::Binary(bytes) => return String::from_utf8(bytes.to_vec()).expect("utf8"),
+                Message::Ping(bytes) => socket.send(Message::Pong(bytes)).expect("pong"),
+                _ => {}
+            }
+        }
     }
 
     fn test_identity() -> DesktopIdentity {

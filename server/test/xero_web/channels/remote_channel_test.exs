@@ -84,6 +84,28 @@ defmodule XeroWeb.RemoteChannelTest do
     end)
   end
 
+  test "web clients can subscribe to a desktop session list without a live desktop ack", %{
+    conn: conn
+  } do
+    with_github_env(fn ->
+      desktop = desktop_login!(conn)
+      web = web_login!(conn)
+
+      {:ok, web_socket} =
+        connect(XeroWeb.RemoteWebSocket, %{"token" => web["web_jwt"]})
+
+      {:ok, reply, _web_session} =
+        subscribe_and_join(
+          web_socket,
+          "session:#{desktop["desktop_device_id"]}:__sessions__",
+          %{"last_seq" => 0}
+        )
+
+      assert reply.desktop_device_id == desktop["desktop_device_id"]
+      assert reply.session_id == "__sessions__"
+    end)
+  end
+
   test "web clients cannot connect with invalid tokens or join another account's desktop", %{
     conn: conn
   } do

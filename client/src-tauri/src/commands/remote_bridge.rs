@@ -175,6 +175,14 @@ pub fn set_session_remote_visibility<R: Runtime + 'static>(
 ) -> CommandResult<SetSessionRemoteVisibilityResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
+    let registered = registered_identity_exists(&app, state.inner())?;
+    if request.visible && !registered {
+        return Err(CommandError::user_fixable(
+            "remote_bridge_not_signed_in",
+            "Sign in with GitHub before sharing a session to the web.",
+        ));
+    }
+
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let session = project_store::set_agent_session_remote_visibility(
         &repo_root,
@@ -186,7 +194,20 @@ pub fn set_session_remote_visibility<R: Runtime + 'static>(
     bridge
         .set_session_visibility(&request.agent_session_id, request.visible)
         .map_err(map_bridge_error)?;
-    remote_state.start_if_registered(&app, state.inner())?;
+    if registered {
+        remote_state.start_if_registered(&app, state.inner())?;
+        publish_visible_remote_sessions(&app, state.inner(), &bridge)?;
+        if request.visible {
+            publish_remote_session_snapshot(
+                &bridge,
+                LocatedRemoteSession {
+                    project_id: request.project_id.clone(),
+                    repo_root: repo_root.clone(),
+                    session: session.clone(),
+                },
+            )?;
+        }
+    }
 
     Ok(SetSessionRemoteVisibilityResponseDto {
         schema: "xero.session_remote_visibility.v1".into(),
@@ -440,6 +461,14 @@ fn route_list_sessions<R: Runtime>(
     state: &DesktopState,
     bridge: &AppRemoteBridge,
 ) -> CommandResult<()> {
+    publish_visible_remote_sessions(app, state, bridge)
+}
+
+fn publish_visible_remote_sessions<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+) -> CommandResult<()> {
     let sessions = visible_remote_sessions(app, state)?;
     bridge
         .forward_control_event(
@@ -449,6 +478,18 @@ fn route_list_sessions<R: Runtime>(
                 "sessions": sessions,
             }),
         )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
+fn publish_remote_session_snapshot(
+    bridge: &AppRemoteBridge,
+    located: LocatedRemoteSession,
+) -> CommandResult<()> {
+    let session_id = located.session.agent_session_id.clone();
+    let snapshot = remote_session_snapshot(&located)?;
+    bridge
+        .snapshot(&session_id, snapshot)
         .map_err(map_bridge_error)?;
     Ok(())
 }
@@ -477,11 +518,7 @@ fn route_session_attached<R: Runtime>(
         return Ok(());
     }
 
-    let snapshot = remote_session_snapshot(&located)?;
-    bridge
-        .snapshot(session_id, snapshot)
-        .map_err(map_bridge_error)?;
-    Ok(())
+    publish_remote_session_snapshot(bridge, located)
 }
 
 fn route_start_session<R: Runtime + 'static>(

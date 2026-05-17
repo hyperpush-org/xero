@@ -589,18 +589,22 @@ fn pop_keyboard_enhancements(pushed: bool) -> Result<(), CliError> {
 }
 
 /// Inline viewport heights. We use a few sizes:
-///   - `INLINE_HEIGHT_RUNNING` (10 rows): hosts the streaming spinner
-///     and in-flight tool row above the composer block.
+///   - `INLINE_HEIGHT_RUNNING` (11 rows): hosts the streaming spinner
+///     and in-flight tool row above the composer block, with one blank
+///     row above the `Thinking…` footer.
 ///   - `INLINE_HEIGHT_SLASH` (12 rows): lets composer-owned slash command
 ///     suggestions behave like an inline select list.
 ///   - `INLINE_HEIGHT_IDLE` (9 rows): composer + one row of breathing
 ///     room above it + composer-to-footer gap + footer. Drops the
 ///     reserved spinner rows but keeps a visual buffer so the
 ///     composer doesn't clamp directly against the last response.
-pub const INLINE_HEIGHT_RUNNING: u16 = 10;
+pub const INLINE_HEIGHT_RUNNING: u16 = 11;
 pub const INLINE_HEIGHT_SLASH: u16 = 12;
 pub const INLINE_HEIGHT_IDLE: u16 = 9;
 const CONVERSATION_COMPOSER_GAP_ROWS: u16 = 1;
+// Blank row above + the `Thinking…` row. The existing conversation-to-composer
+// gap below this area gives the footer its bottom breathing room.
+const INLINE_THINKING_AREA_ROWS: u16 = 2;
 const LOGIN_POLL_INTERVAL: Duration = Duration::from_millis(1_000);
 
 /// Inline viewport height the next render wants. Grows for an active
@@ -623,13 +627,18 @@ fn desired_bottom_panel_height(app: &App, _terminal_height: u16) -> u16 {
         app.run_detail.as_ref().map(|detail| detail.status.as_str()),
         Some("running")
     );
+    let required_height = if running {
+        composer_required_height.saturating_add(INLINE_THINKING_AREA_ROWS)
+    } else {
+        composer_required_height
+    };
     let fixed_height = match (running, slash::is_visible(app)) {
         (true, true) => INLINE_HEIGHT_RUNNING.max(INLINE_HEIGHT_SLASH),
         (true, false) => INLINE_HEIGHT_RUNNING,
         (false, true) => INLINE_HEIGHT_SLASH,
         (false, false) => INLINE_HEIGHT_IDLE,
     };
-    fixed_height.max(composer_required_height)
+    fixed_height.max(required_height)
 }
 
 /// Swap in a fresh `Terminal` with a new inline viewport height when
@@ -3604,6 +3613,47 @@ mod tests {
         assert!(
             !text.contains("partial reasoning tail"),
             "inline viewport should not expose reasoning token tail"
+        );
+    }
+
+    #[test]
+    fn running_inline_viewport_keeps_row_gap_around_thinking_indicator() {
+        let mut app = empty_app();
+        app.run_detail = Some(RunDetail {
+            run_id: "inline-thinking-spacing".into(),
+            status: "running".into(),
+            messages: vec![RuntimeMessageRow {
+                role: "user".into(),
+                content: "prompt".into(),
+                thinking: None,
+                tool_calls: Vec::new(),
+            }],
+            events: Vec::new(),
+            in_progress_text: None,
+            in_progress_reasoning: None,
+            tokens_used: None,
+            context_window: None,
+            started_at: Some(Instant::now()),
+        });
+
+        let rows = render_rows(&app, 80, desired_inline_height(&app, 40));
+        let thinking_row = rows
+            .iter()
+            .position(|row| row.contains("Thinking"))
+            .expect("thinking row");
+
+        assert!(thinking_row > 0, "thinking row should keep a row above it");
+        assert!(
+            rows[thinking_row - 1].trim().is_empty(),
+            "row above the thinking indicator should stay blank"
+        );
+        assert!(
+            thinking_row + 1 < rows.len(),
+            "thinking row should keep a row below it"
+        );
+        assert!(
+            rows[thinking_row + 1].trim().is_empty(),
+            "row below the thinking indicator should stay blank"
         );
     }
 

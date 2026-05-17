@@ -128,6 +128,7 @@ interface AttachRuntimeStreamSubscriptionArgs {
   agentSessionId: string | null
   runtimeSession: RuntimeSessionView | null
   runId: string | null
+  forceFullReplay?: boolean
   adapter: XeroDesktopAdapter
   runtimeActionRefreshKeysRef: MutableRefObject<Record<string, Set<string>>>
   updateRuntimeStream: UpdateRuntimeStream
@@ -877,6 +878,7 @@ export function attachRuntimeStreamSubscription({
   agentSessionId,
   runtimeSession,
   runId,
+  forceFullReplay = false,
   adapter,
   runtimeActionRefreshKeysRef,
   updateRuntimeStream,
@@ -928,7 +930,11 @@ export function attachRuntimeStreamSubscription({
   }
 
   updateRuntimeStream(projectId, agentSessionId, (currentStream) => {
-    if (currentStream?.runId === runId && currentStream.agentSessionId === agentSessionId) {
+    if (
+      !forceFullReplay &&
+      currentStream?.runId === runId &&
+      currentStream.agentSessionId === agentSessionId
+    ) {
       replayAfterSequence = currentStream.lastSequence ?? null
       return {
         ...currentStream,

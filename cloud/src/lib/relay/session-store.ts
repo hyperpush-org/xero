@@ -29,10 +29,33 @@ interface SessionStoreState {
 export const sessionKey = (computerId: string, sessionId: string) =>
 	`${computerId}:${sessionId}`;
 
+function visibleSessionsEqual(
+	left: readonly VisibleSessionSummary[],
+	right: readonly VisibleSessionSummary[],
+): boolean {
+	if (left === right) return true;
+	if (left.length !== right.length) return false;
+	return left.every((current, index) => {
+		const next = right[index];
+		return (
+			current.computerId === next.computerId &&
+			current.sessionId === next.sessionId &&
+			current.title === next.title &&
+			current.lastActivityAt === next.lastActivityAt &&
+			current.computerName === next.computerName
+		);
+	});
+}
+
 export const useSessionStore = create<SessionStoreState>((set) => ({
 	visibleSessions: [],
 	transcripts: {},
-	setVisibleSessions: (sessions) => set({ visibleSessions: sessions }),
+	setVisibleSessions: (sessions) =>
+		set((state) =>
+			visibleSessionsEqual(state.visibleSessions, sessions)
+				? state
+				: { visibleSessions: sessions },
+		),
 	replaceWithSnapshot: (key, transcript) =>
 		set((state) => ({
 			transcripts: { ...state.transcripts, [key]: transcript },
