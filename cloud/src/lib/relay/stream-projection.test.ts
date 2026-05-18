@@ -87,8 +87,122 @@ describe("projectRemotePayloadToTurns", () => {
 				id: "transcript:run-2:41",
 				kind: "message",
 				role: "assistant",
-				sequence: 2,
+				sequence: 41,
 				text: "Working on it.",
+			},
+		]);
+	});
+
+	it("rebuilds snapshot timelines from events when persisted assistant messages exist", () => {
+		const turns = projectRemotePayloadToTurns({
+			schema: "xero.remote_session_snapshot.v1",
+			runs: [
+				{
+					runId: "run-rich",
+					prompt: "What is this project about.",
+					status: "completed",
+					messages: [
+						{
+							id: 12,
+							role: "assistant",
+							content: "Persisted final answer.",
+						},
+					],
+					events: [
+						{
+							id: 1,
+							eventKind: "message_delta",
+							payload: {
+								role: "user",
+								text: "What is this project about.",
+							},
+						},
+						{
+							id: 2,
+							eventKind: "context_manifest_recorded",
+							payload: {
+								summary: "Latest project context manifest recorded.",
+							},
+						},
+						{
+							id: 3,
+							eventKind: "retrieval_performed",
+							payload: {
+								summary: "Latest project context retrieval.",
+							},
+						},
+						{
+							id: 4,
+							eventKind: "reasoning_summary",
+							payload: {
+								summary: "Inspecting project details",
+							},
+						},
+						{
+							id: 5,
+							eventKind: "message_delta",
+							payload: {
+								role: "assistant",
+								text: "This project is ",
+							},
+						},
+						{
+							id: 6,
+							eventKind: "message_delta",
+							payload: {
+								role: "assistant",
+								text: "Clippster.",
+							},
+						},
+					],
+				},
+			],
+		});
+
+		expect(turns).toEqual([
+			{
+				id: "transcript:run-rich:1",
+				kind: "message",
+				role: "user",
+				sequence: 1,
+				text: "What is this project about.",
+			},
+			{
+				id: "tool-group:tool:run-rich:runtime-project-context:2:context_manifest_recorded:tool:run-rich:runtime-project-context:3:retrieval_performed",
+				kind: "action_group",
+				sequence: 3,
+				title: "2 tool calls",
+				detail: "2 succeeded · latest project context retrieval",
+				state: "succeeded",
+				actions: [
+					{
+						id: "tool:run-rich:runtime-project-context:2:context_manifest_recorded",
+						title: "project context manifest",
+						detail: "Latest project context manifest recorded.",
+						detailRows: [],
+						state: "succeeded",
+					},
+					{
+						id: "tool:run-rich:runtime-project-context:3:retrieval_performed",
+						title: "project context retrieval",
+						detail: "Latest project context retrieval.",
+						detailRows: [],
+						state: "succeeded",
+					},
+				],
+			},
+			{
+				id: "thinking:run-rich:4",
+				kind: "thinking",
+				sequence: 4,
+				text: "Inspecting project details",
+			},
+			{
+				id: "transcript:run-rich:5",
+				kind: "message",
+				role: "assistant",
+				sequence: 6,
+				text: "This project is Clippster.",
 			},
 		]);
 	});

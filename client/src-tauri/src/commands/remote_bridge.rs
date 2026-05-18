@@ -527,7 +527,7 @@ fn route_start_session<R: Runtime + 'static>(
     bridge: &AppRemoteBridge,
     command: InboundCommand,
 ) -> CommandResult<()> {
-    let prompt = required_payload_string(&command.payload, &["prompt", "message"])?;
+    let prompt = payload_string(&command.payload, &["prompt", "message"]);
     let located_project = locate_project_for_remote_start(app, state, &command.payload)?;
     let title = payload_string(&command.payload, &["title"])
         .unwrap_or(DEFAULT_AGENT_SESSION_TITLE)
@@ -551,18 +551,23 @@ fn route_start_session<R: Runtime + 'static>(
         .set_session_visibility(&session.agent_session_id, true)
         .map_err(map_bridge_error)?;
 
-    let controls = remote_run_controls_from_payload(&command.payload)?;
-    let run = start_runtime_run_blocking(
-        app.clone(),
-        state.clone(),
-        StartRuntimeRunRequestDto {
-            project_id: located_project.project_id.clone(),
-            agent_session_id: session.agent_session_id.clone(),
-            initial_controls: controls,
-            initial_prompt: Some(prompt.to_string()),
-            initial_attachments: Vec::new(),
-        },
-    )?;
+    let run = match prompt {
+        Some(prompt) => {
+            let controls = remote_run_controls_from_payload(&command.payload, None)?;
+            Some(start_runtime_run_blocking(
+                app.clone(),
+                state.clone(),
+                StartRuntimeRunRequestDto {
+                    project_id: located_project.project_id.clone(),
+                    agent_session_id: session.agent_session_id.clone(),
+                    initial_controls: controls,
+                    initial_prompt: Some(prompt.to_string()),
+                    initial_attachments: Vec::new(),
+                },
+            )?)
+        }
+        None => None,
+    };
 
     let session_payload = json!({
         "projectId": located_project.project_id,
@@ -601,26 +606,32 @@ fn route_send_message<R: Runtime + 'static>(
     let located = locate_visible_remote_session(app, state, session_id)?;
     let existing = load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?;
     let run = match existing {
-        Some(snapshot) => update_runtime_run_controls_blocking(
-            app.clone(),
-            state.clone(),
-            UpdateRuntimeRunControlsRequestDto {
-                project_id: located.project_id.clone(),
-                agent_session_id: session_id.to_string(),
-                run_id: snapshot.run.run_id,
-                controls: remote_run_controls_from_payload(&command.payload)?,
-                prompt: Some(message.to_string()),
-                attachments: Vec::new(),
-                auto_compact: None,
-            },
-        )?,
+        Some(snapshot) => {
+            let selected_controls = selected_runtime_run_controls(&snapshot);
+            update_runtime_run_controls_blocking(
+                app.clone(),
+                state.clone(),
+                UpdateRuntimeRunControlsRequestDto {
+                    project_id: located.project_id.clone(),
+                    agent_session_id: session_id.to_string(),
+                    run_id: snapshot.run.run_id,
+                    controls: remote_run_controls_from_payload(
+                        &command.payload,
+                        Some(&selected_controls),
+                    )?,
+                    prompt: Some(message.to_string()),
+                    attachments: Vec::new(),
+                    auto_compact: None,
+                },
+            )?
+        }
         None => start_runtime_run_blocking(
             app.clone(),
             state.clone(),
             StartRuntimeRunRequestDto {
                 project_id: located.project_id.clone(),
                 agent_session_id: session_id.to_string(),
-                initial_controls: remote_run_controls_from_payload(&command.payload)?,
+                initial_controls: remote_run_controls_from_payload(&command.payload, None)?,
                 initial_prompt: Some(message.to_string()),
                 initial_attachments: Vec::new(),
             },
@@ -874,25 +885,62 @@ fn project_location(project: &RegistryProjectRecord) -> LocatedRemoteProject {
 
 fn remote_run_controls_from_payload(
     payload: &JsonValue,
+    fallback: Option<&RuntimeRunControlInputDto>,
 ) -> CommandResult<Option<RuntimeRunControlInputDto>> {
     let Some(agent) = payload_string(payload, &["agent", "runtimeAgentId", "runtime_agent_id"])
     else {
         return Ok(None);
     };
     let runtime_agent_id = parse_runtime_agent_id(agent)?;
+    let Some(model_id) = payload_string(payload, &["modelId", "model_id"]).or_else(|| {
+        fallback
+            .map(|controls| controls.model_id.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }) else {
+        return Ok(None);
+    };
     Ok(Some(RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: Some(agent.trim().to_string()),
         provider_profile_id: payload_string(payload, &["providerProfileId", "provider_profile_id"])
-            .map(ToOwned::to_owned),
-        model_id: payload_string(payload, &["modelId", "model_id"])
-            .unwrap_or("")
-            .to_string(),
-        thinking_effort: None,
-        approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            .map(ToOwned::to_owned)
+            .or_else(|| fallback.and_then(|controls| controls.provider_profile_id.clone())),
+        model_id: model_id.to_string(),
+        thinking_effort: fallback.and_then(|controls| controls.thinking_effort.clone()),
+        approval_mode: fallback
+            .map(|controls| controls.approval_mode.clone())
+            .unwrap_or(RuntimeRunApprovalModeDto::Suggest),
         plan_mode_required: payload_bool(payload, &["planModeRequired", "plan_mode_required"])
+            .or_else(|| fallback.map(|controls| controls.plan_mode_required))
             .unwrap_or(false),
     }))
+}
+
+fn selected_runtime_run_controls(
+    snapshot: &crate::db::project_store::RuntimeRunSnapshotRecord,
+) -> RuntimeRunControlInputDto {
+    if let Some(pending) = snapshot.controls.pending.as_ref() {
+        return RuntimeRunControlInputDto {
+            runtime_agent_id: pending.runtime_agent_id,
+            agent_definition_id: pending.agent_definition_id.clone(),
+            provider_profile_id: pending.provider_profile_id.clone(),
+            model_id: pending.model_id.clone(),
+            thinking_effort: pending.thinking_effort.clone(),
+            approval_mode: pending.approval_mode.clone(),
+            plan_mode_required: pending.plan_mode_required,
+        };
+    }
+
+    RuntimeRunControlInputDto {
+        runtime_agent_id: snapshot.controls.active.runtime_agent_id,
+        agent_definition_id: snapshot.controls.active.agent_definition_id.clone(),
+        provider_profile_id: snapshot.controls.active.provider_profile_id.clone(),
+        model_id: snapshot.controls.active.model_id.clone(),
+        thinking_effort: snapshot.controls.active.thinking_effort.clone(),
+        approval_mode: snapshot.controls.active.approval_mode.clone(),
+        plan_mode_required: snapshot.controls.active.plan_mode_required,
+    }
 }
 
 fn parse_runtime_agent_id(value: &str) -> CommandResult<RuntimeAgentIdDto> {
@@ -994,5 +1042,90 @@ fn map_bridge_error(error: BridgeError) -> CommandError {
         | BridgeError::LockPoisoned => {
             CommandError::system_fault("remote_bridge_failed", error.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fallback_controls(model_id: &str) -> RuntimeRunControlInputDto {
+        RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some("engineer".into()),
+            provider_profile_id: Some("profile-openai".into()),
+            model_id: model_id.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+            plan_mode_required: true,
+        }
+    }
+
+    #[test]
+    fn remote_controls_use_payload_model_when_present() {
+        let fallback = fallback_controls("gpt-5.4");
+        let controls = remote_run_controls_from_payload(
+            &json!({
+                "agent": "ask",
+                "modelId": "gpt-5.5",
+            }),
+            Some(&fallback),
+        )
+        .expect("controls should parse")
+        .expect("controls should be present");
+
+        assert_eq!(controls.runtime_agent_id, RuntimeAgentIdDto::Ask);
+        assert_eq!(controls.model_id, "gpt-5.5");
+        assert_eq!(
+            controls.provider_profile_id.as_deref(),
+            Some("profile-openai")
+        );
+        assert_eq!(controls.approval_mode, RuntimeRunApprovalModeDto::Yolo);
+        assert!(controls.plan_mode_required);
+    }
+
+    #[test]
+    fn remote_controls_fall_back_to_current_settings() {
+        let fallback = fallback_controls("gpt-5.5");
+        let controls = remote_run_controls_from_payload(
+            &json!({
+                "agent": "ask",
+                "modelId": null,
+            }),
+            Some(&fallback),
+        )
+        .expect("controls should parse")
+        .expect("controls should be present");
+
+        assert_eq!(controls.runtime_agent_id, RuntimeAgentIdDto::Ask);
+        assert_eq!(controls.model_id, "gpt-5.5");
+        assert_eq!(
+            controls.provider_profile_id.as_deref(),
+            Some("profile-openai")
+        );
+        assert_eq!(controls.approval_mode, RuntimeRunApprovalModeDto::Yolo);
+        assert!(controls.plan_mode_required);
+    }
+
+    #[test]
+    fn remote_controls_are_omitted_without_agent_and_model_pair() {
+        assert!(remote_run_controls_from_payload(
+            &json!({
+                "agent": "ask",
+                "modelId": null,
+            }),
+            None,
+        )
+        .expect("controls should parse")
+        .is_none());
+
+        assert!(remote_run_controls_from_payload(
+            &json!({
+                "message": "What is 1+1?",
+            }),
+            Some(&fallback_controls("gpt-5.5")),
+        )
+        .expect("controls should parse")
+        .is_none());
     }
 }

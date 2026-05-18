@@ -3041,7 +3041,7 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(
-      screen.getByPlaceholderText('Describe the agent you want to build...'),
+      screen.getByPlaceholderText('Describe the agent...'),
     ).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Shape this new agent' })).toBeVisible()
     expect(screen.getByText(/Start from a description\./)).toBeVisible()

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 11;
+pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 10;
 
 /// Migrations for the global SQLite database (`xero.db`).
 ///

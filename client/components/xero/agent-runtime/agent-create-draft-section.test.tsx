@@ -32,7 +32,7 @@ describe('AgentCreateDraftSection', () => {
       />,
     )
 
-    expect(screen.getByText(/Describe the agent you want/i)).toBeInTheDocument()
+    expect(screen.getByText(/Describe the agent/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Manage agents/i }))
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
@@ -80,7 +80,7 @@ describe('AgentCreateDraftSection', () => {
       />,
     )
 
-    expect(screen.getByText(/Describe the agent you want/i)).toBeInTheDocument()
+    expect(screen.getByText(/Describe the agent/i)).toBeInTheDocument()
     expect(screen.queryByText('Saved record')).not.toBeInTheDocument()
   })
 })

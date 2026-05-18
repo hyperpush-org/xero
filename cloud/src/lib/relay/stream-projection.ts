@@ -6,9 +6,25 @@ const REMOTE_RUNTIME_EVENT_SCHEMA = "xero.remote_runtime_event.v1";
 const RUNTIME_STREAM_ITEM_KINDS = new Set([
 	"transcript",
 	"tool",
+	"skill",
+	"activity",
 	"action_required",
+	"plan",
+	"complete",
 	"failure",
+	"subagent_lifecycle",
 ]);
+const OWNED_AGENT_REASONING_ACTIVITY_CODE = "owned_agent_reasoning";
+const OWNED_AGENT_FILE_CHANGED_ACTIVITY_CODE = "owned_agent_file_changed";
+const COMPACT_TOOL_BURST_THRESHOLD = 2;
+
+type ActionTurn = Extract<ConversationTurn, { kind: "action" }>;
+type ToolState = ActionTurn["state"];
+
+interface TurnProjectionContext {
+	turns: ConversationTurn[];
+	actionTurnIndexByToolCallId: Map<string, number>;
+}
 
 /**
  * Project an incremental list of `RuntimeStreamItemDto`s into the
@@ -23,12 +39,12 @@ const RUNTIME_STREAM_ITEM_KINDS = new Set([
 export function projectStreamItemsToTurns(
 	items: readonly RuntimeStreamItemDto[],
 ): ConversationTurn[] {
-	const turns: ConversationTurn[] = [];
+	const context = createTurnProjectionContext();
 	for (const item of items) {
 		const turn = mapItem(item);
-		if (turn) turns.push(turn);
+		if (turn) appendProjectedTurn(context, turn);
 	}
-	return turns;
+	return compactActionBursts(context.turns);
 }
 
 /**
@@ -65,6 +81,8 @@ function mapItem(item: RuntimeStreamItemDto): ConversationTurn | null {
 			return mapTranscript(item);
 		case "tool":
 			return mapTool(item);
+		case "activity":
+			return mapActivity(item);
 		case "action_required":
 			return mapAction(item);
 		case "failure":
@@ -82,6 +100,37 @@ function projectRemoteSnapshotRunsToTurns(
 
 	for (const [runIndex, run] of runs.entries()) {
 		const runId = stringField(run, "runId") ?? `run-${runIndex + 1}`;
+		const eventTurns = projectRemoteRunEventsToTurns(run, runId);
+		if (eventTurns.length > 0) {
+			const hasUserMessage = eventTurns.some(
+				(turn) => turn.kind === "message" && turn.role === "user",
+			);
+			const hasAssistantMessage = eventTurns.some(
+				(turn) => turn.kind === "message" && turn.role === "assistant",
+			);
+			if (!hasUserMessage) {
+				const promptTurn = remoteRunPromptTurn(run, runId, nextSequence);
+				if (promptTurn) turns.push(promptTurn);
+			}
+			turns.push(...eventTurns);
+			if (!hasAssistantMessage) {
+				for (const message of recordArray(run, "messages")) {
+					if (stringField(message, "role") !== "assistant") continue;
+					const turn = remoteMessageToTurn(message, runId, nextSequence);
+					if (!turn) continue;
+					turns.push(turn);
+					nextSequence = Math.max(nextSequence, turn.sequence + 1);
+				}
+			}
+			const failure = remoteRunFailureToTurn(run, runId, nextSequence);
+			if (failure && !eventTurns.some((turn) => turn.kind === "failure")) {
+				turns.push(failure);
+			}
+			nextSequence =
+				Math.max(nextSequence, ...turns.map((turn) => turn.sequence)) + 1;
+			continue;
+		}
+
 		const messages = recordArray(run, "messages");
 		const hasUserMessage = messages.some(
 			(message) =>
@@ -89,15 +138,9 @@ function projectRemoteSnapshotRunsToTurns(
 				nonEmptyStringField(message, "content"),
 		);
 		if (!hasUserMessage) {
-			const prompt = nonEmptyStringField(run, "prompt");
-			if (prompt) {
-				turns.push({
-					id: `transcript:${runId}:prompt`,
-					kind: "message",
-					role: "user",
-					sequence: nextSequence,
-					text: prompt,
-				});
+			const promptTurn = remoteRunPromptTurn(run, runId, nextSequence);
+			if (promptTurn) {
+				turns.push(promptTurn);
 				nextSequence += 1;
 			}
 		}
@@ -134,6 +177,43 @@ function projectRemoteSnapshotRunsToTurns(
 	return turns;
 }
 
+function projectRemoteRunEventsToTurns(
+	run: Record<string, unknown>,
+	runId: string,
+): ConversationTurn[] {
+	const events = recordArray(run, "events").sort(
+		(left, right) =>
+			(numberField(left, "id", "eventId") ?? 0) -
+			(numberField(right, "id", "eventId") ?? 0),
+	);
+	const context = createTurnProjectionContext();
+	for (const event of events) {
+		const eventTurn = remoteAgentRunEventToTurn(
+			event,
+			runId,
+			numberField(event, "id", "eventId") ?? context.turns.length + 1,
+		);
+		if (eventTurn) appendProjectedTurn(context, eventTurn);
+	}
+	return compactActionBursts(context.turns);
+}
+
+function remoteRunPromptTurn(
+	run: Record<string, unknown>,
+	runId: string,
+	sequence: number,
+): Extract<ConversationTurn, { kind: "message" }> | null {
+	const prompt = nonEmptyStringField(run, "prompt");
+	if (!prompt) return null;
+	return {
+		id: `transcript:${runId}:prompt`,
+		kind: "message",
+		role: "user",
+		sequence,
+		text: prompt,
+	};
+}
+
 function remoteMessageToTurn(
 	message: Record<string, unknown>,
 	runId: string,
@@ -161,6 +241,41 @@ function remoteAgentRunEventToTurn(
 	const payload = recordField(event, "payload");
 	if (eventKind === "message_delta" && payload) {
 		return remoteMessageDeltaToTurn(payload, runId, sequence, event);
+	}
+	if (eventKind === "reasoning_summary" && payload) {
+		return remoteReasoningSummaryToTurn(payload, runId, sequence, event);
+	}
+	if (eventKind === "tool_started" && payload) {
+		return remoteToolEventToTurn(payload, runId, sequence, event, "running");
+	}
+	if (eventKind === "tool_completed" && payload) {
+		const ok = booleanField(payload, "ok");
+		return remoteToolEventToTurn(
+			payload,
+			runId,
+			sequence,
+			event,
+			ok === false ? "failed" : "succeeded",
+		);
+	}
+	if (eventKind === "command_output" && payload) {
+		return remoteCommandOutputToTurn(payload, runId, sequence, event);
+	}
+	if (
+		eventKind === "context_manifest_recorded" ||
+		eventKind === "retrieval_performed" ||
+		eventKind === "memory_candidate_captured"
+	) {
+		return remoteContextEventToTurn(payload, runId, sequence, event, eventKind);
+	}
+	if (eventKind === "file_changed" && payload) {
+		return remoteFileChangeToTurn(payload, runId, sequence, event);
+	}
+	if (
+		(eventKind === "action_required" || eventKind === "approval_required") &&
+		payload
+	) {
+		return remoteActionRequiredToTurn(payload, runId, sequence, event);
 	}
 	if (eventKind === "run_failed") {
 		const message =
@@ -193,40 +308,20 @@ function projectRemoteRuntimeEventToTurns(
 	const sequence = numberField(event, "eventId") ?? 1;
 	const eventKind = stringField(event, "eventKind");
 
-	if (eventKind === "message_delta" && payload) {
-		const turn = remoteMessageDeltaToTurn(payload, runId, sequence, event);
-		return turn ? [turn] : [];
-	}
-
-	if (eventKind === "tool_started" && payload) {
-		const turn = remoteToolEventToTurn(
-			payload,
-			runId,
-			sequence,
-			event,
-			"running",
-		);
-		return turn ? [turn] : [];
-	}
-
-	if (eventKind === "tool_completed" && payload) {
-		const ok = booleanField(payload, "ok");
-		const turn = remoteToolEventToTurn(
-			payload,
-			runId,
-			sequence,
-			event,
-			ok === false ? "failed" : "succeeded",
-		);
-		return turn ? [turn] : [];
-	}
-
-	if (eventKind === "action_required" && payload) {
-		const turn = remoteActionRequiredToTurn(payload, runId, sequence, event);
-		return turn ? [turn] : [];
-	}
-
-	if (eventKind === "run_failed") {
+	if (
+		eventKind === "message_delta" ||
+		eventKind === "reasoning_summary" ||
+		eventKind === "tool_started" ||
+		eventKind === "tool_completed" ||
+		eventKind === "command_output" ||
+		eventKind === "context_manifest_recorded" ||
+		eventKind === "retrieval_performed" ||
+		eventKind === "memory_candidate_captured" ||
+		eventKind === "file_changed" ||
+		eventKind === "action_required" ||
+		eventKind === "approval_required" ||
+		eventKind === "run_failed"
+	) {
 		const turn = remoteAgentRunEventToTurn(event, runId, sequence);
 		return turn ? [turn] : [];
 	}
@@ -253,6 +348,23 @@ function remoteMessageDeltaToTurn(
 	};
 }
 
+function remoteReasoningSummaryToTurn(
+	payload: Record<string, unknown>,
+	runId: string,
+	sequence: number,
+	event?: Record<string, unknown>,
+): ConversationTurn | null {
+	if (recordField(payload, "usage")) return null;
+	const text = nonEmptyStringField(payload, "summary");
+	if (!text) return null;
+	return {
+		id: `thinking:${runId}:${numberField(event, "eventId", "id") ?? sequence}`,
+		kind: "thinking",
+		sequence,
+		text,
+	};
+}
+
 function remoteToolEventToTurn(
 	payload: Record<string, unknown>,
 	runId: string,
@@ -269,10 +381,85 @@ function remoteToolEventToTurn(
 		sequence,
 		toolCallId,
 		toolName,
-		title: toolName,
-		detail: nonEmptyStringField(payload, "outcome") ?? "",
-		detailRows: [],
+		title: toolTitle(toolName),
+		detail: remoteToolDetail(payload, toolName, state),
+		detailRows: remoteToolDetailRows(payload),
 		state,
+	};
+}
+
+function remoteCommandOutputToTurn(
+	payload: Record<string, unknown>,
+	runId: string,
+	sequence: number,
+	event: Record<string, unknown>,
+): ConversationTurn | null {
+	const toolCallId = stringField(payload, "toolCallId");
+	const toolName = stringField(payload, "toolName") ?? "command";
+	if (!toolCallId) return null;
+	const partial = booleanField(payload, "partial") === true;
+	return {
+		id: `tool:${runId}:${toolCallId}:${numberField(event, "eventId", "id") ?? sequence}`,
+		kind: "action",
+		sequence,
+		toolCallId,
+		toolName,
+		title: toolTitle(toolName),
+		detail: remoteCommandOutputDetail(payload),
+		detailRows: remoteToolDetailRows(payload),
+		state: partial ? "running" : "succeeded",
+	};
+}
+
+function remoteContextEventToTurn(
+	payload: Record<string, unknown> | null,
+	runId: string,
+	sequence: number,
+	event: Record<string, unknown>,
+	eventKind: string,
+): ConversationTurn {
+	const eventId = numberField(event, "eventId", "id") ?? sequence;
+	const detail =
+		nonEmptyStringField(payload, "summary", "message") ??
+		contextEventFallback(eventKind);
+	return {
+		id: `tool:${runId}:runtime-project-context:${eventId}:${eventKind}`,
+		kind: "action",
+		sequence,
+		toolCallId: `runtime-project-context:${eventId}:${eventKind}`,
+		toolName: "project_context",
+		title: contextEventTitle(eventKind),
+		detail,
+		detailRows: payload ? remoteToolDetailRows(payload) : [],
+		state: "succeeded",
+	};
+}
+
+function remoteFileChangeToTurn(
+	payload: Record<string, unknown>,
+	runId: string,
+	sequence: number,
+	event: Record<string, unknown>,
+): ConversationTurn {
+	const operation = stringField(payload, "operation") ?? "changed";
+	const path = stringField(payload, "path") ?? "unknown path";
+	const toPath = stringField(payload, "toPath");
+	const detail = toPath
+		? `${operation}: ${path} -> ${toPath}`
+		: `${operation}: ${path}`;
+	return {
+		id: `file-change:${runId}:${numberField(event, "eventId", "id") ?? sequence}`,
+		kind: "file_change",
+		runId,
+		sequence,
+		title: "File changed",
+		detail,
+		operation,
+		path,
+		toPath,
+		changeGroupId: stringField(payload, "changeGroupId"),
+		workspaceEpoch: numberField(payload, "workspaceEpoch"),
+		patchAvailability: null,
 	};
 }
 
@@ -348,11 +535,43 @@ function mapTool(item: RuntimeStreamItemDto): ConversationTurn | null {
 		sequence: item.sequence,
 		toolCallId: item.toolCallId,
 		toolName: item.toolName,
-		title: item.toolName,
-		detail: "",
-		detailRows: [],
+		title: toolTitle(item.toolName),
+		detail: item.detail ?? item.text ?? "Tool activity recorded.",
+		detailRows: runtimeToolDetailRows(item),
 		state: item.toolState ?? null,
 	};
+}
+
+function mapActivity(item: RuntimeStreamItemDto): ConversationTurn | null {
+	if (item.code === OWNED_AGENT_REASONING_ACTIVITY_CODE) {
+		const text = item.text ?? item.detail;
+		if (!text?.trim()) return null;
+		return {
+			id: `thinking:${item.runId ?? "run"}:${item.sequence}`,
+			kind: "thinking",
+			sequence: item.sequence,
+			text,
+		};
+	}
+	if (item.code === OWNED_AGENT_FILE_CHANGED_ACTIVITY_CODE) {
+		const detail = item.detail ?? item.text ?? "File changed.";
+		const parsed = parseFileChangeDetail(detail);
+		return {
+			id: `file-change:${item.runId ?? "run"}:${item.sequence}`,
+			kind: "file_change",
+			runId: item.runId ?? "run",
+			sequence: item.sequence,
+			title: item.title ?? "File changed",
+			detail,
+			operation: parsed.operation,
+			path: parsed.path,
+			toPath: parsed.toPath,
+			changeGroupId: item.codeChangeGroupId ?? null,
+			workspaceEpoch: item.codeWorkspaceEpoch ?? null,
+			patchAvailability: item.codePatchAvailability ?? null,
+		};
+	}
+	return null;
 }
 
 function mapAction(item: RuntimeStreamItemDto): ConversationTurn | null {
@@ -388,6 +607,319 @@ function mapFailure(item: RuntimeStreamItemDto): ConversationTurn | null {
 function isRuntimeStreamItemPayload(value: Record<string, unknown>): boolean {
 	const kind = stringField(value, "kind");
 	return Boolean(kind && RUNTIME_STREAM_ITEM_KINDS.has(kind));
+}
+
+function createTurnProjectionContext(): TurnProjectionContext {
+	return {
+		turns: [],
+		actionTurnIndexByToolCallId: new Map(),
+	};
+}
+
+function appendProjectedTurn(
+	context: TurnProjectionContext,
+	turn: ConversationTurn,
+): void {
+	const previous = context.turns.at(-1);
+	if (
+		turn.kind === "message" &&
+		turn.role === "assistant" &&
+		previous?.kind === "message" &&
+		previous.role === "assistant"
+	) {
+		previous.text = `${previous.text}${turn.text}`;
+		previous.sequence = turn.sequence;
+		return;
+	}
+
+	if (turn.kind === "thinking" && previous?.kind === "thinking") {
+		previous.text = `${previous.text}${turn.text}`;
+		previous.sequence = turn.sequence;
+		return;
+	}
+
+	if (turn.kind === "action") {
+		const existingIndex = context.actionTurnIndexByToolCallId.get(
+			turn.toolCallId,
+		);
+		const existing =
+			existingIndex != null ? context.turns[existingIndex] : undefined;
+		if (existing?.kind === "action") {
+			mergeActionTurn(existing, turn);
+			return;
+		}
+		context.actionTurnIndexByToolCallId.set(
+			turn.toolCallId,
+			context.turns.length,
+		);
+	}
+
+	context.turns.push(turn);
+}
+
+function mergeActionTurn(existing: ActionTurn, incoming: ActionTurn): void {
+	existing.title = incoming.title || existing.title;
+	existing.detail = incoming.detail || existing.detail;
+	existing.detailRows = mergeActionRows(
+		existing.detailRows,
+		incoming.detailRows,
+	);
+	existing.state = incoming.state ?? existing.state;
+}
+
+function mergeActionRows(
+	existing: ActionTurn["detailRows"],
+	incoming: ActionTurn["detailRows"],
+): ActionTurn["detailRows"] {
+	const merged = existing.map((row) => ({ ...row }));
+	const seen = new Set(merged.map((row) => `${row.label}\u0000${row.value}`));
+	for (const row of incoming) {
+		const key = `${row.label}\u0000${row.value}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(row);
+	}
+	return merged;
+}
+
+function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
+	const compactedTurns: ConversationTurn[] = [];
+	let actionBuffer: ActionTurn[] = [];
+
+	const flushActionBuffer = () => {
+		if (actionBuffer.length >= COMPACT_TOOL_BURST_THRESHOLD) {
+			compactedTurns.push(actionGroupTurnFromActions(actionBuffer));
+		} else {
+			compactedTurns.push(...actionBuffer);
+		}
+		actionBuffer = [];
+	};
+
+	for (const turn of turns) {
+		if (turn.kind === "action" && isTerminalActionState(turn.state)) {
+			actionBuffer.push(turn);
+			continue;
+		}
+		flushActionBuffer();
+		compactedTurns.push(turn);
+	}
+
+	flushActionBuffer();
+	return compactedTurns;
+}
+
+function actionGroupTurnFromActions(actions: ActionTurn[]): ConversationTurn {
+	const firstAction = actions[0];
+	const lastAction = actions.at(-1) ?? firstAction;
+	return {
+		id: `tool-group:${firstAction.id}:${lastAction.id}`,
+		kind: "action_group",
+		sequence: lastAction.sequence,
+		title: `${actions.length} tool calls`,
+		detail: summarizeActionGroup(actions),
+		state: actionGroupState(actions),
+		actions: actions.map((action) => ({
+			id: action.id,
+			title: action.title,
+			detail: action.detail,
+			detailRows: action.detailRows,
+			state: action.state ?? null,
+		})),
+	};
+}
+
+function actionGroupState(actions: ActionTurn[]): ToolState | null {
+	if (actions.some((action) => action.state === "failed")) return "failed";
+	if (actions.some((action) => action.state === "running")) return "running";
+	if (actions.some((action) => action.state === "pending")) return "pending";
+	if (actions.some((action) => action.state === "succeeded")) {
+		return "succeeded";
+	}
+	return null;
+}
+
+function summarizeActionGroup(actions: ActionTurn[]): string {
+	const stateCounts = new Map<ToolState, number>();
+	for (const action of actions) {
+		if (action.state) {
+			stateCounts.set(action.state, (stateCounts.get(action.state) ?? 0) + 1);
+		}
+	}
+
+	const stateSummary = (["failed", "running", "pending", "succeeded"] as const)
+		.map((state) => {
+			const count = stateCounts.get(state) ?? 0;
+			return count > 0
+				? `${count} ${getToolStateLabel(state).toLowerCase()}`
+				: null;
+		})
+		.filter((part): part is string => Boolean(part))
+		.join(" · ");
+	const latestAction = actions.at(-1);
+	return [
+		stateSummary || `${actions.length} recorded`,
+		latestAction ? `latest ${latestAction.title}` : null,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join(" · ");
+}
+
+function isTerminalActionState(state: ToolState | null | undefined): boolean {
+	return state === "succeeded" || state === "failed";
+}
+
+function getToolStateLabel(state: NonNullable<ToolState>): string {
+	switch (state) {
+		case "failed":
+			return "Failed";
+		case "running":
+			return "Running";
+		case "pending":
+			return "Pending";
+		case "succeeded":
+			return "Succeeded";
+	}
+}
+
+function toolTitle(toolName: string): string {
+	return toolName.replace(/[_-]+/g, " ");
+}
+
+function remoteToolDetail(
+	payload: Record<string, unknown>,
+	toolName: string,
+	state: NonNullable<ToolState>,
+): string {
+	return (
+		nonEmptyStringField(payload, "summary", "message", "outcome", "detail") ??
+		(state === "running"
+			? `Started \`${toolName}\`.`
+			: `Completed \`${toolName}\`.`)
+	);
+}
+
+function remoteToolDetailRows(
+	payload: Record<string, unknown>,
+): ActionTurn["detailRows"] {
+	const rows: ActionTurn["detailRows"] = [];
+	const input = payloadValuePreview(payload, "input");
+	if (input) rows.push({ label: "Input", value: input });
+	const output =
+		payloadValuePreview(payload, "output") ??
+		payloadValuePreview(payload, "result") ??
+		payloadValuePreview(payload, "stdout") ??
+		payloadValuePreview(payload, "stderr");
+	if (output) rows.push({ label: "Output", value: output });
+	return rows;
+}
+
+function runtimeToolDetailRows(
+	item: RuntimeStreamItemDto,
+): ActionTurn["detailRows"] {
+	const rows: ActionTurn["detailRows"] = [];
+	if (item.detail) {
+		rows.push({
+			label: item.toolState === "running" ? "Input" : "Outcome",
+			value: item.detail,
+		});
+	}
+	if (item.toolResultPreview) {
+		rows.push({ label: "Output", value: item.toolResultPreview });
+	}
+	return rows;
+}
+
+function remoteCommandOutputDetail(payload: Record<string, unknown>): string {
+	const stream = stringField(payload, "stream") ?? "output";
+	if (booleanField(payload, "partial")) return `Command ${stream} streamed.`;
+	const argv = arrayStringField(payload, "argv")?.join(" ") || "command";
+	const exitCode = numberField(payload, "exitCode");
+	if (typeof exitCode === "number") {
+		return `Command exited with status ${exitCode}: ${argv}.`;
+	}
+	return `Command output: ${argv}.`;
+}
+
+function payloadValuePreview(
+	value: Record<string, unknown> | undefined | null,
+	key: string,
+): string | null {
+	if (!value) return null;
+	const candidate = value[key];
+	if (typeof candidate === "string") {
+		return candidate.trim().length > 0 ? truncateText(candidate) : null;
+	}
+	if (candidate == null) return null;
+	try {
+		return truncateText(JSON.stringify(candidate, null, 2));
+	} catch {
+		return null;
+	}
+}
+
+function truncateText(value: string, maxChars = 24_000): string {
+	return value.length <= maxChars
+		? value
+		: `${value.slice(0, maxChars - 3)}...`;
+}
+
+function contextEventFallback(eventKind: string): string {
+	switch (eventKind) {
+		case "context_manifest_recorded":
+			return "Context manifest recorded.";
+		case "retrieval_performed":
+			return "Durable context retrieval performed.";
+		case "memory_candidate_captured":
+			return "Memory candidate captured.";
+		default:
+			return "Project context updated.";
+	}
+}
+
+function contextEventTitle(eventKind: string): string {
+	switch (eventKind) {
+		case "context_manifest_recorded":
+			return "project context manifest";
+		case "retrieval_performed":
+			return "project context retrieval";
+		case "memory_candidate_captured":
+			return "project context memory";
+		default:
+			return "project context";
+	}
+}
+
+function parseFileChangeDetail(detail: string): {
+	operation: string;
+	path: string;
+	toPath: string | null;
+} {
+	const summary = detail.split(" · ")[0]?.trim() ?? "";
+	const match = /^([^:]+):\s*(.+)$/.exec(summary);
+	if (!match) {
+		return {
+			operation: "changed",
+			path: summary || "unknown path",
+			toPath: null,
+		};
+	}
+	const operation = match[1]?.trim() || "changed";
+	const pathSegment = match[2]?.trim() || "unknown path";
+	const renameSeparator = " -> ";
+	const renameIndex = pathSegment.indexOf(renameSeparator);
+	if (renameIndex >= 0) {
+		return {
+			operation,
+			path: pathSegment.slice(0, renameIndex).trim() || "unknown path",
+			toPath:
+				pathSegment.slice(renameIndex + renameSeparator.length).trim() || null,
+		};
+	}
+	return {
+		operation,
+		path: pathSegment,
+		toPath: null,
+	};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -443,6 +975,19 @@ function numberField(
 		}
 	}
 	return null;
+}
+
+function arrayStringField(
+	value: Record<string, unknown> | undefined | null,
+	key: string,
+): string[] | null {
+	if (!value) return null;
+	const candidate = value[key];
+	if (!Array.isArray(candidate)) return null;
+	const strings = candidate.filter(
+		(item): item is string => typeof item === "string",
+	);
+	return strings.length > 0 ? strings : null;
 }
 
 function booleanField(

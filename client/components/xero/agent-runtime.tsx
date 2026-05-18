@@ -2233,12 +2233,12 @@ export const AgentRuntime = memo(function AgentRuntime({
           !agentRuntimeBlocked &&
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
-        ? 'Describe the agent you want to build...'
+        ? 'Describe the agent...'
       : controller.composerRuntimeAgentId === 'crawl' &&
           !agentRuntimeBlocked &&
           runtimeSession?.isAuthenticated &&
           !renderableRuntimeRun?.isTerminal
-        ? 'Map this existing repository...'
+        ? 'Map this repository...'
       : baseComposerPlaceholder
   const showAgentSetupEmptyState = Boolean(
     agentRuntimeBlocked &&

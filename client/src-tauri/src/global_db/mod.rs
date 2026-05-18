@@ -303,6 +303,52 @@ mod tests {
     }
 
     #[test]
+    fn schema_version_constant_matches_latest_migration() {
+        let connection = migrate_in_memory();
+        let user_version = read_user_version(&connection);
+
+        assert_eq!(
+            user_version,
+            migrations::GLOBAL_DATABASE_SCHEMA_VERSION,
+            "GLOBAL_DATABASE_SCHEMA_VERSION must match the user_version written by rusqlite_migration"
+        );
+    }
+
+    #[test]
+    fn open_global_database_keeps_current_schema_after_process_restart() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let database_path = tempdir.path().join("xero.db");
+
+        {
+            let mut connection = Connection::open(&database_path).expect("open seeded db");
+            configure_connection(&connection).expect("configure seeded db");
+            migrations::migrations()
+                .to_latest(&mut connection)
+                .expect("seed latest schema");
+        }
+
+        let connection = open_global_database(&database_path).expect("open current schema");
+        assert_eq!(
+            read_user_version(&connection),
+            migrations::GLOBAL_DATABASE_SCHEMA_VERSION
+        );
+        let incompatible_backups = fs::read_dir(tempdir.path())
+            .expect("read tempdir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("xero.db.incompatible-v")
+            })
+            .count();
+        assert_eq!(
+            incompatible_backups, 0,
+            "a database at the current schema must not be quarantined on cold restart"
+        );
+    }
+
+    #[test]
     fn environment_profile_migration_enforces_contract() {
         let connection = migrate_in_memory();
 

@@ -55,6 +55,7 @@ export function joinSessionChannel(
 	sessionId: string,
 	lastSeq?: number,
 	onJoined?: (channel: Channel) => void,
+	onJoinError?: (payload: unknown) => void,
 ): Channel {
 	const channel = socketInstance.channel(`session:${computerId}:${sessionId}`, {
 		last_seq: lastSeq ?? 0,
@@ -62,6 +63,11 @@ export function joinSessionChannel(
 	const join = channel.join();
 	if (onJoined) {
 		join.receive("ok", () => onJoined(channel));
+	}
+	if (onJoinError) {
+		join
+			.receive("error", (payload) => onJoinError(payload))
+			.receive("timeout", () => onJoinError({ reason: "timeout" }));
 	}
 	return channel;
 }
