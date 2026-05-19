@@ -22,6 +22,14 @@ pub fn stage_agent_attachment<R: Runtime>(
     state: State<'_, DesktopState>,
     request: StageAgentAttachmentRequestDto,
 ) -> CommandResult<StagedAgentAttachmentDto> {
+    stage_agent_attachment_blocking(&app, state.inner(), request)
+}
+
+pub fn stage_agent_attachment_blocking<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    request: StageAgentAttachmentRequestDto,
+) -> CommandResult<StagedAgentAttachmentDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
     validate_non_empty(&request.original_name, "originalName")?;
@@ -55,7 +63,7 @@ pub fn stage_agent_attachment<R: Runtime>(
         )
     })?;
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let repo_root = resolve_project_root(app, state, &request.project_id)?;
     let attachments_dir = project_app_data_dir_for_repo(&repo_root)
         .join("attachments")
         .join(&request.run_id);
@@ -110,10 +118,18 @@ pub fn discard_agent_attachment<R: Runtime>(
     state: State<'_, DesktopState>,
     request: DiscardAgentAttachmentRequestDto,
 ) -> CommandResult<()> {
+    discard_agent_attachment_blocking(&app, state.inner(), request)
+}
+
+pub fn discard_agent_attachment_blocking<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    request: DiscardAgentAttachmentRequestDto,
+) -> CommandResult<()> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.absolute_path, "absolutePath")?;
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let repo_root = resolve_project_root(app, state, &request.project_id)?;
     let attachments_root = project_app_data_dir_for_repo(&repo_root).join("attachments");
     let path = PathBuf::from(&request.absolute_path);
     if !path.starts_with(&attachments_root) {

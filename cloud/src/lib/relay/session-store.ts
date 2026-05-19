@@ -19,20 +19,78 @@ export interface RemoteProjectSummary {
 	projectName: string | null;
 }
 
+export type SessionThinkingEffort =
+	| "minimal"
+	| "low"
+	| "medium"
+	| "high"
+	| "x_high";
+
 export interface SessionModelOption {
 	id: string;
 	label: string;
 	modelId: string;
 	providerId: string | null;
 	providerProfileId: string | null;
+	thinkingSupported: boolean;
+	thinkingEffortOptions: SessionThinkingEffort[];
+	defaultThinkingEffort: SessionThinkingEffort | null;
+}
+
+export interface SessionContextBudget {
+	budgetTokens?: number | null;
+	contextWindowTokens?: number | null;
+	effectiveInputBudgetTokens?: number | null;
+	maxOutputTokens?: number | null;
+	outputReserveTokens?: number | null;
+	safetyReserveTokens?: number | null;
+	remainingTokens?: number | null;
+	pressurePercent?: number | null;
+	estimatedTokens?: number | null;
+	estimationSource?: string | null;
+	pressure?: "unknown" | "low" | "medium" | "high" | "over" | null;
+	knownProviderBudget?: boolean | null;
+	limitSource?: string | null;
+	limitConfidence?: string | null;
+	limitDiagnostic?: string | null;
+	limitFetchedAt?: string | null;
+}
+
+export interface SessionContextSnapshot {
+	snapshotId?: string | null;
+	projectId?: string | null;
+	agentSessionId?: string | null;
+	runId?: string | null;
+	providerId?: string | null;
+	modelId?: string | null;
+	generatedAt?: string | null;
+	budget?: SessionContextBudget | null;
+	contributors?: Array<{ kind?: string | null }>;
+}
+
+export interface SessionContextError {
+	code?: string | null;
+	message?: string | null;
+	retryable?: boolean | null;
 }
 
 type RawSessionModelOption = Partial<
-	Omit<SessionModelOption, "modelId" | "providerId" | "providerProfileId">
+	Omit<
+		SessionModelOption,
+		| "modelId"
+		| "providerId"
+		| "providerProfileId"
+		| "thinkingSupported"
+		| "thinkingEffortOptions"
+		| "defaultThinkingEffort"
+	>
 > & {
 	modelId?: string | null;
 	providerId?: string | null;
 	providerProfileId?: string | null;
+	thinkingSupported?: boolean | null;
+	thinkingEffortOptions?: ReadonlyArray<string | null> | null;
+	defaultThinkingEffort?: string | null;
 };
 
 export interface SessionTranscript {
@@ -43,6 +101,10 @@ export interface SessionTranscript {
 	availableModels: SessionModelOption[];
 	currentAgentId: string | null;
 	currentModelId: string | null;
+	currentThinkingEffort: SessionThinkingEffort | null;
+	contextSnapshot?: SessionContextSnapshot | null;
+	contextSnapshotError?: SessionContextError | null;
+	contextSnapshotRequestId?: string | null;
 }
 
 interface SessionStoreState {
@@ -78,6 +140,16 @@ interface SessionStoreState {
 			rawModelId?: string | null;
 			providerId?: string | null;
 			providerProfileId?: string | null;
+			thinkingEffort?: SessionThinkingEffort | null;
+		},
+	) => void;
+	updateContextSnapshot: (
+		key: string,
+		update: {
+			snapshot: SessionContextSnapshot | null;
+			error: SessionContextError | null;
+			requestId: string | null;
+			seq?: number;
 		},
 	) => void;
 	setLive: (key: string, isLive: boolean) => void;
@@ -405,6 +477,10 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 				controls.modelId === undefined
 					? current.currentModelId
 					: controls.modelId;
+			const currentThinkingEffort =
+				controls.thinkingEffort === undefined
+					? current.currentThinkingEffort
+					: controls.thinkingEffort;
 			return {
 				transcripts: {
 					...state.transcripts,
@@ -412,6 +488,7 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 						...current,
 						currentAgentId: currentAgentId ?? null,
 						currentModelId: currentModelId ?? null,
+						currentThinkingEffort: currentThinkingEffort ?? null,
 						availableModels: ensureModelOption(
 							current.availableModels,
 							currentModelId ?? null,
@@ -419,6 +496,28 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 							controls.providerId ?? null,
 							controls.providerProfileId ?? null,
 						),
+					},
+				},
+			};
+		}),
+	updateContextSnapshot: (key, update) =>
+		set((state) => {
+			const current = state.transcripts[key];
+			if (!current) return state;
+			return {
+				transcripts: {
+					...state.transcripts,
+					[key]: {
+						...current,
+						contextSnapshot:
+							update.snapshot ??
+							(update.error ? current.contextSnapshot : null),
+						contextSnapshotError: update.error,
+						contextSnapshotRequestId: update.requestId,
+						lastSeq:
+							update.seq == null
+								? current.lastSeq
+								: Math.max(current.lastSeq, update.seq),
 					},
 				},
 			};
@@ -461,6 +560,17 @@ export function normalizeModelOptions(
 			typeof option.label === "string" && option.label.trim()
 				? option.label.trim()
 				: modelId;
+		const thinkingEffortOptions = Array.isArray(option.thinkingEffortOptions)
+			? option.thinkingEffortOptions
+					.map(parseThinkingEffort)
+					.filter((value): value is SessionThinkingEffort => value !== null)
+			: [];
+		const defaultThinkingEffort = parseThinkingEffort(
+			option.defaultThinkingEffort ?? null,
+		);
+		const thinkingSupported =
+			option.thinkingSupported === true ||
+			(option.thinkingSupported !== false && thinkingEffortOptions.length > 0);
 		normalized.push({
 			id,
 			label,
@@ -474,9 +584,31 @@ export function normalizeModelOptions(
 				option.providerProfileId.trim()
 					? option.providerProfileId.trim()
 					: null,
+			thinkingSupported,
+			thinkingEffortOptions,
+			defaultThinkingEffort,
 		});
 	}
 	return normalized;
+}
+
+export function parseThinkingEffort(
+	value: string | null | undefined,
+): SessionThinkingEffort | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim().toLowerCase();
+	switch (trimmed) {
+		case "minimal":
+		case "low":
+		case "medium":
+		case "high":
+		case "x_high":
+			return trimmed;
+		case "xhigh":
+			return "x_high";
+		default:
+			return null;
+	}
 }
 
 function ensureModelOption(
@@ -497,6 +629,9 @@ function ensureModelOption(
 			modelId: normalizedModelId,
 			providerId,
 			providerProfileId,
+			thinkingSupported: false,
+			thinkingEffortOptions: [],
+			defaultThinkingEffort: null,
 		},
 		...options,
 	];

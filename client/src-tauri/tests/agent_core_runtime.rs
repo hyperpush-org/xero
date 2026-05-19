@@ -29,12 +29,13 @@ use xero_agent_core::{
 };
 use xero_desktop_lib::{
     commands::{
-        archive_agent_session, cancel_agent_run, compact_session_history, start_agent_task,
-        start_runtime_run, update_runtime_run_controls, ArchiveAgentSessionRequestDto,
-        BrowserControlPreferenceDto, CancelAgentRunRequestDto, CompactSessionHistoryRequestDto,
-        RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
-        RuntimeRunControlInputDto, RuntimeRunControlStateDto, StartAgentTaskRequestDto,
-        StartRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
+        archive_agent_session, cancel_agent_run, compact_session_history,
+        remote_bridge::RemoteBridgeRuntimeState, start_agent_task, start_runtime_run,
+        update_runtime_run_controls, ArchiveAgentSessionRequestDto, BrowserControlPreferenceDto,
+        CancelAgentRunRequestDto, CompactSessionHistoryRequestDto, RuntimeAgentIdDto,
+        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
+        RuntimeRunControlStateDto, StartAgentTaskRequestDto, StartRuntimeRunRequestDto,
+        UpdateRuntimeRunControlsRequestDto,
     },
     configure_builder_with_state, db,
     git::repository::CanonicalRepository,
@@ -4920,6 +4921,7 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
     let archived = archive_agent_session(
         app.handle().clone(),
         app.state::<DesktopState>(),
+        app.state::<RemoteBridgeRuntimeState>(),
         ArchiveAgentSessionRequestDto {
             project_id: project_id.clone(),
             agent_session_id: agent_session_id.clone(),

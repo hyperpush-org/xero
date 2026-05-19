@@ -1486,7 +1486,7 @@ fn context_history_mailbox_guidance(
     }
 }
 
-fn build_session_context_snapshot(
+pub(crate) fn build_session_context_snapshot(
     repo_root: &Path,
     project_id: &str,
     agent_session_id: &str,

@@ -29,19 +29,27 @@ use crate::{
             emit_project_updated, load_persisted_runtime_run, resolve_project_root,
             runtime_run_dto_from_snapshot,
         },
+        session_history::build_session_context_snapshot,
+        stage_agent_attachment::{
+            discard_agent_attachment_blocking, stage_agent_attachment_blocking,
+        },
         start_runtime_run::start_runtime_run_blocking,
         stop_runtime_run::stop_runtime_run_blocking,
         update_runtime_run_controls::update_runtime_run_controls_blocking,
-        validate_non_empty, AgentSessionDto, CommandError, CommandResult, ProjectUpdateReason,
+        validate_non_empty, AgentSessionDto, CommandError, CommandResult,
+        DiscardAgentAttachmentRequestDto, ProjectUpdateReason, ProviderModelThinkingEffortDto,
         ResolveOperatorActionRequestDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
-        RuntimeRunControlInputDto, StartRuntimeRunRequestDto, StopRuntimeRunRequestDto,
-        UpdateRuntimeRunControlsRequestDto,
+        RuntimeRunControlInputDto, StageAgentAttachmentRequestDto, StagedAgentAttachmentDto,
+        StartRuntimeRunRequestDto, StopRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentSessionCreateRecord, AgentSessionRecord,
         DEFAULT_AGENT_SESSION_TITLE,
     },
-    provider_models::{load_provider_model_catalog, ProviderModelRecord},
+    provider_models::{
+        load_provider_model_catalog, ProviderModelRecord, ProviderModelThinkingCapability,
+        ProviderModelThinkingEffort,
+    },
     registry::{
         read_project_summaries, read_registry, RegistryProjectRecord, RegistryProjectSummaryRecord,
     },
@@ -533,6 +541,11 @@ fn route_inbound_command<R: Runtime + 'static>(
             route_resolve_operator_action(app, state, &bridge, command)
         }
         InboundCommandKind::CancelRun => route_cancel_run(app, state, &bridge, command),
+        InboundCommandKind::ContextSnapshot => route_context_snapshot(app, state, &bridge, command),
+        InboundCommandKind::StageAttachment => route_stage_attachment(app, state, &bridge, command),
+        InboundCommandKind::DiscardAttachment => {
+            route_discard_attachment(app, state, &bridge, command)
+        }
     }
 }
 
@@ -783,6 +796,7 @@ fn route_start_session<R: Runtime + 'static>(
     let run = match prompt {
         Some(prompt) => {
             let controls = remote_run_controls_from_payload(&command.payload, None)?;
+            let initial_attachments = remote_attachments_from_payload(&command.payload)?;
             Some(start_runtime_run_blocking(
                 app.clone(),
                 state.clone(),
@@ -791,7 +805,7 @@ fn route_start_session<R: Runtime + 'static>(
                     agent_session_id: session.agent_session_id.clone(),
                     initial_controls: controls,
                     initial_prompt: Some(prompt.to_string()),
-                    initial_attachments: Vec::new(),
+                    initial_attachments,
                 },
             )?)
         }
@@ -835,6 +849,7 @@ fn route_send_message<R: Runtime + 'static>(
     let message = required_payload_string(&command.payload, &["message", "prompt"])?;
     let located = locate_visible_remote_session(app, state, session_id)?;
     let existing = load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?;
+    let attachments = remote_attachments_from_payload(&command.payload)?;
     let run = match existing {
         Some(snapshot) => {
             let selected_controls = selected_runtime_run_controls(&snapshot);
@@ -850,7 +865,7 @@ fn route_send_message<R: Runtime + 'static>(
                         Some(&selected_controls),
                     )?,
                     prompt: Some(message.to_string()),
-                    attachments: Vec::new(),
+                    attachments,
                     auto_compact: None,
                 },
             )?
@@ -863,7 +878,7 @@ fn route_send_message<R: Runtime + 'static>(
                 agent_session_id: session_id.to_string(),
                 initial_controls: remote_run_controls_from_payload(&command.payload, None)?,
                 initial_prompt: Some(message.to_string()),
-                initial_attachments: Vec::new(),
+                initial_attachments: attachments,
             },
         )?,
     };
@@ -948,6 +963,50 @@ fn route_cancel_run<R: Runtime>(
     )
 }
 
+fn route_context_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?;
+    let located = locate_visible_remote_session(app, state, session_id)?;
+    let request_id =
+        payload_string(&command.payload, &["requestId", "request_id"]).map(ToOwned::to_owned);
+    let context_result = build_session_context_snapshot(
+        &located.repo_root,
+        &located.project_id,
+        session_id,
+        payload_string(&command.payload, &["runId", "run_id"]),
+        payload_string(&command.payload, &["providerId", "provider_id"]),
+        payload_string(&command.payload, &["modelId", "model_id"]),
+        payload_string(
+            &command.payload,
+            &["pendingPrompt", "pending_prompt", "prompt"],
+        ),
+    );
+
+    let payload = match context_result {
+        Ok(snapshot) => json!({
+            "schema": "xero.remote_context_snapshot.v1",
+            "ok": true,
+            "requestId": request_id,
+            "contextSnapshot": snapshot,
+        }),
+        Err(error) => json!({
+            "schema": "xero.remote_context_snapshot.v1",
+            "ok": false,
+            "requestId": request_id,
+            "error": error,
+        }),
+    };
+
+    bridge
+        .forward_control_event(session_id, payload)
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
 fn send_command_ok(
     bridge: &AppRemoteBridge,
     session_id: &str,
@@ -965,6 +1024,122 @@ fn send_command_ok(
         )
         .map_err(map_bridge_error)?;
     Ok(())
+}
+
+fn route_stage_attachment<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?.to_string();
+    let attachment_id = payload_string(&command.payload, &["attachmentId", "attachment_id"])
+        .ok_or_else(|| CommandError::invalid_request("attachmentId"))?
+        .to_string();
+    let located = locate_visible_remote_session(app, state, &session_id)?;
+    let project_id = located.project_id;
+    let original_name =
+        required_payload_string(&command.payload, &["originalName", "original_name"])?.to_string();
+    let media_type =
+        required_payload_string(&command.payload, &["mediaType", "media_type"])?.to_string();
+    let bytes_b64 = required_payload_string(&command.payload, &["bytesBase64", "bytes_base64"])?;
+    let bytes = decode_attachment_bytes(bytes_b64)?;
+    let run_id = payload_string(&command.payload, &["runId", "run_id"])
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "pending".to_string());
+
+    let result = stage_agent_attachment_blocking(
+        app,
+        state,
+        StageAgentAttachmentRequestDto {
+            project_id: project_id.clone(),
+            run_id,
+            original_name,
+            media_type,
+            bytes,
+        },
+    );
+    let payload = match result {
+        Ok(staged) => attachment_staged_payload(&attachment_id, &staged),
+        Err(error) => attachment_error_payload(&attachment_id, &error),
+    };
+
+    bridge
+        .forward_control_event(&session_id, payload)
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
+fn route_discard_attachment<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?.to_string();
+    let attachment_id = payload_string(&command.payload, &["attachmentId", "attachment_id"])
+        .ok_or_else(|| CommandError::invalid_request("attachmentId"))?
+        .to_string();
+    let located = locate_visible_remote_session(app, state, &session_id)?;
+    let absolute_path =
+        required_payload_string(&command.payload, &["absolutePath", "absolute_path"])?.to_string();
+
+    let result = discard_agent_attachment_blocking(
+        app,
+        state,
+        DiscardAgentAttachmentRequestDto {
+            project_id: located.project_id,
+            absolute_path,
+        },
+    );
+    let payload = match result {
+        Ok(()) => json!({
+            "schema": "xero.remote_attachment_discarded.v1",
+            "ok": true,
+            "attachmentId": attachment_id,
+        }),
+        Err(error) => json!({
+            "schema": "xero.remote_attachment_discarded.v1",
+            "ok": false,
+            "attachmentId": attachment_id,
+            "error": error,
+        }),
+    };
+
+    bridge
+        .forward_control_event(&session_id, payload)
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
+fn attachment_staged_payload(attachment_id: &str, staged: &StagedAgentAttachmentDto) -> JsonValue {
+    json!({
+        "schema": "xero.remote_attachment_staged.v1",
+        "ok": true,
+        "attachmentId": attachment_id,
+        "attachment": staged,
+    })
+}
+
+fn attachment_error_payload(attachment_id: &str, error: &CommandError) -> JsonValue {
+    json!({
+        "schema": "xero.remote_attachment_staged.v1",
+        "ok": false,
+        "attachmentId": attachment_id,
+        "error": error,
+    })
+}
+
+fn decode_attachment_bytes(value: &str) -> CommandResult<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(value.as_bytes())
+        .map_err(|error| {
+            CommandError::user_fixable(
+                "remote_attachment_invalid_bytes",
+                format!("Remote attachment bytes were not valid base64: {error}"),
+            )
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -1097,6 +1272,18 @@ fn remote_session_snapshot<R: Runtime>(
     )?
     .as_ref()
     .map(runtime_run_dto_from_snapshot);
+    let (context_snapshot, context_snapshot_error) = match build_session_context_snapshot(
+        &located.repo_root,
+        &located.project_id,
+        &located.session.agent_session_id,
+        None,
+        None,
+        None,
+        None,
+    ) {
+        Ok(snapshot) => (Some(snapshot), None),
+        Err(error) => (None, Some(error)),
+    };
 
     Ok(json!({
         "schema": "xero.remote_session_snapshot.v1",
@@ -1106,6 +1293,8 @@ fn remote_session_snapshot<R: Runtime>(
         "runs": runs,
         "availableAgents": remote_available_agents(),
         "availableModels": remote_available_models(app, state)?,
+        "contextSnapshot": context_snapshot,
+        "contextSnapshotError": context_snapshot_error,
     }))
 }
 
@@ -1131,6 +1320,7 @@ struct RemoteModelOption {
     provider_label: String,
     model_id: String,
     display_name: String,
+    thinking: ProviderModelThinkingCapability,
 }
 
 /// Returns the credential-backed models the cloud composer surfaces in its dropdown.
@@ -1206,15 +1396,39 @@ fn remote_available_models<R: Runtime>(
             } else {
                 option.display_name.clone()
             };
+            let effort_options: Vec<&'static str> = option
+                .thinking
+                .effort_options
+                .iter()
+                .map(thinking_effort_wire_value)
+                .collect();
+            let default_effort = option
+                .thinking
+                .default_effort
+                .as_ref()
+                .map(thinking_effort_wire_value);
             json!({
                 "id": option.id,
                 "label": label,
                 "modelId": option.model_id,
                 "providerId": option.provider_id,
                 "providerProfileId": option.provider_profile_id,
+                "thinkingSupported": option.thinking.supported,
+                "thinkingEffortOptions": effort_options,
+                "defaultThinkingEffort": default_effort,
             })
         })
         .collect())
+}
+
+fn thinking_effort_wire_value(effort: &ProviderModelThinkingEffort) -> &'static str {
+    match effort {
+        ProviderModelThinkingEffort::Minimal => "minimal",
+        ProviderModelThinkingEffort::Low => "low",
+        ProviderModelThinkingEffort::Medium => "medium",
+        ProviderModelThinkingEffort::High => "high",
+        ProviderModelThinkingEffort::XHigh => "x_high",
+    }
 }
 
 fn add_remote_model_option(
@@ -1233,14 +1447,19 @@ fn add_remote_model_option(
     push_remote_model_option(
         options,
         seen,
-        provider_profile_id,
-        provider_id,
-        provider_label,
-        model_id,
-        if display_name.is_empty() {
-            model_id
-        } else {
-            display_name
+        RemoteModelProviderContext {
+            provider_profile_id,
+            provider_id,
+            provider_label,
+        },
+        RemoteModelOptionInput {
+            model_id,
+            display_name: if display_name.is_empty() {
+                model_id
+            } else {
+                display_name
+            },
+            thinking: model.thinking.clone(),
         },
     );
 }
@@ -1260,34 +1479,53 @@ fn add_remote_model_fallback_option(
     push_remote_model_option(
         options,
         seen,
-        provider_profile_id,
-        provider_id,
-        provider_label,
-        model_id,
-        model_id,
+        RemoteModelProviderContext {
+            provider_profile_id,
+            provider_id,
+            provider_label,
+        },
+        RemoteModelOptionInput {
+            model_id,
+            display_name: model_id,
+            thinking: ProviderModelThinkingCapability {
+                supported: false,
+                effort_options: Vec::new(),
+                default_effort: None,
+            },
+        },
     );
+}
+
+struct RemoteModelProviderContext<'a> {
+    provider_profile_id: &'a str,
+    provider_id: &'a str,
+    provider_label: &'a str,
+}
+
+struct RemoteModelOptionInput<'a> {
+    model_id: &'a str,
+    display_name: &'a str,
+    thinking: ProviderModelThinkingCapability,
 }
 
 fn push_remote_model_option(
     options: &mut Vec<RemoteModelOption>,
     seen: &mut BTreeSet<String>,
-    provider_profile_id: &str,
-    provider_id: &str,
-    provider_label: &str,
-    model_id: &str,
-    display_name: &str,
+    provider: RemoteModelProviderContext<'_>,
+    model: RemoteModelOptionInput<'_>,
 ) {
-    let id = remote_model_option_id(provider_profile_id, model_id);
+    let id = remote_model_option_id(provider.provider_profile_id, model.model_id);
     if !seen.insert(id.clone()) {
         return;
     }
     options.push(RemoteModelOption {
         id,
-        provider_profile_id: provider_profile_id.to_string(),
-        provider_id: provider_id.to_string(),
-        provider_label: provider_label.to_string(),
-        model_id: model_id.to_string(),
-        display_name: display_name.to_string(),
+        provider_profile_id: provider.provider_profile_id.to_string(),
+        provider_id: provider.provider_id.to_string(),
+        provider_label: provider.provider_label.to_string(),
+        model_id: model.model_id.to_string(),
+        display_name: model.display_name.to_string(),
+        thinking: model.thinking,
     });
 }
 
@@ -1322,6 +1560,29 @@ fn project_name_for_id<R: Runtime>(
         .map(|project| project.project.name))
 }
 
+fn remote_attachments_from_payload(
+    payload: &JsonValue,
+) -> CommandResult<Vec<StagedAgentAttachmentDto>> {
+    let Some(array) = payload
+        .get("attachments")
+        .and_then(|value| value.as_array())
+    else {
+        return Ok(Vec::new());
+    };
+    let mut attachments = Vec::with_capacity(array.len());
+    for entry in array {
+        let dto: StagedAgentAttachmentDto =
+            serde_json::from_value(entry.clone()).map_err(|error| {
+                CommandError::user_fixable(
+                    "remote_attachment_invalid",
+                    format!("Remote attachment payload was malformed: {error}"),
+                )
+            })?;
+        attachments.push(dto);
+    }
+    Ok(attachments)
+}
+
 fn remote_run_controls_from_payload(
     payload: &JsonValue,
     fallback: Option<&RuntimeRunControlInputDto>,
@@ -1339,6 +1600,10 @@ fn remote_run_controls_from_payload(
     }) else {
         return Ok(None);
     };
+    let thinking_effort = match payload_string(payload, &["thinkingEffort", "thinking_effort"]) {
+        Some(value) => Some(parse_thinking_effort(value)?),
+        None => fallback.and_then(|controls| controls.thinking_effort.clone()),
+    };
     Ok(Some(RuntimeRunControlInputDto {
         runtime_agent_id,
         agent_definition_id: Some(agent.trim().to_string()),
@@ -1346,7 +1611,7 @@ fn remote_run_controls_from_payload(
             .map(ToOwned::to_owned)
             .or_else(|| fallback.and_then(|controls| controls.provider_profile_id.clone())),
         model_id: model_id.to_string(),
-        thinking_effort: fallback.and_then(|controls| controls.thinking_effort.clone()),
+        thinking_effort,
         approval_mode: fallback
             .map(|controls| controls.approval_mode.clone())
             .unwrap_or(RuntimeRunApprovalModeDto::Suggest),
@@ -1379,6 +1644,20 @@ fn selected_runtime_run_controls(
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),
         approval_mode: snapshot.controls.active.approval_mode.clone(),
         plan_mode_required: snapshot.controls.active.plan_mode_required,
+    }
+}
+
+fn parse_thinking_effort(value: &str) -> CommandResult<ProviderModelThinkingEffortDto> {
+    match value.trim() {
+        "minimal" => Ok(ProviderModelThinkingEffortDto::Minimal),
+        "low" => Ok(ProviderModelThinkingEffortDto::Low),
+        "medium" => Ok(ProviderModelThinkingEffortDto::Medium),
+        "high" => Ok(ProviderModelThinkingEffortDto::High),
+        "x_high" | "xhigh" => Ok(ProviderModelThinkingEffortDto::XHigh),
+        other => Err(CommandError::user_fixable(
+            "remote_thinking_effort_unsupported",
+            format!("Remote command does not support thinking effort `{other}`."),
+        )),
     }
 }
 

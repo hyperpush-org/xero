@@ -1782,3 +1782,17 @@
 .scrollbar-thin::-webkit-scrollbar {
   width: 6px;
 }
+
+.scrollbar-sidebar::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--sidebar) 85%, white 15%) !important;
+  background-image: none !important;
+}
+
+.scrollbar-sidebar::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--sidebar) 75%, white 25%) !important;
+  background-image: none !important;
+}
+
+.scrollbar-sidebar {
+  scrollbar-color: color-mix(in oklab, var(--sidebar) 85%, white 15%) transparent;
+}

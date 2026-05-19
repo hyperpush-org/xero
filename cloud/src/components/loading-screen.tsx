@@ -8,8 +8,7 @@ interface LoadingScreenProps {
 
 export function LoadingScreen({ className }: LoadingScreenProps) {
 	return (
-		<div
-			role="status"
+		<output
 			aria-live="polite"
 			aria-busy="true"
 			aria-label="Loading"
@@ -29,6 +28,6 @@ export function LoadingScreen({ className }: LoadingScreenProps) {
 				/>
 				<BrandLogo className="h-7 w-7 xero-loading-breathe" />
 			</div>
-		</div>
+		</output>
 	);
 }

@@ -3,7 +3,9 @@ import {
   applyRepositoryStatus,
   applyRuntimeSession,
   applyRuntimeStreamIssue,
+  adrenalineModeSettingsSchema,
   browserControlSettingsSchema,
+  closedLidModeSettingsSchema,
   composeNotificationRouteTarget,
   createRuntimeStreamFromSubscription,
   decomposeNotificationRouteTarget,
@@ -31,7 +33,9 @@ import {
   syncNotificationAdaptersResponseSchema,
   subscribeRuntimeStreamResponseSchema,
   toolResultSummarySchema,
+  upsertAdrenalineModeSettingsRequestSchema,
   upsertBrowserControlSettingsRequestSchema,
+  upsertClosedLidModeSettingsRequestSchema,
   upsertNotificationRouteCredentialsRequestSchema,
   upsertNotificationRouteCredentialsResponseSchema,
   upsertNotificationRouteRequestSchema,
@@ -2657,6 +2661,90 @@ describe('xero-model', () => {
     ).toEqual({
       preference: 'native_browser',
     })
+
+    expect(
+      adrenalineModeSettingsSchema.parse({
+        enabled: true,
+        assertionKind: 'prevent_idle_system_sleep',
+        active: true,
+        activeStatus: 'active',
+        platformSupported: true,
+        updatedAt: '2026-05-18T12:00:00Z',
+        diagnosticMessage: null,
+      }),
+    ).toEqual({
+      enabled: true,
+      assertionKind: 'prevent_idle_system_sleep',
+      active: true,
+      activeStatus: 'active',
+      platformSupported: true,
+      updatedAt: '2026-05-18T12:00:00Z',
+      diagnosticMessage: null,
+    })
+
+    expect(
+      upsertAdrenalineModeSettingsRequestSchema.parse({
+        enabled: false,
+        assertionKind: 'prevent_idle_display_sleep',
+      }),
+    ).toEqual({
+      enabled: false,
+      assertionKind: 'prevent_idle_display_sleep',
+    })
+
+    expect(
+      closedLidModeSettingsSchema.parse({
+        enabled: true,
+        active: true,
+        activeStatus: 'active',
+        platformSupported: true,
+        authorizationRequired: true,
+        currentDisablesleep: true,
+        previousDisablesleep: false,
+        updatedAt: '2026-05-18T12:00:00Z',
+        diagnosticMessage: null,
+      }),
+    ).toEqual({
+      enabled: true,
+      active: true,
+      activeStatus: 'active',
+      platformSupported: true,
+      authorizationRequired: true,
+      currentDisablesleep: true,
+      previousDisablesleep: false,
+      updatedAt: '2026-05-18T12:00:00Z',
+      diagnosticMessage: null,
+    })
+
+    expect(
+      upsertClosedLidModeSettingsRequestSchema.parse({
+        enabled: true,
+        acknowledgeGlobalPowerChange: true,
+      }),
+    ).toEqual({
+      enabled: true,
+      acknowledgeGlobalPowerChange: true,
+    })
+
+    expect(() =>
+      closedLidModeSettingsSchema.parse({
+        enabled: true,
+        active: true,
+        activeStatus: 'admin_prompt',
+        platformSupported: true,
+        authorizationRequired: true,
+      }),
+    ).toThrow(/activeStatus/)
+
+    expect(() =>
+      adrenalineModeSettingsSchema.parse({
+        enabled: true,
+        assertionKind: 'pmset_disablesleep',
+        active: true,
+        activeStatus: 'active',
+        platformSupported: true,
+      }),
+    ).toThrow(/assertionKind/)
 
     expect(() =>
       browserControlSettingsSchema.parse({

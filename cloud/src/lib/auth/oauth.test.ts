@@ -19,7 +19,17 @@ describe("getDefaultOAuthReturnUrl", () => {
 
 	it("keeps the cloud host when the auth server can share the cookie domain", () => {
 		vi.stubGlobal("window", {
-			location: new URL("https://cloud.xeroshell.com/"),
+			location: new URL("https://cloud.xeroshell.com/?source=pwa"),
+		});
+
+		expect(getDefaultOAuthReturnUrl("https://xeroshell.com")).toBe(
+			"https://cloud.xeroshell.com/sessions",
+		);
+	});
+
+	it("does not rewrite production installed-app launches to the auth origin", () => {
+		vi.stubGlobal("window", {
+			location: new URL("https://cloud.xeroshell.com/sessions"),
 		});
 
 		expect(getDefaultOAuthReturnUrl("https://xeroshell.com")).toBe(

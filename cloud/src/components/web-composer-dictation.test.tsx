@@ -8,8 +8,11 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
-import { WebComposer } from "@xero/ui/components/composer";
-import { useState } from "react";
+import {
+	WebComposer,
+	WebComposerContextIndicator,
+} from "@xero/ui/components/composer";
+import { type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface MockSpeechRecognitionResultEntry {
@@ -72,9 +75,11 @@ class MockSpeechRecognition {
 
 function renderComposer({
 	initialDraft = "",
+	contextMeter = null,
 	onSubmit = vi.fn(),
 }: {
 	initialDraft?: string;
+	contextMeter?: ReactNode;
 	onSubmit?: (draftPrompt?: string) => void;
 } = {}) {
 	function Harness() {
@@ -90,6 +95,7 @@ function renderComposer({
 				modelOptions={[{ id: "gpt-5.5", label: "gpt-5.5" }]}
 				selectedModelId="gpt-5.5"
 				onModelChange={vi.fn()}
+				contextMeter={contextMeter}
 			/>
 		);
 	}
@@ -140,9 +146,28 @@ function mockComposerTextareaMetrics() {
 	};
 }
 
+function stubMatchMedia() {
+	Object.defineProperty(window, "matchMedia", {
+		configurable: true,
+		writable: true,
+		value: (query: string) =>
+			({
+				matches: false,
+				media: query,
+				onchange: null,
+				addEventListener: () => {},
+				removeEventListener: () => {},
+				addListener: () => {},
+				removeListener: () => {},
+				dispatchEvent: () => false,
+			}) as MediaQueryList,
+	});
+}
+
 describe("WebComposer dictation", () => {
 	beforeEach(() => {
 		MockSpeechRecognition.instances = [];
+		stubMatchMedia();
 		Object.defineProperty(window, "webkitSpeechRecognition", {
 			configurable: true,
 			writable: true,
@@ -222,6 +247,10 @@ describe("WebComposer dictation", () => {
 describe("WebComposer layout", () => {
 	let restoreTextareaMetrics: (() => void) | null = null;
 
+	beforeEach(() => {
+		stubMatchMedia();
+	});
+
 	afterEach(() => {
 		cleanup();
 		restoreTextareaMetrics?.();
@@ -267,5 +296,33 @@ describe("WebComposer layout", () => {
 			expect(textarea.style.height).toBe("152px");
 			expect(textarea.style.overflowY).toBe("auto");
 		});
+	});
+
+	it("renders the context indicator beside composer actions", () => {
+		renderComposer({
+			contextMeter: (
+				<WebComposerContextIndicator
+					status="ready"
+					hasUserMessage
+					snapshot={{
+						modelId: "gpt-5.5",
+						budget: {
+							effectiveInputBudgetTokens: 100_000,
+							estimatedTokens: 42_000,
+							knownProviderBudget: true,
+							pressure: "medium",
+							pressurePercent: 42,
+							remainingTokens: 58_000,
+						},
+					}}
+				/>
+			),
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: "Context meter: 58 percent context remaining for gpt-5.5",
+			}),
+		).toBeTruthy();
 	});
 });

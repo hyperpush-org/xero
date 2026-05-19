@@ -1088,10 +1088,9 @@ fn handle_composer_text_edit(app: &mut App, key: KeyEvent) {
             | TextEdit::MoveDown
             | TextEdit::MoveToLineStart
             | TextEdit::MoveToLineEnd
-    ) {
-        if !slash::is_visible(app) {
-            slash::clamp_selection(app);
-        }
+    ) && !slash::is_visible(app)
+    {
+        slash::clamp_selection(app);
     }
 }
 

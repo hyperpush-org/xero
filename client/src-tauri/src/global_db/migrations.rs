@@ -2,14 +2,15 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 10;
+pub const GLOBAL_DATABASE_SCHEMA_VERSION: i64 = 12;
 
 /// Migrations for the global SQLite database (`xero.db`).
 ///
 /// This is the single source of truth for non-project-scoped state:
 /// credentials, sessions, settings, registries, and the model catalog cache.
-/// The app is still pre-release, so the global database starts from a fresh
-/// baseline instead of carrying compatibility migrations for removed schemas.
+/// Existing app-data databases must be migrated in place. The initial schema is
+/// kept as the fresh-install baseline, and later entries are the upgrade path
+/// for users who already have a database at an older `PRAGMA user_version`.
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
         Migrations::new(vec![
@@ -23,10 +24,28 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(DEVELOPER_TOOL_SEQUENCES_SQL),
             M::up(PROJECT_START_TARGETS_SQL),
             M::up(NOOP_SCHEMA_VERSION_MARKER_SQL),
+            M::up(ADRENALINE_MODE_SETTINGS_SQL),
+            M::up(CLOSED_LID_MODE_SETTINGS_SQL),
         ])
     });
     &MIGRATIONS
 }
+
+const CLOSED_LID_MODE_SETTINGS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS closed_lid_mode_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
+"#;
+
+const ADRENALINE_MODE_SETTINGS_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS adrenaline_mode_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
+"#;
 
 const PROJECT_START_TARGETS_SQL: &str = r#"
     ALTER TABLE projects ADD COLUMN start_targets TEXT NOT NULL DEFAULT '[]';
@@ -204,6 +223,18 @@ const INITIAL_SCHEMA_SQL: &str = r#"
         payload TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS adrenaline_mode_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS closed_lid_mode_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL CHECK (payload <> '' AND json_valid(payload)),
+        updated_at TEXT NOT NULL
+    ) STRICT;
 
     CREATE TABLE IF NOT EXISTS soul_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),

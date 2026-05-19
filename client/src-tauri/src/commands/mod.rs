@@ -1,3 +1,4 @@
+pub mod adrenaline_mode;
 pub mod agent_definition;
 pub mod agent_extensions;
 pub mod agent_reports;
@@ -83,6 +84,13 @@ pub mod workspace_index;
 mod contracts;
 pub(crate) mod runtime_support;
 
+pub use adrenaline_mode::{
+    adrenaline_mode_settings, adrenaline_mode_update_settings, closed_lid_mode_settings,
+    closed_lid_mode_update_settings, AdrenalineModeActiveStatusDto, AdrenalineModeAssertionKindDto,
+    AdrenalineModeSettingsDto, AdrenalineModeState, ClosedLidModeActiveStatusDto,
+    ClosedLidModeSettingsDto, ClosedLidModeState, UpsertAdrenalineModeSettingsRequestDto,
+    UpsertClosedLidModeSettingsRequestDto,
+};
 pub use agent_definition::{
     archive_agent_definition, get_agent_definition_version, get_agent_definition_version_diff,
     list_agent_definitions, preview_agent_definition, save_agent_definition,

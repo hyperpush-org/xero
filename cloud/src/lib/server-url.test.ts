@@ -59,8 +59,17 @@ describe("getServerUrl", () => {
 	it("does not canonicalize non-loopback cloud URLs", () => {
 		expect(
 			getCanonicalLoopbackCloudUrl(
-				"https://cloud.xeroshell.com/sessions",
+				"https://cloud.xeroshell.com/?source=pwa",
 				"https://xeroshell.com",
+			),
+		).toBeNull();
+	});
+
+	it("does not leak local loopback canonicalization into production install URLs", () => {
+		expect(
+			getCanonicalLoopbackCloudUrl(
+				"https://cloud.xeroshell.com/sessions/desktop-1/session-1",
+				"http://127.0.0.1:4000",
 			),
 		).toBeNull();
 	});

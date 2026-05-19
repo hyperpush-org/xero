@@ -362,7 +362,7 @@ fn fallback_title_from_prompt(prompt: &str) -> Option<String> {
             matches!(character, '#' | '-' | '*' | '>' | '"' | '\'' | '`')
         })
         .trim();
-    let title = truncate_title(&trim_trailing_title_punctuation(&cleaned), MAX_TITLE_CHARS);
+    let title = truncate_title(&trim_trailing_title_punctuation(cleaned), MAX_TITLE_CHARS);
 
     if is_usable_generated_title(&title) {
         Some(title)

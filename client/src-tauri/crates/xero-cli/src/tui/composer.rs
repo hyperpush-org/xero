@@ -56,8 +56,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let bottom_pad_rows = u16::from(area.height >= 5);
     let input_footer_gap_rows = u16::from(
         footer_rows > 0
-            && area.height
-                >= footer_rows + top_pad_rows + bottom_pad_rows + INPUT_FOOTER_GAP_ROWS + 1,
+            && area.height > footer_rows + top_pad_rows + bottom_pad_rows + INPUT_FOOTER_GAP_ROWS,
     );
     let suggestion_rows =
         slash::visible_rows(app).min(area.height.saturating_sub(

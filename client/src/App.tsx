@@ -3672,6 +3672,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 dictationAdapter={resolvedAdapter}
                 soulAdapter={resolvedAdapter}
                 agentToolingAdapter={resolvedAdapter}
+                powerAdapter={resolvedAdapter}
                 toolCallGroupingPreference={toolCallGroupingPreference}
                 onToolCallGroupingPreferenceChange={handleToolCallGroupingPreferenceChange}
                 memoryReviewAdapter={memoryReviewAdapter}

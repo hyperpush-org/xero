@@ -417,6 +417,16 @@ import {
   type UpsertBrowserControlSettingsRequestDto,
 } from '@/src/lib/xero-model/browser'
 import {
+  adrenalineModeSettingsSchema,
+  closedLidModeSettingsSchema,
+  upsertAdrenalineModeSettingsRequestSchema,
+  upsertClosedLidModeSettingsRequestSchema,
+  type AdrenalineModeSettingsDto,
+  type ClosedLidModeSettingsDto,
+  type UpsertAdrenalineModeSettingsRequestDto,
+  type UpsertClosedLidModeSettingsRequestDto,
+} from '@/src/lib/xero-model/adrenaline-mode'
+import {
   soulSettingsSchema,
   upsertSoulSettingsRequestSchema,
   type SoulSettingsDto,
@@ -709,6 +719,10 @@ const COMMANDS = {
   subscribeRuntimeStream: 'subscribe_runtime_stream',
   browserControlSettings: 'browser_control_settings',
   browserControlUpdateSettings: 'browser_control_update_settings',
+  adrenalineModeSettings: 'adrenaline_mode_settings',
+  adrenalineModeUpdateSettings: 'adrenaline_mode_update_settings',
+  closedLidModeSettings: 'closed_lid_mode_settings',
+  closedLidModeUpdateSettings: 'closed_lid_mode_update_settings',
   soulSettings: 'soul_settings',
   soulUpdateSettings: 'soul_update_settings',
   agentToolingSettings: 'agent_tooling_settings',
@@ -1306,6 +1320,14 @@ export interface XeroDesktopAdapter {
   browserControlUpdateSettings?(
     request: UpsertBrowserControlSettingsRequestDto,
   ): Promise<BrowserControlSettingsDto>
+  adrenalineModeSettings?(): Promise<AdrenalineModeSettingsDto>
+  adrenalineModeUpdateSettings?(
+    request: UpsertAdrenalineModeSettingsRequestDto,
+  ): Promise<AdrenalineModeSettingsDto>
+  closedLidModeSettings?(): Promise<ClosedLidModeSettingsDto>
+  closedLidModeUpdateSettings?(
+    request: UpsertClosedLidModeSettingsRequestDto,
+  ): Promise<ClosedLidModeSettingsDto>
   soulSettings?(): Promise<SoulSettingsDto>
   soulUpdateSettings?(request: UpsertSoulSettingsRequestDto): Promise<SoulSettingsDto>
   agentToolingSettings?(): Promise<AgentToolingSettingsDto>
@@ -3416,6 +3438,28 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   browserControlUpdateSettings(request) {
     const parsedRequest = upsertBrowserControlSettingsRequestSchema.parse(request)
     return invokeTyped(COMMANDS.browserControlUpdateSettings, browserControlSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  adrenalineModeSettings() {
+    return invokeTyped(COMMANDS.adrenalineModeSettings, adrenalineModeSettingsSchema)
+  },
+
+  adrenalineModeUpdateSettings(request) {
+    const parsedRequest = upsertAdrenalineModeSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.adrenalineModeUpdateSettings, adrenalineModeSettingsSchema, {
+      request: parsedRequest,
+    })
+  },
+
+  closedLidModeSettings() {
+    return invokeTyped(COMMANDS.closedLidModeSettings, closedLidModeSettingsSchema)
+  },
+
+  closedLidModeUpdateSettings(request) {
+    const parsedRequest = upsertClosedLidModeSettingsRequestSchema.parse(request)
+    return invokeTyped(COMMANDS.closedLidModeUpdateSettings, closedLidModeSettingsSchema, {
       request: parsedRequest,
     })
   },

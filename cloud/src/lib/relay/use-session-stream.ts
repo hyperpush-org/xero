@@ -12,7 +12,11 @@ import {
 import {
 	modelOptionId,
 	normalizeModelOptions,
+	parseThinkingEffort,
 	type RemoteProjectSummary,
+	type SessionContextError,
+	type SessionContextSnapshot,
+	type SessionThinkingEffort,
 	type SessionTranscript,
 	sessionKey,
 	useSessionStore,
@@ -42,10 +46,15 @@ interface SessionSnapshotPayload {
 		modelId?: string | null;
 		providerId?: string | null;
 		providerProfileId?: string | null;
+		thinkingSupported?: boolean | null;
+		thinkingEffortOptions?: ReadonlyArray<string | null> | null;
+		defaultThinkingEffort?: string | null;
 	}>;
 	transcript?: unknown[];
 	runs?: unknown[];
 	runtimeRun?: unknown;
+	contextSnapshot?: SessionContextSnapshot | null;
+	contextSnapshotError?: SessionContextError | null;
 }
 
 interface RemoteControlSelection {
@@ -54,6 +63,7 @@ interface RemoteControlSelection {
 	rawModelId: string | null;
 	providerId: string | null;
 	providerProfileId: string | null;
+	thinkingEffort: SessionThinkingEffort | null;
 }
 
 interface UseSessionStreamOptions {
@@ -92,6 +102,7 @@ export function useSessionStream({
 	const replaceWithSnapshot = useSessionStore((s) => s.replaceWithSnapshot);
 	const appendTurn = useSessionStore((s) => s.appendTurn);
 	const updateControls = useSessionStore((s) => s.updateControls);
+	const updateContextSnapshot = useSessionStore((s) => s.updateContextSnapshot);
 	const removeVisibleSession = useSessionStore((s) => s.removeVisibleSession);
 	const setLive = useSessionStore((s) => s.setLive);
 	const relayTokenRef = useLatestRelayToken(relayToken);
@@ -150,12 +161,23 @@ export function useSessionStream({
 					),
 					currentAgentId: controls.agentId,
 					currentModelId: controls.modelId,
+					currentThinkingEffort: controls.thinkingEffort,
+					contextSnapshot: snapshot.contextSnapshot ?? null,
+					contextSnapshotError: snapshot.contextSnapshotError ?? null,
+					contextSnapshotRequestId: null,
 				};
 				replaceWithSnapshot(key, next);
 			} else if (envelope.kind === "event") {
 				const turns = projectRemotePayloadToTurns(envelope.payload);
 				for (const turn of turns) {
 					appendTurn(key, turn, envelope.seq);
+				}
+				const contextUpdate = remoteContextSnapshotUpdate(envelope.payload);
+				if (contextUpdate) {
+					updateContextSnapshot(key, {
+						...contextUpdate,
+						seq: envelope.seq,
+					});
 				}
 				const controls = remoteEventControlSelection(envelope.payload);
 				if (controls) updateControls(key, controls);
@@ -182,6 +204,7 @@ export function useSessionStream({
 		relayTokenRef,
 		sessionId,
 		setLive,
+		updateContextSnapshot,
 		updateControls,
 	]);
 
@@ -493,6 +516,22 @@ function requestProjectList(
 	});
 }
 
+function remoteContextSnapshotUpdate(payload: unknown): {
+	snapshot: SessionContextSnapshot | null;
+	error: SessionContextError | null;
+	requestId: string | null;
+} | null {
+	if (!isRecord(payload)) return null;
+	if (payload.schema !== "xero.remote_context_snapshot.v1") return null;
+	const requestId = stringField(payload, "requestId");
+	const ok = payload.ok !== false;
+	return {
+		snapshot: ok ? contextSnapshotField(payload, "contextSnapshot") : null,
+		error: ok ? null : contextErrorField(payload, "error"),
+		requestId,
+	};
+}
+
 function flattenRemoteProjects(
 	projectsByComputer: Record<string, RemoteProjectSummary[]>,
 ): RemoteProjectSummary[] {
@@ -559,6 +598,7 @@ function remoteRunControlSelection(run: unknown): RemoteControlSelection {
 			rawModelId: null,
 			providerId: null,
 			providerProfileId: null,
+			thinkingEffort: null,
 		};
 	}
 	const controls = recordField(run, "controls");
@@ -572,6 +612,9 @@ function remoteRunControlSelection(run: unknown): RemoteControlSelection {
 		rawModelId,
 		providerId: stringField(run, "providerId"),
 		providerProfileId,
+		thinkingEffort: parseThinkingEffort(
+			stringField(selected, "thinkingEffort"),
+		),
 	};
 }
 
@@ -591,6 +634,9 @@ function ensureModelOption(
 			modelId: normalizedModelId,
 			providerId,
 			providerProfileId,
+			thinkingSupported: false,
+			thinkingEffortOptions: [],
+			defaultThinkingEffort: null,
 		},
 		...options,
 	];
@@ -603,6 +649,22 @@ function recordField(
 	if (!record) return null;
 	const value = record[key];
 	return isRecord(value) ? value : null;
+}
+
+function contextSnapshotField(
+	record: Record<string, unknown>,
+	key: string,
+): SessionContextSnapshot | null {
+	const value = record[key];
+	return isRecord(value) ? (value as SessionContextSnapshot) : null;
+}
+
+function contextErrorField(
+	record: Record<string, unknown>,
+	key: string,
+): SessionContextError | null {
+	const value = record[key];
+	return isRecord(value) ? (value as SessionContextError) : null;
 }
 
 function stringField(

@@ -19,6 +19,7 @@ import type {
 } from "@/components/xero/settings-dialog/account-danger-zone"
 import type { DictationSettingsAdapter } from "@/components/xero/settings-dialog/dictation-section"
 import type { MemoryReviewAdapter } from "@/components/xero/settings-dialog/memory-review-section"
+import type { PowerSettingsAdapter } from "@/components/xero/settings-dialog/power-section"
 import type { ProjectStateAdapter } from "@/components/xero/settings-dialog/project-state-section"
 import type { SoulSettingsAdapter } from "@/components/xero/settings-dialog/soul-section"
 import type {
@@ -60,7 +61,7 @@ import type {
   GitHubAuthStatus,
   GitHubSessionView,
 } from "@/src/lib/github-auth"
-import { Activity, ArrowLeft, Bell, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, PlaySquare, Plug, PlugZap, UserRound, WandSparkles, Wrench } from "lucide-react"
+import { Activity, ArrowLeft, Bell, Bot, Brain, Cloud, Code2, Database, Globe, HardDrive, Heart, Keyboard, KeyRound, Mic, Palette, PlaySquare, Plug, PlugZap, Power, UserRound, WandSparkles, Wrench } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -84,6 +85,7 @@ export type SettingsSection =
   | "memory"
   | "plugins"
   | "browser"
+  | "power"
   | "workspaceIndex"
   | "projectState"
   | "projectRunner"
@@ -106,6 +108,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   "skills",
   "plugins",
   "browser",
+  "power",
   "workspaceIndex",
   "projectState",
   "projectRunner",
@@ -133,6 +136,10 @@ const loadAgentToolingSection = () =>
 const loadBrowserSection = () =>
   import("@/components/xero/settings-dialog/browser-section").then((module) => ({
     default: module.BrowserSection,
+  }))
+const loadPowerSection = () =>
+  import("@/components/xero/settings-dialog/power-section").then((module) => ({
+    default: module.PowerSection,
   }))
 const loadDevelopmentSection = () =>
   import("@/components/xero/settings-dialog/development-section").then((module) => ({
@@ -200,6 +207,7 @@ const LazyCloudAccountSection = lazy(loadCloudAccountSection)
 const LazyAgentsSection = lazy(loadAgentsSection)
 const LazyAgentToolingSection = lazy(loadAgentToolingSection)
 const LazyBrowserSection = lazy(loadBrowserSection)
+const LazyPowerSection = lazy(loadPowerSection)
 const LazyDevelopmentSection = lazy(loadDevelopmentSection)
 const LazyDictationSection = lazy(loadDictationSection)
 const LazyDiagnosticsSection = lazy(loadDiagnosticsSection)
@@ -231,6 +239,7 @@ const SETTINGS_SECTION_LOADERS: Record<SettingsSection, () => Promise<unknown>> 
   skills: loadSkillsSection,
   plugins: loadPluginsSection,
   browser: loadBrowserSection,
+  power: loadPowerSection,
   workspaceIndex: loadWorkspaceIndexSection,
   projectState: loadProjectStateSection,
   projectRunner: loadProjectRunnerSection,
@@ -294,6 +303,7 @@ const WORKSPACE_GROUP: NavGroup = {
     { id: "skills", label: "Skills", icon: WandSparkles },
     { id: "plugins", label: "Plugins", icon: Plug },
     { id: "browser", label: "Browser", icon: Globe },
+    { id: "power", label: "Power", icon: Power },
     { id: "workspaceIndex", label: "Workspace Index", icon: Database },
     { id: "projectState", label: "Project State", icon: HardDrive },
     { id: "projectRunner", label: "Project Runner", icon: PlaySquare },
@@ -355,6 +365,7 @@ export interface SettingsDialogProps {
   dictationAdapter?: DictationSettingsAdapter
   soulAdapter?: SoulSettingsAdapter
   agentToolingAdapter?: AgentToolingSettingsAdapter
+  powerAdapter?: PowerSettingsAdapter
   toolCallGroupingPreference?: ToolCallGroupingPreference
   onToolCallGroupingPreferenceChange?: (preference: ToolCallGroupingPreference) => Promise<void> | void
   memoryReviewAdapter?: MemoryReviewAdapter | null
@@ -477,6 +488,7 @@ export function SettingsDialog({
   dictationAdapter,
   soulAdapter,
   agentToolingAdapter,
+  powerAdapter,
   toolCallGroupingPreference,
   onToolCallGroupingPreferenceChange,
   memoryReviewAdapter = null,
@@ -811,6 +823,10 @@ export function SettingsDialog({
       return <LazyBrowserSection />
     }
 
+    if (renderedSection === "power") {
+      return <LazyPowerSection adapter={powerAdapter} />
+    }
+
     if (renderedSection === "workspaceIndex") {
       return (
         <LazyWorkspaceIndexSection
@@ -888,7 +904,7 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto scrollbar-thin py-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto scrollbar-thin scrollbar-sidebar py-4">
               {NAV_GROUPS.map((group) => (
                 <div key={group.id} className="flex flex-col">
                   <span className="px-4 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">

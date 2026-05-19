@@ -77,21 +77,27 @@ if remote_jwt_signing_key = System.get_env("XERO_REMOTE_JWT_SIGNING_KEY") do
 end
 
 # --- Oban background jobs ---
-oban_queues =
-  System.get_env("OBAN_QUEUES", "default:10,mailers:5")
-  |> String.split(",", trim: true)
-  |> Enum.map(fn pair ->
-    [name, limit] = String.split(pair, ":", parts: 2)
-    {String.to_atom(String.trim(name)), String.to_integer(String.trim(limit))}
-  end)
+if config_env() == :test do
+  config :xero, Oban,
+    repo: Xero.Repo,
+    testing: :manual
+else
+  oban_queues =
+    System.get_env("OBAN_QUEUES", "default:10,mailers:5")
+    |> String.split(",", trim: true)
+    |> Enum.map(fn pair ->
+      [name, limit] = String.split(pair, ":", parts: 2)
+      {String.to_atom(String.trim(name)), String.to_integer(String.trim(limit))}
+    end)
 
-config :xero, Oban,
-  repo: Xero.Repo,
-  queues: oban_queues,
-  plugins: [
-    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
-    Oban.Plugins.Reindexer
-  ]
+  config :xero, Oban,
+    repo: Xero.Repo,
+    queues: oban_queues,
+    plugins: [
+      {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
+      Oban.Plugins.Reindexer
+    ]
+end
 
 if config_env() == :prod do
   database_url =

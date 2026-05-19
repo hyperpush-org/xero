@@ -97,6 +97,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 		useSessionStore.getState().replaceWithSnapshot("desktop-2:session-2", {
 			turns: [],
@@ -106,6 +107,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore
@@ -156,6 +158,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore.getState().removeVisibleSession("desktop-1", "session-1");
@@ -178,6 +181,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore
@@ -228,6 +232,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore.getState().clearVisibleSessionsForComputers(["desktop-1"]);
@@ -263,6 +268,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore.getState().setVisibleSessions([]);
@@ -289,6 +295,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore.getState().appendTurn(
@@ -380,6 +387,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore.getState().appendTurn(
@@ -528,6 +536,7 @@ describe("session store", () => {
 			availableModels: [],
 			currentAgentId: null,
 			currentModelId: null,
+			currentThinkingEffort: null,
 		});
 
 		useSessionStore.getState().updateControls(key, {
@@ -547,6 +556,50 @@ describe("session store", () => {
 					providerProfileId: null,
 				},
 			],
+		});
+	});
+
+	it("tracks cloud context snapshots for the composer indicator", () => {
+		const key = "desktop-1:session-1";
+		useSessionStore.getState().replaceWithSnapshot(key, {
+			turns: [],
+			lastSeq: 7,
+			isLive: false,
+			availableAgents: [],
+			availableModels: [],
+			currentAgentId: null,
+			currentModelId: null,
+			currentThinkingEffort: null,
+		});
+
+		useSessionStore.getState().updateContextSnapshot(key, {
+			requestId: "context-request-1",
+			error: null,
+			seq: 9,
+			snapshot: {
+				modelId: "gpt-5.5",
+				budget: {
+					effectiveInputBudgetTokens: 100_000,
+					estimatedTokens: 42_000,
+					knownProviderBudget: true,
+					pressure: "medium",
+					pressurePercent: 42,
+					remainingTokens: 58_000,
+				},
+			},
+		});
+
+		expect(useSessionStore.getState().transcripts[key]).toMatchObject({
+			contextSnapshotRequestId: "context-request-1",
+			contextSnapshotError: null,
+			lastSeq: 9,
+			contextSnapshot: {
+				modelId: "gpt-5.5",
+				budget: {
+					remainingTokens: 58_000,
+					pressurePercent: 42,
+				},
+			},
 		});
 	});
 

@@ -30,7 +30,7 @@ import {
   Markdown,
   getMarkdownSegmentStats,
   resetMarkdownSegmentCacheForTests,
-} from '@/components/xero/agent-runtime/conversation-markdown'
+} from '@xero/ui/components/transcript/conversation-markdown'
 import {
   getShikiTokenCacheStats,
 } from '@/lib/shiki'

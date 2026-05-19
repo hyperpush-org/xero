@@ -41,6 +41,7 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 config :xero, Xero.Remote.Jwt, signing_key: "test-remote-jwt-signing-key"
+
 config :xero,
   web_session_cookie_domain: nil,
   web_session_cookie_secure: false,

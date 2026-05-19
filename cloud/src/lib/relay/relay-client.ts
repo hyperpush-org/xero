@@ -16,8 +16,11 @@ export interface InboundCommand {
 		| "set_session_visibility"
 		| "resolve_operator_action"
 		| "cancel_run"
+		| "context_snapshot"
 		| "list_sessions"
-		| "list_projects";
+		| "list_projects"
+		| "stage_attachment"
+		| "discard_attachment";
 	payload: unknown;
 }
 
@@ -114,6 +117,36 @@ export function requestSessionSnapshot(
 	});
 }
 
+export function requestContextSnapshot(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		requestId: string;
+		providerId?: string | null;
+		modelId?: string | null;
+		pendingPrompt?: string | null;
+	},
+): void {
+	const payload: Record<string, unknown> = {
+		requestId: options.requestId,
+	};
+	if (options.providerId) payload.providerId = options.providerId;
+	if (options.modelId) payload.modelId = options.modelId;
+	if (options.pendingPrompt) payload.pendingPrompt = options.pendingPrompt;
+
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "context_snapshot",
+		payload,
+	});
+}
+
 export function requestSessionRemoteVisibility(
 	channel: Channel,
 	options: {
@@ -135,6 +168,61 @@ export function requestSessionRemoteVisibility(
 			projectId: options.projectId,
 			agentSessionId: options.sessionId,
 			visible: options.visible,
+		},
+	});
+}
+
+export function requestStageAttachment(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		attachmentId: string;
+		originalName: string;
+		mediaType: string;
+		bytesBase64: string;
+		runId?: string | null;
+	},
+): void {
+	const payload: Record<string, unknown> = {
+		attachmentId: options.attachmentId,
+		originalName: options.originalName,
+		mediaType: options.mediaType,
+		bytesBase64: options.bytesBase64,
+	};
+	if (options.runId) payload.runId = options.runId;
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "stage_attachment",
+		payload,
+	});
+}
+
+export function requestDiscardAttachment(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+		attachmentId: string;
+		absolutePath: string;
+	},
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "discard_attachment",
+		payload: {
+			attachmentId: options.attachmentId,
+			absolutePath: options.absolutePath,
 		},
 	});
 }

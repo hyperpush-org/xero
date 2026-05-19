@@ -43,9 +43,7 @@ describe("NewSessionPicker", () => {
 
 	it("renders a disabled button when no projects are available", () => {
 		const onSelect = vi.fn();
-		render(
-			<NewSessionPicker projects={[]} onSelectProject={onSelect} />,
-		);
+		render(<NewSessionPicker projects={[]} onSelectProject={onSelect} />);
 		const button = screen.getByRole("button", {
 			name: /no projects available/i,
 		});

@@ -94,15 +94,14 @@ export function SessionListRow({
 	const isArchivePending = isPending && pendingAction === "archive";
 	const isVisibilityPending = isPending && pendingAction !== "archive";
 
-	const [archiveConfirmationActive, setArchiveConfirmationActive] =
-		useState(false);
+	const [archiveConfirmationSessionId, setArchiveConfirmationSessionId] =
+		useState<string | null>(null);
 	const archiveButtonRef = useRef<HTMLButtonElement | null>(null);
-	useEffect(() => {
-		setArchiveConfirmationActive(false);
-	}, [summary.sessionId]);
+	const archiveConfirmationActive =
+		archiveConfirmationSessionId === summary.sessionId;
 	useEffect(() => {
 		if (isPending || !onArchive) {
-			setArchiveConfirmationActive(false);
+			setArchiveConfirmationSessionId(null);
 		}
 	}, [isPending, onArchive]);
 	useEffect(() => {
@@ -115,10 +114,10 @@ export function SessionListRow({
 			) {
 				return;
 			}
-			setArchiveConfirmationActive(false);
+			setArchiveConfirmationSessionId(null);
 		};
 		const timeoutId = window.setTimeout(
-			() => setArchiveConfirmationActive(false),
+			() => setArchiveConfirmationSessionId(null),
 			ARCHIVE_CONFIRMATION_TIMEOUT_MS,
 		);
 		document.addEventListener("pointerdown", handlePointerDown, true);
@@ -129,7 +128,7 @@ export function SessionListRow({
 	}, [archiveConfirmationActive]);
 	const isArchiveConfirming =
 		archiveConfirmationActive && Boolean(onArchive) && !isPending;
-	const clearArchiveConfirmation = () => setArchiveConfirmationActive(false);
+	const clearArchiveConfirmation = () => setArchiveConfirmationSessionId(null);
 
 	const archiveButton = onArchive ? (
 		<Button
@@ -139,15 +138,18 @@ export function SessionListRow({
 			size="icon"
 			onClick={() => {
 				if (isArchiveConfirming) {
-					setArchiveConfirmationActive(false);
+					setArchiveConfirmationSessionId(null);
 					onArchive();
 					return;
 				}
-				setArchiveConfirmationActive(true);
+				setArchiveConfirmationSessionId(summary.sessionId);
 			}}
 			onBlur={(event: FocusEvent<HTMLButtonElement>) => {
 				const nextFocused = event.relatedTarget;
-				if (nextFocused instanceof Node && event.currentTarget.contains(nextFocused)) {
+				if (
+					nextFocused instanceof Node &&
+					event.currentTarget.contains(nextFocused)
+				) {
 					return;
 				}
 				clearArchiveConfirmation();

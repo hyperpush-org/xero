@@ -55,6 +55,11 @@ describe("SessionDrawer", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Open sessions" }));
 		expect(screen.getByText(/Clipstack ·/)).toBeTruthy();
 		expect(screen.queryByText(/Xero TUI/)).toBeNull();
+		expect(
+			document.querySelector(
+				'.cloud-session-drawer-content [class*="safe-area-inset-top"]',
+			),
+		).toBeTruthy();
 		fireEvent.click(
 			screen.getByRole("button", { name: "Open Project Overview" }),
 		);

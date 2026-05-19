@@ -22,7 +22,7 @@ export function SessionTopBar({
 	drawerTrigger,
 }: SessionTopBarProps) {
 	return (
-		<header className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-background px-4 py-3">
+		<header className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-background px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)]">
 			<div className="flex min-w-0 items-center gap-2">
 				<BrandLogo className="size-4 shrink-0" aria-label="Xero" />
 				<span aria-hidden="true" className="text-sm text-muted-foreground/50">

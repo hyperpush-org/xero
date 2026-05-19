@@ -24,6 +24,7 @@ import {
 import { ArrowUpRight, Menu, Power, Share2, X } from "lucide-react";
 import { type ReactNode, useCallback, useState } from "react";
 
+import { InstallAppAction } from "#/components/install-app-action";
 import { NewSessionPicker } from "#/components/new-session-picker";
 import type { CloudSession } from "#/lib/auth/session";
 import type {
@@ -69,10 +70,13 @@ export function SessionDrawer({
 }: SessionDrawerProps) {
 	const [internalOpen, setInternalOpen] = useState(false);
 	const isOpen = open ?? internalOpen;
-	const setIsOpen = (next: boolean) => {
-		setInternalOpen(next);
-		onOpenChange?.(next);
-	};
+	const setIsOpen = useCallback(
+		(next: boolean) => {
+			setInternalOpen(next);
+			onOpenChange?.(next);
+		},
+		[onOpenChange],
+	);
 	const [pendingSessionAction, setPendingSessionAction] = useState<{
 		key: string;
 		action: "visibility" | "archive";
@@ -97,7 +101,7 @@ export function SessionDrawer({
 			setIsOpen(false);
 			onSelectSession(summary.computerId, summary.sessionId);
 		},
-		[onSelectSession, onSetSessionRemoteVisibility],
+		[onSelectSession, onSetSessionRemoteVisibility, setIsOpen],
 	);
 	const handleSetSessionRemoteVisibility = useCallback(
 		async (summary: VisibleSessionSummary, visible: boolean) => {
@@ -144,7 +148,7 @@ export function SessionDrawer({
 				onOpenAutoFocus={(event) => event.preventDefault()}
 				className="cloud-session-drawer-content flex w-[86vw] max-w-[340px] flex-col gap-0 border-l border-border bg-background p-0 sm:w-[340px] [&>button.absolute]:hidden"
 			>
-				<SheetHeader className="gap-0 border-b border-border px-4 py-3">
+				<SheetHeader className="gap-0 border-b border-border px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)]">
 					<div className="flex items-center justify-between gap-2">
 						<div className="flex min-w-0 items-center gap-2">
 							<SheetTitle className="truncate text-sm font-medium tracking-tight text-foreground">
@@ -269,6 +273,7 @@ export function SessionDrawer({
 							<ArrowUpRight className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
 						</div>
 					</a>
+					<InstallAppAction variant="compact" />
 					<Button
 						variant="ghost"
 						size="icon"

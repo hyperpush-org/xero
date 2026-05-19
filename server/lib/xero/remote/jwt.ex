@@ -38,7 +38,8 @@ defmodule Xero.Remote.Jwt do
   end
 
   def verify(token) when is_binary(token) do
-    with [header_segment, payload_segment, signature_segment] <- String.split(token, ".", parts: 3),
+    with [header_segment, payload_segment, signature_segment] <-
+           String.split(token, ".", parts: 3),
          data = header_segment <> "." <> payload_segment,
          true <- Plug.Crypto.secure_compare(signature(data), signature_segment),
          {:ok, header} <- decode_json(header_segment),

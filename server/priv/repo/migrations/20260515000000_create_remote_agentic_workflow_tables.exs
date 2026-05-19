@@ -26,6 +26,7 @@ defmodule Xero.Repo.Migrations.CreateRemoteAgenticWorkflowTables do
     create table(:pairings, primary_key: false) do
       add :token, :text, primary_key: true
       add :account_id, references(:accounts, type: :uuid, on_delete: :delete_all), null: false
+
       add :desktop_device_id, references(:devices, type: :uuid, on_delete: :delete_all),
         null: false
 

@@ -1,7 +1,12 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { WebComposer } from "@xero/ui/components/composer";
+import {
+	WebComposer,
+	WebComposerContextIndicator,
+	type WebComposerContextIndicatorStatus,
+	type WebComposerSelectOption,
+} from "@xero/ui/components/composer";
 import { ConversationSection } from "@xero/ui/components/transcript/conversation-section";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptySessionState } from "#/components/empty-session-state";
 import { LoadingScreen } from "#/components/loading-screen";
@@ -12,10 +17,16 @@ import { signOut } from "#/lib/auth/session";
 import {
 	type InboundCommand,
 	pushInboundCommand,
+	requestContextSnapshot,
 	requestSessionSnapshot,
 } from "#/lib/relay/relay-client";
-import { sessionKey, useSessionStore } from "#/lib/relay/session-store";
+import {
+	type SessionThinkingEffort,
+	sessionKey,
+	useSessionStore,
+} from "#/lib/relay/session-store";
 import { useConversationAutoFollow } from "#/lib/relay/use-conversation-auto-follow";
+import { useRemoteAttachments } from "#/lib/relay/use-remote-attachments";
 import {
 	useAccountRemoteSessions,
 	useSessionStream,
@@ -51,6 +62,8 @@ function SessionView() {
 	const availableModels = transcript?.availableModels ?? [];
 	const currentAgentId = transcript?.currentAgentId ?? null;
 	const currentModelId = transcript?.currentModelId ?? null;
+	const contextSnapshot = transcript?.contextSnapshot ?? null;
+	const contextSnapshotError = transcript?.contextSnapshotError ?? null;
 	const isLive = transcript?.isLive ?? false;
 	const currentComputerReconciled = useSessionStore((state) =>
 		Boolean(state.visibleSessionsByComputerVersion[computerId]),
@@ -77,11 +90,14 @@ function SessionView() {
 		key: string;
 		agentId: string | null;
 		modelId: string | null;
-	}>({ key, agentId: null, modelId: null });
+		thinkingEffort: SessionThinkingEffort | null;
+	}>({ key, agentId: null, modelId: null, thinkingEffort: null });
 	const selectedAgentId =
 		selectedControls.key === key ? selectedControls.agentId : null;
 	const selectedModelId =
 		selectedControls.key === key ? selectedControls.modelId : null;
+	const selectedThinkingEffort =
+		selectedControls.key === key ? selectedControls.thinkingEffort : null;
 
 	const resolvedAgentId =
 		selectedAgentId ?? currentAgentId ?? availableAgents[0]?.id ?? null;
@@ -89,6 +105,62 @@ function SessionView() {
 		selectedModelId ?? currentModelId ?? availableModels[0]?.id ?? null;
 	const resolvedModelOption =
 		availableModels.find((option) => option.id === resolvedModelId) ?? null;
+	const resolvedProviderId = resolvedModelOption?.providerId ?? null;
+	const resolvedRawModelId = resolvedModelOption?.modelId ?? resolvedModelId;
+	const currentThinkingEffort = transcript?.currentThinkingEffort ?? null;
+	const thinkingOptionsForModel =
+		resolvedModelOption?.thinkingEffortOptions ?? [];
+	const resolvedThinkingEffort =
+		selectedThinkingEffort ??
+		currentThinkingEffort ??
+		resolvedModelOption?.defaultThinkingEffort ??
+		(thinkingOptionsForModel.length > 0 ? thinkingOptionsForModel[0] : null);
+	const thinkingComposerOptions = useMemo<WebComposerSelectOption[]>(() => {
+		if (!resolvedModelOption?.thinkingSupported) return [];
+		return thinkingOptionsForModel.map((effort) => ({
+			id: effort,
+			label: formatThinkingEffortLabel(effort),
+		}));
+	}, [resolvedModelOption?.thinkingSupported, thinkingOptionsForModel]);
+	const hasUserMessage = turns.some(
+		(turn) => turn.kind === "message" && turn.role === "user",
+	);
+	const conversationContextKey = `${turns.length}:${
+		turns.at(-1)?.sequence ?? "empty"
+	}`;
+	const debouncedDraftPrompt = useDebouncedValue(draftPrompt, 350);
+	const contextRequestKey = [
+		key,
+		conversationContextKey,
+		resolvedProviderId ?? "",
+		resolvedRawModelId ?? "",
+		debouncedDraftPrompt,
+	].join("\u0000");
+	const [pendingContextRequestKey, setPendingContextRequestKey] = useState<
+		string | null
+	>(null);
+	const contextRequestSettled =
+		transcript?.contextSnapshotRequestId === contextRequestKey &&
+		(Boolean(contextSnapshot) || Boolean(contextSnapshotError));
+	const contextMeterStatus: WebComposerContextIndicatorStatus =
+		pendingContextRequestKey === contextRequestKey
+			? contextSnapshot
+				? "stale"
+				: "loading"
+			: contextSnapshotError
+				? "error"
+				: contextSnapshot
+					? "ready"
+					: "idle";
+	const contextMeter =
+		contextMeterStatus === "idle" ? null : (
+			<WebComposerContextIndicator
+				status={contextMeterStatus}
+				snapshot={contextSnapshot}
+				hasUserMessage={hasUserMessage}
+				error={contextSnapshotError}
+			/>
+		);
 	const {
 		contentRef: conversationContentRef,
 		followLatest: followLatestConversation,
@@ -154,18 +226,66 @@ function SessionView() {
 		visibleSessionsVersion,
 	]);
 
+	useEffect(() => {
+		if (!channel || !session.deviceId || !transcript || isLive) return;
+		if (contextRequestSettled) {
+			setPendingContextRequestKey((current) =>
+				current === contextRequestKey ? null : current,
+			);
+			return;
+		}
+		if (pendingContextRequestKey === contextRequestKey) return;
+		setPendingContextRequestKey(contextRequestKey);
+		requestContextSnapshot(channel, {
+			computerId,
+			sessionId,
+			deviceId: session.deviceId,
+			requestId: contextRequestKey,
+			providerId: resolvedProviderId,
+			modelId: resolvedRawModelId,
+			pendingPrompt: debouncedDraftPrompt,
+		});
+	}, [
+		channel,
+		computerId,
+		contextRequestKey,
+		contextRequestSettled,
+		debouncedDraftPrompt,
+		isLive,
+		pendingContextRequestKey,
+		resolvedProviderId,
+		resolvedRawModelId,
+		session.deviceId,
+		sessionId,
+		transcript,
+	]);
+
+	const attachmentsHook = useRemoteAttachments({
+		channel,
+		computerId,
+		sessionId,
+		deviceId: session.deviceId,
+	});
+
 	const dispatchSend = useCallback(
 		(submittedPrompt?: string) => {
 			const message = (submittedPrompt ?? draftPrompt).trim();
 			if (!channel || !message || !session.deviceId) return;
+			const readyAttachments = attachmentsHook.getReadyAttachments();
 			const payload: Record<string, unknown> = {
 				message,
 			};
+			if (readyAttachments.length > 0) {
+				payload.attachments = readyAttachments;
+			}
 			if (resolvedAgentId && resolvedModelId) {
 				payload.agent = resolvedAgentId;
 				payload.modelId = resolvedModelOption?.modelId ?? resolvedModelId;
 				if (resolvedModelOption?.providerProfileId) {
 					payload.providerProfileId = resolvedModelOption.providerProfileId;
+				}
+				if (resolvedThinkingEffort && resolvedModelOption?.thinkingSupported) {
+					payload.thinkingEffort = resolvedThinkingEffort;
 				}
 			}
 			const command: InboundCommand = {
@@ -179,10 +299,17 @@ function SessionView() {
 			};
 			pushInboundCommand(channel, command);
 			setDraftPrompt("");
-			setSelectedControls({ key, agentId: null, modelId: null });
+			setSelectedControls({
+				key,
+				agentId: null,
+				modelId: null,
+				thinkingEffort: null,
+			});
+			attachmentsHook.clearAttachments();
 			followLatestConversation();
 		},
 		[
+			attachmentsHook,
 			channel,
 			computerId,
 			draftPrompt,
@@ -191,6 +318,7 @@ function SessionView() {
 			resolvedAgentId,
 			resolvedModelId,
 			resolvedModelOption,
+			resolvedThinkingEffort,
 			session.deviceId,
 			sessionId,
 		],
@@ -348,6 +476,8 @@ function SessionView() {
 									key,
 									agentId,
 									modelId: current.key === key ? current.modelId : null,
+									thinkingEffort:
+										current.key === key ? current.thinkingEffort : null,
 								}))
 							}
 							modelOptions={availableModels}
@@ -357,12 +487,53 @@ function SessionView() {
 									key,
 									agentId: current.key === key ? current.agentId : null,
 									modelId,
+									thinkingEffort: null,
 								}))
 							}
+							thinkingOptions={thinkingComposerOptions}
+							selectedThinkingId={resolvedThinkingEffort}
+							onThinkingChange={(value) =>
+								setSelectedControls((current) => ({
+									key,
+									agentId: current.key === key ? current.agentId : null,
+									modelId: current.key === key ? current.modelId : null,
+									thinkingEffort: value as SessionThinkingEffort,
+								}))
+							}
+							pendingAttachments={attachmentsHook.pendingAttachments}
+							onAddFiles={attachmentsHook.addFiles}
+							onRemoveAttachment={attachmentsHook.removeAttachment}
+							contextMeter={contextMeter}
 						/>
 					</div>
 				</div>
 			</div>
 		</main>
 	);
+}
+
+function formatThinkingEffortLabel(effort: SessionThinkingEffort): string {
+	switch (effort) {
+		case "minimal":
+			return "Minimal";
+		case "low":
+			return "Low";
+		case "medium":
+			return "Medium";
+		case "high":
+			return "High";
+		case "x_high":
+			return "Very high";
+	}
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+	const [debounced, setDebounced] = useState(value);
+
+	useEffect(() => {
+		const timeout = window.setTimeout(() => setDebounced(value), delayMs);
+		return () => window.clearTimeout(timeout);
+	}, [delayMs, value]);
+
+	return debounced;
 }

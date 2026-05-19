@@ -227,6 +227,41 @@ fn search_context(
     query_text: &str,
     search_scope: project_store::AgentRetrievalSearchScope,
 ) -> project_store::AgentContextRetrievalResponse {
+    search_context_with_historical(
+        repo_root,
+        project_id,
+        query_id,
+        query_text,
+        search_scope,
+        false,
+    )
+}
+
+fn search_context_including_historical(
+    repo_root: &Path,
+    project_id: &str,
+    query_id: &str,
+    query_text: &str,
+    search_scope: project_store::AgentRetrievalSearchScope,
+) -> project_store::AgentContextRetrievalResponse {
+    search_context_with_historical(
+        repo_root,
+        project_id,
+        query_id,
+        query_text,
+        search_scope,
+        true,
+    )
+}
+
+fn search_context_with_historical(
+    repo_root: &Path,
+    project_id: &str,
+    query_id: &str,
+    query_text: &str,
+    search_scope: project_store::AgentRetrievalSearchScope,
+    include_historical: bool,
+) -> project_store::AgentContextRetrievalResponse {
     project_store::search_agent_context(
         repo_root,
         project_store::AgentContextRetrievalRequest {
@@ -239,7 +274,10 @@ fn search_context(
             agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
             query_text: query_text.into(),
             search_scope,
-            filters: project_store::AgentContextRetrievalFilters::default(),
+            filters: project_store::AgentContextRetrievalFilters {
+                include_historical,
+                ..project_store::AgentContextRetrievalFilters::default()
+            },
             limit_count: 10,
             allow_keyword_fallback: true,
             created_at: "2026-05-03T12:30:00Z".into(),
@@ -338,7 +376,7 @@ fn lancedb_freshness_phase1_marks_related_path_current_then_stale_after_hash_cha
         related_path,
         "pub fn auth_flow() { /* refactored */ }\n",
     );
-    let after = search_context(
+    let after = search_context_including_historical(
         &repo_root,
         &project_id,
         "fresh-current-after",
@@ -376,7 +414,7 @@ fn lancedb_freshness_phase1_marks_deleted_related_path_source_missing() {
     );
     fs::remove_file(repo_root.join(related_path)).expect("delete related path");
 
-    let response = search_context(
+    let response = search_context_including_historical(
         &repo_root,
         &project_id,
         "fresh-source-missing",
@@ -426,7 +464,7 @@ fn lancedb_freshness_phase1_supersedes_older_record_with_same_fact_key() {
         "2026-05-03T12:04:00Z",
     );
 
-    let response = search_context(
+    let response = search_context_including_historical(
         &repo_root,
         &project_id,
         "fresh-supersession",
@@ -498,7 +536,7 @@ fn lancedb_freshness_phase1_marks_approved_memory_stale_after_source_file_change
         source_path,
         "pub fn memory_source() { /* changed */ }\n",
     );
-    let response = search_context(
+    let response = search_context_including_historical(
         &repo_root,
         &project_id,
         "fresh-memory-stale",
@@ -824,7 +862,7 @@ fn lancedb_freshness_phase7_update_context_supersedes_target_record_automaticall
     assert_eq!(new_record.visibility, "retrieval");
     assert_eq!(new_record.trust["supersedesId"], "fresh-phase7-update-old");
 
-    let response = search_context(
+    let response = search_context_including_historical(
         &repo_root,
         &project_id,
         "fresh-phase7-update-search",
@@ -1076,6 +1114,7 @@ fn lancedb_freshness_phase1_project_context_tool_returns_every_freshness_state()
     let mut request =
         AutonomousProjectContextRequest::new(AutonomousProjectContextAction::SearchProjectRecords);
     request.query = Some("freshcontract state".into());
+    request.include_historical = true;
     request.limit = Some(10);
     let output = runtime
         .execute(AutonomousToolRequest::ProjectContext(request))
@@ -2222,7 +2261,7 @@ fn lancedb_freshness_phase9_retrieval_ranks_current_rows_ahead_of_stale_rows_whe
         "pub fn phase9_rank_stale() { /* changed */ }\n",
     );
 
-    let response = search_context(
+    let response = search_context_including_historical(
         &repo_root,
         &project_id,
         "fresh-phase9-ranking-search",
@@ -2288,6 +2327,7 @@ fn lancedb_freshness_phase9_project_context_direct_reads_include_stale_evidence_
     let mut request =
         AutonomousProjectContextRequest::new(AutonomousProjectContextAction::GetProjectRecord);
     request.record_id = Some("fresh-phase9-direct-record".into());
+    request.include_historical = true;
     let output = execute_project_context(&runtime, request);
     let record = output.record.expect("direct project record");
     assert_eq!(record.trust["freshnessState"], "stale");
@@ -2408,6 +2448,7 @@ fn lancedb_freshness_phase9_direct_memory_read_preserves_review_state_while_anno
     let mut request =
         AutonomousProjectContextRequest::new(AutonomousProjectContextAction::GetMemory);
     request.memory_id = Some("fresh-phase9-direct-memory".into());
+    request.include_historical = true;
     let output = execute_project_context(&runtime, request);
     let memory = output.memory.expect("direct approved memory");
     assert_eq!(memory.trust["freshnessState"], "stale");

@@ -5,9 +5,11 @@ import {
 	Scripts,
 } from "@tanstack/react-router";
 import { Button } from "@xero/ui/components/ui/button";
+import { Toaster } from "@xero/ui/components/ui/toaster";
 import type { ReactNode } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
+import { PwaServiceWorkerManager } from "#/components/pwa-service-worker-manager";
 import {
 	getPublicRuntimeServerUrl,
 	RUNTIME_SERVER_URL_META_NAME,
@@ -22,16 +24,71 @@ export const Route = createRootRoute({
 			},
 			{
 				name: "viewport",
-				content: "width=device-width, initial-scale=1",
+				content: "width=device-width, initial-scale=1, viewport-fit=cover",
 			},
 			{
-				title: "Cloud",
+				title: "Xero Cloud",
+			},
+			{
+				name: "application-name",
+				content: "Xero Cloud",
+			},
+			{
+				name: "apple-mobile-web-app-capable",
+				content: "yes",
+			},
+			{
+				name: "mobile-web-app-capable",
+				content: "yes",
+			},
+			{
+				name: "apple-mobile-web-app-title",
+				content: "Xero",
+			},
+			{
+				name: "apple-mobile-web-app-status-bar-style",
+				content: "black-translucent",
+			},
+			{
+				name: "theme-color",
+				content: "#121212",
+			},
+			{
+				name: "msapplication-TileColor",
+				content: "#121212",
 			},
 		],
 		links: [
 			{
 				rel: "stylesheet",
 				href: appCss,
+			},
+			{
+				rel: "manifest",
+				href: "/manifest.webmanifest",
+			},
+			{
+				rel: "icon",
+				type: "image/png",
+				sizes: "16x16",
+				href: "/icons/favicon-16x16.png",
+			},
+			{
+				rel: "icon",
+				type: "image/png",
+				sizes: "32x32",
+				href: "/icons/favicon-32x32.png",
+			},
+			{
+				rel: "icon",
+				type: "image/png",
+				sizes: "48x48",
+				href: "/icons/favicon-48x48.png",
+			},
+			{
+				rel: "apple-touch-icon",
+				sizes: "180x180",
+				href: "/apple-touch-icon.png",
 			},
 		],
 	}),
@@ -51,6 +108,8 @@ function RootDocument({ children }: { children: ReactNode }) {
 			</head>
 			<body>
 				{children}
+				<PwaServiceWorkerManager />
+				<Toaster />
 				<Scripts />
 			</body>
 		</html>

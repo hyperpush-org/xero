@@ -119,7 +119,7 @@ export interface RuntimeAgentDescriptor {
 }
 
 export function getRuntimeAgentAvailability(
-  _env: RuntimeAgentAvailabilityEnvironment = import.meta.env,
+  _env: RuntimeAgentAvailabilityEnvironment = {},
 ): RuntimeAgentAvailability {
   return {}
 }

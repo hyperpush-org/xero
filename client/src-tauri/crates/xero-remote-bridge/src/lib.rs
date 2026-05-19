@@ -394,6 +394,9 @@ pub enum InboundCommandKind {
     StartSession,
     ResolveOperatorAction,
     CancelRun,
+    ContextSnapshot,
+    StageAttachment,
+    DiscardAttachment,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1756,6 +1759,10 @@ mod tests {
         let parsed: InboundCommandKind =
             serde_json::from_str("\"list_projects\"").expect("deserialize");
         assert_eq!(parsed, InboundCommandKind::ListProjects);
+
+        let parsed: InboundCommandKind =
+            serde_json::from_str("\"context_snapshot\"").expect("deserialize context snapshot");
+        assert_eq!(parsed, InboundCommandKind::ContextSnapshot);
     }
 
     #[test]

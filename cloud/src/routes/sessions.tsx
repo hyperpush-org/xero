@@ -157,7 +157,7 @@ function SessionsEmptyState({
 
 	return (
 		<main className="flex min-h-dvh flex-col bg-background text-foreground">
-			<header className="sticky top-0 z-20 flex items-center justify-between gap-2 bg-background px-4 py-3">
+			<header className="sticky top-0 z-20 flex items-center justify-between gap-2 bg-background px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)]">
 				<div className="flex items-center gap-2">
 					<BrandLogo className="size-5" aria-label="Xero" />
 					<span className="text-sm font-medium tracking-tight text-foreground">

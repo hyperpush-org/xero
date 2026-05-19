@@ -1,0 +1,122 @@
+<!doctype html>
+<html class="theme-dusk dark" data-theme="dusk" lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#121212" />
+		<title>Xero Cloud is offline</title>
+		<style>
+			:root {
+				color-scheme: dark;
+				--background: #121212;
+				--foreground: #f8f9fa;
+				--card: #1a1a1a;
+				--muted-foreground: #a8aeb5;
+				--border: #2d2d2d;
+				--primary: #d4a574;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				min-height: 100dvh;
+				margin: 0;
+				display: grid;
+				place-items: center;
+				padding: max(env(safe-area-inset-top), 1.5rem) 1.5rem
+					max(env(safe-area-inset-bottom), 1.5rem);
+				background:
+					radial-gradient(circle at 50% 0%, rgba(212, 165, 116, 0.08), transparent 32rem),
+					var(--background);
+				color: var(--foreground);
+				font-family:
+					ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+					sans-serif;
+			}
+
+			main {
+				width: min(100%, 24rem);
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 1.25rem;
+				text-align: center;
+			}
+
+			.logo {
+				width: 4rem;
+				height: 4rem;
+			}
+
+			.panel {
+				width: 100%;
+				display: flex;
+				flex-direction: column;
+				gap: 0.75rem;
+				border: 1px solid var(--border);
+				border-radius: 0.5rem;
+				background: var(--card);
+				padding: 1.25rem;
+			}
+
+			h1 {
+				margin: 0;
+				font-size: 1rem;
+				font-weight: 600;
+				letter-spacing: 0;
+			}
+
+			p {
+				margin: 0;
+				color: var(--muted-foreground);
+				font-size: 0.875rem;
+				line-height: 1.55;
+			}
+
+			.status {
+				color: var(--primary);
+				font-size: 0.75rem;
+				font-weight: 500;
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<svg
+				class="logo"
+				viewBox="0 0 420 420"
+				xmlns="http://www.w3.org/2000/svg"
+				fill="none"
+				role="img"
+				aria-label="Xero"
+			>
+				<path
+					d="M237.02 237.023H419.999V370.004C419.999 397.618 397.614 420.004 369.999 420.004H237.02V237.023Z"
+					fill="#D4A574"
+				/>
+				<path
+					d="M182.98 182.984L0.000640869 182.984L0.000629244 50.0041C0.00062683 22.3898 22.3864 0.00413391 50.0006 0.0041315L182.98 0.00411987L182.98 182.984Z"
+					fill="#D4A574"
+				/>
+				<path
+					d="M0 237.023H182.98V420.004H50C22.3857 420.004 0 397.618 0 370.004L0 237.023Z"
+					fill="#4E4337"
+				/>
+				<path
+					d="M237.02 0L370 0C397.614 0 420 22.3858 420 50V182.98H237.02V0Z"
+					fill="#4E4337"
+				/>
+			</svg>
+			<section class="panel" aria-labelledby="offline-title">
+				<div class="status">Offline</div>
+				<h1 id="offline-title">Xero Cloud needs the network</h1>
+				<p>
+					Reconnect to continue with live desktop sessions. Private session
+					content is not stored for offline use.
+				</p>
+			</section>
+		</main>
+	</body>
+</html>

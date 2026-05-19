@@ -68,52 +68,40 @@ pub fn open_global_database(database_path: &Path) -> Result<Connection, CommandE
     }
 
     let observed_user_version = read_user_version(&connection);
-    if database_existed && observed_user_version != migrations::GLOBAL_DATABASE_SCHEMA_VERSION {
-        let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-        drop(connection);
+    if database_existed && observed_user_version > migrations::GLOBAL_DATABASE_SCHEMA_VERSION {
+        return Err(global_database_schema_too_new_error(
+            database_path,
+            observed_user_version,
+        ));
+    }
 
-        quarantine_incompatible_database(database_path, observed_user_version)?;
+    let migration_backup_path =
+        if database_existed && observed_user_version < migrations::GLOBAL_DATABASE_SCHEMA_VERSION {
+            checkpoint_global_database_for_backup(&connection, database_path)?;
+            Some(backup_global_database_before_migration(
+                database_path,
+                observed_user_version,
+                migrations::GLOBAL_DATABASE_SCHEMA_VERSION,
+            )?)
+        } else {
+            None
+        };
 
-        let mut reset_connection = Connection::open(database_path).map_err(|error| {
-            CommandError::retryable(
-                "global_database_open_failed",
-                format!(
-                    "Xero could not recreate the global database at {}: {error}",
-                    database_path.display()
-                ),
-            )
-        })?;
-        configure_connection(&reset_connection)?;
-        migrations::migrations()
-            .to_latest(&mut reset_connection)
-            .map_err(|error| global_database_migration_error(database_path, error))?;
-        connection = reset_connection;
-    } else {
-        match migrations::migrations().to_latest(&mut connection) {
-            Ok(()) => {}
-            Err(error) if database_existed && is_database_too_far_ahead(&error) => {
-                let observed_user_version = read_user_version(&connection);
-                let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-                drop(connection);
-
-                quarantine_incompatible_database(database_path, observed_user_version)?;
-
-                let mut reset_connection = Connection::open(database_path).map_err(|error| {
-                    CommandError::retryable(
-                        "global_database_open_failed",
-                        format!(
-                            "Xero could not recreate the global database at {}: {error}",
-                            database_path.display()
-                        ),
-                    )
-                })?;
-                configure_connection(&reset_connection)?;
-                migrations::migrations()
-                    .to_latest(&mut reset_connection)
-                    .map_err(|error| global_database_migration_error(database_path, error))?;
-                connection = reset_connection;
-            }
-            Err(error) => return Err(global_database_migration_error(database_path, error)),
+    match migrations::migrations().to_latest(&mut connection) {
+        Ok(()) => {}
+        Err(error) if is_database_too_far_ahead(&error) => {
+            let observed_user_version = read_user_version(&connection);
+            return Err(global_database_schema_too_new_error(
+                database_path,
+                observed_user_version,
+            ));
+        }
+        Err(error) => {
+            return Err(global_database_migration_error(
+                database_path,
+                migration_backup_path.as_deref(),
+                error,
+            ));
         }
     }
 
@@ -146,12 +134,33 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), Comman
         })
 }
 
-fn global_database_migration_error(database_path: &Path, error: MigrationError) -> CommandError {
+fn global_database_migration_error(
+    database_path: &Path,
+    backup_path: Option<&Path>,
+    error: MigrationError,
+) -> CommandError {
+    let backup_hint = backup_path
+        .map(|path| format!(" A pre-migration backup was saved at {}.", path.display()))
+        .unwrap_or_default();
     CommandError::system_fault(
         "global_database_migration_failed",
         format!(
-            "Xero could not initialize the global database at {}. The local app state may need to be reset: {error}",
-            database_path.display()
+            "Xero could not migrate the global database at {}.{backup_hint} The local app state was not reset: {error}",
+            database_path.display(),
+        ),
+    )
+}
+
+fn global_database_schema_too_new_error(
+    database_path: &Path,
+    observed_user_version: i64,
+) -> CommandError {
+    CommandError::user_fixable(
+        "global_database_schema_too_new",
+        format!(
+            "The global database at {} was created by a newer Xero build (schema v{}). Install a newer build or move that app-data database aside before launching this one.",
+            database_path.display(),
+            observed_user_version.max(0),
         ),
     )
 }
@@ -175,52 +184,69 @@ fn read_user_version(connection: &Connection) -> i64 {
         .unwrap_or(0)
 }
 
-fn quarantine_incompatible_database(
+fn checkpoint_global_database_for_backup(
+    connection: &Connection,
     database_path: &Path,
-    observed_user_version: i64,
 ) -> Result<(), CommandError> {
-    let backup_path = next_incompatible_backup_path(database_path, observed_user_version);
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .map_err(|error| {
+            CommandError::retryable(
+                "global_database_checkpoint_failed",
+                format!(
+                    "Xero needs to migrate the global database at {} but could not checkpoint pending SQLite WAL data before backing it up: {error}",
+                    database_path.display(),
+                ),
+            )
+        })
+}
 
-    fs::rename(database_path, &backup_path).map_err(|error| {
+fn backup_global_database_before_migration(
+    database_path: &Path,
+    from_version: i64,
+    to_version: i64,
+) -> Result<PathBuf, CommandError> {
+    let backup_path = next_schema_migration_backup_path(database_path, from_version, to_version);
+
+    fs::copy(database_path, &backup_path).map_err(|error| {
         CommandError::retryable(
             "global_database_backup_failed",
             format!(
-                "Xero found pre-release app state from an incompatible build at {} but could not move it aside to {}: {error}",
+                "Xero needs to migrate the global database at {} but could not create a pre-migration backup at {}: {error}",
                 database_path.display(),
                 backup_path.display(),
             ),
         )
     })?;
 
-    remove_database_sidecars(database_path);
-    Ok(())
+    Ok(backup_path)
 }
 
-fn next_incompatible_backup_path(database_path: &Path, observed_user_version: i64) -> PathBuf {
+fn next_schema_migration_backup_path(
+    database_path: &Path,
+    from_version: i64,
+    to_version: i64,
+) -> PathBuf {
     let file_name = database_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(GLOBAL_DATABASE_FILE_NAME);
-    let version_label = observed_user_version.max(0);
+    let from_label = from_version.max(0);
+    let to_label = to_version.max(0);
     let parent = database_path.parent().unwrap_or_else(|| Path::new("."));
 
-    let mut candidate = parent.join(format!("{file_name}.incompatible-v{version_label}.bak"));
+    let mut candidate = parent.join(format!(
+        "{file_name}.pre-migration-v{from_label}-to-v{to_label}.bak"
+    ));
     let mut attempt = 1;
     while candidate.exists() {
         candidate = parent.join(format!(
-            "{file_name}.incompatible-v{version_label}.{attempt}.bak"
+            "{file_name}.pre-migration-v{from_label}-to-v{to_label}.{attempt}.bak"
         ));
         attempt += 1;
     }
 
     candidate
-}
-
-fn remove_database_sidecars(database_path: &Path) {
-    let wal_path = database_path.with_extension("db-wal");
-    let shm_path = database_path.with_extension("db-shm");
-    let _ = fs::remove_file(wal_path);
-    let _ = fs::remove_file(shm_path);
 }
 
 #[cfg(test)]
@@ -258,6 +284,8 @@ mod tests {
             "runtime_settings",
             "dictation_settings",
             "browser_control_settings",
+            "adrenaline_mode_settings",
+            "closed_lid_mode_settings",
             "soul_settings",
             "skill_sources",
             "mcp_registry",
@@ -464,20 +492,168 @@ mod tests {
     }
 
     #[test]
-    fn open_global_database_rebuilds_incompatible_pre_release_state() {
+    fn open_global_database_migrates_v10_state_without_losing_user_data() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let database_path = tempdir.path().join("xero.db");
 
         {
-            let connection = Connection::open(&database_path).expect("open old db");
+            let connection = Connection::open(&database_path).expect("open v10 db");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE provider_credentials (
+                        provider_id              TEXT    PRIMARY KEY,
+                        kind                     TEXT    NOT NULL,
+                        api_key                  TEXT,
+                        oauth_account_id         TEXT,
+                        oauth_session_id         TEXT,
+                        oauth_access_token       TEXT,
+                        oauth_refresh_token      TEXT,
+                        oauth_expires_at         INTEGER,
+                        base_url                 TEXT,
+                        api_version              TEXT,
+                        region                   TEXT,
+                        scope_project_id         TEXT,
+                        default_model_id         TEXT,
+                        updated_at               TEXT    NOT NULL
+                    );
+
+                    CREATE TABLE openai_codex_sessions (
+                        account_id TEXT PRIMARY KEY,
+                        provider_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        access_token TEXT NOT NULL,
+                        refresh_token TEXT NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE projects (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        description TEXT NOT NULL DEFAULT '',
+                        milestone TEXT NOT NULL DEFAULT '',
+                        total_phases INTEGER NOT NULL DEFAULT 0 CHECK (total_phases >= 0),
+                        completed_phases INTEGER NOT NULL DEFAULT 0 CHECK (completed_phases >= 0),
+                        active_phase INTEGER NOT NULL DEFAULT 0 CHECK (active_phase >= 0),
+                        branch TEXT,
+                        runtime TEXT,
+                        start_targets TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE repositories (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        root_path TEXT NOT NULL UNIQUE,
+                        display_name TEXT NOT NULL,
+                        branch TEXT,
+                        head_sha TEXT,
+                        is_git_repo INTEGER NOT NULL DEFAULT 1 CHECK (is_git_repo IN (0, 1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    INSERT INTO provider_credentials (
+                        provider_id, kind, oauth_account_id, oauth_session_id,
+                        oauth_access_token, oauth_refresh_token, oauth_expires_at, updated_at
+                    ) VALUES (
+                        'openai-codex', 'oauth_session', 'acct-1', 'session-1',
+                        'access-token', 'refresh-token', 1893456000, '2026-05-18T12:00:00Z'
+                    );
+                    INSERT INTO openai_codex_sessions (
+                        account_id, provider_id, session_id, access_token,
+                        refresh_token, expires_at, updated_at
+                    ) VALUES (
+                        'acct-1', 'openai-codex', 'session-1', 'access-token',
+                        'refresh-token', 1893456000, '2026-05-18T12:00:00Z'
+                    );
+                    INSERT INTO projects (
+                        id, name, description, milestone, total_phases, completed_phases,
+                        active_phase, branch, runtime, start_targets, created_at, updated_at
+                    ) VALUES (
+                        'project-1', 'mesh-lang', '', '', 0, 0, 0,
+                        'main', NULL, '[]', '2026-05-18T12:00:00Z', '2026-05-18T12:00:00Z'
+                    );
+                    INSERT INTO repositories (
+                        id, project_id, root_path, display_name, branch, head_sha,
+                        is_git_repo, created_at, updated_at
+                    ) VALUES (
+                        'repo-1', 'project-1', '/Users/sn0w/Documents/dev/mesh-lang',
+                        'mesh-lang', 'main', 'abc123', 1,
+                        '2026-05-18T12:00:00Z', '2026-05-18T12:00:00Z'
+                    );
+                    PRAGMA user_version = 10;
+                    "#,
+                )
+                .expect("seed v10 user state");
+        }
+
+        let connection = open_global_database(&database_path).expect("migrate v10 db");
+
+        assert_eq!(
+            read_user_version(&connection),
+            migrations::GLOBAL_DATABASE_SCHEMA_VERSION,
+            "the global database should advance to the latest schema"
+        );
+        assert_eq!(
+            table_count(&connection, "adrenaline_mode_settings"),
+            1,
+            "the v11 migration should add Adrenaline Mode settings storage"
+        );
+        assert_eq!(
+            table_count(&connection, "closed_lid_mode_settings"),
+            1,
+            "the v12 migration should add Closed-Lid Mode settings storage"
+        );
+        assert_eq!(
+            row_count(&connection, "provider_credentials"),
+            1,
+            "OAuth credentials must survive schema upgrades"
+        );
+        assert_eq!(
+            row_count(&connection, "openai_codex_sessions"),
+            1,
+            "OpenAI Codex OAuth sessions must survive schema upgrades"
+        );
+        assert_eq!(
+            row_count(&connection, "projects"),
+            1,
+            "imported projects must survive schema upgrades"
+        );
+        assert_eq!(
+            row_count(&connection, "repositories"),
+            1,
+            "imported repositories must survive schema upgrades"
+        );
+        assert!(
+            tempdir
+                .path()
+                .join("xero.db.pre-migration-v10-to-v12.bak")
+                .exists(),
+            "existing user state should be copied before an in-place schema upgrade"
+        );
+    }
+
+    #[test]
+    fn open_global_database_rejects_newer_schema_without_rebuilding() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let database_path = tempdir.path().join("xero.db");
+
+        {
+            let connection = Connection::open(&database_path).expect("open future db");
             connection
                 .execute_batch(
                     "PRAGMA user_version = 99; CREATE TABLE stale_marker (id INTEGER PRIMARY KEY);",
                 )
-                .expect("seed incompatible db");
+                .expect("seed future db");
         }
 
-        let connection = open_global_database(&database_path).expect("rebuild incompatible db");
+        let error = open_global_database(&database_path).expect_err("newer db should be rejected");
+        assert_eq!(error.code, "global_database_schema_too_new");
+
+        let connection = Connection::open(&database_path).expect("reopen future db");
         let stale_table_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'stale_marker'",
@@ -486,12 +662,17 @@ mod tests {
             )
             .expect("count stale table");
         assert_eq!(
-            stale_table_count, 0,
-            "incompatible pre-release state should be moved aside before rebuilding"
+            stale_table_count, 1,
+            "state from a newer app version must not be rebuilt or discarded"
+        );
+        assert_eq!(
+            read_user_version(&connection),
+            99,
+            "the newer schema version should remain intact"
         );
         assert!(
-            tempdir.path().join("xero.db.incompatible-v99.bak").exists(),
-            "the incompatible database should be quarantined for inspection"
+            !tempdir.path().join("xero.db.incompatible-v99.bak").exists(),
+            "newer app-data should not be moved aside and replaced"
         );
     }
 
@@ -587,5 +768,23 @@ mod tests {
             .query_map([], |row| row.get::<_, String>(1))
             .expect("query table_info");
         rows.map(|row| row.expect("read column name")).collect()
+    }
+
+    fn table_count(connection: &Connection, table: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .expect("count table")
+    }
+
+    fn row_count(connection: &Connection, table: &str) -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count rows")
     }
 }

@@ -11,6 +11,7 @@
     "./styles.css": "./src/styles.css",
     "./styles-extra-themes.css": "./src/styles-extra-themes.css",
     "./lib/utils": "./src/lib/utils.ts",
+    "./lib/agent-attachments": "./src/lib/agent-attachments.ts",
     "./lib/byte-budget-cache": "./src/lib/byte-budget-cache.ts",
     "./lib/shiki": "./src/lib/shiki.ts",
     "./model/runtime-stream": "./src/model/runtime-stream.ts",
@@ -25,6 +26,7 @@
     "./components/app-logo": "./src/components/app-logo.tsx"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
@@ -68,7 +70,9 @@
     "lucide-react": "^0.564.0",
     "mermaid": "11.14.0",
     "motion": "12.38.0",
+    "next-themes": "^0.4.6",
     "react-day-picker": "9.13.2",
+    "react-hook-form": "^7.76.0",
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.0",
     "shiki": "4.0.2",
@@ -80,8 +84,13 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "^22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "typescript": "5.7.3"
+    "jsdom": "29.0.2",
+    "typescript": "5.7.3",
+    "vitest": "4.1.4"
   }
 }

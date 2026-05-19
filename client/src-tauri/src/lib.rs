@@ -31,6 +31,8 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
         .manage(commands::BrowserState::default())
         .manage(commands::DictationState::default())
         .manage(commands::EmulatorState::default())
+        .manage(commands::AdrenalineModeState::default())
+        .manage(commands::ClosedLidModeState::default())
         .manage(commands::remote_bridge::RemoteBridgeRuntimeState::default())
         .manage(commands::project_assets::ProjectAssetState::default())
         .register_asynchronous_uri_scheme_protocol(
@@ -96,6 +98,15 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                         &payload,
                     );
                 });
+            }
+
+            {
+                let app_handle = app.handle().clone();
+                if let Err(error) =
+                    commands::adrenaline_mode::apply_persisted_settings_on_startup(&app_handle)
+                {
+                    eprintln!("[power] Adrenaline Mode startup skipped: {error}");
+                }
             }
 
             {
@@ -199,6 +210,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 use tauri::Manager;
+                commands::adrenaline_mode::shutdown_on_close(window.app_handle());
                 commands::dictation::shutdown_on_close(window.app_handle());
                 commands::emulator::shutdown::shutdown_on_close(window.app_handle());
                 commands::remote_bridge::shutdown_on_close(window.app_handle());
@@ -409,6 +421,10 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::soul_settings::soul_update_settings,
             commands::agent_tooling_settings::agent_tooling_settings,
             commands::agent_tooling_settings::agent_tooling_update_settings,
+            commands::adrenaline_mode::adrenaline_mode_settings,
+            commands::adrenaline_mode::adrenaline_mode_update_settings,
+            commands::adrenaline_mode::closed_lid_mode_settings,
+            commands::adrenaline_mode::closed_lid_mode_update_settings,
             commands::browser::browser_show,
             commands::browser::browser_resize,
             commands::browser::browser_hide,
@@ -575,6 +591,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Xero desktop host")
         .run(|app, event| {
+            if matches!(
+                &event,
+                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+            ) {
+                commands::adrenaline_mode::shutdown_on_close(app);
+            }
+
             #[cfg(target_os = "macos")]
             {
                 if let tauri::RunEvent::Reopen {

@@ -1,0 +1,35 @@
+{
+	"id": "/",
+	"name": "Xero Cloud",
+	"short_name": "Xero",
+	"description": "Install Xero Cloud to drive your desktop coding sessions from any supported device.",
+	"start_url": "/?source=pwa",
+	"scope": "/",
+	"display": "standalone",
+	"theme_color": "#121212",
+	"background_color": "#101010",
+	"icons": [
+		{
+			"src": "/icons/icon-192x192.png",
+			"sizes": "192x192",
+			"type": "image/png"
+		},
+		{
+			"src": "/icons/icon-512x512.png",
+			"sizes": "512x512",
+			"type": "image/png"
+		},
+		{
+			"src": "/icons/maskable-icon-192x192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "maskable"
+		},
+		{
+			"src": "/icons/maskable-icon-512x512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
+		}
+	]
+}
