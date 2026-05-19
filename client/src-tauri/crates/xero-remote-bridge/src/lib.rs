@@ -387,6 +387,9 @@ pub fn encode_relay_frame_payload(envelope: &RuntimeEnvelope) -> BridgeResult<Js
 pub enum InboundCommandKind {
     SendMessage,
     ListSessions,
+    ListProjects,
+    SetSessionVisibility,
+    ArchiveSession,
     SessionAttached,
     StartSession,
     ResolveOperatorAction,
@@ -810,12 +813,29 @@ pub struct RemoteBridge<I, V> {
     identity_store: I,
     visibility_store: V,
     client: Client,
+    account_devices_cache: Mutex<Option<CachedAccountDevices>>,
     connected: AtomicBool,
     seq_by_session: Mutex<HashMap<String, u64>>,
     replay_by_session: Mutex<HashMap<String, Vec<RuntimeEnvelope>>>,
     outbound_tx: mpsc::Sender<OutboundFrame>,
     outbound_rx: Mutex<mpsc::Receiver<OutboundFrame>>,
     inbound_tx: broadcast::Sender<InboundCommand>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedAccountDevices {
+    account_id: Option<String>,
+    desktop_device_id: Option<String>,
+    fetched_at: Instant,
+    devices: Vec<AccountDevice>,
+}
+
+impl CachedAccountDevices {
+    fn is_fresh_for(&self, identity: &DesktopIdentity, now: Instant) -> bool {
+        self.account_id == identity.account_id
+            && self.desktop_device_id == identity.desktop_device_id
+            && now.saturating_duration_since(self.fetched_at) <= ACCOUNT_DEVICES_CACHE_TTL
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -839,9 +859,10 @@ impl Default for DesktopBridgeLoopOptions {
     }
 }
 
-const CONTROL_SESSION_IDS: [&str; 2] = ["__sessions__", "__new__"];
+const CONTROL_SESSION_IDS: [&str; 3] = ["__sessions__", "__projects__", "__new__"];
 const MAX_SESSION_REPLAY_FRAMES: usize = 512;
 const RELAY_TOKEN_REFRESH_SKEW_SECONDS: i64 = 120;
+const ACCOUNT_DEVICES_CACHE_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RelayTokenRefreshAuth {
@@ -862,6 +883,7 @@ where
             identity_store,
             visibility_store,
             client: Client::new(),
+            account_devices_cache: Mutex::new(None),
             connected: AtomicBool::new(false),
             seq_by_session: Mutex::new(HashMap::new()),
             replay_by_session: Mutex::new(HashMap::new()),
@@ -947,6 +969,7 @@ where
         let identity = identity_from_github_session(session_id.clone(), session)?;
         let status = auth_status_from_identity(&identity);
         self.identity_store.save(&identity)?;
+        self.clear_account_devices_cache()?;
         Ok(status)
     }
 
@@ -963,6 +986,7 @@ where
             let _ignored = decode_http_allow_empty(response)?;
         }
         self.identity_store.save(&DesktopIdentity::generate())?;
+        self.clear_account_devices_cache()?;
         Ok(())
     }
 
@@ -1015,9 +1039,12 @@ where
         let Some(identity) = self.identity_store.load()? else {
             return Ok(Vec::new());
         };
-        let Some(jwt) = identity.desktop_jwt else {
+        let Some(jwt) = identity.desktop_jwt.as_deref() else {
             return Ok(Vec::new());
         };
+        if let Some(devices) = self.cached_account_devices(&identity, Instant::now())? {
+            return Ok(devices);
+        }
 
         let response = self
             .client
@@ -1025,10 +1052,11 @@ where
             .bearer_auth(jwt)
             .send()?;
         let value: JsonValue = decode_http(response)?;
-        Ok(
+        let devices: Vec<AccountDevice> =
             serde_json::from_value(value.get("devices").cloned().unwrap_or_else(|| json!([])))
-                .unwrap_or_default(),
-        )
+                .unwrap_or_default();
+        self.store_account_devices_cache(&identity, devices.clone())?;
+        Ok(devices)
     }
 
     pub fn revoke_device(&self, device_id: &str) -> BridgeResult<()> {
@@ -1047,6 +1075,7 @@ where
             .bearer_auth(jwt)
             .send()?;
         let _ignored: JsonValue = decode_http_allow_empty(response)?;
+        self.clear_account_devices_cache()?;
         Ok(())
     }
 
@@ -1134,6 +1163,30 @@ where
             session_id: session_id.to_owned(),
             kind: EnvelopeKind::Event,
             payload: runtime_event,
+        };
+        self.record_envelope(envelope.clone())?;
+        self.enqueue_envelope(&envelope)?;
+        encode_relay_frame_payload(&envelope)
+    }
+
+    pub fn forward_session_removed(
+        &self,
+        removed_session_id: &str,
+        payload: JsonValue,
+    ) -> BridgeResult<JsonValue> {
+        self.visibility_store
+            .set_visible(removed_session_id, false)?;
+        let identity = self.ensure_registered()?;
+        let computer_id = identity.desktop_device_id.unwrap_or_default();
+        let control_session_id = "__sessions__";
+        let seq = self.next_seq(control_session_id)?;
+        let envelope = RuntimeEnvelope {
+            v: 1,
+            seq,
+            computer_id,
+            session_id: control_session_id.to_owned(),
+            kind: EnvelopeKind::SessionRemoved,
+            payload,
         };
         self.record_envelope(envelope.clone())?;
         self.enqueue_envelope(&envelope)?;
@@ -1237,6 +1290,49 @@ where
         ) {
             let _ = self.refresh_relay_token()?;
         }
+        Ok(())
+    }
+
+    fn cached_account_devices(
+        &self,
+        identity: &DesktopIdentity,
+        now: Instant,
+    ) -> BridgeResult<Option<Vec<AccountDevice>>> {
+        let cache = self
+            .account_devices_cache
+            .lock()
+            .map_err(|_| BridgeError::LockPoisoned)?;
+        Ok(cache.as_ref().and_then(|cached| {
+            cached
+                .is_fresh_for(identity, now)
+                .then(|| cached.devices.clone())
+        }))
+    }
+
+    fn store_account_devices_cache(
+        &self,
+        identity: &DesktopIdentity,
+        devices: Vec<AccountDevice>,
+    ) -> BridgeResult<()> {
+        let mut cache = self
+            .account_devices_cache
+            .lock()
+            .map_err(|_| BridgeError::LockPoisoned)?;
+        *cache = Some(CachedAccountDevices {
+            account_id: identity.account_id.clone(),
+            desktop_device_id: identity.desktop_device_id.clone(),
+            fetched_at: Instant::now(),
+            devices,
+        });
+        Ok(())
+    }
+
+    fn clear_account_devices_cache(&self) -> BridgeResult<()> {
+        let mut cache = self
+            .account_devices_cache
+            .lock()
+            .map_err(|_| BridgeError::LockPoisoned)?;
+        *cache = None;
         Ok(())
     }
 
@@ -1653,16 +1749,28 @@ mod tests {
     }
 
     #[test]
+    fn inbound_command_kind_serializes_list_projects_in_snake_case() {
+        let kind = InboundCommandKind::ListProjects;
+        let serialized = serde_json::to_string(&kind).expect("serialize");
+        assert_eq!(serialized, "\"list_projects\"");
+        let parsed: InboundCommandKind =
+            serde_json::from_str("\"list_projects\"").expect("deserialize");
+        assert_eq!(parsed, InboundCommandKind::ListProjects);
+    }
+
+    #[test]
     fn initial_desktop_session_ids_include_control_topics_once() {
         assert_eq!(
             initial_desktop_session_ids(vec![
                 "__sessions__".into(),
                 "session-1".into(),
                 "__new__".into(),
+                "__projects__".into(),
                 "session-1".into(),
             ]),
             vec![
                 "__sessions__".to_string(),
+                "__projects__".to_string(),
                 "__new__".to_string(),
                 "session-1".to_string(),
             ]
@@ -1691,6 +1799,62 @@ mod tests {
         assert_eq!(encoded["userAgent"], "browser");
         assert_eq!(encoded["createdAt"], "2026-05-17T06:00:00Z");
         assert!(encoded.get("account_id").is_none());
+    }
+
+    #[test]
+    fn account_devices_cache_is_scoped_and_short_lived() {
+        let bridge = RemoteBridge::new(
+            BridgeConfig::local_default(),
+            FileIdentityStore::new(tempfile_path("device-cache").join("identity.json")),
+            MemorySessionVisibilityStore::default(),
+        );
+        let identity = test_identity();
+        let devices = vec![AccountDevice {
+            id: "web-1".into(),
+            account_id: "account-1".into(),
+            kind: "web".into(),
+            name: Some("Xero Web".into()),
+            user_agent: Some("browser".into()),
+            last_seen: None,
+            created_at: "2026-05-18T00:00:00Z".into(),
+            revoked_at: None,
+        }];
+
+        assert!(bridge
+            .cached_account_devices(&identity, std::time::Instant::now())
+            .expect("empty cache")
+            .is_none());
+
+        bridge
+            .store_account_devices_cache(&identity, devices.clone())
+            .expect("store devices");
+
+        assert_eq!(
+            bridge
+                .cached_account_devices(&identity, std::time::Instant::now())
+                .expect("fresh cache"),
+            Some(devices.clone())
+        );
+
+        let mut other_identity = identity.clone();
+        other_identity.account_id = Some("account-2".into());
+        assert!(bridge
+            .cached_account_devices(&other_identity, std::time::Instant::now())
+            .expect("other account cache")
+            .is_none());
+
+        let expired_at =
+            std::time::Instant::now() + ACCOUNT_DEVICES_CACHE_TTL + Duration::from_millis(1);
+        assert!(bridge
+            .cached_account_devices(&identity, expired_at)
+            .expect("expired cache")
+            .is_none());
+
+        bridge.clear_account_devices_cache().expect("clear cache");
+        assert!(bridge
+            .cached_account_devices(&identity, std::time::Instant::now())
+            .expect("cleared cache")
+            .is_none());
     }
 
     #[test]
@@ -1883,6 +2047,55 @@ mod tests {
             .expect("forward bytes");
         let next_envelope = decode_envelope(&payload).expect("decode forward");
         assert!(next_envelope.seq > envelope.seq);
+    }
+
+    #[test]
+    fn session_removed_clears_visibility_and_emits_control_envelope() {
+        let temp = tempfile_path("bridge-session-removed");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        identity_store.save(&test_identity()).expect("identity");
+        let visibility = MemorySessionVisibilityStore::default();
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store, visibility);
+        bridge
+            .set_session_visibility("session-1", true)
+            .expect("visible");
+
+        let payload = bridge
+            .forward_session_removed(
+                "session-1",
+                json!({
+                    "schema": "xero.remote_session_removed.v1",
+                    "projectId": "project-1",
+                    "sessionId": "session-1",
+                }),
+            )
+            .expect("removed payload");
+
+        assert!(!bridge
+            .visibility_store
+            .is_visible("session-1")
+            .expect("visibility cleared"));
+        assert_eq!(payload["kind"], "session_removed");
+        let receiver = bridge.outbound_rx.lock().expect("outbound lock");
+        let queued = receiver.try_recv().expect("queued removal");
+        assert_eq!(queued.session_id, "__sessions__");
+        assert_eq!(queued.payload["kind"], "session_removed");
+
+        let envelope = decode_envelope(
+            &URL_SAFE_NO_PAD
+                .decode(
+                    queued
+                        .payload
+                        .get("envelope")
+                        .and_then(JsonValue::as_str)
+                        .expect("encoded envelope"),
+                )
+                .expect("base64 envelope"),
+        )
+        .expect("decode envelope");
+        assert_eq!(envelope.kind, EnvelopeKind::SessionRemoved);
+        assert_eq!(envelope.session_id, "__sessions__");
+        assert_eq!(envelope.payload["sessionId"], "session-1");
     }
 
     #[test]

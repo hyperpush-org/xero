@@ -1,5 +1,6 @@
 const DEFAULT_SERVER_URL = "http://127.0.0.1:4000";
 const RUNTIME_CONFIG_KEY = "__XERO_RUNTIME_CONFIG__";
+export const RUNTIME_SERVER_URL_META_NAME = "xero-server-url";
 
 interface XeroRuntimeConfig {
 	serverUrl?: string;
@@ -22,15 +23,49 @@ export function getServerUrl(): string {
 	);
 }
 
-export function getPublicRuntimeConfigScript(): string {
-	const config: XeroRuntimeConfig = { serverUrl: getServerUrl() };
-	const json = JSON.stringify(config).replaceAll("<", "\\u003c");
-	return `window.${RUNTIME_CONFIG_KEY}=${json};`;
+export function getPublicRuntimeServerUrl(): string {
+	return getServerUrl();
+}
+
+export function getCanonicalLoopbackCloudUrl(
+	currentHref?: string,
+	serverUrl = getServerUrl(),
+): string | null {
+	const href = currentHref ?? getCurrentHref();
+	if (!href) return null;
+
+	try {
+		const current = new URL(href);
+		const server = new URL(serverUrl);
+		if (
+			!isLoopbackHostname(current.hostname) ||
+			!isLoopbackHostname(server.hostname) ||
+			sameHostname(current.hostname, server.hostname)
+		) {
+			return null;
+		}
+
+		current.hostname = server.hostname;
+		return current.toString();
+	} catch {
+		return null;
+	}
+}
+
+function getCurrentHref(): string | undefined {
+	if (typeof window !== "undefined") return window.location.href;
+	return undefined;
 }
 
 function getBrowserRuntimeServerUrl(): string | undefined {
 	if (typeof window === "undefined") return undefined;
-	return window[RUNTIME_CONFIG_KEY]?.serverUrl;
+	return (
+		window[RUNTIME_CONFIG_KEY]?.serverUrl ??
+		window.document
+			?.querySelector(`meta[name="${RUNTIME_SERVER_URL_META_NAME}"]`)
+			?.getAttribute("content") ??
+		undefined
+	);
 }
 
 function getProcessServerUrl(): string | undefined {
@@ -48,4 +83,20 @@ function getViteServerUrl(): string | undefined {
 function normalizeServerUrl(value: string): string {
 	const trimmed = value.trim();
 	return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+	return (
+		normalizeHostname(hostname) === "localhost" ||
+		normalizeHostname(hostname) === "127.0.0.1" ||
+		normalizeHostname(hostname) === "::1"
+	);
+}
+
+function sameHostname(left: string, right: string): boolean {
+	return normalizeHostname(left) === normalizeHostname(right);
+}
+
+function normalizeHostname(hostname: string): string {
+	return hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
 }

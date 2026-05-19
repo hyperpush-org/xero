@@ -46,13 +46,18 @@ defmodule Xero.GitHubAuth do
       flow_id = random_token()
       state_token = random_token()
 
+      redirect_to =
+        attrs
+        |> string_attr("redirect_to")
+        |> canonical_web_redirect_to(config.redirect_uri, kind)
+
       flow = %{
         flow_id: flow_id,
         state: state_token,
         kind: kind,
         name: string_attr(attrs, "name"),
         user_agent: string_attr(attrs, "user_agent"),
-        redirect_to: string_attr(attrs, "redirect_to"),
+        redirect_to: redirect_to,
         status: :pending,
         inserted_at: DateTime.utc_now()
       }
@@ -332,7 +337,8 @@ defmodule Xero.GitHubAuth do
               {:error, error}
           end
 
-        {:error, error} -> {:error, error}
+        {:error, error} ->
+          {:error, error}
       end
     else
       {:error, error} ->
@@ -418,7 +424,8 @@ defmodule Xero.GitHubAuth do
            Map.get(stored_session, :created_at) || Map.get(stored_session, "created_at") ||
              DateTime.to_iso8601(DateTime.utc_now()),
          kind: Map.get(stored_session, :kind) || Map.get(stored_session, "kind") || "desktop",
-         account_id: Map.get(stored_session, :account_id) || Map.get(stored_session, "account_id"),
+         account_id:
+           Map.get(stored_session, :account_id) || Map.get(stored_session, "account_id"),
          device_id: Map.get(stored_session, :device_id) || Map.get(stored_session, "device_id"),
          csrf_token: Map.get(stored_session, :csrf_token) || Map.get(stored_session, "csrf_token")
        }}
@@ -547,7 +554,9 @@ defmodule Xero.GitHubAuth do
 
   defp delete_session(session_id) do
     case Repo.get(Session, session_id) do
-      nil -> :ok
+      nil ->
+        :ok
+
       session ->
         _ = revoke_session_device(persisted_session_to_plain_map(session))
         Repo.delete(session) |> then(fn _result -> :ok end)
@@ -687,17 +696,20 @@ defmodule Xero.GitHubAuth do
 
   defp exchange_code_for_token(config, code) do
     response =
-      Req.post(@token_url,
-        headers: [
-          {"accept", "application/json"},
-          {"user-agent", @user_agent}
-        ],
-        form: [
-          client_id: config.client_id,
-          client_secret: config.client_secret,
-          code: code,
-          redirect_uri: config.redirect_uri
-        ]
+      Req.post(
+        @token_url,
+        github_req_options(
+          headers: [
+            {"accept", "application/json"},
+            {"user-agent", @user_agent}
+          ],
+          form: [
+            client_id: config.client_id,
+            client_secret: config.client_secret,
+            code: code,
+            redirect_uri: config.redirect_uri
+          ]
+        )
       )
 
     case response do
@@ -741,13 +753,16 @@ defmodule Xero.GitHubAuth do
 
   defp fetch_github_user(access_token) do
     response =
-      Req.get(@user_url,
-        headers: [
-          {"accept", "application/vnd.github+json"},
-          {"authorization", "Bearer #{access_token}"},
-          {"user-agent", @user_agent},
-          {"x-github-api-version", "2022-11-28"}
-        ]
+      Req.get(
+        @user_url,
+        github_req_options(
+          headers: [
+            {"accept", "application/vnd.github+json"},
+            {"authorization", "Bearer #{access_token}"},
+            {"user-agent", @user_agent},
+            {"x-github-api-version", "2022-11-28"}
+          ]
+        )
       )
 
     case response do
@@ -768,6 +783,11 @@ defmodule Xero.GitHubAuth do
            "Could not fetch GitHub user: #{Exception.message(reason)}"
          )}
     end
+  end
+
+  defp github_req_options(options) do
+    Application.get_env(:xero, :github_auth_req_options, [])
+    |> Keyword.merge(options)
   end
 
   defp user_from_body(body) do
@@ -850,6 +870,44 @@ defmodule Xero.GitHubAuth do
   defp login_kind("desktop"), do: {:ok, :desktop}
   defp login_kind("web"), do: {:ok, :web}
   defp login_kind(_kind), do: {:error, remote_error(:invalid_kind)}
+
+  defp canonical_web_redirect_to(nil, _callback_uri, _kind), do: nil
+
+  defp canonical_web_redirect_to(redirect_to, _callback_uri, kind) when kind != :web,
+    do: redirect_to
+
+  defp canonical_web_redirect_to(redirect_to, callback_uri, :web) do
+    canonical_web_redirect_to(redirect_to, callback_uri)
+  end
+
+  defp canonical_web_redirect_to(redirect_to, callback_uri) do
+    with %URI{host: redirect_host} = redirect_uri when is_binary(redirect_host) <-
+           URI.parse(redirect_to),
+         %URI{host: callback_host} when is_binary(callback_host) <- URI.parse(callback_uri),
+         true <- loopback_host?(redirect_host),
+         true <- loopback_host?(callback_host),
+         false <- same_host?(redirect_host, callback_host) do
+      %{redirect_uri | host: callback_host}
+      |> URI.to_string()
+    else
+      _ -> redirect_to
+    end
+  end
+
+  defp loopback_host?(host) when is_binary(host) do
+    normalize_loopback_host(host) in ["localhost", "127.0.0.1", "::1"]
+  end
+
+  defp same_host?(left, right) do
+    normalize_loopback_host(left) == normalize_loopback_host(right)
+  end
+
+  defp normalize_loopback_host(host) do
+    host
+    |> String.downcase()
+    |> String.trim_leading("[")
+    |> String.trim_trailing("]")
+  end
 
   defp string_attr(attrs, key) when is_map(attrs) do
     Map.get(attrs, key) || Map.get(attrs, known_attr_key(key))

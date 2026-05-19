@@ -15,21 +15,28 @@ import {
 	EmptyTitle,
 } from "@xero/ui/components/ui/empty";
 import { Menu } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
 import { SessionDrawer } from "#/components/session-drawer";
+import { SessionListRow } from "#/components/session-list-row";
 import {
 	type CloudSession,
-	getCurrentSession,
+	getCachedCurrentSession,
 	signOut,
 } from "#/lib/auth/session";
-import { sessionKey } from "#/lib/relay/session-store";
-import { useAccountVisibleSessions } from "#/lib/relay/use-session-stream";
+import {
+	sessionKey,
+	type VisibleSessionSummary,
+} from "#/lib/relay/session-store";
+import { useAccountRemoteSessions } from "#/lib/relay/use-session-stream";
+import { getCanonicalLoopbackCloudUrl } from "#/lib/server-url";
 
 export const Route = createFileRoute("/sessions")({
 	beforeLoad: async () => {
-		const session = await getCurrentSession();
+		const canonicalUrl = getCanonicalLoopbackCloudUrl();
+		if (canonicalUrl) throw redirect({ href: canonicalUrl });
+		const session = await getCachedCurrentSession();
 		if (!session) throw redirect({ to: "/" });
 		return { session };
 	},
@@ -44,23 +51,54 @@ function SessionsIndex() {
 		},
 	});
 	if (!isSessionsIndex) return <Outlet />;
-	return <SessionsEmptyState />;
+	return <SessionsHome />;
 }
 
-function SessionsEmptyState() {
+function SessionsHome() {
 	const { session } = Route.useRouteContext();
-	const navigate = useNavigate();
-	const redirectedSessionKey = useRef<string | null>(null);
-	const visibleSessions = useAccountVisibleSessions(
+	const remoteSessions = useAccountRemoteSessions(
 		session.relayToken,
 		session.accountId,
 		session.devices,
 		session.deviceId,
 	);
+	return (
+		<SessionsEmptyState
+			session={session as CloudSession}
+			visibleSessions={remoteSessions.sessions}
+			onSetSessionRemoteVisibility={remoteSessions.setSessionRemoteVisibility}
+			onArchiveSession={remoteSessions.archiveSession}
+		/>
+	);
+}
+
+function SessionsEmptyState({
+	session,
+	visibleSessions,
+	onSetSessionRemoteVisibility,
+	onArchiveSession,
+}: {
+	session: CloudSession;
+	visibleSessions: VisibleSessionSummary[];
+	onSetSessionRemoteVisibility: (
+		summary: VisibleSessionSummary,
+		visible: boolean,
+	) => boolean;
+	onArchiveSession: (summary: VisibleSessionSummary) => boolean;
+}) {
+	const navigate = useNavigate();
+	const redirectedSessionKey = useRef<string | null>(null);
+	const [pendingSessionAction, setPendingSessionAction] = useState<{
+		key: string;
+		action: "visibility" | "archive";
+	} | null>(null);
+	const linkedSessions = visibleSessions.filter(
+		(summary) => summary.remoteVisible,
+	);
 
 	useEffect(() => {
-		if (visibleSessions.length === 0) return;
-		const first = visibleSessions[0];
+		if (linkedSessions.length === 0) return;
+		const first = linkedSessions[0];
 		const nextSessionKey = sessionKey(first.computerId, first.sessionId);
 		if (redirectedSessionKey.current === nextSessionKey) return;
 		redirectedSessionKey.current = nextSessionKey;
@@ -69,12 +107,52 @@ function SessionsEmptyState() {
 			params: { computerId: first.computerId, sessionId: first.sessionId },
 			replace: true,
 		});
-	}, [navigate, visibleSessions]);
+	}, [linkedSessions, navigate]);
 
 	const handleSignOut = () => {
 		void signOut().then(() => {
 			if (typeof window !== "undefined") window.location.href = "/";
 		});
+	};
+	const navigateToSession = (computerId: string, sessionId: string) => {
+		void navigate({
+			to: "/sessions/$computerId/$sessionId",
+			params: { computerId, sessionId },
+		});
+	};
+	const openSession = (summary: VisibleSessionSummary) => {
+		if (!summary.remoteVisible) {
+			const key = sessionKey(summary.computerId, summary.sessionId);
+			setPendingSessionAction({ key, action: "visibility" });
+			try {
+				const didRequest = onSetSessionRemoteVisibility(summary, true);
+				if (!didRequest) return;
+			} finally {
+				setPendingSessionAction(null);
+			}
+		}
+		navigateToSession(summary.computerId, summary.sessionId);
+	};
+	const handleSetSessionRemoteVisibility = async (
+		summary: VisibleSessionSummary,
+		visible: boolean,
+	) => {
+		const key = sessionKey(summary.computerId, summary.sessionId);
+		setPendingSessionAction({ key, action: "visibility" });
+		try {
+			onSetSessionRemoteVisibility(summary, visible);
+		} finally {
+			setPendingSessionAction(null);
+		}
+	};
+	const handleArchiveSession = async (summary: VisibleSessionSummary) => {
+		const key = sessionKey(summary.computerId, summary.sessionId);
+		setPendingSessionAction({ key, action: "archive" });
+		try {
+			onArchiveSession(summary);
+		} finally {
+			setPendingSessionAction(null);
+		}
 	};
 
 	return (
@@ -90,12 +168,9 @@ function SessionsEmptyState() {
 					session={session as CloudSession}
 					visibleSessions={visibleSessions}
 					currentSessionKey={null}
-					onSelectSession={(computerId, sessionId) => {
-						void navigate({
-							to: "/sessions/$computerId/$sessionId",
-							params: { computerId, sessionId },
-						});
-					}}
+					onSelectSession={navigateToSession}
+					onSetSessionRemoteVisibility={onSetSessionRemoteVisibility}
+					onArchiveSession={onArchiveSession}
 					onSignOut={handleSignOut}
 					trigger={
 						<Button
@@ -118,38 +193,67 @@ function SessionsEmptyState() {
 							<BrandLogo className="size-10" aria-label="Xero" />
 						</EmptyMedia>
 						<EmptyTitle className="text-sm font-medium text-foreground">
-							No sessions are shared yet
+							{visibleSessions.length > 0
+								? "Open a desktop session"
+								: "No desktop sessions yet"}
 						</EmptyTitle>
 						<EmptyDescription className="text-xs">
-							Open the Xero desktop app and toggle{" "}
-							<span className="font-medium text-foreground">Share to web</span>{" "}
-							on a session row to drive it from here.
+							{visibleSessions.length > 0
+								? "Conversation content stays on the desktop until you open a session."
+								: "Open Xero on your desktop to make sessions available here."}
 						</EmptyDescription>
 					</EmptyHeader>
 					<EmptyContent>
-						<SessionDrawer
-							session={session as CloudSession}
-							visibleSessions={visibleSessions}
-							currentSessionKey={null}
-							onSelectSession={(computerId, sessionId) => {
-								void navigate({
-									to: "/sessions/$computerId/$sessionId",
-									params: { computerId, sessionId },
-								});
-							}}
-							onSignOut={handleSignOut}
-							trigger={
-								<Button
-									type="button"
-									size="sm"
-									variant="secondary"
-									className="h-9 gap-2 px-4 text-[12px] font-medium"
-								>
-									<Menu className="h-3.5 w-3.5" />
-									Open menu
-								</Button>
-							}
-						/>
+						{visibleSessions.length > 0 ? (
+							<ul className="flex w-[min(28rem,calc(100vw-2rem))] flex-col gap-1 rounded-lg border border-border bg-background p-1">
+								{visibleSessions.map((summary) => {
+									const key = sessionKey(summary.computerId, summary.sessionId);
+									const pendingAction =
+										pendingSessionAction?.key === key
+											? pendingSessionAction.action
+											: undefined;
+									return (
+										<li key={key}>
+											<SessionListRow
+												summary={summary}
+												isActive={false}
+												onSelect={() => openSession(summary)}
+												onSetRemoteVisibility={(visible) =>
+													void handleSetSessionRemoteVisibility(
+														summary,
+														visible,
+													)
+												}
+												onArchive={() => void handleArchiveSession(summary)}
+												isPending={pendingSessionAction?.key === key}
+												pendingAction={pendingAction}
+											/>
+										</li>
+									);
+								})}
+							</ul>
+						) : (
+							<SessionDrawer
+								session={session as CloudSession}
+								visibleSessions={visibleSessions}
+								currentSessionKey={null}
+								onSelectSession={navigateToSession}
+								onSetSessionRemoteVisibility={onSetSessionRemoteVisibility}
+								onArchiveSession={onArchiveSession}
+								onSignOut={handleSignOut}
+								trigger={
+									<Button
+										type="button"
+										size="sm"
+										variant="secondary"
+										className="h-9 gap-2 px-4 text-[12px] font-medium"
+									>
+										<Menu className="h-3.5 w-3.5" />
+										Open menu
+									</Button>
+								}
+							/>
+						)}
 					</EmptyContent>
 				</Empty>
 			</div>

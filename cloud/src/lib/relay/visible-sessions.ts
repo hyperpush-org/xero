@@ -11,6 +11,11 @@ export type RemoteVisibleSessionUpdate =
 	| {
 			kind: "upsert";
 			summary: VisibleSessionSummary;
+	  }
+	| {
+			kind: "remove";
+			computerId: string;
+			sessionId: string;
 	  };
 
 export function remoteVisibleSessionUpdateFromEnvelope(
@@ -23,7 +28,7 @@ export function remoteVisibleSessionUpdateFromEnvelope(
 	const schema = stringField(envelope.payload, "schema");
 	const computerName = desktopNameForId(devices, envelope.computer_id);
 
-	if (schema === "xero.remote_visible_sessions.v1") {
+	if (schema === "xero.remote_sessions.v1") {
 		const entries = Array.isArray(envelope.payload.sessions)
 			? envelope.payload.sessions
 			: [];
@@ -46,20 +51,60 @@ export function remoteVisibleSessionUpdateFromEnvelope(
 
 	if (
 		schema === "xero.remote_session_added.v1" ||
-		schema === "xero.remote_session_started.v1"
+		schema === "xero.remote_session_started.v1" ||
+		schema === "xero.remote_session_visibility_changed.v1"
 	) {
 		const session = isRecord(envelope.payload.result)
 			? envelope.payload.result.session
 			: envelope.payload.session;
+		const projectId = isRecord(envelope.payload.result)
+			? stringField(envelope.payload.result, "projectId", "project_id")
+			: stringField(envelope.payload, "projectId", "project_id");
+		const projectName = isRecord(envelope.payload.result)
+			? stringField(envelope.payload.result, "projectName", "project_name")
+			: stringField(envelope.payload, "projectName", "project_name");
 		const summary = summaryFromRemoteSession(
 			envelope.computer_id,
 			computerName,
+			projectId,
+			projectName,
 			session,
 		);
 		return summary ? { kind: "upsert", summary } : null;
 	}
 
+	if (
+		schema === "xero.remote_session_removed.v1" ||
+		envelope.kind === "session_removed"
+	) {
+		const sessionId = removedSessionId(envelope.payload);
+		return sessionId
+			? { kind: "remove", computerId: envelope.computer_id, sessionId }
+			: null;
+	}
+
 	return null;
+}
+
+function removedSessionId(payload: Record<string, unknown>): string | null {
+	return (
+		stringField(
+			payload,
+			"sessionId",
+			"session_id",
+			"agentSessionId",
+			"agent_session_id",
+		) ??
+		(isRecord(payload.session)
+			? stringField(
+					payload.session,
+					"agentSessionId",
+					"agent_session_id",
+					"sessionId",
+					"session_id",
+				)
+			: null)
+	);
 }
 
 function summaryFromRemoteVisibleEntry(
@@ -68,20 +113,44 @@ function summaryFromRemoteVisibleEntry(
 	entry: unknown,
 ): VisibleSessionSummary | null {
 	if (!isRecord(entry)) return null;
-	return summaryFromRemoteSession(computerId, computerName, entry.session);
+	const projectId =
+		stringField(entry, "projectId", "project_id") ??
+		(isRecord(entry.session)
+			? stringField(entry.session, "projectId", "project_id")
+			: null);
+	const projectName =
+		stringField(entry, "projectName", "project_name") ??
+		(isRecord(entry.session)
+			? stringField(entry.session, "projectName", "project_name")
+			: null);
+	return summaryFromRemoteSession(
+		computerId,
+		computerName,
+		projectId,
+		projectName,
+		entry.session,
+	);
 }
 
 function summaryFromRemoteSession(
 	computerId: string,
 	computerName: string | null,
+	projectId: string | null,
+	projectName: string | null,
 	session: unknown,
 ): VisibleSessionSummary | null {
 	if (!isRecord(session)) return null;
 	const sessionId = stringField(session, "agentSessionId", "agent_session_id");
-	if (!sessionId) return null;
+	const resolvedProjectId =
+		projectId ?? stringField(session, "projectId", "project_id");
+	if (!sessionId || !resolvedProjectId) return null;
+	const resolvedProjectName =
+		projectName ?? stringField(session, "projectName", "project_name");
 	return {
 		computerId,
 		sessionId,
+		projectId: resolvedProjectId,
+		projectName: resolvedProjectName,
 		title: stringField(session, "title") ?? "New Chat",
 		lastActivityAt:
 			stringField(
@@ -92,6 +161,8 @@ function summaryFromRemoteSession(
 				"updated_at",
 			) ?? null,
 		computerName,
+		remoteVisible:
+			booleanField(session, "remoteVisible", "remote_visible") ?? false,
 	};
 }
 
@@ -115,6 +186,17 @@ function stringField(
 		if (typeof value !== "string") continue;
 		const trimmed = value.trim();
 		if (trimmed) return trimmed;
+	}
+	return null;
+}
+
+function booleanField(
+	record: Record<string, unknown>,
+	...keys: string[]
+): boolean | null {
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "boolean") return value;
 	}
 	return null;
 }

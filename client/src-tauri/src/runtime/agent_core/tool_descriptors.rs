@@ -4789,6 +4789,7 @@ fn patch_schema() -> JsonValue {
     });
 
     json!({
+        "type": "object",
         "oneOf": [
             object_schema(
                 &["path", "search", "replace"],
@@ -5860,6 +5861,7 @@ fn macos_automation_schema() -> JsonValue {
 
 fn skill_schema() -> JsonValue {
     json!({
+        "type": "object",
         "oneOf": [
             object_schema(
                 &["operation", "includeUnavailable"],
@@ -6941,6 +6943,25 @@ mod tests {
                     .iter()
                     .any(|reason| reason.reason_code == reason_code)
         })
+    }
+
+    #[test]
+    fn disjunctive_builtin_tool_schemas_still_declare_root_object_type() {
+        for descriptor in builtin_tool_descriptors() {
+            let has_disjunction = descriptor.input_schema.get("oneOf").is_some()
+                || descriptor.input_schema.get("anyOf").is_some();
+            if has_disjunction {
+                assert_eq!(
+                    descriptor
+                        .input_schema
+                        .get("type")
+                        .and_then(JsonValue::as_str),
+                    Some("object"),
+                    "{} tool schemas sent to OpenAI-compatible providers must declare a root object type",
+                    descriptor.name
+                );
+            }
+        }
     }
 
     #[test]

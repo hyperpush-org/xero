@@ -2470,6 +2470,7 @@ mod tests {
         RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto,
         RuntimeRunControlStateDto,
     };
+    use crate::runtime::{agent_core::builtin_tool_descriptors, AUTONOMOUS_TOOL_PATCH};
 
     fn test_request() -> ProviderTurnRequest {
         ProviderTurnRequest {
@@ -2726,6 +2727,27 @@ mod tests {
         )
         .expect("gpt-5.1 body");
         assert_eq!(gpt_5_1["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn openai_codex_patch_tool_parameters_keep_root_object_type() {
+        let mut request = test_request();
+        request.tools = vec![builtin_tool_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == AUTONOMOUS_TOOL_PATCH)
+            .expect("patch descriptor")];
+
+        let body = openai_codex_responses_request_body(
+            OPENAI_CODEX_PROVIDER_ID,
+            "gpt-5.5",
+            &request,
+            None,
+        )
+        .expect("codex body");
+
+        assert_eq!(body["tools"][0]["name"], AUTONOMOUS_TOOL_PATCH);
+        assert_eq!(body["tools"][0]["parameters"]["type"], "object");
+        assert!(body["tools"][0]["parameters"]["oneOf"].is_array());
     }
 
     #[test]

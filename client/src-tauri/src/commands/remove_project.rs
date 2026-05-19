@@ -27,6 +27,7 @@ pub fn remove_project<R: Runtime>(
 
     if remaining_projects.len() != original_count {
         registry::replace_projects(&registry_path, remaining_projects)?;
+        crate::commands::remote_bridge::publish_remote_project_list_to_cloud(&app, state.inner());
     }
 
     load_projects_from_registry(&registry_path)

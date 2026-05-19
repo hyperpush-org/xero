@@ -22,67 +22,112 @@ import {
 	SheetTrigger,
 } from "@xero/ui/components/ui/sheet";
 import { ArrowUpRight, Menu, Power, Share2, X } from "lucide-react";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 
+import { NewSessionPicker } from "#/components/new-session-picker";
 import type { CloudSession } from "#/lib/auth/session";
-import type { VisibleSessionSummary } from "#/lib/relay/session-store";
+import type {
+	RemoteProjectSummary,
+	VisibleSessionSummary,
+} from "#/lib/relay/session-store";
 
 import { SessionListRow } from "./session-list-row";
 
 interface SessionDrawerProps {
 	session: CloudSession;
 	visibleSessions: VisibleSessionSummary[];
+	projects?: RemoteProjectSummary[];
 	currentSessionKey: string | null;
+	open?: boolean;
+	onOpenChange?: (open: boolean) => void;
 	onSelectSession: (computerId: string, sessionId: string) => void;
+	onSelectProject?: (projectId: string) => void;
+	onSetSessionRemoteVisibility?: (
+		summary: VisibleSessionSummary,
+		visible: boolean,
+	) => boolean | Promise<boolean>;
+	onArchiveSession?: (
+		summary: VisibleSessionSummary,
+	) => boolean | Promise<boolean>;
 	onSignOut: () => void;
 	trigger?: ReactNode;
-}
-
-interface ComputerGroup {
-	computerId: string;
-	computerName: string;
-	sessions: VisibleSessionSummary[];
-}
-
-function groupByComputer(sessions: VisibleSessionSummary[]): ComputerGroup[] {
-	const groups = new Map<string, ComputerGroup>();
-	for (const s of sessions) {
-		const existing = groups.get(s.computerId);
-		if (existing) {
-			existing.sessions.push(s);
-		} else {
-			groups.set(s.computerId, {
-				computerId: s.computerId,
-				computerName: s.computerName ?? "Desktop",
-				sessions: [s],
-			});
-		}
-	}
-	return Array.from(groups.values());
 }
 
 export function SessionDrawer({
 	session,
 	visibleSessions,
+	projects = [],
 	currentSessionKey,
+	open,
+	onOpenChange,
 	onSelectSession,
+	onSelectProject,
+	onSetSessionRemoteVisibility,
+	onArchiveSession,
 	onSignOut,
 	trigger,
 }: SessionDrawerProps) {
-	const [isOpen, setIsOpen] = useState(false);
-	const groups = useMemo(
-		() => groupByComputer(visibleSessions),
-		[visibleSessions],
-	);
+	const [internalOpen, setInternalOpen] = useState(false);
+	const isOpen = open ?? internalOpen;
+	const setIsOpen = (next: boolean) => {
+		setInternalOpen(next);
+		onOpenChange?.(next);
+	};
+	const [pendingSessionAction, setPendingSessionAction] = useState<{
+		key: string;
+		action: "visibility" | "archive";
+	} | null>(null);
 	const total = visibleSessions.length;
-	const hasMultipleComputers = groups.length > 1;
 
 	const handleSelectSession = useCallback(
-		(computerId: string, sessionId: string) => {
+		async (summary: VisibleSessionSummary) => {
+			if (!summary.remoteVisible) {
+				if (!onSetSessionRemoteVisibility) return;
+				const key = `${summary.computerId}:${summary.sessionId}`;
+				setPendingSessionAction({ key, action: "visibility" });
+				try {
+					const didRequest = await onSetSessionRemoteVisibility(summary, true);
+					if (!didRequest) return;
+				} catch {
+					return;
+				} finally {
+					setPendingSessionAction(null);
+				}
+			}
 			setIsOpen(false);
-			onSelectSession(computerId, sessionId);
+			onSelectSession(summary.computerId, summary.sessionId);
 		},
-		[onSelectSession],
+		[onSelectSession, onSetSessionRemoteVisibility],
+	);
+	const handleSetSessionRemoteVisibility = useCallback(
+		async (summary: VisibleSessionSummary, visible: boolean) => {
+			if (!onSetSessionRemoteVisibility) return;
+			const key = `${summary.computerId}:${summary.sessionId}`;
+			setPendingSessionAction({ key, action: "visibility" });
+			try {
+				await onSetSessionRemoteVisibility(summary, visible);
+			} catch {
+				// The authoritative session list will remain unchanged if the command fails.
+			} finally {
+				setPendingSessionAction(null);
+			}
+		},
+		[onSetSessionRemoteVisibility],
+	);
+	const handleArchiveSession = useCallback(
+		async (summary: VisibleSessionSummary) => {
+			if (!onArchiveSession) return;
+			const key = `${summary.computerId}:${summary.sessionId}`;
+			setPendingSessionAction({ key, action: "archive" });
+			try {
+				await onArchiveSession(summary);
+			} catch {
+				// The desktop remains authoritative if the command fails.
+			} finally {
+				setPendingSessionAction(null);
+			}
+		},
+		[onArchiveSession],
 	);
 
 	return (
@@ -97,13 +142,13 @@ export function SessionDrawer({
 			<SheetContent
 				side="right"
 				onOpenAutoFocus={(event) => event.preventDefault()}
-				className="flex w-[86vw] max-w-[340px] flex-col gap-0 border-l border-border bg-background p-0 sm:w-[340px] [&>button.absolute]:hidden"
+				className="cloud-session-drawer-content flex w-[86vw] max-w-[340px] flex-col gap-0 border-l border-border bg-background p-0 sm:w-[340px] [&>button.absolute]:hidden"
 			>
 				<SheetHeader className="gap-0 border-b border-border px-4 py-3">
 					<div className="flex items-center justify-between gap-2">
 						<div className="flex min-w-0 items-center gap-2">
 							<SheetTitle className="truncate text-sm font-medium tracking-tight text-foreground">
-								Shared sessions
+								Desktop sessions
 							</SheetTitle>
 							{total > 0 ? (
 								<Badge
@@ -114,18 +159,31 @@ export function SessionDrawer({
 								</Badge>
 							) : null}
 						</div>
-						<SheetClose asChild>
-							<button
-								type="button"
-								aria-label="Close"
-								className="-mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-							>
-								<X className="h-4 w-4" />
-							</button>
-						</SheetClose>
+						<div className="flex shrink-0 items-center gap-1">
+							{onSelectProject ? (
+								<NewSessionPicker
+									projects={projects}
+									onSelectProject={(projectId) => {
+										onSelectProject(projectId);
+									}}
+									onPickerOpenChange={(pickerOpen) => {
+										if (pickerOpen) setIsOpen(false);
+									}}
+								/>
+							) : null}
+							<SheetClose asChild>
+								<button
+									type="button"
+									aria-label="Close"
+									className="-mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+								>
+									<X className="h-4 w-4" />
+								</button>
+							</SheetClose>
+						</div>
 					</div>
 					<SheetDescription className="sr-only">
-						Browse sessions shared to the web and manage the signed-in account.
+						Browse desktop sessions and manage the signed-in account.
 					</SheetDescription>
 				</SheetHeader>
 
@@ -138,55 +196,50 @@ export function SessionDrawer({
 										<Share2 className="size-5 text-muted-foreground" />
 									</EmptyMedia>
 									<EmptyTitle className="text-sm font-medium text-foreground">
-										Nothing shared yet
+										No desktop sessions yet
 									</EmptyTitle>
 									<EmptyDescription className="text-xs">
-										Open Xero on your desktop, find a session, and enable{" "}
-										<span className="font-medium text-foreground">
-											Share to web
-										</span>
-										. It&apos;ll appear here instantly.
+										Open Xero on your desktop to make sessions available here.
 									</EmptyDescription>
 								</EmptyHeader>
 							</Empty>
 						</div>
 					) : (
-						<div className="flex flex-col gap-4 px-2 py-3">
-							{groups.map((group) => (
-								<section key={group.computerId} className="flex flex-col gap-1">
-									{hasMultipleComputers ? (
-										<div className="flex items-center gap-2 px-3 pt-1 pb-1.5">
-											<span className="truncate font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-												{group.computerName}
-											</span>
-											<span aria-hidden className="h-px flex-1 bg-border/60" />
-											<span className="font-mono text-[10px] tabular-nums text-muted-foreground/70">
-												{group.sessions.length}
-											</span>
-										</div>
-									) : null}
-									<ul className="flex flex-col gap-0.5">
-										{group.sessions.map((summary) => {
-											const key = `${summary.computerId}:${summary.sessionId}`;
-											return (
-												<li key={key}>
-													<SessionListRow
-														summary={summary}
-														isActive={currentSessionKey === key}
-														showComputer={!hasMultipleComputers}
-														onSelect={() =>
-															handleSelectSession(
-																summary.computerId,
-																summary.sessionId,
-															)
-														}
-													/>
-												</li>
-											);
-										})}
-									</ul>
-								</section>
-							))}
+						<div className="flex flex-col gap-3">
+							<ul className="flex flex-col">
+								{visibleSessions.map((summary) => {
+									const key = `${summary.computerId}:${summary.sessionId}`;
+									const pendingAction =
+										pendingSessionAction?.key === key
+											? pendingSessionAction.action
+											: undefined;
+									return (
+										<li key={key}>
+											<SessionListRow
+												summary={summary}
+												isActive={currentSessionKey === key}
+												onSelect={() => void handleSelectSession(summary)}
+												onSetRemoteVisibility={
+													onSetSessionRemoteVisibility
+														? (visible) =>
+																handleSetSessionRemoteVisibility(
+																	summary,
+																	visible,
+																)
+														: undefined
+												}
+												onArchive={
+													onArchiveSession
+														? () => void handleArchiveSession(summary)
+														: undefined
+												}
+												isPending={pendingSessionAction?.key === key}
+												pendingAction={pendingAction}
+											/>
+										</li>
+									);
+								})}
+							</ul>
 						</div>
 					)}
 				</div>

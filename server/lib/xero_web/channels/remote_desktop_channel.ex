@@ -1,7 +1,7 @@
 defmodule XeroWeb.RemoteDesktopChannel do
   use XeroWeb, :channel
 
-  alias XeroWeb.RemoteChannelRateLimit
+  alias XeroWeb.{Presence, RemoteChannelRateLimit}
 
   @impl true
   def join("desktop:" <> desktop_device_id, _payload, socket) do
@@ -11,10 +11,28 @@ defmodule XeroWeb.RemoteDesktopChannel do
         topic: socket.topic
       })
 
+      send(self(), :track_account_presence)
+
       {:ok, %{desktop_device_id: desktop_device_id}, socket}
     else
       {:error, %{reason: "unauthorized"}}
     end
+  end
+
+  @impl true
+  def handle_info(:track_account_presence, socket) do
+    _ =
+      Presence.track(
+        self(),
+        account_topic(socket.assigns.account_id),
+        socket.assigns.device_id,
+        %{
+          kind: "desktop",
+          online_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        }
+      )
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -42,4 +60,6 @@ defmodule XeroWeb.RemoteDesktopChannel do
         {:reply, {:error, %{reason: "invalid_payload"}}, socket}
     end
   end
+
+  defp account_topic(account_id), do: "account:#{account_id}"
 end

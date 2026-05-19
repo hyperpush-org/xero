@@ -8,6 +8,10 @@ import { Button } from "@xero/ui/components/ui/button";
 import type { ReactNode } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
+import {
+	getPublicRuntimeServerUrl,
+	RUNTIME_SERVER_URL_META_NAME,
+} from "#/lib/server-url";
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -40,6 +44,10 @@ function RootDocument({ children }: { children: ReactNode }) {
 		<html className="theme-dusk dark" data-theme="dusk" lang="en">
 			<head>
 				<HeadContent />
+				<meta
+					name={RUNTIME_SERVER_URL_META_NAME}
+					content={getPublicRuntimeServerUrl()}
+				/>
 			</head>
 			<body>
 				{children}

@@ -1,15 +1,18 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Button } from "@xero/ui/components/ui/button";
 import { Github, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
 import { signInWithGitHub } from "#/lib/auth/oauth";
-import { getCurrentSession } from "#/lib/auth/session";
+import { getCachedCurrentSession } from "#/lib/auth/session";
+import { getCanonicalLoopbackCloudUrl } from "#/lib/server-url";
 
 export const Route = createFileRoute("/")({
 	beforeLoad: async () => {
-		const session = await getCurrentSession();
+		const canonicalUrl = getCanonicalLoopbackCloudUrl();
+		if (canonicalUrl) throw redirect({ href: canonicalUrl });
+		const session = await getCachedCurrentSession();
 		if (session) {
 			throw redirect({ to: "/sessions" });
 		}
@@ -20,6 +23,11 @@ export const Route = createFileRoute("/")({
 function LoginScreen() {
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		const canonicalUrl = getCanonicalLoopbackCloudUrl();
+		if (canonicalUrl) window.location.replace(canonicalUrl);
+	}, []);
 
 	const handleSignIn = async () => {
 		setPending(true);

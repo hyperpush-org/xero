@@ -1,24 +1,33 @@
 import { Button } from "@xero/ui/components/ui/button";
-import { Menu, Plus } from "lucide-react";
+import { Menu } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
+import { NewSessionPicker } from "#/components/new-session-picker";
+import type { RemoteProjectSummary } from "#/lib/relay/session-store";
 
 interface SessionTopBarProps {
 	title: string;
-	onNewSession?: () => void;
+	projects?: RemoteProjectSummary[];
+	onSelectProject?: (projectId: string) => void;
+	onPickerOpenChange?: (open: boolean) => void;
 	drawerTrigger?: ReactNode;
 }
 
 export function SessionTopBar({
 	title,
-	onNewSession,
+	projects = [],
+	onSelectProject,
+	onPickerOpenChange,
 	drawerTrigger,
 }: SessionTopBarProps) {
 	return (
 		<header className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-background px-4 py-3">
 			<div className="flex min-w-0 items-center gap-2">
-				<BrandLogo className="size-5 shrink-0" aria-label="Xero" />
+				<BrandLogo className="size-4 shrink-0" aria-label="Xero" />
+				<span aria-hidden="true" className="text-sm text-muted-foreground/50">
+					|
+				</span>
 				<span
 					className="truncate text-sm font-medium text-foreground"
 					title={title}
@@ -27,17 +36,12 @@ export function SessionTopBar({
 				</span>
 			</div>
 			<div className="flex shrink-0 items-center gap-1">
-				{onNewSession ? (
-					<Button
-						type="button"
-						variant="ghost"
-						size="icon"
-						aria-label="Start new session"
-						onClick={onNewSession}
-						className="text-muted-foreground hover:text-foreground"
-					>
-						<Plus className="h-4 w-4" />
-					</Button>
+				{onSelectProject ? (
+					<NewSessionPicker
+						projects={projects}
+						onSelectProject={onSelectProject}
+						onPickerOpenChange={onPickerOpenChange}
+					/>
 				) : null}
 				{drawerTrigger ?? (
 					<Button

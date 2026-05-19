@@ -17,6 +17,13 @@ const RUNTIME_STREAM_ITEM_KINDS = new Set([
 const OWNED_AGENT_REASONING_ACTIVITY_CODE = "owned_agent_reasoning";
 const OWNED_AGENT_FILE_CHANGED_ACTIVITY_CODE = "owned_agent_file_changed";
 const COMPACT_TOOL_BURST_THRESHOLD = 2;
+const CODE_EDIT_TOOL_NAMES = new Set([
+	"edit",
+	"patch",
+	"write",
+	"apply_patch",
+	"notebook_edit",
+]);
 
 type ActionTurn = Extract<ConversationTurn, { kind: "action" }>;
 type ToolState = ActionTurn["state"];
@@ -100,6 +107,29 @@ function projectRemoteSnapshotRunsToTurns(
 
 	for (const [runIndex, run] of runs.entries()) {
 		const runId = stringField(run, "runId") ?? `run-${runIndex + 1}`;
+		const eventProjectionEnabled = isLiveAgentRunStatus(
+			stringField(run, "status"),
+		);
+		if (!eventProjectionEnabled) {
+			const terminalTurns = projectTerminalRemoteRunToTurns(
+				run,
+				runId,
+				nextSequence,
+			);
+			turns.push(...terminalTurns);
+			const failure = remoteRunFailureToTurn(
+				run,
+				runId,
+				nextSequence + terminalTurns.length,
+			);
+			if (failure && !terminalTurns.some((turn) => turn.kind === "failure")) {
+				turns.push(failure);
+			}
+			nextSequence =
+				Math.max(nextSequence, ...turns.map((turn) => turn.sequence)) + 1;
+			continue;
+		}
+
 		const eventTurns = projectRemoteRunEventsToTurns(run, runId);
 		if (eventTurns.length > 0) {
 			const hasUserMessage = eventTurns.some(
@@ -172,6 +202,95 @@ function projectRemoteSnapshotRunsToTurns(
 			turns.push(failure);
 			nextSequence += 1;
 		}
+	}
+
+	return turns;
+}
+
+function projectTerminalRemoteRunToTurns(
+	run: Record<string, unknown>,
+	runId: string,
+	initialSequence: number,
+): ConversationTurn[] {
+	const eventTurns = projectRemoteRunEventsToTurns(run, runId);
+	if (eventTurns.length === 0) {
+		return projectRemoteRunMessagesToTurns(run, runId, initialSequence);
+	}
+
+	const messageTurns = projectRemoteRunMessagesToTurns(
+		run,
+		runId,
+		initialSequence,
+	).filter(
+		(turn): turn is Extract<ConversationTurn, { kind: "message" }> =>
+			turn.kind === "message",
+	);
+	const messagesByRole = {
+		user: messageTurns.filter((turn) => turn.role === "user"),
+		assistant: messageTurns.filter((turn) => turn.role === "assistant"),
+	};
+	const nextMessageIndexByRole = {
+		user: 0,
+		assistant: 0,
+	};
+	const usedMessageIds = new Set<string>();
+
+	return eventTurns
+		.map((turn) => {
+			if (turn.kind !== "message") return turn;
+			const replacement =
+				messagesByRole[turn.role][nextMessageIndexByRole[turn.role]++];
+			if (!replacement) return turn;
+			usedMessageIds.add(replacement.id);
+			return {
+				...turn,
+				id: replacement.id,
+				text: replacement.text,
+			};
+		})
+		.concat(
+			messageTurns
+				.filter((turn) => !usedMessageIds.has(turn.id))
+				.map((turn, index) => ({
+					...turn,
+					sequence:
+						Math.max(
+							initialSequence - 1,
+							...eventTurns.map((item) => item.sequence),
+						) +
+						index +
+						1,
+				})),
+		);
+}
+
+function projectRemoteRunMessagesToTurns(
+	run: Record<string, unknown>,
+	runId: string,
+	initialSequence: number,
+): ConversationTurn[] {
+	const turns: ConversationTurn[] = [];
+	let nextSequence = initialSequence;
+	const messages = recordArray(run, "messages");
+	const hasUserMessage = messages.some(
+		(message) =>
+			stringField(message, "role") === "user" &&
+			nonEmptyStringField(message, "content"),
+	);
+
+	if (!hasUserMessage) {
+		const promptTurn = remoteRunPromptTurn(run, runId, nextSequence);
+		if (promptTurn) {
+			turns.push(promptTurn);
+			nextSequence += 1;
+		}
+	}
+
+	for (const message of messages) {
+		const turn = remoteMessageToTurn(message, runId, nextSequence);
+		if (!turn) continue;
+		turns.push(turn);
+		nextSequence += 1;
 	}
 
 	return turns;
@@ -385,6 +504,7 @@ function remoteToolEventToTurn(
 		detail: remoteToolDetail(payload, toolName, state),
 		detailRows: remoteToolDetailRows(payload),
 		state,
+		...(isCodeEditToolName(toolName) ? { defaultOpen: true } : {}),
 	};
 }
 
@@ -408,6 +528,7 @@ function remoteCommandOutputToTurn(
 		detail: remoteCommandOutputDetail(payload),
 		detailRows: remoteToolDetailRows(payload),
 		state: partial ? "running" : "succeeded",
+		...(isCodeEditToolName(toolName) ? { defaultOpen: true } : {}),
 	};
 }
 
@@ -514,6 +635,15 @@ function remoteRunFailureToTurn(
 	};
 }
 
+function isLiveAgentRunStatus(status: string | null): boolean {
+	return (
+		status === "starting" ||
+		status === "running" ||
+		status === "paused" ||
+		status === "cancelling"
+	);
+}
+
 function mapTranscript(item: RuntimeStreamItemDto): ConversationTurn | null {
 	if (!item.text || !item.transcriptRole) return null;
 	const role = item.transcriptRole;
@@ -539,7 +669,12 @@ function mapTool(item: RuntimeStreamItemDto): ConversationTurn | null {
 		detail: item.detail ?? item.text ?? "Tool activity recorded.",
 		detailRows: runtimeToolDetailRows(item),
 		state: item.toolState ?? null,
+		...(isCodeEditToolName(item.toolName) ? { defaultOpen: true } : {}),
 	};
+}
+
+function isCodeEditToolName(toolName: string): boolean {
+	return CODE_EDIT_TOOL_NAMES.has(toolName);
 }
 
 function mapActivity(item: RuntimeStreamItemDto): ConversationTurn | null {
@@ -616,6 +751,18 @@ function createTurnProjectionContext(): TurnProjectionContext {
 	};
 }
 
+export function appendConversationTurn(
+	turns: readonly ConversationTurn[],
+	turn: ConversationTurn,
+): ConversationTurn[] {
+	const context = createTurnProjectionContext();
+	for (const currentTurn of expandActionGroups(turns)) {
+		appendProjectedTurn(context, currentTurn);
+	}
+	appendProjectedTurn(context, cloneConversationTurn(turn));
+	return compactActionBursts(context.turns);
+}
+
 function appendProjectedTurn(
 	context: TurnProjectionContext,
 	turn: ConversationTurn,
@@ -657,6 +804,73 @@ function appendProjectedTurn(
 	context.turns.push(turn);
 }
 
+function expandActionGroups(
+	turns: readonly ConversationTurn[],
+): ConversationTurn[] {
+	const expandedTurns: ConversationTurn[] = [];
+	for (const turn of turns) {
+		if (turn.kind !== "action_group") {
+			expandedTurns.push(cloneConversationTurn(turn));
+			continue;
+		}
+		expandedTurns.push(
+			...turn.actions.map((action) => ({
+				id: action.id,
+				kind: "action" as const,
+				sequence: action.sequence,
+				toolCallId: action.toolCallId,
+				toolName: action.toolName,
+				title: action.title,
+				detail: action.detail,
+				detailRows: cloneActionRows(action.detailRows),
+				state: action.state,
+				...(action.defaultOpen ? { defaultOpen: true } : {}),
+			})),
+		);
+	}
+	return expandedTurns;
+}
+
+function cloneConversationTurn(turn: ConversationTurn): ConversationTurn {
+	if (turn.kind === "message") {
+		return {
+			...turn,
+			attachments: turn.attachments?.map((attachment) => ({ ...attachment })),
+		};
+	}
+	if (turn.kind === "thinking") {
+		return { ...turn };
+	}
+	if (turn.kind === "action") {
+		return {
+			...turn,
+			detailRows: cloneActionRows(turn.detailRows),
+		};
+	}
+	if (turn.kind === "action_group") {
+		return {
+			...turn,
+			actions: turn.actions.map((action) => ({
+				...action,
+				detailRows: cloneActionRows(action.detailRows),
+			})),
+		};
+	}
+	if (turn.kind === "subagent_group") {
+		return {
+			...turn,
+			children: turn.children.map(cloneConversationTurn),
+		};
+	}
+	return { ...turn };
+}
+
+function cloneActionRows(
+	rows: ActionTurn["detailRows"],
+): ActionTurn["detailRows"] {
+	return rows.map((row) => ({ ...row }));
+}
+
 function mergeActionTurn(existing: ActionTurn, incoming: ActionTurn): void {
 	existing.title = incoming.title || existing.title;
 	existing.detail = incoming.detail || existing.detail;
@@ -665,6 +879,7 @@ function mergeActionTurn(existing: ActionTurn, incoming: ActionTurn): void {
 		incoming.detailRows,
 	);
 	existing.state = incoming.state ?? existing.state;
+	existing.defaultOpen = incoming.defaultOpen ?? existing.defaultOpen;
 }
 
 function mergeActionRows(
@@ -682,7 +897,9 @@ function mergeActionRows(
 	return merged;
 }
 
-function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
+export function compactActionBursts(
+	turns: ConversationTurn[],
+): ConversationTurn[] {
 	const compactedTurns: ConversationTurn[] = [];
 	let actionBuffer: ActionTurn[] = [];
 
@@ -696,7 +913,12 @@ function compactActionBursts(turns: ConversationTurn[]): ConversationTurn[] {
 	};
 
 	for (const turn of turns) {
-		if (turn.kind === "action" && isTerminalActionState(turn.state)) {
+		if (turn.kind === "action") {
+			if (isCodeEditAction(turn) || !isTerminalActionState(turn.state)) {
+				flushActionBuffer();
+				compactedTurns.push(turn);
+				continue;
+			}
 			actionBuffer.push(turn);
 			continue;
 		}
@@ -720,12 +942,20 @@ function actionGroupTurnFromActions(actions: ActionTurn[]): ConversationTurn {
 		state: actionGroupState(actions),
 		actions: actions.map((action) => ({
 			id: action.id,
+			sequence: action.sequence,
+			toolCallId: action.toolCallId,
+			toolName: action.toolName,
 			title: action.title,
 			detail: action.detail,
-			detailRows: action.detailRows,
+			detailRows: cloneActionRows(action.detailRows),
 			state: action.state ?? null,
+			...(action.defaultOpen ? { defaultOpen: true } : {}),
 		})),
 	};
+}
+
+function isCodeEditAction(action: ActionTurn): boolean {
+	return isCodeEditToolName(action.toolName);
 }
 
 function actionGroupState(actions: ActionTurn[]): ToolState | null {

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
@@ -10,7 +12,7 @@ use crate::{
         ProviderModelThinkingEffortDto, RuntimeRunActiveControlSnapshotDto,
         RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
     },
-    db::project_store::{self, AgentSessionUpdateRecord, DEFAULT_AGENT_SESSION_TITLE},
+    db::project_store::{self, AgentSessionUpdateRecord},
     runtime::{
         create_provider_adapter, ProviderMessage, ProviderStreamEvent, ProviderTurnOutcome,
         ProviderTurnRequest,
@@ -18,9 +20,12 @@ use crate::{
     state::DesktopState,
 };
 
-const SESSION_TITLE_SYSTEM_PROMPT: &str = "You name developer-assistant chat sessions from the user's first prompt. Return only one concise title. Use 2 to 6 words. No markdown, no quotes, no trailing punctuation, no generic labels like New Chat. Capture the user's intent, not the assistant's behavior.";
+const SESSION_TITLE_SYSTEM_PROMPT: &str = "You name developer-assistant chat sessions from the conversation so far. Return only one concise title. Use 2 to 6 words. No markdown, no quotes, no trailing punctuation, no generic labels like Main, New Chat, Session, or Conversation. Capture the user's current goal as it has evolved, not the assistant's behavior.";
 const MAX_TITLE_CHARS: usize = 64;
 const MAX_PROMPT_CHARS: usize = 4_000;
+const MAX_TITLE_CONTEXT_CHARS: usize = 8_000;
+const MAX_TITLE_CONTEXT_MESSAGES: usize = 12;
+const MAX_TITLE_MESSAGE_CHARS: usize = 900;
 
 #[tauri::command]
 pub async fn auto_name_agent_session<R: Runtime + 'static>(
@@ -66,12 +71,24 @@ fn auto_name_agent_session_blocking<R: Runtime + 'static>(
         )
     })?;
 
-    if !is_default_session_title(&existing.title) {
-        return Ok(agent_session_dto(&existing));
-    }
-
-    let generated_title =
-        generate_session_title(&app, &state, request.controls.as_ref(), &request.prompt)?;
+    let original_title = existing.title.clone();
+    let title_context = build_session_title_context(
+        &repo_root,
+        &request.project_id,
+        &request.agent_session_id,
+        &original_title,
+        &request.prompt,
+    );
+    let generated_title = title_or_prompt_fallback(
+        generate_session_title(
+            &app,
+            &state,
+            request.controls.as_ref(),
+            &title_context,
+            &request.prompt,
+        ),
+        &request.prompt,
+    )?;
 
     let current = project_store::get_agent_session(
         &repo_root,
@@ -88,7 +105,9 @@ fn auto_name_agent_session_blocking<R: Runtime + 'static>(
         )
     })?;
 
-    if !is_default_session_title(&current.title) {
+    if current.title.as_str() != original_title.as_str()
+        || titles_match(&current.title, &generated_title)
+    {
         return Ok(agent_session_dto(&current));
     }
 
@@ -110,7 +129,8 @@ fn generate_session_title<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     controls: Option<&RuntimeRunControlInputDto>,
-    prompt: &str,
+    title_context: &str,
+    fallback_prompt: &str,
 ) -> CommandResult<String> {
     let title_controls = controls.map(title_generation_controls);
     let provider_config = resolve_owned_agent_provider_config(app, state, title_controls.as_ref())?;
@@ -119,7 +139,7 @@ fn generate_session_title<R: Runtime>(
     let turn = ProviderTurnRequest {
         system_prompt: SESSION_TITLE_SYSTEM_PROMPT.into(),
         messages: vec![ProviderMessage::User {
-            content: build_session_title_prompt(prompt),
+            content: build_session_title_prompt(title_context),
             attachments: Vec::new(),
         }],
         tools: Vec::new(),
@@ -142,13 +162,28 @@ fn generate_session_title<R: Runtime>(
     };
 
     sanitize_provider_session_title(&message)
-        .or_else(|| fallback_title_from_prompt(prompt))
+        .or_else(|| fallback_title_from_prompt(fallback_prompt))
         .ok_or_else(|| {
             CommandError::retryable(
                 "agent_session_title_empty",
                 "The selected model returned an empty session name.",
             )
         })
+}
+
+fn title_or_prompt_fallback(
+    generated_title: CommandResult<String>,
+    fallback_prompt: &str,
+) -> CommandResult<String> {
+    match generated_title {
+        Ok(title) => Ok(title),
+        Err(_) => fallback_title_from_prompt(fallback_prompt).ok_or_else(|| {
+            CommandError::retryable(
+                "agent_session_title_fallback_empty",
+                "Xero could not derive a session name from the latest prompt.",
+            )
+        }),
+    }
 }
 
 fn title_generation_controls(controls: &RuntimeRunControlInputDto) -> RuntimeRunControlInputDto {
@@ -184,11 +219,113 @@ fn title_generation_control_state(
     }
 }
 
-fn build_session_title_prompt(prompt: &str) -> String {
+fn build_session_title_prompt(title_context: &str) -> String {
     format!(
-        "Create a sidebar title for this first user prompt:\n\n{}",
-        truncate_prompt(prompt.trim(), MAX_PROMPT_CHARS)
+        "Create a sidebar title for this developer-assistant conversation. Prefer the latest user goal when the topic has shifted. Do not preserve a generic current title such as Main, New Chat, Session, or Conversation.\n\n{}",
+        truncate_text(title_context.trim(), MAX_TITLE_CONTEXT_CHARS, "[Conversation truncated for title generation.]")
     )
+}
+
+fn build_session_title_context(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    current_title: &str,
+    latest_prompt: &str,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Current sidebar title: {}", current_title.trim()));
+
+    let mut messages = recent_session_title_messages(repo_root, project_id, agent_session_id);
+    let latest_prompt = latest_prompt.trim();
+    if !latest_prompt.is_empty()
+        && !messages.iter().rev().any(|message| {
+            message.role == TitleContextRole::User && message.content == latest_prompt
+        })
+    {
+        messages.push(TitleContextMessage {
+            role: TitleContextRole::User,
+            content: latest_prompt.to_owned(),
+        });
+    }
+
+    if messages.is_empty() {
+        lines.push(String::from("Latest user prompt:"));
+        lines.push(truncate_text(
+            latest_prompt,
+            MAX_PROMPT_CHARS,
+            "[Prompt truncated for title generation.]",
+        ));
+        return lines.join("\n");
+    }
+
+    lines.push(String::from("Recent conversation:"));
+    let start = messages.len().saturating_sub(MAX_TITLE_CONTEXT_MESSAGES);
+    for message in messages.iter().skip(start) {
+        lines.push(format!(
+            "{}: {}",
+            message.role.label(),
+            truncate_text(
+                &message.content,
+                MAX_TITLE_MESSAGE_CHARS,
+                "[Message truncated for title generation.]",
+            )
+        ));
+    }
+
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleContextRole {
+    User,
+    Assistant,
+}
+
+impl TitleContextRole {
+    fn label(self) -> &'static str {
+        match self {
+            TitleContextRole::User => "User",
+            TitleContextRole::Assistant => "Assistant",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TitleContextMessage {
+    role: TitleContextRole,
+    content: String,
+}
+
+fn recent_session_title_messages(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+) -> Vec<TitleContextMessage> {
+    let Ok(snapshots) =
+        project_store::load_agent_session_run_snapshots(repo_root, project_id, agent_session_id)
+    else {
+        return Vec::new();
+    };
+
+    let mut messages = Vec::new();
+    for (snapshot, _) in snapshots {
+        for message in snapshot.messages {
+            let role = match message.role {
+                project_store::AgentMessageRole::User => TitleContextRole::User,
+                project_store::AgentMessageRole::Assistant => TitleContextRole::Assistant,
+                project_store::AgentMessageRole::System
+                | project_store::AgentMessageRole::Developer
+                | project_store::AgentMessageRole::Tool => continue,
+            };
+            let content = collapse_title_whitespace(&message.content);
+            if content.is_empty() {
+                continue;
+            }
+            messages.push(TitleContextMessage { role, content });
+        }
+    }
+    messages
 }
 
 fn sanitize_provider_session_title(message: &str) -> Option<String> {
@@ -225,12 +362,7 @@ fn fallback_title_from_prompt(prompt: &str) -> Option<String> {
             matches!(character, '#' | '-' | '*' | '>' | '"' | '\'' | '`')
         })
         .trim();
-    let words = cleaned
-        .split_whitespace()
-        .take(6)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let title = truncate_title(&trim_trailing_title_punctuation(&words), MAX_TITLE_CHARS);
+    let title = truncate_title(&trim_trailing_title_punctuation(&cleaned), MAX_TITLE_CHARS);
 
     if is_usable_generated_title(&title) {
         Some(title)
@@ -239,27 +371,41 @@ fn fallback_title_from_prompt(prompt: &str) -> Option<String> {
     }
 }
 
-fn is_default_session_title(title: &str) -> bool {
-    title
-        .trim()
-        .eq_ignore_ascii_case(DEFAULT_AGENT_SESSION_TITLE)
-}
-
 fn is_usable_generated_title(title: &str) -> bool {
     let trimmed = title.trim();
-    !trimmed.is_empty()
-        && !is_default_session_title(trimmed)
-        && !trimmed.eq_ignore_ascii_case("untitled")
-        && !trimmed.eq_ignore_ascii_case("chat")
+    !trimmed.is_empty() && !is_generic_session_title(trimmed)
 }
 
-fn truncate_prompt(prompt: &str, max_chars: usize) -> String {
-    if prompt.chars().count() <= max_chars {
-        return prompt.to_owned();
+fn is_generic_session_title(title: &str) -> bool {
+    let normalized = collapse_title_whitespace(
+        &title
+            .trim()
+            .trim_matches(|character: char| matches!(character, '"' | '\'' | '`'))
+            .to_ascii_lowercase(),
+    );
+    matches!(
+        normalized.as_str(),
+        "main"
+            | "new chat"
+            | "new session"
+            | "untitled"
+            | "untitled session"
+            | "chat"
+            | "session"
+            | "conversation"
+            | "developer conversation"
+            | "developer assistant conversation"
+    )
+}
+
+fn truncate_text(value: &str, max_chars: usize, marker: &str) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
     }
 
-    let mut truncated = prompt.chars().take(max_chars).collect::<String>();
-    truncated.push_str("\n\n[Prompt truncated for title generation.]");
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("\n\n");
+    truncated.push_str(marker);
     truncated
 }
 
@@ -351,13 +497,18 @@ fn trim_trailing_title_punctuation(value: &str) -> String {
         .to_owned()
 }
 
+fn titles_match(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        fallback_title_from_prompt, sanitize_provider_session_title, title_generation_controls,
+        build_session_title_context, build_session_title_prompt, fallback_title_from_prompt,
+        sanitize_provider_session_title, title_generation_controls, title_or_prompt_fallback,
     };
     use crate::commands::{
-        ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
+        CommandError, ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
         RuntimeRunControlInputDto,
     };
 
@@ -373,11 +524,49 @@ mod tests {
     #[test]
     fn rejects_generic_titles_and_uses_prompt_fallback() {
         assert_eq!(sanitize_provider_session_title("New Chat"), None);
+        assert_eq!(sanitize_provider_session_title("Main"), None);
+        assert_eq!(sanitize_provider_session_title("Conversation"), None);
         assert_eq!(
             fallback_title_from_prompt("How does the system prompt get built for the Ask agent?")
                 .as_deref(),
-            Some("How does the system prompt get")
+            Some("How does the system prompt get built for the Ask agent")
         );
+        assert_eq!(
+            fallback_title_from_prompt("how do I write fizz buzz in c#?").as_deref(),
+            Some("how do I write fizz buzz in c#")
+        );
+    }
+
+    #[test]
+    fn prompt_fallback_survives_title_generation_errors() {
+        let title = title_or_prompt_fallback(
+            Err(CommandError::retryable(
+                "agent_session_title_provider_unavailable",
+                "Provider unavailable.",
+            )),
+            "What is this project about?",
+        )
+        .expect("prompt fallback should create a usable title");
+
+        assert_eq!(title, "What is this project about");
+    }
+
+    #[test]
+    fn title_prompt_targets_progressing_conversation() {
+        let context = build_session_title_context(
+            std::path::Path::new("/definitely/missing"),
+            "project-1",
+            "agent-session-main",
+            "System Prompt Investigation",
+            "Actually focus the title on the runtime reconnect bug.",
+        );
+        let prompt = build_session_title_prompt(&context);
+
+        assert!(prompt.contains("conversation"));
+        assert!(prompt.contains("Current sidebar title: System Prompt Investigation"));
+        assert!(prompt.contains("Actually focus the title on the runtime reconnect bug."));
+        assert!(!prompt.contains("first user prompt"));
+        assert!(prompt.contains("Do not preserve a generic current title"));
     }
 
     #[test]

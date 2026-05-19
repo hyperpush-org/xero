@@ -93,14 +93,14 @@ describe("projectRemotePayloadToTurns", () => {
 		]);
 	});
 
-	it("rebuilds snapshot timelines from events when persisted assistant messages exist", () => {
+	it("rebuilds live snapshot timelines from events when persisted assistant messages exist", () => {
 		const turns = projectRemotePayloadToTurns({
 			schema: "xero.remote_session_snapshot.v1",
 			runs: [
 				{
 					runId: "run-rich",
 					prompt: "What is this project about.",
-					status: "completed",
+					status: "running",
 					messages: [
 						{
 							id: 12,
@@ -177,6 +177,9 @@ describe("projectRemotePayloadToTurns", () => {
 				actions: [
 					{
 						id: "tool:run-rich:runtime-project-context:2:context_manifest_recorded",
+						sequence: 2,
+						toolCallId: "runtime-project-context:2:context_manifest_recorded",
+						toolName: "project_context",
 						title: "project context manifest",
 						detail: "Latest project context manifest recorded.",
 						detailRows: [],
@@ -184,6 +187,9 @@ describe("projectRemotePayloadToTurns", () => {
 					},
 					{
 						id: "tool:run-rich:runtime-project-context:3:retrieval_performed",
+						sequence: 3,
+						toolCallId: "runtime-project-context:3:retrieval_performed",
+						toolName: "project_context",
 						title: "project context retrieval",
 						detail: "Latest project context retrieval.",
 						detailRows: [],
@@ -203,6 +209,125 @@ describe("projectRemotePayloadToTurns", () => {
 				role: "assistant",
 				sequence: 6,
 				text: "This project is Clippster.",
+			},
+		]);
+	});
+
+	it("uses finalized messages while preserving terminal event timelines", () => {
+		const finalAnswer = [
+			"Here's a straightforward FizzBuzz in Elixir:",
+			"",
+			"```elixir",
+			"for n <- 1..100 do",
+			"  cond do",
+			'    rem(n, 15) == 0 -> IO.puts("FizzBuzz")',
+			'    rem(n, 3) == 0 -> IO.puts("Fizz")',
+			'    rem(n, 5) == 0 -> IO.puts("Buzz")',
+			"    true -> IO.puts(n)",
+			"  end",
+			"end",
+			"```",
+		].join("\n");
+
+		const turns = projectRemotePayloadToTurns({
+			schema: "xero.remote_session_snapshot.v1",
+			runs: [
+				{
+					runId: "run-terminal",
+					prompt: "How do I write fizz buzz in Elixir?",
+					status: "completed",
+					messages: [
+						{
+							id: 29,
+							role: "user",
+							content: "How do I write fizz buzz in Elixir?",
+						},
+						{
+							id: 30,
+							role: "assistant",
+							content: finalAnswer,
+						},
+					],
+					events: [
+						{
+							id: 1,
+							eventKind: "message_delta",
+							payload: {
+								role: "user",
+								text: "How do I write fizz buzz in Elixir?",
+							},
+						},
+						{
+							id: 2,
+							eventKind: "context_manifest_recorded",
+							payload: {
+								summary: "Latest project context manifest recorded.",
+							},
+						},
+						{
+							id: 3,
+							eventKind: "retrieval_performed",
+							payload: {
+								summary: "Latest project context retrieval.",
+							},
+						},
+						{
+							id: 4,
+							eventKind: "message_delta",
+							payload: {
+								role: "assistant",
+								text: "Here's a streamed fragment that should not win.",
+							},
+						},
+					],
+				},
+			],
+		});
+
+		expect(turns).toEqual([
+			{
+				id: "transcript:run-terminal:29",
+				kind: "message",
+				role: "user",
+				sequence: 1,
+				text: "How do I write fizz buzz in Elixir?",
+			},
+			{
+				id: "tool-group:tool:run-terminal:runtime-project-context:2:context_manifest_recorded:tool:run-terminal:runtime-project-context:3:retrieval_performed",
+				kind: "action_group",
+				sequence: 3,
+				title: "2 tool calls",
+				detail: "2 succeeded · latest project context retrieval",
+				state: "succeeded",
+				actions: [
+					{
+						id: "tool:run-terminal:runtime-project-context:2:context_manifest_recorded",
+						sequence: 2,
+						toolCallId: "runtime-project-context:2:context_manifest_recorded",
+						toolName: "project_context",
+						title: "project context manifest",
+						detail: "Latest project context manifest recorded.",
+						detailRows: [],
+						state: "succeeded",
+					},
+					{
+						id: "tool:run-terminal:runtime-project-context:3:retrieval_performed",
+						sequence: 3,
+						toolCallId: "runtime-project-context:3:retrieval_performed",
+						toolName: "project_context",
+						title: "project context retrieval",
+						detail: "Latest project context retrieval.",
+						detailRows: [],
+						state: "succeeded",
+					},
+				],
+			},
+			{
+				id: "transcript:run-terminal:30",
+				kind: "message",
+				role: "assistant",
+				sequence: 4,
+				text: finalAnswer,
 			},
 		]);
 	});

@@ -125,6 +125,8 @@ pub fn create_repository<R: Runtime>(
             )
         })?;
 
+    crate::commands::remote_bridge::publish_remote_project_list_to_cloud(&app, state.inner());
+
     Ok(ImportRepositoryResponseDto {
         project: imported.project,
         repository: imported.repository,

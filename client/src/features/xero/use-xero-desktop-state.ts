@@ -3478,6 +3478,7 @@ export function useXeroDesktopState(
         return []
       }
 
+      const runtimeRunProjectionKey = getRuntimeRunProjectionKey(runtimeRun)
       return [{
         key: [
           activeProjectId,
@@ -3486,6 +3487,7 @@ export function useXeroDesktopState(
           activeRuntimeSubscriptionSession.sessionId,
           activeRuntimeSubscriptionSession.flowId ?? 'none',
           runId,
+          runtimeRunProjectionKey,
           runtimeStreamRetryToken,
         ].join(':'),
         projectId: activeProjectId,

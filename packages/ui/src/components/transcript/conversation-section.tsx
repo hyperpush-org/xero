@@ -123,10 +123,14 @@ export type ConversationTurn =
       state?: RuntimeStreamToolItemView['toolState'] | null
       actions: Array<{
         id: string
+        sequence: number
+        toolCallId: string
+        toolName: string
         title: string
         detail: string
         detailRows: Array<{ label: string; value: string }>
         state: RuntimeStreamToolItemView['toolState'] | null
+        defaultOpen?: boolean
       }>
     }
   | {
@@ -1965,10 +1969,14 @@ interface ActionGroupCardProps {
   state: RuntimeStreamToolItemView['toolState'] | null
   actions: Array<{
     id: string
+    sequence: number
+    toolCallId: string
+    toolName: string
     title: string
     detail: string
     detailRows: Array<{ label: string; value: string }>
     state: RuntimeStreamToolItemView['toolState'] | null
+    defaultOpen?: boolean
   }>
   connectsTop?: boolean
   connectsBottom?: boolean
@@ -2174,6 +2182,39 @@ interface UserMessageProps {
 
 function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: UserMessageProps) {
   const hasAttachments = attachments && attachments.length > 0
+  const isTouch = useIsTouchDevice()
+  const [tapCopied, setTapCopied] = useState(false)
+
+  useEffect(() => {
+    if (!tapCopied) return
+    const timeoutId = window.setTimeout(() => setTapCopied(false), 1400)
+    return () => window.clearTimeout(timeoutId)
+  }, [tapCopied])
+
+  const trimmedLength = text.trim().length
+  const canTapCopy = isTouch && trimmedLength > 0
+
+  const handleBubbleTap = useCallback(async () => {
+    if (!canTapCopy) return
+    try {
+      if (!navigator.clipboard?.writeText) return
+      await navigator.clipboard.writeText(text)
+      setTapCopied(true)
+    } catch {
+      // Clipboard writes can be denied by WebView permissions or test runners.
+    }
+  }, [canTapCopy, text])
+
+  const handleBubbleKey = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!canTapCopy) return
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      void handleBubbleTap()
+    },
+    [canTapCopy, handleBubbleTap],
+  )
+
   return (
     <div className="group/user flex justify-end gap-2.5">
       <div className="flex min-w-0 max-w-[80%] flex-col items-end gap-1">
@@ -2187,18 +2228,27 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
         ) : null}
         {text.length > 0 ? (
           <div
+            role={canTapCopy ? 'button' : undefined}
+            tabIndex={canTapCopy ? 0 : undefined}
+            onClick={canTapCopy ? () => void handleBubbleTap() : undefined}
+            onKeyDown={canTapCopy ? handleBubbleKey : undefined}
+            aria-label={canTapCopy ? (tapCopied ? 'Copied your prompt' : 'Tap to copy your prompt') : undefined}
             className={cn(
               'rounded-2xl px-3.5 py-2',
               'bg-primary/10 text-foreground',
-              'ring-1 ring-inset ring-primary/40',
+              'ring-1 ring-inset transition-[box-shadow,background-color] duration-150',
+              tapCopied ? 'ring-success/70 bg-success/10' : 'ring-primary/40',
               'whitespace-pre-wrap break-words text-[14px] leading-relaxed select-text',
               'agent-user-bubble-enter',
+              canTapCopy
+                ? 'cursor-pointer active:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70'
+                : null,
             )}
           >
             {text}
           </div>
         ) : null}
-        {text.trim().length > 0 ? (
+        {!isTouch && trimmedLength > 0 ? (
           <div
             className={cn(
               'flex h-3 translate-y-1.5 items-center justify-end pr-0.5',
@@ -2212,15 +2262,38 @@ function UserMessage({ text, attachments, accountAvatarUrl, accountLogin }: User
               copiedLabel="Copied your prompt"
               tooltip="Copy"
               size="icon-xs"
-              className="!size-[22px] text-muted-foreground/55 hover:text-foreground"
-              iconClassName="size-[11px]"
+              className="!size-[26px] text-muted-foreground/55 hover:text-foreground"
+              iconClassName="size-[14px]"
             />
+          </div>
+        ) : null}
+        {canTapCopy && tapCopied ? (
+          <div className="flex h-3 translate-y-1.5 items-center justify-end pr-0.5">
+            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-success">
+              <Check className="size-[11px] agent-copy-icon-pop" aria-hidden="true" />
+              Copied
+            </span>
           </div>
         ) : null}
       </div>
       <UserAvatar avatarUrl={accountAvatarUrl} login={accountLogin} />
     </div>
   )
+}
+
+function useIsTouchDevice(): boolean {
+  const [isTouch, setIsTouch] = useState(false)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return
+    }
+    const mediaQuery = window.matchMedia('(hover: none) and (pointer: coarse)')
+    setIsTouch(mediaQuery.matches)
+    const handleChange = (event: MediaQueryListEvent) => setIsTouch(event.matches)
+    mediaQuery.addEventListener('change', handleChange)
+    return () => mediaQuery.removeEventListener('change', handleChange)
+  }, [])
+  return isTouch
 }
 
 function UserMessageAttachmentChip({ attachment }: { attachment: ConversationMessageAttachment }) {
@@ -2305,6 +2378,7 @@ function AssistantMessage({
   isStreaming: boolean
 }) {
   const segments = useMemo(() => splitAssistantText(text), [text])
+  const isTouch = useIsTouchDevice()
   const responseCopyText = useMemo(
     () =>
       segments
@@ -2342,9 +2416,10 @@ function AssistantMessage({
       {responseCopyText.length > 0 ? (
         <div
           className={cn(
-            'flex h-4 items-center pl-0.5',
-            'opacity-0 transition-opacity duration-150',
-            'group-hover/agent:opacity-100 focus-within:opacity-100',
+            'mt-2 flex h-4 items-center pl-0.5 transition-opacity duration-150',
+            isTouch
+              ? 'opacity-100'
+              : 'opacity-0 group-hover/agent:opacity-100 focus-within:opacity-100',
           )}
         >
           <CopyTextButton
@@ -2640,6 +2715,7 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
       aria-hidden="true"
       className={cn(
         'relative inline-flex items-center justify-center shrink-0',
+        state === 'running' && 'animate-spin',
         className,
       )}
     >
@@ -2650,7 +2726,6 @@ function ToolStatusIcon({ state, className }: ToolStatusIconProps) {
           iconSize,
           'shrink-0',
           tone,
-          state === 'running' && 'animate-spin',
           state === 'succeeded' && 'drop-shadow-[0_0_4px_rgba(34,197,94,0.25)]',
           'motion-safe:animate-in motion-safe:fade-in-0',
           pop ? 'tool-status-icon-pop' : 'motion-safe:zoom-in-95 motion-safe:duration-150',

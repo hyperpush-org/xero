@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getPublicRuntimeConfigScript, getServerUrl } from "./server-url";
+import {
+	getCanonicalLoopbackCloudUrl,
+	getPublicRuntimeServerUrl,
+	getServerUrl,
+	RUNTIME_SERVER_URL_META_NAME,
+} from "./server-url";
 
 describe("getServerUrl", () => {
 	afterEach(() => {
@@ -19,11 +24,44 @@ describe("getServerUrl", () => {
 		expect(getServerUrl()).toBe("https://api-from-runtime.example");
 	});
 
-	it("injects the runtime server URL without raw html delimiters", () => {
+	it("uses the browser runtime meta tag before process env", () => {
+		process.env.XERO_SERVER_URL = "https://api-from-process.example";
+		vi.stubGlobal("window", {
+			document: {
+				querySelector: vi.fn((selector: string) =>
+					selector === `meta[name="${RUNTIME_SERVER_URL_META_NAME}"]`
+						? {
+								getAttribute: () => "https://api-from-meta.example/",
+							}
+						: null,
+				),
+			},
+		});
+
+		expect(getServerUrl()).toBe("https://api-from-meta.example");
+	});
+
+	it("exposes the normalized server URL for the root document meta tag", () => {
 		process.env.XERO_SERVER_URL = "https://api.example/<tenant>/";
 
-		expect(getPublicRuntimeConfigScript()).toBe(
-			'window.__XERO_RUNTIME_CONFIG__={"serverUrl":"https://api.example/\\u003ctenant>"};',
-		);
+		expect(getPublicRuntimeServerUrl()).toBe("https://api.example/<tenant>");
+	});
+
+	it("canonicalizes local cloud URLs to the server loopback host", () => {
+		expect(
+			getCanonicalLoopbackCloudUrl(
+				"http://localhost:3002/sessions?tab=active#top",
+				"http://127.0.0.1:4000",
+			),
+		).toBe("http://127.0.0.1:3002/sessions?tab=active#top");
+	});
+
+	it("does not canonicalize non-loopback cloud URLs", () => {
+		expect(
+			getCanonicalLoopbackCloudUrl(
+				"https://cloud.xeroshell.com/sessions",
+				"https://xeroshell.com",
+			),
+		).toBeNull();
 	});
 });

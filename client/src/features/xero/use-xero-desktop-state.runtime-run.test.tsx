@@ -599,6 +599,7 @@ function createMockAdapter(options?: {
   upsertRouteErrors?: Record<string, Error>
   startRuntimeRunErrors?: Record<string, Error>
   updateRuntimeRunControlErrors?: Record<string, Error>
+  autoNameAgentSessionError?: Error
   subscribeResponses?: Record<string, SubscribeRuntimeStreamResponseDto>
 }) {
   let projectUpdatedHandler: ((payload: ProjectUpdatedPayloadDto) => void) | null = null
@@ -799,6 +800,10 @@ function createMockAdapter(options?: {
     prompt: string
     controls?: RuntimeRunControlInputDto | null
   }) => {
+    if (options?.autoNameAgentSessionError) {
+      throw options.autoNameAgentSessionError
+    }
+
     const snapshot = snapshots[request.projectId]
     const existing = snapshot?.agentSessions.find((session) => session.agentSessionId === request.agentSessionId)
     if (!snapshot || !existing) {
@@ -807,7 +812,7 @@ function createMockAdapter(options?: {
 
     const nextSession = {
       ...existing,
-      title: existing.title.trim().toLowerCase() === 'new chat' ? 'System Prompt Investigation' : existing.title,
+      title: 'System Prompt Investigation',
       updatedAt: '2026-04-15T20:00:02Z',
     }
     snapshots[request.projectId] = {
@@ -815,6 +820,37 @@ function createMockAdapter(options?: {
       agentSessions: snapshot.agentSessions.map((session) =>
         session.agentSessionId === request.agentSessionId ? nextSession : session,
       ),
+    }
+    return nextSession
+  })
+  const updateAgentSession = vi.fn(async (request: {
+    projectId: string
+    agentSessionId: string
+    title?: string | null
+    summary?: string | null
+    selected?: boolean | null
+  }) => {
+    const snapshot = snapshots[request.projectId]
+    const existing = snapshot?.agentSessions.find((session) => session.agentSessionId === request.agentSessionId)
+    if (!snapshot || !existing) {
+      throw new Error(`Missing agent session ${request.agentSessionId}`)
+    }
+
+    const nextSession = {
+      ...existing,
+      title: request.title?.trim() || existing.title,
+      summary: request.summary ?? existing.summary,
+      selected: request.selected ?? existing.selected,
+      updatedAt: '2026-04-15T20:00:03Z',
+    }
+    snapshots[request.projectId] = {
+      ...snapshot,
+      agentSessions: snapshot.agentSessions.map((session) => {
+        if (session.agentSessionId === request.agentSessionId) {
+          return nextSession
+        }
+        return request.selected ? { ...session, selected: false } : session
+      }),
     }
     return nextSession
   })
@@ -911,6 +947,7 @@ function createMockAdapter(options?: {
     getAutonomousRun,
     getRuntimeRun,
     getRuntimeSession,
+    updateAgentSession,
     autoNameAgentSession,
     getProviderModelCatalog: vi.fn(async (profileId: string): Promise<ProviderModelCatalogDto> => {
       const profile = providerProfiles.profiles.find((candidate) => candidate.profileId === profileId)
@@ -1117,6 +1154,7 @@ function createMockAdapter(options?: {
         _itemKinds,
         handler: (payload: RuntimeStreamEventDto) => void,
         onError?: (error: XeroDesktopError) => void,
+        _options?: { afterSequence?: number | null; replayLimit?: number | null },
       ) => {
         const subscription = {
           projectId,
@@ -1177,6 +1215,7 @@ function createMockAdapter(options?: {
     upsertNotificationRoute,
     startRuntimeRun: adapter.startRuntimeRun,
     autoNameAgentSession,
+    updateAgentSession,
     updateRuntimeRunControls: adapter.updateRuntimeRunControls,
     resumeOperatorRun,
     subscribeRuntimeStream: adapter.subscribeRuntimeStream,
@@ -1565,6 +1604,91 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     })
   })
 
+  it('falls back to a prompt-derived title when model title generation fails', async () => {
+    const newChatSnapshot = makeSnapshot('project-1', 'Xero')
+    newChatSnapshot.agentSessions = [
+      {
+        ...makeAgentSession('project-1'),
+        title: 'New Chat',
+        summary: '',
+        lastRunId: null,
+      },
+    ]
+    const setup = createMockAdapter({
+      snapshots: {
+        'project-1': newChatSnapshot,
+      },
+      runtimeRuns: {
+        'project-1': null,
+      },
+      autoNameAgentSessionError: new Error('title provider unavailable'),
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('none'))
+    expect(screen.getByTestId('selected-session-title')).toHaveTextContent('New Chat')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Start runtime run with controls' }))
+    })
+
+    await waitFor(() => expect(setup.autoNameAgentSession).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(setup.updateAgentSession).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        agentSessionId: 'agent-session-main',
+        title: 'Review the latest diff before continuing',
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId('selected-session-title')).toHaveTextContent('Review the latest diff before continuing'),
+    )
+  })
+
+  it('refreshes the session title from follow-up prompts after the first run exists', async () => {
+    const existingChatSnapshot = makeSnapshot('project-1', 'Xero')
+    existingChatSnapshot.agentSessions = [
+      {
+        ...makeAgentSession('project-1'),
+        title: 'Diff Review',
+        summary: '',
+        lastRunId: 'run-project-1',
+      },
+    ]
+    const setup = createMockAdapter({
+      snapshots: {
+        'project-1': existingChatSnapshot,
+      },
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1'),
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+    expect(screen.getByTestId('selected-session-title')).toHaveTextContent('Diff Review')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Queue runtime controls' }))
+    })
+
+    await waitFor(() => expect(setup.autoNameAgentSession).toHaveBeenCalledTimes(1))
+    expect(setup.autoNameAgentSession).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      prompt: 'Review the latest diff before continuing.',
+      controls: expect.objectContaining({
+        modelId: 'openai/gpt-5-mini',
+        thinkingEffort: 'high',
+      }),
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId('selected-session-title')).toHaveTextContent('System Prompt Investigation'),
+    )
+  })
+
   it('preserves the last truthful runtime-run view when a later run refresh fails', async () => {
     const setup = createMockAdapter({
       runtimeRuns: {
@@ -1910,6 +2034,93 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(vi.mocked(setup.getProjectSnapshot).mock.calls.length).toBe(snapshotCallsBeforeEvent)
     expect(vi.mocked(setup.listNotificationRoutes).mock.calls.length).toBe(routeRefreshesBeforeEvent)
     expect(vi.mocked(setup.syncNotificationAdapters).mock.calls.length).toBe(syncRefreshesBeforeEvent)
+  })
+
+  it('resubscribes on runtime_run:updated when the active session queues a prompt on the same run id', async () => {
+    const initialRun = makeRuntimeRun('project-1', { runId: 'run-project-1' })
+    const setup = createMockAdapter({
+      runtimeSessions: {
+        'project-1': makeRuntimeSession('project-1', {
+          phase: 'authenticated',
+          sessionId: 'session-1',
+          flowId: 'flow-1',
+          accountId: 'acct-1',
+          lastErrorCode: null,
+          lastError: null,
+        }),
+      },
+      runtimeRuns: {
+        'project-1': initialRun,
+      },
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('stream-run-id')).toHaveTextContent('run-project-1'))
+    expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      setup.emitRuntimeStream(
+        0,
+        makeRuntimeStreamEvent('project-1', {
+          runId: 'run-project-1',
+          item: {
+            kind: 'complete',
+            sequence: 9,
+            runId: 'run-project-1',
+            detail: 'Previous turn completed.',
+            text: 'Previous turn completed.',
+          },
+        }),
+      )
+    })
+    await waitFor(() => expect(screen.getByTestId('stream-status')).toHaveTextContent('complete'))
+    expect(screen.getByTestId('stream-last-sequence')).toHaveTextContent('9')
+
+    act(() => {
+      setup.emitRuntimeRunUpdated({
+        projectId: 'project-1',
+        run: makeRuntimeRun('project-1', {
+          runId: 'run-project-1',
+          updatedAt: '2026-04-15T20:01:00Z',
+          lastCheckpointSequence: 3,
+          lastCheckpointAt: '2026-04-15T20:01:00Z',
+          checkpoints: [
+            ...initialRun.checkpoints,
+            {
+              sequence: 3,
+              kind: 'state',
+              summary: 'Owned agent runtime queued a cloud prompt.',
+              createdAt: '2026-04-15T20:01:00Z',
+            },
+          ],
+          controls: {
+            active: initialRun.controls.active,
+            pending: {
+              providerProfileId: initialRun.controls.active.providerProfileId,
+              runtimeAgentId: initialRun.controls.active.runtimeAgentId,
+              modelId: initialRun.controls.active.modelId,
+              thinkingEffort: initialRun.controls.active.thinkingEffort,
+              approvalMode: initialRun.controls.active.approvalMode,
+              planModeRequired: initialRun.controls.active.planModeRequired,
+              revision: 2,
+              queuedAt: '2026-04-15T20:01:00Z',
+              queuedPrompt: 'What is 1+1?',
+              queuedPromptAt: '2026-04-15T20:01:00Z',
+            },
+          },
+        }),
+      })
+    })
+
+    await waitFor(() => expect(setup.subscribeRuntimeStream).toHaveBeenCalledTimes(2))
+    expect(setup.streamSubscriptions[0]?.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1')
+    expect(screen.getByTestId('pending-control-prompt')).toHaveTextContent('What is 1+1?')
+    expect(vi.mocked(setup.subscribeRuntimeStream).mock.calls.at(-1)?.[5]).toEqual({
+      afterSequence: 9,
+      replayLimit: 200,
+    })
   })
 
   it('hydrates gate-linked pending approvals from durable snapshot truth on project:updated refresh', async () => {

@@ -4,7 +4,7 @@ import type { RuntimeEnvelope } from "./envelope";
 import { remoteVisibleSessionUpdateFromEnvelope } from "./visible-sessions";
 
 describe("remoteVisibleSessionUpdateFromEnvelope", () => {
-	it("maps desktop visible-session lists into cloud summaries", () => {
+	it("maps desktop session lists into cloud summaries without transcript content", () => {
 		const envelope: RuntimeEnvelope = {
 			v: 1,
 			seq: 1,
@@ -12,14 +12,26 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 			session_id: "__sessions__",
 			kind: "event",
 			payload: {
-				schema: "xero.remote_visible_sessions.v1",
+				schema: "xero.remote_sessions.v1",
 				sessions: [
 					{
 						projectId: "project-1",
+						projectName: "Clipstack",
 						session: {
 							agent_session_id: "session-1",
 							title: "Project Overview",
+							remote_visible: false,
 							updated_at: "2026-05-16T20:49:15Z",
+						},
+					},
+					{
+						projectId: "project-1",
+						session: {
+							agentSessionId: "session-2",
+							projectName: "Clipstack",
+							title: "Linked Session",
+							remoteVisible: true,
+							updatedAt: "2026-05-16T21:49:15Z",
 						},
 					},
 				],
@@ -46,9 +58,22 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 				{
 					computerId: "desktop-1",
 					sessionId: "session-1",
+					projectId: "project-1",
+					projectName: "Clipstack",
 					title: "Project Overview",
 					lastActivityAt: "2026-05-16T20:49:15Z",
 					computerName: "Mac Studio",
+					remoteVisible: false,
+				},
+				{
+					computerId: "desktop-1",
+					sessionId: "session-2",
+					projectId: "project-1",
+					projectName: "Clipstack",
+					title: "Linked Session",
+					lastActivityAt: "2026-05-16T21:49:15Z",
+					computerName: "Mac Studio",
+					remoteVisible: true,
 				},
 			],
 		});
@@ -62,11 +87,32 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 			session_id: "session-1",
 			kind: "event",
 			payload: {
-				schema: "xero.remote_visible_sessions.v1",
+				schema: "xero.remote_sessions.v1",
 				sessions: [],
 			},
 		};
 
 		expect(remoteVisibleSessionUpdateFromEnvelope(envelope)).toBeNull();
+	});
+
+	it("maps desktop session-removed frames into removal updates", () => {
+		const envelope: RuntimeEnvelope = {
+			v: 1,
+			seq: 2,
+			computer_id: "desktop-1",
+			session_id: "__sessions__",
+			kind: "session_removed",
+			payload: {
+				schema: "xero.remote_session_removed.v1",
+				projectId: "project-1",
+				sessionId: "session-1",
+			},
+		};
+
+		expect(remoteVisibleSessionUpdateFromEnvelope(envelope)).toEqual({
+			kind: "remove",
+			computerId: "desktop-1",
+			sessionId: "session-1",
+		});
 	});
 });

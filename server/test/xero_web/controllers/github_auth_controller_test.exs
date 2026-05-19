@@ -167,6 +167,103 @@ defmodule XeroWeb.GitHubAuthControllerTest do
     end)
   end
 
+  test "web callback sets persistent browser session cookies", %{conn: conn} do
+    with_github_env(fn ->
+      with_github_req_stub(fn ->
+        redirect_to = "http://127.0.0.1:3000/sessions"
+
+        start_conn =
+          post(conn, ~p"/api/github/login", %{
+            kind: "web",
+            redirectTo: redirect_to
+          })
+
+        start_body = json_response(start_conn, 200)
+        state_token = state_from_authorization_url(start_body["authorizationUrl"])
+
+        callback_conn =
+          get(conn, ~p"/auth/github/callback?state=#{state_token}&code=callback-code")
+
+        assert redirected_to(callback_conn, 302) == redirect_to
+
+        cookies = get_resp_header(callback_conn, "set-cookie")
+        web_session_cookie = Enum.find(cookies, &String.starts_with?(&1, "_xero_web_session="))
+        csrf_cookie = Enum.find(cookies, &String.starts_with?(&1, "xero_csrf_token="))
+
+        assert web_session_cookie
+        assert csrf_cookie
+
+        normalized_web_cookie = String.downcase(web_session_cookie)
+        normalized_csrf_cookie = String.downcase(csrf_cookie)
+
+        assert normalized_web_cookie =~ "max-age=31536000"
+        assert normalized_web_cookie =~ "httponly"
+        assert normalized_web_cookie =~ "samesite=lax"
+        assert normalized_csrf_cookie =~ "max-age=31536000"
+        refute normalized_csrf_cookie =~ "httponly"
+      end)
+    end)
+  end
+
+  test "web callback aligns loopback redirect host with the OAuth callback host", %{conn: conn} do
+    with_github_env(fn ->
+      with_github_req_stub(fn ->
+        start_conn =
+          post(conn, ~p"/api/github/login", %{
+            kind: "web",
+            redirectTo: "http://localhost:3000/sessions"
+          })
+
+        start_body = json_response(start_conn, 200)
+        state_token = state_from_authorization_url(start_body["authorizationUrl"])
+
+        callback_conn =
+          get(conn, ~p"/auth/github/callback?state=#{state_token}&code=callback-code")
+
+        assert redirected_to(callback_conn, 302) == "http://127.0.0.1:3000/sessions"
+      end)
+    end)
+  end
+
+  test "web cookie refresh survives cleared server memory", %{conn: conn} do
+    with_github_env(fn ->
+      with_github_req_stub(fn ->
+        redirect_to = "http://127.0.0.1:3000/sessions"
+
+        start_conn =
+          post(conn, ~p"/api/github/login", %{
+            kind: "web",
+            redirectTo: redirect_to
+          })
+
+        start_body = json_response(start_conn, 200)
+        state_token = state_from_authorization_url(start_body["authorizationUrl"])
+
+        callback_conn =
+          get(conn, ~p"/auth/github/callback?state=#{state_token}&code=callback-code")
+
+        web_session_cookie =
+          callback_conn
+          |> get_resp_header("set-cookie")
+          |> Enum.find(&String.starts_with?(&1, "_xero_web_session="))
+
+        session_id = cookie_value!(web_session_cookie)
+        assert Repo.get(Session, session_id)
+        assert :ok = GitHubAuth.clear_in_memory_state_for_test!()
+
+        refresh_conn =
+          conn
+          |> put_req_cookie("_xero_web_session", session_id)
+          |> post(~p"/api/relay/token/refresh", %{})
+
+        body = json_response(refresh_conn, 200)
+        assert body["deviceKind"] == "web"
+        assert body["relayToken"]
+        assert body["account"]["githubLogin"] == "octo"
+      end)
+    end)
+  end
+
   test "web session cookies are host-only when the configured domain is nil", %{conn: conn} do
     original_domain = Application.fetch_env(:xero, :web_session_cookie_domain)
     Application.put_env(:xero, :web_session_cookie_domain, nil)
@@ -248,5 +345,52 @@ defmodule XeroWeb.GitHubAuthControllerTest do
       assert body["error"]["code"] == "github_oauth_rejected"
       assert body["error"]["message"] =~ "access_denied"
     end)
+  end
+
+  defp with_github_req_stub(fun) do
+    original_req_options = Application.fetch_env(:xero, :github_auth_req_options)
+    Application.put_env(:xero, :github_auth_req_options, plug: &github_req_stub/1)
+
+    try do
+      fun.()
+    after
+      case original_req_options do
+        {:ok, value} -> Application.put_env(:xero, :github_auth_req_options, value)
+        :error -> Application.delete_env(:xero, :github_auth_req_options)
+      end
+    end
+  end
+
+  defp github_req_stub(
+         %Plug.Conn{method: "POST", request_path: "/login/oauth/access_token"} = conn
+       ) do
+    Req.Test.json(conn, %{
+      "access_token" => "callback-access-token",
+      "token_type" => "bearer",
+      "scope" => "read:user user:email"
+    })
+  end
+
+  defp github_req_stub(%Plug.Conn{method: "GET", request_path: "/user"} = conn) do
+    Req.Test.json(conn, %{
+      "id" => 42,
+      "login" => "octo",
+      "name" => "Octo",
+      "email" => nil,
+      "avatar_url" => "https://avatars.githubusercontent.com/u/42?v=4",
+      "html_url" => "https://github.com/octo"
+    })
+  end
+
+  defp github_req_stub(conn) do
+    Plug.Conn.send_resp(conn, 404, "unexpected GitHub request")
+  end
+
+  defp cookie_value!(cookie) when is_binary(cookie) do
+    cookie
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.split("=", parts: 2)
+    |> List.last()
   end
 end

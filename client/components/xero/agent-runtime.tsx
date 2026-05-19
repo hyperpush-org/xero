@@ -630,10 +630,14 @@ function actionGroupTurnFromActions(
     state: actionGroupState(actions),
     actions: actions.map((action) => ({
       id: action.id,
+      sequence: action.sequence,
+      toolCallId: action.toolCallId,
+      toolName: action.toolName,
       title: action.title,
       detail: action.detail,
       detailRows: action.detailRows,
       state: action.state ?? null,
+      ...(action.defaultOpen ? { defaultOpen: true } : {}),
     })),
   }
 }

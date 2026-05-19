@@ -2602,9 +2602,15 @@ describe('AgentRuntime current UI', () => {
     ])
 
     expect(screen.queryByText('Running')).not.toBeInTheDocument()
-    expect(container.querySelector('.animate-spin')).not.toBeNull()
+    const toolDetailsButton = screen.getByRole('button', { name: /show tool details/i })
+    const spinner = toolDetailsButton.querySelector('.animate-spin')
+    const spinnerIcon = spinner?.querySelector('svg')
+    expect(spinner?.tagName.toLowerCase()).toBe('span')
+    expect(spinnerIcon).not.toBeNull()
+    expect(spinnerIcon).not.toHaveClass('animate-spin')
+    expect(spinnerIcon).toHaveClass('motion-safe:animate-in')
 
-    fireEvent.click(screen.getByRole('button', { name: /show tool details/i }))
+    fireEvent.click(toolDetailsButton)
 
     expect(screen.queryByText('Output')).not.toBeInTheDocument()
     const output = screen.getByText((content) =>

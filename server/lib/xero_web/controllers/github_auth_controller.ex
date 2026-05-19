@@ -6,6 +6,7 @@ defmodule XeroWeb.GitHubAuthController do
 
   @web_session_cookie "_xero_web_session"
   @csrf_cookie "xero_csrf_token"
+  @web_session_cookie_max_age_seconds 365 * 24 * 60 * 60
 
   def start(conn, params) do
     kind = Map.get(params, "kind") || "desktop"
@@ -186,6 +187,7 @@ defmodule XeroWeb.GitHubAuthController do
       domain: cookie_domain(),
       secure: secure_cookie?(),
       http_only: Keyword.fetch!(extra, :http_only),
+      max_age: @web_session_cookie_max_age_seconds,
       same_site: "Lax"
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)

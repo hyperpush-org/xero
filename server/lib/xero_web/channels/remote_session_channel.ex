@@ -21,8 +21,6 @@ defmodule XeroWeb.RemoteSessionChannel do
           session_id: session_id
         )
 
-      maybe_broadcast_session_attached(socket, desktop_device_id, session_id, payload)
-
       {:ok, %{desktop_device_id: desktop_device_id, session_id: session_id}, socket}
     else
       _ -> {:error, %{reason: "unauthorized"}}
@@ -31,7 +29,7 @@ defmodule XeroWeb.RemoteSessionChannel do
 
   @impl true
   def handle_in("frame", payload, socket) when is_map(payload) do
-    case RemoteChannelRateLimit.hit(socket, "frame") do
+    case rate_limit_frame(socket) do
       :ok ->
         direction = direction(socket.assigns.device_kind)
         bytes = payload_size(payload)
@@ -93,6 +91,14 @@ defmodule XeroWeb.RemoteSessionChannel do
        do: :ok
 
   defp authorize_session_join(
+         %{assigns: %{device_kind: :web}},
+         _desktop_device_id,
+         "__projects__",
+         _payload
+       ),
+       do: :ok
+
+  defp authorize_session_join(
          %{assigns: %{device_kind: :web}} = socket,
          desktop_device_id,
          session_id,
@@ -130,21 +136,10 @@ defmodule XeroWeb.RemoteSessionChannel do
   defp authorize_session_join(_socket, _desktop_device_id, _session_id, _payload),
     do: {:error, :unauthorized}
 
-  defp maybe_broadcast_session_attached(
-         %{assigns: %{device_kind: :web, device_id: web_device_id}},
-         desktop_device_id,
-         session_id,
-         payload
-       ) do
-    XeroWeb.Endpoint.broadcast("desktop:#{desktop_device_id}", "session_attached", %{
-      web_device_id: web_device_id,
-      session_id: session_id,
-      last_seq: Map.get(payload, "last_seq")
-    })
-  end
+  defp rate_limit_frame(%{assigns: %{device_kind: :web}} = socket),
+    do: RemoteChannelRateLimit.hit(socket, "frame")
 
-  defp maybe_broadcast_session_attached(_socket, _desktop_device_id, _session_id, _payload),
-    do: :ok
+  defp rate_limit_frame(%{assigns: %{device_kind: :desktop}}), do: :ok
 
   defp direction(:desktop), do: :desktop_to_web
   defp direction(:web), do: :web_to_desktop

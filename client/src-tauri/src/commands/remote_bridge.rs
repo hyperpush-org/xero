@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,15 +22,17 @@ use xero_remote_bridge::{
 use crate::{
     commands::{
         agent_run_dto,
-        agent_session::agent_session_dto,
+        agent_session::{agent_session_dto, stop_idle_owned_runtime_run_before_archive},
+        provider_credentials::load_provider_credentials_view,
         resolve_operator_action::resolve_operator_action_blocking,
         runtime_support::{
-            load_persisted_runtime_run, resolve_project_root, runtime_run_dto_from_snapshot,
+            emit_project_updated, load_persisted_runtime_run, resolve_project_root,
+            runtime_run_dto_from_snapshot,
         },
         start_runtime_run::start_runtime_run_blocking,
         stop_runtime_run::stop_runtime_run_blocking,
         update_runtime_run_controls::update_runtime_run_controls_blocking,
-        validate_non_empty, AgentSessionDto, CommandError, CommandResult,
+        validate_non_empty, AgentSessionDto, CommandError, CommandResult, ProjectUpdateReason,
         ResolveOperatorActionRequestDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
         RuntimeRunControlInputDto, StartRuntimeRunRequestDto, StopRuntimeRunRequestDto,
         UpdateRuntimeRunControlsRequestDto,
@@ -38,7 +41,10 @@ use crate::{
         self, AgentEventRecord, AgentSessionCreateRecord, AgentSessionRecord,
         DEFAULT_AGENT_SESSION_TITLE,
     },
-    registry::{read_registry, RegistryProjectRecord},
+    provider_models::{load_provider_model_catalog, ProviderModelRecord},
+    registry::{
+        read_project_summaries, read_registry, RegistryProjectRecord, RegistryProjectSummaryRecord,
+    },
     state::DesktopState,
 };
 
@@ -196,9 +202,11 @@ pub fn set_session_remote_visibility<R: Runtime + 'static>(
         .map_err(map_bridge_error)?;
     if registered {
         remote_state.start_if_registered(&app, state.inner())?;
-        publish_visible_remote_sessions(&app, state.inner(), &bridge)?;
+        publish_remote_session_list(&app, state.inner(), &bridge)?;
         if request.visible {
             publish_remote_session_snapshot(
+                &app,
+                state.inner(),
                 &bridge,
                 LocatedRemoteSession {
                     project_id: request.project_id.clone(),
@@ -227,6 +235,44 @@ pub fn start_remote_bridge_if_registered<R: Runtime + 'static>(
 
 pub fn shutdown_on_close<R: Runtime>(app: &AppHandle<R>) {
     app.state::<RemoteBridgeRuntimeState>().shutdown();
+}
+
+pub fn publish_remote_project_list_to_cloud<R: Runtime>(app: &AppHandle<R>, state: &DesktopState) {
+    let Some(bridge) = runtime_event_forwarder() else {
+        return;
+    };
+    let path = match state.global_db_path(app) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("[remote-bridge] project list publish skipped: {error}");
+            return;
+        }
+    };
+    let summaries = match read_project_summaries(&path) {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            eprintln!("[remote-bridge] project list publish skipped: {error}");
+            return;
+        }
+    };
+    let projects: Vec<JsonValue> = summaries
+        .into_iter()
+        .map(|summary| {
+            json!({
+                "projectId": summary.registry.project_id,
+                "projectName": summary.project.name,
+            })
+        })
+        .collect();
+    if let Err(error) = bridge.forward_control_event(
+        "__projects__",
+        json!({
+            "schema": "xero.remote_projects.v1",
+            "projects": projects,
+        }),
+    ) {
+        eprintln!("[remote-bridge] project list publish skipped: {error}");
+    }
 }
 
 pub fn forward_agent_event(repo_root: &Path, event: &AgentEventRecord) {
@@ -263,6 +309,50 @@ pub fn forward_agent_event(repo_root: &Path, event: &AgentEventRecord) {
     if let Err(error) = bridge.forward(&run.agent_session_id, runtime_event) {
         eprintln!("[remote-bridge] runtime event forward skipped: {error}");
     }
+}
+
+pub(crate) fn handle_deleted_agent_session_remote_state<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    remote_state: &RemoteBridgeRuntimeState,
+    project_id: &str,
+    session: &AgentSessionRecord,
+) {
+    if let Err(error) =
+        publish_deleted_agent_session_remote_state(app, state, remote_state, project_id, session)
+    {
+        eprintln!("[remote-bridge] session delete notification skipped: {error}");
+    }
+}
+
+fn publish_deleted_agent_session_remote_state<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    remote_state: &RemoteBridgeRuntimeState,
+    project_id: &str,
+    session: &AgentSessionRecord,
+) -> CommandResult<()> {
+    let bridge = remote_state.bridge(app, state)?;
+    bridge
+        .set_session_visibility(&session.agent_session_id, false)
+        .map_err(map_bridge_error)?;
+
+    if !registered_identity_exists(app, state)? {
+        return Ok(());
+    }
+
+    remote_state.start_if_registered(app, state)?;
+    bridge
+        .forward_session_removed(
+            &session.agent_session_id,
+            json!({
+                "schema": "xero.remote_session_removed.v1",
+                "projectId": project_id,
+                "sessionId": &session.agent_session_id,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
 }
 
 impl RemoteBridgeRuntimeState {
@@ -431,6 +521,11 @@ fn route_inbound_command<R: Runtime + 'static>(
     ensure_known_web_device(&bridge, &command.device_id)?;
     match command.kind.clone() {
         InboundCommandKind::ListSessions => route_list_sessions(app, state, &bridge),
+        InboundCommandKind::ListProjects => route_list_projects(app, state, &bridge),
+        InboundCommandKind::SetSessionVisibility => {
+            route_set_session_visibility(app, state, &bridge, command)
+        }
+        InboundCommandKind::ArchiveSession => route_archive_session(app, state, &bridge, command),
         InboundCommandKind::SessionAttached => route_session_attached(app, state, &bridge, command),
         InboundCommandKind::StartSession => route_start_session(app, state, &bridge, command),
         InboundCommandKind::SendMessage => route_send_message(app, state, &bridge, command),
@@ -461,20 +556,20 @@ fn route_list_sessions<R: Runtime>(
     state: &DesktopState,
     bridge: &AppRemoteBridge,
 ) -> CommandResult<()> {
-    publish_visible_remote_sessions(app, state, bridge)
+    publish_remote_session_list(app, state, bridge)
 }
 
-fn publish_visible_remote_sessions<R: Runtime>(
+fn publish_remote_session_list<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     bridge: &AppRemoteBridge,
 ) -> CommandResult<()> {
-    let sessions = visible_remote_sessions(app, state)?;
+    let sessions = remote_session_summaries(app, state)?;
     bridge
         .forward_control_event(
             "__sessions__",
             json!({
-                "schema": "xero.remote_visible_sessions.v1",
+                "schema": "xero.remote_sessions.v1",
                 "sessions": sessions,
             }),
         )
@@ -482,12 +577,140 @@ fn publish_visible_remote_sessions<R: Runtime>(
     Ok(())
 }
 
+fn route_list_projects<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+) -> CommandResult<()> {
+    publish_remote_project_list(app, state, bridge)
+}
+
+fn publish_remote_project_list<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+) -> CommandResult<()> {
+    let projects = remote_project_summaries(app, state)?;
+    bridge
+        .forward_control_event(
+            "__projects__",
+            json!({
+                "schema": "xero.remote_projects.v1",
+                "projects": projects,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
+fn remote_project_summaries<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> CommandResult<Vec<JsonValue>> {
+    Ok(read_project_summaries(&state.global_db_path(app)?)?
+        .into_iter()
+        .map(|summary| {
+            json!({
+                "projectId": summary.registry.project_id,
+                "projectName": summary.project.name,
+            })
+        })
+        .collect())
+}
+
+fn route_set_session_visibility<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let project_id = required_payload_string(&command.payload, &["projectId", "project_id"])?;
+    let session_id = required_payload_string(
+        &command.payload,
+        &[
+            "agentSessionId",
+            "agent_session_id",
+            "sessionId",
+            "session_id",
+        ],
+    )?;
+    let visible = payload_bool(
+        &command.payload,
+        &["visible", "remoteVisible", "remote_visible"],
+    )
+    .unwrap_or(true);
+    let repo_root = resolve_project_root(app, state, project_id)?;
+    let session = project_store::set_agent_session_remote_visibility(
+        &repo_root, project_id, session_id, visible,
+    )?;
+    bridge
+        .set_session_visibility(&session.agent_session_id, visible)
+        .map_err(map_bridge_error)?;
+    emit_project_updated(
+        app,
+        &repo_root,
+        project_id,
+        ProjectUpdateReason::MetadataChanged,
+    )?;
+
+    publish_remote_session_list(app, state, bridge)?;
+    let project_name = project_name_for_id(app, state, project_id)?;
+    send_command_ok(
+        bridge,
+        "__sessions__",
+        "xero.remote_session_visibility_changed.v1",
+        remote_session_summary_payload(project_id, project_name.as_deref(), &session),
+    )
+}
+
+fn route_archive_session<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let project_id = required_payload_string(&command.payload, &["projectId", "project_id"])?;
+    let session_id = required_payload_string(
+        &command.payload,
+        &[
+            "agentSessionId",
+            "agent_session_id",
+            "sessionId",
+            "session_id",
+        ],
+    )?;
+    let repo_root = resolve_project_root(app, state, project_id)?;
+    stop_idle_owned_runtime_run_before_archive(app, state, &repo_root, project_id, session_id)?;
+    let session = project_store::archive_agent_session(&repo_root, project_id, session_id)?;
+    emit_project_updated(
+        app,
+        &repo_root,
+        project_id,
+        ProjectUpdateReason::MetadataChanged,
+    )?;
+
+    publish_remote_session_list(app, state, bridge)?;
+    bridge
+        .forward_session_removed(
+            &session.agent_session_id,
+            json!({
+                "schema": "xero.remote_session_removed.v1",
+                "projectId": project_id,
+                "sessionId": &session.agent_session_id,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
 fn publish_remote_session_snapshot(
+    app: &AppHandle<impl Runtime>,
+    state: &DesktopState,
     bridge: &AppRemoteBridge,
     located: LocatedRemoteSession,
 ) -> CommandResult<()> {
     let session_id = located.session.agent_session_id.clone();
-    let snapshot = remote_session_snapshot(&located)?;
+    let snapshot = remote_session_snapshot(app, state, &located)?;
     bridge
         .snapshot(&session_id, snapshot)
         .map_err(map_bridge_error)?;
@@ -518,7 +741,7 @@ fn route_session_attached<R: Runtime>(
         return Ok(());
     }
 
-    publish_remote_session_snapshot(bridge, located)
+    publish_remote_session_snapshot(app, state, bridge, located)
 }
 
 fn route_start_session<R: Runtime + 'static>(
@@ -550,6 +773,12 @@ fn route_start_session<R: Runtime + 'static>(
     bridge
         .set_session_visibility(&session.agent_session_id, true)
         .map_err(map_bridge_error)?;
+    emit_project_updated(
+        app,
+        &located_project.repo_root,
+        &located_project.project_id,
+        ProjectUpdateReason::MetadataChanged,
+    )?;
 
     let run = match prompt {
         Some(prompt) => {
@@ -570,7 +799,8 @@ fn route_start_session<R: Runtime + 'static>(
     };
 
     let session_payload = json!({
-        "projectId": located_project.project_id,
+        "projectId": &located_project.project_id,
+        "projectName": located_project.project_name.as_deref().unwrap_or(&located_project.project_id),
         "session": agent_session_dto(&session),
         "run": run,
     });
@@ -740,6 +970,7 @@ fn send_command_ok(
 #[derive(Debug, Clone)]
 struct LocatedRemoteProject {
     project_id: String,
+    project_name: Option<String>,
     repo_root: std::path::PathBuf,
 }
 
@@ -757,15 +988,17 @@ fn locate_project_for_remote_start<R: Runtime>(
 ) -> CommandResult<LocatedRemoteProject> {
     if let Some(project_id) = payload_string(payload, &["projectId", "project_id"]) {
         let repo_root = resolve_project_root(app, state, project_id)?;
+        let project_name = project_name_for_id(app, state, project_id)?;
         return Ok(LocatedRemoteProject {
             project_id: project_id.to_string(),
+            project_name,
             repo_root,
         });
     }
 
-    let registry = read_registry(&state.global_db_path(app)?)?;
-    match registry.projects.as_slice() {
-        [project] => Ok(project_location(project)),
+    let projects = read_project_summaries(&state.global_db_path(app)?)?;
+    match projects.as_slice() {
+        [project] => Ok(project_summary_location(project)),
         [] => Err(CommandError::project_not_found()),
         _ => Err(CommandError::user_fixable(
             "remote_project_required",
@@ -805,29 +1038,50 @@ fn locate_visible_remote_session<R: Runtime>(
     ))
 }
 
-fn visible_remote_sessions<R: Runtime>(
+fn remote_session_summaries<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
 ) -> CommandResult<Vec<JsonValue>> {
-    let registry = read_registry(&state.global_db_path(app)?)?;
+    let projects = read_project_summaries(&state.global_db_path(app)?)?;
     let mut sessions = Vec::new();
-    for project in registry.projects {
-        let location = project_location(&project);
+    for project in projects {
+        let location = project_summary_location(&project);
         for session in
             project_store::list_agent_sessions(&location.repo_root, &location.project_id, false)?
         {
-            if session.remote_visible {
-                sessions.push(json!({
-                    "projectId": location.project_id,
-                    "session": agent_session_dto(&session),
-                }));
-            }
+            sessions.push(remote_session_summary_payload(
+                &location.project_id,
+                location.project_name.as_deref(),
+                &session,
+            ));
         }
     }
     Ok(sessions)
 }
 
-fn remote_session_snapshot(located: &LocatedRemoteSession) -> CommandResult<JsonValue> {
+fn remote_session_summary_payload(
+    project_id: &str,
+    project_name: Option<&str>,
+    session: &AgentSessionRecord,
+) -> JsonValue {
+    json!({
+        "projectId": project_id,
+        "projectName": project_name.unwrap_or(project_id),
+        "session": {
+            "agentSessionId": &session.agent_session_id,
+            "title": &session.title,
+            "remoteVisible": session.remote_visible,
+            "createdAt": &session.created_at,
+            "updatedAt": &session.updated_at,
+        },
+    })
+}
+
+fn remote_session_snapshot<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    located: &LocatedRemoteSession,
+) -> CommandResult<JsonValue> {
     let runs = project_store::load_agent_session_run_snapshots(
         &located.repo_root,
         &located.project_id,
@@ -851,7 +1105,7 @@ fn remote_session_snapshot(located: &LocatedRemoteSession) -> CommandResult<Json
         "runtimeRun": runtime_run,
         "runs": runs,
         "availableAgents": remote_available_agents(),
-        "availableModels": remote_available_models(),
+        "availableModels": remote_available_models(app, state)?,
     }))
 }
 
@@ -869,18 +1123,203 @@ fn remote_available_agents() -> Vec<JsonValue> {
     ]
 }
 
-/// Returns the models the cloud composer surfaces in its dropdown.
-/// Placeholder list — a richer per-project loader will populate this from the
-/// active provider profile's catalog in a follow-up.
-fn remote_available_models() -> Vec<JsonValue> {
-    Vec::new()
+#[derive(Debug, Clone)]
+struct RemoteModelOption {
+    id: String,
+    provider_profile_id: String,
+    provider_id: String,
+    provider_label: String,
+    model_id: String,
+    display_name: String,
+}
+
+/// Returns the credential-backed models the cloud composer surfaces in its dropdown.
+fn remote_available_models<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+) -> CommandResult<Vec<JsonValue>> {
+    let provider_profiles = load_provider_credentials_view(app, state)?;
+    let mut seen = BTreeSet::new();
+    let mut options = Vec::new();
+
+    for profile in provider_profiles.profiles() {
+        if !profile.readiness().ready {
+            continue;
+        }
+
+        match load_provider_model_catalog(app, state, &profile.profile_id, false) {
+            Ok(catalog) => {
+                for model in &catalog.models {
+                    add_remote_model_option(
+                        &mut options,
+                        &mut seen,
+                        &profile.profile_id,
+                        &profile.provider_id,
+                        &profile.label,
+                        model,
+                    );
+                }
+                add_remote_model_fallback_option(
+                    &mut options,
+                    &mut seen,
+                    &profile.profile_id,
+                    &profile.provider_id,
+                    &profile.label,
+                    &catalog.configured_model_id,
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "[remote-bridge] provider model catalog unavailable for `{}`: {error}",
+                    profile.profile_id
+                );
+                add_remote_model_fallback_option(
+                    &mut options,
+                    &mut seen,
+                    &profile.profile_id,
+                    &profile.provider_id,
+                    &profile.label,
+                    &profile.model_id,
+                );
+            }
+        }
+    }
+
+    options.sort_by(|left, right| {
+        left.provider_label
+            .cmp(&right.provider_label)
+            .then(left.display_name.cmp(&right.display_name))
+            .then(left.model_id.cmp(&right.model_id))
+    });
+
+    let provider_count = options
+        .iter()
+        .map(|option| option.provider_profile_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+
+    Ok(options
+        .into_iter()
+        .map(|option| {
+            let label = if provider_count > 1 {
+                format!("{} · {}", option.display_name, option.provider_label)
+            } else {
+                option.display_name.clone()
+            };
+            json!({
+                "id": option.id,
+                "label": label,
+                "modelId": option.model_id,
+                "providerId": option.provider_id,
+                "providerProfileId": option.provider_profile_id,
+            })
+        })
+        .collect())
+}
+
+fn add_remote_model_option(
+    options: &mut Vec<RemoteModelOption>,
+    seen: &mut BTreeSet<String>,
+    provider_profile_id: &str,
+    provider_id: &str,
+    provider_label: &str,
+    model: &ProviderModelRecord,
+) {
+    let model_id = model.model_id.trim();
+    if model_id.is_empty() {
+        return;
+    }
+    let display_name = model.display_name.trim();
+    push_remote_model_option(
+        options,
+        seen,
+        provider_profile_id,
+        provider_id,
+        provider_label,
+        model_id,
+        if display_name.is_empty() {
+            model_id
+        } else {
+            display_name
+        },
+    );
+}
+
+fn add_remote_model_fallback_option(
+    options: &mut Vec<RemoteModelOption>,
+    seen: &mut BTreeSet<String>,
+    provider_profile_id: &str,
+    provider_id: &str,
+    provider_label: &str,
+    model_id: &str,
+) {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return;
+    }
+    push_remote_model_option(
+        options,
+        seen,
+        provider_profile_id,
+        provider_id,
+        provider_label,
+        model_id,
+        model_id,
+    );
+}
+
+fn push_remote_model_option(
+    options: &mut Vec<RemoteModelOption>,
+    seen: &mut BTreeSet<String>,
+    provider_profile_id: &str,
+    provider_id: &str,
+    provider_label: &str,
+    model_id: &str,
+    display_name: &str,
+) {
+    let id = remote_model_option_id(provider_profile_id, model_id);
+    if !seen.insert(id.clone()) {
+        return;
+    }
+    options.push(RemoteModelOption {
+        id,
+        provider_profile_id: provider_profile_id.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_label: provider_label.to_string(),
+        model_id: model_id.to_string(),
+        display_name: display_name.to_string(),
+    });
+}
+
+fn remote_model_option_id(provider_profile_id: &str, model_id: &str) -> String {
+    format!("{}:{}", provider_profile_id.trim(), model_id.trim())
 }
 
 fn project_location(project: &RegistryProjectRecord) -> LocatedRemoteProject {
     LocatedRemoteProject {
         project_id: project.project_id.clone(),
+        project_name: None,
         repo_root: std::path::PathBuf::from(&project.root_path),
     }
+}
+
+fn project_summary_location(project: &RegistryProjectSummaryRecord) -> LocatedRemoteProject {
+    LocatedRemoteProject {
+        project_id: project.registry.project_id.clone(),
+        project_name: Some(project.project.name.clone()),
+        repo_root: std::path::PathBuf::from(&project.registry.root_path),
+    }
+}
+
+fn project_name_for_id<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+) -> CommandResult<Option<String>> {
+    Ok(read_project_summaries(&state.global_db_path(app)?)?
+        .into_iter()
+        .find(|project| project.registry.project_id == project_id)
+        .map(|project| project.project.name))
 }
 
 fn remote_run_controls_from_payload(
@@ -1068,6 +1507,7 @@ mod tests {
             &json!({
                 "agent": "ask",
                 "modelId": "gpt-5.5",
+                "providerProfileId": "openai_codex-default",
             }),
             Some(&fallback),
         )
@@ -1078,10 +1518,22 @@ mod tests {
         assert_eq!(controls.model_id, "gpt-5.5");
         assert_eq!(
             controls.provider_profile_id.as_deref(),
-            Some("profile-openai")
+            Some("openai_codex-default")
         );
         assert_eq!(controls.approval_mode, RuntimeRunApprovalModeDto::Yolo);
         assert!(controls.plan_mode_required);
+    }
+
+    #[test]
+    fn remote_model_option_id_scopes_models_by_provider_profile() {
+        assert_eq!(
+            remote_model_option_id("openai_codex-default", "gpt-5.5"),
+            "openai_codex-default:gpt-5.5"
+        );
+        assert_eq!(
+            remote_model_option_id("bedrock-default", "anthropic.claude-v1:0"),
+            "bedrock-default:anthropic.claude-v1:0"
+        );
     }
 
     #[test]

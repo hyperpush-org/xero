@@ -18,6 +18,7 @@ use crate::{
     state::DesktopState,
 };
 
+use super::remote_bridge::{handle_deleted_agent_session_remote_state, RemoteBridgeRuntimeState};
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run, resolve_project_root,
     stop_owned_runtime_run,
@@ -112,9 +113,10 @@ pub fn update_agent_session<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn archive_agent_session<R: Runtime>(
+pub fn archive_agent_session<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    remote_state: State<'_, RemoteBridgeRuntimeState>,
     request: ArchiveAgentSessionRequestDto,
 ) -> CommandResult<AgentSessionDto> {
     validate_non_empty(&request.project_id, "projectId")?;
@@ -132,10 +134,17 @@ pub fn archive_agent_session<R: Runtime>(
         &request.project_id,
         &request.agent_session_id,
     )?;
+    handle_deleted_agent_session_remote_state(
+        &app,
+        state.inner(),
+        remote_state.inner(),
+        &request.project_id,
+        &session,
+    );
     Ok(agent_session_dto(&session))
 }
 
-fn stop_idle_owned_runtime_run_before_archive<R: Runtime>(
+pub(crate) fn stop_idle_owned_runtime_run_before_archive<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     repo_root: &Path,
@@ -190,19 +199,34 @@ pub fn restore_agent_session<R: Runtime>(
 }
 
 #[tauri::command]
-pub fn delete_agent_session<R: Runtime>(
+pub fn delete_agent_session<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
+    remote_state: State<'_, RemoteBridgeRuntimeState>,
     request: DeleteAgentSessionRequestDto,
 ) -> CommandResult<()> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let deleted_session = project_store::get_agent_session(
+        &repo_root,
+        &request.project_id,
+        &request.agent_session_id,
+    )?;
     project_store::delete_agent_session(
         &repo_root,
         &request.project_id,
         &request.agent_session_id,
     )?;
+    if let Some(session) = deleted_session.as_ref() {
+        handle_deleted_agent_session_remote_state(
+            &app,
+            state.inner(),
+            remote_state.inner(),
+            &request.project_id,
+            session,
+        );
+    }
     Ok(())
 }
 

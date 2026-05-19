@@ -9,15 +9,24 @@ export interface InboundCommand {
 	session_id?: string;
 	device_id?: string;
 	kind:
+		| "session_attached"
 		| "send_message"
 		| "start_session"
+		| "archive_session"
+		| "set_session_visibility"
 		| "resolve_operator_action"
 		| "cancel_run"
-		| "list_sessions";
+		| "list_sessions"
+		| "list_projects";
 	payload: unknown;
 }
 
 let socket: Socket | null = null;
+
+function socketIsReusable(socketInstance: Socket): boolean {
+	const state = socketInstance.connectionState();
+	return state === "connecting" || state === "open";
+}
 
 /**
  * Lazily open the singleton browser → relay WebSocket. The relay URL is derived
@@ -26,7 +35,10 @@ let socket: Socket | null = null;
  * `/api/relay/token/refresh`.
  */
 export function getRelaySocket(token: string): Socket {
-	if (socket?.isConnected()) return socket;
+	if (socket) {
+		if (socketIsReusable(socket)) return socket;
+		socket.disconnect();
+	}
 	const url = `${getServerUrl().replace(/^http/, "ws")}/socket/web`;
 	socket = new Socket(url, { params: { token } });
 	socket.connect();
@@ -81,4 +93,71 @@ export function pushInboundCommand(
 	command: InboundCommand,
 ): void {
 	channel.push("frame", command);
+}
+
+export function requestSessionSnapshot(
+	channel: Channel,
+	options: {
+		computerId: string;
+		sessionId: string;
+		deviceId: string;
+	},
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: options.sessionId,
+		device_id: options.deviceId,
+		kind: "session_attached",
+		payload: { lastSeq: 0 },
+	});
+}
+
+export function requestSessionRemoteVisibility(
+	channel: Channel,
+	options: {
+		computerId: string;
+		projectId: string;
+		sessionId: string;
+		deviceId: string;
+		visible: boolean;
+	},
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: "__sessions__",
+		device_id: options.deviceId,
+		kind: "set_session_visibility",
+		payload: {
+			projectId: options.projectId,
+			agentSessionId: options.sessionId,
+			visible: options.visible,
+		},
+	});
+}
+
+export function requestSessionArchive(
+	channel: Channel,
+	options: {
+		computerId: string;
+		projectId: string;
+		sessionId: string;
+		deviceId: string;
+	},
+): void {
+	pushInboundCommand(channel, {
+		v: 1,
+		seq: Date.now(),
+		computer_id: options.computerId,
+		session_id: "__sessions__",
+		device_id: options.deviceId,
+		kind: "archive_session",
+		payload: {
+			projectId: options.projectId,
+			agentSessionId: options.sessionId,
+		},
+	});
 }
