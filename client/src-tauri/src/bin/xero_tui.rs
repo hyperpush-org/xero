@@ -19,6 +19,7 @@ use xero_desktop_lib::{
     },
     db::{self, project_store},
     environment::service as environment_service,
+    git::repository::resolve_repository,
     global_db::{open_global_database, GLOBAL_DATABASE_FILE_NAME},
     provider_credentials::load_provider_credentials_view_or_default,
     registry,
@@ -40,6 +41,9 @@ impl TuiCommandAdapter for DesktopProjectStoreTuiAdapter {
         args: &[String],
     ) -> Option<Result<JsonValue, CliError>> {
         match args.first().map(String::as_str) {
+            Some("project") if args.get(1).map(String::as_str) == Some("import") => {
+                Some(handle_project_command(state_dir, &args[1..]).map_err(cli_error))
+            }
             Some("project-record") | Some("project-records") => {
                 Some(handle_project_record_command(state_dir, &args[1..]).map_err(cli_error))
             }
@@ -101,6 +105,54 @@ fn main() {
     process::exit(xero_cli::run_tui_from_env_with_adapter(Arc::new(
         DesktopProjectStoreTuiAdapter,
     )));
+}
+
+fn handle_project_command(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    let command = args.first().map(String::as_str).unwrap_or("list");
+    match command {
+        "import" => {
+            let path = option_value(&args[1..], "--path").unwrap_or_else(|| ".".into());
+            let registry_path = global_database_path_for_tui_state(state_dir);
+            configure_project_store_paths(state_dir);
+            let repository = resolve_repository(&path)?;
+            let imported = db::import_project_with_origin(
+                &repository,
+                db::ProjectOrigin::Brownfield,
+                &Default::default(),
+            )?;
+            registry::upsert_project(
+                &registry_path,
+                registry::RegistryProjectRecord {
+                    project_id: imported.project.id.clone(),
+                    repository_id: imported.repository.id.clone(),
+                    root_path: imported.repository.root_path.clone(),
+                },
+                &Default::default(),
+            )?;
+            Ok(json!({
+                "kind": "projectImport",
+                "project": {
+                    "projectId": imported.project.id,
+                    "repositoryId": imported.repository.id,
+                    "name": imported.project.name,
+                    "rootPath": imported.repository.root_path,
+                    "databasePath": imported.database_path,
+                    "branch": imported.repository.branch,
+                    "headSha": imported.repository.head_sha,
+                    "startTargets": imported.project.start_targets,
+                    "selected": true,
+                    "rootExists": true,
+                    "stateExists": true,
+                },
+                "backend": "desktop_project_store",
+                "uiDeferred": false,
+            }))
+        }
+        _ => Err(CommandError::user_fixable(
+            "xero_tui_project_command_unknown",
+            format!("Unknown desktop-backed project command `{command}`. Use import."),
+        )),
+    }
 }
 
 fn handle_project_record_command(
@@ -874,7 +926,7 @@ fn build_desktop_tui_app(
     state_dir: &Path,
 ) -> Result<tauri::App<tauri::test::MockRuntime>, CommandError> {
     let desktop_state = DesktopState::default()
-        .with_global_db_path_override(state_dir.join(GLOBAL_DATABASE_FILE_NAME))
+        .with_global_db_path_override(global_database_path_for_tui_state(state_dir))
         .with_autonomous_skill_cache_dir_override(
             state_dir.join(AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME),
         );
@@ -929,7 +981,7 @@ fn resolve_provider_profile_id(
     state_dir: &Path,
     provider_id: &str,
 ) -> Result<String, CommandError> {
-    let connection = open_global_database(&state_dir.join(GLOBAL_DATABASE_FILE_NAME))?;
+    let connection = open_global_database(&global_database_path_for_tui_state(state_dir))?;
     let view = load_provider_credentials_view_or_default(&connection)?;
     if view.profile(provider_id).is_some() {
         return Ok(provider_id.to_owned());
@@ -1353,7 +1405,7 @@ fn handle_environment_service_command(
     args: &[String],
 ) -> Result<JsonValue, CommandError> {
     let command = args.first().map(String::as_str).unwrap_or("refresh");
-    let database_path = state_dir.join(GLOBAL_DATABASE_FILE_NAME);
+    let database_path = global_database_path_for_tui_state(state_dir);
     match command {
         "start" => environment_command_json(
             "environmentDiscoveryStart",
@@ -1560,7 +1612,7 @@ fn handle_skill_sources_command(
     args: &[String],
 ) -> Result<JsonValue, CommandError> {
     let command = args.first().map(String::as_str).unwrap_or("list");
-    let database_path = state_dir.join(GLOBAL_DATABASE_FILE_NAME);
+    let database_path = global_database_path_for_tui_state(state_dir);
     match command {
         "list" | "settings" => skill_source_command_json(
             "skillSourceSettings",
@@ -1634,7 +1686,7 @@ fn handle_plugin_sources_command(
     args: &[String],
 ) -> Result<JsonValue, CommandError> {
     let command = args.first().map(String::as_str).unwrap_or("list");
-    let database_path = state_dir.join(GLOBAL_DATABASE_FILE_NAME);
+    let database_path = global_database_path_for_tui_state(state_dir);
     match command {
         "list" | "settings" => skill_source_command_json(
             "pluginSourceSettings",
@@ -1678,7 +1730,7 @@ fn handle_skill_sources_reload(
     state_dir: &Path,
     args: &[String],
 ) -> Result<JsonValue, CommandError> {
-    let database_path = state_dir.join(GLOBAL_DATABASE_FILE_NAME);
+    let database_path = global_database_path_for_tui_state(state_dir);
     let settings = load_skill_source_settings_from_path(&database_path)?;
     let mut candidates = Vec::new();
     let mut diagnostics = Vec::new();
@@ -1723,7 +1775,7 @@ fn handle_plugin_sources_reload(
     args: &[String],
 ) -> Result<JsonValue, CommandError> {
     let project_id = required_option(args, "--project-id", "projectId")?;
-    let database_path = state_dir.join(GLOBAL_DATABASE_FILE_NAME);
+    let database_path = global_database_path_for_tui_state(state_dir);
     let settings = load_skill_source_settings_from_path(&database_path)?;
     let roots = settings
         .enabled_plugin_roots()
@@ -1987,12 +2039,26 @@ fn normalize_agent_definition_summary_json(value: &mut JsonValue) {
     }
 }
 
+fn app_data_root_for_tui_state(state_dir: &Path) -> PathBuf {
+    if state_dir.file_name().and_then(|name| name.to_str()) == Some("headless") {
+        return state_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| state_dir.to_path_buf());
+    }
+    state_dir.to_path_buf()
+}
+
+fn global_database_path_for_tui_state(state_dir: &Path) -> PathBuf {
+    app_data_root_for_tui_state(state_dir).join(GLOBAL_DATABASE_FILE_NAME)
+}
+
 fn configure_project_store_paths(state_dir: &Path) {
-    db::configure_project_database_paths(&state_dir.join(GLOBAL_DATABASE_FILE_NAME));
+    db::configure_project_database_paths(&global_database_path_for_tui_state(state_dir));
 }
 
 fn project_root(state_dir: &Path, project_id: &str) -> Result<PathBuf, CommandError> {
-    let registry_path = state_dir.join(GLOBAL_DATABASE_FILE_NAME);
+    let registry_path = global_database_path_for_tui_state(state_dir);
     registry::read_project_records(&registry_path, project_id)?
         .into_iter()
         .next()
@@ -2274,5 +2340,19 @@ fn cli_error(error: CommandError) -> CliError {
         code: error.code,
         message: error.message,
         exit_code,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_database_path_for_tui_state_uses_parent_app_data_for_headless_dir() {
+        let state_dir = PathBuf::from("/tmp/dev.sn0w.xero/headless");
+
+        let database_path = global_database_path_for_tui_state(&state_dir);
+
+        assert_eq!(database_path, PathBuf::from("/tmp/dev.sn0w.xero/xero.db"));
     }
 }

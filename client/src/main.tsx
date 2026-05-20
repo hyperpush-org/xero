@@ -1,6 +1,8 @@
+import { Toaster } from '@xero/ui/components/ui/toaster'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { SignInReminderToast } from '@/components/xero/sign-in-reminder-toast'
 import { ShortcutsProvider } from './features/shortcuts/shortcuts-provider'
 import { ThemeProvider } from './features/theme/theme-provider'
 import './styles.css'
@@ -16,6 +18,8 @@ createRoot(container).render(
     <ThemeProvider>
       <ShortcutsProvider>
         <App />
+        <SignInReminderToast />
+        <Toaster />
       </ShortcutsProvider>
     </ThemeProvider>
   </StrictMode>,

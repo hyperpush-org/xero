@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	activateWaitingXeroCloudServiceWorker,
 	registerXeroCloudServiceWorker,
+	unregisterXeroCloudServiceWorkers,
 } from "./service-worker-registration";
 
 class MockWorker extends EventTarget {
@@ -36,28 +37,8 @@ describe("service worker registration", () => {
 		serviceWorker = new MockServiceWorkerContainer();
 	});
 
-	it("does not register in development and unregisters stale local workers", async () => {
-		const stale = new MockRegistration();
-		const otherOrigin = new MockRegistration();
-		otherOrigin.scope = "https://other.example/";
-		serviceWorker.registrations = [stale, otherOrigin];
-
+	it("registers the service worker at the cloud root scope in any environment", async () => {
 		registerXeroCloudServiceWorker({
-			isProduction: false,
-			scopeOrigin: "https://cloud.xeroshell.test",
-			serviceWorker: serviceWorker as unknown as ServiceWorkerContainer,
-		});
-		await flushPromises();
-
-		expect(serviceWorker.getRegistrations).toHaveBeenCalled();
-		expect(serviceWorker.register).not.toHaveBeenCalled();
-		expect(stale.unregister).toHaveBeenCalled();
-		expect(otherOrigin.unregister).not.toHaveBeenCalled();
-	});
-
-	it("registers the production service worker at the cloud root scope", async () => {
-		registerXeroCloudServiceWorker({
-			isProduction: true,
 			serviceWorker: serviceWorker as unknown as ServiceWorkerContainer,
 		});
 		await flushPromises();
@@ -65,6 +46,21 @@ describe("service worker registration", () => {
 		expect(serviceWorker.register).toHaveBeenCalledWith("/sw.js", {
 			scope: "/",
 		});
+	});
+
+	it("unregisters only same-origin workers when cleaning up", async () => {
+		const stale = new MockRegistration();
+		const otherOrigin = new MockRegistration();
+		otherOrigin.scope = "https://other.example/";
+		serviceWorker.registrations = [stale, otherOrigin];
+
+		await unregisterXeroCloudServiceWorkers(
+			serviceWorker as unknown as ServiceWorkerContainer,
+			"https://cloud.xeroshell.test",
+		);
+
+		expect(stale.unregister).toHaveBeenCalled();
+		expect(otherOrigin.unregister).not.toHaveBeenCalled();
 	});
 
 	it("notifies when an updated worker is waiting behind an active controller", async () => {
@@ -77,7 +73,6 @@ describe("service worker registration", () => {
 		const onUpdateReady = vi.fn();
 
 		registerXeroCloudServiceWorker({
-			isProduction: true,
 			serviceWorker: serviceWorker as unknown as ServiceWorkerContainer,
 			onUpdateReady,
 		});

@@ -1,7 +1,5 @@
 export interface XeroCloudServiceWorkerRegistrationOptions {
-	isProduction?: boolean;
 	serviceWorker?: ServiceWorkerContainer;
-	scopeOrigin?: string;
 	onUpdateReady?: (registration: ServiceWorkerRegistration) => void;
 }
 
@@ -15,14 +13,6 @@ export function registerXeroCloudServiceWorker(
 ): () => void {
 	const serviceWorker = options.serviceWorker ?? getBrowserServiceWorker();
 	if (!serviceWorker) return noop;
-
-	if (!(options.isProduction ?? import.meta.env.PROD)) {
-		void unregisterXeroCloudServiceWorkers(
-			serviceWorker,
-			options.scopeOrigin ?? getBrowserOrigin(),
-		);
-		return noop;
-	}
 
 	let disposed = false;
 	const notifyUpdateReady = (registration: ServiceWorkerRegistration) => {

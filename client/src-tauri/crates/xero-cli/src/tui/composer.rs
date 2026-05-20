@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use super::{
-    app::{attachment_size_label, App},
+    app::{attachment_size_label, App, ComposerDisplay},
     slash, theme,
 };
 
@@ -25,7 +25,8 @@ const INPUT_FOOTER_GAP_ROWS: u16 = 1;
 const VERTICAL_PAD_ROWS: u16 = 1;
 
 pub fn height(app: &App) -> u16 {
-    let typed_rows = input_rows(&app.composer).len();
+    let display = app.composer_display();
+    let typed_rows = input_rows(&display.text).len();
     let input_rows = typed_rows.clamp(VISIBLE_INPUT_ROWS, MAX_INPUT_ROWS) as u16;
     let attachment_rows = u16::from(!app.pending_attachments.is_empty());
     // top pad + input + slash suggestions + input/footer gap + pending attachments + agent footer + bottom pad
@@ -57,8 +58,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(surface, surface_area);
 
     let bg = theme::composer_bg_color();
-    let typed_rows = input_rows(&app.composer);
-    let cursor = app.composer_cursor();
+    let display = app.composer_display();
+    let typed_rows = input_rows(&display.text);
+    let cursor = display.cursor;
     let cursor_row = cursor_row_index(&typed_rows, cursor);
     let footer_rows = u16::from(area.height >= 2);
     let attachment_rows = u16::from(!app.pending_attachments.is_empty() && area.height >= 3);
@@ -117,6 +119,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     placeholder_for(app).to_string(),
                     theme::dim().bg(bg),
                 ));
+            } else if let Some(selection) = row_selection(row, &display) {
+                push_selected_row(&mut spans, row, selection, body_style);
             } else if index == cursor_row {
                 push_cursor_row(&mut spans, row, cursor, body_style);
             } else {
@@ -200,6 +204,13 @@ fn cursor_row_index(rows: &[InputRow<'_>], cursor: usize) -> usize {
         .unwrap_or_else(|| rows.len().saturating_sub(1))
 }
 
+fn row_selection(row: InputRow<'_>, display: &ComposerDisplay) -> Option<(usize, usize)> {
+    let (start, end) = display.selected_attachment?;
+    let start = start.max(row.start);
+    let end = end.min(row.end);
+    (start < end).then_some((start - row.start, end - row.start))
+}
+
 fn push_cursor_row(spans: &mut Vec<Span<'static>>, row: InputRow<'_>, cursor: usize, style: Style) {
     let cursor = cursor.clamp(row.start, row.end);
     let split_at = cursor - row.start;
@@ -221,6 +232,25 @@ fn push_cursor_row(spans: &mut Vec<Span<'static>>, row: InputRow<'_>, cursor: us
         }
     } else {
         spans.push(Span::styled(" ", cursor_style()));
+    }
+}
+
+fn push_selected_row(
+    spans: &mut Vec<Span<'static>>,
+    row: InputRow<'_>,
+    selection: (usize, usize),
+    style: Style,
+) {
+    let (start, end) = selection;
+    if start > 0 {
+        spans.push(Span::styled(row.text[..start].to_string(), style));
+    }
+    spans.push(Span::styled(
+        row.text[start..end].to_string(),
+        cursor_style(),
+    ));
+    if end < row.text.len() {
+        spans.push(Span::styled(row.text[end..].to_string(), style));
     }
 }
 

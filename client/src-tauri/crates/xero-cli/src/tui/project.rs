@@ -2,9 +2,7 @@
 //!
 //! 1. cwd → `git rev-parse --show-toplevel` (fallback to cwd itself).
 //! 2. Look up the registered project whose `rootPath` matches the resolved root.
-//!
-//! Returns `None` when no project is registered; the TUI then runs in scratch
-//! mode and the welcome message invites the user to `/register`.
+//! 3. If no project exists yet, import the resolved root into app-data.
 
 use std::{env, path::PathBuf, process::Command};
 
@@ -28,7 +26,12 @@ pub fn resolve(globals: &GlobalOptions) -> ResolvedProject {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let root = git_toplevel(&cwd).unwrap_or_else(|| cwd.clone());
     let branch = git_branch(&root);
-    let project_id = lookup_registered_project(globals, &root);
+    resolve_root(globals, root, branch)
+}
+
+fn resolve_root(globals: &GlobalOptions, root: PathBuf, branch: Option<String>) -> ResolvedProject {
+    let project_id =
+        lookup_registered_project(globals, &root).or_else(|| auto_import_project(globals, &root));
     let display_path = display_path_for(&root);
     let registered = project_id.is_some();
     ResolvedProject {
@@ -100,6 +103,22 @@ fn lookup_registered_project(globals: &GlobalOptions, root: &std::path::Path) ->
     })
 }
 
+fn auto_import_project(globals: &GlobalOptions, root: &std::path::Path) -> Option<String> {
+    let root = root.to_string_lossy().into_owned();
+    let value = invoke_json(globals, &["project", "import", "--path", &root]).ok()?;
+    project_id_from_import_response(&value)
+}
+
+fn project_id_from_import_response(value: &JsonValue) -> Option<String> {
+    value
+        .get("project")
+        .and_then(|project| project.get("projectId"))
+        .or_else(|| value.get("projectId"))
+        .and_then(JsonValue::as_str)
+        .filter(|project_id| !project_id.trim().is_empty())
+        .map(str::to_owned)
+}
+
 fn display_path_for(root: &std::path::Path) -> String {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     if let Some(home) = home_dir() {
@@ -117,4 +136,75 @@ fn display_path_for(root: &std::path::Path) -> String {
 
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{CliError, GlobalOptions, OutputMode, TuiCommandAdapter};
+    use serde_json::json;
+    use std::{
+        path::Path,
+        sync::{Arc, Mutex},
+    };
+
+    #[derive(Default)]
+    struct AutoImportAdapter {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl TuiCommandAdapter for AutoImportAdapter {
+        fn invoke_json(
+            &self,
+            _state_dir: &Path,
+            args: &[String],
+        ) -> Option<Result<JsonValue, CliError>> {
+            self.calls.lock().expect("record calls").push(args.to_vec());
+            match args.first().map(String::as_str) {
+                Some("project") if args.get(1).map(String::as_str) == Some("list") => {
+                    Some(Ok(json!({ "projects": [] })))
+                }
+                Some("project") if args.get(1).map(String::as_str) == Some("import") => {
+                    Some(Ok(json!({
+                        "kind": "projectImport",
+                        "project": {
+                            "projectId": "project-auto"
+                        }
+                    })))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    fn globals_with_adapter(adapter: Arc<dyn TuiCommandAdapter>) -> GlobalOptions {
+        GlobalOptions {
+            output_mode: OutputMode::Json,
+            ci: false,
+            state_dir: PathBuf::from("/tmp/xero-tui-project-test"),
+            tui_adapter: Some(adapter),
+        }
+    }
+
+    #[test]
+    fn resolve_root_imports_current_root_when_not_registered() {
+        let adapter = AutoImportAdapter::default();
+        let calls = Arc::clone(&adapter.calls);
+        let globals = globals_with_adapter(Arc::new(adapter));
+
+        let project = resolve_root(&globals, PathBuf::from("/tmp/xero-auto-root"), None);
+
+        assert_eq!(project.project_id.as_deref(), Some("project-auto"));
+        assert!(project.registered);
+        let calls = calls.lock().expect("recorded calls");
+        assert_eq!(
+            calls.get(1),
+            Some(&vec![
+                "project".to_owned(),
+                "import".to_owned(),
+                "--path".to_owned(),
+                "/tmp/xero-auto-root".to_owned()
+            ])
+        );
+    }
 }

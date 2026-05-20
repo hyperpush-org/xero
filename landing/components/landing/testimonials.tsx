@@ -12,7 +12,7 @@ type Testimonial = {
 const testimonials: Testimonial[] = [
   {
     quote:
-      "I kicked off a Stripe-powered SaaS before a flight. Landed, opened my laptop, and Xero was waiting with a green PR and a deploy preview. It had pinged me on Telegram twice mid-air. I just hadn't replied yet.",
+      "I kicked off a Stripe-powered SaaS before a flight. Landed, opened my laptop, and Xero was waiting with a green PR and a deploy preview. It had flagged two decisions for me mid-air — I cleared them from the cloud app on my phone.",
     name: "Maya Chen",
     role: "Founder, Northwind",
     initials: "MC",
@@ -57,7 +57,7 @@ const testimonials: Testimonial[] = [
   },
   {
     quote:
-      "The Discord integration is absurdly well-tuned. I get the exact diff and tradeoff, not a vague 'need your input'. I reply in one sentence from bed.",
+      "The cloud app is absurdly well-tuned. I get the exact diff and tradeoff, not a vague 'need your input'. I approve in one tap from my phone in bed.",
     name: "Theo Marín",
     role: "Solo founder, Prism",
     initials: "TM",

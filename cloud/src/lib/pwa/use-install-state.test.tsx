@@ -117,6 +117,8 @@ const IPHONE_SAFARI =
 	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 const DESKTOP_CHROME =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const DESKTOP_FIREFOX =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0";
 
 describe("useXeroCloudInstallState", () => {
 	afterEach(() => {
@@ -130,12 +132,19 @@ describe("useXeroCloudInstallState", () => {
 	});
 
 	it("reports unsupported when no install signals are present", () => {
-		setUserAgent(DESKTOP_CHROME);
+		setUserAgent(DESKTOP_FIREFOX);
 		stubMatchMedia(window);
 		const { result } = renderHook(() => useXeroCloudInstallState());
 		expect(result.current.support).toBe("unsupported");
 		expect(result.current.isStandalone).toBe(false);
 		expect(result.current.hasPromptEvent).toBe(false);
+	});
+
+	it("falls back to manual-chromium on desktop Chromium without a prompt event", () => {
+		setUserAgent(DESKTOP_CHROME);
+		stubMatchMedia(window);
+		const { result } = renderHook(() => useXeroCloudInstallState());
+		expect(result.current.support).toBe("manual-chromium");
 	});
 
 	it("captures beforeinstallprompt, exposes prompt, and clears the event after use", async () => {

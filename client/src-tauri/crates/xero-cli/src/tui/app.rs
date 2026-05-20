@@ -11,8 +11,9 @@ use std::{
 use crossterm::{
     cursor::MoveTo,
     event::{
-        self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event as CrosstermEvent, KeyCode,
+        KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
@@ -80,6 +81,12 @@ pub struct PendingAttachment {
     pub staged: TuiStagedAttachmentDto,
 }
 
+pub(crate) struct ComposerDisplay {
+    pub text: String,
+    pub cursor: usize,
+    pub selected_attachment: Option<(usize, usize)>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TuiStagedAttachmentDto {
@@ -144,8 +151,7 @@ pub struct RunDetail {
 /// One agent definition surfaced in the composer's mode cycler. Sourced
 /// from `xero agent-definition list` — the same catalog the Tauri app
 /// reads — so the TUI doesn't drift from the desktop product. Falls back
-/// to a static seed when no project is selected so a fresh `xero tui` in
-/// an unregistered directory still has something to cycle through.
+/// to a static seed when project-scoped loading is unavailable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentEntry {
     pub definition_id: String,
@@ -447,6 +453,15 @@ impl App {
         text_edit::clamped_cursor(&self.composer, self.composer_cursor)
     }
 
+    pub(crate) fn composer_display(&self) -> ComposerDisplay {
+        display_composer(&self.project.root, &self.composer, self.composer_cursor())
+    }
+
+    pub(crate) fn composer_has_attachment_path_display(&self) -> bool {
+        attachment_display_spans_from_input(&self.project.root, &self.composer)
+            .is_some_and(|spans| !spans.is_empty())
+    }
+
     /// Called whenever a persisted preference changes — the file is small
     /// so we write it eagerly rather than batching.
     fn persist_preferences(&self) {
@@ -560,12 +575,15 @@ pub fn run_interactive(globals: GlobalOptions) -> Result<CliResponse, CliError> 
 
     enable_raw_mode().map_err(tui_io_error)?;
     let keyboard_enhancement_pushed = push_keyboard_enhancements();
+    let bracketed_paste_enabled = enable_bracketed_paste();
     let result = run_terminal_session(&globals, &mut app);
 
+    let bracketed_paste_result = disable_bracketed_paste(bracketed_paste_enabled);
     let keyboard_enhancement_result = pop_keyboard_enhancements(keyboard_enhancement_pushed);
     disable_raw_mode().map_err(tui_io_error)?;
 
     result?;
+    bracketed_paste_result?;
     keyboard_enhancement_result?;
     Ok(CliResponse {
         output_mode: globals.output_mode,
@@ -650,6 +668,17 @@ fn pop_keyboard_enhancements(pushed: bool) -> Result<(), CliError> {
         return Ok(());
     }
     execute!(io::stdout(), PopKeyboardEnhancementFlags).map_err(tui_io_error)
+}
+
+fn enable_bracketed_paste() -> bool {
+    execute!(io::stdout(), EnableBracketedPaste).is_ok()
+}
+
+fn disable_bracketed_paste(enabled: bool) -> Result<(), CliError> {
+    if !enabled {
+        return Ok(());
+    }
+    execute!(io::stdout(), DisableBracketedPaste).map_err(tui_io_error)
 }
 
 /// Inline viewport heights. We use a few sizes:
@@ -766,6 +795,10 @@ fn event_loop(
                 KeyOutcome::Continue => {}
                 KeyOutcome::Quit => return Ok(()),
             },
+            CrosstermEvent::Paste(text) => match handle_paste(app, &text, globals) {
+                KeyOutcome::Continue => {}
+                KeyOutcome::Quit => return Ok(()),
+            },
             CrosstermEvent::Resize(_, _) => {
                 let damage_height = resize_damage_height(app, terminal_size.height);
                 if sync_terminal_size(terminal, &mut terminal_size, damage_height)? {
@@ -800,6 +833,10 @@ fn fullscreen_event_loop(
         }
         match event::read().map_err(tui_io_error)? {
             CrosstermEvent::Key(key) => match dispatch_key(app, key, &mut active_run, globals) {
+                KeyOutcome::Continue => {}
+                KeyOutcome::Quit => return Ok(()),
+            },
+            CrosstermEvent::Paste(text) => match handle_paste(app, &text, globals) {
                 KeyOutcome::Continue => {}
                 KeyOutcome::Quit => return Ok(()),
             },
@@ -1085,6 +1122,35 @@ fn handle_composer_key(
                     }
                     return KeyOutcome::Continue;
                 }
+                if let Some(attachment_spans) =
+                    attachment_file_spans_from_input(&app.project.root, &raw_submission)
+                {
+                    let prompt =
+                        remove_attachment_spans_from_input(&raw_submission, &attachment_spans);
+                    let source_paths = attachment_spans
+                        .iter()
+                        .map(|span| span.path.clone())
+                        .collect::<Vec<_>>();
+                    app.clear_composer();
+                    slash::reset_selection(app);
+                    match stage_source_paths(app, source_paths, globals) {
+                        Ok(attached) if prompt.trim().is_empty() => {
+                            app.status = Some(format_pending_attachment_summary(app, attached));
+                            return KeyOutcome::Continue;
+                        }
+                        Ok(_) if active_run.is_some() => {
+                            app.status =
+                                Some("A run is already active; wait for it to finish.".into());
+                            return KeyOutcome::Continue;
+                        }
+                        Ok(_) => match start_prompt_job(globals, app, prompt.trim()) {
+                            Ok(job) => *active_run = Some(job),
+                            Err(error) => app.status = Some(error.message),
+                        },
+                        Err(error) => app.status = Some(error.message),
+                    }
+                    return KeyOutcome::Continue;
+                }
                 if submission.starts_with('/') {
                     if let Some(selected) = slash::selected_action(app, &raw_submission) {
                         match selected {
@@ -1121,6 +1187,10 @@ fn handle_composer_key(
 
 fn handle_composer_text_edit(app: &mut App, key: KeyEvent) {
     let edit = text_edit::edit_for_key(key);
+    if edit == TextEdit::Backspace && remove_attachment_span_before_cursor(app) {
+        slash::clamp_selection(app);
+        return;
+    }
     let outcome = text_edit::apply_edit_at_cursor(
         &mut app.composer,
         &mut app.composer_cursor,
@@ -1163,6 +1233,50 @@ fn handle_composer_text_edit(app: &mut App, key: KeyEvent) {
     {
         slash::clamp_selection(app);
     }
+}
+
+fn remove_attachment_span_before_cursor(app: &mut App) -> bool {
+    let cursor = app.composer_cursor();
+    let Some(span) = attachment_span_for_backspace(&app.project.root, &app.composer, cursor) else {
+        return false;
+    };
+    app.composer.drain(span.start..span.end);
+    app.composer_cursor = span.start;
+    app.composer_desired_column = None;
+    true
+}
+
+fn handle_paste(app: &mut App, text: &str, globals: &GlobalOptions) -> KeyOutcome {
+    if let Some(attachment_spans) = attachment_file_spans_from_input(&app.project.root, text) {
+        let prompt_fragment = remove_attachment_spans_from_input(text, &attachment_spans);
+        let source_paths = attachment_spans
+            .iter()
+            .map(|span| span.path.clone())
+            .collect::<Vec<_>>();
+        match stage_source_paths(app, source_paths, globals) {
+            Ok(attached) => {
+                if !prompt_fragment.trim().is_empty() {
+                    insert_text_into_composer(app, &prompt_fragment);
+                }
+                app.status = Some(format_pending_attachment_summary(app, attached));
+            }
+            Err(error) => app.status = Some(error.message),
+        }
+        return KeyOutcome::Continue;
+    }
+    insert_text_into_composer(app, text);
+    KeyOutcome::Continue
+}
+
+fn insert_text_into_composer(app: &mut App, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let cursor = text_edit::clamped_cursor(&app.composer, app.composer_cursor);
+    app.composer.insert_str(cursor, text);
+    app.composer_cursor = cursor + text.len();
+    app.composer_desired_column = None;
+    slash::reset_selection(app);
 }
 
 fn handle_slash_command(app: &mut App, submission: &str, globals: &GlobalOptions) -> KeyOutcome {
@@ -1229,13 +1343,41 @@ fn handle_slash_command(app: &mut App, submission: &str, globals: &GlobalOptions
 }
 
 fn handle_attach_command(app: &mut App, paths: &[String], globals: &GlobalOptions) -> KeyOutcome {
-    let Some(project_id) = app.project.project_id.clone() else {
-        app.status = Some("Attachments require a registered Xero project.".into());
-        return KeyOutcome::Continue;
-    };
     if paths.is_empty() {
         app.status = Some("Usage: /attach <path> [path...]".into());
         return KeyOutcome::Continue;
+    }
+    let source_paths = paths
+        .iter()
+        .map(|raw_path| resolve_attachment_source_path(&app.project.root, raw_path))
+        .collect::<Vec<_>>();
+    attach_source_paths(app, source_paths, globals)
+}
+
+fn attach_source_paths(
+    app: &mut App,
+    source_paths: Vec<PathBuf>,
+    globals: &GlobalOptions,
+) -> KeyOutcome {
+    match stage_source_paths(app, source_paths, globals) {
+        Ok(attached) => app.status = Some(format_pending_attachment_summary(app, attached)),
+        Err(error) => app.status = Some(error.message),
+    }
+    KeyOutcome::Continue
+}
+
+fn stage_source_paths(
+    app: &mut App,
+    source_paths: Vec<PathBuf>,
+    globals: &GlobalOptions,
+) -> Result<usize, CliError> {
+    let Some(project_id) = app.project.project_id.clone() else {
+        return Err(CliError::usage(
+            "Attachments require a registered Xero project.",
+        ));
+    };
+    if source_paths.is_empty() {
+        return Err(CliError::usage("Usage: /attach <path> [path...]"));
     }
 
     let run_id = app
@@ -1243,8 +1385,7 @@ fn handle_attach_command(app: &mut App, paths: &[String], globals: &GlobalOption
         .get_or_insert_with(|| generate_id("tui-run"))
         .clone();
     let mut attached = 0usize;
-    for raw_path in paths {
-        let source_path = resolve_attachment_source_path(&app.project.root, raw_path);
+    for source_path in source_paths {
         match stage_tui_attachment(globals, &project_id, &run_id, &source_path) {
             Ok(staged) => {
                 let index = app.next_attachment_index;
@@ -1257,14 +1398,11 @@ fn handle_attach_command(app: &mut App, paths: &[String], globals: &GlobalOption
                 attached += 1;
             }
             Err(error) => {
-                app.status = Some(error.message);
-                return KeyOutcome::Continue;
+                return Err(error);
             }
         }
     }
-
-    app.status = Some(format_pending_attachment_summary(app, attached));
-    KeyOutcome::Continue
+    Ok(attached)
 }
 
 fn handle_detach_command(app: &mut App, targets: &[String], globals: &GlobalOptions) -> KeyOutcome {
@@ -1323,12 +1461,11 @@ fn handle_attachments_command(app: &mut App) -> KeyOutcome {
                 .iter()
                 .map(|attachment| {
                     format!(
-                        "{}. {}  {}  {}  {}",
+                        "{}. {}  {}  {}",
                         attachment.index,
-                        attachment.staged.original_name,
+                        pending_attachment_display_name(attachment),
                         attachment.staged.kind,
-                        attachment_size_label(attachment.staged.size_bytes),
-                        attachment.source_path.display()
+                        attachment_size_label(attachment.staged.size_bytes)
                     )
                 })
                 .collect(),
@@ -1336,6 +1473,353 @@ fn handle_attachments_command(app: &mut App) -> KeyOutcome {
         selected: 0,
     }));
     KeyOutcome::Continue
+}
+
+#[derive(Debug, Clone)]
+struct ComposerToken {
+    start: usize,
+    end: usize,
+    value: String,
+}
+
+#[derive(Debug, Clone)]
+struct AttachmentPathSpan {
+    start: usize,
+    end: usize,
+    path: PathBuf,
+}
+
+fn attachment_file_spans_from_input(
+    project_root: &Path,
+    input: &str,
+) -> Option<Vec<AttachmentPathSpan>> {
+    attachment_spans_from_input(project_root, input, true)
+}
+
+fn attachment_display_spans_from_input(
+    project_root: &Path,
+    input: &str,
+) -> Option<Vec<AttachmentPathSpan>> {
+    attachment_spans_from_input(project_root, input, false)
+}
+
+fn attachment_spans_from_input(
+    project_root: &Path,
+    input: &str,
+    require_existing_file: bool,
+) -> Option<Vec<AttachmentPathSpan>> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') {
+        return None;
+    }
+
+    let tokens = shell_tokens_with_spans(input)?;
+    let spans = attachment_spans_from_tokens(project_root, &tokens, require_existing_file);
+    if !spans.is_empty() {
+        return Some(spans);
+    }
+
+    whole_input_attachment_span(project_root, input, require_existing_file).map(|span| vec![span])
+}
+
+fn attachment_spans_from_tokens(
+    project_root: &Path,
+    tokens: &[ComposerToken],
+    require_existing_file: bool,
+) -> Vec<AttachmentPathSpan> {
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let Some(span) =
+            attachment_span_from_token(project_root, tokens, index, require_existing_file)
+        else {
+            index += 1;
+            continue;
+        };
+        let token_end = span.end;
+        spans.push(span);
+        index = tokens
+            .iter()
+            .position(|token| token.start >= token_end)
+            .unwrap_or(tokens.len());
+    }
+    spans
+}
+
+fn attachment_span_from_token(
+    project_root: &Path,
+    tokens: &[ComposerToken],
+    start_index: usize,
+    require_existing_file: bool,
+) -> Option<AttachmentPathSpan> {
+    let first = tokens.get(start_index)?;
+    if !looks_like_attachment_path_input(&first.value) {
+        return None;
+    }
+
+    let mut value = String::new();
+    for token in &tokens[start_index..] {
+        if !value.is_empty() {
+            value.push(' ');
+        }
+        value.push_str(&token.value);
+        let path = resolve_attachment_source_path(project_root, &value);
+        let matched = if require_existing_file {
+            path.is_file()
+        } else {
+            looks_like_attachment_display_path(project_root, &value)
+        };
+        if matched {
+            return Some(AttachmentPathSpan {
+                start: first.start,
+                end: token.end,
+                path,
+            });
+        }
+    }
+    None
+}
+
+fn attachment_span_for_backspace(
+    project_root: &Path,
+    input: &str,
+    cursor: usize,
+) -> Option<AttachmentPathSpan> {
+    let cursor = text_edit::clamped_cursor(input, cursor);
+    let spans = attachment_display_spans_from_input(project_root, input)?;
+    spans
+        .into_iter()
+        .find(|span| cursor > span.start && cursor <= span.end)
+}
+
+fn whole_input_attachment_span(
+    project_root: &Path,
+    input: &str,
+    require_existing_file: bool,
+) -> Option<AttachmentPathSpan> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || !looks_like_attachment_path_input(trimmed) {
+        return None;
+    }
+    let path = resolve_attachment_source_path(project_root, trimmed);
+    let matched = if require_existing_file {
+        path.is_file()
+    } else {
+        looks_like_attachment_display_path(project_root, trimmed)
+    };
+    if !matched {
+        return None;
+    }
+    let start = input.find(trimmed).unwrap_or(0);
+    Some(AttachmentPathSpan {
+        start,
+        end: start + trimmed.len(),
+        path,
+    })
+}
+
+fn shell_tokens_with_spans(input: &str) -> Option<Vec<ComposerToken>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut start: Option<usize> = None;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (index, ch) in input.char_indices() {
+        if escaped {
+            if start.is_none() {
+                start = Some(index);
+            }
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            if start.is_none() {
+                start = Some(index);
+            }
+            escaped = true;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => {
+                if start.is_none() {
+                    start = Some(index);
+                }
+                quote = Some(ch);
+            }
+            ch if ch.is_whitespace() => {
+                if let Some(token_start) = start.take() {
+                    if !current.is_empty() {
+                        tokens.push(ComposerToken {
+                            start: token_start,
+                            end: index,
+                            value: std::mem::take(&mut current),
+                        });
+                    }
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(index);
+                }
+                current.push(ch);
+            }
+        }
+    }
+
+    if escaped {
+        current.push('\\');
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if let Some(token_start) = start {
+        if !current.is_empty() {
+            tokens.push(ComposerToken {
+                start: token_start,
+                end: input.len(),
+                value: current,
+            });
+        }
+    }
+    Some(tokens)
+}
+
+fn display_composer(project_root: &Path, input: &str, cursor: usize) -> ComposerDisplay {
+    let Some(spans) = attachment_display_spans_from_input(project_root, input) else {
+        return ComposerDisplay {
+            text: input.to_owned(),
+            cursor: text_edit::clamped_cursor(input, cursor),
+            selected_attachment: None,
+        };
+    };
+    replace_attachment_spans_for_display(input, &spans, text_edit::clamped_cursor(input, cursor))
+}
+
+fn remove_attachment_spans_from_input(input: &str, spans: &[AttachmentPathSpan]) -> String {
+    replace_attachment_spans(input, spans, false)
+}
+
+fn replace_attachment_spans_for_display(
+    input: &str,
+    spans: &[AttachmentPathSpan],
+    cursor: usize,
+) -> ComposerDisplay {
+    let mut output = String::with_capacity(input.len());
+    let mut last = 0;
+    let mut display_cursor = None;
+    let mut selected_attachment = None;
+    for span in spans {
+        if span.start < last || span.end > input.len() {
+            continue;
+        }
+        if display_cursor.is_none() && cursor < span.start {
+            display_cursor = Some(output.len() + cursor.saturating_sub(last));
+        }
+        output.push_str(&input[last..span.start]);
+        let display_start = output.len();
+        output.push_str(&attachment_chip_label(&span.path));
+        let display_end = output.len();
+        if cursor >= span.start && cursor <= span.end {
+            display_cursor = Some(display_end);
+            selected_attachment = Some((display_start, display_end));
+        }
+        last = span.end;
+    }
+    if display_cursor.is_none() {
+        display_cursor = Some(output.len() + cursor.saturating_sub(last));
+    }
+    output.push_str(&input[last..]);
+    ComposerDisplay {
+        text: output,
+        cursor: display_cursor.unwrap_or(0),
+        selected_attachment,
+    }
+}
+
+fn replace_attachment_spans(
+    input: &str,
+    spans: &[AttachmentPathSpan],
+    insert_filename: bool,
+) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut last = 0;
+    for span in spans {
+        if span.start < last || span.end > input.len() {
+            continue;
+        }
+        output.push_str(&input[last..span.start]);
+        if insert_filename {
+            output.push_str(&path_display_name(&span.path));
+        }
+        last = span.end;
+    }
+    output.push_str(&input[last..]);
+    output
+}
+
+fn looks_like_attachment_path_input(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.starts_with('/')
+        || trimmed.starts_with("~/")
+        || trimmed == "~"
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.starts_with('"')
+        || trimmed.starts_with('\'')
+}
+
+fn looks_like_attachment_display_path(project_root: &Path, input: &str) -> bool {
+    let trimmed = input.trim();
+    if !looks_like_attachment_path_input(trimmed) {
+        return false;
+    }
+    let path = resolve_attachment_source_path(project_root, trimmed);
+    if path.is_file() {
+        return true;
+    }
+    let has_directory_hint = trimmed.starts_with("~/")
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+        || trimmed.starts_with('"')
+        || trimmed.starts_with('\'')
+        || trimmed
+            .strip_prefix('/')
+            .is_some_and(|rest| rest.contains('/'));
+    has_directory_hint
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(looks_like_attachment_extension)
+}
+
+fn looks_like_attachment_extension(extension: &str) -> bool {
+    let trimmed = extension.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 16
+        && trimmed.chars().all(|ch| ch.is_ascii_alphanumeric())
+        && trimmed.chars().any(|ch| ch.is_ascii_alphabetic())
+}
+
+fn attachment_chip_label(path: &Path) -> String {
+    format!("[{}]", path_display_name(path))
+}
+
+fn path_display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn resolve_attachment_source_path(project_root: &Path, raw_path: &str) -> PathBuf {
@@ -1413,6 +1897,18 @@ fn pending_attachment_position(app: &App, target: &str) -> Option<usize> {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name == target)
     })
+}
+
+fn pending_attachment_display_name(attachment: &PendingAttachment) -> String {
+    if !attachment.staged.original_name.trim().is_empty() {
+        return attachment.staged.original_name.clone();
+    }
+    attachment
+        .source_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| attachment.source_path.display().to_string())
 }
 
 fn matches_normalized(value: &str, expected: &str) -> bool {
@@ -3032,6 +3528,60 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct AttachmentStageAdapter {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl crate::TuiCommandAdapter for AttachmentStageAdapter {
+        fn invoke_json(
+            &self,
+            _state_dir: &Path,
+            args: &[String],
+        ) -> Option<Result<JsonValue, CliError>> {
+            self.calls.lock().expect("record calls").push(args.to_vec());
+            match args.first().map(String::as_str) {
+                Some("attachment") if args.get(1).map(String::as_str) == Some("stage") => {
+                    let source_path = option_arg(args, "--path").unwrap_or_default();
+                    let original_name = Path::new(&source_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("attachment")
+                        .to_owned();
+                    Some(Ok(json!({
+                        "attachment": {
+                            "kind": "image",
+                            "absolutePath": "/tmp/xero/staged/attachment.png",
+                            "mediaType": "image/png",
+                            "originalName": original_name,
+                            "sizeBytes": 42,
+                            "width": null,
+                            "height": null
+                        }
+                    })))
+                }
+                Some("agent") if args.get(1).map(String::as_str) == Some("exec") => {
+                    Some(Ok(json!({
+                        "snapshot": {
+                            "runId": "run-recorded",
+                            "status": "completed",
+                            "messages": [],
+                            "events": []
+                        }
+                    })))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    fn option_arg(args: &[String], option: &str) -> Option<String> {
+        args.windows(2)
+            .find(|window| window.first().is_some_and(|arg| arg == option))
+            .and_then(|window| window.get(1))
+            .cloned()
+    }
+
     fn buffer_to_string(buffer: &Buffer) -> String {
         buffer
             .content
@@ -3060,6 +3610,22 @@ mod tests {
         buffer_rows(terminal.backend().buffer())
     }
 
+    fn temp_attachment_path(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("xero-tui-{nonce}"));
+        std::fs::create_dir_all(&dir).expect("create temp attachment dir");
+        let path = dir.join(name);
+        std::fs::write(&path, b"attachment").expect("write temp attachment");
+        path
+    }
+
+    fn shell_escape_path(path: &Path) -> String {
+        path.to_string_lossy().replace(' ', "\\ ")
+    }
+
     fn rendered_cursor_cell(app: &App, width: u16, height: u16) -> (usize, String) {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
         terminal.draw(|frame| render(frame, app)).expect("draw");
@@ -3074,6 +3640,19 @@ mod tests {
                     .map(|cell| (row_index, cell.symbol().to_owned()))
             })
             .expect("rendered cursor cell")
+    }
+
+    fn highlighted_text(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
+        terminal.draw(|frame| render(frame, app)).expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .filter(|cell| cell.fg == theme::composer_bg_color() && cell.bg == theme::FG)
+            .map(|cell| cell.symbol())
+            .collect::<String>()
     }
 
     fn terminal_history_to_string(terminal: &Terminal<TestBackend>) -> String {
@@ -3627,6 +4206,252 @@ mod tests {
             text.contains("ctrl+p /commands"),
             "short viewport should keep the global footer visible"
         );
+    }
+
+    #[test]
+    fn composer_shows_filename_for_attachment_path_input() {
+        let path = temp_attachment_path("Screenshot 2026-05-19 at 6.22.51 PM.png");
+        let mut app = empty_app();
+        app.replace_composer(shell_escape_path(&path));
+
+        let text = render_to_string(&app, 120, desired_inline_height(&app, 40));
+
+        assert!(text.contains("[Screenshot 2026-05-19 at 6.22.51 PM.png]"));
+        assert!(!text.contains(path.parent().unwrap().to_string_lossy().as_ref()));
+        assert!(!slash::is_visible(&app));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_highlights_entire_attachment_filename_at_cursor() {
+        let path = temp_attachment_path("Screenshot 2026-05-19 at 5.34.30 PM.png");
+        let mut app = empty_app();
+        app.replace_composer(shell_escape_path(&path));
+
+        let highlighted = highlighted_text(&app, 140, desired_inline_height(&app, 40));
+
+        assert_eq!(highlighted, "[Screenshot 2026-05-19 at 5.34.30 PM.png]");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn backspace_removes_entire_attachment_path_token() {
+        let globals = test_only_globals();
+        let path = temp_attachment_path("Screenshot 2026-05-19 at 5.34.30 PM.png");
+        let mut app = empty_app();
+        app.replace_composer(format!("describe {}", shell_escape_path(&path)));
+        let mut active_run = None;
+
+        let outcome = dispatch_key(&mut app, key(KeyCode::Backspace), &mut active_run, &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert_eq!(app.composer, "describe ");
+        assert_eq!(app.composer_cursor, "describe ".len());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn composer_shows_filename_for_escaped_path_before_file_probe_succeeds() {
+        let mut app = empty_app();
+        app.replace_composer("/Users/sn0w/Desktop/Screenshot\\ 2026-05-19\\ at\\ 6.00.17\\ PM.png");
+
+        let text = render_to_string(&app, 120, desired_inline_height(&app, 40));
+
+        assert!(text.contains("[Screenshot 2026-05-19 at 6.00.17 PM.png]"));
+        assert!(!text.contains("/Users/sn0w/Desktop"));
+        assert!(!slash::is_visible(&app));
+    }
+
+    #[test]
+    fn composer_brackets_complete_attachment_filename_with_timestamp() {
+        let mut app = empty_app();
+        app.replace_composer("/Users/sn0w/Desktop/Screenshot\\ 2026-05-19\\ at\\ 5.34.30 PM.png");
+
+        let text = render_to_string(&app, 120, desired_inline_height(&app, 40));
+
+        assert!(text.contains("[Screenshot 2026-05-19 at 5.34.30 PM.png]"));
+        assert!(!text.contains("[Screenshot 2026-05-19 at 5.34.30] PM.png"));
+        assert!(!text.contains("/Users/sn0w/Desktop"));
+    }
+
+    #[test]
+    fn composer_preserves_prompt_text_while_hiding_multiple_attachment_paths() {
+        let first = temp_attachment_path("first image.png");
+        let second = temp_attachment_path("second image.png");
+        let mut app = empty_app();
+        app.replace_composer(format!(
+            "compare {} with {}",
+            shell_escape_path(&first),
+            shell_escape_path(&second)
+        ));
+
+        let text = render_to_string(&app, 160, desired_inline_height(&app, 40));
+
+        assert!(text.contains("compare [first image.png] with [second image.png]"));
+        assert!(!text.contains(first.parent().unwrap().to_string_lossy().as_ref()));
+        assert!(!text.contains(second.parent().unwrap().to_string_lossy().as_ref()));
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+
+    #[test]
+    fn slash_command_input_still_shows_suggestions() {
+        let mut app = empty_app();
+        app.replace_composer("/session");
+
+        assert!(slash::is_visible(&app));
+    }
+
+    #[test]
+    fn pasted_attachment_path_stages_file_without_inserting_full_path() {
+        let adapter = AttachmentStageAdapter::default();
+        let calls = Arc::clone(&adapter.calls);
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(adapter));
+        let path = temp_attachment_path("image picker upload.png");
+        let mut app = empty_app();
+        app.project.project_id = Some("project-1".into());
+        app.project.registered = true;
+
+        let outcome = handle_paste(&mut app, &shell_escape_path(&path), &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert!(app.composer.is_empty());
+        assert_eq!(app.pending_attachments.len(), 1);
+        assert_eq!(
+            app.pending_attachments[0].staged.original_name,
+            "image picker upload.png"
+        );
+        let calls = calls.lock().expect("recorded calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].first().map(String::as_str), Some("attachment"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pasting_second_attachment_preserves_existing_prompt_text() {
+        let adapter = AttachmentStageAdapter::default();
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(adapter));
+        let first = temp_attachment_path("first upload.png");
+        let second = temp_attachment_path("second upload.png");
+        let mut app = empty_app();
+        app.project.project_id = Some("project-1".into());
+        app.project.registered = true;
+
+        handle_paste(&mut app, &shell_escape_path(&first), &globals);
+        app.replace_composer("describe these");
+        handle_paste(&mut app, &shell_escape_path(&second), &globals);
+
+        assert_eq!(app.composer, "describe these");
+        assert_eq!(app.pending_attachments.len(), 2);
+        assert_eq!(
+            app.pending_attachments
+                .iter()
+                .map(|attachment| attachment.staged.original_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first upload.png", "second upload.png"]
+        );
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+
+    #[test]
+    fn enter_on_attachment_path_stages_file_instead_of_slash_command() {
+        let adapter = AttachmentStageAdapter::default();
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(adapter));
+        let path = temp_attachment_path("absolute path image.png");
+        let mut app = empty_app();
+        app.project.project_id = Some("project-1".into());
+        app.project.registered = true;
+        app.replace_composer(shell_escape_path(&path));
+        let mut active_run = None;
+
+        let outcome = dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert!(app.palette.is_none());
+        assert!(app.composer.is_empty());
+        assert_eq!(app.pending_attachments.len(), 1);
+        assert_eq!(
+            app.pending_attachments[0].staged.original_name,
+            "absolute path image.png"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn enter_on_prompt_with_multiple_attachment_paths_sends_prompt_and_attachments() {
+        let adapter = AttachmentStageAdapter::default();
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(adapter));
+        let first = temp_attachment_path("first send.png");
+        let second = temp_attachment_path("second send.png");
+        let mut app = empty_app();
+        app.project.project_id = Some("project-1".into());
+        app.project.registered = true;
+        app.providers = vec![ProviderRow {
+            provider_id: "openai_codex".into(),
+            default_model: "gpt-5.5".into(),
+            credential_kind: "app_session".into(),
+        }];
+        app.replace_composer(format!(
+            "describe these {} {}",
+            shell_escape_path(&first),
+            shell_escape_path(&second)
+        ));
+        let mut active_run = None;
+
+        let outcome = dispatch_key(&mut app, enter_key(), &mut active_run, &globals);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        assert!(active_run.is_some());
+        let user_message = &app
+            .run_detail
+            .as_ref()
+            .expect("run detail")
+            .messages
+            .first()
+            .expect("user message");
+        assert_eq!(user_message.content.trim(), "describe these");
+        assert_eq!(user_message.attachments.len(), 2);
+        assert!(app.composer.is_empty());
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+
+    #[test]
+    fn attachments_palette_shows_filename_without_source_path() {
+        let mut app = empty_app();
+        app.pending_attachments.push(PendingAttachment {
+            index: 1,
+            source_path: PathBuf::from("/Users/sn0w/Desktop/Screenshot 2026-05-19.png"),
+            staged: TuiStagedAttachmentDto {
+                kind: "image".into(),
+                absolute_path: "/tmp/xero/staged/screenshot.png".into(),
+                media_type: "image/png".into(),
+                original_name: "Screenshot 2026-05-19.png".into(),
+                size_bytes: 42_000,
+                width: None,
+                height: None,
+            },
+        });
+
+        let outcome = handle_attachments_command(&mut app);
+
+        assert!(matches!(outcome, KeyOutcome::Continue));
+        match app.palette.as_ref().expect("attachments detail") {
+            PaletteState::Detail(detail) => match &detail.data {
+                palette::DetailData::Body(lines) => {
+                    let body = lines.join("\n");
+                    assert!(body.contains("Screenshot 2026-05-19.png"));
+                    assert!(!body.contains("/Users/sn0w/Desktop"));
+                }
+                _ => panic!("expected attachment body detail"),
+            },
+            PaletteState::Browse(_) => panic!("expected attachments detail"),
+        }
     }
 
     #[test]

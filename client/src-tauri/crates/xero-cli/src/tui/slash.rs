@@ -33,7 +33,9 @@ pub enum SelectedAction {
 }
 
 pub fn is_visible(app: &App) -> bool {
-    app.palette.is_none() && query(&app.composer).is_some()
+    app.palette.is_none()
+        && !app.composer_has_attachment_path_display()
+        && query(&app.composer).is_some()
 }
 
 pub fn visible_rows(app: &App) -> u16 {

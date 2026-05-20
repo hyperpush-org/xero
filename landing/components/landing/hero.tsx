@@ -24,19 +24,19 @@ export function Hero() {
             className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/40 px-3 py-1 text-xs text-muted-foreground backdrop-blur hover:border-border hover:bg-secondary/70 hover:text-foreground"
           >
             <span className="inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
-            Beta · agents, workflows, mobile approvals
+            Beta · agents · workflows · mobile approvals
             <ArrowRight className="h-3 w-3" />
           </Link>
 
           <h1 className="mt-6 font-sans text-4xl font-medium tracking-tight text-balance sm:text-6xl lg:text-7xl">
-            Agents you design.{" "}
-            <span className="text-muted-foreground">Software they ship.</span>
+            Autonomous coding agents{" "}
+            <span className="text-muted-foreground">that still answer to you.</span>
           </h1>
 
           <p className="mx-auto mt-6 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg">
-            A desktop runtime for the agents you actually build. Set each
-            one&apos;s tools, memory, and approval gates, then chain them into
-            workflows that take a project from brief to merged.
+            Build agents with the exact tools, memory, and approval gates you
+            choose, then chain them into workflows that run for hours on your
+            own machine and your own keys.
           </p>
 
           <div className="mt-8 flex flex-wrap justify-center gap-3">

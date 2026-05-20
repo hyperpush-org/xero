@@ -21,6 +21,8 @@ const IPHONE_SAFARI =
 	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 const DESKTOP_CHROME =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const DESKTOP_FIREFOX =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0";
 
 function setUserAgent(value: string) {
 	Object.defineProperty(window.navigator, "userAgent", {
@@ -78,11 +80,26 @@ describe("InstallAppAction", () => {
 		expect(renderToString(<InstallAppAction />)).toBe("");
 	});
 
-	it("renders nothing when no install path is available", () => {
-		setUserAgent(DESKTOP_CHROME);
+	it("renders nothing on browsers that cannot install", () => {
+		setUserAgent(DESKTOP_FIREFOX);
 		stubMatchMedia(false);
 		const { container } = render(<InstallAppAction />);
 		expect(container.firstChild).toBeNull();
+	});
+
+	it("shows manual install instructions on desktop Chromium", async () => {
+		setUserAgent(DESKTOP_CHROME);
+		stubMatchMedia(false);
+		render(<InstallAppAction />);
+
+		const button = await screen.findByRole("button", {
+			name: /install xero cloud/i,
+		});
+		fireEvent.click(button);
+
+		await waitFor(() => {
+			expect(screen.getByText(/install icon/i)).toBeTruthy();
+		});
 	});
 
 	it("renders nothing when running in standalone mode", () => {

@@ -45,6 +45,7 @@ const config = defineConfig(({ mode }) => {
 			...(isTest
 				? []
 				: [
+						xeroCloudPwaServiceWorkerDev(),
 						nitro({
 							routeRules: XERO_CLOUD_PWA_ROUTE_RULES,
 							rollupConfig: {
@@ -67,6 +68,33 @@ const config = defineConfig(({ mode }) => {
 });
 
 export default config;
+
+// Production emits `sw.js` from the build bundle. The dev server never runs that
+// bundle step, so without this the PWA is uninstallable locally (no service
+// worker means Chromium never fires `beforeinstallprompt`). Serve a service
+// worker that precaches only the public shell — dev has no hashed assets, and
+// Vite's module URLs (`/@fs`, `/@vite`, `/src`) are network-only in the SW
+// fetch policy, so HMR is unaffected.
+function xeroCloudPwaServiceWorkerDev(): Plugin {
+	return {
+		name: "xero-cloud-pwa-service-worker-dev",
+		apply: "serve",
+		enforce: "pre",
+		configureServer(server) {
+			server.middlewares.use((req, res, next) => {
+				const path = req.url?.split("?", 1)[0];
+				if (path !== "/sw.js") {
+					next();
+					return;
+				}
+				res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+				res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+				res.setHeader("Service-Worker-Allowed", "/");
+				res.end(renderXeroCloudServiceWorker(XERO_CLOUD_PUBLIC_PRECACHE_URLS));
+			});
+		},
+	};
+}
 
 function xeroCloudPwaServiceWorker(): Plugin {
 	return {

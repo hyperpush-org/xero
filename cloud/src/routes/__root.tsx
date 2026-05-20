@@ -9,6 +9,7 @@ import { Toaster } from "@xero/ui/components/ui/toaster";
 import type { ReactNode } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
+import { InstallPromptToast } from "#/components/install-prompt-toast";
 import { PwaServiceWorkerManager } from "#/components/pwa-service-worker-manager";
 import {
 	getPublicRuntimeServerUrl,
@@ -109,6 +110,7 @@ function RootDocument({ children }: { children: ReactNode }) {
 			<body>
 				{children}
 				<PwaServiceWorkerManager />
+				<InstallPromptToast />
 				<Toaster />
 				<Scripts />
 			</body>

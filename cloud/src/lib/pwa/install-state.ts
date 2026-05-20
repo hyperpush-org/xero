@@ -7,6 +7,7 @@ export type XeroCloudInstallSupport =
 	| "standalone"
 	| "prompt"
 	| "manual-ios"
+	| "manual-chromium"
 	| "unsupported";
 
 export type XeroCloudInstallPromptOutcome =
@@ -57,7 +58,21 @@ export function classifyInstallSupport(
 	if (environment.isStandalone) return "standalone";
 	if (hasPromptEvent) return "prompt";
 	if (isIosSafari(environment.userAgent)) return "manual-ios";
+	// Chromium fires `beforeinstallprompt` only once its install heuristics are
+	// met (and never again for ~90 days after a dismissal, or if already
+	// installed). Surface a manual affordance so the install path is always
+	// discoverable rather than silently absent.
+	if (isInstallableChromium(environment.userAgent)) return "manual-chromium";
 	return "unsupported";
+}
+
+export function isInstallableChromium(userAgent: string): boolean {
+	// iOS only installs through Safari's share sheet; Chromium-on-iOS cannot.
+	if (isIos(userAgent)) return false;
+	if (!/Chrome\/|Chromium\//.test(userAgent)) return false;
+	// Chromium-based in-app webviews expose the engine string but cannot install.
+	if (/FBAN|FBAV|Instagram|Line\/|Twitter|; wv\)/.test(userAgent)) return false;
+	return true;
 }
 
 export function detectPlatform(

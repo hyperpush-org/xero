@@ -26,12 +26,18 @@ use super::{
     theme,
 };
 
-/// Block row count for the welcome banner — logo + identity row + version
-/// row. Callers use this to clamp `target_height` so the banner always
-/// fits, even on a tight terminal.
+/// Worst-case block row count for the welcome banner — logo + identity row +
+/// signed-out reminder row + version row. Callers use this to clamp
+/// `target_height` so the banner always fits, even on a tight terminal. The
+/// reminder row is only present when signed out; reserving it unconditionally
+/// just leaves one extra blank pad row when signed in, which is harmless.
 pub fn welcome_logo_height() -> u16 {
-    LOGO_ROWS.len() as u16 + 2
+    LOGO_ROWS.len() as u16 + 3
 }
+
+/// Reminder shown beneath the identity row when no GitHub account is linked,
+/// explaining why signing in is worthwhile.
+const SIGN_IN_REMINDER: &str = "Sign in to drive these sessions from the cloud app on any device.";
 
 /// Build the welcome-banner lines for the scrollback. The logo is centered
 /// horizontally inside `width` and vertically inside `target_height` rows
@@ -55,7 +61,10 @@ pub fn welcome_banner_lines(
         .max()
         .unwrap_or(0);
     let logo_leading = (width as usize).saturating_sub(logo_width) / 2;
-    let block_rows = welcome_logo_height();
+    let show_reminder = signed_in_handle.is_none();
+    // logo rows + identity row + version row, plus the reminder row when
+    // signed out.
+    let block_rows = LOGO_ROWS.len() as u16 + 2 + u16::from(show_reminder);
     // Center vertically inside the target height; bias a hair high so the
     // logo doesn't feel mashed against the composer below.
     let total = target_height.max(block_rows);
@@ -84,6 +93,14 @@ pub fn welcome_banner_lines(
         Span::raw(" ".repeat(identity_leading)),
         Span::styled(identity.to_string(), identity_style),
     ]));
+    if show_reminder {
+        let reminder_width = SIGN_IN_REMINDER.chars().count();
+        let reminder_leading = (width as usize).saturating_sub(reminder_width) / 2;
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(reminder_leading)),
+            Span::styled(SIGN_IN_REMINDER, theme::dim()),
+        ]));
+    }
     let version_label = format!("v{version}");
     let version_width = version_label.chars().count();
     let version_leading = (width as usize).saturating_sub(version_width) / 2;
@@ -1064,4 +1081,39 @@ impl MdRenderer {
 
 fn spans_visible_len(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|span| span.content.chars().count()).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn banner_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn signed_out_banner_includes_cloud_reminder() {
+        let lines = welcome_banner_lines(80, 20, "1.2.3", None);
+        let text = banner_text(&lines);
+        assert!(text.contains("not signed in · /login"));
+        assert!(text.contains("cloud app"));
+    }
+
+    #[test]
+    fn signed_in_banner_omits_reminder() {
+        let lines = welcome_banner_lines(80, 20, "1.2.3", Some("octocat"));
+        let text = banner_text(&lines);
+        assert!(text.contains("octocat"));
+        assert!(!text.contains("cloud app"));
+        assert!(!text.contains("not signed in"));
+    }
 }

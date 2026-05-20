@@ -4,9 +4,15 @@ import {
 	classifyInstallSupport,
 	detectInstallEnvironment,
 	detectPlatform,
+	isInstallableChromium,
 	isIos,
 	isIosSafari,
 } from "./install-state";
+
+const ANDROID_WEBVIEW =
+	"Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0 Mobile Safari/537.36";
+const DESKTOP_FIREFOX =
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:124.0) Gecko/20100101 Firefox/124.0";
 
 const IPHONE_SAFARI =
 	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
@@ -73,13 +79,44 @@ describe("classifyInstallSupport", () => {
 		).toBe("unsupported");
 	});
 
-	it("returns unsupported for desktop browsers without a prompt event", () => {
+	it("falls back to manual-chromium for desktop Chromium without a prompt event", () => {
 		expect(
 			classifyInstallSupport(
 				{ userAgent: DESKTOP_CHROME, isStandalone: false },
 				false,
 			),
+		).toBe("manual-chromium");
+	});
+
+	it("falls back to manual-chromium for Android Chrome without a prompt event", () => {
+		expect(
+			classifyInstallSupport(
+				{ userAgent: ANDROID_CHROME, isStandalone: false },
+				false,
+			),
+		).toBe("manual-chromium");
+	});
+
+	it("returns unsupported for non-Chromium desktop browsers", () => {
+		expect(
+			classifyInstallSupport(
+				{ userAgent: DESKTOP_FIREFOX, isStandalone: false },
+				false,
+			),
 		).toBe("unsupported");
+	});
+});
+
+describe("isInstallableChromium", () => {
+	it("accepts desktop and Android Chromium", () => {
+		expect(isInstallableChromium(DESKTOP_CHROME)).toBe(true);
+		expect(isInstallableChromium(ANDROID_CHROME)).toBe(true);
+	});
+
+	it("rejects Firefox, iOS, and Android in-app webviews", () => {
+		expect(isInstallableChromium(DESKTOP_FIREFOX)).toBe(false);
+		expect(isInstallableChromium(IPHONE_CHROME)).toBe(false);
+		expect(isInstallableChromium(ANDROID_WEBVIEW)).toBe(false);
 	});
 });
 

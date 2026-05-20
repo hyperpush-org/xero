@@ -15,21 +15,19 @@ pub fn open(globals: &GlobalOptions, app: &mut App) -> OpenOutcome {
         };
     }
     let root = app.project.root.to_string_lossy().into_owned();
-    let mut name = root.rsplit('/').next().unwrap_or("xero-project").to_owned();
-    if name.is_empty() {
-        name = "xero-project".into();
-    }
-    let args = vec![
-        "project",
-        "create",
-        "--root",
-        root.as_str(),
-        "--name",
-        name.as_str(),
-    ];
+    let name = root
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("xero-project")
+        .to_owned();
+    let args = vec!["project", "import", "--path", root.as_str()];
     match invoke_json(globals, &args) {
         Ok(value) => {
-            let project_id = string_field(&value, "projectId");
+            let project_id = value
+                .get("project")
+                .map(|project| string_field(project, "projectId"))
+                .unwrap_or_else(|| string_field(&value, "projectId"));
             if !project_id.is_empty() {
                 app.project.project_id = Some(project_id.clone());
                 app.project.registered = true;

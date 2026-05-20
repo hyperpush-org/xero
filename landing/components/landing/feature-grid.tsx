@@ -30,8 +30,8 @@ export function FeatureGrid() {
 
           <BentoCard
             className="lg:col-span-5"
-            title="Approve from your phone"
-            caption="Discord or Telegram, with the actual diff inline."
+            title="Drive it from your phone"
+            caption="Pick up a live session in any browser, with the actual diff inline."
             visual={<PingWaveVisual />}
           />
 
