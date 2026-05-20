@@ -257,7 +257,6 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
             commands::remote_bridge::bridge_poll_github_login,
             commands::remote_bridge::bridge_sign_out,
             commands::remote_bridge::bridge_revoke_device,
-            commands::remote_bridge::set_session_remote_visibility,
             commands::project_records::list_project_context_records,
             commands::project_records::delete_project_context_record,
             commands::project_records::supersede_project_context_record,

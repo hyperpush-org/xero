@@ -1334,6 +1334,7 @@ mod tests {
                 thinking_effort: None,
                 approval_mode: RuntimeRunApprovalModeDto::Suggest,
                 plan_mode_required: false,
+                auto_compact_enabled: true,
                 revision: 1,
                 applied_at: "2026-05-05T00:00:00Z".into(),
             },

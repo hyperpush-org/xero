@@ -1,21 +1,18 @@
 use std::time::Duration;
 
-use rusqlite::Connection;
 use serde_json::{json, Value as JsonValue};
 use xero_remote_bridge::{
-    BridgeConfig, BridgeError, FileIdentityStore, FileSessionVisibilityStore, IdentityStore,
-    PhoenixChannelClient, PhoenixSocketKind, RemoteBridge,
+    BridgeConfig, BridgeError, FileIdentityStore, IdentityStore, PhoenixChannelClient,
+    PhoenixSocketKind, RemoteBridge,
 };
 
 use super::{
     cli_app_data_root, default_headless_state_dir, response, take_bool_flag, take_help,
-    take_option, validate_required_cli, workspace_project_database_path, CliError, CliResponse,
-    GlobalOptions, OutputMode,
+    take_option, validate_required_cli, CliError, CliResponse, GlobalOptions, OutputMode,
 };
 
 const REMOTE_DIR: &str = "remote";
 const IDENTITY_FILE: &str = "desktop-identity.json";
-const VISIBILITY_FILE: &str = "remote-visibility.json";
 const MOCK_WEB_IDENTITY_FILE: &str = "mock-web-identity.json";
 
 pub(crate) fn dispatch_remote(
@@ -27,14 +24,13 @@ pub(crate) fn dispatch_remote(
         Some("logout") => command_remote_logout(globals, args[1..].to_vec()),
         Some("connect") => command_remote_connect(globals, args[1..].to_vec()),
         Some("devices") => command_remote_devices(globals, args[1..].to_vec()),
-        Some("visibility") => command_remote_visibility(globals, args[1..].to_vec()),
         Some("--help") | Some("-h") | None => Ok(response(
             &globals,
             remote_help(),
             json!({ "command": "remote" }),
         )),
         Some(other) => Err(CliError::usage(format!(
-            "Unknown remote command `{other}`. Use login, logout, connect, devices, or visibility."
+            "Unknown remote command `{other}`. Use login, logout, connect, or devices."
         ))),
     }
 }
@@ -407,88 +403,6 @@ fn command_remote_connect(
     ))
 }
 
-fn command_remote_visibility(
-    globals: GlobalOptions,
-    mut args: Vec<String>,
-) -> Result<CliResponse, CliError> {
-    if take_help(&args) {
-        return Ok(response(
-            &globals,
-            "Usage: xero remote visibility SESSION_ID on|off --project-id PROJECT_ID",
-            json!({ "command": "remote visibility" }),
-        ));
-    }
-
-    let project_id = take_option(&mut args, "--project-id")?
-        .ok_or_else(|| CliError::usage("Missing --project-id for remote visibility."))?;
-    validate_required_cli(&project_id, "projectId")?;
-    let session_id = args
-        .first()
-        .ok_or_else(|| CliError::usage("Missing SESSION_ID for remote visibility."))?
-        .clone();
-    validate_required_cli(&session_id, "sessionId")?;
-    let mode = args
-        .get(1)
-        .ok_or_else(|| CliError::usage("Missing visibility mode. Use on or off."))?
-        .as_str();
-    if args.len() > 2 {
-        return Err(CliError::usage(
-            "Unexpected extra arguments after visibility mode.",
-        ));
-    }
-    let visible = match mode {
-        "on" | "true" | "visible" => true,
-        "off" | "false" | "hidden" => false,
-        _ => return Err(CliError::usage("Visibility mode must be on or off.")),
-    };
-
-    let database_path = workspace_project_database_path(&globals, &project_id);
-    let connection = Connection::open(&database_path).map_err(|error| {
-        CliError::system_fault(
-            "xero_cli_remote_visibility_open_failed",
-            format!(
-                "Xero could not open project state `{}`: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
-    ensure_remote_visible_column(&connection)?;
-    let affected = connection
-        .execute(
-            "UPDATE agent_sessions SET remote_visible = ?3 WHERE project_id = ?1 AND agent_session_id = ?2",
-            rusqlite::params![project_id, session_id, if visible { 1 } else { 0 }],
-        )
-        .map_err(|error| {
-            CliError::system_fault(
-                "xero_cli_remote_visibility_write_failed",
-                format!("Xero could not update remote visibility: {error}"),
-            )
-        })?;
-    if affected == 0 {
-        return Err(CliError::user_fixable(
-            "xero_cli_remote_visibility_session_missing",
-            format!("Session `{session_id}` was not found in project `{project_id}`."),
-        ));
-    }
-    bridge_for_cli(&globals)
-        .set_session_visibility(&session_id, visible)
-        .map_err(map_bridge_error)?;
-
-    Ok(response(
-        &globals,
-        format!(
-            "Remote visibility for session `{session_id}` is {}.",
-            if visible { "on" } else { "off" }
-        ),
-        json!({
-            "schema": "xero.remote_visibility.v1",
-            "projectId": project_id,
-            "sessionId": session_id,
-            "visible": visible,
-        }),
-    ))
-}
-
 #[derive(Debug, Clone)]
 struct MockWebState {
     relay_url: String,
@@ -699,25 +613,19 @@ fn command_mock_web_start(
     ))
 }
 
-fn bridge_for_cli(
-    globals: &GlobalOptions,
-) -> RemoteBridge<FileIdentityStore, FileSessionVisibilityStore> {
+fn bridge_for_cli(globals: &GlobalOptions) -> RemoteBridge<FileIdentityStore> {
     let remote_dir = cli_app_data_root(globals).join(REMOTE_DIR);
     RemoteBridge::new(
         BridgeConfig::from_env_or_local("Xero CLI"),
         FileIdentityStore::new(remote_dir.join(IDENTITY_FILE)),
-        FileSessionVisibilityStore::new(remote_dir.join(VISIBILITY_FILE)),
     )
 }
 
-fn mock_web_bridge_for_cli(
-    globals: &GlobalOptions,
-) -> RemoteBridge<FileIdentityStore, FileSessionVisibilityStore> {
+fn mock_web_bridge_for_cli(globals: &GlobalOptions) -> RemoteBridge<FileIdentityStore> {
     let remote_dir = cli_app_data_root(globals).join(REMOTE_DIR);
     RemoteBridge::new(
         BridgeConfig::from_env_or_local("Xero Mock Web"),
         FileIdentityStore::new(remote_dir.join(MOCK_WEB_IDENTITY_FILE)),
-        FileSessionVisibilityStore::new(remote_dir.join(VISIBILITY_FILE)),
     )
 }
 
@@ -868,39 +776,6 @@ fn mock_web_command_seq() -> u64 {
         .unwrap_or(0)
 }
 
-fn ensure_remote_visible_column(connection: &Connection) -> Result<(), CliError> {
-    let mut statement = connection
-        .prepare("PRAGMA table_info(agent_sessions)")
-        .map_err(|error| {
-            CliError::system_fault("xero_cli_remote_visibility_probe_failed", error.to_string())
-        })?;
-    let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| {
-            CliError::system_fault("xero_cli_remote_visibility_probe_failed", error.to_string())
-        })?;
-    for column in columns {
-        if column.map_err(|error| {
-            CliError::system_fault("xero_cli_remote_visibility_probe_failed", error.to_string())
-        })? == "remote_visible"
-        {
-            return Ok(());
-        }
-    }
-    connection
-        .execute(
-            "ALTER TABLE agent_sessions ADD COLUMN remote_visible INTEGER NOT NULL DEFAULT 0",
-            [],
-        )
-        .map_err(|error| {
-            CliError::system_fault(
-                "xero_cli_remote_visibility_migration_failed",
-                format!("Xero could not add the remote visibility column: {error}"),
-            )
-        })?;
-    Ok(())
-}
-
 fn reject_unknown_remote_options(args: &[String]) -> Result<(), CliError> {
     if let Some(option) = args.iter().find(|arg| arg.starts_with('-')) {
         return Err(CliError::usage(format!("Unknown option `{option}`.")));
@@ -938,7 +813,7 @@ fn map_bridge_error(error: BridgeError) -> CliError {
 }
 
 fn remote_help() -> &'static str {
-    "Usage: xero remote login|logout|connect|devices|visibility"
+    "Usage: xero remote login|logout|connect|devices"
 }
 
 fn mock_web_help() -> &'static str {

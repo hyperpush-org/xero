@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { cn } from "@xero/ui/lib/utils";
 
 import { BrandLogo } from "#/components/brand-logo";
@@ -15,15 +16,12 @@ interface SessionSidebarProps {
 	projects?: RemoteProjectSummary[];
 	currentSessionKey: string | null;
 	onSelectSession: (computerId: string, sessionId: string) => void;
-	onSelectProject?: (projectId: string) => void;
-	onSetSessionRemoteVisibility?: (
-		summary: VisibleSessionSummary,
-		visible: boolean,
-	) => boolean | Promise<boolean>;
+	onSelectProject?: (project: RemoteProjectSummary) => void;
 	onArchiveSession?: (
 		summary: VisibleSessionSummary,
 	) => boolean | Promise<boolean>;
 	onSignOut: () => void;
+	pendingProjectKey?: string | null;
 	className?: string;
 }
 
@@ -34,16 +32,16 @@ export function SessionSidebar({
 	currentSessionKey,
 	onSelectSession,
 	onSelectProject,
-	onSetSessionRemoteVisibility,
 	onArchiveSession,
 	onSignOut,
+	pendingProjectKey,
 	className,
 }: SessionSidebarProps) {
 	return (
 		<aside
 			aria-label="Desktop sessions"
 			className={cn(
-				"hidden h-dvh w-[300px] shrink-0 flex-col gap-0 border-r border-border bg-card/40 lg:flex",
+				"relative hidden h-dvh w-[300px] shrink-0 flex-col gap-0 border-r border-border/70 bg-sidebar lg:flex",
 				className,
 			)}
 		>
@@ -54,21 +52,22 @@ export function SessionSidebar({
 				currentSessionKey={currentSessionKey}
 				onSelectSession={onSelectSession}
 				onSelectProject={onSelectProject}
-				onSetSessionRemoteVisibility={onSetSessionRemoteVisibility}
 				onArchiveSession={onArchiveSession}
 				onSignOut={onSignOut}
+				pendingProjectKey={pendingProjectKey}
 				showCount={false}
+				inlineProjectActions
 				titleSlot={
-					<a
-						href="/sessions"
-						className="flex min-w-0 items-center gap-2 rounded-md px-1 py-1 -mx-1 transition-colors hover:bg-accent/40"
+					<Link
+						to="/sessions"
+						className="group relative flex min-w-0 items-center gap-2.5 rounded-md px-1 py-0.5 -mx-1 transition-colors hover:bg-accent/40"
 						aria-label="Xero"
 					>
-						<BrandLogo className="size-5 shrink-0" aria-hidden />
-						<span className="truncate text-sm font-semibold tracking-tight text-foreground">
+						<BrandLogo className="size-4 shrink-0" aria-hidden />
+						<span className="font-display truncate text-[14px] font-medium tracking-tight text-foreground">
 							Xero
 						</span>
-					</a>
+					</Link>
 				}
 			/>
 		</aside>

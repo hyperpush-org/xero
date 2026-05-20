@@ -233,6 +233,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -250,6 +251,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         effectiveAt: '2026-04-15T20:00:00Z',
         queuedPrompt: null,
@@ -418,6 +420,8 @@ function makeAgent(project = makeProject(), overrides: Partial<AgentPaneView> = 
       selectedModelOption?.defaultThinkingEffort ??
       null,
     selectedApprovalMode: overrides.selectedApprovalMode ?? selectedControls?.approvalMode ?? 'suggest',
+    selectedAutoCompactEnabled:
+      overrides.selectedAutoCompactEnabled ?? selectedControls?.autoCompactEnabled ?? true,
     selectedPrompt: overrides.selectedPrompt ?? {
       text: selectedControls?.queuedPrompt ?? null,
       queuedAt: selectedControls?.queuedPromptAt ?? null,

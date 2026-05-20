@@ -241,9 +241,7 @@ pub use provider_preflight::preflight_provider_profile;
 pub use record_notification_dispatch_outcome::record_notification_dispatch_outcome;
 pub use remote_bridge::{
     bridge_poll_github_login, bridge_revoke_device, bridge_sign_in, bridge_sign_out, bridge_status,
-    set_session_remote_visibility, BridgePollGithubLoginRequestDto, BridgeRevokeDeviceRequestDto,
-    BridgeStatusResponseDto, SetSessionRemoteVisibilityRequestDto,
-    SetSessionRemoteVisibilityResponseDto,
+    BridgePollGithubLoginRequestDto, BridgeRevokeDeviceRequestDto, BridgeStatusResponseDto,
 };
 pub use remove_mcp_server::remove_mcp_server;
 pub use remove_project::remove_project;

@@ -8,7 +8,10 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { resetInstallPromptStoreForTests } from "#/lib/pwa/use-install-state";
 
 import { InstallAppAction } from "./install-app-action";
 
@@ -60,11 +63,19 @@ function dispatchBeforeInstallPrompt(
 describe("InstallAppAction", () => {
 	afterEach(() => {
 		cleanup();
+		resetInstallPromptStoreForTests();
 		Object.defineProperty(window.navigator, "standalone", {
 			configurable: true,
 			value: undefined,
 		});
 		setUserAgent(DESKTOP_CHROME);
+	});
+
+	it("renders stable empty markup before browser install state hydrates", () => {
+		setUserAgent(IPHONE_SAFARI);
+		stubMatchMedia(false);
+
+		expect(renderToString(<InstallAppAction />)).toBe("");
 	});
 
 	it("renders nothing when no install path is available", () => {

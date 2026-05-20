@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     ffi::OsString,
     fs,
     path::PathBuf,
@@ -385,10 +385,10 @@ pub fn encode_relay_frame_payload(envelope: &RuntimeEnvelope) -> BridgeResult<Js
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum InboundCommandKind {
+    AuthorizeSessionJoin,
     SendMessage,
     ListSessions,
     ListProjects,
-    SetSessionVisibility,
     ArchiveSession,
     SessionAttached,
     StartSession,
@@ -397,6 +397,7 @@ pub enum InboundCommandKind {
     ContextSnapshot,
     StageAttachment,
     DiscardAttachment,
+    UpdateSessionControls,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -646,130 +647,6 @@ impl PhoenixChannelClient {
     }
 }
 
-pub trait SessionVisibilityStore: Send + Sync {
-    fn set_visible(&self, session_id: &str, visible: bool) -> BridgeResult<()>;
-    fn is_visible(&self, session_id: &str) -> BridgeResult<bool>;
-    fn visible_sessions(&self) -> BridgeResult<Vec<String>>;
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct MemorySessionVisibilityStore {
-    sessions: Arc<Mutex<BTreeMap<String, bool>>>,
-}
-
-impl SessionVisibilityStore for MemorySessionVisibilityStore {
-    fn set_visible(&self, session_id: &str, visible: bool) -> BridgeResult<()> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| BridgeError::LockPoisoned)?;
-        sessions.insert(session_id.to_owned(), visible);
-        Ok(())
-    }
-
-    fn is_visible(&self, session_id: &str) -> BridgeResult<bool> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| BridgeError::LockPoisoned)?;
-        Ok(sessions.get(session_id).copied().unwrap_or(false))
-    }
-
-    fn visible_sessions(&self) -> BridgeResult<Vec<String>> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|_| BridgeError::LockPoisoned)?;
-        Ok(sessions
-            .iter()
-            .filter(|(_session_id, visible)| **visible)
-            .map(|(session_id, _visible)| session_id.clone())
-            .collect())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct FileVisibilityState {
-    visible_sessions: BTreeMap<String, bool>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FileSessionVisibilityStore {
-    path: PathBuf,
-}
-
-impl FileSessionVisibilityStore {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    fn load_state(&self) -> BridgeResult<FileVisibilityState> {
-        match fs::read_to_string(&self.path) {
-            Ok(raw) => serde_json::from_str(&raw).map_err(|source| BridgeError::StateDecode {
-                path: self.path.clone(),
-                source,
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(FileVisibilityState::default())
-            }
-            Err(source) => Err(BridgeError::StateRead {
-                path: self.path.clone(),
-                source,
-            }),
-        }
-    }
-
-    fn save_state(&self, state: &FileVisibilityState) -> BridgeResult<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|source| BridgeError::StateWrite {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        let raw =
-            serde_json::to_string_pretty(state).map_err(|source| BridgeError::StateDecode {
-                path: self.path.clone(),
-                source,
-            })?;
-        fs::write(&self.path, raw).map_err(|source| BridgeError::StateWrite {
-            path: self.path.clone(),
-            source,
-        })
-    }
-}
-
-impl SessionVisibilityStore for FileSessionVisibilityStore {
-    fn set_visible(&self, session_id: &str, visible: bool) -> BridgeResult<()> {
-        let mut state = self.load_state()?;
-        if visible {
-            state.visible_sessions.insert(session_id.to_owned(), true);
-        } else {
-            state.visible_sessions.remove(session_id);
-        }
-        self.save_state(&state)
-    }
-
-    fn is_visible(&self, session_id: &str) -> BridgeResult<bool> {
-        Ok(self
-            .load_state()?
-            .visible_sessions
-            .get(session_id)
-            .copied()
-            .unwrap_or(false))
-    }
-
-    fn visible_sessions(&self) -> BridgeResult<Vec<String>> {
-        Ok(self
-            .load_state()?
-            .visible_sessions
-            .into_iter()
-            .filter(|(_session_id, visible)| *visible)
-            .map(|(session_id, _visible)| session_id)
-            .collect())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconnectBackoff {
     base: Duration,
@@ -811,10 +688,9 @@ impl ReconnectBackoff {
     }
 }
 
-pub struct RemoteBridge<I, V> {
+pub struct RemoteBridge<I> {
     config: BridgeConfig,
     identity_store: I,
-    visibility_store: V,
     client: Client,
     account_devices_cache: Mutex<Option<CachedAccountDevices>>,
     connected: AtomicBool,
@@ -842,9 +718,17 @@ impl CachedAccountDevices {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct OutboundFrame {
-    session_id: String,
-    payload: JsonValue,
+enum OutboundFrame {
+    SessionFrame {
+        session_id: String,
+        payload: JsonValue,
+    },
+    SessionAuthorization {
+        join_ref: String,
+        auth_topic: String,
+        session_id: String,
+        authorized: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -873,18 +757,16 @@ enum RelayTokenRefreshAuth {
     SessionId(String),
 }
 
-impl<I, V> RemoteBridge<I, V>
+impl<I> RemoteBridge<I>
 where
     I: IdentityStore,
-    V: SessionVisibilityStore,
 {
-    pub fn new(config: BridgeConfig, identity_store: I, visibility_store: V) -> Self {
+    pub fn new(config: BridgeConfig, identity_store: I) -> Self {
         let (inbound_tx, _inbound_rx) = broadcast::channel(256);
         let (outbound_tx, outbound_rx) = mpsc::channel();
         Self {
             config,
             identity_store,
-            visibility_store,
             client: Client::new(),
             account_devices_cache: Mutex::new(None),
             connected: AtomicBool::new(false),
@@ -1082,12 +964,24 @@ where
         Ok(())
     }
 
-    pub fn set_session_visibility(&self, session_id: &str, visible: bool) -> BridgeResult<()> {
-        self.visibility_store.set_visible(session_id, visible)
-    }
-
     pub fn subscribe_inbound(&self) -> broadcast::Receiver<InboundCommand> {
         self.inbound_tx.subscribe()
+    }
+
+    pub fn authorize_session_join(
+        &self,
+        join_ref: &str,
+        auth_topic: &str,
+        session_id: &str,
+        authorized: bool,
+    ) -> BridgeResult<()> {
+        let _ = self.outbound_tx.send(OutboundFrame::SessionAuthorization {
+            join_ref: join_ref.to_owned(),
+            auth_topic: auth_topic.to_owned(),
+            session_id: session_id.to_owned(),
+            authorized,
+        });
+        Ok(())
     }
 
     pub fn forward(
@@ -1095,11 +989,9 @@ where
         session_id: &str,
         runtime_event: JsonValue,
     ) -> BridgeResult<Option<Vec<u8>>> {
-        if !self.visibility_store.is_visible(session_id)? {
+        let Some(identity) = self.registered_identity()? else {
             return Ok(None);
-        }
-
-        let identity = self.ensure_registered()?;
+        };
         let computer_id = identity.desktop_device_id.unwrap_or_default();
         let seq = self.next_seq(session_id)?;
         let envelope = RuntimeEnvelope {
@@ -1130,11 +1022,9 @@ where
     }
 
     pub fn snapshot(&self, session_id: &str, snapshot: JsonValue) -> BridgeResult<Option<Vec<u8>>> {
-        if !self.visibility_store.is_visible(session_id)? {
+        let Some(identity) = self.registered_identity()? else {
             return Ok(None);
-        }
-
-        let identity = self.ensure_registered()?;
+        };
         let computer_id = identity.desktop_device_id.unwrap_or_default();
         let seq = self.next_seq(session_id)?;
         let envelope = RuntimeEnvelope {
@@ -1174,11 +1064,9 @@ where
 
     pub fn forward_session_removed(
         &self,
-        removed_session_id: &str,
+        _removed_session_id: &str,
         payload: JsonValue,
     ) -> BridgeResult<JsonValue> {
-        self.visibility_store
-            .set_visible(removed_session_id, false)?;
         let identity = self.ensure_registered()?;
         let computer_id = identity.desktop_device_id.unwrap_or_default();
         let control_session_id = "__sessions__";
@@ -1271,7 +1159,6 @@ where
     ) -> thread::JoinHandle<BridgeResult<()>>
     where
         I: 'static,
-        V: 'static,
     {
         thread::spawn(move || self.run_desktop_loop(shutdown, options))
     }
@@ -1280,6 +1167,13 @@ where
         match self.identity_store.load()? {
             Some(identity) if identity.desktop_jwt.is_some() => Ok(identity),
             _ => Err(BridgeError::MissingServerField("desktop_jwt")),
+        }
+    }
+
+    fn registered_identity(&self) -> BridgeResult<Option<DesktopIdentity>> {
+        match self.identity_store.load()? {
+            Some(identity) if identity.desktop_jwt.is_some() => Ok(Some(identity)),
+            _ => Ok(None),
         }
     }
 
@@ -1365,7 +1259,7 @@ where
 
     fn enqueue_envelope(&self, envelope: &RuntimeEnvelope) -> BridgeResult<()> {
         let payload = encode_relay_frame_payload(envelope)?;
-        let _ = self.outbound_tx.send(OutboundFrame {
+        let _ = self.outbound_tx.send(OutboundFrame::SessionFrame {
             session_id: envelope.session_id.clone(),
             payload,
         });
@@ -1381,7 +1275,7 @@ where
         connection.set_read_timeout(Some(options.read_timeout))?;
         connection.join_control()?;
         let mut joined_sessions = BTreeSet::new();
-        for session_id in initial_desktop_session_ids(self.visibility_store.visible_sessions()?) {
+        for session_id in initial_desktop_session_ids() {
             connection.join_session(&session_id)?;
             joined_sessions.insert(session_id);
         }
@@ -1425,12 +1319,26 @@ where
                 let session_id = required_json_string(&message.4, "session_id")?;
                 let join_ref = required_json_string(&message.4, "join_ref")?;
                 let auth_topic = required_json_string(&message.4, "auth_topic")?;
-                let authorized = is_control_session_id(session_id)
-                    || self.visibility_store.is_visible(session_id)?;
-                connection.authorize_session_join(join_ref, auth_topic, authorized)?;
-                if authorized && joined_sessions.insert(session_id.to_owned()) {
-                    let _reply = connection.join_session(session_id)?;
+                if is_control_session_id(session_id) {
+                    connection.authorize_session_join(join_ref, auth_topic, true)?;
+                    if joined_sessions.insert(session_id.to_owned()) {
+                        let _reply = connection.join_session(session_id)?;
+                    }
+                    return Ok(());
                 }
+                let web_device_id = required_json_string(&message.4, "web_device_id")?;
+                let _ = self.inbound_tx.send(InboundCommand {
+                    v: 1,
+                    seq: 0,
+                    computer_id: connection.desktop_device_id.clone(),
+                    session_id: Some(session_id.to_owned()),
+                    kind: InboundCommandKind::AuthorizeSessionJoin,
+                    device_id: web_device_id.to_owned(),
+                    payload: json!({
+                        "joinRef": join_ref,
+                        "authTopic": auth_topic,
+                    }),
+                });
             }
             "session_attached" => {
                 let session_id = required_json_string(&message.4, "session_id")?;
@@ -1488,10 +1396,28 @@ where
                     Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
                 }
             };
-            if joined_sessions.insert(frame.session_id.clone()) {
-                connection.join_session(&frame.session_id)?;
+            match frame {
+                OutboundFrame::SessionFrame {
+                    session_id,
+                    payload,
+                } => {
+                    if joined_sessions.insert(session_id.clone()) {
+                        connection.join_session(&session_id)?;
+                    }
+                    connection.push_session_frame(&session_id, payload)?;
+                }
+                OutboundFrame::SessionAuthorization {
+                    join_ref,
+                    auth_topic,
+                    session_id,
+                    authorized,
+                } => {
+                    connection.authorize_session_join(&join_ref, &auth_topic, authorized)?;
+                    if authorized && joined_sessions.insert(session_id.clone()) {
+                        connection.join_session(&session_id)?;
+                    }
+                }
             }
-            connection.push_session_frame(&frame.session_id, frame.payload)?;
         }
         Ok(())
     }
@@ -1629,15 +1555,10 @@ fn relay_token_refresh_auth(identity: &DesktopIdentity) -> Option<RelayTokenRefr
     }
 }
 
-fn initial_desktop_session_ids(visible_sessions: Vec<String>) -> Vec<String> {
+fn initial_desktop_session_ids() -> Vec<String> {
     let mut session_ids = Vec::new();
     for session_id in CONTROL_SESSION_IDS {
         session_ids.push(session_id.to_owned());
-    }
-    for session_id in visible_sessions {
-        if !session_ids.iter().any(|existing| existing == &session_id) {
-            session_ids.push(session_id);
-        }
     }
     session_ids
 }
@@ -1766,20 +1687,13 @@ mod tests {
     }
 
     #[test]
-    fn initial_desktop_session_ids_include_control_topics_once() {
+    fn initial_desktop_session_ids_include_control_topics() {
         assert_eq!(
-            initial_desktop_session_ids(vec![
-                "__sessions__".into(),
-                "session-1".into(),
-                "__new__".into(),
-                "__projects__".into(),
-                "session-1".into(),
-            ]),
+            initial_desktop_session_ids(),
             vec![
                 "__sessions__".to_string(),
                 "__projects__".to_string(),
                 "__new__".to_string(),
-                "session-1".to_string(),
             ]
         );
     }
@@ -1813,7 +1727,6 @@ mod tests {
         let bridge = RemoteBridge::new(
             BridgeConfig::local_default(),
             FileIdentityStore::new(tempfile_path("device-cache").join("identity.json")),
-            MemorySessionVisibilityStore::default(),
         );
         let identity = test_identity();
         let devices = vec![AccountDevice {
@@ -1939,7 +1852,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_forward_gates_by_remote_visibility() {
+    fn bridge_forward_records_and_queues_remote_events_when_registered() {
         let temp = tempfile_path("bridge-forward");
         let identity_store = FileIdentityStore::new(temp.join("identity.json"));
         identity_store
@@ -1953,17 +1866,8 @@ mod tests {
                 github_avatar_url: None,
             })
             .expect("identity");
-        let visibility = MemorySessionVisibilityStore::default();
-        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store, visibility);
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
 
-        assert!(bridge
-            .forward("session-1", json!({"event": 1}))
-            .expect("hidden gate")
-            .is_none());
-
-        bridge
-            .set_session_visibility("session-1", true)
-            .expect("visible");
         let first = bridge
             .forward("session-1", json!({"event": 1}))
             .expect("forward")
@@ -1989,13 +1893,12 @@ mod tests {
         let receiver = bridge.outbound_rx.lock().expect("outbound lock");
         let queued_first = receiver.try_recv().expect("queued first");
         let queued_second = receiver.try_recv().expect("queued second");
-        assert_eq!(queued_first.session_id, "session-1");
-        assert_eq!(queued_first.payload["seq"], 1);
-        assert_eq!(queued_second.payload["seq"], 2);
+        assert_session_frame(&queued_first, "session-1", 1);
+        assert_session_frame(&queued_second, "session-1", 2);
     }
 
     #[test]
-    fn snapshot_emits_snapshot_envelope_when_session_is_visible() {
+    fn snapshot_emits_snapshot_envelope_when_registered() {
         let temp = tempfile_path("bridge-snapshot");
         let identity_store = FileIdentityStore::new(temp.join("identity.json"));
         identity_store
@@ -2009,22 +1912,8 @@ mod tests {
                 github_avatar_url: None,
             })
             .expect("identity");
-        let visibility = MemorySessionVisibilityStore::default();
-        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store, visibility);
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
 
-        // Hidden session -> snapshot is a no-op.
-        let hidden = bridge
-            .snapshot("session-1", json!({ "schema": "x.snapshot.v1" }))
-            .expect("hidden snapshot");
-        assert!(hidden.is_none());
-
-        bridge
-            .set_session_visibility("session-1", true)
-            .expect("visible");
-
-        // Visible session -> snapshot returns an encoded envelope keyed to
-        // the session and tagged as `Snapshot` (the wire kind a web client
-        // uses to seed its store before live events arrive).
         let bytes = bridge
             .snapshot(
                 "session-1",
@@ -2057,15 +1946,11 @@ mod tests {
     }
 
     #[test]
-    fn session_removed_clears_visibility_and_emits_control_envelope() {
+    fn session_removed_emits_control_envelope() {
         let temp = tempfile_path("bridge-session-removed");
         let identity_store = FileIdentityStore::new(temp.join("identity.json"));
         identity_store.save(&test_identity()).expect("identity");
-        let visibility = MemorySessionVisibilityStore::default();
-        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store, visibility);
-        bridge
-            .set_session_visibility("session-1", true)
-            .expect("visible");
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
 
         let payload = bridge
             .forward_session_removed(
@@ -2078,21 +1963,17 @@ mod tests {
             )
             .expect("removed payload");
 
-        assert!(!bridge
-            .visibility_store
-            .is_visible("session-1")
-            .expect("visibility cleared"));
         assert_eq!(payload["kind"], "session_removed");
         let receiver = bridge.outbound_rx.lock().expect("outbound lock");
         let queued = receiver.try_recv().expect("queued removal");
-        assert_eq!(queued.session_id, "__sessions__");
-        assert_eq!(queued.payload["kind"], "session_removed");
+        let (session_id, payload) = queued_session_frame(&queued);
+        assert_eq!(session_id, "__sessions__");
+        assert_eq!(payload["kind"], "session_removed");
 
         let envelope = decode_envelope(
             &URL_SAFE_NO_PAD
                 .decode(
-                    queued
-                        .payload
+                    payload
                         .get("envelope")
                         .and_then(JsonValue::as_str)
                         .expect("encoded envelope"),
@@ -2106,21 +1987,16 @@ mod tests {
     }
 
     #[test]
-    fn file_visibility_store_persists_visible_sessions() {
-        let path = tempfile_path("visibility").join("state.json");
-        let store = FileSessionVisibilityStore::new(&path);
+    fn forward_returns_none_without_registered_identity() {
+        let temp = tempfile_path("bridge-unregistered-forward");
+        let identity_store = FileIdentityStore::new(temp.join("identity.json"));
+        let bridge = RemoteBridge::new(BridgeConfig::local_default(), identity_store);
 
-        assert!(!store.is_visible("session-1").expect("default hidden"));
-        store.set_visible("session-1", true).expect("show");
+        let forwarded = bridge
+            .forward("session-1", json!({"event": 1}))
+            .expect("forward should not fail");
 
-        let reloaded = FileSessionVisibilityStore::new(&path);
-        assert!(reloaded.is_visible("session-1").expect("reloaded"));
-        assert_eq!(
-            reloaded.visible_sessions().expect("visible sessions"),
-            vec!["session-1".to_string()]
-        );
-        reloaded.set_visible("session-1", false).expect("hide");
-        assert!(!store.is_visible("session-1").expect("hidden"));
+        assert!(forwarded.is_none());
     }
 
     #[test]
@@ -2136,6 +2012,24 @@ mod tests {
         let jittered_delay = jittered.next_jittered_delay();
         assert!(jittered_delay >= Duration::from_millis(250));
         assert!(jittered_delay <= Duration::from_millis(312));
+    }
+
+    fn assert_session_frame(frame: &OutboundFrame, expected_session_id: &str, expected_seq: u64) {
+        let (session_id, payload) = queued_session_frame(frame);
+        assert_eq!(session_id, expected_session_id);
+        assert_eq!(payload["seq"], expected_seq);
+    }
+
+    fn queued_session_frame(frame: &OutboundFrame) -> (&str, &JsonValue) {
+        match frame {
+            OutboundFrame::SessionFrame {
+                session_id,
+                payload,
+            } => (session_id.as_str(), payload),
+            OutboundFrame::SessionAuthorization { .. } => {
+                panic!("expected session frame, got authorization")
+            }
+        }
     }
 
     fn tempfile_path(name: &str) -> PathBuf {

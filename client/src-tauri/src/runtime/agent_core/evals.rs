@@ -1555,6 +1555,7 @@ mod removed_test_agent_ci_runtime {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: false,
         }
     }
 
@@ -4834,6 +4835,7 @@ fn agent_definition_eval_controls(
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: false,
             revision: 1,
             applied_at: "2026-05-01T00:00:00Z".into(),
         },
@@ -5953,6 +5955,7 @@ fn eval_controls() -> RuntimeRunControlStateDto {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Yolo,
             plan_mode_required: false,
+            auto_compact_enabled: false,
             revision: 1,
             applied_at: "2026-04-30T00:00:00Z".into(),
         },

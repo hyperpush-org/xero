@@ -1064,12 +1064,6 @@ static COMMANDS: &[Command] = &[
         action: preview_cli(&["remote", "connect"], CommandScope::None),
     },
     Command {
-        id: "remote visibility",
-        title: "remote visibility",
-        hint: "session visibility",
-        action: preview_cli(&["remote", "visibility"], CommandScope::ProjectRequired),
-    },
-    Command {
         id: "agent host",
         title: "agent host",
         hint: "external CLI agent",

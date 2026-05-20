@@ -17,7 +17,7 @@ export function LoadingScreen({ className }: LoadingScreenProps) {
 				className,
 			)}
 		>
-			<div className="relative flex h-20 w-20 items-center justify-center">
+			<div className="cloud-halo-soft relative flex h-24 w-24 items-center justify-center">
 				<span
 					aria-hidden
 					className="absolute inset-0 rounded-full xero-loading-ring"

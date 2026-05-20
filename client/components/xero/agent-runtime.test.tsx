@@ -158,6 +158,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -175,6 +176,7 @@ function makeRuntimeRun(overrides: Partial<RuntimeRunView> = {}): RuntimeRunView
         approvalMode: 'suggest',
         approvalModeLabel: 'Suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         effectiveAt: '2026-04-15T20:00:00Z',
         queuedPrompt: null,
@@ -330,6 +332,7 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     selectedModelId,
     selectedThinkingEffort: overrides.selectedThinkingEffort ?? selectedModelOption?.defaultThinkingEffort ?? null,
     selectedApprovalMode: overrides.selectedApprovalMode ?? 'suggest',
+    selectedAutoCompactEnabled: overrides.selectedAutoCompactEnabled ?? true,
     selectedPrompt:
       overrides.selectedPrompt ??
       ({
@@ -909,6 +912,7 @@ describe('AgentRuntime current UI', () => {
           thinkingEffort: null,
           approvalMode: 'suggest',
           planModeRequired: false,
+          autoCompactEnabled: true,
         },
         prompt: '1+1',
       }),
@@ -3025,7 +3029,7 @@ describe('AgentRuntime current UI', () => {
         agentDefinitionId: null,
         thinkingEffort: 'medium',
         approvalMode: 'yolo',
-        autoCompactEnabled: true,
+        autoCompactEnabled: false,
       })
     })
   })
@@ -3136,6 +3140,7 @@ describe('AgentRuntime current UI', () => {
             approvalMode: 'suggest',
             approvalModeLabel: 'Suggest',
             planModeRequired: false,
+            autoCompactEnabled: true,
             revision: 1,
             appliedAt: '2026-04-20T12:00:00Z',
           },
@@ -3151,6 +3156,7 @@ describe('AgentRuntime current UI', () => {
             approvalMode: 'yolo',
             approvalModeLabel: 'YOLO',
             planModeRequired: false,
+            autoCompactEnabled: true,
             revision: 2,
             queuedAt: '2026-04-20T12:05:00Z',
             queuedPrompt: 'Review the diff before continuing.',
@@ -3229,6 +3235,7 @@ describe('AgentRuntime current UI', () => {
           thinkingEffort: null,
           approvalMode: 'suggest',
           planModeRequired: false,
+          autoCompactEnabled: true,
         },
         prompt: 'Kick off the first run.',
       }),
@@ -3262,6 +3269,7 @@ describe('AgentRuntime current UI', () => {
             approvalMode: 'suggest',
             approvalModeLabel: 'Suggest',
             planModeRequired: false,
+            autoCompactEnabled: true,
             revision: 1,
             appliedAt: '2026-04-20T12:00:00Z',
           },
@@ -3277,6 +3285,7 @@ describe('AgentRuntime current UI', () => {
             approvalMode: 'suggest',
             approvalModeLabel: 'Suggest',
             planModeRequired: false,
+            autoCompactEnabled: true,
             revision: 2,
             queuedAt: '2026-04-20T12:05:00Z',
             queuedPrompt: 'Kick off the first run.',
@@ -3366,6 +3375,7 @@ describe('AgentRuntime current UI', () => {
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
           planModeRequired: false,
+          autoCompactEnabled: true,
         },
         prompt: 'Build the provider path.',
       }),
@@ -3465,6 +3475,7 @@ describe('AgentRuntime current UI', () => {
             approvalMode: 'yolo',
             approvalModeLabel: 'YOLO',
             planModeRequired: false,
+            autoCompactEnabled: true,
             revision: 3,
             appliedAt: '2026-04-20T12:00:00Z',
           },
@@ -3522,12 +3533,13 @@ describe('AgentRuntime current UI', () => {
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
           planModeRequired: false,
+          autoCompactEnabled: true,
         },
       }),
     )
   })
 
-  it('opts owned-agent continuations into auto-compact from the composer', async () => {
+  it('queues sticky auto-compact control updates from the composer toggle', async () => {
     const onUpdateRuntimeRunControls = vi.fn(async () => makeRuntimeRun())
 
     render(
@@ -3546,21 +3558,14 @@ describe('AgentRuntime current UI', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Auto-compact before sending' }))
-    fireEvent.change(screen.getByLabelText('Agent input'), {
-      target: { value: 'Continue after compacting old context.' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    await waitFor(() =>
-      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith({
-        prompt: 'Continue after compacting old context.',
-        autoCompact: {
-          enabled: true,
-          thresholdPercent: 85,
-          rawTailMessageCount: 8,
-        },
-      }),
-    )
+    await waitFor(() => {
+      expect(onUpdateRuntimeRunControls).toHaveBeenCalledWith(
+        expect.objectContaining({
+          controls: expect.objectContaining({ autoCompactEnabled: false }),
+        }),
+      )
+    })
   })
 
   it('keeps the dictation mic hidden without native macOS support', () => {
@@ -4098,7 +4103,7 @@ describe('AgentRuntime current UI', () => {
       expect(spawnBtn).toBeDisabled()
     })
 
-    it('renders the compact composer variant with a gear popover when density is compact', () => {
+    it('renders the dense inline composer variant when density is compact', () => {
       render(
         <AgentRuntime
           agent={makeAgent({
@@ -4110,10 +4115,9 @@ describe('AgentRuntime current UI', () => {
         />,
       )
 
-      // Compact composer: gear popover trigger is visible.
-      expect(screen.getByRole('button', { name: 'Composer settings' })).toBeVisible()
-      // Comfortable-mode inline thinking selector is hidden in compact mode (lives inside gear popover).
-      expect(screen.queryByLabelText('Thinking level selector')).not.toBeInTheDocument()
+      // Compact agent panes adopt the sidebar's dense inline pills, not a gear popover.
+      expect(screen.queryByRole('button', { name: 'Composer settings' })).not.toBeInTheDocument()
+      expect(screen.getByLabelText('Thinking level selector')).toBeVisible()
     })
 
     it('uses the condensed transcript font scale when density is compact', () => {

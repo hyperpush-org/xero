@@ -13,14 +13,14 @@ export interface InboundCommand {
 		| "send_message"
 		| "start_session"
 		| "archive_session"
-		| "set_session_visibility"
 		| "resolve_operator_action"
 		| "cancel_run"
 		| "context_snapshot"
 		| "list_sessions"
 		| "list_projects"
 		| "stage_attachment"
-		| "discard_attachment";
+		| "discard_attachment"
+		| "update_session_controls";
 	payload: unknown;
 }
 
@@ -147,28 +147,30 @@ export function requestContextSnapshot(
 	});
 }
 
-export function requestSessionRemoteVisibility(
+export function requestStartSession(
 	channel: Channel,
 	options: {
 		computerId: string;
 		projectId: string;
-		sessionId: string;
 		deviceId: string;
-		visible: boolean;
+		title?: string | null;
+		prompt?: string | null;
 	},
 ): void {
+	const payload: Record<string, unknown> = {
+		projectId: options.projectId,
+		prompt: options.prompt ?? "",
+	};
+	if (options.title?.trim()) payload.title = options.title.trim();
+
 	pushInboundCommand(channel, {
 		v: 1,
 		seq: Date.now(),
 		computer_id: options.computerId,
-		session_id: "__sessions__",
+		session_id: "__new__",
 		device_id: options.deviceId,
-		kind: "set_session_visibility",
-		payload: {
-			projectId: options.projectId,
-			agentSessionId: options.sessionId,
-			visible: options.visible,
-		},
+		kind: "start_session",
+		payload,
 	});
 }
 

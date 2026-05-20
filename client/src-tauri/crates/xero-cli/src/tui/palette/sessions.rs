@@ -39,7 +39,7 @@ pub fn handle_key(
     app: &mut App,
     detail: &mut DetailState,
     key: KeyEvent,
-    _globals: &GlobalOptions,
+    globals: &GlobalOptions,
 ) -> DetailOutcome {
     if !matches!(key.code, KeyCode::Enter) {
         return DetailOutcome::Stay;
@@ -52,6 +52,14 @@ pub fn handle_key(
     };
     let session_id = string_field(&row.payload, "agentSessionId");
     let title = string_field(&row.payload, "title");
+    if let Err(error) = app.discard_pending_attachments(globals) {
+        return DetailOutcome::Close {
+            status: Some(format!(
+                "Could not clear pending attachments: {} ({})",
+                error.message, error.code
+            )),
+        };
+    }
     app.active_session_id = Some(session_id.clone());
     DetailOutcome::Close {
         status: Some(format!(

@@ -327,6 +327,7 @@ export interface AgentPaneView {
   selectedModelSelectionKey?: string | null
   selectedThinkingEffort: ProviderModelThinkingEffortDto | null
   selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedAutoCompactEnabled: boolean
   selectedPrompt: AgentRunPromptView
   runtimeRunActiveControls: RuntimeRunActiveControlSnapshotView | null
   runtimeRunPendingControls: RuntimeRunPendingControlSnapshotView | null

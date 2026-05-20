@@ -9,7 +9,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import {
-	WebComposer,
+	Composer,
 	WebComposerContextIndicator,
 } from "@xero/ui/components/composer";
 import { type ReactNode, useState } from "react";
@@ -77,24 +77,32 @@ function renderComposer({
 	initialDraft = "",
 	contextMeter = null,
 	onSubmit = vi.fn(),
+	autoCompactEnabled,
+	onAutoCompactEnabledChange,
 }: {
 	initialDraft?: string;
 	contextMeter?: ReactNode;
 	onSubmit?: (draftPrompt?: string) => void;
+	autoCompactEnabled?: boolean;
+	onAutoCompactEnabledChange?: (next: boolean) => void;
 } = {}) {
 	function Harness() {
 		const [draftPrompt, setDraftPrompt] = useState(initialDraft);
 		return (
-			<WebComposer
+			<Composer
 				draftPrompt={draftPrompt}
 				onDraftPromptChange={setDraftPrompt}
 				onSubmit={onSubmit}
-				agentOptions={[{ id: "ask", label: "Ask" }]}
+				agentGroups={[{ id: "agents", options: [{ id: "ask", label: "Ask" }] }]}
 				selectedAgentId="ask"
 				onAgentChange={vi.fn()}
-				modelOptions={[{ id: "gpt-5.5", label: "gpt-5.5" }]}
+				modelGroups={[
+					{ id: "models", options: [{ id: "gpt-5.5", label: "gpt-5.5" }] },
+				]}
 				selectedModelId="gpt-5.5"
 				onModelChange={vi.fn()}
+				autoCompactEnabled={autoCompactEnabled}
+				onAutoCompactEnabledChange={onAutoCompactEnabledChange}
 				contextMeter={contextMeter}
 			/>
 		);
@@ -164,7 +172,7 @@ function stubMatchMedia() {
 	});
 }
 
-describe("WebComposer dictation", () => {
+describe("Composer dictation", () => {
 	beforeEach(() => {
 		MockSpeechRecognition.instances = [];
 		stubMatchMedia();
@@ -244,7 +252,7 @@ describe("WebComposer dictation", () => {
 	});
 });
 
-describe("WebComposer layout", () => {
+describe("Composer layout", () => {
 	let restoreTextareaMetrics: (() => void) | null = null;
 
 	beforeEach(() => {
@@ -296,6 +304,27 @@ describe("WebComposer layout", () => {
 			expect(textarea.style.height).toBe("152px");
 			expect(textarea.style.overflowY).toBe("auto");
 		});
+	});
+
+	it("omits the auto-compact toggle when the change handler is not provided", () => {
+		renderComposer();
+		expect(
+			screen.queryByRole("button", { name: "Auto-compact before sending" }),
+		).toBeNull();
+	});
+
+	it("reflects auto-compact enabled state and toggles via the handler", () => {
+		const onAutoCompactEnabledChange = vi.fn();
+		renderComposer({
+			autoCompactEnabled: true,
+			onAutoCompactEnabledChange,
+		});
+		const toggle = screen.getByRole("button", {
+			name: "Auto-compact before sending",
+		});
+		expect(toggle.getAttribute("aria-pressed")).toBe("true");
+		fireEvent.click(toggle);
+		expect(onAutoCompactEnabledChange).toHaveBeenCalledWith(false);
 	});
 
 	it("renders the context indicator beside composer actions", () => {

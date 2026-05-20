@@ -102,6 +102,7 @@ export interface SessionTranscript {
 	currentAgentId: string | null;
 	currentModelId: string | null;
 	currentThinkingEffort: SessionThinkingEffort | null;
+	currentAutoCompactEnabled: boolean;
 	contextSnapshot?: SessionContextSnapshot | null;
 	contextSnapshotError?: SessionContextError | null;
 	contextSnapshotRequestId?: string | null;
@@ -141,6 +142,7 @@ interface SessionStoreState {
 			providerId?: string | null;
 			providerProfileId?: string | null;
 			thinkingEffort?: SessionThinkingEffort | null;
+			autoCompactEnabled?: boolean;
 		},
 	) => void;
 	updateContextSnapshot: (
@@ -202,14 +204,14 @@ function safeTimestamp(value: string | null): number {
 	return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-function pruneHiddenTranscripts(
+function pruneMissingTranscripts(
 	transcripts: Record<string, SessionTranscript>,
 	visibleSessions: readonly VisibleSessionSummary[],
 ): Record<string, SessionTranscript> {
 	const visibleKeys = new Set(
-		visibleSessions
-			.filter((session) => session.remoteVisible)
-			.map((session) => sessionKey(session.computerId, session.sessionId)),
+		visibleSessions.map((session) =>
+			sessionKey(session.computerId, session.sessionId),
+		),
 	);
 	const entries = Object.entries(transcripts).filter(([key]) =>
 		visibleKeys.has(key),
@@ -398,7 +400,7 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 					...state.visibleSessionsByComputerVersion,
 					[computerId]: nextVersion,
 				},
-				transcripts: pruneHiddenTranscripts(state.transcripts, nextSessions),
+				transcripts: pruneMissingTranscripts(state.transcripts, nextSessions),
 			};
 		}),
 	upsertVisibleSession: (summary) =>
@@ -421,7 +423,7 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 					...state.visibleSessionsByComputerVersion,
 					[summary.computerId]: nextVersion,
 				},
-				transcripts: pruneHiddenTranscripts(state.transcripts, nextSessions),
+				transcripts: pruneMissingTranscripts(state.transcripts, nextSessions),
 			};
 		}),
 	removeVisibleSession: (computerId, sessionId) =>
@@ -443,7 +445,7 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 					...state.visibleSessionsByComputerVersion,
 					[computerId]: nextVersion,
 				},
-				transcripts: pruneHiddenTranscripts(state.transcripts, nextSessions),
+				transcripts: pruneMissingTranscripts(state.transcripts, nextSessions),
 			};
 		}),
 	replaceWithSnapshot: (key, transcript) =>
@@ -481,6 +483,10 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 				controls.thinkingEffort === undefined
 					? current.currentThinkingEffort
 					: controls.thinkingEffort;
+			const currentAutoCompactEnabled =
+				controls.autoCompactEnabled === undefined
+					? current.currentAutoCompactEnabled
+					: controls.autoCompactEnabled;
 			return {
 				transcripts: {
 					...state.transcripts,
@@ -489,6 +495,7 @@ export const useSessionStore = create<SessionStoreState>((set) => ({
 						currentAgentId: currentAgentId ?? null,
 						currentModelId: currentModelId ?? null,
 						currentThinkingEffort: currentThinkingEffort ?? null,
+						currentAutoCompactEnabled,
 						availableModels: ensureModelOption(
 							current.availableModels,
 							currentModelId ?? null,

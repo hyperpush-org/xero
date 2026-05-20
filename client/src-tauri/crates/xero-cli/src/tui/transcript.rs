@@ -22,7 +22,7 @@ use ratatui::{
 use serde_json::Value as JsonValue;
 
 use super::{
-    app::{App, ToolCallRow},
+    app::{attachment_size_label, App, RuntimeAttachmentRow, ToolCallRow},
     theme,
 };
 
@@ -115,7 +115,7 @@ pub fn message_lines(message: &super::app::RuntimeMessageRow, width: u16) -> Vec
         return lines;
     }
     match role {
-        "user" => push_user(&mut lines, &message.content, width),
+        "user" => push_user(&mut lines, &message.content, &message.attachments, width),
         "assistant" | "model" => push_assistant_markdown(&mut lines, &message.content),
         "thinking" => push_thinking_text(&mut lines, &message.content, width),
         other if other.contains("thinking") => {
@@ -295,10 +295,16 @@ fn frame_for(elapsed: Duration) -> usize {
 // User prompt — full-width bg
 // ---------------------------------------------------------------------------
 
-fn push_user(lines: &mut Vec<Line<'static>>, content: &str, width: u16) {
+fn push_user(
+    lines: &mut Vec<Line<'static>>,
+    content: &str,
+    attachments: &[RuntimeAttachmentRow],
+    width: u16,
+) {
     let bg = theme::composer_bg_color();
     let stripe_style = theme::accent().bg(bg);
     let body_style = theme::fg().bg(bg);
+    let attachment_style = theme::muted().bg(bg);
     let total_width = width as usize;
     let push_blank = |lines: &mut Vec<Line<'static>>| {
         let pad_len = total_width.saturating_sub(2);
@@ -311,21 +317,65 @@ fn push_user(lines: &mut Vec<Line<'static>>, content: &str, width: u16) {
         }
         lines.push(Line::from(spans));
     };
-
-    push_blank(lines);
-    for segment in content.split('\n') {
-        let leading = 2 + segment.chars().count();
+    let push_body = |lines: &mut Vec<Line<'static>>, text: String, style: Style| {
+        let text = truncate_for_surface(&text, total_width.saturating_sub(2));
+        let leading = 2 + text.chars().count();
         let pad_len = total_width.saturating_sub(leading);
         let mut spans = vec![
             Span::styled(format!("{} ", theme::STRIPE_GLYPH), stripe_style),
-            Span::styled(segment.to_string(), body_style),
+            Span::styled(text, style),
         ];
         if pad_len > 0 {
-            spans.push(Span::styled(" ".repeat(pad_len), body_style));
+            spans.push(Span::styled(" ".repeat(pad_len), style));
         }
         lines.push(Line::from(spans));
+    };
+
+    push_blank(lines);
+    for segment in content.split('\n') {
+        push_body(lines, segment.to_string(), body_style);
+    }
+    if !attachments.is_empty() {
+        for line in attachment_summary_lines(attachments) {
+            push_body(lines, line, attachment_style);
+        }
     }
     push_blank(lines);
+}
+
+fn attachment_summary_lines(attachments: &[RuntimeAttachmentRow]) -> Vec<String> {
+    let mut lines = attachments
+        .iter()
+        .take(3)
+        .map(|attachment| {
+            format!(
+                "Attached: {} ({}, {})",
+                attachment.original_name,
+                attachment.kind,
+                attachment_size_label(attachment.size_bytes)
+            )
+        })
+        .collect::<Vec<_>>();
+    let more = attachments.len().saturating_sub(lines.len());
+    if more > 0 {
+        lines.push(format!("Attached: +{more} more"));
+    }
+    lines
+}
+
+fn truncate_for_surface(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_owned();
+    }
+    if width <= 3 {
+        return String::new();
+    }
+    let mut output = value
+        .chars()
+        .take(width.saturating_sub(3))
+        .collect::<String>();
+    output.push_str("...");
+    output
 }
 
 // ---------------------------------------------------------------------------

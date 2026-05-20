@@ -1,4 +1,4 @@
-import type { WebComposerPendingAttachment } from "@xero/ui/components/composer";
+import type { ComposerPendingAttachment } from "@xero/ui/components/composer";
 import {
 	type AgentAttachmentKind,
 	classificationRejectionMessage,
@@ -41,7 +41,7 @@ export interface RemoteAttachmentReady {
 }
 
 export interface UseRemoteAttachmentsResult {
-	pendingAttachments: WebComposerPendingAttachment[];
+	pendingAttachments: ComposerPendingAttachment[];
 	classificationError: string | null;
 	addFiles: (files: File[]) => void;
 	removeAttachment: (id: string) => void;
@@ -49,7 +49,7 @@ export interface UseRemoteAttachmentsResult {
 	getReadyAttachments: () => RemoteAttachmentReady[];
 }
 
-interface InternalAttachmentRecord extends WebComposerPendingAttachment {
+interface InternalAttachmentRecord extends ComposerPendingAttachment {
 	absolutePath?: string;
 }
 
@@ -256,7 +256,7 @@ export function useRemoteAttachments({
 
 function stripInternalFields(
 	record: InternalAttachmentRecord,
-): WebComposerPendingAttachment {
+): ComposerPendingAttachment {
 	return {
 		id: record.id,
 		kind: record.kind,

@@ -1198,6 +1198,7 @@ fn runtime_control_input_from_active(
         thinking_effort: active.thinking_effort.clone(),
         approval_mode: active.approval_mode.clone(),
         plan_mode_required: active.plan_mode_required,
+        auto_compact_enabled: active.auto_compact_enabled,
     }
 }
 
@@ -1303,6 +1304,11 @@ pub(crate) fn update_owned_runtime_run_controls(
         .map(|controls| controls.plan_mode_required && runtime_agent_id.allows_plan_gate())
         .or_else(|| base_pending.map(|pending| pending.plan_mode_required))
         .unwrap_or(active.plan_mode_required);
+    let auto_compact_enabled = controls
+        .as_ref()
+        .map(|controls| controls.auto_compact_enabled)
+        .or_else(|| base_pending.map(|pending| pending.auto_compact_enabled))
+        .unwrap_or(active.auto_compact_enabled);
     let queued_prompt = prompt
         .as_deref()
         .map(str::trim)
@@ -1340,6 +1346,7 @@ pub(crate) fn update_owned_runtime_run_controls(
             thinking_effort,
             approval_mode,
             plan_mode_required,
+            auto_compact_enabled,
             revision: next_revision,
             queued_at: now,
             queued_prompt,
@@ -1395,6 +1402,7 @@ pub(crate) fn apply_owned_runtime_run_pending_controls_with_status(
             thinking_effort: pending.thinking_effort.clone(),
             approval_mode: pending.approval_mode.clone(),
             plan_mode_required: pending.plan_mode_required,
+            auto_compact_enabled: pending.auto_compact_enabled,
             revision: pending.revision,
             applied_at: now_timestamp(),
         },
@@ -1432,6 +1440,7 @@ pub(crate) fn bind_owned_runtime_run_to_agent_handoff(
             approval_mode: pending.approval_mode.clone(),
             plan_mode_required: target.run.runtime_agent_id.allows_plan_gate()
                 && pending.plan_mode_required,
+            auto_compact_enabled: pending.auto_compact_enabled,
             revision: pending.revision,
             applied_at: now_timestamp(),
         },
@@ -1445,6 +1454,7 @@ pub(crate) fn bind_owned_runtime_run_to_agent_handoff(
             approval_mode: snapshot.controls.active.approval_mode.clone(),
             plan_mode_required: target.run.runtime_agent_id.allows_plan_gate()
                 && snapshot.controls.active.plan_mode_required,
+            auto_compact_enabled: snapshot.controls.active.auto_compact_enabled,
             revision: snapshot.controls.active.revision.saturating_add(1),
             applied_at: now_timestamp(),
         },
@@ -1672,6 +1682,7 @@ fn runtime_run_control_state_dto(
             thinking_effort: controls.active.thinking_effort.clone(),
             approval_mode: controls.active.approval_mode.clone(),
             plan_mode_required: controls.active.plan_mode_required,
+            auto_compact_enabled: controls.active.auto_compact_enabled,
             revision: controls.active.revision,
             applied_at: controls.active.applied_at.clone(),
         },
@@ -1687,6 +1698,7 @@ fn runtime_run_control_state_dto(
                 thinking_effort: pending.thinking_effort.clone(),
                 approval_mode: pending.approval_mode.clone(),
                 plan_mode_required: pending.plan_mode_required,
+                auto_compact_enabled: pending.auto_compact_enabled,
                 revision: pending.revision,
                 queued_at: pending.queued_at.clone(),
                 queued_prompt: pending.queued_prompt.clone(),

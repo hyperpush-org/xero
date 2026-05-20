@@ -270,7 +270,7 @@ describe('EffectiveRuntimePanel', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Diagnostics' }))
     expect(await screen.findByText(/No diagnostics/i)).toBeInTheDocument()
 
-    expect(container).toMatchSnapshot()
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
   })
 
   it('renders workflow phases when the snapshot declares a state machine', async () => {

@@ -7,7 +7,7 @@ import {
 	joinSessionChannel,
 	pushInboundCommand,
 	requestSessionArchive,
-	requestSessionRemoteVisibility,
+	requestStartSession,
 } from "./relay-client";
 import {
 	modelOptionId,
@@ -64,6 +64,7 @@ interface RemoteControlSelection {
 	providerId: string | null;
 	providerProfileId: string | null;
 	thinkingEffort: SessionThinkingEffort | null;
+	autoCompactEnabled: boolean;
 }
 
 interface UseSessionStreamOptions {
@@ -76,10 +77,7 @@ interface UseSessionStreamOptions {
 export interface AccountRemoteSessionsState {
 	sessions: VisibleSessionSummary[];
 	projects: RemoteProjectSummary[];
-	setSessionRemoteVisibility: (
-		summary: VisibleSessionSummary,
-		visible: boolean,
-	) => boolean;
+	startSession: (project: RemoteProjectSummary) => boolean;
 	archiveSession: (summary: VisibleSessionSummary) => boolean;
 }
 
@@ -162,6 +160,7 @@ export function useSessionStream({
 					currentAgentId: controls.agentId,
 					currentModelId: controls.modelId,
 					currentThinkingEffort: controls.thinkingEffort,
+					currentAutoCompactEnabled: controls.autoCompactEnabled,
 					contextSnapshot: snapshot.contextSnapshot ?? null,
 					contextSnapshotError: snapshot.contextSnapshotError ?? null,
 					contextSnapshotRequestId: null,
@@ -242,6 +241,7 @@ export function useAccountRemoteSessions(
 	const relayTokenRef = useLatestRelayToken(relayToken);
 	const sessionListChannelsRef = useRef(new Map<string, Channel>());
 	const projectListChannelsRef = useRef(new Map<string, Channel>());
+	const newSessionChannelsRef = useRef(new Map<string, Channel>());
 
 	useEffect(() => {
 		if (!relayTokenRef.current || !accountId) return;
@@ -380,6 +380,17 @@ export function useAccountRemoteSessions(
 			return projectListChannel;
 		});
 
+		const newSessionChannels = onlineDesktopIds.map((computerId) => {
+			const newSessionChannel = joinSessionChannel(
+				socket,
+				computerId,
+				"__new__",
+				0,
+			);
+			newSessionChannelsRef.current.set(computerId, newSessionChannel);
+			return newSessionChannel;
+		});
+
 		return () => {
 			disposed = true;
 			for (const retryHandle of retryHandles) {
@@ -390,6 +401,9 @@ export function useAccountRemoteSessions(
 			}
 			for (const projectListChannel of projectListChannels) {
 				projectListChannel.leave();
+			}
+			for (const newSessionChannel of newSessionChannels) {
+				newSessionChannel.leave();
 			}
 			for (const [index, computerId] of onlineDesktopIds.entries()) {
 				if (
@@ -403,6 +417,12 @@ export function useAccountRemoteSessions(
 					projectListChannels[index]
 				) {
 					projectListChannelsRef.current.delete(computerId);
+				}
+				if (
+					newSessionChannelsRef.current.get(computerId) ===
+					newSessionChannels[index]
+				) {
+					newSessionChannelsRef.current.delete(computerId);
 				}
 			}
 		};
@@ -420,21 +440,15 @@ export function useAccountRemoteSessions(
 		webDeviceId,
 	]);
 
-	const setSessionRemoteVisibility = (
-		summary: VisibleSessionSummary,
-		visible: boolean,
-	): boolean => {
+	const startSession = (project: RemoteProjectSummary): boolean => {
 		if (!webDeviceId) return false;
-		const channel = sessionListChannelsRef.current.get(summary.computerId);
+		const channel = newSessionChannelsRef.current.get(project.computerId);
 		if (!channel) return false;
-		requestSessionRemoteVisibility(channel, {
-			computerId: summary.computerId,
-			projectId: summary.projectId,
-			sessionId: summary.sessionId,
+		requestStartSession(channel, {
+			computerId: project.computerId,
+			projectId: project.projectId,
 			deviceId: webDeviceId,
-			visible,
 		});
-		upsertVisibleSession({ ...summary, remoteVisible: visible });
 		return true;
 	};
 
@@ -456,7 +470,7 @@ export function useAccountRemoteSessions(
 	return {
 		sessions: visibleSessions,
 		projects,
-		setSessionRemoteVisibility,
+		startSession,
 		archiveSession,
 	};
 }
@@ -599,6 +613,7 @@ function remoteRunControlSelection(run: unknown): RemoteControlSelection {
 			providerId: null,
 			providerProfileId: null,
 			thinkingEffort: null,
+			autoCompactEnabled: true,
 		};
 	}
 	const controls = recordField(run, "controls");
@@ -606,6 +621,7 @@ function remoteRunControlSelection(run: unknown): RemoteControlSelection {
 		recordField(controls, "pending") ?? recordField(controls, "active");
 	const rawModelId = stringField(selected, "modelId");
 	const providerProfileId = stringField(selected, "providerProfileId");
+	const autoCompactEnabledRaw = selected?.autoCompactEnabled;
 	return {
 		agentId: stringField(selected, "runtimeAgentId"),
 		modelId: modelOptionId(providerProfileId, rawModelId),
@@ -615,6 +631,8 @@ function remoteRunControlSelection(run: unknown): RemoteControlSelection {
 		thinkingEffort: parseThinkingEffort(
 			stringField(selected, "thinkingEffort"),
 		),
+		autoCompactEnabled:
+			typeof autoCompactEnabledRaw === "boolean" ? autoCompactEnabledRaw : true,
 	};
 }
 

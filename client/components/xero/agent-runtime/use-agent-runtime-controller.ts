@@ -7,7 +7,6 @@ import type {
   AgentDefinitionSummaryDto,
   ProviderModelThinkingEffortDto,
   RuntimeAgentIdDto,
-  RuntimeAutoCompactPreferenceDto,
   RuntimeRunApprovalModeDto,
   RuntimeRunControlInputDto,
   RuntimeRunView,
@@ -45,6 +44,7 @@ interface UseAgentRuntimeControllerOptions {
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   selectedThinkingEffort: ComposerThinkingLevel
   selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedAutoCompactEnabled: boolean
   selectedPrompt: AgentPaneView['selectedPrompt']
   availableModels: AgentPaneView['providerModelCatalog']['models']
   approvalRequests: AgentPaneView['approvalRequests']
@@ -82,7 +82,6 @@ interface UseAgentRuntimeControllerOptions {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
-    autoCompact?: RuntimeAutoCompactPreferenceDto | null
   }) => Promise<RuntimeRunView | null>
   /** Returns the staged attachments that should be sent with the next prompt. */
   getPendingAttachments?: () => StagedAgentAttachmentDto[]
@@ -112,11 +111,6 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 const AUTO_COMPACT_STORAGE_KEY = 'xero.agent.autoCompact.enabled'
 const COMPOSER_SETTINGS_STORAGE_KEY = 'xero.agent.composer.settings.v1'
-const AUTO_COMPACT_DEFAULT_PREFERENCE: RuntimeAutoCompactPreferenceDto = {
-  enabled: true,
-  thresholdPercent: 85,
-  rawTailMessageCount: 8,
-}
 const COMPOSER_SETTINGS_VERSION = 1
 const COMPOSER_THINKING_LEVELS = ['minimal', 'low', 'medium', 'high', 'x_high'] as const
 const COMPOSER_APPROVAL_MODES = ['suggest', 'auto_edit', 'yolo'] as const
@@ -164,12 +158,14 @@ function sameRuntimeControlInput(
 }
 
 function readStoredAutoCompactEnabled(): boolean {
-  if (typeof window === 'undefined') return false
+  if (typeof window === 'undefined') return true
 
   try {
-    return window.localStorage.getItem(AUTO_COMPACT_STORAGE_KEY) === '1'
+    const raw = window.localStorage.getItem(AUTO_COMPACT_STORAGE_KEY)
+    if (raw === null) return true
+    return raw === '1'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -284,6 +280,7 @@ export function useAgentRuntimeController({
   customAgentDefinitions = [],
   selectedThinkingEffort,
   selectedApprovalMode,
+  selectedAutoCompactEnabled,
   selectedPrompt,
   availableModels,
   approvalRequests,
@@ -385,6 +382,7 @@ export function useAgentRuntimeController({
     effectiveRuntimeAgentId,
     activeRuntimeRun ? selectedApprovalMode : draftApprovalMode,
   )
+  const effectiveAutoCompactEnabled = activeRuntimeRun ? selectedAutoCompactEnabled : autoCompactEnabled
   const composerAgentSelectionKey = buildComposerAgentSelectionKey(
     effectiveRuntimeAgentId,
     effectiveAgentDefinitionId,
@@ -398,11 +396,13 @@ export function useAgentRuntimeController({
         selectionKey: effectiveModelSelectionKey,
         thinkingEffort: effectiveThinkingEffort,
         approvalMode: effectiveApprovalMode,
+        autoCompactEnabled: effectiveAutoCompactEnabled,
       }),
     [
       availableModels,
       effectiveAgentDefinitionId,
       effectiveApprovalMode,
+      effectiveAutoCompactEnabled,
       effectiveModelSelectionKey,
       effectiveRuntimeAgentId,
       effectiveThinkingEffort,
@@ -511,11 +511,11 @@ export function useAgentRuntimeController({
       agentDefinitionId: normalizeStoredText(effectiveAgentDefinitionId),
       thinkingEffort: effectiveThinkingEffort,
       approvalMode: effectiveApprovalMode,
-      autoCompactEnabled,
+      autoCompactEnabled: effectiveAutoCompactEnabled,
     })
   }, [
     activeRuntimeRun,
-    autoCompactEnabled,
+    effectiveAutoCompactEnabled,
     effectiveAgentDefinitionId,
     effectiveApprovalMode,
     effectiveModelSelectionKey,
@@ -773,7 +773,6 @@ export function useAgentRuntimeController({
       await onUpdateRuntimeRunControls({
         prompt: promptToSubmit,
         ...(attachmentsToSubmit.length > 0 ? { attachments: attachmentsToSubmit } : {}),
-        ...(autoCompactEnabled ? { autoCompact: AUTO_COMPACT_DEFAULT_PREFERENCE } : {}),
       })
       clearSubmittedDraft()
       setQueuedDraftAcknowledgement(promptToSubmit)
@@ -808,6 +807,20 @@ export function useAgentRuntimeController({
   function handleAutoCompactEnabledChange(value: boolean) {
     hasUserComposerSettingsRef.current = true
     setAutoCompactEnabled(value)
+    if (!activeRuntimeRun) {
+      return
+    }
+    void queueRuntimeRunControls(
+      getComposerControlInput({
+        runtimeAgentId: effectiveRuntimeAgentId,
+        agentDefinitionId: effectiveAgentDefinitionId,
+        models: availableModels,
+        selectionKey: effectiveModelSelectionKey,
+        thinkingEffort: effectiveThinkingEffort,
+        approvalMode: effectiveApprovalMode,
+        autoCompactEnabled: value,
+      }),
+    )
   }
 
   function handleComposerModelChange(value: string) {
@@ -826,6 +839,7 @@ export function useAgentRuntimeController({
         selectionKey: value,
         thinkingEffort: selectedThinkingEffort,
         approvalMode: selectedApprovalMode,
+        autoCompactEnabled: effectiveAutoCompactEnabled,
       }),
     )
   }
@@ -849,6 +863,7 @@ export function useAgentRuntimeController({
         selectionKey: effectiveModelSelectionKey,
         thinkingEffort: value,
         approvalMode: effectiveApprovalMode,
+        autoCompactEnabled: effectiveAutoCompactEnabled,
       }),
     )
   }
@@ -871,6 +886,7 @@ export function useAgentRuntimeController({
         selectionKey: effectiveModelSelectionKey,
         thinkingEffort: effectiveThinkingEffort,
         approvalMode: value,
+        autoCompactEnabled: effectiveAutoCompactEnabled,
       }),
     )
   }
@@ -889,6 +905,7 @@ export function useAgentRuntimeController({
           selectionKey: effectiveModelSelectionKey,
           thinkingEffort: effectiveThinkingEffort,
           approvalMode: resolveRuntimeAgentApprovalMode(value, effectiveApprovalMode),
+          autoCompactEnabled: effectiveAutoCompactEnabled,
         }),
       )
       return
@@ -923,6 +940,7 @@ export function useAgentRuntimeController({
             selection.runtimeAgentId,
             effectiveApprovalMode,
           ),
+          autoCompactEnabled: effectiveAutoCompactEnabled,
         }),
       )
       return
@@ -1016,7 +1034,7 @@ export function useAgentRuntimeController({
 
   return {
     draftPrompt,
-    autoCompactEnabled,
+    autoCompactEnabled: effectiveAutoCompactEnabled,
     composerModelId: effectiveModelSelectionKey,
     composerRuntimeAgentId: effectiveRuntimeAgentId,
     composerAgentDefinitionId: effectiveAgentDefinitionId,

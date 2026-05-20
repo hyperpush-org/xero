@@ -8,7 +8,9 @@ use crate::db::project_store::{
     AgentMessageRecord, AgentRunRecord, AgentRunSnapshotRecord, AgentToolCallRecord,
 };
 
-use super::runtime::{RuntimeAgentIdDto, RuntimeRunControlInputDto, RuntimeRunDiagnosticDto};
+use super::runtime::{
+    RuntimeAgentIdDto, RuntimeRunControlInputDto, RuntimeRunDiagnosticDto, StagedAgentAttachmentDto,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -252,9 +254,13 @@ pub struct AgentRunSummaryDto {
 pub struct StartAgentTaskRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls: Option<RuntimeRunControlInputDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<StagedAgentAttachmentDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -262,6 +268,8 @@ pub struct StartAgentTaskRequestDto {
 pub struct SendAgentMessageRequestDto {
     pub run_id: String,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<StagedAgentAttachmentDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact: Option<AgentAutoCompactPreferenceDto>,
 }

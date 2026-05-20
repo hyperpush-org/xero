@@ -107,6 +107,7 @@ describe('getComposerControlInput', () => {
       selectionKey: baseModel.selectionKey,
       thinkingEffort: 'medium',
       approvalMode: 'suggest',
+      autoCompactEnabled: true,
     })
     expect(input).not.toBeNull()
     expect(input?.agentDefinitionId).toBe('team_engineer_v2')
@@ -121,6 +122,7 @@ describe('getComposerControlInput', () => {
       selectionKey: baseModel.selectionKey,
       thinkingEffort: null,
       approvalMode: 'suggest',
+      autoCompactEnabled: true,
     })
     expect(input?.agentDefinitionId).toBeNull()
   })

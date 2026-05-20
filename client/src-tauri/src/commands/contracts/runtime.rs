@@ -3,7 +3,6 @@ use xero_agent_core::{
     ProviderCapabilityCatalog, ProviderPreflightRequiredFeatures, ProviderPreflightSnapshot,
 };
 
-use super::agent::AgentAutoCompactPreferenceDto;
 use super::autonomous::{
     AutonomousSkillCacheStatusDto, AutonomousSkillLifecycleDiagnosticDto,
     AutonomousSkillLifecycleResultDto, AutonomousSkillLifecycleSourceDto,
@@ -533,6 +532,10 @@ pub fn runtime_agent_descriptor(agent_id: RuntimeAgentIdDto) -> RuntimeAgentDesc
     }
 }
 
+fn default_auto_compact_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunControlInputDto {
@@ -547,6 +550,8 @@ pub struct RuntimeRunControlInputDto {
     pub approval_mode: RuntimeRunApprovalModeDto,
     #[serde(default)]
     pub plan_mode_required: bool,
+    #[serde(default = "default_auto_compact_enabled")]
+    pub auto_compact_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -565,6 +570,8 @@ pub struct RuntimeRunActiveControlSnapshotDto {
     pub approval_mode: RuntimeRunApprovalModeDto,
     #[serde(default)]
     pub plan_mode_required: bool,
+    #[serde(default = "default_auto_compact_enabled")]
+    pub auto_compact_enabled: bool,
     pub revision: u32,
     pub applied_at: String,
 }
@@ -585,6 +592,8 @@ pub struct RuntimeRunPendingControlSnapshotDto {
     pub approval_mode: RuntimeRunApprovalModeDto,
     #[serde(default)]
     pub plan_mode_required: bool,
+    #[serde(default = "default_auto_compact_enabled")]
+    pub auto_compact_enabled: bool,
     pub revision: u32,
     pub queued_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1133,8 +1142,6 @@ pub struct UpdateRuntimeRunControlsRequestDto {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<StagedAgentAttachmentDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_compact: Option<AgentAutoCompactPreferenceDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1288,6 +1295,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let value = serde_json::to_value(&input).expect("serialize run controls");
 

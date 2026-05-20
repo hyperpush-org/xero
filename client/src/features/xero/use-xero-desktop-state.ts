@@ -73,6 +73,7 @@ import {
   attachRuntimeStreamSubscription,
   clearRuntimeMetadataRefresh,
   scheduleRuntimeMetadataRefresh as scheduleRuntimeMetadataRefreshHelper,
+  shouldForceFullRuntimeStreamReplay,
   type RuntimeMetadataRefreshSource,
 } from './use-xero-desktop-state/runtime-stream'
 import { trimRecordCacheToByteBudget } from './use-xero-desktop-state/memory-budget'
@@ -3512,10 +3513,9 @@ export function useXeroDesktopState(
 
   useEffect(() => {
     const previousSubscriptionProjectId = runtimeStreamSubscriptionProjectIdRef.current
-    const forceFullReplay = Boolean(
-      activeProjectId &&
-        previousSubscriptionProjectId !== null &&
-        previousSubscriptionProjectId !== activeProjectId,
+    const forceFullReplay = shouldForceFullRuntimeStreamReplay(
+      previousSubscriptionProjectId,
+      activeProjectId,
     )
     const cleanups = activeRuntimeSubscriptionTargets.map((target) =>
       attachRuntimeStreamSubscription({

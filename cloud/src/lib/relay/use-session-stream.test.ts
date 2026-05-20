@@ -20,7 +20,6 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 						session: {
 							agent_session_id: "session-1",
 							title: "Project Overview",
-							remote_visible: false,
 							updated_at: "2026-05-16T20:49:15Z",
 						},
 					},
@@ -29,7 +28,7 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 						session: {
 							agentSessionId: "session-2",
 							projectName: "Clipstack",
-							title: "Linked Session",
+							title: "Follow-up Session",
 							remoteVisible: true,
 							updatedAt: "2026-05-16T21:49:15Z",
 						},
@@ -63,14 +62,14 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 					title: "Project Overview",
 					lastActivityAt: "2026-05-16T20:49:15Z",
 					computerName: "Mac Studio",
-					remoteVisible: false,
+					remoteVisible: true,
 				},
 				{
 					computerId: "desktop-1",
 					sessionId: "session-2",
 					projectId: "project-1",
 					projectName: "Clipstack",
-					title: "Linked Session",
+					title: "Follow-up Session",
 					lastActivityAt: "2026-05-16T21:49:15Z",
 					computerName: "Mac Studio",
 					remoteVisible: true,

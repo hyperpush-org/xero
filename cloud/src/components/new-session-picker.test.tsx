@@ -69,7 +69,12 @@ describe("NewSessionPicker", () => {
 		fireEvent.click(
 			screen.getByRole("button", { name: /start new session in clipstack/i }),
 		);
-		expect(onSelect).toHaveBeenCalledWith("project-1");
+		expect(onSelect).toHaveBeenCalledWith(
+			expect.objectContaining({
+				computerId: "desktop-1",
+				projectId: "project-1",
+			}),
+		);
 	});
 
 	it("renders a single trigger when multiple projects are available", () => {

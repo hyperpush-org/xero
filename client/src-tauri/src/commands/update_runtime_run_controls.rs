@@ -100,7 +100,6 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
 
     reject_provider_profile_change(existing, request.controls.as_ref())?;
 
-    let auto_compact = auto_compact_preference(request.auto_compact.clone())?;
     let after = update_owned_runtime_run_controls(
         &repo_root,
         existing,
@@ -115,6 +114,7 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         &before,
         &Some(after.clone()),
     )?;
+    let auto_compact = derive_auto_compact_preference(&after)?;
     if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
         let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
         if agent_core.is_active(&after.run.run_id)? {
@@ -356,6 +356,28 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     }
 }
 
+const AUTO_COMPACT_DEFAULT_THRESHOLD_PERCENT: u8 = 85;
+const AUTO_COMPACT_DEFAULT_RAW_TAIL_MESSAGE_COUNT: u32 = 8;
+
+fn derive_auto_compact_preference(
+    snapshot: &RuntimeRunSnapshotRecord,
+) -> CommandResult<Option<AgentAutoCompactPreference>> {
+    let enabled = snapshot
+        .controls
+        .pending
+        .as_ref()
+        .map(|pending| pending.auto_compact_enabled)
+        .unwrap_or(snapshot.controls.active.auto_compact_enabled);
+    if !enabled {
+        return Ok(None);
+    }
+    auto_compact_preference(Some(crate::commands::AgentAutoCompactPreferenceDto {
+        enabled: true,
+        threshold_percent: Some(AUTO_COMPACT_DEFAULT_THRESHOLD_PERCENT),
+        raw_tail_message_count: Some(AUTO_COMPACT_DEFAULT_RAW_TAIL_MESSAGE_COUNT),
+    }))
+}
+
 fn runtime_run_controls_as_input(
     snapshot: &RuntimeRunSnapshotRecord,
 ) -> crate::commands::RuntimeRunControlInputDto {
@@ -368,6 +390,7 @@ fn runtime_run_controls_as_input(
             thinking_effort: pending.thinking_effort.clone(),
             approval_mode: pending.approval_mode.clone(),
             plan_mode_required: pending.plan_mode_required,
+            auto_compact_enabled: pending.auto_compact_enabled,
         };
     }
 
@@ -379,6 +402,7 @@ fn runtime_run_controls_as_input(
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),
         approval_mode: snapshot.controls.active.approval_mode.clone(),
         plan_mode_required: snapshot.controls.active.plan_mode_required,
+        auto_compact_enabled: snapshot.controls.active.auto_compact_enabled,
     }
 }
 

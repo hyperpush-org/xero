@@ -5,15 +5,22 @@ use std::{
     sync::Arc,
 };
 
+use rand::RngCore;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value as JsonValue};
+use tauri::Manager;
 use xero_cli::{CliError, TuiCommandAdapter};
 use xero_desktop_lib::{
     auth::now_timestamp,
-    commands::{project_runner, solana, CommandError, CommandErrorClass, RuntimeAgentIdDto},
+    commands::{
+        project_runner, solana, CommandError, CommandErrorClass, ProviderModelThinkingEffortDto,
+        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
+        StagedAgentAttachmentDto, StartAgentTaskRequestDto,
+    },
     db::{self, project_store},
     environment::service as environment_service,
-    global_db::GLOBAL_DATABASE_FILE_NAME,
+    global_db::{open_global_database, GLOBAL_DATABASE_FILE_NAME},
+    provider_credentials::load_provider_credentials_view_or_default,
     registry,
     runtime::{
         discover_local_skill_directory, discover_plugin_roots, discover_project_skill_directory,
@@ -21,6 +28,7 @@ use xero_desktop_lib::{
         AutonomousAgentDefinitionAction, AutonomousAgentDefinitionRequest, AutonomousToolOutput,
         AutonomousToolRuntime, XeroPluginRoot,
     },
+    state::{DesktopState, AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME},
 };
 
 struct DesktopProjectStoreTuiAdapter;
@@ -46,6 +54,18 @@ impl TuiCommandAdapter for DesktopProjectStoreTuiAdapter {
             }
             Some("conversation") if args.get(1).map(String::as_str) == Some("rewind") => {
                 Some(handle_conversation_rewind(state_dir, &args[2..]).map_err(cli_error))
+            }
+            Some("conversation") if args.get(1).map(String::as_str) == Some("show") => {
+                Some(handle_conversation_show(state_dir, &args[2..]).map_err(cli_error))
+            }
+            Some("attachment") | Some("attachments") => {
+                Some(handle_attachment_command(state_dir, &args[1..]).map_err(cli_error))
+            }
+            Some("agent")
+                if args.get(1).map(String::as_str) == Some("exec")
+                    && option_value(&args[2..], "--attachments-json").is_some() =>
+            {
+                Some(handle_agent_exec_command(state_dir, &args[2..]).map_err(cli_error))
             }
             Some("terminal") | Some("pty") => {
                 Some(handle_terminal_command(state_dir, &args[1..]).map_err(cli_error))
@@ -716,6 +736,365 @@ fn handle_conversation_rewind(
         "backend": "desktop_project_store_session_lineage",
         "uiDeferred": false
     }))
+}
+
+fn handle_conversation_show(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    let project_id = required_option(args, "--project-id", "projectId")?;
+    let run_id = positional_or_option(args, "--run-id", "runId")?;
+    configure_project_store_paths(state_dir);
+    let repo_root = project_root(state_dir, &project_id)?;
+    let snapshot = project_store::load_agent_run(&repo_root, &project_id, &run_id)?;
+    Ok(json!({
+        "kind": "conversationShow",
+        "schema": "xero.conversation_show_command.v1",
+        "projectId": project_id,
+        "runId": run_id,
+        "snapshot": agent_run_snapshot_json(snapshot),
+        "backend": "desktop_project_store_agent_runtime",
+        "uiDeferred": false
+    }))
+}
+
+fn handle_attachment_command(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    let command = args.first().map(String::as_str).unwrap_or("stage");
+    match command {
+        "stage" | "add" => {
+            let project_id = required_option(&args[1..], "--project-id", "projectId")?;
+            let run_id = required_option(&args[1..], "--run-id", "runId")?;
+            let source = required_option(&args[1..], "--path", "path")?;
+            configure_project_store_paths(state_dir);
+            let repo_root = project_root(state_dir, &project_id)?;
+            let source_path = PathBuf::from(source);
+            let source_path = if source_path.is_absolute() {
+                source_path
+            } else {
+                repo_root.join(source_path)
+            };
+            let attachment =
+                xero_desktop_lib::commands::stage_agent_attachment::stage_agent_attachment_path_for_repo(
+                    &repo_root,
+                    run_id,
+                    &source_path,
+                )?;
+            Ok(json!({
+                "kind": "attachmentStage",
+                "schema": "xero.tui_attachment_stage_command.v1",
+                "projectId": project_id,
+                "attachment": attachment,
+                "backend": "desktop_project_store_agent_runtime",
+                "uiDeferred": false
+            }))
+        }
+        "discard" | "detach" | "remove" => {
+            let project_id = required_option(&args[1..], "--project-id", "projectId")?;
+            let absolute_path = required_option(&args[1..], "--absolute-path", "absolutePath")?;
+            configure_project_store_paths(state_dir);
+            let repo_root = project_root(state_dir, &project_id)?;
+            xero_desktop_lib::commands::stage_agent_attachment::discard_agent_attachment_for_repo(
+                &repo_root,
+                &absolute_path,
+            )?;
+            Ok(json!({
+                "kind": "attachmentDiscard",
+                "schema": "xero.tui_attachment_discard_command.v1",
+                "projectId": project_id,
+                "discarded": true,
+                "backend": "desktop_project_store_agent_runtime",
+                "uiDeferred": false
+            }))
+        }
+        _ => Err(CommandError::user_fixable(
+            "xero_tui_attachment_command_unknown",
+            format!("Unknown desktop-backed attachment command `{command}`. Use stage or discard."),
+        )),
+    }
+}
+
+fn handle_agent_exec_command(state_dir: &Path, args: &[String]) -> Result<JsonValue, CommandError> {
+    let project_id = required_option(args, "--project-id", "projectId")?;
+    let prompt = required_option(args, "--prompt", "prompt")?;
+    let provider_id = required_option(args, "--provider", "provider")?;
+    let provider_profile_id = resolve_provider_profile_id(state_dir, &provider_id)?;
+    let model_id = required_option(args, "--model", "model")?;
+    let run_id = option_value(args, "--run-id").unwrap_or_else(|| tui_generate_id("tui-run"));
+    let agent_session_id =
+        option_value(args, "--session-id").unwrap_or_else(|| tui_generate_id("session"));
+    let runtime_agent_id = parse_runtime_agent_id(
+        option_value(args, "--runtime-agent-id")
+            .as_deref()
+            .unwrap_or("engineer"),
+    );
+    let agent_definition_id = option_value(args, "--agent-definition-id");
+    let thinking_effort = option_value(args, "--thinking-effort")
+        .map(|value| parse_thinking_effort(&value))
+        .transpose()?;
+    let attachments = parse_staged_attachments(
+        option_value(args, "--attachments-json")
+            .as_deref()
+            .unwrap_or("[]"),
+    )?;
+
+    configure_project_store_paths(state_dir);
+    let app = build_desktop_tui_app(state_dir)?;
+    let state = app.state::<DesktopState>();
+    xero_desktop_lib::commands::agent_task::start_agent_task_blocking(
+        app.handle(),
+        state.inner(),
+        StartAgentTaskRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id,
+            run_id: Some(run_id.clone()),
+            prompt,
+            controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id,
+                agent_definition_id,
+                provider_profile_id: Some(provider_profile_id),
+                model_id,
+                thinking_effort,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+            }),
+            attachments,
+        },
+    )?;
+
+    let repo_root = project_root(state_dir, &project_id)?;
+    let snapshot = project_store::load_agent_run(&repo_root, &project_id, &run_id)?;
+    Ok(json!({
+        "kind": "agentExec",
+        "executionMode": "desktop_owned_agent",
+        "snapshot": agent_run_snapshot_json(snapshot),
+        "backend": "desktop_project_store_agent_runtime",
+        "uiDeferred": false
+    }))
+}
+
+fn build_desktop_tui_app(
+    state_dir: &Path,
+) -> Result<tauri::App<tauri::test::MockRuntime>, CommandError> {
+    let desktop_state = DesktopState::default()
+        .with_global_db_path_override(state_dir.join(GLOBAL_DATABASE_FILE_NAME))
+        .with_autonomous_skill_cache_dir_override(
+            state_dir.join(AUTONOMOUS_SKILL_CACHE_DIRECTORY_NAME),
+        );
+    xero_desktop_lib::configure_builder_with_state(tauri::test::mock_builder(), desktop_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .map_err(|error| {
+            CommandError::system_fault(
+                "xero_tui_app_bootstrap_failed",
+                format!("Could not bootstrap the desktop-backed TUI runtime: {error}"),
+            )
+        })
+}
+
+fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
+    match value.trim().replace('-', "_").to_ascii_lowercase().as_str() {
+        "ask" => RuntimeAgentIdDto::Ask,
+        "plan" => RuntimeAgentIdDto::Plan,
+        "debug" => RuntimeAgentIdDto::Debug,
+        "crawl" => RuntimeAgentIdDto::Crawl,
+        "agent_create" | "agentcreate" => RuntimeAgentIdDto::AgentCreate,
+        "generalist" => RuntimeAgentIdDto::Generalist,
+        _ => RuntimeAgentIdDto::Engineer,
+    }
+}
+
+fn parse_thinking_effort(value: &str) -> Result<ProviderModelThinkingEffortDto, CommandError> {
+    match value.trim().replace('-', "_").to_ascii_lowercase().as_str() {
+        "minimal" => Ok(ProviderModelThinkingEffortDto::Minimal),
+        "low" => Ok(ProviderModelThinkingEffortDto::Low),
+        "medium" => Ok(ProviderModelThinkingEffortDto::Medium),
+        "high" => Ok(ProviderModelThinkingEffortDto::High),
+        "x_high" | "xhigh" => Ok(ProviderModelThinkingEffortDto::XHigh),
+        other => Err(CommandError::user_fixable(
+            "xero_tui_thinking_effort_invalid",
+            format!(
+                "Unknown thinking effort `{other}`. Use minimal, low, medium, high, or x_high."
+            ),
+        )),
+    }
+}
+
+fn parse_staged_attachments(raw: &str) -> Result<Vec<StagedAgentAttachmentDto>, CommandError> {
+    serde_json::from_str(raw).map_err(|error| {
+        CommandError::user_fixable(
+            "xero_tui_attachments_json_invalid",
+            format!("Could not parse --attachments-json: {error}"),
+        )
+    })
+}
+
+fn resolve_provider_profile_id(
+    state_dir: &Path,
+    provider_id: &str,
+) -> Result<String, CommandError> {
+    let connection = open_global_database(&state_dir.join(GLOBAL_DATABASE_FILE_NAME))?;
+    let view = load_provider_credentials_view_or_default(&connection)?;
+    if view.profile(provider_id).is_some() {
+        return Ok(provider_id.to_owned());
+    }
+    Ok(view
+        .profiles()
+        .iter()
+        .find(|profile| profile.provider_id == provider_id)
+        .map(|profile| profile.profile_id.clone())
+        .unwrap_or_else(|| provider_id.to_owned()))
+}
+
+fn tui_generate_id(prefix: &str) -> String {
+    let mut bytes = [0_u8; 8];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let suffix = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{prefix}-{suffix}")
+}
+
+fn agent_run_snapshot_json(snapshot: project_store::AgentRunSnapshotRecord) -> JsonValue {
+    let run = snapshot.run;
+    json!({
+        "traceId": run.trace_id,
+        "runtimeAgentId": runtime_agent_id_label(run.runtime_agent_id),
+        "agentDefinitionId": run.agent_definition_id,
+        "agentDefinitionVersion": run.agent_definition_version,
+        "systemPrompt": run.system_prompt,
+        "projectId": run.project_id,
+        "agentSessionId": run.agent_session_id,
+        "runId": run.run_id,
+        "providerId": run.provider_id,
+        "modelId": run.model_id,
+        "status": agent_run_status_label(&run.status),
+        "prompt": run.prompt,
+        "startedAt": run.started_at,
+        "completedAt": run.completed_at,
+        "cancelledAt": run.cancelled_at,
+        "updatedAt": run.updated_at,
+        "messages": snapshot.messages.into_iter().map(agent_message_json).collect::<Vec<_>>(),
+        "events": snapshot.events.into_iter().map(agent_event_json).collect::<Vec<_>>(),
+        "toolCalls": snapshot.tool_calls.into_iter().map(agent_tool_call_json).collect::<Vec<_>>(),
+        "fileChanges": snapshot.file_changes.into_iter().map(agent_file_change_json).collect::<Vec<_>>(),
+        "checkpoints": snapshot.checkpoints.into_iter().map(agent_checkpoint_json).collect::<Vec<_>>(),
+        "actionRequests": snapshot.action_requests.into_iter().map(agent_action_request_json).collect::<Vec<_>>()
+    })
+}
+
+fn agent_message_json(message: project_store::AgentMessageRecord) -> JsonValue {
+    let provider_metadata = message
+        .provider_metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<JsonValue>(raw).ok())
+        .unwrap_or(JsonValue::Null);
+    json!({
+        "id": message.id,
+        "projectId": message.project_id,
+        "runId": message.run_id,
+        "role": project_store::agent_message_role_sql_value(&message.role),
+        "content": message.content,
+        "providerMetadata": provider_metadata,
+        "createdAt": message.created_at,
+        "attachments": message.attachments.into_iter().map(agent_message_attachment_json).collect::<Vec<_>>()
+    })
+}
+
+fn agent_message_attachment_json(
+    attachment: project_store::AgentMessageAttachmentRecord,
+) -> JsonValue {
+    json!({
+        "id": attachment.id,
+        "messageId": attachment.message_id,
+        "projectId": attachment.project_id,
+        "runId": attachment.run_id,
+        "kind": agent_message_attachment_kind_label(&attachment.kind),
+        "absolutePath": attachment.storage_path,
+        "mediaType": attachment.media_type,
+        "originalName": attachment.original_name,
+        "sizeBytes": attachment.size_bytes,
+        "width": attachment.width,
+        "height": attachment.height,
+        "createdAt": attachment.created_at
+    })
+}
+
+fn agent_event_json(event: project_store::AgentEventRecord) -> JsonValue {
+    json!({
+        "id": event.id,
+        "projectId": event.project_id,
+        "runId": event.run_id,
+        "eventKind": project_store::agent_event_kind_sql_value(&event.event_kind),
+        "payload": serde_json::from_str::<JsonValue>(&event.payload_json).unwrap_or(JsonValue::Null),
+        "createdAt": event.created_at
+    })
+}
+
+fn agent_tool_call_json(tool: project_store::AgentToolCallRecord) -> JsonValue {
+    json!({
+        "projectId": tool.project_id,
+        "runId": tool.run_id,
+        "toolCallId": tool.tool_call_id,
+        "toolName": tool.tool_name,
+        "input": serde_json::from_str::<JsonValue>(&tool.input_json).unwrap_or(JsonValue::Null),
+        "state": project_store::agent_tool_call_state_sql_value(&tool.state),
+        "result": tool.result_json.and_then(|raw| serde_json::from_str::<JsonValue>(&raw).ok()),
+        "startedAt": tool.started_at,
+        "completedAt": tool.completed_at
+    })
+}
+
+fn agent_file_change_json(change: project_store::AgentFileChangeRecord) -> JsonValue {
+    json!({
+        "id": change.id,
+        "projectId": change.project_id,
+        "runId": change.run_id,
+        "traceId": change.trace_id,
+        "topLevelRunId": change.top_level_run_id,
+        "subagentId": change.subagent_id,
+        "subagentRole": change.subagent_role,
+        "changeGroupId": change.change_group_id,
+        "path": change.path,
+        "operation": change.operation,
+        "oldHash": change.old_hash,
+        "newHash": change.new_hash,
+        "createdAt": change.created_at
+    })
+}
+
+fn agent_checkpoint_json(checkpoint: project_store::AgentCheckpointRecord) -> JsonValue {
+    json!({
+        "id": checkpoint.id,
+        "projectId": checkpoint.project_id,
+        "runId": checkpoint.run_id,
+        "checkpointKind": checkpoint.checkpoint_kind,
+        "summary": checkpoint.summary,
+        "payload": checkpoint.payload_json.and_then(|raw| serde_json::from_str::<JsonValue>(&raw).ok()),
+        "createdAt": checkpoint.created_at
+    })
+}
+
+fn agent_action_request_json(action: project_store::AgentActionRequestRecord) -> JsonValue {
+    json!({
+        "projectId": action.project_id,
+        "runId": action.run_id,
+        "actionId": action.action_id,
+        "actionType": action.action_type,
+        "title": action.title,
+        "detail": action.detail,
+        "status": action.status,
+        "createdAt": action.created_at,
+        "resolvedAt": action.resolved_at,
+        "response": action.response
+    })
+}
+
+fn agent_message_attachment_kind_label(
+    kind: &project_store::AgentMessageAttachmentKind,
+) -> &'static str {
+    match kind {
+        project_store::AgentMessageAttachmentKind::Image => "image",
+        project_store::AgentMessageAttachmentKind::Document => "document",
+        project_store::AgentMessageAttachmentKind::Text => "text",
+    }
 }
 
 fn agent_session_json(session: project_store::AgentSessionRecord) -> JsonValue {

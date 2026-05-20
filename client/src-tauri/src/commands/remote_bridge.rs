@@ -15,8 +15,8 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::broadcast::error::TryRecvError as BroadcastTryRecvError;
 use xero_remote_bridge::{
     AccountDevice, AuthStatus, BridgeAccount, BridgeConfig, BridgeError, BridgeResult,
-    DesktopBridgeLoopOptions, FileIdentityStore, FileSessionVisibilityStore, IdentityStore,
-    InboundCommand, InboundCommandKind, RemoteBridge,
+    DesktopBridgeLoopOptions, FileIdentityStore, IdentityStore, InboundCommand, InboundCommandKind,
+    RemoteBridge,
 };
 
 use crate::{
@@ -36,11 +36,11 @@ use crate::{
         start_runtime_run::start_runtime_run_blocking,
         stop_runtime_run::stop_runtime_run_blocking,
         update_runtime_run_controls::update_runtime_run_controls_blocking,
-        validate_non_empty, AgentSessionDto, CommandError, CommandResult,
-        DiscardAgentAttachmentRequestDto, ProjectUpdateReason, ProviderModelThinkingEffortDto,
-        ResolveOperatorActionRequestDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
-        RuntimeRunControlInputDto, StageAgentAttachmentRequestDto, StagedAgentAttachmentDto,
-        StartRuntimeRunRequestDto, StopRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
+        validate_non_empty, CommandError, CommandResult, DiscardAgentAttachmentRequestDto,
+        ProjectUpdateReason, ProviderModelThinkingEffortDto, ResolveOperatorActionRequestDto,
+        RuntimeAgentIdDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
+        StageAgentAttachmentRequestDto, StagedAgentAttachmentDto, StartRuntimeRunRequestDto,
+        StopRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
     },
     db::project_store::{
         self, AgentEventRecord, AgentSessionCreateRecord, AgentSessionRecord,
@@ -58,9 +58,8 @@ use crate::{
 
 const REMOTE_DIR: &str = "remote";
 const IDENTITY_FILE: &str = "desktop-identity.json";
-const VISIBILITY_FILE: &str = "remote-visibility.json";
 
-type AppRemoteBridge = RemoteBridge<FileIdentityStore, FileSessionVisibilityStore>;
+type AppRemoteBridge = RemoteBridge<FileIdentityStore>;
 
 #[derive(Default)]
 pub struct RemoteBridgeRuntimeState {
@@ -91,21 +90,6 @@ pub struct BridgeRevokeDeviceRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BridgePollGithubLoginRequestDto {
     pub flow_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SetSessionRemoteVisibilityRequestDto {
-    pub project_id: String,
-    pub agent_session_id: String,
-    pub visible: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SetSessionRemoteVisibilityResponseDto {
-    pub schema: String,
-    pub session: AgentSessionDto,
 }
 
 #[tauri::command]
@@ -178,57 +162,6 @@ pub fn bridge_revoke_device<R: Runtime>(
     bridge
         .revoke_device(request.device_id.trim())
         .map_err(map_bridge_error)
-}
-
-#[tauri::command]
-pub fn set_session_remote_visibility<R: Runtime + 'static>(
-    app: AppHandle<R>,
-    state: State<'_, DesktopState>,
-    remote_state: State<'_, RemoteBridgeRuntimeState>,
-    request: SetSessionRemoteVisibilityRequestDto,
-) -> CommandResult<SetSessionRemoteVisibilityResponseDto> {
-    validate_non_empty(&request.project_id, "projectId")?;
-    validate_non_empty(&request.agent_session_id, "agentSessionId")?;
-    let registered = registered_identity_exists(&app, state.inner())?;
-    if request.visible && !registered {
-        return Err(CommandError::user_fixable(
-            "remote_bridge_not_signed_in",
-            "Sign in with GitHub before sharing a session to the web.",
-        ));
-    }
-
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let session = project_store::set_agent_session_remote_visibility(
-        &repo_root,
-        &request.project_id,
-        &request.agent_session_id,
-        request.visible,
-    )?;
-    let bridge = remote_state.bridge(&app, state.inner())?;
-    bridge
-        .set_session_visibility(&request.agent_session_id, request.visible)
-        .map_err(map_bridge_error)?;
-    if registered {
-        remote_state.start_if_registered(&app, state.inner())?;
-        publish_remote_session_list(&app, state.inner(), &bridge)?;
-        if request.visible {
-            publish_remote_session_snapshot(
-                &app,
-                state.inner(),
-                &bridge,
-                LocatedRemoteSession {
-                    project_id: request.project_id.clone(),
-                    repo_root: repo_root.clone(),
-                    session: session.clone(),
-                },
-            )?;
-        }
-    }
-
-    Ok(SetSessionRemoteVisibilityResponseDto {
-        schema: "xero.session_remote_visibility.v1".into(),
-        session: agent_session_dto(&session),
-    })
 }
 
 pub fn start_remote_bridge_if_registered<R: Runtime + 'static>(
@@ -341,10 +274,6 @@ fn publish_deleted_agent_session_remote_state<R: Runtime + 'static>(
     session: &AgentSessionRecord,
 ) -> CommandResult<()> {
     let bridge = remote_state.bridge(app, state)?;
-    bridge
-        .set_session_visibility(&session.agent_session_id, false)
-        .map_err(map_bridge_error)?;
-
     if !registered_identity_exists(app, state)? {
         return Ok(());
     }
@@ -526,13 +455,14 @@ fn route_inbound_command<R: Runtime + 'static>(
     bridge: Arc<AppRemoteBridge>,
     command: InboundCommand,
 ) -> CommandResult<()> {
+    if matches!(command.kind, InboundCommandKind::AuthorizeSessionJoin) {
+        return route_authorize_session_join(app, state, &bridge, command);
+    }
     ensure_known_web_device(&bridge, &command.device_id)?;
     match command.kind.clone() {
         InboundCommandKind::ListSessions => route_list_sessions(app, state, &bridge),
         InboundCommandKind::ListProjects => route_list_projects(app, state, &bridge),
-        InboundCommandKind::SetSessionVisibility => {
-            route_set_session_visibility(app, state, &bridge, command)
-        }
+        InboundCommandKind::AuthorizeSessionJoin => unreachable!("handled before device gate"),
         InboundCommandKind::ArchiveSession => route_archive_session(app, state, &bridge, command),
         InboundCommandKind::SessionAttached => route_session_attached(app, state, &bridge, command),
         InboundCommandKind::StartSession => route_start_session(app, state, &bridge, command),
@@ -545,6 +475,9 @@ fn route_inbound_command<R: Runtime + 'static>(
         InboundCommandKind::StageAttachment => route_stage_attachment(app, state, &bridge, command),
         InboundCommandKind::DiscardAttachment => {
             route_discard_attachment(app, state, &bridge, command)
+        }
+        InboundCommandKind::UpdateSessionControls => {
+            route_update_session_controls(app, state, &bridge, command)
         }
     }
 }
@@ -562,6 +495,23 @@ fn ensure_known_web_device(bridge: &AppRemoteBridge, device_id: &str) -> Command
     Err(CommandError::policy_denied(
         "Remote command rejected because the web device is not linked or has been revoked.",
     ))
+}
+
+fn route_authorize_session_join<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?.to_string();
+    let join_ref = required_payload_string(&command.payload, &["joinRef", "join_ref"])?;
+    let auth_topic = required_payload_string(&command.payload, &["authTopic", "auth_topic"])?;
+    let authorized = ensure_known_web_device(bridge, &command.device_id).is_ok()
+        && locate_remote_session(app, state, &session_id).is_ok();
+
+    bridge
+        .authorize_session_join(join_ref, auth_topic, &session_id, authorized)
+        .map_err(map_bridge_error)
 }
 
 fn route_list_sessions<R: Runtime>(
@@ -631,51 +581,6 @@ fn remote_project_summaries<R: Runtime>(
         .collect())
 }
 
-fn route_set_session_visibility<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &DesktopState,
-    bridge: &AppRemoteBridge,
-    command: InboundCommand,
-) -> CommandResult<()> {
-    let project_id = required_payload_string(&command.payload, &["projectId", "project_id"])?;
-    let session_id = required_payload_string(
-        &command.payload,
-        &[
-            "agentSessionId",
-            "agent_session_id",
-            "sessionId",
-            "session_id",
-        ],
-    )?;
-    let visible = payload_bool(
-        &command.payload,
-        &["visible", "remoteVisible", "remote_visible"],
-    )
-    .unwrap_or(true);
-    let repo_root = resolve_project_root(app, state, project_id)?;
-    let session = project_store::set_agent_session_remote_visibility(
-        &repo_root, project_id, session_id, visible,
-    )?;
-    bridge
-        .set_session_visibility(&session.agent_session_id, visible)
-        .map_err(map_bridge_error)?;
-    emit_project_updated(
-        app,
-        &repo_root,
-        project_id,
-        ProjectUpdateReason::MetadataChanged,
-    )?;
-
-    publish_remote_session_list(app, state, bridge)?;
-    let project_name = project_name_for_id(app, state, project_id)?;
-    send_command_ok(
-        bridge,
-        "__sessions__",
-        "xero.remote_session_visibility_changed.v1",
-        remote_session_summary_payload(project_id, project_name.as_deref(), &session),
-    )
-}
-
 fn route_archive_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -743,7 +648,7 @@ fn route_session_attached<R: Runtime>(
         _ => {}
     }
 
-    let located = locate_visible_remote_session(app, state, session_id)?;
+    let located = locate_remote_session(app, state, session_id)?;
     let last_seq = payload_u64(&command.payload, &["lastSeq", "last_seq"]).unwrap_or(0);
     if last_seq > 0
         && bridge
@@ -777,15 +682,6 @@ fn route_start_session<R: Runtime + 'static>(
             selected: true,
         },
     )?;
-    let session = project_store::set_agent_session_remote_visibility(
-        &located_project.repo_root,
-        &located_project.project_id,
-        &session.agent_session_id,
-        true,
-    )?;
-    bridge
-        .set_session_visibility(&session.agent_session_id, true)
-        .map_err(map_bridge_error)?;
     emit_project_updated(
         app,
         &located_project.repo_root,
@@ -847,7 +743,7 @@ fn route_send_message<R: Runtime + 'static>(
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
     let message = required_payload_string(&command.payload, &["message", "prompt"])?;
-    let located = locate_visible_remote_session(app, state, session_id)?;
+    let located = locate_remote_session(app, state, session_id)?;
     let existing = load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?;
     let attachments = remote_attachments_from_payload(&command.payload)?;
     let run = match existing {
@@ -866,7 +762,6 @@ fn route_send_message<R: Runtime + 'static>(
                     )?,
                     prompt: Some(message.to_string()),
                     attachments,
-                    auto_compact: None,
                 },
             )?
         }
@@ -891,6 +786,43 @@ fn route_send_message<R: Runtime + 'static>(
     )
 }
 
+fn route_update_session_controls<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    bridge: &AppRemoteBridge,
+    command: InboundCommand,
+) -> CommandResult<()> {
+    let session_id = required_command_session(&command)?;
+    let located = locate_remote_session(app, state, session_id)?;
+    let existing = load_persisted_runtime_run(&located.repo_root, &located.project_id, session_id)?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "runtime_run_missing",
+                "Xero cannot update session controls because the session has no runtime run yet.",
+            )
+        })?;
+    let selected_controls = selected_runtime_run_controls(&existing);
+    let controls = remote_run_controls_from_payload(&command.payload, Some(&selected_controls))?;
+    let run = update_runtime_run_controls_blocking(
+        app.clone(),
+        state.clone(),
+        UpdateRuntimeRunControlsRequestDto {
+            project_id: located.project_id.clone(),
+            agent_session_id: session_id.to_string(),
+            run_id: existing.run.run_id,
+            controls,
+            prompt: None,
+            attachments: Vec::new(),
+        },
+    )?;
+    send_command_ok(
+        bridge,
+        session_id,
+        "xero.remote_session_controls_updated.v1",
+        json!({ "run": run }),
+    )
+}
+
 fn route_resolve_operator_action<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -898,7 +830,7 @@ fn route_resolve_operator_action<R: Runtime>(
     command: InboundCommand,
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
-    let located = locate_visible_remote_session(app, state, session_id)?;
+    let located = locate_remote_session(app, state, session_id)?;
     let action_id = required_payload_string(&command.payload, &["actionId", "action_id"])?;
     let decision = required_payload_string(&command.payload, &["decision"])?;
     let response = resolve_operator_action_blocking(
@@ -928,7 +860,7 @@ fn route_cancel_run<R: Runtime>(
     command: InboundCommand,
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
-    let located = locate_visible_remote_session(app, state, session_id)?;
+    let located = locate_remote_session(app, state, session_id)?;
     let run_id = match payload_string(&command.payload, &["runId", "run_id"]) {
         Some(run_id) => run_id.to_string(),
         None => {
@@ -970,7 +902,7 @@ fn route_context_snapshot<R: Runtime>(
     command: InboundCommand,
 ) -> CommandResult<()> {
     let session_id = required_command_session(&command)?;
-    let located = locate_visible_remote_session(app, state, session_id)?;
+    let located = locate_remote_session(app, state, session_id)?;
     let request_id =
         payload_string(&command.payload, &["requestId", "request_id"]).map(ToOwned::to_owned);
     let context_result = build_session_context_snapshot(
@@ -1036,7 +968,7 @@ fn route_stage_attachment<R: Runtime>(
     let attachment_id = payload_string(&command.payload, &["attachmentId", "attachment_id"])
         .ok_or_else(|| CommandError::invalid_request("attachmentId"))?
         .to_string();
-    let located = locate_visible_remote_session(app, state, &session_id)?;
+    let located = locate_remote_session(app, state, &session_id)?;
     let project_id = located.project_id;
     let original_name =
         required_payload_string(&command.payload, &["originalName", "original_name"])?.to_string();
@@ -1080,7 +1012,7 @@ fn route_discard_attachment<R: Runtime>(
     let attachment_id = payload_string(&command.payload, &["attachmentId", "attachment_id"])
         .ok_or_else(|| CommandError::invalid_request("attachmentId"))?
         .to_string();
-    let located = locate_visible_remote_session(app, state, &session_id)?;
+    let located = locate_remote_session(app, state, &session_id)?;
     let absolute_path =
         required_payload_string(&command.payload, &["absolutePath", "absolute_path"])?.to_string();
 
@@ -1182,7 +1114,7 @@ fn locate_project_for_remote_start<R: Runtime>(
     }
 }
 
-fn locate_visible_remote_session<R: Runtime>(
+fn locate_remote_session<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     session_id: &str,
@@ -1194,9 +1126,9 @@ fn locate_visible_remote_session<R: Runtime>(
         if let Some(session) =
             project_store::get_agent_session(&location.repo_root, &location.project_id, session_id)?
         {
-            if !session.remote_visible {
+            if matches!(session.status, project_store::AgentSessionStatus::Archived) {
                 return Err(CommandError::policy_denied(
-                    "Remote command rejected because this session is not remotely visible.",
+                    "Remote command rejected because this session is archived.",
                 ));
             }
             return Ok(LocatedRemoteSession {
@@ -1209,7 +1141,7 @@ fn locate_visible_remote_session<R: Runtime>(
 
     Err(CommandError::user_fixable(
         "remote_session_not_found",
-        format!("Xero could not find remotely visible session `{session_id}`."),
+        format!("Xero could not find session `{session_id}`."),
     ))
 }
 
@@ -1245,7 +1177,7 @@ fn remote_session_summary_payload(
         "session": {
             "agentSessionId": &session.agent_session_id,
             "title": &session.title,
-            "remoteVisible": session.remote_visible,
+            "remoteVisible": !matches!(session.status, project_store::AgentSessionStatus::Archived),
             "createdAt": &session.created_at,
             "updatedAt": &session.updated_at,
         },
@@ -1618,6 +1550,12 @@ fn remote_run_controls_from_payload(
         plan_mode_required: payload_bool(payload, &["planModeRequired", "plan_mode_required"])
             .or_else(|| fallback.map(|controls| controls.plan_mode_required))
             .unwrap_or(false),
+        auto_compact_enabled: payload_bool(
+            payload,
+            &["autoCompactEnabled", "auto_compact_enabled"],
+        )
+        .or_else(|| fallback.map(|controls| controls.auto_compact_enabled))
+        .unwrap_or(true),
     }))
 }
 
@@ -1633,6 +1571,7 @@ fn selected_runtime_run_controls(
             thinking_effort: pending.thinking_effort.clone(),
             approval_mode: pending.approval_mode.clone(),
             plan_mode_required: pending.plan_mode_required,
+            auto_compact_enabled: pending.auto_compact_enabled,
         };
     }
 
@@ -1644,6 +1583,7 @@ fn selected_runtime_run_controls(
         thinking_effort: snapshot.controls.active.thinking_effort.clone(),
         approval_mode: snapshot.controls.active.approval_mode.clone(),
         plan_mode_required: snapshot.controls.active.plan_mode_required,
+        auto_compact_enabled: snapshot.controls.active.auto_compact_enabled,
     }
 }
 
@@ -1720,7 +1660,6 @@ fn new_bridge_for_app<R: Runtime>(
     Ok(RemoteBridge::new(
         BridgeConfig::from_env_or_local("Xero Desktop"),
         FileIdentityStore::new(remote_dir.join(IDENTITY_FILE)),
-        FileSessionVisibilityStore::new(remote_dir.join(VISIBILITY_FILE)),
     ))
 }
 
@@ -1776,6 +1715,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Yolo,
             plan_mode_required: true,
+            auto_compact_enabled: true,
         }
     }
 

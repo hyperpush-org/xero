@@ -1,3 +1,165 @@
 @import "@xero/ui/styles.css";
 
 @source "../../packages/ui/src";
+
+/* ── Elevated Dusk: cloud-only extensions ────────────────────────────────── */
+/*  These styles refine the dusk palette for the cloud surface only. The     */
+/*  desktop client imports @xero/ui/styles.css directly and never loads this */
+/*  file, so adding tokens / utilities here does not affect the client.      */
+
+:root {
+	--cloud-halo: color-mix(in oklab, var(--primary) 14%, transparent);
+	--cloud-halo-soft: color-mix(in oklab, var(--primary) 5%, transparent);
+	--cloud-rule: color-mix(in oklab, var(--primary) 14%, var(--border));
+	--cloud-rule-strong: color-mix(in oklab, var(--primary) 26%, var(--border));
+	--cloud-surface-warm: color-mix(in oklab, var(--primary) 4%, var(--card));
+	--cloud-surface-deep: color-mix(in oklab, black 18%, var(--background));
+}
+
+@layer utilities {
+	.font-display {
+		letter-spacing: -0.014em;
+	}
+
+	.font-display-italic {
+		font-style: italic;
+		letter-spacing: -0.008em;
+	}
+
+	.cloud-halo {
+		position: relative;
+		isolation: isolate;
+	}
+	.cloud-halo::before {
+		content: "";
+		position: absolute;
+		inset: -20%;
+		z-index: -1;
+		pointer-events: none;
+		background: radial-gradient(
+			closest-side at 50% 50%,
+			var(--cloud-halo) 0%,
+			var(--cloud-halo-soft) 40%,
+			transparent 75%
+		);
+	}
+
+	.cloud-halo-soft {
+		position: relative;
+		isolation: isolate;
+	}
+	.cloud-halo-soft::before {
+		content: "";
+		position: absolute;
+		inset: -25%;
+		z-index: -1;
+		pointer-events: none;
+		background: radial-gradient(
+			closest-side at 50% 50%,
+			var(--cloud-halo-soft) 0%,
+			transparent 75%
+		);
+	}
+
+	.cloud-halo-edge {
+		position: relative;
+		isolation: isolate;
+	}
+	.cloud-halo-edge::before {
+		content: "";
+		position: absolute;
+		inset: -10%;
+		z-index: -1;
+		pointer-events: none;
+		background:
+			radial-gradient(60% 50% at 18% 24%, var(--cloud-halo) 0%, transparent 60%),
+			radial-gradient(50% 50% at 92% 90%, var(--cloud-halo-soft) 0%, transparent 65%);
+	}
+
+	.cloud-vignette-top {
+		position: relative;
+	}
+	.cloud-vignette-top::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: linear-gradient(
+			to bottom,
+			var(--cloud-surface-deep) 0%,
+			transparent 30%
+		);
+		opacity: 0.6;
+	}
+
+	.cloud-grain {
+		position: relative;
+	}
+	.cloud-grain::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1   0 0 0 0 0.85   0 0 0 0 0.62  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+		background-size: 180px 180px;
+		opacity: 0.035;
+		mix-blend-mode: overlay;
+	}
+
+	.cloud-rule {
+		height: 1px;
+		background: linear-gradient(
+			to right,
+			transparent,
+			var(--cloud-rule-strong) 20%,
+			var(--cloud-rule-strong) 80%,
+			transparent
+		);
+		border: 0;
+	}
+
+	.text-cloud-meta {
+		font-size: 10px;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		font-weight: 500;
+	}
+
+	.cloud-rise {
+		animation: cloud-rise 720ms cubic-bezier(0.22, 0.7, 0.26, 1) backwards;
+		animation-delay: var(--cloud-rise-delay, 0ms);
+	}
+
+	.cloud-glow-breathe {
+		animation: cloud-glow-breathe 4.2s ease-in-out infinite;
+	}
+}
+
+@keyframes cloud-rise {
+	from {
+		opacity: 0;
+		transform: translate3d(0, 10px, 0);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+@keyframes cloud-glow-breathe {
+	0%, 100% {
+		opacity: 0.65;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.cloud-rise,
+	.cloud-glow-breathe {
+		animation-duration: 1ms !important;
+		animation-iteration-count: 1 !important;
+		animation-delay: 0ms !important;
+	}
+}

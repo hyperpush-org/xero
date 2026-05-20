@@ -351,6 +351,7 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -1042,6 +1043,7 @@ function createMockAdapter(options?: {
               thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
               approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
               planModeRequired: options?.initialControls?.planModeRequired ?? false,
+              autoCompactEnabled: true,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1053,6 +1055,7 @@ function createMockAdapter(options?: {
                   thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
                   approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
                   planModeRequired: options?.initialControls?.planModeRequired ?? false,
+                  autoCompactEnabled: true,
                   revision: 2,
                   queuedAt: '2026-04-15T20:00:01Z',
                   queuedPrompt: options.initialPrompt,
@@ -1103,6 +1106,10 @@ function createMockAdapter(options?: {
               request.controls?.planModeRequired ??
               basePending?.planModeRequired ??
               currentRun.controls.active.planModeRequired,
+            autoCompactEnabled:
+              request.controls?.autoCompactEnabled ??
+              basePending?.autoCompactEnabled ??
+              currentRun.controls.active.autoCompactEnabled,
             revision: basePending ? basePending.revision + 1 : currentRun.controls.active.revision + 1,
             queuedAt,
             queuedPrompt: request.prompt ?? basePending?.queuedPrompt ?? null,
@@ -1424,6 +1431,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
                 thinkingEffort: 'high',
                 approvalMode: 'auto_edit',
                 planModeRequired: false,
+                autoCompactEnabled: true,
               },
               prompt: 'Review the latest diff before continuing.',
             })
@@ -1443,6 +1451,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
                 thinkingEffort: 'high',
                 approvalMode: 'auto_edit',
                 planModeRequired: false,
+                autoCompactEnabled: true,
               },
               prompt: 'Review the latest diff before continuing.',
             })
@@ -1462,6 +1471,7 @@ function Harness({ adapter }: { adapter: XeroDesktopAdapter }) {
                 thinkingEffort: 'high',
                 approvalMode: 'auto_edit',
                 planModeRequired: false,
+                autoCompactEnabled: true,
               },
             })
             .catch(() => undefined)
@@ -1752,6 +1762,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
               planModeRequired: false,
+              autoCompactEnabled: true,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1762,6 +1773,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
               planModeRequired: false,
+              autoCompactEnabled: true,
               revision: 2,
               queuedAt: '2026-04-15T20:00:01Z',
               queuedPrompt: 'First queued prompt.',
@@ -1794,6 +1806,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
               thinkingEffort: 'medium',
               approvalMode: 'suggest',
               planModeRequired: false,
+              autoCompactEnabled: true,
               revision: 1,
               appliedAt: '2026-04-15T20:00:00Z',
             },
@@ -1803,6 +1816,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
               thinkingEffort: 'medium',
               approvalMode: 'yolo',
               planModeRequired: false,
+              autoCompactEnabled: true,
               revision: 2,
               queuedAt: '2026-04-15T20:00:07Z',
               queuedPrompt: null,
@@ -2103,6 +2117,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
               thinkingEffort: initialRun.controls.active.thinkingEffort,
               approvalMode: initialRun.controls.active.approvalMode,
               planModeRequired: initialRun.controls.active.planModeRequired,
+              autoCompactEnabled: true,
               revision: 2,
               queuedAt: '2026-04-15T20:01:00Z',
               queuedPrompt: 'What is 1+1?',

@@ -74,7 +74,7 @@ export function CloudAccountSection() {
     <div className="flex flex-col gap-7">
       <SectionHeader
         title="Cloud account"
-        description="Manage the desktops and browsers linked to your GitHub account. Anything linked here can drive sessions you have shared to the cloud."
+        description="Manage the desktops and browsers linked to your GitHub account. Linked browsers can drive non-archived sessions from signed-in desktops."
       />
 
       <div className="flex flex-col gap-3">

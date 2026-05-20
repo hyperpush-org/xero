@@ -7,6 +7,7 @@ import {
   createRuntimeRunUpdateBuffer,
   mergeRuntimeStreamEvents,
   RUNTIME_STREAM_BATCH_WINDOW_MS,
+  shouldForceFullRuntimeStreamReplay,
 } from './runtime-stream'
 import {
   createRuntimeStreamView,
@@ -249,6 +250,7 @@ function makeRuntimeRun(projectId: string, overrides: Partial<RuntimeRunDto> = {
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -365,6 +367,13 @@ describe('runtime run metadata coalescing', () => {
 })
 
 describe('runtime stream event coalescing', () => {
+  it('forces a full replay on first project subscription and project switches', () => {
+    expect(shouldForceFullRuntimeStreamReplay(null, null)).toBe(false)
+    expect(shouldForceFullRuntimeStreamReplay(null, 'project-1')).toBe(true)
+    expect(shouldForceFullRuntimeStreamReplay('project-1', 'project-1')).toBe(false)
+    expect(shouldForceFullRuntimeStreamReplay('project-1', 'project-2')).toBe(true)
+  })
+
   it('flushes non-urgent stream items in one buffered update', () => {
     let stream: RuntimeStreamView | null = makeRuntimeStream()
     let scheduledFlush: (() => void) | null = null
@@ -504,6 +513,71 @@ describe('runtime stream event coalescing', () => {
       agentSessionId: 'agent-session-main',
       runId: 'run-1',
       completedAt: '2026-04-16T13:30:03Z',
+    })
+  })
+
+  it('notifies when a replay patch carries completion in the snapshot', () => {
+    let stream: RuntimeStreamView | null = makeRuntimeStream()
+    const updateRuntimeStream = vi.fn(
+      (
+        _projectId: string,
+        _agentSessionId: string,
+        updater: (current: RuntimeStreamView | null) => RuntimeStreamView | null,
+      ) => {
+        stream = updater(stream)
+      },
+    )
+    const onRuntimeSessionCompleted = vi.fn()
+    const buffer = createRuntimeStreamEventBuffer({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runtimeKind: 'openai_codex',
+      runId: 'run-1',
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      subscribedItemKinds: ['activity', 'complete'],
+      runtimeActionRefreshKeysRef: { current: {} },
+      updateRuntimeStream,
+      scheduleRuntimeMetadataRefresh: vi.fn(),
+      onRuntimeSessionCompleted,
+    })
+    const replayPatch = makeRuntimeStreamPatch(4)
+    replayPatch.item = {
+      kind: 'activity',
+      runId: 'run-1',
+      sequence: 4,
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      code: 'owned_agent_validation_completed',
+      title: 'Validation completed',
+      detail: 'Validation passed: memory_extraction.',
+      text: 'Validation passed: memory_extraction.',
+      createdAt: '2026-04-16T13:31:04Z',
+    }
+    replayPatch.snapshot.status = 'complete'
+    replayPatch.snapshot.completion = {
+      kind: 'complete',
+      runId: 'run-1',
+      sequence: 3,
+      sessionId: 'session-1',
+      flowId: 'flow-1',
+      detail: 'Done.',
+      text: 'Done.',
+      createdAt: '2026-04-16T13:31:03Z',
+    }
+    replayPatch.snapshot.lastSequence = 4
+    replayPatch.snapshot.lastItemAt = '2026-04-16T13:31:04Z'
+
+    buffer.enableCompletionNotifications()
+    buffer.enqueue(replayPatch)
+    buffer.flush()
+
+    expect(stream?.status).toBe('complete')
+    expect(onRuntimeSessionCompleted).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      agentSessionId: 'agent-session-main',
+      runId: 'run-1',
+      completedAt: '2026-04-16T13:31:03Z',
     })
   })
 

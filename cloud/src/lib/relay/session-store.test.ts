@@ -76,7 +76,7 @@ describe("session store", () => {
 		}
 	});
 
-	it("replaces one desktop visible-session list and drops hidden transcripts", () => {
+	it("replaces one desktop visible-session list and drops missing transcripts", () => {
 		useSessionStore.getState().setVisibleSessions([
 			sessionSummary(),
 			sessionSummary({
@@ -98,6 +98,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 		useSessionStore.getState().replaceWithSnapshot("desktop-2:session-2", {
 			turns: [],
@@ -108,6 +109,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore
@@ -159,6 +161,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().removeVisibleSession("desktop-1", "session-1");
@@ -170,7 +173,7 @@ describe("session store", () => {
 		).toBeGreaterThan(0);
 	});
 
-	it("keeps unlinked session summaries without keeping their transcripts", () => {
+	it("keeps transcripts for listed sessions regardless of legacy visibility flags", () => {
 		const key = "desktop-1:session-1";
 		useSessionStore.getState().setVisibleSessions([sessionSummary()]);
 		useSessionStore.getState().replaceWithSnapshot(key, {
@@ -182,6 +185,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore
@@ -193,7 +197,7 @@ describe("session store", () => {
 		expect(useSessionStore.getState().visibleSessions).toEqual([
 			sessionSummary({ remoteVisible: false }),
 		]);
-		expect(useSessionStore.getState().transcripts).not.toHaveProperty(key);
+		expect(useSessionStore.getState().transcripts).toHaveProperty(key);
 	});
 
 	it("tracks online desktop presence separately from visible-session reconciliation", () => {
@@ -233,6 +237,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().clearVisibleSessionsForComputers(["desktop-1"]);
@@ -269,6 +274,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().setVisibleSessions([]);
@@ -296,6 +302,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().appendTurn(
@@ -388,6 +395,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().appendTurn(
@@ -537,6 +545,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().updateControls(key, {
@@ -570,6 +579,7 @@ describe("session store", () => {
 			currentAgentId: null,
 			currentModelId: null,
 			currentThinkingEffort: null,
+			currentAutoCompactEnabled: true,
 		});
 
 		useSessionStore.getState().updateContextSnapshot(key, {

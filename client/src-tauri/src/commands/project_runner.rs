@@ -744,6 +744,7 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
         thinking_effort: request.thinking_effort.clone(),
         approval_mode: RuntimeRunApprovalModeDto::Yolo,
         plan_mode_required: false,
+        auto_compact_enabled: false,
     };
 
     let provider_config = resolve_owned_agent_provider_config(&app, &state, Some(&controls))?;
@@ -770,6 +771,7 @@ fn suggest_project_start_targets_blocking<R: Runtime + 'static>(
                 thinking_effort: controls.thinking_effort.clone(),
                 approval_mode: RuntimeRunApprovalModeDto::Yolo,
                 plan_mode_required: false,
+                auto_compact_enabled: false,
                 revision: 1,
                 applied_at: now_timestamp(),
             },

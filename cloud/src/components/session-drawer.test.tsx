@@ -26,9 +26,16 @@ const session: CloudSession = {
 describe("SessionDrawer", () => {
 	afterEach(() => {
 		cleanup();
+		try {
+			window.localStorage?.removeItem?.(
+				"xero.cloud.sidebar.projectCollapsed.v1",
+			);
+		} catch {
+			// Test-runner localStorage stubs vary; ignore failures.
+		}
 	});
 
-	it("closes after a shared session is selected", async () => {
+	it("closes after a session is selected", async () => {
 		const onSelectSession = vi.fn();
 		render(
 			<SessionDrawer
@@ -53,7 +60,7 @@ describe("SessionDrawer", () => {
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Open sessions" }));
-		expect(screen.getByText(/Clipstack ·/)).toBeTruthy();
+		expect(screen.getAllByText("Clipstack")).toHaveLength(1);
 		expect(screen.queryByText(/Xero TUI/)).toBeNull();
 		expect(
 			document.querySelector(
@@ -76,16 +83,84 @@ describe("SessionDrawer", () => {
 		});
 	});
 
-	it("unlinks a linked session without selecting it", async () => {
-		const onSelectSession = vi.fn();
-		const onSetSessionRemoteVisibility = vi.fn(() => true);
+	it("groups sessions under their project headers", () => {
 		render(
 			<SessionDrawer
 				session={session}
 				visibleSessions={[
 					{
 						computerId: "desktop-1",
-						sessionId: "agent-session-3",
+						sessionId: "agent-session-a",
+						projectId: "project-1",
+						projectName: "Clipstack",
+						title: "Project Overview",
+						lastActivityAt: "2026-05-17T07:00:00Z",
+						computerName: "Xero TUI",
+						remoteVisible: true,
+					},
+					{
+						computerId: "desktop-1",
+						sessionId: "agent-session-b",
+						projectId: "project-1",
+						projectName: "Clipstack",
+						title: "Refactor auth",
+						lastActivityAt: "2026-05-17T06:30:00Z",
+						computerName: "Xero TUI",
+						remoteVisible: true,
+					},
+					{
+						computerId: "desktop-1",
+						sessionId: "agent-session-c",
+						projectId: "project-2",
+						projectName: "Mesh Lang",
+						title: "Parse spec",
+						lastActivityAt: "2026-05-17T05:00:00Z",
+						computerName: "Xero TUI",
+						remoteVisible: true,
+					},
+				]}
+				currentSessionKey={null}
+				onSelectSession={vi.fn()}
+				onSignOut={vi.fn()}
+				trigger={<button type="button">Open sessions</button>}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Open sessions" }));
+
+		// Each project name appears exactly once — as a group header, not inside rows.
+		expect(screen.getAllByText("Clipstack")).toHaveLength(1);
+		expect(screen.getAllByText("Mesh Lang")).toHaveLength(1);
+		// All three sessions render under their groups.
+		expect(
+			screen.getByRole("button", { name: "Open Project Overview" }),
+		).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Open Refactor auth" }),
+		).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Open Parse spec" }),
+		).toBeTruthy();
+		// Group with most recent session activity comes first.
+		const collapseTriggers = screen.getAllByRole("button", {
+			name: /^Collapse /,
+		});
+		expect(collapseTriggers[0].getAttribute("aria-label")).toBe(
+			"Collapse Clipstack",
+		);
+		expect(collapseTriggers[1].getAttribute("aria-label")).toBe(
+			"Collapse Mesh Lang",
+		);
+	});
+
+	it("collapses a project group on header click", () => {
+		render(
+			<SessionDrawer
+				session={session}
+				visibleSessions={[
+					{
+						computerId: "desktop-1",
+						sessionId: "agent-session-a",
 						projectId: "project-1",
 						projectName: "Clipstack",
 						title: "Project Overview",
@@ -95,23 +170,23 @@ describe("SessionDrawer", () => {
 					},
 				]}
 				currentSessionKey={null}
-				onSelectSession={onSelectSession}
-				onSetSessionRemoteVisibility={onSetSessionRemoteVisibility}
+				onSelectSession={vi.fn()}
 				onSignOut={vi.fn()}
 				trigger={<button type="button">Open sessions</button>}
 			/>,
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Open sessions" }));
-		fireEvent.click(
-			screen.getByRole("button", { name: "Unlink Project Overview" }),
-		);
-
-		expect(onSetSessionRemoteVisibility).toHaveBeenCalledWith(
-			expect.objectContaining({ sessionId: "agent-session-3" }),
-			false,
-		);
-		expect(onSelectSession).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("button", { name: "Open Project Overview" }),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Collapse Clipstack" }));
+		expect(
+			screen.queryByRole("button", { name: "Open Project Overview" }),
+		).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Expand Clipstack" }),
+		).toBeTruthy();
 	});
 
 	it("archives a session after a two-tap confirmation", async () => {
@@ -157,9 +232,8 @@ describe("SessionDrawer", () => {
 		expect(onSelectSession).not.toHaveBeenCalled();
 	});
 
-	it("links and selects an unshared session when it is opened", async () => {
+	it("selects any listed session directly", async () => {
 		const onSelectSession = vi.fn();
-		const onSetSessionRemoteVisibility = vi.fn(() => true);
 		render(
 			<SessionDrawer
 				session={session}
@@ -177,25 +251,17 @@ describe("SessionDrawer", () => {
 				]}
 				currentSessionKey={null}
 				onSelectSession={onSelectSession}
-				onSetSessionRemoteVisibility={onSetSessionRemoteVisibility}
 				onSignOut={vi.fn()}
 				trigger={<button type="button">Open sessions</button>}
 			/>,
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Open sessions" }));
-		expect(screen.queryByRole("button", { name: "Link New Chat" })).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Open New Chat" }));
 
-		await waitFor(() => {
-			expect(onSetSessionRemoteVisibility).toHaveBeenCalledWith(
-				expect.objectContaining({ sessionId: "agent-session-2" }),
-				true,
-			);
-			expect(onSelectSession).toHaveBeenCalledWith(
-				"desktop-1",
-				"agent-session-2",
-			);
-		});
+		expect(onSelectSession).toHaveBeenCalledWith(
+			"desktop-1",
+			"agent-session-2",
+		);
 	});
 });

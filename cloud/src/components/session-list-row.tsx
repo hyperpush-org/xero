@@ -1,6 +1,6 @@
 import { Button } from "@xero/ui/components/ui/button";
 import { cn } from "@xero/ui/lib/utils";
-import { Archive, Loader2, Unlink2 } from "lucide-react";
+import { Archive, Loader2 } from "lucide-react";
 import { type FocusEvent, useEffect, useRef, useState } from "react";
 
 import type { VisibleSessionSummary } from "#/lib/relay/session-store";
@@ -11,10 +11,12 @@ interface SessionListRowProps {
 	summary: VisibleSessionSummary;
 	isActive: boolean;
 	onSelect: () => void;
-	onSetRemoteVisibility?: (visible: boolean) => void;
 	onArchive?: () => void;
 	isPending?: boolean;
-	pendingAction?: "visibility" | "archive";
+	pendingAction?: "archive";
+	hideProjectLabel?: boolean;
+	compact?: boolean;
+	alwaysShowActions?: boolean;
 }
 
 function formatRelativeTime(iso: string | null): string | null {
@@ -39,24 +41,26 @@ export function SessionListRow({
 	summary,
 	isActive,
 	onSelect,
-	onSetRemoteVisibility,
 	onArchive,
 	isPending = false,
 	pendingAction,
+	hideProjectLabel = false,
+	compact = false,
+	alwaysShowActions = false,
 }: SessionListRowProps) {
-	const timeLabel = formatRelativeTime(summary.lastActivityAt);
-	const isLinked = summary.remoteVisible;
+	const timeLabel = compact ? null : formatRelativeTime(summary.lastActivityAt);
 	const title = summary.title || "Untitled session";
-	const projectLabel = summary.projectName ?? summary.projectId;
-
-	const metaParts = [projectLabel, timeLabel].filter(Boolean);
-	const meta = metaParts.join(" · ");
+	const projectLabel =
+		compact || hideProjectLabel
+			? null
+			: (summary.projectName ?? summary.projectId);
 
 	const titleBlock = (
 		<div className="flex min-w-0 flex-1 flex-col">
 			<span
 				className={cn(
-					"truncate text-[13px] leading-tight",
+					"truncate leading-tight",
+					compact ? "text-[12.5px]" : "text-[13px]",
 					isActive
 						? "font-medium text-foreground"
 						: "font-normal text-foreground/90",
@@ -64,35 +68,46 @@ export function SessionListRow({
 			>
 				{title}
 			</span>
-			{meta ? (
-				<span className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground/80">
-					{meta}
+			{projectLabel || timeLabel ? (
+				<span className="mt-1 flex items-center gap-1.5 truncate text-[11px] leading-tight text-muted-foreground/75">
+					{projectLabel ? (
+						<span className="truncate font-medium tracking-[0.04em]">
+							{projectLabel}
+						</span>
+					) : null}
+					{projectLabel && timeLabel ? (
+						<span aria-hidden className="text-muted-foreground/40">
+							·
+						</span>
+					) : null}
+					{timeLabel ? (
+						<span className="font-display-italic shrink-0 tracking-normal text-muted-foreground/70">
+							{timeLabel}
+						</span>
+					) : null}
 				</span>
 			) : null}
 		</div>
 	);
 
-	const canSelect = isLinked || Boolean(onSetRemoteVisibility);
 	const container = cn(
-		"group relative flex w-full items-center transition-colors",
-		isActive
-			? "bg-accent/70"
-			: isLinked
-				? "hover:bg-accent/40"
-				: "hover:bg-accent/30",
+		"group relative flex items-center transition-colors",
+		compact
+			? cn(
+					"mx-2 rounded-md",
+					isActive ? "bg-accent/50" : "hover:bg-accent/30",
+				)
+			: cn(
+					"w-full",
+					isActive ? "bg-primary/[0.07]" : "hover:bg-accent/40",
+				),
 	);
-	const selectButtonClassName =
-		"flex min-w-0 flex-1 items-center px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-60";
-	const actionGroupClassName = cn(
-		"mr-2 flex shrink-0 items-center gap-1 transition-opacity",
-		isActive || isPending
-			? "opacity-100"
-			: "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+	const selectButtonClassName = cn(
+		"flex min-w-0 flex-1 items-center text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-60",
+		compact ? "rounded-md px-3 py-2" : "px-4 py-3",
 	);
-	const actionButtonClassName =
-		"inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-40";
+	const actionIconClassName = compact ? "size-3.5" : "size-3.5";
 	const isArchivePending = isPending && pendingAction === "archive";
-	const isVisibilityPending = isPending && pendingAction !== "archive";
 
 	const [archiveConfirmationSessionId, setArchiveConfirmationSessionId] =
 		useState<string | null>(null);
@@ -170,54 +185,32 @@ export function SessionListRow({
 					: `Archive ${title}`
 			}
 			className={cn(
-				"inline-flex h-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-40",
+				"inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-40",
+				compact ? "h-6" : "h-7",
 				isArchiveConfirming
-					? "w-auto min-w-[62px] bg-destructive/10 px-2 text-[11px] font-semibold text-destructive hover:bg-destructive/15"
-					: "w-7",
+					? cn(
+							"w-auto bg-destructive/10 font-semibold text-destructive hover:bg-destructive/15",
+							compact
+								? "min-w-[54px] px-1.5 text-[10px]"
+								: "min-w-[62px] px-2 text-[11px]",
+						)
+					: compact
+						? "w-6"
+						: "w-7",
 			)}
 		>
 			{isArchivePending ? (
-				<Loader2 className="h-3.5 w-3.5 animate-spin" />
+				<Loader2 className={cn("animate-spin", actionIconClassName)} />
 			) : isArchiveConfirming ? (
 				<span>Archive</span>
 			) : (
-				<Archive className="h-3.5 w-3.5" />
+				<Archive className={actionIconClassName} />
 			)}
 		</Button>
 	) : null;
 
-	if (!isLinked) {
-		return (
-			<div className={container}>
-				<button
-					type="button"
-					onClick={onSelect}
-					disabled={!canSelect || isPending}
-					aria-label={`Open ${title}`}
-					className={selectButtonClassName}
-				>
-					{titleBlock}
-				</button>
-				{archiveButton || isVisibilityPending ? (
-					<div className={actionGroupClassName}>
-						{isVisibilityPending ? (
-							<Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-						) : null}
-						{archiveButton}
-					</div>
-				) : null}
-			</div>
-		);
-	}
-
 	return (
 		<div className={container}>
-			{isActive ? (
-				<span
-					aria-hidden
-					className="pointer-events-none absolute inset-y-0 left-0 w-0.5 bg-primary"
-				/>
-			) : null}
 			<button
 				type="button"
 				onClick={onSelect}
@@ -228,33 +221,21 @@ export function SessionListRow({
 			>
 				{titleBlock}
 			</button>
-			<div
-				className={cn(
-					"mr-2 flex shrink-0 items-center gap-1 transition-opacity",
-					isPending
-						? "opacity-100"
-						: isActive
-							? "opacity-70"
-							: "opacity-0 group-hover:opacity-70 group-focus-within:opacity-70",
-				)}
-			>
-				{archiveButton}
-				<Button
-					type="button"
-					variant="ghost"
-					size="icon"
-					onClick={() => onSetRemoteVisibility?.(false)}
-					disabled={!onSetRemoteVisibility || isPending}
-					aria-label={`Unlink ${title}`}
-					className={actionButtonClassName}
-				>
-					{isVisibilityPending ? (
-						<Loader2 className="h-3.5 w-3.5 animate-spin" />
-					) : (
-						<Unlink2 className="h-3.5 w-3.5" />
+			{archiveButton ? (
+				<div
+					className={cn(
+						"flex shrink-0 items-center transition-opacity",
+						compact ? "mr-2 gap-1.5" : "mr-2 gap-1",
+						isPending
+							? "opacity-100"
+							: isActive || alwaysShowActions
+								? "opacity-70"
+								: "opacity-0 group-hover:opacity-70 group-focus-within:opacity-70",
 					)}
-				</Button>
-			</div>
+				>
+					{archiveButton}
+				</div>
+			) : null}
 		</div>
 	);
 }

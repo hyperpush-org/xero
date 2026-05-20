@@ -6384,6 +6384,7 @@ mod tests {
                     thinking_effort: None,
                     approval_mode: RuntimeRunApprovalModeDto::Yolo,
                     plan_mode_required: false,
+                    auto_compact_enabled: true,
                     revision: 1,
                     applied_at: now_timestamp(),
                 },

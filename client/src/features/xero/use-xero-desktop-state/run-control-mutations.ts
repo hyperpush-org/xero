@@ -124,6 +124,7 @@ function controlsForSessionTitleRefresh(
     thinkingEffort: selected.thinkingEffort,
     approvalMode: selected.approvalMode,
     planModeRequired: selected.planModeRequired,
+    autoCompactEnabled: selected.autoCompactEnabled,
   }
 }
 
@@ -456,9 +457,6 @@ export function useRunControlMutations({
           controls: request.controls ?? null,
           prompt: request.prompt ?? null,
           attachments: request.attachments ?? [],
-        }
-        if (request.autoCompact !== undefined) {
-          updateRequest.autoCompact = request.autoCompact
         }
         const response = await adapter.updateRuntimeRunControls(updateRequest)
         const runtimeRun = mapRuntimeRun(response)

@@ -266,6 +266,7 @@ export function getComposerControlInput(options: {
   selectionKey: string | null | undefined
   thinkingEffort: ProviderModelThinkingEffortDto | null | undefined
   approvalMode: RuntimeRunApprovalModeDto
+  autoCompactEnabled: boolean
 }): RuntimeRunControlInputDto | null {
   const model = getComposerModelOption(options.models, options.selectionKey)
   if (!model) {
@@ -281,6 +282,7 @@ export function getComposerControlInput(options: {
     thinkingEffort: resolveComposerThinkingSelection(model, options.thinkingEffort),
     approvalMode: resolveRuntimeAgentApprovalMode(options.runtimeAgentId, options.approvalMode),
     planModeRequired: false,
+    autoCompactEnabled: options.autoCompactEnabled,
   }
 }
 

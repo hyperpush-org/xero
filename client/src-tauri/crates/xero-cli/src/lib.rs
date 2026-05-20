@@ -590,7 +590,7 @@ fn command_agent_exec(
     if take_help(&args) {
         return Ok(response(
             &globals,
-            "Usage: xero agent exec [PROMPT] [--project-id ID] [--session-id ID] [--run-id ID] [--runtime-agent-id ID] [--agent-definition-id ID] [--thinking-effort minimal|low|medium|high|x_high] --provider ID [--model ID]\nRuns a headless owned-agent turn through the shared Xero runtime. Use --provider fake_provider only for harness tests.",
+            "Usage: xero agent exec [PROMPT] [--project-id ID] [--session-id ID] [--run-id ID] [--runtime-agent-id ID] [--agent-definition-id ID] [--thinking-effort minimal|low|medium|high|x_high] [--attachments-json JSON] --provider ID [--model ID]\nRuns a headless owned-agent turn through the shared Xero runtime. Attachments require the desktop-backed TUI runtime. Use --provider fake_provider only for harness tests.",
             json!({ "command": "agent exec" }),
         ));
     }
@@ -608,6 +608,11 @@ fn command_agent_exec(
     let thinking_effort = take_option(&mut args, "--thinking-effort")?
         .map(|effort| normalize_cli_thinking_effort(&effort))
         .transpose()?;
+    if take_option(&mut args, "--attachments-json")?.is_some() {
+        return Err(CliError::usage(
+            "Attachments require the desktop-backed Xero TUI runtime.",
+        ));
+    }
     reject_unknown_options(&args)?;
 
     let prompt = prompt_flag

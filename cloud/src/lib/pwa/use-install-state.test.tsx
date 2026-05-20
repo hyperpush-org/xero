@@ -3,7 +3,10 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useXeroCloudInstallState } from "./use-install-state";
+import {
+	resetInstallPromptStoreForTests,
+	useXeroCloudInstallState,
+} from "./use-install-state";
 
 interface FakePromptEvent extends Event {
 	prompt: () => Promise<void>;
@@ -118,6 +121,7 @@ const DESKTOP_CHROME =
 describe("useXeroCloudInstallState", () => {
 	afterEach(() => {
 		cleanup();
+		resetInstallPromptStoreForTests();
 		Object.defineProperty(window.navigator, "standalone", {
 			configurable: true,
 			value: undefined,
@@ -155,6 +159,25 @@ describe("useXeroCloudInstallState", () => {
 		expect(outcome).toBe("accepted");
 		expect(captured.prompt).toHaveBeenCalledTimes(1);
 		expect(result.current.hasPromptEvent).toBe(false);
+	});
+
+	it("exposes a prompt captured before this instance mounted", () => {
+		setUserAgent(ANDROID_CHROME);
+		stubMatchMedia(window);
+
+		// An earlier-mounted instance (e.g. the desktop sidebar) is what attaches
+		// the global listener and captures the one-shot event.
+		const earlier = renderHook(() => useXeroCloudInstallState());
+		act(() => {
+			dispatchBeforeInstallPrompt(window, "accepted");
+		});
+		expect(earlier.result.current.support).toBe("prompt");
+
+		// A later-mounted instance (e.g. the lazily-rendered mobile drawer) must
+		// still see the already-captured event rather than report "unsupported".
+		const later = renderHook(() => useXeroCloudInstallState());
+		expect(later.result.current.support).toBe("prompt");
+		expect(later.result.current.hasPromptEvent).toBe(true);
 	});
 
 	it("returns unavailable when promptInstall is called with no stored event", async () => {

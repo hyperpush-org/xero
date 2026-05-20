@@ -1,7 +1,7 @@
 import { ChevronRight, GitBranch, Hammer, Lightbulb, Search, ShieldCheck, Sparkles, Workflow } from 'lucide-react'
 
-import { cn } from '@/lib/utils'
-import { AppLogo } from '@xero/ui/components/app-logo'
+import { AppLogo } from './app-logo'
+import { cn } from '../lib/utils'
 
 interface EmptySessionStateProps {
   projectLabel: string
@@ -135,7 +135,7 @@ export function EmptySessionState({
 
   return (
     <div className="relative flex min-h-full w-full items-center justify-center overflow-hidden">
-      <div className="agent-empty-fade-in relative flex w-full max-w-xl flex-col items-center px-8 py-12 text-center">
+      <div className="agent-empty-fade-in relative flex w-full max-w-xl flex-col items-center px-6 py-8 text-center sm:px-8 sm:py-12">
         <BrandGlyph context={context} />
 
         {greeting ? (
@@ -162,7 +162,7 @@ export function EmptySessionState({
         </p>
 
         {onSelectSuggestion || showWorkflowCanvasAction ? (
-          <ul className="mt-8 flex w-full max-w-md flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/40 backdrop-blur-sm">
+          <ul className="mt-7 flex w-full max-w-md flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-card/40 backdrop-blur-sm sm:mt-8">
             {showWorkflowCanvasAction ? (
               <li>
                 <button

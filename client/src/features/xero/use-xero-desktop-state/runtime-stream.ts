@@ -382,14 +382,21 @@ function notifyRuntimeStreamCompletions(
   const notifiedRunIds = new Set<string>()
   for (const event of events) {
     const item = getRuntimeStreamPayloadItem(event)
-    if (item.kind !== 'complete') {
+    const completionItem = isRuntimeStreamPatch(event)
+      ? item.kind === 'complete'
+        ? item
+        : event.snapshot.completion
+      : item.kind === 'complete'
+        ? item
+        : null
+    if (!completionItem) {
       continue
     }
 
     const projectId = isRuntimeStreamPatch(event) ? event.snapshot.projectId : event.projectId
     const agentSessionId = isRuntimeStreamPatch(event) ? event.snapshot.agentSessionId : event.agentSessionId
-    const runId = item.runId?.trim()
-    const completedAt = item.createdAt?.trim()
+    const runId = completionItem.runId?.trim()
+    const completedAt = completionItem.createdAt?.trim()
     if (!projectId || !agentSessionId || !runId || !completedAt || notifiedRunIds.has(runId)) {
       continue
     }
@@ -1114,4 +1121,11 @@ export function attachRuntimeStreamSubscription({
     streamEventBuffer?.dispose()
     unsubscribe()
   }
+}
+
+export function shouldForceFullRuntimeStreamReplay(
+  previousProjectId: string | null,
+  activeProjectId: string | null,
+): boolean {
+  return Boolean(activeProjectId && previousProjectId !== activeProjectId)
 }

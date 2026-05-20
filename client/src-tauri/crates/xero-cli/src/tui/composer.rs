@@ -12,7 +12,10 @@ use ratatui::{
     Frame,
 };
 
-use super::{app::App, slash, theme};
+use super::{
+    app::{attachment_size_label, App},
+    slash, theme,
+};
 
 const VISIBLE_INPUT_ROWS: usize = 2;
 const MAX_INPUT_ROWS: usize = 6;
@@ -24,8 +27,14 @@ const VERTICAL_PAD_ROWS: u16 = 1;
 pub fn height(app: &App) -> u16 {
     let typed_rows = input_rows(&app.composer).len();
     let input_rows = typed_rows.clamp(VISIBLE_INPUT_ROWS, MAX_INPUT_ROWS) as u16;
-    // top pad + input + slash suggestions + input/footer gap + agent footer + bottom pad
-    input_rows + slash::visible_rows(app) + INPUT_FOOTER_GAP_ROWS + 1 + 2 * VERTICAL_PAD_ROWS
+    let attachment_rows = u16::from(!app.pending_attachments.is_empty());
+    // top pad + input + slash suggestions + input/footer gap + pending attachments + agent footer + bottom pad
+    input_rows
+        + slash::visible_rows(app)
+        + INPUT_FOOTER_GAP_ROWS
+        + attachment_rows
+        + 1
+        + 2 * VERTICAL_PAD_ROWS
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -52,20 +61,30 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let cursor = app.composer_cursor();
     let cursor_row = cursor_row_index(&typed_rows, cursor);
     let footer_rows = u16::from(area.height >= 2);
+    let attachment_rows = u16::from(!app.pending_attachments.is_empty() && area.height >= 3);
     let top_pad_rows = u16::from(area.height >= 4);
     let bottom_pad_rows = u16::from(area.height >= 5);
     let input_footer_gap_rows = u16::from(
         footer_rows > 0
-            && area.height > footer_rows + top_pad_rows + bottom_pad_rows + INPUT_FOOTER_GAP_ROWS,
+            && area.height
+                > footer_rows
+                    + attachment_rows
+                    + top_pad_rows
+                    + bottom_pad_rows
+                    + INPUT_FOOTER_GAP_ROWS,
     );
-    let suggestion_rows =
-        slash::visible_rows(app).min(area.height.saturating_sub(
-            footer_rows + top_pad_rows + bottom_pad_rows + input_footer_gap_rows + 1,
-        ));
+    let suggestion_rows = slash::visible_rows(app).min(area.height.saturating_sub(
+        footer_rows + attachment_rows + top_pad_rows + bottom_pad_rows + input_footer_gap_rows + 1,
+    ));
     let available_input_rows = area
         .height
         .saturating_sub(
-            footer_rows + top_pad_rows + bottom_pad_rows + suggestion_rows + input_footer_gap_rows,
+            footer_rows
+                + attachment_rows
+                + top_pad_rows
+                + bottom_pad_rows
+                + suggestion_rows
+                + input_footer_gap_rows,
         )
         .max(1) as usize;
     let visible_rows = typed_rows
@@ -113,6 +132,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     for _ in 0..input_footer_gap_rows {
         lines.push(stripe_only_line(bg));
+    }
+
+    if attachment_rows > 0 {
+        lines.push(pending_attachment_line(app, surface_area.width));
     }
 
     if footer_rows > 0 {
@@ -253,4 +276,48 @@ fn agent_footer_line(app: &App) -> Line<'static> {
         Span::styled(" · ", theme::dim().bg(bg)),
         Span::styled(effort, theme::muted().bg(bg)),
     ])
+}
+
+fn pending_attachment_line(app: &App, width: u16) -> Line<'static> {
+    let bg = theme::composer_bg_color();
+    let names = app
+        .pending_attachments
+        .iter()
+        .take(2)
+        .map(|attachment| attachment.staged.original_name.as_str())
+        .collect::<Vec<_>>();
+    let more = app.pending_attachments.len().saturating_sub(names.len());
+    let mut body = if names.is_empty() {
+        "Attachments pending".to_owned()
+    } else {
+        format!("Attachments: {}", names.join(", "))
+    };
+    if more > 0 {
+        body.push_str(&format!(" +{more}"));
+    }
+    body.push_str(&format!(
+        " · {}",
+        attachment_size_label(app.pending_attachment_bytes())
+    ));
+    let body = truncate_for_width(&body, width.saturating_sub(2) as usize);
+
+    Line::from(vec![
+        Span::styled(format!("{} ", theme::STRIPE_GLYPH), theme::accent().bg(bg)),
+        Span::styled(body, theme::muted().bg(bg)),
+    ])
+}
+
+fn truncate_for_width(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_owned();
+    }
+    if width <= 3 {
+        return String::new();
+    }
+    let mut output = value
+        .chars()
+        .take(width.saturating_sub(3))
+        .collect::<String>();
+    output.push_str("...");
+    output
 }

@@ -79,6 +79,10 @@ pub struct RuntimeRunDiagnosticRecord {
     pub message: String,
 }
 
+fn default_auto_compact_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeRunActiveControlSnapshotRecord {
@@ -95,6 +99,8 @@ pub struct RuntimeRunActiveControlSnapshotRecord {
     pub approval_mode: RuntimeRunApprovalModeDto,
     #[serde(default)]
     pub plan_mode_required: bool,
+    #[serde(default = "default_auto_compact_enabled")]
+    pub auto_compact_enabled: bool,
     pub revision: u32,
     pub applied_at: String,
 }
@@ -115,6 +121,8 @@ pub struct RuntimeRunPendingControlSnapshotRecord {
     pub approval_mode: RuntimeRunApprovalModeDto,
     #[serde(default)]
     pub plan_mode_required: bool,
+    #[serde(default = "default_auto_compact_enabled")]
+    pub auto_compact_enabled: bool,
     pub revision: u32,
     pub queued_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2133,6 +2141,7 @@ pub fn build_runtime_run_control_state_with_profile(
         thinking_effort,
         approval_mode: approval_mode.clone(),
         plan_mode_required,
+        auto_compact_enabled: default_auto_compact_enabled(),
         revision: 1,
         applied_at: timestamp.to_owned(),
     };
@@ -2146,6 +2155,7 @@ pub fn build_runtime_run_control_state_with_profile(
             thinking_effort: active.thinking_effort.clone(),
             approval_mode,
             plan_mode_required: active.plan_mode_required,
+            auto_compact_enabled: active.auto_compact_enabled,
             revision: active.revision.saturating_add(1),
             queued_at: timestamp.to_owned(),
             queued_prompt: Some(prompt.to_owned()),

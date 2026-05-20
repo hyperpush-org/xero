@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
 	type BeforeInstallPromptEvent,
@@ -13,6 +13,50 @@ const BEFORE_INSTALL_PROMPT_EVENT = "beforeinstallprompt";
 const APP_INSTALLED_EVENT = "appinstalled";
 const DISPLAY_MODE_QUERY = "(display-mode: standalone)";
 
+// `beforeinstallprompt` fires once per page load. Each hook instance used to
+// capture it in its own ref, so whichever instance was mounted at that moment
+// "owned" the event. Instances mounted later — e.g. the mobile session drawer,
+// whose content Radix only mounts when opened — never saw it and fell back to
+// "unsupported". The captured event therefore lives in a module-level store so
+// every instance, whenever it mounts, can read the already-captured event.
+let storedPromptEvent: BeforeInstallPromptEvent | null = null;
+let storedInstalled = false;
+const promptSubscribers = new Set<() => void>();
+let promptListenersView: Window | null = null;
+
+function notifyPromptSubscribers(): void {
+	for (const subscriber of promptSubscribers) subscriber();
+}
+
+function ensurePromptListeners(view: Window): void {
+	if (promptListenersView === view) return;
+	promptListenersView = view;
+	view.addEventListener(BEFORE_INSTALL_PROMPT_EVENT, (event) => {
+		event.preventDefault();
+		storedPromptEvent = event as BeforeInstallPromptEvent;
+		notifyPromptSubscribers();
+	});
+	view.addEventListener(APP_INSTALLED_EVENT, () => {
+		storedPromptEvent = null;
+		storedInstalled = true;
+		notifyPromptSubscribers();
+	});
+}
+
+function consumePromptEvent(): BeforeInstallPromptEvent | null {
+	const event = storedPromptEvent;
+	storedPromptEvent = null;
+	notifyPromptSubscribers();
+	return event;
+}
+
+/** Test-only: clears the shared prompt store between cases. */
+export function resetInstallPromptStoreForTests(): void {
+	storedPromptEvent = null;
+	storedInstalled = false;
+	promptSubscribers.clear();
+}
+
 export interface UseXeroCloudInstallStateOptions {
 	view?: Window;
 }
@@ -21,19 +65,21 @@ export function useXeroCloudInstallState(
 	options: UseXeroCloudInstallStateOptions = {},
 ): XeroCloudInstallState & XeroCloudInstallActions {
 	const viewOverride = options.view;
-	const promptEventRef = useRef<BeforeInstallPromptEvent | null>(null);
-	const [hasPromptEvent, setHasPromptEvent] = useState(false);
+	const [promptEvent, setPromptEvent] =
+		useState<BeforeInstallPromptEvent | null>(() =>
+			viewOverride ? storedPromptEvent : null,
+		);
 	const [isStandalone, setIsStandalone] = useState(() => {
-		const view = viewOverride ?? safeWindow();
-		return detectInstallEnvironment(view)?.isStandalone ?? false;
+		const view = viewOverride;
+		return (
+			storedInstalled || (detectInstallEnvironment(view)?.isStandalone ?? false)
+		);
 	});
 	const [supportPlatform, setSupportPlatform] = useState<"ios" | "other">(() =>
-		detectPlatform(detectInstallEnvironment(viewOverride ?? safeWindow())),
+		detectPlatform(detectInstallEnvironment(viewOverride)),
 	);
 	const [userAgent, setUserAgent] = useState<string>(() => {
-		return (
-			detectInstallEnvironment(viewOverride ?? safeWindow())?.userAgent ?? ""
-		);
+		return detectInstallEnvironment(viewOverride)?.userAgent ?? "";
 	});
 
 	useEffect(() => {
@@ -41,26 +87,20 @@ export function useXeroCloudInstallState(
 		if (!view) return;
 		const environment = detectInstallEnvironment(view);
 		if (!environment) return;
-		setIsStandalone(environment.isStandalone);
 		setUserAgent(environment.userAgent);
 		setSupportPlatform(detectPlatform(environment));
 
-		const handleBeforeInstallPrompt = (event: Event) => {
-			event.preventDefault();
-			promptEventRef.current = event as BeforeInstallPromptEvent;
-			setHasPromptEvent(true);
+		ensurePromptListeners(view);
+		const sync = () => {
+			setPromptEvent(storedPromptEvent);
+			setIsStandalone(
+				(current) => current || storedInstalled || environment.isStandalone,
+			);
 		};
-		const handleAppInstalled = () => {
-			promptEventRef.current = null;
-			setHasPromptEvent(false);
-			setIsStandalone(true);
-		};
-
-		view.addEventListener(
-			BEFORE_INSTALL_PROMPT_EVENT,
-			handleBeforeInstallPrompt as EventListener,
-		);
-		view.addEventListener(APP_INSTALLED_EVENT, handleAppInstalled);
+		// Adopt any event captured before this instance mounted, then track future
+		// changes from the shared store.
+		sync();
+		promptSubscribers.add(sync);
 
 		const mediaQuery =
 			typeof view.matchMedia === "function"
@@ -72,32 +112,24 @@ export function useXeroCloudInstallState(
 		if (mediaQuery) addDisplayModeListener(mediaQuery, handleDisplayModeChange);
 
 		return () => {
-			view.removeEventListener(
-				BEFORE_INSTALL_PROMPT_EVENT,
-				handleBeforeInstallPrompt as EventListener,
-			);
-			view.removeEventListener(APP_INSTALLED_EVENT, handleAppInstalled);
+			promptSubscribers.delete(sync);
 			if (mediaQuery)
 				removeDisplayModeListener(mediaQuery, handleDisplayModeChange);
 		};
 	}, [viewOverride]);
 
+	const hasPromptEvent = promptEvent !== null;
+
 	const promptInstall = useCallback(async () => {
-		const event = promptEventRef.current;
+		const event = consumePromptEvent();
 		if (!event) return "unavailable" as const;
-		try {
-			await event.prompt();
-			const choice = await event.userChoice;
-			return choice.outcome;
-		} finally {
-			promptEventRef.current = null;
-			setHasPromptEvent(false);
-		}
+		await event.prompt();
+		const choice = await event.userChoice;
+		return choice.outcome;
 	}, []);
 
 	const clearStoredPromptEvent = useCallback(() => {
-		promptEventRef.current = null;
-		setHasPromptEvent(false);
+		consumePromptEvent();
 	}, []);
 
 	const support = classifyInstallSupport(

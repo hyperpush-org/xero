@@ -15,7 +15,7 @@ describe("SessionTopBar", () => {
 
 		const header = container.querySelector("header");
 		expect(header?.className).toContain(
-			"pt-[max(env(safe-area-inset-top),0.75rem)]",
+			"pt-[max(env(safe-area-inset-top),0.5rem)]",
 		);
 		expect(
 			screen.getByRole("button", { name: "Open sessions list" }),

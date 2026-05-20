@@ -6440,6 +6440,9 @@ pub(crate) fn runtime_controls_from_request(
             plan_mode_required: controls
                 .map(|controls| controls.plan_mode_required)
                 .unwrap_or(false),
+            auto_compact_enabled: controls
+                .map(|controls| controls.auto_compact_enabled)
+                .unwrap_or(true),
             revision: 1,
             applied_at: now_timestamp(),
         },
@@ -7021,6 +7024,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let prompt = "Find symbols and diagnostics for the runtime.";
@@ -7123,6 +7127,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -7248,6 +7253,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(root.path(), "Patch and summarize.", &controls);
@@ -7329,6 +7335,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(root.path(), "Use saved context.", &controls);
@@ -7399,6 +7406,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry =
@@ -7523,6 +7531,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -7687,6 +7696,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: true,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -7733,6 +7743,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -7788,6 +7799,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -8091,6 +8103,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(root.path(), "What is left to do?", &controls);
@@ -8131,6 +8144,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -8164,6 +8178,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(
@@ -8199,6 +8214,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         };
         let controls = runtime_controls_from_request(Some(&controls_input));
         let registry = ToolRegistry::for_prompt(root.path(), "Map this repository.", &controls);

@@ -6,8 +6,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Cloud,
-  CloudOff,
   Loader2,
   Plus,
   SplitSquareHorizontal,
@@ -96,7 +94,7 @@ import {
   type ConversationTurn,
   type ReturnSessionToHereUiRequest,
 } from '@xero/ui/components/transcript/conversation-section'
-import { EmptySessionState } from './agent-runtime/empty-session-state'
+import { EmptySessionState } from '@xero/ui/components/empty-session-state'
 import {
   getToolCardTitle,
   getStreamRunId,
@@ -145,7 +143,6 @@ export interface AgentRuntimeProps {
     controls?: RuntimeRunControlInputDto | null
     prompt?: string | null
     attachments?: StagedAgentAttachmentDto[]
-    autoCompact?: RuntimeAutoCompactPreferenceDto | null
   }) => Promise<RuntimeRunView | null>
   onComposerControlsChange?: (controls: RuntimeRunControlInputDto | null) => void
   onStartRuntimeSession?: (options?: { providerProfileId?: string | null }) => Promise<RuntimeSessionView | null>
@@ -171,8 +168,6 @@ export interface AgentRuntimeProps {
   accountLogin?: string | null
   onCreateSession?: () => void
   isCreatingSession?: boolean
-  /** Toggle whether the active session is shared to the cloud web UI. */
-  onToggleRemoteVisibility?: (agentSessionId: string, next: boolean) => Promise<void> | void
   /** Active and known custom agent definitions visible to the composer selector. */
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   /** Open the Settings → Agents tab so the user can manage custom agents. */
@@ -1608,7 +1603,6 @@ export const AgentRuntime = memo(function AgentRuntime({
   accountLogin = null,
   onCreateSession,
   isCreatingSession = false,
-  onToggleRemoteVisibility,
   customAgentDefinitions = [],
   onOpenAgentManagement,
   onCreateAgentByHand,
@@ -2071,6 +2065,7 @@ export const AgentRuntime = memo(function AgentRuntime({
     customAgentDefinitions,
     selectedThinkingEffort: agent.selectedThinkingEffort,
     selectedApprovalMode: agent.selectedApprovalMode,
+    selectedAutoCompactEnabled: agent.selectedAutoCompactEnabled,
     selectedPrompt: agent.selectedPrompt,
     availableModels,
     approvalRequests: agent.approvalRequests,
@@ -2750,39 +2745,6 @@ export const AgentRuntime = memo(function AgentRuntime({
               ) : null}
               <span className="truncate font-semibold text-foreground">{projectLabel}</span>
               <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-              {onToggleRemoteVisibility && selectedAgentSessionId ? (
-                <button
-                  type="button"
-                  aria-label={
-                    selectedAgentSession?.remoteVisible
-                      ? `Stop sharing ${sessionLabel} to the web`
-                      : `Share ${sessionLabel} to the web`
-                  }
-                  title={
-                    selectedAgentSession?.remoteVisible
-                      ? `Stop sharing ${sessionLabel} to the web`
-                      : `Share ${sessionLabel} to the web`
-                  }
-                  onClick={() => {
-                    void onToggleRemoteVisibility(
-                      selectedAgentSessionId,
-                      !selectedAgentSession?.remoteVisible,
-                    )
-                  }}
-                  className={cn(
-                    'inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md transition-colors',
-                    selectedAgentSession?.remoteVisible
-                      ? 'text-primary hover:bg-primary/10'
-                      : 'text-muted-foreground/70 hover:bg-secondary/50 hover:text-foreground',
-                  )}
-                >
-                  {selectedAgentSession?.remoteVisible ? (
-                    <Cloud className="h-3.5 w-3.5" />
-                  ) : (
-                    <CloudOff className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              ) : null}
               {inSidebar && sidebarSessions && sidebarSessions.length > 0 && onSelectSidebarSession ? (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -3052,6 +3014,7 @@ export const AgentRuntime = memo(function AgentRuntime({
           onDraftPromptChange={controller.handleDraftPromptChange}
           onSubmitDraftPrompt={handleSubmitDraftPrompt}
           pendingAttachments={pendingAttachments}
+          onAddFiles={handleAddFiles}
           onRemoveAttachment={handleRemoveAttachment}
           pendingRuntimeRunAction={pendingRuntimeRunAction}
           placeholder={composerPlaceholder}

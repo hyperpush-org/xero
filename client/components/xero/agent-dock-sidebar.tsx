@@ -85,7 +85,6 @@ export interface AgentDockSidebarProps {
   onUpsertNotificationRoute?: AgentRuntimeProps["onUpsertNotificationRoute"]
   onRetryStream?: AgentRuntimeProps["onRetryStream"]
   onCodeUndoApplied?: AgentRuntimeProps["onCodeUndoApplied"]
-  onToggleRemoteVisibility?: AgentRuntimeProps["onToggleRemoteVisibility"]
   agentCreateCanvasIncluded?: AgentRuntimeProps["agentCreateCanvasIncluded"]
   pendingInitialRuntimeAgentId?: AgentRuntimeProps["pendingInitialRuntimeAgentId"]
   onPendingInitialRuntimeAgentIdConsumed?: AgentRuntimeProps["onPendingInitialRuntimeAgentIdConsumed"]

@@ -335,6 +335,7 @@ fn yolo_controls() -> RuntimeRunControlStateDto {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Yolo,
             plan_mode_required: false,
+            auto_compact_enabled: true,
             revision: 1,
             applied_at: "2026-04-24T00:00:00Z".into(),
         },
@@ -351,6 +352,7 @@ fn yolo_controls_input() -> RuntimeRunControlInputDto {
         thinking_effort: None,
         approval_mode: RuntimeRunApprovalModeDto::Yolo,
         plan_mode_required: false,
+        auto_compact_enabled: true,
     }
 }
 
@@ -363,6 +365,7 @@ fn suggest_controls_input() -> RuntimeRunControlInputDto {
         thinking_effort: None,
         approval_mode: RuntimeRunApprovalModeDto::Suggest,
         plan_mode_required: false,
+        auto_compact_enabled: true,
     }
 }
 
@@ -3530,6 +3533,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Yolo,
             plan_mode_required: true,
+            auto_compact_enabled: true,
         }),
         tool_runtime,
         provider_config: AgentProviderConfig::Fake,
@@ -4969,7 +4973,6 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             controls: None,
             prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             attachments: Vec::new(),
-            auto_compact: None,
         },
     ))
     .expect("runtime prompt should start owned agent run");
@@ -4997,7 +5000,6 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             controls: None,
             prompt: Some("Thanks, summarize the result.".into()),
             attachments: Vec::new(),
-            auto_compact: None,
         },
     ))
     .expect("runtime prompt should continue owned agent run");
@@ -5034,6 +5036,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
                 thinking_effort: None,
                 approval_mode: RuntimeRunApprovalModeDto::Suggest,
                 plan_mode_required: false,
+                auto_compact_enabled: true,
             }),
             initial_prompt: None,
             initial_attachments: Vec::new(),
@@ -5056,10 +5059,10 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
                 thinking_effort: None,
                 approval_mode: RuntimeRunApprovalModeDto::Suggest,
                 plan_mode_required: false,
+                auto_compact_enabled: true,
             }),
             prompt: None,
             attachments: Vec::new(),
-            auto_compact: None,
         },
     ))
     .expect("runtime agent switch should queue as pending controls");
@@ -5088,7 +5091,6 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
             controls: None,
             prompt: Some("Summarize the tracked file.".into()),
             attachments: Vec::new(),
-            auto_compact: None,
         },
     ))
     .expect("queued runtime agent switch should apply at the next prompt boundary");
@@ -5115,8 +5117,10 @@ fn start_agent_task_returns_running_before_background_driver_finishes() {
         StartAgentTaskRequestDto {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: None,
             prompt: "Run a slow command.\ntool:command_sh sleep 2".into(),
             controls: Some(yolo_controls_input()),
+            attachments: Vec::new(),
         },
     )
     .expect("start agent task should return initial running snapshot");
@@ -5150,8 +5154,10 @@ fn cancel_agent_run_flips_background_task_cancellation_token() {
         StartAgentTaskRequestDto {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: None,
             prompt: "Run a cancellable command.\ntool:command_sh sleep 5".into(),
             controls: None,
+            attachments: Vec::new(),
         },
     )
     .expect("start cancellable agent task");

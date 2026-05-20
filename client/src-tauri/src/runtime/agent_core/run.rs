@@ -2060,6 +2060,9 @@ fn handoff_control_input_for_source(
             && requested
                 .map(|controls| controls.plan_mode_required)
                 .unwrap_or(false),
+        auto_compact_enabled: requested
+            .map(|controls| controls.auto_compact_enabled)
+            .unwrap_or(true),
     }
 }
 
@@ -3017,6 +3020,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 thinking_effort: self.controls.active.thinking_effort.clone(),
                 approval_mode: self.controls.active.approval_mode.clone(),
                 plan_mode_required: false,
+                auto_compact_enabled: self.controls.active.auto_compact_enabled,
             }),
             tool_runtime: self
                 .tool_runtime
@@ -3176,6 +3180,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
                 thinking_effort: self.controls.active.thinking_effort.clone(),
                 approval_mode: self.controls.active.approval_mode.clone(),
                 plan_mode_required: false,
+                auto_compact_enabled: self.controls.active.auto_compact_enabled,
             }),
             tool_runtime: self
                 .tool_runtime
@@ -3981,6 +3986,7 @@ mod tests {
             thinking_effort: None,
             approval_mode,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         }
     }
 

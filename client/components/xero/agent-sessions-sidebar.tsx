@@ -17,7 +17,6 @@ import {
   Archive,
   ArchiveRestore,
   ChevronRight,
-  Cloud,
   FileText,
   Loader2,
   MessageSquare,
@@ -1246,12 +1245,6 @@ export const AgentSessionsSidebarItem = memo(function AgentSessionsSidebarItem({
         type="button"
       >
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          {session.remoteVisible ? (
-            <Cloud
-              aria-label="Shared to web"
-              className="mr-1 h-3 w-3 shrink-0 text-primary/80"
-            />
-          ) : null}
           <span
             className={cn(
               'truncate text-[12.5px] font-medium leading-tight',

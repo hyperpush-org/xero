@@ -417,51 +417,6 @@ pub fn update_agent_session(
     .ok_or_else(|| missing_agent_session_error(&payload.project_id, &payload.agent_session_id))
 }
 
-pub fn set_agent_session_remote_visibility(
-    repo_root: &Path,
-    project_id: &str,
-    agent_session_id: &str,
-    visible: bool,
-) -> Result<AgentSessionRecord, CommandError> {
-    validate_non_empty_text(project_id, "projectId", "agent_session_request_invalid")?;
-    validate_non_empty_text(
-        agent_session_id,
-        "agentSessionId",
-        "agent_session_request_invalid",
-    )?;
-
-    let database_path = database_path_for_repo(repo_root);
-    let connection = open_runtime_database(repo_root, &database_path)?;
-    read_project_row(&connection, &database_path, repo_root, project_id)?;
-
-    let affected = connection
-        .execute(
-            r#"
-            UPDATE agent_sessions
-            SET remote_visible = ?3
-            WHERE project_id = ?1
-              AND agent_session_id = ?2
-            "#,
-            params![project_id, agent_session_id, if visible { 1 } else { 0 }],
-        )
-        .map_err(|error| {
-            CommandError::system_fault(
-                "agent_session_remote_visibility_persist_failed",
-                format!(
-                    "Xero could not update remote visibility for agent session `{agent_session_id}` in {}: {error}",
-                    database_path.display()
-                ),
-            )
-        })?;
-
-    if affected == 0 {
-        return Err(missing_agent_session_error(project_id, agent_session_id));
-    }
-
-    read_agent_session_row(&connection, &database_path, project_id, agent_session_id)?
-        .ok_or_else(|| missing_agent_session_error(project_id, agent_session_id))
-}
-
 pub fn archive_agent_session(
     repo_root: &Path,
     project_id: &str,

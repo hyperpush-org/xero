@@ -8083,6 +8083,7 @@ mod tests {
             thinking_effort: None,
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: true,
         }
     }
 

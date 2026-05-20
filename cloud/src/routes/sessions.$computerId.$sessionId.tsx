@@ -1,22 +1,14 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import {
-	WebComposer,
+	Composer,
+	type ComposerSelectOption,
 	WebComposerContextIndicator,
 	type WebComposerContextIndicatorStatus,
-	type WebComposerSelectOption,
 } from "@xero/ui/components/composer";
+import { EmptySessionState } from "@xero/ui/components/empty-session-state";
 import { ConversationSection } from "@xero/ui/components/transcript/conversation-section";
-import { Button } from "@xero/ui/components/ui/button";
-import { Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-import { EmptySessionState } from "#/components/empty-session-state";
 import { LoadingScreen } from "#/components/loading-screen";
-import { SessionDrawer } from "#/components/session-drawer";
-import { SessionSidebar } from "#/components/session-sidebar";
-import { SessionTopBar } from "#/components/session-top-bar";
-import type { CloudSession } from "#/lib/auth/session";
-import { signOut } from "#/lib/auth/session";
 import {
 	type InboundCommand,
 	pushInboundCommand,
@@ -28,37 +20,27 @@ import {
 	sessionKey,
 	useSessionStore,
 } from "#/lib/relay/session-store";
+import { useSessionsShell } from "#/lib/relay/sessions-shell-context";
 import { useConversationAutoFollow } from "#/lib/relay/use-conversation-auto-follow";
 import { useRemoteAttachments } from "#/lib/relay/use-remote-attachments";
-import {
-	useAccountRemoteSessions,
-	useSessionStream,
-} from "#/lib/relay/use-session-stream";
-import { Route as SessionsRoute } from "./sessions";
+import { useSessionStream } from "#/lib/relay/use-session-stream";
 
 export const Route = createFileRoute("/sessions/$computerId/$sessionId")({
 	component: SessionView,
 });
 
 function SessionView() {
-	const { session } = SessionsRoute.useRouteContext();
+	const shell = useSessionsShell();
+	const {
+		session,
+		visibleSessions,
+		currentComputerOnline,
+		visibleSessionsVersion,
+		reportActiveTargetInvalid,
+	} = shell;
 	const { computerId, sessionId } = Route.useParams();
-	const navigate = useNavigate();
 	const key = sessionKey(computerId, sessionId);
-	const remoteSessions = useAccountRemoteSessions(
-		session.relayToken,
-		session.accountId,
-		session.devices,
-		session.deviceId,
-	);
 
-	const visibleSessions = useSessionStore((state) => state.visibleSessions);
-	const computerPresenceKnown = useSessionStore(
-		(state) => state.computerPresenceKnown,
-	);
-	const currentComputerOnline = useSessionStore((state) =>
-		Boolean(state.onlineComputerIds[computerId]),
-	);
 	const transcript = useSessionStore((state) => state.transcripts[key]);
 	const turns = transcript?.turns ?? [];
 	const availableAgents = transcript?.availableAgents ?? [];
@@ -68,21 +50,12 @@ function SessionView() {
 	const contextSnapshot = transcript?.contextSnapshot ?? null;
 	const contextSnapshotError = transcript?.contextSnapshotError ?? null;
 	const isLive = transcript?.isLive ?? false;
-	const currentComputerReconciled = useSessionStore((state) =>
-		Boolean(state.visibleSessionsByComputerVersion[computerId]),
-	);
-	const visibleSessionsVersion = useSessionStore(
-		(state) => state.visibleSessionsVersion,
-	);
-	const currentSessionVisible = visibleSessions.some(
-		(s) =>
-			s.computerId === computerId &&
-			s.sessionId === sessionId &&
-			s.remoteVisible,
+	const currentSessionAvailable = visibleSessions.some(
+		(s) => s.computerId === computerId && s.sessionId === sessionId,
 	);
 	const { channel, joinRejected } = useSessionStream({
 		computerId,
-		enabled: currentComputerOnline && currentSessionVisible,
+		enabled: currentComputerOnline && currentSessionAvailable,
 		sessionId,
 		relayToken: session.relayToken,
 	});
@@ -94,13 +67,26 @@ function SessionView() {
 		agentId: string | null;
 		modelId: string | null;
 		thinkingEffort: SessionThinkingEffort | null;
-	}>({ key, agentId: null, modelId: null, thinkingEffort: null });
+		autoCompactEnabled: boolean | null;
+	}>({
+		key,
+		agentId: null,
+		modelId: null,
+		thinkingEffort: null,
+		autoCompactEnabled: null,
+	});
 	const selectedAgentId =
 		selectedControls.key === key ? selectedControls.agentId : null;
 	const selectedModelId =
 		selectedControls.key === key ? selectedControls.modelId : null;
 	const selectedThinkingEffort =
 		selectedControls.key === key ? selectedControls.thinkingEffort : null;
+	const selectedAutoCompactEnabled =
+		selectedControls.key === key ? selectedControls.autoCompactEnabled : null;
+	const currentAutoCompactEnabled =
+		transcript?.currentAutoCompactEnabled ?? true;
+	const autoCompactEnabled =
+		selectedAutoCompactEnabled ?? currentAutoCompactEnabled;
 
 	const resolvedAgentId =
 		selectedAgentId ?? currentAgentId ?? availableAgents[0]?.id ?? null;
@@ -118,7 +104,7 @@ function SessionView() {
 		currentThinkingEffort ??
 		resolvedModelOption?.defaultThinkingEffort ??
 		(thinkingOptionsForModel.length > 0 ? thinkingOptionsForModel[0] : null);
-	const thinkingComposerOptions = useMemo<WebComposerSelectOption[]>(() => {
+	const thinkingComposerOptions = useMemo<ComposerSelectOption[]>(() => {
 		if (!resolvedModelOption?.thinkingSupported) return [];
 		return thinkingOptionsForModel.map((effort) => ({
 			id: effort,
@@ -178,28 +164,12 @@ function SessionView() {
 	});
 
 	useEffect(() => {
-		if (computerPresenceKnown && !currentComputerOnline) {
-			void navigate({ to: "/sessions", replace: true });
-			return;
-		}
-		if (
-			!joinRejected &&
-			(!currentComputerReconciled || currentSessionVisible)
-		) {
-			return;
-		}
-		void navigate({ to: "/sessions", replace: true });
-	}, [
-		computerPresenceKnown,
-		currentComputerReconciled,
-		currentComputerOnline,
-		currentSessionVisible,
-		joinRejected,
-		navigate,
-	]);
+		if (!joinRejected) return;
+		reportActiveTargetInvalid(key);
+	}, [joinRejected, key, reportActiveTargetInvalid]);
 
 	useEffect(() => {
-		if (!channel || !session.deviceId || !currentSessionVisible) return;
+		if (!channel || !session.deviceId || !currentSessionAvailable) return;
 		if (transcript) {
 			lastSnapshotRequestKey.current = null;
 			return;
@@ -221,7 +191,7 @@ function SessionView() {
 	}, [
 		channel,
 		computerId,
-		currentSessionVisible,
+		currentSessionAvailable,
 		key,
 		session.deviceId,
 		sessionId,
@@ -290,6 +260,7 @@ function SessionView() {
 				if (resolvedThinkingEffort && resolvedModelOption?.thinkingSupported) {
 					payload.thinkingEffort = resolvedThinkingEffort;
 				}
+				payload.autoCompactEnabled = autoCompactEnabled;
 			}
 			const command: InboundCommand = {
 				v: 1,
@@ -307,12 +278,14 @@ function SessionView() {
 				agentId: null,
 				modelId: null,
 				thinkingEffort: null,
+				autoCompactEnabled: null,
 			});
 			attachmentsHook.clearAttachments();
 			followLatestConversation();
 		},
 		[
 			attachmentsHook,
+			autoCompactEnabled,
 			channel,
 			computerId,
 			draftPrompt,
@@ -327,219 +300,153 @@ function SessionView() {
 		],
 	);
 
-	const projectsForCurrentComputer = remoteSessions.projects.filter(
-		(project) => project.computerId === computerId,
-	);
-
-	const [pendingNewSession, setPendingNewSession] = useState<{
-		projectId: string;
-		knownSessionIds: Set<string>;
-	} | null>(null);
-
-	const handleNewSession = (projectId: string) => {
-		if (!channel || !session.deviceId || !resolvedAgentId) return;
-		const knownSessionIds = new Set(
-			visibleSessions
-				.filter(
-					(summary) =>
-						summary.computerId === computerId &&
-						summary.projectId === projectId,
-				)
-				.map((summary) => summary.sessionId),
-		);
-		setPendingNewSession({ projectId, knownSessionIds });
-		const payload: Record<string, unknown> = {
-			agent: resolvedAgentId,
-			projectId,
-			prompt: "",
-		};
-		if (resolvedModelId) {
-			payload.modelId = resolvedModelOption?.modelId ?? resolvedModelId;
+	const handleAutoCompactEnabledChange = useCallback(
+		(next: boolean) => {
+			setSelectedControls((current) => ({
+				key,
+				agentId: current.key === key ? current.agentId : null,
+				modelId: current.key === key ? current.modelId : null,
+				thinkingEffort: current.key === key ? current.thinkingEffort : null,
+				autoCompactEnabled: next,
+			}));
+			if (
+				!channel ||
+				!session.deviceId ||
+				!resolvedAgentId ||
+				!resolvedModelId
+			) {
+				return;
+			}
+			const payload: Record<string, unknown> = {
+				agent: resolvedAgentId,
+				modelId: resolvedModelOption?.modelId ?? resolvedModelId,
+				autoCompactEnabled: next,
+			};
 			if (resolvedModelOption?.providerProfileId) {
 				payload.providerProfileId = resolvedModelOption.providerProfileId;
 			}
-		}
-		const command: InboundCommand = {
-			v: 1,
-			seq: Date.now(),
-			computer_id: computerId,
-			device_id: session.deviceId,
-			kind: "start_session",
-			payload,
-		};
-		pushInboundCommand(channel, command);
-	};
-
-	useEffect(() => {
-		if (!pendingNewSession) return;
-		const created = visibleSessions.find(
-			(summary) =>
-				summary.computerId === computerId &&
-				summary.projectId === pendingNewSession.projectId &&
-				!pendingNewSession.knownSessionIds.has(summary.sessionId),
-		);
-		if (!created) return;
-		setPendingNewSession(null);
-		void navigate({
-			to: "/sessions/$computerId/$sessionId",
-			params: { computerId, sessionId: created.sessionId },
-			replace: true,
-		});
-	}, [computerId, navigate, pendingNewSession, visibleSessions]);
-
-	const handleSignOut = () => {
-		void signOut().then(() => {
-			if (typeof window !== "undefined") window.location.href = "/";
-		});
-	};
-
-	const currentSessionSummary = visibleSessions.find(
-		(s) => s.computerId === computerId && s.sessionId === sessionId,
+			if (resolvedThinkingEffort && resolvedModelOption?.thinkingSupported) {
+				payload.thinkingEffort = resolvedThinkingEffort;
+			}
+			const command: InboundCommand = {
+				v: 1,
+				seq: Date.now(),
+				computer_id: computerId,
+				session_id: sessionId,
+				device_id: session.deviceId,
+				kind: "update_session_controls",
+				payload,
+			};
+			pushInboundCommand(channel, command);
+		},
+		[
+			channel,
+			computerId,
+			key,
+			resolvedAgentId,
+			resolvedModelId,
+			resolvedModelOption,
+			resolvedThinkingEffort,
+			session.deviceId,
+			sessionId,
+		],
 	);
-	const sessionTitle = currentSessionSummary?.title ?? "Session";
-	const projectLabel =
-		currentSessionSummary?.projectName ??
-		currentSessionSummary?.projectId ??
-		"this project";
 
-	const handleNavigateToSession = (
-		nextComputerId: string,
-		nextSessionId: string,
-	) => {
-		void navigate({
-			to: "/sessions/$computerId/$sessionId",
-			params: {
-				computerId: nextComputerId,
-				sessionId: nextSessionId,
-			},
-		});
-	};
+	const projectLabel = shell.activeProjectLabel;
 
 	return (
-		<div className="flex h-dvh bg-background text-foreground">
-			<SessionSidebar
-				session={session as CloudSession}
-				visibleSessions={visibleSessions}
-				projects={projectsForCurrentComputer}
-				currentSessionKey={key}
-				onSelectSession={handleNavigateToSession}
-				onSelectProject={handleNewSession}
-				onSetSessionRemoteVisibility={remoteSessions.setSessionRemoteVisibility}
-				onArchiveSession={remoteSessions.archiveSession}
-				onSignOut={handleSignOut}
-			/>
-			<main className="flex h-dvh min-w-0 flex-1 flex-col">
-				<SessionTopBar
-					title={sessionTitle}
-					projects={projectsForCurrentComputer}
-					onSelectProject={handleNewSession}
-					drawerTrigger={
-						<SessionDrawer
-							session={session as CloudSession}
-							visibleSessions={visibleSessions}
-							projects={projectsForCurrentComputer}
-							currentSessionKey={key}
-							onSelectSession={handleNavigateToSession}
-							onSelectProject={handleNewSession}
-							onSetSessionRemoteVisibility={
-								remoteSessions.setSessionRemoteVisibility
-							}
-							onArchiveSession={remoteSessions.archiveSession}
-							onSignOut={handleSignOut}
-							trigger={
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon"
-									aria-label="Open sessions list"
-									className="text-muted-foreground hover:text-foreground lg:hidden"
-								>
-									<Menu className="h-4 w-4" />
-								</Button>
-							}
-						/>
-					}
-				/>
-				<div className="relative min-h-0 flex-1">
-					<div
-						ref={conversationViewportRef}
-						onScroll={handleConversationScroll}
-						onWheel={handleConversationWheel}
-						className="absolute inset-0 overflow-y-auto px-4 pt-4 sm:px-6"
-					>
-						<div
-							ref={conversationContentRef}
-							className="mx-auto flex min-h-full max-w-3xl flex-col gap-4 pb-24"
-						>
-							{transcript ? (
-								turns.length === 0 ? (
-									<EmptySessionState
-										projectLabel={projectLabel}
-										onSelectSuggestion={setDraftPrompt}
-									/>
-								) : (
-									<ConversationSection
-										runtimeRun={null}
-										visibleTurns={turns}
-										streamIssue={null}
-										streamFailure={null}
-										showActivityIndicator={isLive}
-										accountAvatarUrl={session.avatarUrl ?? null}
-										accountLogin={session.githubLogin}
-									/>
-								)
-							) : (
-								<LoadingScreen className="flex-1" />
-							)}
-							<div aria-hidden="true" className="h-1 shrink-0" />
-						</div>
-					</div>
-					<div className="pointer-events-none absolute inset-x-0 bottom-0 bg-background px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] sm:px-6">
-						<div className="pointer-events-auto mx-auto max-w-3xl">
-							<WebComposer
-								draftPrompt={draftPrompt}
-								onDraftPromptChange={setDraftPrompt}
-								onSubmit={dispatchSend}
-								agentOptions={availableAgents}
-								selectedAgentId={resolvedAgentId}
-								onAgentChange={(agentId) =>
-									setSelectedControls((current) => ({
-										key,
-										agentId,
-										modelId: current.key === key ? current.modelId : null,
-										thinkingEffort:
-											current.key === key ? current.thinkingEffort : null,
-									}))
-								}
-								modelOptions={availableModels}
-								selectedModelId={resolvedModelId}
-								onModelChange={(modelId) =>
-									setSelectedControls((current) => ({
-										key,
-										agentId: current.key === key ? current.agentId : null,
-										modelId,
-										thinkingEffort: null,
-									}))
-								}
-								thinkingOptions={thinkingComposerOptions}
-								selectedThinkingId={resolvedThinkingEffort}
-								onThinkingChange={(value) =>
-									setSelectedControls((current) => ({
-										key,
-										agentId: current.key === key ? current.agentId : null,
-										modelId: current.key === key ? current.modelId : null,
-										thinkingEffort: value as SessionThinkingEffort,
-									}))
-								}
-								pendingAttachments={attachmentsHook.pendingAttachments}
-								onAddFiles={attachmentsHook.addFiles}
-								onRemoveAttachment={attachmentsHook.removeAttachment}
-								contextMeter={contextMeter}
+		<div className="relative min-h-0 flex-1">
+			<div
+				ref={conversationViewportRef}
+				onScroll={handleConversationScroll}
+				onWheel={handleConversationWheel}
+				className="absolute inset-0 overflow-y-auto px-4 pt-4 sm:px-6"
+			>
+				<div
+					ref={conversationContentRef}
+					className="mx-auto flex min-h-full max-w-3xl flex-col gap-4 pb-24 lg:max-w-[47rem]"
+				>
+					{transcript ? (
+						turns.length === 0 ? (
+							<div className="flex flex-1 items-center justify-center">
+								<EmptySessionState
+									projectLabel={projectLabel}
+									onSelectSuggestion={setDraftPrompt}
+								/>
+							</div>
+						) : (
+							<ConversationSection
+								runtimeRun={null}
+								visibleTurns={turns}
+								streamIssue={null}
+								streamFailure={null}
+								showActivityIndicator={isLive}
+								accountAvatarUrl={session.avatarUrl ?? null}
+								accountLogin={session.githubLogin}
 							/>
-						</div>
-					</div>
+						)
+					) : (
+						<LoadingScreen className="flex-1" />
+					)}
+					<div aria-hidden="true" className="h-1 shrink-0" />
 				</div>
-			</main>
+			</div>
+			<div
+				aria-hidden="true"
+				className="pointer-events-none absolute inset-x-0 top-0 z-10 h-7 bg-gradient-to-b from-background to-background/0"
+			/>
+			<div className="pointer-events-none absolute inset-x-0 bottom-0 bg-background px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] sm:px-6">
+				<div className="pointer-events-auto mx-auto max-w-3xl">
+					<Composer
+						draftPrompt={draftPrompt}
+						onDraftPromptChange={setDraftPrompt}
+						onSubmit={dispatchSend}
+						autoCompactEnabled={autoCompactEnabled}
+						onAutoCompactEnabledChange={handleAutoCompactEnabledChange}
+						agentGroups={[{ id: "agents", options: availableAgents }]}
+						selectedAgentId={resolvedAgentId}
+						onAgentChange={(agentId) =>
+							setSelectedControls((current) => ({
+								key,
+								agentId,
+								modelId: current.key === key ? current.modelId : null,
+								thinkingEffort:
+									current.key === key ? current.thinkingEffort : null,
+								autoCompactEnabled:
+									current.key === key ? current.autoCompactEnabled : null,
+							}))
+						}
+						modelGroups={[{ id: "models", options: availableModels }]}
+						selectedModelId={resolvedModelId}
+						onModelChange={(modelId) =>
+							setSelectedControls((current) => ({
+								key,
+								agentId: current.key === key ? current.agentId : null,
+								modelId,
+								thinkingEffort: null,
+								autoCompactEnabled:
+									current.key === key ? current.autoCompactEnabled : null,
+							}))
+						}
+						thinkingOptions={thinkingComposerOptions}
+						selectedThinkingId={resolvedThinkingEffort}
+						onThinkingChange={(value) =>
+							setSelectedControls((current) => ({
+								key,
+								agentId: current.key === key ? current.agentId : null,
+								modelId: current.key === key ? current.modelId : null,
+								thinkingEffort: value as SessionThinkingEffort,
+								autoCompactEnabled:
+									current.key === key ? current.autoCompactEnabled : null,
+							}))
+						}
+						pendingAttachments={attachmentsHook.pendingAttachments}
+						onAddFiles={attachmentsHook.addFiles}
+						onRemoveAttachment={attachmentsHook.removeAttachment}
+						contextMeter={contextMeter}
+					/>
+				</div>
+			</div>
 		</div>
 	);
 }

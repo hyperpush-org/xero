@@ -6,8 +6,8 @@ import {
 	type InboundCommand,
 	pushInboundCommand,
 	requestSessionArchive,
-	requestSessionRemoteVisibility,
 	requestSessionSnapshot,
+	requestStartSession,
 } from "./relay-client";
 
 const { MockSocket, socketInstances } = vi.hoisted(() => {
@@ -116,34 +116,6 @@ describe("pushInboundCommand", () => {
 		);
 	});
 
-	it("requests a desktop-side session link from the session-list channel", () => {
-		const push = vi.fn();
-
-		requestSessionRemoteVisibility({ push } as never, {
-			computerId: "desktop-1",
-			projectId: "project-1",
-			sessionId: "session-1",
-			deviceId: "web-1",
-			visible: true,
-		});
-
-		expect(push).toHaveBeenCalledWith(
-			"frame",
-			expect.objectContaining({
-				v: 1,
-				computer_id: "desktop-1",
-				session_id: "__sessions__",
-				device_id: "web-1",
-				kind: "set_session_visibility",
-				payload: {
-					projectId: "project-1",
-					agentSessionId: "session-1",
-					visible: true,
-				},
-			}),
-		);
-	});
-
 	it("requests a desktop-side session archive from the session-list channel", () => {
 		const push = vi.fn();
 
@@ -165,6 +137,31 @@ describe("pushInboundCommand", () => {
 				payload: {
 					projectId: "project-1",
 					agentSessionId: "session-1",
+				},
+			}),
+		);
+	});
+
+	it("requests a desktop-side new session from the new-session control channel", () => {
+		const push = vi.fn();
+
+		requestStartSession({ push } as never, {
+			computerId: "desktop-1",
+			projectId: "project-1",
+			deviceId: "web-1",
+		});
+
+		expect(push).toHaveBeenCalledWith(
+			"frame",
+			expect.objectContaining({
+				v: 1,
+				computer_id: "desktop-1",
+				session_id: "__new__",
+				device_id: "web-1",
+				kind: "start_session",
+				payload: {
+					projectId: "project-1",
+					prompt: "",
 				},
 			}),
 		);

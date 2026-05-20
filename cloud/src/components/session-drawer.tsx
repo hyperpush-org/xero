@@ -27,15 +27,12 @@ interface SessionDrawerProps {
 	open?: boolean;
 	onOpenChange?: (open: boolean) => void;
 	onSelectSession: (computerId: string, sessionId: string) => void;
-	onSelectProject?: (projectId: string) => void;
-	onSetSessionRemoteVisibility?: (
-		summary: VisibleSessionSummary,
-		visible: boolean,
-	) => boolean | Promise<boolean>;
+	onSelectProject?: (project: RemoteProjectSummary) => void;
 	onArchiveSession?: (
 		summary: VisibleSessionSummary,
 	) => boolean | Promise<boolean>;
 	onSignOut: () => void;
+	pendingProjectKey?: string | null;
 	trigger?: ReactNode;
 }
 
@@ -48,9 +45,9 @@ export function SessionDrawer({
 	onOpenChange,
 	onSelectSession,
 	onSelectProject,
-	onSetSessionRemoteVisibility,
 	onArchiveSession,
 	onSignOut,
+	pendingProjectKey,
 	trigger,
 }: SessionDrawerProps) {
 	const [internalOpen, setInternalOpen] = useState(false);
@@ -75,7 +72,7 @@ export function SessionDrawer({
 			<SheetContent
 				side="right"
 				onOpenAutoFocus={(event) => event.preventDefault()}
-				className="cloud-session-drawer-content flex w-[86vw] max-w-[340px] flex-col gap-0 border-l border-border bg-background p-0 sm:w-[340px] [&>button.absolute]:hidden"
+				className="cloud-session-drawer-content flex w-[86vw] max-w-[340px] flex-col gap-0 border-l border-border/80 bg-sidebar p-0 sm:w-[340px] [&>button.absolute]:hidden"
 			>
 				<SheetHeader className="sr-only">
 					<SheetTitle>Desktop sessions</SheetTitle>
@@ -90,9 +87,10 @@ export function SessionDrawer({
 					currentSessionKey={currentSessionKey}
 					onSelectSession={onSelectSession}
 					onSelectProject={onSelectProject}
-					onSetSessionRemoteVisibility={onSetSessionRemoteVisibility}
 					onArchiveSession={onArchiveSession}
 					onSignOut={onSignOut}
+					pendingProjectKey={pendingProjectKey}
+					alwaysShowRowActions
 					onAfterSelectSession={() => setIsOpen(false)}
 					onProjectPickerOpenChange={(pickerOpen) => {
 						if (pickerOpen) setIsOpen(false);

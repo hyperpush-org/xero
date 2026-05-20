@@ -212,6 +212,7 @@ fn title_generation_control_state(
             thinking_effort: controls.and_then(|controls| controls.thinking_effort.clone()),
             approval_mode: RuntimeRunApprovalModeDto::Suggest,
             plan_mode_required: false,
+            auto_compact_enabled: false,
             revision: 1,
             applied_at: now_timestamp(),
         },
@@ -579,6 +580,7 @@ mod tests {
             thinking_effort: Some(ProviderModelThinkingEffortDto::High),
             approval_mode: RuntimeRunApprovalModeDto::AutoEdit,
             plan_mode_required: true,
+            auto_compact_enabled: true,
         };
 
         let title_controls = title_generation_controls(&controls);

@@ -681,6 +681,7 @@ pub fn developer_tool_model_run<R: Runtime + 'static>(
         thinking_effort: None,
         approval_mode: RuntimeRunApprovalModeDto::Suggest,
         plan_mode_required: false,
+        auto_compact_enabled: false,
     };
 
     let snapshot = start_agent_task(
@@ -689,8 +690,10 @@ pub fn developer_tool_model_run<R: Runtime + 'static>(
         StartAgentTaskRequestDto {
             project_id: request.project_id.clone(),
             agent_session_id: agent_session_id.clone(),
+            run_id: None,
             prompt,
             controls: Some(controls),
+            attachments: Vec::new(),
         },
     )?;
 

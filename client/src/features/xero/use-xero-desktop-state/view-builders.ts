@@ -92,6 +92,7 @@ interface AgentRunControlProjection {
   selectedModelId: string | null
   selectedThinkingEffort: ProviderModelThinkingEffortDto | null
   selectedApprovalMode: RuntimeRunApprovalModeDto
+  selectedAutoCompactEnabled: boolean
   selectedPrompt: {
     text: string | null
     queuedAt: string | null
@@ -200,6 +201,9 @@ function getAgentRunControlProjection(
     selectedApprovalMode: useRuntimeRunTruth
       ? selectedControls?.approvalMode ?? DEFAULT_RUNTIME_RUN_APPROVAL_MODE
       : DEFAULT_RUNTIME_RUN_APPROVAL_MODE,
+    selectedAutoCompactEnabled: useRuntimeRunTruth
+      ? selectedControls?.autoCompactEnabled ?? true
+      : true,
     selectedPrompt: useRuntimeRunTruth
       ? {
           text: selectedControls?.queuedPrompt ?? null,
@@ -721,6 +725,7 @@ export function buildAgentView({
       selectedModelSelectionKey: providerModelCatalogProjection.selectedModelOption?.selectionKey ?? null,
       selectedThinkingEffort,
       selectedApprovalMode,
+      selectedAutoCompactEnabled: controlProjection.selectedAutoCompactEnabled,
       selectedPrompt: controlProjection.selectedPrompt,
       runtimeRunActiveControls: controlProjection.activeControls,
       runtimeRunPendingControls: controlProjection.pendingControls,

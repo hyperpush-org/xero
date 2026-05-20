@@ -1,13 +1,14 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Button } from "@xero/ui/components/ui/button";
 import {
+	ArrowRight,
 	Github,
 	Loader2,
 	Monitor,
 	ShieldCheck,
 	Smartphone,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
 import { InstallAppAction } from "#/components/install-app-action";
@@ -29,16 +30,19 @@ export const Route = createFileRoute("/")({
 
 const FEATURES = [
 	{
+		numeral: "I",
 		icon: Monitor,
 		title: "Drive your local machine from anywhere",
 		body: "Pick up your Xero sessions from any browser.",
 	},
 	{
+		numeral: "II",
 		icon: Smartphone,
 		title: "Phone, tablet, laptop",
 		body: "Designed to work at any size, on any device.",
 	},
 	{
+		numeral: "III",
 		icon: ShieldCheck,
 		title: "Secure by default",
 		body: "GitHub OAuth, scoped per-device tokens.",
@@ -63,6 +67,10 @@ const PREVIEW_SESSIONS = [
 	},
 ];
 
+function rise(delay: number): CSSProperties {
+	return { "--cloud-rise-delay": `${delay}ms` } as CSSProperties;
+}
+
 function LoginScreen() {
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -84,103 +92,136 @@ function LoginScreen() {
 	};
 
 	return (
-		<main className="grid min-h-dvh bg-background text-foreground lg:grid-cols-[1.1fr_1fr]">
-			<aside className="relative hidden overflow-hidden border-r border-border/40 bg-background lg:flex lg:flex-col lg:justify-between lg:px-14 lg:py-14">
+		<main className="grid min-h-dvh bg-background text-foreground lg:grid-cols-[1.15fr_1fr]">
+			{/* ────────────────────────  Desktop hero rail  ──────────────────── */}
+			<aside className="cloud-halo-edge cloud-grain relative hidden overflow-hidden border-r border-border/40 bg-background lg:flex lg:flex-col lg:justify-between lg:px-16 lg:py-14">
 				<div
 					aria-hidden
-					className="pointer-events-none absolute inset-0 bg-black/30"
-				/>
-				<div
-					aria-hidden
-					className="pointer-events-none absolute inset-0 opacity-[0.06]"
+					className="pointer-events-none absolute inset-0 opacity-[0.045]"
 					style={{
 						backgroundImage:
 							"radial-gradient(currentColor 1px, transparent 1px)",
-						backgroundSize: "26px 26px",
+						backgroundSize: "28px 28px",
 					}}
 				/>
 
-				<div className="relative flex max-w-md flex-col gap-10">
-					<div className="flex items-center gap-3">
-						<BrandLogo className="h-11 w-11" aria-label="Xero" />
-						<span className="text-sm font-semibold tracking-tight text-foreground">
+				<div className="relative flex max-w-lg flex-col gap-12">
+					<div className="cloud-rise flex items-center gap-3" style={rise(0)}>
+						<BrandLogo className="h-9 w-9" aria-label="Xero" />
+						<span className="font-display text-[15px] font-medium tracking-tight text-foreground">
 							Xero
 						</span>
+						<span
+							aria-hidden
+							className="ml-1 h-px w-12"
+							style={{
+								background:
+									"linear-gradient(to right, var(--cloud-rule-strong), transparent)",
+							}}
+						/>
 					</div>
 
-					<div className="flex flex-col gap-4">
-						<h1 className="text-4xl font-semibold leading-[1.1] tracking-tight text-foreground">
-							Your sessions, <span className="text-primary">everywhere</span>
+					<div className="flex flex-col gap-7">
+						<h1
+							className="font-display cloud-rise text-[64px] font-medium leading-[1.02] tracking-[-0.025em] text-foreground"
+							style={rise(120)}
+						>
+							Your sessions,
+							<br />
+							<em className="font-display-italic font-normal text-primary">
+								everywhere.
+							</em>
 						</h1>
-						<p className="max-w-sm text-base leading-relaxed text-muted-foreground">
+						<p
+							className="cloud-rise max-w-md text-[15px] leading-[1.65] text-muted-foreground"
+							style={rise(220)}
+						>
 							Drive the Xero coding sessions running on your computer from any
-							browser, on any device.
+							browser, on any device — a continuous thread that travels with
+							you.
 						</p>
 					</div>
 
-					<ul className="flex flex-col gap-4 pt-2">
-						{FEATURES.map(({ icon: Icon, title, body }) => (
-							<li key={title} className="flex items-start gap-3">
-								<span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
-									<Icon className="h-4 w-4 text-primary" aria-hidden />
+					<ul className="cloud-rise flex flex-col gap-5" style={rise(320)}>
+						{FEATURES.map(({ numeral, icon: Icon, title, body }) => (
+							<li key={title} className="flex items-baseline gap-4">
+								<span className="font-display-italic mt-0.5 w-7 shrink-0 text-[15px] font-normal leading-none text-primary/80">
+									{numeral.toLowerCase()}
 								</span>
-								<div className="flex flex-col gap-0.5">
-									<p className="text-sm font-medium text-foreground">{title}</p>
-									<p className="text-[13px] leading-relaxed text-muted-foreground">
-										{body}
-									</p>
+								<span
+									aria-hidden
+									className="mt-2 h-px w-6 shrink-0"
+									style={{ backgroundColor: "var(--cloud-rule-strong)" }}
+								/>
+								<div className="flex flex-1 items-start gap-3">
+									<Icon
+										className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary/75"
+										aria-hidden
+									/>
+									<div className="flex flex-col gap-0.5">
+										<p className="text-[13.5px] font-medium leading-snug text-foreground">
+											{title}
+										</p>
+										<p className="text-[12.5px] leading-relaxed text-muted-foreground">
+											{body}
+										</p>
+									</div>
 								</div>
 							</li>
 						))}
 					</ul>
 				</div>
 
-				<div className="relative flex max-w-md flex-col gap-3">
-					<div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-						<div className="flex items-center justify-between border-b border-border px-3 py-2">
+				<div
+					className="cloud-rise relative flex max-w-md flex-col gap-3"
+					style={rise(440)}
+				>
+					<div className="overflow-hidden rounded-lg border border-border/70 bg-card/70 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.4)] backdrop-blur-sm">
+						<div className="flex items-center justify-between border-b border-border/60 px-3.5 py-2.5">
 							<div className="flex items-center gap-2">
-								<span className="h-1.5 w-1.5 rounded-full bg-primary" />
-								<span className="text-[11px] font-medium text-foreground">
+								<span className="cloud-glow-breathe h-1.5 w-1.5 rounded-full bg-primary shadow-[0_0_10px_var(--cloud-halo)]" />
+								<span className="text-cloud-meta text-foreground/85">
 									Sessions
 								</span>
 							</div>
-							<span className="text-[10px] text-muted-foreground">
-								3 active
+							<span className="font-display-italic text-[12px] text-muted-foreground">
+								three active
 							</span>
 						</div>
-						<ul className="divide-y divide-border">
+						<ul className="divide-y divide-border/50">
 							{PREVIEW_SESSIONS.map((s) => (
 								<li
 									key={s.name}
-									className="flex items-center gap-3 px-3 py-2.5"
+									className="flex items-center gap-3 px-3.5 py-2.5"
 								>
 									<span
 										className={
 											s.state === "active"
-												? "h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
-												: "h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40"
+												? "h-1.5 w-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_8px_var(--cloud-halo)]"
+												: "h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/30"
 										}
 									/>
-									<span className="flex-1 truncate text-[12px] text-foreground">
+									<span className="flex-1 truncate text-[12.5px] text-foreground/90">
 										{s.name}
 									</span>
-									<span className="text-[10px] text-muted-foreground">
+									<span className="text-cloud-meta text-muted-foreground/70">
 										{s.project}
 									</span>
 								</li>
 							))}
 						</ul>
 					</div>
-					<p className="text-[11px] text-muted-foreground">
+					<p className="font-display-italic pl-1 text-[12px] text-muted-foreground/80">
 						A live look at what awaits inside.
 					</p>
 				</div>
 			</aside>
 
-			<section className="relative flex flex-col items-center justify-between overflow-hidden px-6 pb-10 pt-[max(env(safe-area-inset-top),2.5rem)] sm:px-10 lg:justify-center lg:py-10">
+			{/* ────────────────────────  Sign-in panel  ──────────────────────── */}
+			<section className="cloud-halo-soft relative flex flex-col items-center justify-between overflow-hidden px-6 pb-10 pt-[max(env(safe-area-inset-top),2.5rem)] sm:px-10 lg:justify-center lg:py-10">
 				<div
 					aria-hidden
-					className="pointer-events-none absolute inset-0 opacity-[0.05] lg:hidden"
+					className="pointer-events-none absolute inset-0 opacity-[0.04] lg:hidden"
 					style={{
 						backgroundImage:
 							"radial-gradient(currentColor 1px, transparent 1px)",
@@ -188,23 +229,42 @@ function LoginScreen() {
 					}}
 				/>
 
+				{/* Mobile hero */}
 				<div className="relative flex flex-1 flex-col items-center justify-center gap-7 text-center lg:hidden">
-					<BrandLogo className="h-14 w-14" aria-label="Xero" />
-					<div className="flex max-w-xs flex-col items-center gap-2.5">
-						<h1 className="text-2xl font-semibold leading-tight tracking-tight text-foreground">
-							Your sessions, <span className="text-primary">everywhere</span>
+					<div
+						className="cloud-halo cloud-rise flex items-center justify-center"
+						style={rise(0)}
+					>
+						<BrandLogo className="h-14 w-14" aria-label="Xero" />
+					</div>
+					<div className="flex max-w-xs flex-col items-center gap-3">
+						<h1
+							className="font-display cloud-rise text-[34px] font-medium leading-[1.05] tracking-[-0.022em] text-foreground"
+							style={rise(120)}
+						>
+							Your sessions,
+							<br />
+							<em className="font-display-italic font-normal text-primary">
+								everywhere.
+							</em>
 						</h1>
-						<p className="text-[13px] leading-relaxed text-muted-foreground">
+						<p
+							className="cloud-rise text-[13.5px] leading-relaxed text-muted-foreground"
+							style={rise(220)}
+						>
 							Drive the Xero sessions running on your computer from anywhere.
 						</p>
 					</div>
-					<ul className="flex w-full max-w-xs flex-col gap-2 pt-1 text-left">
+					<ul
+						className="cloud-rise flex w-full max-w-[15rem] flex-col gap-2.5 pt-1 text-left"
+						style={rise(320)}
+					>
 						{FEATURES.map(({ icon: Icon, title }) => (
 							<li key={title} className="flex items-center gap-3">
-								<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
+								<span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10">
 									<Icon className="h-3.5 w-3.5 text-primary" aria-hidden />
 								</span>
-								<span className="text-[13px] font-medium text-foreground">
+								<span className="text-[12.5px] font-medium leading-snug text-foreground">
 									{title}
 								</span>
 							</li>
@@ -212,14 +272,20 @@ function LoginScreen() {
 					</ul>
 				</div>
 
+				{/* Sign-in card (both desktop and mobile, different chrome) */}
 				<div className="relative flex w-full max-w-sm flex-col gap-4 pb-[env(safe-area-inset-bottom)] lg:pb-0">
-					<div className="flex flex-col items-stretch gap-6 lg:gap-7 lg:rounded-xl lg:border lg:border-border lg:bg-card lg:p-8 lg:shadow-sm">
-						<div className="hidden flex-col items-center gap-2 text-center lg:flex">
-							<BrandLogo className="h-10 w-10" aria-label="Xero" />
-							<h2 className="pt-2 text-xl font-semibold tracking-tight text-foreground">
-								Welcome back
+					<div
+						className="cloud-rise flex flex-col items-stretch gap-7 lg:gap-8 lg:rounded-2xl lg:border lg:border-border/70 lg:bg-card/60 lg:p-10 lg:shadow-[0_24px_60px_-24px_rgba(0,0,0,0.55)] lg:backdrop-blur-md"
+						style={rise(440)}
+					>
+						<div className="hidden flex-col items-center gap-3 text-center lg:flex">
+							<div className="cloud-halo flex items-center justify-center">
+								<BrandLogo className="h-11 w-11" aria-label="Xero" />
+							</div>
+							<h2 className="font-display pt-3 text-[28px] font-medium leading-tight tracking-[-0.02em] text-foreground">
+								Welcome <em className="font-display-italic">back</em>.
 							</h2>
-							<p className="text-[13px] text-muted-foreground">
+							<p className="text-[12.5px] leading-relaxed text-muted-foreground">
 								Sign in to access your sessions.
 							</p>
 						</div>
@@ -227,7 +293,7 @@ function LoginScreen() {
 						<div className="flex flex-col items-stretch gap-3">
 							{error ? (
 								<p
-									className="text-center text-sm text-destructive"
+									className="text-center text-[12.5px] text-destructive"
 									role="alert"
 								>
 									{error}
@@ -235,8 +301,7 @@ function LoginScreen() {
 							) : null}
 							<Button
 								type="button"
-								size="sm"
-								className="h-10 w-full gap-2 px-4 text-[13px] font-medium"
+								className="group relative h-12 w-full justify-center gap-2.5 rounded-lg px-5 text-[13.5px] font-medium tracking-tight shadow-[0_8px_24px_-12px_var(--cloud-halo)] transition-shadow hover:shadow-[0_10px_30px_-10px_var(--cloud-halo)]"
 								onClick={() => {
 									void handleSignIn();
 								}}
@@ -244,18 +309,19 @@ function LoginScreen() {
 							>
 								{pending ? (
 									<>
-										<Loader2 className="h-3.5 w-3.5 animate-spin" />
+										<Loader2 className="h-4 w-4 animate-spin" />
 										Signing in…
 									</>
 								) : (
 									<>
-										<Github className="h-3.5 w-3.5" />
-										Sign in with GitHub
+										<Github className="h-4 w-4" />
+										<span>Continue with GitHub</span>
+										<ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
 									</>
 								)}
 							</Button>
 							{pending ? null : <InstallAppAction />}
-							<p className="hidden text-center text-[11px] leading-relaxed text-muted-foreground lg:block">
+							<p className="font-display-italic hidden text-center text-[11.5px] leading-relaxed text-muted-foreground/80 lg:block">
 								By signing in you agree to our terms and privacy policy.
 							</p>
 						</div>

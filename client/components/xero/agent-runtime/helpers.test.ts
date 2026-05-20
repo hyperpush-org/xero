@@ -85,6 +85,7 @@ function makeAgent(overrides: Partial<AgentPaneView> = {}): AgentPaneView {
     selectedModelId: 'openai_codex',
     selectedThinkingEffort: null,
     selectedApprovalMode: 'suggest',
+    selectedAutoCompactEnabled: true,
     selectedPrompt: {
       text: null,
       queuedAt: null,

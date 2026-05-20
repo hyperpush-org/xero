@@ -981,6 +981,7 @@ function makeRuntimeRun(projectId = 'project-1', overrides: Partial<RuntimeRunDt
         thinkingEffort: 'medium',
         approvalMode: 'suggest',
         planModeRequired: false,
+        autoCompactEnabled: true,
         revision: 1,
         appliedAt: '2026-04-15T20:00:00Z',
       },
@@ -1269,6 +1270,8 @@ function createAdapter(options?: {
     const thinkingEffort = options.nextControls?.thinkingEffort ?? options.base.thinkingEffort
     const approvalMode = options.nextControls?.approvalMode ?? options.base.approvalMode
     const planModeRequired = options.nextControls?.planModeRequired ?? options.base.planModeRequired
+    const autoCompactEnabled =
+      options.nextControls?.autoCompactEnabled ?? options.base.autoCompactEnabled ?? true
 
     return {
       active: {
@@ -1278,6 +1281,7 @@ function createAdapter(options?: {
         thinkingEffort,
         approvalMode,
         planModeRequired,
+        autoCompactEnabled,
         revision: options.revision,
         appliedAt: options.appliedAt ?? options.base.appliedAt,
       },
@@ -1290,6 +1294,7 @@ function createAdapter(options?: {
               thinkingEffort,
               approvalMode,
               planModeRequired,
+              autoCompactEnabled,
               revision: options.revision,
               queuedAt: options.queuedAt ?? options.appliedAt ?? options.base.appliedAt,
               queuedPrompt: options.queuedPrompt ?? null,
@@ -1341,6 +1346,7 @@ function createAdapter(options?: {
               thinkingEffort: request?.controls?.thinkingEffort ?? 'medium',
               approvalMode: request?.controls?.approvalMode ?? 'suggest',
               planModeRequired: request?.controls?.planModeRequired ?? false,
+              autoCompactEnabled: true,
             },
             revision: 1,
             appliedAt: '2026-04-22T12:05:30Z',
@@ -1366,6 +1372,7 @@ function createAdapter(options?: {
         thinkingEffort: options?.initialControls?.thinkingEffort ?? 'medium',
         approvalMode: options?.initialControls?.approvalMode ?? 'suggest',
         planModeRequired: options?.initialControls?.planModeRequired ?? false,
+        autoCompactEnabled: true,
       },
       revision: 1,
       appliedAt: '2026-04-22T12:00:00Z',

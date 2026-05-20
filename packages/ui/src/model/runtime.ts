@@ -599,6 +599,7 @@ export const runtimeRunControlInputSchema = z
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
     approvalMode: runtimeRunApprovalModeSchema,
     planModeRequired: z.boolean().default(false),
+    autoCompactEnabled: z.boolean().default(true),
   })
   .strict()
 
@@ -620,6 +621,7 @@ export const runtimeRunActiveControlSnapshotSchema = z
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
     approvalMode: runtimeRunApprovalModeSchema,
     planModeRequired: z.boolean().default(false),
+    autoCompactEnabled: z.boolean().default(true),
     revision: z.number().int().positive(),
     appliedAt: isoTimestampSchema,
   })
@@ -635,6 +637,7 @@ export const runtimeRunPendingControlSnapshotSchema = z
     thinkingEffort: runtimeRunThinkingEffortSchema.nullable().optional(),
     approvalMode: runtimeRunApprovalModeSchema,
     planModeRequired: z.boolean().default(false),
+    autoCompactEnabled: z.boolean().default(true),
     revision: z.number().int().positive(),
     queuedAt: isoTimestampSchema,
     queuedPrompt: z.string().trim().min(1).nullable().optional(),
@@ -870,7 +873,6 @@ export const updateRuntimeRunControlsRequestSchema = z
     controls: runtimeRunControlInputSchema.nullable().optional(),
     prompt: z.string().trim().min(1).nullable().optional(),
     attachments: z.array(stagedAgentAttachmentSchema).default([]),
-    autoCompact: runtimeAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
   .superRefine((request, ctx) => {
@@ -1023,6 +1025,7 @@ export interface RuntimeRunControlInputView {
   approvalMode: RuntimeRunApprovalModeDto
   approvalModeLabel: string
   planModeRequired: boolean
+  autoCompactEnabled: boolean
 }
 
 export interface RuntimeRunActiveControlSnapshotView extends RuntimeRunControlInputView {
@@ -1244,6 +1247,7 @@ function mapRuntimeRunControlInput(control: RuntimeRunControlInputDto): RuntimeR
     approvalMode: control.approvalMode,
     approvalModeLabel: getRuntimeRunApprovalModeLabel(control.approvalMode),
     planModeRequired: control.planModeRequired ?? false,
+    autoCompactEnabled: control.autoCompactEnabled ?? true,
   }
 }
 

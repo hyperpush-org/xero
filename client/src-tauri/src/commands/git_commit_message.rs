@@ -48,6 +48,7 @@ pub fn git_generate_commit_message<R: Runtime>(
         thinking_effort: request.thinking_effort.clone(),
         approval_mode: RuntimeRunApprovalModeDto::Yolo,
         plan_mode_required: false,
+        auto_compact_enabled: false,
     };
     let provider_config =
         resolve_owned_agent_provider_config(&app, state.inner(), Some(&controls))?;
@@ -74,6 +75,7 @@ pub fn git_generate_commit_message<R: Runtime>(
                 thinking_effort: controls.thinking_effort.clone(),
                 approval_mode: RuntimeRunApprovalModeDto::Yolo,
                 plan_mode_required: false,
+                auto_compact_enabled: false,
                 revision: 1,
                 applied_at: now_timestamp(),
             },

@@ -1,7 +1,7 @@
 //! Single-column app state and the event/render loop.
 
 use std::{
-    fs, io,
+    env, fs, io,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
@@ -61,8 +61,37 @@ impl ProviderRow {
 pub struct RuntimeMessageRow {
     pub role: String,
     pub content: String,
+    pub attachments: Vec<RuntimeAttachmentRow>,
     pub thinking: Option<String>,
     pub tool_calls: Vec<ToolCallRow>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeAttachmentRow {
+    pub kind: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingAttachment {
+    pub index: usize,
+    pub source_path: PathBuf,
+    pub staged: TuiStagedAttachmentDto,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TuiStagedAttachmentDto {
+    pub kind: String,
+    pub absolute_path: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -239,6 +268,9 @@ pub struct App {
     pub run_detail: Option<RunDetail>,
     pub active_run_id: Option<String>,
     pub active_session_id: Option<String>,
+    pub draft_run_id: Option<String>,
+    pub pending_attachments: Vec<PendingAttachment>,
+    pub next_attachment_index: usize,
     pub last_ctrl_c_at: Option<std::time::Instant>,
     /// How many messages of the current run have already been written to
     /// the terminal scrollback. Anything past this index needs to be
@@ -347,6 +379,9 @@ impl App {
             run_detail: None,
             active_run_id: None,
             active_session_id: None,
+            draft_run_id: None,
+            pending_attachments: Vec::new(),
+            next_attachment_index: 1,
             last_ctrl_c_at: None,
             committed_messages: 0,
             welcome_committed: false,
@@ -467,6 +502,9 @@ impl App {
         self.run_detail = None;
         self.active_run_id = None;
         self.active_session_id = active_session_id;
+        self.draft_run_id = None;
+        self.pending_attachments.clear();
+        self.next_attachment_index = 1;
         self.committed_messages = 0;
         self.welcome_committed = false;
         self.streamed_text_rows = 0;
@@ -474,6 +512,31 @@ impl App {
         self.last_scrollback_line_blank = false;
         self.committed_scrollback.clear();
         self.tui_reset_requested = true;
+    }
+
+    pub fn pending_attachment_bytes(&self) -> i64 {
+        self.pending_attachments
+            .iter()
+            .map(|attachment| attachment.staged.size_bytes.max(0))
+            .sum()
+    }
+
+    pub fn clear_sent_pending_attachments(&mut self) {
+        self.pending_attachments.clear();
+        self.draft_run_id = None;
+        self.next_attachment_index = 1;
+    }
+
+    pub fn discard_pending_attachments(&mut self, globals: &GlobalOptions) -> Result<(), CliError> {
+        let Some(project_id) = self.project.project_id.clone() else {
+            self.clear_sent_pending_attachments();
+            return Ok(());
+        };
+        for attachment in self.pending_attachments.clone() {
+            discard_staged_attachment(globals, &project_id, &attachment.staged.absolute_path)?;
+        }
+        self.clear_sent_pending_attachments();
+        Ok(())
     }
 
     fn take_tui_reset_requested(&mut self) -> bool {
@@ -484,6 +547,7 @@ impl App {
 struct PromptJob {
     project_id: Option<String>,
     run_id: String,
+    clears_pending_attachments: bool,
     receiver: Receiver<Result<JsonValue, CliError>>,
 }
 
@@ -935,6 +999,7 @@ fn dispatch_key(
         let now = std::time::Instant::now();
         if let Some(previous) = app.last_ctrl_c_at {
             if now.duration_since(previous) <= Duration::from_secs(2) {
+                let _ = app.discard_pending_attachments(globals);
                 return KeyOutcome::Quit;
             }
         }
@@ -961,7 +1026,10 @@ fn dispatch_key(
                 }
                 KeyOutcome::Continue
             }
-            palette::KeyResult::Quit => KeyOutcome::Quit,
+            palette::KeyResult::Quit => {
+                let _ = app.discard_pending_attachments(globals);
+                KeyOutcome::Quit
+            }
         };
     }
 
@@ -1012,6 +1080,9 @@ fn handle_composer_key(
                 let raw_submission = app.composer.clone();
                 let mut submission = raw_submission.trim().to_owned();
                 if submission.is_empty() {
+                    if !app.pending_attachments.is_empty() {
+                        app.status = Some("Type a prompt to send pending attachments.".into());
+                    }
                     return KeyOutcome::Continue;
                 }
                 if submission.starts_with('/') {
@@ -1113,13 +1184,20 @@ fn handle_slash_command(app: &mut App, submission: &str, globals: &GlobalOptions
         return KeyOutcome::Continue;
     }
 
+    match words[0].as_str() {
+        "attach" => return handle_attach_command(app, &words[1..], globals),
+        "detach" => return handle_detach_command(app, &words[1..], globals),
+        "attachments" => return handle_attachments_command(app),
+        _ => {}
+    }
+
     if words.len() == 1 {
         if let Some(outcome) = palette::activate_command_by_id(&words[0], app, globals) {
-            return palette_result_to_key_outcome(app, outcome);
+            return palette_result_to_key_outcome(app, outcome, globals);
         }
         if let Some(alias) = slash_dialog_alias(&words[0]) {
             if let Some(outcome) = palette::activate_command_by_id(alias, app, globals) {
-                return palette_result_to_key_outcome(app, outcome);
+                return palette_result_to_key_outcome(app, outcome, globals);
             }
         }
     }
@@ -1148,6 +1226,221 @@ fn handle_slash_command(app: &mut App, submission: &str, globals: &GlobalOptions
         }
     }
     KeyOutcome::Continue
+}
+
+fn handle_attach_command(app: &mut App, paths: &[String], globals: &GlobalOptions) -> KeyOutcome {
+    let Some(project_id) = app.project.project_id.clone() else {
+        app.status = Some("Attachments require a registered Xero project.".into());
+        return KeyOutcome::Continue;
+    };
+    if paths.is_empty() {
+        app.status = Some("Usage: /attach <path> [path...]".into());
+        return KeyOutcome::Continue;
+    }
+
+    let run_id = app
+        .draft_run_id
+        .get_or_insert_with(|| generate_id("tui-run"))
+        .clone();
+    let mut attached = 0usize;
+    for raw_path in paths {
+        let source_path = resolve_attachment_source_path(&app.project.root, raw_path);
+        match stage_tui_attachment(globals, &project_id, &run_id, &source_path) {
+            Ok(staged) => {
+                let index = app.next_attachment_index;
+                app.next_attachment_index = app.next_attachment_index.saturating_add(1);
+                app.pending_attachments.push(PendingAttachment {
+                    index,
+                    source_path,
+                    staged,
+                });
+                attached += 1;
+            }
+            Err(error) => {
+                app.status = Some(error.message);
+                return KeyOutcome::Continue;
+            }
+        }
+    }
+
+    app.status = Some(format_pending_attachment_summary(app, attached));
+    KeyOutcome::Continue
+}
+
+fn handle_detach_command(app: &mut App, targets: &[String], globals: &GlobalOptions) -> KeyOutcome {
+    if app.pending_attachments.is_empty() {
+        app.status = Some("No pending attachments.".into());
+        return KeyOutcome::Continue;
+    }
+    if targets.is_empty() {
+        app.status = Some("Usage: /detach <index|name|all>".into());
+        return KeyOutcome::Continue;
+    }
+    let target = targets.join(" ");
+    if matches_normalized(&target, "all") {
+        match app.discard_pending_attachments(globals) {
+            Ok(()) => app.status = Some("Detached all pending attachments.".into()),
+            Err(error) => app.status = Some(error.message),
+        }
+        return KeyOutcome::Continue;
+    }
+    let Some(project_id) = app.project.project_id.clone() else {
+        app.clear_sent_pending_attachments();
+        app.status = Some("Cleared pending attachments.".into());
+        return KeyOutcome::Continue;
+    };
+    let position = pending_attachment_position(app, &target);
+    let Some(position) = position else {
+        app.status = Some(format!("No pending attachment matches `{target}`."));
+        return KeyOutcome::Continue;
+    };
+    let attachment = app.pending_attachments[position].clone();
+    match discard_staged_attachment(globals, &project_id, &attachment.staged.absolute_path) {
+        Ok(()) => {
+            let removed = app.pending_attachments.remove(position);
+            if app.pending_attachments.is_empty() {
+                app.draft_run_id = None;
+                app.next_attachment_index = 1;
+            }
+            app.status = Some(format!("Detached {}.", removed.staged.original_name));
+        }
+        Err(error) => app.status = Some(error.message),
+    }
+    KeyOutcome::Continue
+}
+
+fn handle_attachments_command(app: &mut App) -> KeyOutcome {
+    if app.pending_attachments.is_empty() {
+        app.status = Some("No pending attachments.".into());
+        return KeyOutcome::Continue;
+    }
+    app.palette = Some(PaletteState::Detail(palette::DetailState {
+        command_id: "attachments",
+        title: "Pending attachments".to_owned(),
+        hint: Some("esc back".to_owned()),
+        data: palette::DetailData::Body(
+            app.pending_attachments
+                .iter()
+                .map(|attachment| {
+                    format!(
+                        "{}. {}  {}  {}  {}",
+                        attachment.index,
+                        attachment.staged.original_name,
+                        attachment.staged.kind,
+                        attachment_size_label(attachment.staged.size_bytes),
+                        attachment.source_path.display()
+                    )
+                })
+                .collect(),
+        ),
+        selected: 0,
+    }));
+    KeyOutcome::Continue
+}
+
+fn resolve_attachment_source_path(project_root: &Path, raw_path: &str) -> PathBuf {
+    let trimmed = raw_path.trim();
+    let expanded = if trimmed == "~" {
+        env::var_os("HOME").map(PathBuf::from)
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        env::var_os("HOME").map(|home| PathBuf::from(home).join(rest))
+    } else {
+        None
+    };
+    let path = expanded.unwrap_or_else(|| PathBuf::from(trimmed));
+    if path.is_absolute() {
+        path
+    } else {
+        project_root.join(path)
+    }
+}
+
+fn stage_tui_attachment(
+    globals: &GlobalOptions,
+    project_id: &str,
+    run_id: &str,
+    source_path: &Path,
+) -> Result<TuiStagedAttachmentDto, CliError> {
+    let args = vec![
+        "attachment".to_owned(),
+        "stage".to_owned(),
+        "--project-id".to_owned(),
+        project_id.to_owned(),
+        "--run-id".to_owned(),
+        run_id.to_owned(),
+        "--path".to_owned(),
+        source_path.to_string_lossy().into_owned(),
+    ];
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let value = invoke_json(globals, &borrowed)?;
+    let attachment = value.get("attachment").cloned().unwrap_or(value);
+    serde_json::from_value(attachment).map_err(|error| CliError {
+        code: "xero_tui_attachment_stage_decode_failed".into(),
+        message: format!("Could not decode staged attachment: {error}"),
+        exit_code: 1,
+    })
+}
+
+fn discard_staged_attachment(
+    globals: &GlobalOptions,
+    project_id: &str,
+    absolute_path: &str,
+) -> Result<(), CliError> {
+    let args = vec![
+        "attachment".to_owned(),
+        "discard".to_owned(),
+        "--project-id".to_owned(),
+        project_id.to_owned(),
+        "--absolute-path".to_owned(),
+        absolute_path.to_owned(),
+    ];
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    invoke_json(globals, &borrowed).map(|_| ())
+}
+
+fn pending_attachment_position(app: &App, target: &str) -> Option<usize> {
+    if let Ok(index) = target.parse::<usize>() {
+        return app
+            .pending_attachments
+            .iter()
+            .position(|attachment| attachment.index == index);
+    }
+    app.pending_attachments.iter().position(|attachment| {
+        attachment.staged.original_name == target
+            || attachment
+                .source_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == target)
+    })
+}
+
+fn matches_normalized(value: &str, expected: &str) -> bool {
+    value
+        .trim()
+        .replace('-', "_")
+        .eq_ignore_ascii_case(expected)
+}
+
+fn format_pending_attachment_summary(app: &App, added: usize) -> String {
+    format!(
+        "Attached {added}; pending {} file(s), {} total.",
+        app.pending_attachments.len(),
+        attachment_size_label(app.pending_attachment_bytes())
+    )
+}
+
+pub(crate) fn attachment_size_label(size_bytes: i64) -> String {
+    let bytes = size_bytes.max(0) as f64;
+    if bytes < 1024.0 {
+        return format!("{} B", size_bytes.max(0));
+    }
+    let kib = bytes / 1024.0;
+    if kib < 1024.0 {
+        return format!("{kib:.1} KB");
+    }
+    let mib = kib / 1024.0;
+    format!("{mib:.1} MB")
 }
 
 /// Driver for `/login` — starts the OAuth flow on first call. The event
@@ -1273,17 +1566,11 @@ fn auth_detail_state(
 
 fn remote_bridge_for(
     globals: &GlobalOptions,
-) -> xero_remote_bridge::RemoteBridge<
-    xero_remote_bridge::FileIdentityStore,
-    xero_remote_bridge::FileSessionVisibilityStore,
-> {
+) -> xero_remote_bridge::RemoteBridge<xero_remote_bridge::FileIdentityStore> {
     let remote_dir = crate::cli_app_data_root(globals).join("remote");
     xero_remote_bridge::RemoteBridge::new(
         xero_remote_bridge::BridgeConfig::from_env_or_local("Xero TUI"),
         xero_remote_bridge::FileIdentityStore::new(remote_dir.join("desktop-identity.json")),
-        xero_remote_bridge::FileSessionVisibilityStore::new(
-            remote_dir.join("remote-visibility.json"),
-        ),
     )
 }
 
@@ -1303,7 +1590,11 @@ fn open_in_browser(url: &str) {
         .spawn();
 }
 
-fn palette_result_to_key_outcome(app: &mut App, result: palette::KeyResult) -> KeyOutcome {
+fn palette_result_to_key_outcome(
+    app: &mut App,
+    result: palette::KeyResult,
+    globals: &GlobalOptions,
+) -> KeyOutcome {
     match result {
         palette::KeyResult::Continue => KeyOutcome::Continue,
         palette::KeyResult::Close { status } => {
@@ -1313,7 +1604,10 @@ fn palette_result_to_key_outcome(app: &mut App, result: palette::KeyResult) -> K
             }
             KeyOutcome::Continue
         }
-        palette::KeyResult::Quit => KeyOutcome::Quit,
+        palette::KeyResult::Quit => {
+            let _ = app.discard_pending_attachments(globals);
+            KeyOutcome::Quit
+        }
     }
 }
 
@@ -1486,9 +1780,13 @@ fn start_prompt_job(
         .unwrap_or("engineer")
         .to_owned();
     let thinking_effort = app.thinking_effort.label().to_owned();
-    let run_id = generate_id("tui-run");
+    let run_id = app
+        .draft_run_id
+        .clone()
+        .unwrap_or_else(|| generate_id("tui-run"));
     let project_id = app.project.project_id.clone();
     let agent_session_id = app.active_session_id.clone();
+    let pending_attachments = app.pending_attachments.clone();
     let mut owned = vec![
         "agent".to_owned(),
         "exec".to_owned(),
@@ -1515,6 +1813,17 @@ fn start_prompt_job(
         owned.push("--session-id".into());
         owned.push(agent_session_id.to_owned());
     }
+    if !pending_attachments.is_empty() {
+        let attachments_json = serde_json::to_string(
+            &pending_attachments
+                .iter()
+                .map(|attachment| attachment.staged.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| CliError::system_fault("xero_tui_attachment_encode", error.to_string()))?;
+        owned.push("--attachments-json".into());
+        owned.push(attachments_json);
+    }
 
     let (sender, receiver) = mpsc::channel();
     let globals_clone = globals.clone();
@@ -1531,6 +1840,14 @@ fn start_prompt_job(
         messages: vec![RuntimeMessageRow {
             role: "user".into(),
             content: prompt.to_owned(),
+            attachments: pending_attachments
+                .iter()
+                .map(|attachment| RuntimeAttachmentRow {
+                    kind: attachment.staged.kind.clone(),
+                    original_name: attachment.staged.original_name.clone(),
+                    size_bytes: attachment.staged.size_bytes,
+                })
+                .collect(),
             thinking: None,
             tool_calls: Vec::new(),
         }],
@@ -1552,6 +1869,7 @@ fn start_prompt_job(
     Ok(PromptJob {
         project_id,
         run_id,
+        clears_pending_attachments: !pending_attachments.is_empty(),
         receiver,
     })
 }
@@ -1573,6 +1891,9 @@ fn poll_active_run(globals: &GlobalOptions, app: &mut App, active_run: &mut Opti
             let mut detail = run_detail_from_snapshot(&snapshot);
             detail.started_at = started_at;
             app.run_detail = Some(detail);
+            if job.clears_pending_attachments {
+                app.clear_sent_pending_attachments();
+            }
             app.status = None;
             app.active_run_id = None;
             *active_run = None;
@@ -1644,6 +1965,14 @@ pub fn run_detail_from_snapshot(snapshot: &JsonValue) -> RunDetail {
             RuntimeMessageRow {
                 role: string_field(message, "role"),
                 content: string_field(message, "content"),
+                attachments: message
+                    .get("attachments")
+                    .and_then(JsonValue::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(runtime_attachment_row_from_json)
+                    .filter(|attachment| !attachment.original_name.is_empty())
+                    .collect(),
                 thinking,
                 tool_calls,
             }
@@ -1926,6 +2255,17 @@ fn string_field(value: &JsonValue, key: &str) -> String {
         .and_then(JsonValue::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+fn runtime_attachment_row_from_json(value: &JsonValue) -> RuntimeAttachmentRow {
+    RuntimeAttachmentRow {
+        kind: string_field(value, "kind"),
+        original_name: string_field(value, "originalName"),
+        size_bytes: value
+            .get("sizeBytes")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or_default(),
+    }
 }
 
 /// Render the inline viewport: optional streaming indicator on top,
@@ -2613,6 +2953,9 @@ pub(crate) fn test_only_empty_app() -> App {
         run_detail: None,
         active_run_id: None,
         active_session_id: None,
+        draft_run_id: None,
+        pending_attachments: Vec::new(),
+        next_attachment_index: 1,
         last_ctrl_c_at: None,
         committed_messages: 0,
         welcome_committed: false,
@@ -2793,6 +3136,9 @@ mod tests {
             run_detail: None,
             active_run_id: None,
             active_session_id: None,
+            draft_run_id: None,
+            pending_attachments: Vec::new(),
+            next_attachment_index: 1,
             last_ctrl_c_at: None,
             committed_messages: 0,
             welcome_committed: false,
@@ -3067,6 +3413,7 @@ mod tests {
             messages: vec![RuntimeMessageRow {
                 role: "user".into(),
                 content: "old prompt".into(),
+                attachments: Vec::new(),
                 thinking: None,
                 tool_calls: Vec::new(),
             }],
@@ -3340,12 +3687,14 @@ mod tests {
                 RuntimeMessageRow {
                     role: "user".into(),
                     content: "resize prompt".into(),
+                    attachments: Vec::new(),
                     thinking: None,
                     tool_calls: Vec::new(),
                 },
                 RuntimeMessageRow {
                     role: "assistant".into(),
                     content: "resize reply".into(),
+                    attachments: Vec::new(),
                     thinking: None,
                     tool_calls: Vec::new(),
                 },
@@ -3437,6 +3786,7 @@ mod tests {
             messages: vec![RuntimeMessageRow {
                 role: "user".into(),
                 content: "resize prompt".into(),
+                attachments: Vec::new(),
                 thinking: None,
                 tool_calls: Vec::new(),
             }],
@@ -3491,6 +3841,7 @@ mod tests {
             messages: vec![RuntimeMessageRow {
                 role: "user".into(),
                 content: "prompt".into(),
+                attachments: Vec::new(),
                 thinking: None,
                 tool_calls: Vec::new(),
             }],
@@ -3540,6 +3891,7 @@ mod tests {
             messages: vec![RuntimeMessageRow {
                 role: "user".into(),
                 content: "prompt".into(),
+                attachments: Vec::new(),
                 thinking: None,
                 tool_calls: Vec::new(),
             }],
@@ -3588,6 +3940,7 @@ mod tests {
             messages: vec![RuntimeMessageRow {
                 role: "user".into(),
                 content: "prompt".into(),
+                attachments: Vec::new(),
                 thinking: None,
                 tool_calls: Vec::new(),
             }],
@@ -3624,6 +3977,7 @@ mod tests {
             messages: vec![RuntimeMessageRow {
                 role: "user".into(),
                 content: "prompt".into(),
+                attachments: Vec::new(),
                 thinking: None,
                 tool_calls: Vec::new(),
             }],
@@ -3789,12 +4143,14 @@ mod tests {
         let user = RuntimeMessageRow {
             role: "user".into(),
             content: "1+1".into(),
+            attachments: Vec::new(),
             thinking: None,
             tool_calls: Vec::new(),
         };
         let assistant = RuntimeMessageRow {
             role: "assistant".into(),
             content: "2".into(),
+            attachments: Vec::new(),
             thinking: None,
             tool_calls: Vec::new(),
         };
@@ -3973,6 +4329,7 @@ mod tests {
         let mut active_run = Some(PromptJob {
             project_id: None,
             run_id: "tui-run-test".into(),
+            clears_pending_attachments: false,
             receiver,
         });
 
@@ -4001,12 +4358,14 @@ mod tests {
         let user = RuntimeMessageRow {
             role: "user".into(),
             content: "1+1".into(),
+            attachments: Vec::new(),
             thinking: None,
             tool_calls: Vec::new(),
         };
         let assistant = RuntimeMessageRow {
             role: "assistant".into(),
             content: "2".into(),
+            attachments: Vec::new(),
             thinking: Some("The user is asking a simple math question.".into()),
             tool_calls: vec![ToolCallRow {
                 name: "calc".into(),

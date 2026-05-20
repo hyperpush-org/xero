@@ -7,7 +7,7 @@
 - This is a new application, backwards compatability is prohibited unless asked for
 - When stale or incompatible app-data state causes runtime/schema issues, wipe the affected OS app-data state instead of adding backwards-compatible glue code or migrations unless the user explicitly asks for compatibility.
 - Build prerequisite: `protoc` must be on PATH (the LanceDB-backed agent memory store pulls lance-* crates whose build scripts compile vendored .proto files). On macOS: `brew install protobuf`.
-- Run scooped tests and format instead of repo wide when working with rust to save time and storage
+- Run scooped tests and format instead of repo wide when working with rust to save time and storage.
 - Dont create branches or stash unless user asks, there may be multiple agents working at the same time and doing this will break things
 
 ## Stages vs. Workflow (terminology)

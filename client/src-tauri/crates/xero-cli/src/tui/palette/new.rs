@@ -19,6 +19,14 @@ pub fn open(globals: &GlobalOptions, app: &mut App) -> OpenOutcome {
         Ok(value) => {
             let session = value.get("session").cloned().unwrap_or(value);
             let session_id = string_field(&session, "agentSessionId");
+            if let Err(error) = app.discard_pending_attachments(globals) {
+                return OpenOutcome::Closed {
+                    status: Some(format!(
+                        "Could not clear pending attachments: {} ({})",
+                        error.message, error.code
+                    )),
+                };
+            }
             app.reset_for_new_session((!session_id.is_empty()).then_some(session_id.clone()));
             OpenOutcome::Closed {
                 status: Some(if session_id.is_empty() {

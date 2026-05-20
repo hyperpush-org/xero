@@ -1,53 +1,55 @@
 import { Button } from "@xero/ui/components/ui/button";
-import { Menu } from "lucide-react";
+import { ChevronRight, Menu } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { BrandLogo } from "#/components/brand-logo";
-import { NewSessionPicker } from "#/components/new-session-picker";
-import type { RemoteProjectSummary } from "#/lib/relay/session-store";
 
 interface SessionTopBarProps {
 	title: string;
-	projects?: RemoteProjectSummary[];
-	onSelectProject?: (projectId: string) => void;
-	onPickerOpenChange?: (open: boolean) => void;
+	projectLabel?: string;
 	drawerTrigger?: ReactNode;
 }
 
 export function SessionTopBar({
 	title,
-	projects = [],
-	onSelectProject,
-	onPickerOpenChange,
+	projectLabel,
 	drawerTrigger,
 }: SessionTopBarProps) {
 	return (
-		<header className="sticky top-0 z-20 flex items-center justify-between gap-3 bg-background px-4 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)]">
-			<div className="flex min-w-0 items-center gap-2">
-				<BrandLogo className="size-4 shrink-0 lg:hidden" aria-label="Xero" />
-				<span
+		<header className="sticky top-0 z-20 flex items-center justify-between gap-1.5 bg-background px-3.5 lg:px-5 pb-2 pt-[max(env(safe-area-inset-top),0.5rem)] lg:py-4">
+			<span
+				aria-hidden
+				className="pointer-events-none absolute inset-x-0 -top-6 h-20 opacity-50"
+				style={{
+					background:
+						"radial-gradient(60% 100% at 50% 0%, var(--cloud-halo-soft), transparent 75%)",
+				}}
+			/>
+			<div className="relative flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+				<BrandLogo className="size-3.5 shrink-0 lg:hidden" aria-label="Xero" />
+				<ChevronRight
 					aria-hidden="true"
-					className="text-sm text-muted-foreground/50 lg:hidden"
-				>
-					|
-				</span>
-				<span
-					className="truncate text-sm font-medium text-foreground"
-					title={title}
-				>
+					className="h-3 w-3 shrink-0 text-muted-foreground/70 lg:hidden"
+				/>
+				{projectLabel ? (
+					<span className="hidden min-w-0 items-center gap-1.5 lg:flex">
+						<span
+							className="truncate font-semibold text-foreground"
+							title={projectLabel}
+						>
+							{projectLabel}
+						</span>
+						<ChevronRight
+							aria-hidden="true"
+							className="h-3 w-3 shrink-0 text-muted-foreground/70"
+						/>
+					</span>
+				) : null}
+				<span className="truncate font-medium" title={title}>
 					{title}
 				</span>
 			</div>
-			<div className="flex shrink-0 items-center gap-1">
-				{onSelectProject ? (
-					<div className="lg:hidden">
-						<NewSessionPicker
-							projects={projects}
-							onSelectProject={onSelectProject}
-							onPickerOpenChange={onPickerOpenChange}
-						/>
-					</div>
-				) : null}
+			<div className="relative flex shrink-0 items-center gap-1">
 				{drawerTrigger ?? (
 					<Button
 						type="button"

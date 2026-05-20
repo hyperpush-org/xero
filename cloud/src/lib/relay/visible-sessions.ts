@@ -51,8 +51,7 @@ export function remoteVisibleSessionUpdateFromEnvelope(
 
 	if (
 		schema === "xero.remote_session_added.v1" ||
-		schema === "xero.remote_session_started.v1" ||
-		schema === "xero.remote_session_visibility_changed.v1"
+		schema === "xero.remote_session_started.v1"
 	) {
 		const session = isRecord(envelope.payload.result)
 			? envelope.payload.result.session
@@ -162,7 +161,7 @@ function summaryFromRemoteSession(
 			) ?? null,
 		computerName,
 		remoteVisible:
-			booleanField(session, "remoteVisible", "remote_visible") ?? false,
+			booleanField(session, "remoteVisible", "remote_visible") ?? true,
 	};
 }
 
