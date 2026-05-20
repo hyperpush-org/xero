@@ -5106,6 +5106,115 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
 }
 
 #[test]
+fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let agent_session_id = db::project_store::DEFAULT_AGENT_SESSION_ID.to_string();
+
+    let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartRuntimeRunRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            initial_controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Ask,
+                agent_definition_id: None,
+                provider_profile_id: Some("xai-default".into()),
+                model_id: "grok-4.3".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+            }),
+            initial_prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
+            initial_attachments: Vec::new(),
+        },
+    ))
+    .expect("start runtime run should execute the initial prompt");
+
+    wait_for_agent_run_status(
+        &repo_root,
+        &project_id,
+        &runtime_run.run_id,
+        db::project_store::AgentRunStatus::Completed,
+    );
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
+
+    let queued = tauri::async_runtime::block_on(update_runtime_run_controls(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateRuntimeRunControlsRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            run_id: runtime_run.run_id.clone(),
+            controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Ask,
+                agent_definition_id: None,
+                provider_profile_id: Some("openai_codex-default".into()),
+                model_id: "gpt-5.4".into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+            }),
+            prompt: None,
+            attachments: Vec::new(),
+        },
+    ))
+    .expect("provider profile switch should queue as pending controls");
+
+    assert_eq!(
+        queued.controls.active.provider_profile_id.as_deref(),
+        Some("xai-default")
+    );
+    let pending = queued
+        .controls
+        .pending
+        .as_ref()
+        .expect("provider profile switch should be pending");
+    assert_eq!(
+        pending.provider_profile_id.as_deref(),
+        Some("openai_codex-default")
+    );
+    assert_eq!(pending.model_id, "gpt-5.4");
+
+    tauri::async_runtime::block_on(update_runtime_run_controls(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateRuntimeRunControlsRequestDto {
+            project_id: project_id.clone(),
+            agent_session_id: agent_session_id.clone(),
+            run_id: runtime_run.run_id.clone(),
+            controls: None,
+            prompt: Some("Thanks, continue with the newly selected provider.".into()),
+            attachments: Vec::new(),
+        },
+    ))
+    .expect("queued provider profile switch should apply at the next prompt boundary");
+
+    wait_for_agent_run_status(
+        &repo_root,
+        &project_id,
+        &runtime_run.run_id,
+        db::project_store::AgentRunStatus::Completed,
+    );
+    let applied = db::project_store::load_runtime_run(&repo_root, &project_id, &agent_session_id)
+        .expect("load runtime run")
+        .expect("runtime run should remain persisted");
+    assert_eq!(
+        applied.controls.active.provider_profile_id.as_deref(),
+        Some("openai_codex-default")
+    );
+    assert_eq!(applied.controls.active.model_id, "gpt-5.4");
+    assert!(
+        applied.controls.pending.is_none(),
+        "pending provider switch should be consumed after the prompt boundary"
+    );
+}
+
+#[test]
 fn start_agent_task_returns_running_before_background_driver_finishes() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));

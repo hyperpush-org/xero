@@ -98,8 +98,6 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         return Ok(runtime_run_dto_from_snapshot(&outcome.snapshot));
     }
 
-    reject_provider_profile_change(existing, request.controls.as_ref())?;
-
     let after = update_owned_runtime_run_controls(
         &repo_root,
         existing,
@@ -404,37 +402,6 @@ fn runtime_run_controls_as_input(
         plan_mode_required: snapshot.controls.active.plan_mode_required,
         auto_compact_enabled: snapshot.controls.active.auto_compact_enabled,
     }
-}
-
-fn reject_provider_profile_change(
-    existing: &RuntimeRunSnapshotRecord,
-    controls: Option<&crate::commands::RuntimeRunControlInputDto>,
-) -> CommandResult<()> {
-    let requested_profile_id = controls
-        .and_then(|controls| controls.provider_profile_id.as_deref())
-        .map(str::trim)
-        .filter(|profile_id| !profile_id.is_empty());
-    let active_profile_id = existing
-        .controls
-        .active
-        .provider_profile_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|profile_id| !profile_id.is_empty());
-
-    if let (Some(requested), Some(active)) = (requested_profile_id, active_profile_id) {
-        if requested != active {
-            return Err(CommandError::user_fixable(
-                "runtime_run_provider_profile_switch_blocked",
-                format!(
-                    "Xero cannot switch active runtime run `{}` from provider profile `{active}` to `{requested}`. Stop the current run before changing providers.",
-                    existing.run.run_id
-                ),
-            ));
-        }
-    }
-
-    Ok(())
 }
 
 fn normalized_prompt(prompt: Option<&str>) -> Option<String> {

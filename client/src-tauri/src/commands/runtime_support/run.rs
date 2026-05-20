@@ -259,7 +259,7 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
             project_id,
             existing.controls.active.runtime_agent_id,
         )?;
-        reject_runtime_run_provider_profile_switch(existing, requested_controls.as_ref())?;
+        reject_runtime_run_agent_switch(existing, requested_controls.as_ref())?;
         return Ok(RuntimeRunLaunchOutcome {
             repo_root,
             snapshot: existing.clone(),
@@ -1703,7 +1703,7 @@ fn load_provider_profile_selection<R: Runtime>(
     })
 }
 
-fn reject_runtime_run_provider_profile_switch(
+fn reject_runtime_run_agent_switch(
     snapshot: &RuntimeRunSnapshotRecord,
     requested_controls: Option<&RuntimeRunControlInputDto>,
 ) -> CommandResult<()> {
@@ -1720,30 +1720,6 @@ fn reject_runtime_run_provider_profile_switch(
                 snapshot.controls.active.runtime_agent_id.label()
             ),
         ));
-    }
-
-    let requested_profile_id = requested_controls
-        .and_then(|controls| controls.provider_profile_id.as_deref())
-        .map(str::trim)
-        .filter(|profile_id| !profile_id.is_empty());
-    let active_profile_id = snapshot
-        .controls
-        .active
-        .provider_profile_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|profile_id| !profile_id.is_empty());
-
-    if let (Some(requested), Some(active)) = (requested_profile_id, active_profile_id) {
-        if requested != active {
-            return Err(CommandError::user_fixable(
-                "runtime_run_provider_switch_blocked",
-                format!(
-                    "Xero cannot switch active runtime run `{}` from provider `{active}` to `{requested}`. Stop the current run before changing providers.",
-                    snapshot.run.run_id
-                ),
-            ));
-        }
     }
 
     Ok(())
