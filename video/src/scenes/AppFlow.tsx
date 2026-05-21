@@ -22,8 +22,41 @@ const { fontFamily: monoFamily } = loadMono("normal", { weights: ["400", "700"] 
 const SCREEN_RATIO = 2000 / 1199;
 
 // Head-turn exit at the very end.
-const HEAD_TURN_START = 616;
-const HEAD_TURN_END = 640;
+const HEAD_TURN_START = 601;
+const HEAD_TURN_END = 625;
+
+// Solana workbench: as the zoom finishes it flows straight into a downward pan
+// that first opens the Solana Workbench from agent chat, then keeps moving
+// through two sidebar clicks. It starts brisk, clicks Personas (2nd tab), holds
+// that pace briefly, then accelerates down to the Wallet button near the bottom.
+const SOL_OPEN_CLICK = 662; // click Solana Workbench toolbar icon
+const SOL_WORKBENCH_SHOW = SOL_OPEN_CLICK + 4;
+const SOL_CAPTION_START = SOL_WORKBENCH_SHOW + 4;
+const SOL_CLICK = 700; // click Personas (2nd tab) -> swap to bench_2
+const SOL_CLICK2 = 746; // click Wallet button (lower) -> swap to bench_3
+const SOL_FINAL_PULLBACK_START = SOL_CLICK2 + 21;
+const SOL_FINAL_PULLBACK_END = SOL_FINAL_PULLBACK_START + 30;
+const SOL_OPEN_ICON = { fx: 0.946, fy: 0.044 }; // Solana Workbench toolbar icon
+const SOL_TAB2 = { fx: 0.739, fy: 0.192 }; // Personas tab, image fraction
+const SOL_TAB3 = { fx: 0.743, fy: 0.592 }; // Wallet button, image fraction
+const SOL_TAB_NAMES = [
+  "Cluster",
+  "Personas",
+  "Scenarios",
+  "Tx",
+  "Logs",
+  "Indexer",
+  "IDL",
+  "Deploy",
+  "Audit",
+  "Token",
+  "Wallet",
+  "Safety",
+  "RPC",
+];
+const SOL_TAB_NAME_START = SOL_WORKBENCH_SHOW;
+const SOL_TAB_NAME_STRIDE = 18;
+const SOL_TAB_NAME_TRANSITION = 7;
 
 // Beat timing (frames @ 30fps).
 const CLICK1 = 38; // click "Create agent"
@@ -33,7 +66,7 @@ const CANVAS_IN = 72;
 // Scene-3 hand-off (no cut): the list slides out while the app flattens and
 // zooms into the top-left tabs, clicks "Agent", and the screen swaps.
 const T3_START = 150;
-const CLICK3 = 202; // click the "Agent" tab
+const CLICK3 = 198; // click the "Agent" tab
 const AGENT_TAB = { x: 15.7, y: 4.4 };
 const AGENT_FROM = { x: 24, y: 12 };
 
@@ -76,6 +109,16 @@ const MODAL = { left: 34.85, top: 31.6, right: 65.95, bottom: 67.5 };
 // strong acceleration through the middle, quick settle) gives the camera moves
 // punch and depth rather than a flat glide.
 const CAM_EASE = Easing.bezier(0.78, 0, 0.2, 1);
+const CURSOR_SIZE = 96;
+const CURSOR_TIP_X = (3 / 24) * CURSOR_SIZE;
+const CURSOR_TIP_Y = (2 / 24) * CURSOR_SIZE;
+const CLICK_RIPPLE_SIZE = 64;
+const CLICK_RIPPLE_FRAMES = 16;
+const CURSOR_GLITCH_DELAY = 6;
+const CURSOR_GLITCH_FRAMES = 11;
+const CURSOR_PATH =
+  "M3 2 L3 20.5 L8.2 15.4 L11.5 22 L14.1 20.8 L10.8 14.4 L17.4 14.4 Z";
+
 const kf = (frame: number, times: number[], values: number[]) => {
   if (frame <= times[0]) return values[0];
   for (let i = 0; i < times.length - 1; i++) {
@@ -90,11 +133,145 @@ const kf = (frame: number, times: number[], values: number[]) => {
   return values[values.length - 1];
 };
 
-const Cursor: React.FC<{ x: number; y: number; press: number; cam: number }> = ({
+const cursorExitAt = (frame: number, clicks: number[]) => {
+  const progress = Math.max(
+    0,
+    ...clicks.map((at) => {
+      const start = at + CURSOR_GLITCH_DELAY;
+      const end = start + CURSOR_GLITCH_FRAMES;
+      if (frame < start || frame > end) {
+        return 0;
+      }
+      return interpolate(frame, [start, end], [0, 1], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      });
+    }),
+  );
+
+  if (progress <= 0) {
+    return { glitch: 0, opacity: 1 };
+  }
+
+  return {
+    glitch: interpolate(progress, [0, 0.28, 1], [0.3, 1, 0.75], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }),
+    opacity: interpolate(progress, [0, 0.45, 1], [1, 0.38, 0], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    }),
+  };
+};
+
+const CursorGlyph: React.FC<{ glitch: number; seed: number }> = ({ glitch, seed }) => {
+  const svg = (
+    style?: React.CSSProperties,
+    fill = "#ffffff",
+    stroke = "#111111",
+  ) => (
+    <svg
+      width={CURSOR_SIZE}
+      height={CURSOR_SIZE}
+      viewBox="0 0 24 24"
+      style={style}
+    >
+      <path
+        d={CURSOR_PATH}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1.3}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+
+  if (glitch <= 0.001) {
+    return svg();
+  }
+
+  const rnd = (k: string) => random(`cursor-${seed}-${k}`);
+  const signed = (k: string) => rnd(k) * 2 - 1;
+  const split = (2 + rnd("split") * 5) * glitch;
+  const jitterX = signed("jitter-x") * 3.8 * glitch;
+  const jitterY = signed("jitter-y") * 2.4 * glitch;
+  const flicker = 1 - rnd("flicker") * 0.28 * glitch;
+  const overlay = (color: string, dx: number, dy: number): React.CSSProperties => ({
+    position: "absolute",
+    top: 0,
+    left: 0,
+    color,
+    mixBlendMode: "screen",
+    opacity: 0.85,
+    transform: `translate(${dx}px, ${dy}px)`,
+  });
+  const slices = [0, 1, 2, 3, 4]
+    .filter((k) => rnd(`slice-on-${k}`) < 0.7)
+    .map((k) => {
+      const top = Math.round(rnd(`slice-top-${k}`) * 78);
+      const h = 5 + Math.round(rnd(`slice-h-${k}`) * 18);
+      const dx = signed(`slice-dx-${k}`) * 16 * glitch;
+      const dy = signed(`slice-dy-${k}`) * 2.5 * glitch;
+      return { k, top, bottom: Math.max(0, 100 - top - h), dx, dy };
+    });
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: CURSOR_SIZE,
+        height: CURSOR_SIZE,
+        opacity: flicker,
+        transform: `translate(${jitterX}px, ${jitterY}px)`,
+      }}
+    >
+      {svg({ position: "relative", display: "block", opacity: 0.96 })}
+      {svg(
+        overlay("#ff0000", split, signed("red-y") * 1.5 * glitch),
+        "#ff0000",
+        "#380000",
+      )}
+      {svg(
+        overlay("#0000ff", -split, signed("blue-y") * 1.5 * glitch),
+        "#0000ff",
+        "#000038",
+      )}
+      {slices.map((s) => (
+        <div
+          key={s.k}
+          style={{
+            position: "absolute",
+            inset: 0,
+            clipPath: `inset(${s.top}% 0 ${s.bottom}% 0)`,
+            transform: `translate(${s.dx}px, ${s.dy}px)`,
+          }}
+        >
+          {svg()}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const Cursor: React.FC<{
+  x: number;
+  y: number;
+  press: number;
+  cam: number;
+  glitch: number;
+  opacity: number;
+  seed: number;
+}> = ({
   x,
   y,
   press,
   cam,
+  glitch,
+  opacity,
+  seed,
 }) => (
   <div
     style={{
@@ -103,18 +280,11 @@ const Cursor: React.FC<{ x: number; y: number; press: number; cam: number }> = (
       top: `${y}%`,
       transform: `scale(${press / cam})`,
       transformOrigin: "top left",
+      opacity,
       filter: "drop-shadow(0 2px 3px rgba(0,0,0,0.55))",
     }}
   >
-    <svg width={76} height={76} viewBox="0 0 24 24">
-      <path
-        d="M3 2 L3 20.5 L8.2 15.4 L11.5 22 L14.1 20.8 L10.8 14.4 L17.4 14.4 Z"
-        fill="#ffffff"
-        stroke="#111111"
-        strokeWidth={1.3}
-        strokeLinejoin="round"
-      />
-    </svg>
+    <CursorGlyph glitch={glitch} seed={seed} />
   </div>
 );
 
@@ -125,10 +295,10 @@ const ClickRipple: React.FC<{ x: number; y: number; at: number; cam: number }> =
   cam,
 }) => {
   const frame = useCurrentFrame();
-  if (frame < at || frame > at + 13) {
+  if (frame < at || frame > at + CLICK_RIPPLE_FRAMES) {
     return null;
   }
-  const p = interpolate(frame, [at, at + 13], [0, 1], {
+  const p = interpolate(frame, [at, at + CLICK_RIPPLE_FRAMES], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
@@ -138,14 +308,14 @@ const ClickRipple: React.FC<{ x: number; y: number; at: number; cam: number }> =
         position: "absolute",
         left: `${x}%`,
         top: `${y}%`,
-        width: 48,
-        height: 48,
-        marginLeft: -24,
-        marginTop: -24,
+        width: CLICK_RIPPLE_SIZE,
+        height: CLICK_RIPPLE_SIZE,
+        marginLeft: -CLICK_RIPPLE_SIZE / 2,
+        marginTop: -CLICK_RIPPLE_SIZE / 2,
         borderRadius: "50%",
-        border: "2px solid rgba(212,165,116,0.9)",
-        transform: `scale(${interpolate(p, [0, 1], [0.2, 2.5]) / cam})`,
-        opacity: interpolate(p, [0, 1], [0.55, 0]),
+        border: "3px solid rgba(212,165,116,0.95)",
+        transform: `scale(${interpolate(p, [0, 1], [0.22, 3]) / cam})`,
+        opacity: interpolate(p, [0, 1], [0.72, 0]),
       }}
     />
   );
@@ -247,6 +417,133 @@ const ChatCaption: React.FC = () => {
       >
         Chat with agents in the app
       </span>
+    </div>
+  );
+};
+
+const SolanaTabName: React.FC = () => {
+  const frame = useCurrentFrame();
+  const elapsed = Math.max(0, frame - SOL_TAB_NAME_START);
+  const index = Math.floor(elapsed / SOL_TAB_NAME_STRIDE) % SOL_TAB_NAMES.length;
+  const previousIndex =
+    (index + SOL_TAB_NAMES.length - 1) % SOL_TAB_NAMES.length;
+  const label = SOL_TAB_NAMES[index];
+  const firstCycle = elapsed < SOL_TAB_NAME_STRIDE;
+  const previousLabel = firstCycle ? label : SOL_TAB_NAMES[previousIndex];
+  const local = elapsed % SOL_TAB_NAME_STRIDE;
+  const swap = interpolate(local, [0, SOL_TAB_NAME_TRANSITION], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+  const nameSwap = firstCycle ? 1 : swap;
+  const textStyle: React.CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    fontFamily,
+    fontStyle: "italic",
+    fontWeight: 400,
+    fontSize: 32,
+    lineHeight: "36px",
+    letterSpacing: 0,
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <span
+      style={{
+        position: "relative",
+        display: "block",
+        width: 360,
+        height: 36,
+        overflow: "hidden",
+      }}
+    >
+      <span
+        style={{
+          ...textStyle,
+          color: "rgba(255,255,255,0.42)",
+          opacity: 1 - nameSwap,
+          transform: `translateY(${-10 * nameSwap}px)`,
+        }}
+      >
+        {previousLabel}
+      </span>
+      <span
+        style={{
+          ...textStyle,
+          color: "rgba(255,255,255,0.74)",
+          opacity: nameSwap,
+          transform: `translateY(${10 * (1 - nameSwap)}px)`,
+        }}
+      >
+        {label}
+      </span>
+    </span>
+  );
+};
+
+// Bottom-left caption that animates in as the solana zoom settles.
+const SolanaCaption: React.FC = () => {
+  const frame = useCurrentFrame();
+  const capIn = interpolate(frame, [SOL_CAPTION_START, SOL_CAPTION_START + 14], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.out(Easing.cubic),
+  });
+  const capOut = interpolate(
+    frame,
+    [SOL_FINAL_PULLBACK_START - 5, SOL_FINAL_PULLBACK_START + 2],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.in(Easing.cubic),
+    },
+  );
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 88,
+        bottom: 84,
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 20,
+        opacity: capIn * (1 - capOut),
+        transform: `translateY(${(1 - capIn) * 28 - capOut * 16}px)`,
+      }}
+    >
+      <div
+        style={{
+          width: 5,
+          height: 92,
+          borderRadius: 3,
+          backgroundColor: "#D4A574",
+        }}
+      />
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 9,
+        }}
+      >
+        <span
+          style={{
+            fontFamily,
+            fontWeight: 600,
+            fontSize: 54,
+            lineHeight: 1,
+            color: "#ffffff",
+            whiteSpace: "nowrap",
+          }}
+        >
+          Solana workbench
+        </span>
+        <SolanaTabName />
+      </div>
     </div>
   );
 };
@@ -455,7 +752,7 @@ const ComposerType: React.FC = () => {
 const REVEAL_START = 274;
 const CONV_START = 298;
 
-const appear = (frame: number, start: number, dur = 7): React.CSSProperties => {
+const appear = (frame: number, start: number, dur = 6): React.CSSProperties => {
   const t = interpolate(frame, [start, start + dur], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
@@ -538,7 +835,7 @@ const Conversation: React.FC = () => {
   if (f < 0) {
     return null;
   }
-  const scrollY = interpolate(f, [30, 108], [0, -210], {
+  const scrollY = interpolate(f, [28, 100], [0, -210], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
     easing: Easing.inOut(Easing.cubic),
@@ -1526,6 +1823,108 @@ export const AppFlow: React.FC = () => {
   const turnTx = turn * -2300;
   const turnRy = turn * 58;
 
+  // The solana view is locked to the head turn (mirror of the exiting scene)
+  // so they move as one, then ~halfway through it starts a camera push into
+  // the Solana Workbench sidebar (top-right). It begins zoomed out.
+  const solZoom = interpolate(frame, [619, 653], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: CAM_EASE,
+  });
+  const solPullback = interpolate(frame, [714, SOL_CLICK2], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.inOut(Easing.cubic),
+  });
+  const solFinalPullback = interpolate(
+    frame,
+    [SOL_FINAL_PULLBACK_START, SOL_FINAL_PULLBACK_END],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: CAM_EASE,
+    },
+  );
+  const activeSolS = 0.6 + solZoom * 1.55 - solPullback * 0.5;
+  const activeSolFx = 0.5 + solZoom * 0.258;
+  // Downward pan: brisk to the Personas tab, a brief hold at that pace, then a
+  // clear acceleration down to the Wallet button. Piecewise-linear so velocity
+  // only ever increases (no stall) until it settles at the end.
+  const solPanDown = interpolate(
+    frame,
+    [668, 698, 714, 746, 758],
+    [0, 0.072, 0.103, 0.345, 0.37],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+  );
+  const activeSolFy = 0.5 - solZoom * 0.32 + solPanDown; // center -> top, then pan down
+  const solS = interpolate(solFinalPullback, [0, 1], [activeSolS, 0.74]);
+  const solFx = interpolate(solFinalPullback, [0, 1], [activeSolFx, 0.5]);
+  const solFy = interpolate(solFinalPullback, [0, 1], [activeSolFy, 0.5]);
+  const solFinalAgentView = frame >= SOL_FINAL_PULLBACK_START;
+  const solTx = width / 2 - solFx * width * solS;
+  const solTy = height / 2 - solFy * height * solS;
+
+  // The solana view renders objectFit:contain in a 1920x1080 box, so the image
+  // is letterboxed. Map image fractions -> on-screen pixels. By the time we
+  // interact, the head-turn wrapper is identity, so the only transform is
+  // translate(solTx,solTy) scale(solS).
+  const solImgScale = Math.min(width / 3032, height / 1812);
+  const solImgW = 3032 * solImgScale;
+  const solImgH = 1812 * solImgScale;
+  const solImgOffX = (width - solImgW) / 2;
+  const solImgOffY = (height - solImgH) / 2;
+  const solTabPos = (fx: number, fy: number) => ({
+    x: solTx + (solImgOffX + fx * solImgW) * solS,
+    y: solTy + (solImgOffY + fy * solImgH) * solS,
+  });
+  const openIcon = solTabPos(SOL_OPEN_ICON.fx, SOL_OPEN_ICON.fy);
+  const tab2 = solTabPos(SOL_TAB2.fx, SOL_TAB2.fy);
+  const tab3 = solTabPos(SOL_TAB3.fx, SOL_TAB3.fy);
+  // Cursor: one continuous pointer opens the Workbench, continues through the
+  // sidebar tab sequence, then glitches away only after the final click. All
+  // targets track the live camera pan.
+  const solCurIn = interpolate(frame, [624, 632], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const approachOpen = interpolate(frame, [628, SOL_OPEN_CLICK], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.inOut(Easing.cubic),
+  });
+  const toTab2 = interpolate(frame, [SOL_OPEN_CLICK + 6, SOL_CLICK], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.inOut(Easing.cubic),
+  });
+  const toTab3 = interpolate(frame, [SOL_CLICK + 6, SOL_CLICK2], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: Easing.inOut(Easing.cubic),
+  });
+  const solCurX =
+    openIcon.x +
+    (tab2.x - openIcon.x) * toTab2 +
+    (tab3.x - tab2.x) * toTab3 +
+    (1 - approachOpen) * 240;
+  const solCurY =
+    openIcon.y +
+    (tab2.y - openIcon.y) * toTab2 +
+    (tab3.y - tab2.y) * toTab3 +
+    (1 - approachOpen) * 200;
+  const solPress =
+    1 -
+    0.16 *
+      Math.max(
+        pressDip(frame, SOL_OPEN_CLICK),
+        pressDip(frame, SOL_CLICK),
+        pressDip(frame, SOL_CLICK2),
+      );
+  const solCursorExit = cursorExitAt(frame, [SOL_CLICK2]);
+  const solCursorVisible =
+    frame >= 624 && frame <= SOL_CLICK2 + CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES;
+
   // Camera: zoom into "Create agent", pan to the modal, then zoom out to reveal
   // the whole canvas.
   // Ends by zooming out past 1.0 and panning right (small focal x) so the agent
@@ -1533,7 +1932,7 @@ export const AppFlow: React.FC = () => {
   // Opens further out (whole app visible) with a brief hold, then zooms in.
   const camS = kf(
     frame,
-    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 422, 446, 512, 534],
+    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 414, 438, 512, 534],
     [
       0.78, 0.78, 1.55, 1.55, 1.45, 1.45, 0.85, 0.85, 2.6, 2.6, 1.9, 1.9, 1.62,
       1.62, 0.85, 0.85, 0.85,
@@ -1541,7 +1940,7 @@ export const AppFlow: React.FC = () => {
   );
   const camFx = kf(
     frame,
-    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 422, 446, 512, 534],
+    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 414, 438, 512, 534],
     [
       0.5, 0.5, 0.515, 0.515, 0.5, 0.5, 0.034, 0.034, 0.157, 0.157, 0.518, 0.518,
       0.55, 0.55, 0.034, 0.034, 1.17,
@@ -1549,7 +1948,7 @@ export const AppFlow: React.FC = () => {
   );
   const camFy = kf(
     frame,
-    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 422, 446, 512, 534],
+    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 414, 438, 512, 534],
     [
       0.5, 0.5, 0.557, 0.557, 0.5, 0.5, 0.5, 0.5, 0.09, 0.09, 0.715, 0.715, 0.4,
       0.4, 0.5, 0.5, 0.525,
@@ -1591,8 +1990,10 @@ export const AppFlow: React.FC = () => {
         pressDip(frame, CLICK2),
         pressDip(frame, CLICK3),
       );
+  const cursorExit = cursorExitAt(frame, [CLICK2, CLICK3]);
   const cursorVisible =
-    frame < CANVAS_IN + 6 || (frame >= 158 && frame < CLICK3 + 6);
+    frame < CLICK2 + CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES ||
+    (frame >= 158 && frame < CLICK3 + CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES);
 
   // Modal: springs in on click 1, scales out on click 2.
   const modalIn = spring({
@@ -1637,11 +2038,11 @@ export const AppFlow: React.FC = () => {
   // The app eases into a hovering 3D perspective once it settles, then flattens
   // back out for the scene-3 hand-off.
   // Flat through the composer/typing, then a gentle 3D angle while the
-  // conversation streams (298-422), growing into the full card tilt at the
+  // conversation streams (298-414), growing into the full card tilt at the
   // zoom-out.
   const tiltP = kf(
     frame,
-    [CANVAS_IN, 112, T3_START, T3_START + 20, 298, 320, 422, 446],
+    [CANVAS_IN, 112, T3_START, T3_START + 20, 298, 318, 414, 438],
     [0, 1, 1, 0, 0, 0.78, 0.78, 1],
   );
   // As the combo slides to the left at the close, flip the yaw so the cards
@@ -1652,7 +2053,7 @@ export const AppFlow: React.FC = () => {
   });
   // While the conversation is up, the plane gently rocks so its 3D angle is in
   // motion — depth reads far better moving than static at this zoom.
-  const convPhase = interpolate(frame, [298, 318, 408, 422], [0, 1, 1, 0], {
+  const convPhase = interpolate(frame, [298, 316, 400, 414], [0, 1, 1, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
@@ -1794,7 +2195,15 @@ export const AppFlow: React.FC = () => {
           <ClickRipple x={AGENT_TAB.x} y={AGENT_TAB.y} at={CLICK3} cam={camS} />
 
             {cursorVisible && (
-              <Cursor x={cx} y={cy} press={press} cam={camS} />
+              <Cursor
+                x={cx}
+                y={cy}
+                press={press}
+                cam={camS}
+                glitch={cursorExit.glitch}
+                opacity={cursorExit.opacity}
+                seed={frame}
+              />
             )}
 
             {/* Cloud iPhone, on the app's own tilted plane — revealed (not slid
@@ -1840,7 +2249,116 @@ export const AppFlow: React.FC = () => {
         </AbsoluteFill>
       </AbsoluteFill>
 
-      {[CLICK1, CLICK2, CLICK3].map((at) => (
+      {/* As the head turn swings the scene off-left, the next view (solana
+          benchmark) pans in from the right and settles face-on — same motion. */}
+      {turn > 0.001 && (
+        <AbsoluteFill style={{ perspective: 1700 }}>
+          <AbsoluteFill
+            style={{
+              transform: `translateX(${(1 - turn) * 2300}px) rotateY(${-(1 - turn) * 58}deg)`,
+              transformOrigin: "center center",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                transformOrigin: "0 0",
+                transform: `translate(${solTx}px, ${solTy}px) scale(${solS})`,
+              }}
+            >
+              <Img
+                src={staticFile("agent_chat.png")}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  opacity:
+                    frame < SOL_WORKBENCH_SHOW || solFinalAgentView ? 1 : 0,
+                }}
+              />
+              <Img
+                src={staticFile("solana_bench_1.png")}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  opacity:
+                    frame >= SOL_WORKBENCH_SHOW && frame < SOL_CLICK ? 1 : 0,
+                }}
+              />
+              <Img
+                src={staticFile("solana_bench_2.png")}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  opacity: frame >= SOL_CLICK && frame < SOL_CLICK2 ? 1 : 0,
+                }}
+              />
+              <Img
+                src={staticFile("solana_bench_3.png")}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  opacity:
+                    frame >= SOL_CLICK2 && !solFinalAgentView ? 1 : 0,
+                }}
+              />
+            </div>
+          </AbsoluteFill>
+        </AbsoluteFill>
+      )}
+
+      {/* Cursor opens Solana Workbench, continues through the sidebar, then exits. */}
+      {solCursorVisible && (
+        <>
+          <div
+            style={{
+              position: "absolute",
+              left: solCurX - CURSOR_TIP_X,
+              top: solCurY - CURSOR_TIP_Y,
+              transform: `scale(${solPress})`,
+              transformOrigin: "top left",
+              opacity: solCurIn * solCursorExit.opacity,
+              filter: "drop-shadow(0 2px 3px rgba(0,0,0,0.55))",
+            }}
+          >
+            <CursorGlyph glitch={solCursorExit.glitch} seed={frame} />
+          </div>
+          <ClickRipple
+            x={(openIcon.x / width) * 100}
+            y={(openIcon.y / height) * 100}
+            at={SOL_OPEN_CLICK}
+            cam={1}
+          />
+          <ClickRipple
+            x={(tab2.x / width) * 100}
+            y={(tab2.y / height) * 100}
+            at={SOL_CLICK}
+            cam={1}
+          />
+          <ClickRipple
+            x={(tab3.x / width) * 100}
+            y={(tab3.y / height) * 100}
+            at={SOL_CLICK2}
+            cam={1}
+          />
+        </>
+      )}
+
+      {frame >= SOL_CAPTION_START && <SolanaCaption />}
+
+      {[CLICK1, CLICK2, CLICK3, SOL_OPEN_CLICK, SOL_CLICK, SOL_CLICK2].map((at) => (
         <Sequence key={at} from={at} durationInFrames={12} layout="none">
           <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.4} />
         </Sequence>
