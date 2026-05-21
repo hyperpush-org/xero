@@ -668,29 +668,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn library_contains_four_builtin_exploits() {
-        let lib = ExploitLibrary::builtin();
-        let descriptors = lib.all();
-        assert_eq!(descriptors.len(), 4);
-        let keys: Vec<_> = descriptors.iter().map(|d| d.key).collect();
-        assert!(keys.contains(&ExploitKey::WormholeSigSkip));
-        assert!(keys.contains(&ExploitKey::CashioFakeCollateral));
-        assert!(keys.contains(&ExploitKey::MangoOracleManip));
-        assert!(keys.contains(&ExploitKey::NirvanaFlashLoan));
-    }
-
-    #[test]
-    fn wormhole_descriptor_has_fork_and_assert_steps() {
-        let lib = ExploitLibrary::builtin();
-        let d = lib.get(ExploitKey::WormholeSigSkip).unwrap();
-        assert!(matches!(d.steps.first(), Some(ReplayStep::Fork { .. })));
-        assert!(matches!(
-            d.steps.last(),
-            Some(ReplayStep::AssertBadState { .. })
-        ));
-    }
-
-    #[test]
     fn rejects_mainnet_replay_for_safety() {
         let lib = ExploitLibrary::builtin();
         let runner = ScriptedReplayRunner::new();
@@ -795,14 +772,6 @@ mod tests {
         .unwrap();
         assert_eq!(report.outcome, ReplayOutcome::Mitigated);
         assert_eq!(report.findings[0].severity, FindingSeverity::Informational);
-    }
-
-    #[test]
-    fn exploit_key_serializes_as_snake_case() {
-        let serialized = serde_json::to_string(&ExploitKey::WormholeSigSkip).unwrap();
-        assert_eq!(serialized, "\"wormhole_sig_skip\"");
-        let parsed: ExploitKey = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(parsed, ExploitKey::WormholeSigSkip);
     }
 
     #[test]

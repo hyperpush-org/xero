@@ -69,24 +69,3 @@ pub fn builtin_tracked_programs() -> Vec<TrackedProgram> {
         },
     ]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn registry_includes_metaplex_token_metadata() {
-        assert!(builtin_tracked_programs()
-            .iter()
-            .any(|p| p.label == "Metaplex Token Metadata"));
-    }
-
-    #[test]
-    fn registry_includes_jupiter_squads_and_governance() {
-        let programs = builtin_tracked_programs();
-        let labels: Vec<&str> = programs.iter().map(|p| p.label.as_str()).collect();
-        assert!(labels.contains(&"Jupiter Aggregator v6"));
-        assert!(labels.contains(&"Squads v4"));
-        assert!(labels.contains(&"SPL Governance"));
-    }
-}

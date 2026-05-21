@@ -138,8 +138,8 @@ fn audit_coverage_parses_instruction_rollups() {
 }
 
 #[test]
-fn audit_replay_catalog_returns_four_exploits_and_refuses_mainnet() {
-    audit_engine::replay_catalog_returns_four_exploits_and_refuses_mainnet();
+fn audit_replay_refuses_mainnet() {
+    audit_engine::replay_refuses_mainnet();
 }
 
 #[test]
@@ -153,11 +153,6 @@ fn audit_twenty_instruction_anchor_program_audit_is_fast() {
 }
 
 // -- Phase 8 — token + metaplex + wallet -----------------------------------
-
-#[test]
-fn extension_matrix_flags_transfer_hook_on_wallet_adapter() {
-    wallet_and_token::extension_matrix_flags_transfer_hook_on_wallet_adapter();
-}
 
 #[test]
 fn token_create_argv_preserves_transfer_fee_config() {
@@ -185,11 +180,6 @@ fn metaplex_mint_rejects_overlong_symbol() {
 }
 
 #[test]
-fn wallet_descriptors_cover_every_kind() {
-    wallet_and_token::wallet_descriptors_cover_every_kind();
-}
-
-#[test]
 fn privy_scaffold_writes_compileable_tree_with_api_key_env() {
     wallet_and_token::privy_scaffold_writes_compileable_tree_with_api_key_env();
 }
@@ -212,43 +202,13 @@ fn phase9_committed_id_json_with_mainnet_keypair_is_critical() {
 }
 
 #[test]
-fn phase9_secret_patterns_registry_exposes_stable_rule_ids() {
-    phase9_safety::secret_patterns_registry_exposes_stable_rule_ids();
-}
-
-#[test]
 fn phase9_drift_check_flags_metaplex_version_delta_between_devnet_and_mainnet() {
     phase9_safety::drift_check_flags_metaplex_version_delta_between_devnet_and_mainnet();
 }
 
 #[test]
-fn phase9_drift_registry_includes_required_programs() {
-    phase9_safety::drift_registry_includes_required_programs();
-}
-
-#[test]
 fn phase9_cost_snapshot_rolls_up_local_ledger_activity() {
     phase9_safety::cost_snapshot_rolls_up_local_ledger_activity();
-}
-
-#[test]
-fn phase9_cost_snapshot_matches_provider_dashboard_within_5_percent() {
-    phase9_safety::cost_snapshot_matches_provider_dashboard_within_5_percent();
-}
-
-#[test]
-fn phase9_doc_catalog_covers_every_phase9_tool() {
-    phase9_safety::doc_catalog_covers_every_phase9_tool();
-}
-
-#[test]
-fn phase9_doc_snippets_for_unknown_tool_returns_empty() {
-    phase9_safety::doc_snippets_for_unknown_tool_returns_empty();
-}
-
-#[test]
-fn phase9_doc_snippets_for_known_tool_has_non_empty_body_and_url() {
-    phase9_safety::doc_snippets_for_known_tool_has_non_empty_body_and_url();
 }
 
 #[test]

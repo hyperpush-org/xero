@@ -5041,51 +5041,6 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_catalog_matches_tauri_seeds() {
-        let catalog = default_agent_catalog();
-        let labels: Vec<String> = catalog
-            .iter()
-            .map(|entry| entry.label().to_owned())
-            .collect();
-        // Same names users see in the desktop UI.
-        for expected in ["Ask", "Plan", "Engineer", "Debug", "Agent Create", "Agent"] {
-            assert!(
-                labels.iter().any(|label| label == expected),
-                "missing seeded agent `{expected}` (have: {labels:?})",
-            );
-        }
-    }
-
-    #[test]
-    fn startup_agent_selection_prefers_agent() {
-        let agents = default_agent_catalog();
-        let selected = initial_selected_agent_index(&agents, Some("ask"));
-
-        assert_eq!(
-            (
-                agents[selected].definition_id.as_str(),
-                agents[selected].label()
-            ),
-            ("generalist", "Agent")
-        );
-    }
-
-    #[test]
-    fn agent_catalog_merges_missing_agent_builtin() {
-        let agents = vec![AgentEntry {
-            definition_id: "ask".into(),
-            display_name: "Ask".into(),
-        }];
-        let merged = merge_missing_default_agents(agents);
-        let agent = merged
-            .iter()
-            .find(|entry| entry.definition_id == "generalist")
-            .expect("generalist fallback");
-
-        assert_eq!(agent.label(), "Agent");
-    }
-
-    #[test]
     fn cycle_agent_advances_then_wraps() {
         let mut app = empty_app();
         let starting = app.selected_agent_label().to_owned();

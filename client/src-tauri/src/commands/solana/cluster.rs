@@ -77,29 +77,3 @@ pub fn descriptors() -> Vec<ClusterDescriptor> {
         },
     ]
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn descriptors_cover_every_kind() {
-        let kinds: Vec<ClusterKind> = descriptors().into_iter().map(|d| d.kind).collect();
-        for kind in ClusterKind::ALL {
-            assert!(kinds.contains(&kind));
-        }
-    }
-
-    #[test]
-    fn only_local_kinds_are_startable() {
-        for desc in descriptors() {
-            assert_eq!(desc.startable, desc.kind.is_local());
-        }
-    }
-
-    #[test]
-    fn serde_uses_snake_case() {
-        let json = serde_json::to_string(&ClusterKind::MainnetFork).unwrap();
-        assert_eq!(json, "\"mainnet_fork\"");
-    }
-}

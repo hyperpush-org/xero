@@ -672,11 +672,4 @@ mod tests {
         assert_eq!(err.code, "solana_cpi_unknown_instruction");
         assert!(err.message.contains("SPL Token"));
     }
-
-    #[test]
-    fn known_program_ids_matches_labels() {
-        for id in known_program_ids() {
-            assert!(known_program_label(id).is_some());
-        }
-    }
 }

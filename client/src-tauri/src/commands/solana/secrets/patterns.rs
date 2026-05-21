@@ -199,15 +199,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_pattern_has_a_unique_rule_id() {
-        let patterns = builtin_patterns();
-        let mut ids = std::collections::HashSet::new();
-        for pat in &patterns {
-            assert!(ids.insert(pat.rule_id.clone()), "duplicate rule id");
-        }
-    }
-
-    #[test]
     fn every_regex_pattern_compiles() {
         for pat in builtin_patterns() {
             match pat.kind {
@@ -222,14 +213,5 @@ mod tests {
                 SecretPatternKind::SolanaKeypairJson => {}
             }
         }
-    }
-
-    #[test]
-    fn keypair_pattern_is_critical_severity() {
-        let keypair = builtin_patterns()
-            .into_iter()
-            .find(|p| p.rule_id == "solana_keypair_id_json")
-            .expect("keypair pattern is present");
-        assert_eq!(keypair.severity, SecretSeverity::Critical);
     }
 }

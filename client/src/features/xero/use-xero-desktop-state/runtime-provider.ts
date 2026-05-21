@@ -270,19 +270,31 @@ export function buildComposerModelOptions(
 export function resolveSelectedModel(
   credentials: ProviderCredentialsSnapshotDto | null,
   selectedRunControls: RuntimeRunControlSelectionView | null,
-  options: { runtimeRun?: RuntimeRunView | null } = {},
+  options: {
+    runtimeRun?: RuntimeRunView | null
+    composerModelOptions?: readonly ComposerModelOptionView[]
+  } = {},
 ): SelectedModelView {
   const list = credentials?.credentials ?? []
 
-  // 1. Runtime-run truth: selected controls carry the (provider, model) pair.
+  // 1. Runtime-run truth: selected controls carry the profile/model pair.
   if (selectedRunControls) {
-    const runProviderId = options.runtimeRun?.providerId?.trim() ?? ''
+    const controlModelId = selectedRunControls.modelId || null
+    const controlProfileId = selectedRunControls.providerProfileId?.trim() ?? ''
+    const selectedOption =
+      options.composerModelOptions?.find(
+        (option) =>
+          option.modelId === controlModelId &&
+          controlProfileId.length > 0 &&
+          option.profileId === controlProfileId,
+      ) ?? null
+    const runProviderId = selectedOption?.providerId ?? options.runtimeRun?.providerId?.trim() ?? ''
     if (runProviderId.length > 0 && isKnownRuntimeProviderId(runProviderId)) {
       const credential = findProviderCredential(credentials, runProviderId)
       return {
         providerId: runProviderId,
         providerLabel: getRuntimeProviderLabel(runProviderId),
-        modelId: selectedRunControls.modelId || null,
+        modelId: controlModelId,
         hasCredential: credential !== null,
         credentialKind: credential?.kind ?? null,
         source: 'runtime_run',

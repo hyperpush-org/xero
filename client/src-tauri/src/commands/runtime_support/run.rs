@@ -63,10 +63,10 @@ pub(crate) struct RuntimeRunLaunchOutcome {
     pub reconnected: bool,
 }
 
-struct ActiveProviderProfileSelection {
-    profile_id: String,
-    provider_id: String,
-    model_id: String,
+pub(crate) struct ActiveProviderProfileSelection {
+    pub(crate) profile_id: String,
+    pub(crate) provider_id: String,
+    pub(crate) model_id: String,
 }
 
 pub(crate) struct OwnedRuntimePromptStart {
@@ -1320,6 +1320,7 @@ pub(crate) fn stop_owned_runtime_run(
 pub(crate) fn update_owned_runtime_run_controls(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
+    provider_id: &str,
     controls: Option<RuntimeRunControlInputDto>,
     prompt: Option<String>,
     attachments: &[crate::commands::StagedAgentAttachmentDto],
@@ -1456,7 +1457,7 @@ pub(crate) fn update_owned_runtime_run_controls(
         &snapshot.run.project_id,
         &snapshot.run.agent_session_id,
         &snapshot.run.run_id,
-        &snapshot.run.provider_id,
+        provider_id,
         &run_controls,
         snapshot.run.status.clone(),
         snapshot.run.last_error.clone(),
@@ -1574,7 +1575,7 @@ pub(crate) fn bind_owned_runtime_run_to_agent_handoff(
     )
 }
 
-fn resolve_owned_runtime_profile_selection<R: Runtime>(
+pub(crate) fn resolve_owned_runtime_profile_selection<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     requested_controls: Option<&RuntimeRunControlInputDto>,

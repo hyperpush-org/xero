@@ -1459,31 +1459,25 @@ fn owned_agent_event_runtime_item(
             item.text = item.detail.clone();
         }
         AgentRunEventKind::ContextManifestRecorded => {
-            item.kind = RuntimeStreamItemKind::Tool;
+            item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_context_manifest_recorded".into());
-            item.tool_call_id = Some(format!("runtime-project-context:{event_id}:manifest"));
-            item.tool_name = Some("project_context".into());
-            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.title = Some("Project context".into());
             item.detail = context_event_tool_detail(
                 &payload,
                 "context_manifest",
                 "Context manifest recorded.",
             );
-            item.tool_result_preview = context_event_tool_result_preview(&payload);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::RetrievalPerformed => {
-            item.kind = RuntimeStreamItemKind::Tool;
+            item.kind = RuntimeStreamItemKind::Activity;
             item.code = Some("owned_agent_retrieval_performed".into());
-            item.tool_call_id = Some(format!("runtime-project-context:{event_id}:retrieval"));
-            item.tool_name = Some("project_context".into());
-            item.tool_state = Some(RuntimeToolCallState::Succeeded);
+            item.title = Some("Project context".into());
             item.detail = context_event_tool_detail(
                 &payload,
                 "retrieval",
                 "Durable context retrieval performed.",
             );
-            item.tool_result_preview = context_event_tool_result_preview(&payload);
             item.text = item.detail.clone();
         }
         AgentRunEventKind::MemoryCandidateCaptured => {
@@ -3569,7 +3563,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_agent_context_events_project_as_project_context_tools() {
+    fn owned_agent_manifest_and_retrieval_events_project_as_runtime_diagnostics() {
         let retrieval = owned_agent_event_runtime_item(
             event(
                 AgentRunEventKind::RetrievalPerformed,
@@ -3578,25 +3572,24 @@ mod tests {
             "owned-agent:run-1",
             None,
         )
-        .expect("retrieval tool item");
+        .expect("retrieval activity item");
 
-        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Tool);
-        assert_eq!(retrieval.tool_name.as_deref(), Some("project_context"));
+        assert_eq!(retrieval.kind, RuntimeStreamItemKind::Activity);
         assert_eq!(
-            retrieval.tool_call_id.as_deref(),
-            Some("runtime-project-context:42:retrieval")
+            retrieval.code.as_deref(),
+            Some("owned_agent_retrieval_performed")
         );
-        assert_eq!(retrieval.tool_state, Some(RuntimeToolCallState::Succeeded));
+        assert_eq!(retrieval.title.as_deref(), Some("Project context"));
         assert_eq!(
             retrieval.detail.as_deref(),
             Some(
                 "action: retrieval, queryId: query-1, resultCount: 2 · Retrieved durable context from LanceDB."
             )
         );
-        assert!(retrieval
-            .tool_result_preview
-            .as_deref()
-            .is_some_and(|preview| preview.contains("\"queryId\": \"query-1\"")));
+        assert!(retrieval.tool_name.is_none());
+        assert!(retrieval.tool_call_id.is_none());
+        assert!(retrieval.tool_state.is_none());
+        assert!(retrieval.tool_result_preview.is_none());
 
         let manifest = owned_agent_event_runtime_item(
             event(
@@ -3606,13 +3599,15 @@ mod tests {
             "owned-agent:run-1",
             None,
         )
-        .expect("manifest tool item");
-        assert_eq!(manifest.kind, RuntimeStreamItemKind::Tool);
-        assert_eq!(manifest.tool_name.as_deref(), Some("project_context"));
+        .expect("manifest activity item");
+        assert_eq!(manifest.kind, RuntimeStreamItemKind::Activity);
         assert_eq!(
-            manifest.tool_call_id.as_deref(),
-            Some("runtime-project-context:42:manifest")
+            manifest.code.as_deref(),
+            Some("owned_agent_context_manifest_recorded")
         );
+        assert_eq!(manifest.title.as_deref(), Some("Project context"));
+        assert!(manifest.tool_name.is_none());
+        assert!(manifest.tool_call_id.is_none());
         assert!(manifest
             .detail
             .as_deref()

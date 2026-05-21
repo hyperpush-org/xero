@@ -382,9 +382,11 @@ function remoteAgentRunEventToTurn(
 	}
 	if (
 		eventKind === "context_manifest_recorded" ||
-		eventKind === "retrieval_performed" ||
-		eventKind === "memory_candidate_captured"
+		eventKind === "retrieval_performed"
 	) {
+		return null;
+	}
+	if (eventKind === "memory_candidate_captured") {
 		return remoteContextEventToTurn(payload, runId, sequence, event, eventKind);
 	}
 	if (eventKind === "file_changed" && payload) {

@@ -98,7 +98,8 @@ export function useHistoricalConversationTurns(
 ): ConversationTurn[] | null {
   const projectId = agent?.project.id ?? null
   const agentSessionId = agent?.project.selectedAgentSessionId ?? null
-  const activeRunId = agent?.runtimeRun?.runId ?? null
+  const runtimeRun = agent?.runtimeRun ?? null
+  const activeRunId = runtimeRun && !runtimeRun.isTerminal ? runtimeRun.runId : null
   const getSessionTranscript = desktopAdapter?.getSessionTranscript
   const [turnsByKey, setTurnsByKey] = useState<{
     sessionKey: string

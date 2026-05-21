@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Loader2,
   Plus,
@@ -57,10 +57,15 @@ export function SolanaPersonaPanel({
   const [expandedName, setExpandedName] = useState<string | null>(null)
   const [lastReceipt, setLastReceipt] = useState<FundingReceipt | null>(null)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const onRefreshRef = useRef(onRefresh)
 
   useEffect(() => {
-    onRefresh()
-  }, [cluster, onRefresh])
+    onRefreshRef.current = onRefresh
+  }, [onRefresh])
+
+  useEffect(() => {
+    onRefreshRef.current()
+  }, [cluster])
 
   const rolePresets = useMemo(() => {
     const map = new Map<PersonaRole, RoleDescriptor>()

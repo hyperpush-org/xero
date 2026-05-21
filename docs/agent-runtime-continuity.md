@@ -6,7 +6,7 @@ This document is a runtime-behavior reference, not a feature tour. For shipped s
 
 ## Contracts
 
-Every owned-agent provider request is assembled from a deterministic context package and a persisted context manifest. The package is built before the request is sent. The manifest records what went in, what was excluded and why, the policy decision, and any retrieval, compaction, or handoff identifiers used. No provider call is made without a manifest stored.
+Every owned-agent provider request is assembled from a deterministic context package and a persisted context manifest. The package is built before the request is sent. The manifest records what went in, what was excluded and why, the policy decision, and any retrieval, compaction, or handoff identifiers used. No provider call is made without a manifest stored. Pre-provider durable-context retrieval is conditional: generic prompts can skip it, while prior-work-sensitive or project-specific prompts still retrieve source-cited context before the provider call.
 
 Project records, approved memory, handoff bundles, and retrieval logs live in app-data-backed databases. SQLite holds transactional state (sessions, runs, manifests, lineage, retrieval logs, policy settings, handoff attempts). LanceDB holds retrieval state (handoffs, project facts, decisions, plans, findings, verification, memories, candidates) with embedding metadata.
 
@@ -56,7 +56,7 @@ Pending lineage rows are discoverable via `list_agent_handoff_lineage_by_status`
 
 ## Retrieval And Memory
 
-Project records and reviewed memory live in LanceDB with embedding model and version metadata. Hybrid retrieval combines vector similarity, keyword search, kind/tag filters, related paths, agent id, session id, recency, importance, and confidence. When embeddings are unavailable, the runtime falls back to deterministic keyword retrieval rather than injecting empty context.
+Project records and reviewed memory live in LanceDB with embedding model and version metadata. Hybrid retrieval combines vector similarity, keyword search, kind/tag filters, related paths, agent id, session id, recency, importance, and confidence. When embeddings are unavailable, the runtime falls back to deterministic keyword retrieval rather than injecting empty context. The provider prompt always includes tool-mediated durable-context guidance, so the model can still call `project_context` later when it decides prior project state is needed.
 
 A read-only project context tool is exposed to all three agents. Ask is observe-only and cannot propose new records. Engineer and Debug can request candidate records, but the runtime owns the final write, and write-like model proposals never become trusted memory without review.
 

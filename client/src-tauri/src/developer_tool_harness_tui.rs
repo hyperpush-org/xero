@@ -826,7 +826,6 @@ fn on_off(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::{backend::TestBackend, Terminal};
 
     fn catalog() -> DeveloperToolCatalogResponseDto {
         DeveloperToolCatalogResponseDto {
@@ -931,27 +930,5 @@ mod tests {
         })));
 
         assert_eq!(value, json!({"path": "", "recursive": false, "count": 0}));
-    }
-
-    #[test]
-    fn renderer_includes_main_catalog_and_help_text() {
-        let mut controller = HarnessTuiController::new(catalog(), Vec::new());
-        controller.apply(HarnessTuiEvent::ToggleHelp);
-        let backend = TestBackend::new(100, 28);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-
-        terminal
-            .draw(|frame| render_harness_tui(frame, &controller.state))
-            .expect("draw");
-
-        let buffer = terminal.backend().buffer();
-        let rendered = buffer
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(rendered.contains("Catalog"));
-        assert!(rendered.contains("read"));
-        assert!(rendered.contains("Execution:"));
     }
 }

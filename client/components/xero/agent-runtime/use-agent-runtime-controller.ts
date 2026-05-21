@@ -835,6 +835,7 @@ export function useAgentRuntimeController({
     void queueRuntimeRunControls(
       getComposerControlInput({
         runtimeAgentId: effectiveRuntimeAgentId,
+        agentDefinitionId: effectiveAgentDefinitionId,
         models: availableModels,
         selectionKey: value,
         thinkingEffort: selectedThinkingEffort,
@@ -859,6 +860,7 @@ export function useAgentRuntimeController({
     void queueRuntimeRunControls(
       getComposerControlInput({
         runtimeAgentId: effectiveRuntimeAgentId,
+        agentDefinitionId: effectiveAgentDefinitionId,
         models: availableModels,
         selectionKey: effectiveModelSelectionKey,
         thinkingEffort: value,
@@ -882,6 +884,7 @@ export function useAgentRuntimeController({
     void queueRuntimeRunControls(
       getComposerControlInput({
         runtimeAgentId: effectiveRuntimeAgentId,
+        agentDefinitionId: effectiveAgentDefinitionId,
         models: availableModels,
         selectionKey: effectiveModelSelectionKey,
         thinkingEffort: effectiveThinkingEffort,

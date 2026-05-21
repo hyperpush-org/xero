@@ -23,8 +23,8 @@ use super::runtime_support::{
     bind_owned_runtime_run_to_agent_handoff, emit_runtime_run_updated_if_changed,
     ensure_owned_runtime_provider_turn_capabilities, fail_owned_runtime_run,
     launch_or_reconnect_runtime_run, load_persisted_runtime_run,
-    resolve_owned_agent_provider_config, resolve_project_root, runtime_run_dto_from_snapshot,
-    update_owned_runtime_run_controls,
+    resolve_owned_agent_provider_config, resolve_owned_runtime_profile_selection,
+    resolve_project_root, runtime_run_dto_from_snapshot, update_owned_runtime_run_controls,
 };
 
 #[tauri::command]
@@ -98,9 +98,17 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         return Ok(runtime_run_dto_from_snapshot(&outcome.snapshot));
     }
 
+    let next_provider_id = match request.controls.as_ref() {
+        Some(controls) => {
+            resolve_owned_runtime_profile_selection(&app, &state, Some(controls))?.provider_id
+        }
+        None => existing.run.provider_id.clone(),
+    };
+
     let after = update_owned_runtime_run_controls(
         &repo_root,
         existing,
+        &next_provider_id,
         request.controls.clone(),
         request.prompt.clone(),
         &request.attachments,

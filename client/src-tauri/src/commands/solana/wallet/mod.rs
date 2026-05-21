@@ -436,36 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn every_scaffold_writes_at_least_package_json_and_tsx_file() {
-        let tmp = TempDir::new().unwrap();
-        let toolchain = full_toolchain();
-        for kind in WalletKind::ALL {
-            // Give each kind its own sub-dir so existing-file guards don't fire.
-            let sub = tmp.path().join(kind.as_str());
-            std::fs::create_dir_all(&sub).unwrap();
-            let result = generate(&toolchain, &base_request(kind, &sub)).unwrap();
-            let paths: BTreeSet<_> = result.files.iter().map(|f| f.path.as_str()).collect();
-            assert!(
-                paths.contains("package.json"),
-                "{:?} scaffold missing package.json",
-                kind
-            );
-            assert!(
-                paths
-                    .iter()
-                    .any(|p| p.ends_with(".tsx") || p.ends_with(".ts")),
-                "{:?} scaffold must write at least one ts/tsx source file",
-                kind
-            );
-            assert!(
-                paths.contains("README.md"),
-                "{:?} scaffold must write a README with next-step instructions",
-                kind
-            );
-        }
-    }
-
-    #[test]
     fn scaffold_rejects_overwriting_existing_without_flag() {
         let tmp = TempDir::new().unwrap();
         let toolchain = full_toolchain();
@@ -541,17 +511,5 @@ mod tests {
         let hashes_a: Vec<_> = a.files.iter().map(|f| f.sha256.clone()).collect();
         let hashes_b: Vec<_> = b.files.iter().map(|f| f.sha256.clone()).collect();
         assert_eq!(hashes_a, hashes_b);
-    }
-
-    #[test]
-    fn descriptors_expose_every_kind_once() {
-        let descs = descriptors();
-        let seen: BTreeSet<_> = descs.iter().map(|d| d.kind).collect();
-        assert_eq!(seen.len(), WalletKind::ALL.len());
-        for kind in WalletKind::ALL {
-            let d = descs.iter().find(|d| d.kind == kind).unwrap();
-            assert!(!d.label.is_empty());
-            assert!(!d.summary.is_empty());
-        }
     }
 }

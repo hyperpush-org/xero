@@ -162,7 +162,7 @@ function isDisplayableUserOrAssistantMessage(
     return false
   }
 
-  return true
+  return false
 }
 
 function toMessageTurn(item: SessionTranscriptItemDto): Extract<ConversationTurn, { kind: 'message' }> {

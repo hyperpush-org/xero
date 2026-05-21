@@ -15,11 +15,13 @@ function publicRedaction() {
 
 function makeAgentPane({
   activeRunId,
+  runtimeRunIsTerminal = false,
   runtimeRunActionStatus = 'idle',
   runtimeStreamStatus = 'idle',
   hasQueuedPrompt = false,
 }: {
   activeRunId: string | null
+  runtimeRunIsTerminal?: boolean
   runtimeRunActionStatus?: AgentPaneView['runtimeRunActionStatus']
   runtimeStreamStatus?: AgentPaneView['runtimeStreamStatus']
   hasQueuedPrompt?: boolean
@@ -30,7 +32,10 @@ function makeAgentPane({
       selectedAgentSessionId: SESSION_ID,
     } as AgentPaneView['project'],
     runtimeRun: activeRunId
-      ? ({ runId: activeRunId } as AgentPaneView['runtimeRun'])
+      ? ({
+          runId: activeRunId,
+          isTerminal: runtimeRunIsTerminal,
+        } as AgentPaneView['runtimeRun'])
       : null,
     runtimeRunActionStatus,
     runtimeStreamStatus,
@@ -193,6 +198,30 @@ describe('useHistoricalConversationTurns', () => {
       expect(turns[2].sourceRunId).toBe('run-A')
       expect(turns[2].targetRunId).toBe('run-B')
     }
+  })
+
+  it('keeps a terminal runtime run in historical conversation turns after reload', async () => {
+    const transcript = makeTranscriptWithHandoff()
+    const { adapter } = makeAdapter(transcript)
+    const { result } = renderHook(() =>
+      useHistoricalConversationTurns(
+        makeAgentPane({
+          activeRunId: 'run-B',
+          runtimeRunIsTerminal: true,
+          runtimeStreamStatus: 'complete',
+        }),
+        adapter,
+      ),
+    )
+
+    await waitFor(() => {
+      expect(result.current).not.toBeNull()
+    })
+
+    const turns = result.current ?? []
+    expect(
+      turns.some((turn) => turn.kind === 'message' && turn.text === 'continuation in fresh run'),
+    ).toBe(true)
   })
 
   it('refetches when the active runId flips (the same-type handoff transition path)', async () => {

@@ -678,16 +678,16 @@ export function buildAgentView({
 
   // Selected model + composer options + blocked flag (credentials-driven).
   const selectedRunControls = runtimeRun?.controls.selected ?? null
-  const selectedModel: SelectedModelView = resolveSelectedModel(
-    providerCredentials,
-    selectedRunControls,
-    { runtimeRun },
-  )
-  const { selectedProvider } = getSelectedProviderProjection(selectedModel)
   const composerModelOptions: ComposerModelOptionView[] = buildComposerModelOptions(
     providerCredentials,
     providerModelCatalogs,
   )
+  const selectedModel: SelectedModelView = resolveSelectedModel(
+    providerCredentials,
+    selectedRunControls,
+    { runtimeRun, composerModelOptions },
+  )
+  const { selectedProvider } = getSelectedProviderProjection(selectedModel)
   const agentRuntimeBlocked =
     providerCredentials !== null
       ? isAgentRuntimeBlocked(providerCredentials, selectedModel)

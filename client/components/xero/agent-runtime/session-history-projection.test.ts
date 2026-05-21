@@ -114,6 +114,33 @@ function makeEventMessageDeltaItem(
   }
 }
 
+function makeRuntimeStreamMessageItem(
+  runId: string,
+  sequence: number,
+  actor: 'user' | 'assistant',
+  text: string,
+): SessionTranscriptItemDto {
+  return {
+    contractVersion: 1,
+    itemId: `${runId}:runtime-stream:${sequence}`,
+    projectId: PROJECT_ID,
+    agentSessionId: SESSION_ID,
+    runId,
+    providerId: PROVIDER_ID,
+    modelId: MODEL_ID,
+    sourceKind: 'runtime_stream',
+    sourceTable: 'runtime_stream_items',
+    sourceId: `${sequence}`,
+    sequence,
+    createdAt: '2026-05-08T10:00:00Z',
+    kind: 'message',
+    actor,
+    title: 'Runtime stream message',
+    text,
+    redaction: publicRedaction(),
+  }
+}
+
 function makeNonMessageItem(
   runId: string,
   sequence: number,
@@ -231,6 +258,35 @@ describe('buildHistoricalConversationTurns', () => {
       role: 'assistant',
       text: 'This project is Xero.',
     })
+  })
+
+  it('uses durable agent messages for historical chat and drops runtime-stream message rows', () => {
+    const transcript = makeTranscript(
+      [makeRun('run-A', 'completed', '2026-05-08T09:00:00Z', 6)],
+      [
+        makeMessageItem('run-A', 1, 'user', 'fizz buzz request'),
+        makeRuntimeStreamMessageItem('run-A', 2, 'assistant', 'println!("Fizz");'),
+        makeRuntimeStreamMessageItem('run-A', 3, 'assistant', '### How it works'),
+        makeMessageItem('run-A', 4, 'assistant', 'Full rendered answer.\n\n### How it works'),
+      ],
+    )
+
+    const turns = buildHistoricalConversationTurns(transcript, { activeRunId: null })
+
+    expect(turns).toHaveLength(2)
+    expect(turns[0]).toMatchObject({
+      kind: 'message',
+      role: 'user',
+      text: 'fizz buzz request',
+    })
+    expect(turns[1]).toMatchObject({
+      kind: 'message',
+      role: 'assistant',
+      text: 'Full rendered answer.\n\n### How it works',
+    })
+    expect(
+      turns.some((turn) => turn.kind === 'message' && turn.text.includes('println!("Fizz");')),
+    ).toBe(false)
   })
 
   it('falls back to the run prompt when a run has no persisted user message row', () => {

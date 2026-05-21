@@ -49,7 +49,7 @@ type Segment =
   | { kind: 'code'; lang: string | null; code: string }
   | { kind: 'text'; text: string }
 
-const FENCE_RE = /(^|\n)```([^\n`]*)\n([\s\S]*?)(?:\n```|$)/g
+const FENCE_RE = /(^|\n)( {0,3})```([^\n`]*)\n([\s\S]*?)(?:\n {0,3}```[^\S\n]*(?=\n|$)|$)/g
 export const MARKDOWN_CODE_BLOCK_HIGHLIGHT_BYTE_LIMIT = 96 * 1024
 const MARKDOWN_SEGMENT_CACHE_MAX_ENTRIES = 240
 export const MARKDOWN_SEGMENT_CACHE_MAX_BYTES = 2 * 1024 * 1024
@@ -92,6 +92,19 @@ function estimateMarkdownSegmentBytes(
   return bytes
 }
 
+function stripFencedCodeIndent(code: string, indentSize: number): string {
+  if (indentSize <= 0) {
+    return code
+  }
+
+  const maxStrip = Math.min(indentSize, 3)
+  const indentRe = new RegExp(`^ {0,${maxStrip}}`)
+  return code
+    .split('\n')
+    .map((line) => line.replace(indentRe, ''))
+    .join('\n')
+}
+
 export function splitFencedSegments(input: string): Segment[] {
   const segments: Segment[] = []
   let lastIndex = 0
@@ -99,7 +112,7 @@ export function splitFencedSegments(input: string): Segment[] {
 
   FENCE_RE.lastIndex = 0
   while ((match = FENCE_RE.exec(input)) !== null) {
-    const [whole, leading, langRaw, body] = match
+    const [whole, leading, indent, langRaw, body] = match
     const start = match.index + leading.length
     if (start > lastIndex) {
       segments.push({ kind: 'text', text: input.slice(lastIndex, start) })
@@ -107,7 +120,7 @@ export function splitFencedSegments(input: string): Segment[] {
     segments.push({
       kind: 'code',
       lang: langRaw.trim().length > 0 ? langRaw.trim().toLowerCase() : null,
-      code: body.replace(/\s+$/g, ''),
+      code: stripFencedCodeIndent(body, indent.length).replace(/\s+$/g, ''),
     })
     lastIndex = match.index + whole.length
   }

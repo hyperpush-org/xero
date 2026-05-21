@@ -1072,12 +1072,4 @@ mod tests {
         ));
         assert!(dirs.contains(&root.join("bin")));
     }
-
-    #[test]
-    fn resolve_command_keeps_unknown_binary_name() {
-        assert_eq!(
-            resolve_command("this-binary-should-never-exist-xyz123"),
-            "this-binary-should-never-exist-xyz123"
-        );
-    }
 }

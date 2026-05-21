@@ -1318,12 +1318,4 @@ mod tests {
         assert_eq!(truncate_log("hello"), "hello");
         assert_eq!(truncate_log("trailing\n"), "trailing");
     }
-
-    #[test]
-    fn java_major_parses_modern_version() {
-        // Covered indirectly — the function shells out so we only assert
-        // on the parse path via a synthetic helper. Kept here as a
-        // placeholder so future contributors know the semver parse lives
-        // in `java_major_version` and not in a helper module.
-    }
 }

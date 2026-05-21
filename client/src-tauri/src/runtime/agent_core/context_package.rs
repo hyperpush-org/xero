@@ -13,6 +13,7 @@ pub(crate) struct ProviderContextPackage {
     pub system_prompt: String,
     pub manifest: project_store::AgentContextManifestRecord,
     pub compilation: PromptCompilation,
+    pub pre_provider_retrieval_performed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -46,10 +47,27 @@ pub(crate) fn assemble_provider_context_package(
     let created_at = now_timestamp();
     let first_turn_context_policy =
         FirstTurnContextPolicy::from_agent_definition_snapshot(input.agent_definition_snapshot);
-    let retrieved_project_context =
-        retrieve_project_context(&input, &created_at, &first_turn_context_policy)?;
+    let retrieval_query_text = context_retrieval_query_text(
+        input.runtime_agent_id,
+        input.messages,
+        input.agent_definition_snapshot,
+    );
+    let retrieval_decision =
+        pre_provider_retrieval_decision(&input, &first_turn_context_policy, &retrieval_query_text);
+    let retrieved_project_context = if retrieval_decision.should_retrieve() {
+        Some(retrieve_project_context(
+            &input,
+            &created_at,
+            &first_turn_context_policy,
+            &retrieval_query_text,
+        )?)
+    } else {
+        None
+    };
     let working_set_context = if first_turn_context_policy.auto_summary_enabled {
-        source_cited_working_set_context(&retrieved_project_context)
+        retrieved_project_context
+            .as_ref()
+            .and_then(source_cited_working_set_context)
     } else {
         None
     };
@@ -129,6 +147,12 @@ pub(crate) fn assemble_provider_context_package(
         });
     }
     if let Some(context) = working_set_context.as_ref() {
+        let Some(retrieved_project_context) = retrieved_project_context.as_ref() else {
+            return Err(CommandError::system_fault(
+                "agent_context_working_set_without_retrieval",
+                "Xero assembled a working-set summary without a retrieval response.",
+            ));
+        };
         included.push(project_store::AgentContextManifestContributorRecord {
             contributor_id: format!(
                 "working_set_summary:{}",
@@ -145,7 +169,8 @@ pub(crate) fn assemble_provider_context_package(
     append_empty_context_exclusions(
         &mut excluded,
         &compilation.fragments,
-        &retrieved_project_context,
+        retrieved_project_context.as_ref(),
+        &retrieval_decision,
     );
 
     let estimated_tokens = included.iter().fold(0_u64, |total, contributor| {
@@ -172,31 +197,46 @@ pub(crate) fn assemble_provider_context_package(
             settings,
         });
     let context_hash = provider_context_hash(&compilation, input.messages, input.tools)?;
-    let retrieval_query_ids = vec![retrieved_project_context.query.query_id.clone()];
-    let retrieval_result_ids = retrieved_project_context
-        .result_logs
-        .iter()
-        .map(|result| result.result_id.clone())
-        .collect::<Vec<_>>();
-    let freshness_diagnostics = retrieved_project_context
-        .diagnostic
+    let retrieval_query_ids = retrieved_project_context
         .as_ref()
+        .map(|context| vec![context.query.query_id.clone()])
+        .unwrap_or_default();
+    let retrieval_result_ids = retrieved_project_context
+        .as_ref()
+        .map(|context| {
+            context
+                .result_logs
+                .iter()
+                .map(|result| result.result_id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let freshness_diagnostics = retrieved_project_context
+        .as_ref()
+        .and_then(|context| context.diagnostic.as_ref())
         .and_then(|diagnostic| diagnostic.get("freshnessDiagnostics"))
         .cloned()
-        .unwrap_or_else(|| json!({}));
+        .unwrap_or_else(|| skipped_retrieval_freshness_diagnostics(&retrieval_decision));
     let stale_context_rows_available = freshness_count(&freshness_diagnostics, "staleCount");
     let source_missing_context_rows_available =
         freshness_count(&freshness_diagnostics, "sourceMissingCount");
     let superseded_context_rows_available =
         freshness_count(&freshness_diagnostics, "supersededCount");
     let retrieval_json = json!({
-        "queryIds": retrieval_query_ids,
-        "resultIds": retrieval_result_ids,
+        "queryIds": retrieval_query_ids.clone(),
+        "resultIds": retrieval_result_ids.clone(),
         "deliveryModel": "tool_mediated",
         "rawContextInjected": false,
         "firstTurnPolicy": first_turn_context_policy.manifest_json(),
-        "method": retrieved_project_context.method.clone(),
-        "diagnostic": retrieved_project_context.diagnostic.clone(),
+        "preProviderRetrieval": retrieval_decision.manifest_json(),
+        "method": retrieved_project_context
+            .as_ref()
+            .map(|context| context.method.clone())
+            .unwrap_or_else(|| "skipped_by_runtime_policy".into()),
+        "diagnostic": retrieved_project_context
+            .as_ref()
+            .and_then(|context| context.diagnostic.clone())
+            .unwrap_or_else(|| skipped_retrieval_diagnostic(&retrieval_decision)),
         "freshnessDiagnostics": freshness_diagnostics,
         "staleContextRowsAvailable": stale_context_rows_available,
         "sourceMissingContextRowsAvailable": source_missing_context_rows_available,
@@ -207,8 +247,20 @@ pub(crate) fn assemble_provider_context_package(
                 AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
             )),
         },
-        "resultCount": retrieved_project_context.results.len(),
-        "results": retrieved_project_context.results.iter().map(retrieval_result_manifest_json).collect::<Vec<_>>(),
+        "resultCount": retrieved_project_context
+            .as_ref()
+            .map(|context| context.results.len())
+            .unwrap_or_default(),
+        "results": retrieved_project_context
+            .as_ref()
+            .map(|context| {
+                context
+                    .results
+                    .iter()
+                    .map(retrieval_result_manifest_json)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
     });
     let working_set_json = working_set_context
         .as_ref()
@@ -218,7 +270,9 @@ pub(crate) fn assemble_provider_context_package(
                 "deliveryModel": "admitted_source_cited_summary",
                 "rawDurableContextInjected": false,
                 "promptFragmentId": "xero.working_set_context",
-                "sourceQueryId": retrieved_project_context.query.query_id.clone(),
+                "sourceQueryId": retrieved_project_context
+                    .as_ref()
+                    .map(|context| context.query.query_id.clone()),
                 "policy": first_turn_context_policy.manifest_json(),
                 "citationCount": context.citations.len(),
                 "citations": context.citations,
@@ -230,7 +284,9 @@ pub(crate) fn assemble_provider_context_package(
                 "deliveryModel": "none",
                 "rawDurableContextInjected": false,
                 "promptFragmentId": null,
-                "sourceQueryId": retrieved_project_context.query.query_id.clone(),
+                "sourceQueryId": retrieved_project_context
+                    .as_ref()
+                    .map(|context| context.query.query_id.clone()),
                 "policy": first_turn_context_policy.manifest_json(),
                 "citationCount": 0,
                 "citations": [],
@@ -239,8 +295,10 @@ pub(crate) fn assemble_provider_context_package(
     let redaction_state = if prompt_redacted
         || messages_redacted
         || agent_definition_redacted
-        || retrieved_project_context.results.iter().any(|result| {
-            result.redaction_state != project_store::AgentContextRedactionState::Clean
+        || retrieved_project_context.as_ref().is_some_and(|context| {
+            context.results.iter().any(|result| {
+                result.redaction_state != project_store::AgentContextRedactionState::Clean
+            })
         }) {
         project_store::AgentContextRedactionState::Redacted
     } else {
@@ -392,12 +450,6 @@ pub(crate) fn assemble_provider_context_package(
     );
     let manifest_json = JsonValue::Object(manifest_fields);
 
-    let retrieval_query_ids = vec![retrieved_project_context.query.query_id.clone()];
-    let retrieval_result_ids = retrieved_project_context
-        .result_logs
-        .iter()
-        .map(|result| result.result_id.clone())
-        .collect::<Vec<_>>();
     let manifest = project_store::insert_agent_context_manifest(
         input.repo_root,
         &project_store::NewAgentContextManifestRecord {
@@ -433,6 +485,7 @@ pub(crate) fn assemble_provider_context_package(
         system_prompt: compilation.prompt.clone(),
         manifest,
         compilation,
+        pre_provider_retrieval_performed: retrieval_decision.should_retrieve(),
     })
 }
 
@@ -440,6 +493,7 @@ fn retrieve_project_context(
     input: &ProviderContextPackageInput<'_>,
     created_at: &str,
     policy: &FirstTurnContextPolicy,
+    query_text: &str,
 ) -> CommandResult<project_store::AgentContextRetrievalResponse> {
     project_store::search_agent_context_without_freshness_refresh(
         input.repo_root,
@@ -451,11 +505,7 @@ fn retrieve_project_context(
             runtime_agent_id: input.runtime_agent_id,
             agent_definition_id: input.agent_definition_id.to_string(),
             agent_definition_version: input.agent_definition_version,
-            query_text: context_retrieval_query_text(
-                input.runtime_agent_id,
-                input.messages,
-                input.agent_definition_snapshot,
-            ),
+            query_text: query_text.to_string(),
             search_scope: policy.search_scope.clone(),
             filters: policy.filters.clone(),
             limit_count: policy.limit_count,
@@ -465,8 +515,200 @@ fn retrieve_project_context(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreProviderRetrievalAction {
+    Retrieve,
+    Skip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreProviderRetrievalDecision {
+    action: PreProviderRetrievalAction,
+    reason_code: &'static str,
+}
+
+impl PreProviderRetrievalDecision {
+    fn retrieve(reason_code: &'static str) -> Self {
+        Self {
+            action: PreProviderRetrievalAction::Retrieve,
+            reason_code,
+        }
+    }
+
+    fn skip(reason_code: &'static str) -> Self {
+        Self {
+            action: PreProviderRetrievalAction::Skip,
+            reason_code,
+        }
+    }
+
+    fn should_retrieve(&self) -> bool {
+        self.action == PreProviderRetrievalAction::Retrieve
+    }
+
+    fn action_label(&self) -> &'static str {
+        match self.action {
+            PreProviderRetrievalAction::Retrieve => "retrieve",
+            PreProviderRetrievalAction::Skip => "skip",
+        }
+    }
+
+    fn manifest_json(&self) -> JsonValue {
+        json!({
+            "schema": "xero.pre_provider_retrieval_decision.v1",
+            "action": self.action_label(),
+            "reasonCode": self.reason_code,
+        })
+    }
+}
+
+fn pre_provider_retrieval_decision(
+    input: &ProviderContextPackageInput<'_>,
+    policy: &FirstTurnContextPolicy,
+    query_text: &str,
+) -> PreProviderRetrievalDecision {
+    if !policy.auto_retrieval_enabled {
+        return PreProviderRetrievalDecision::skip("agent_definition_retrieval_disabled");
+    }
+    if input.turn_index > 0 {
+        return PreProviderRetrievalDecision::skip("provider_turn_not_task_start");
+    }
+    if consumed_artifact_retrieval_query_text(input.agent_definition_snapshot).is_some() {
+        return PreProviderRetrievalDecision::retrieve("custom_agent_consumed_artifacts");
+    }
+    if query_has_prior_work_signal(query_text) {
+        return PreProviderRetrievalDecision::retrieve("prior_work_sensitive_prompt");
+    }
+    if query_has_project_surface_signal(query_text) {
+        return PreProviderRetrievalDecision::retrieve("project_context_sensitive_prompt");
+    }
+    PreProviderRetrievalDecision::skip("no_project_context_signal")
+}
+
+fn skipped_retrieval_diagnostic(decision: &PreProviderRetrievalDecision) -> JsonValue {
+    json!({
+        "schema": "xero.pre_provider_retrieval_diagnostic.v1",
+        "status": "skipped",
+        "reasonCode": decision.reason_code,
+    })
+}
+
+fn skipped_retrieval_freshness_diagnostics(decision: &PreProviderRetrievalDecision) -> JsonValue {
+    json!({
+        "schema": "xero.retrieval_freshness_diagnostics.v1",
+        "refreshMode": "not_applicable",
+        "reasonCode": decision.reason_code,
+        "inspectedCount": 0,
+        "currentCount": 0,
+        "staleCount": 0,
+        "sourceMissingCount": 0,
+        "supersededCount": 0,
+        "invalidatedCount": 0,
+        "blockedCount": 0,
+    })
+}
+
+fn query_has_prior_work_signal(query_text: &str) -> bool {
+    let lowered = query_text.to_ascii_lowercase();
+    text_contains_any(
+        &lowered,
+        &[
+            "previous",
+            "prior",
+            "earlier",
+            "last time",
+            "continue",
+            "resume",
+            "where we left",
+            "same issue",
+            "same problem",
+            "again",
+            "already tried",
+            "decision",
+            "constraint",
+            "handoff",
+            "blocker",
+            "durable context",
+            "project context",
+            "approved memory",
+        ],
+    )
+}
+
+fn query_has_project_surface_signal(query_text: &str) -> bool {
+    let lowered = query_text.to_ascii_lowercase();
+    text_contains_any(
+        &lowered,
+        &[
+            "this repo",
+            "the repo",
+            "repository",
+            "codebase",
+            "workspace",
+            "this project",
+            "the project",
+            "this app",
+            "the app",
+            "tauri app",
+            "agent runtime",
+            "runtime stream",
+            "context manifest",
+            "context package",
+            "project record",
+            "project records",
+            "durable project",
+            "lancedb",
+            "cargo test",
+            "cargo build",
+            "pnpm test",
+            "pnpm build",
+            "failing test",
+            "test failure",
+            "build failure",
+            "stack trace",
+            "regression",
+            "schema issue",
+            "migration",
+            "tool call",
+            "tool calls",
+            "stage",
+            "stages",
+        ],
+    ) || query_mentions_source_path(&lowered)
+}
+
+fn query_mentions_source_path(lowered_query_text: &str) -> bool {
+    text_contains_any(
+        lowered_query_text,
+        &[
+            "agents.md",
+            "package.json",
+            "cargo.toml",
+            "tauri.conf",
+            "client/",
+            "server/",
+            "src/",
+            "docs/",
+            ".rs",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".json",
+            ".toml",
+            ".sql",
+            ".md",
+        ],
+    )
+}
+
+fn text_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FirstTurnContextPolicy {
+    auto_retrieval_enabled: bool,
     auto_summary_enabled: bool,
     source: &'static str,
     search_scope: project_store::AgentRetrievalSearchScope,
@@ -487,10 +729,11 @@ impl FirstTurnContextPolicy {
             return Self::default_project_records();
         };
 
-        let auto_summary_enabled = defaults
+        let auto_retrieval_enabled = defaults
             .get("enabled")
             .and_then(JsonValue::as_bool)
             .unwrap_or(true);
+        let auto_summary_enabled = auto_retrieval_enabled;
         let (record_kinds, requested_record_kinds, ignored_record_kinds) = defaults
             .get("recordKinds")
             .map(parse_project_record_kind_policy_array)
@@ -512,6 +755,7 @@ impl FirstTurnContextPolicy {
             first_turn_search_scope(record_kinds.as_slice(), memory_kinds.as_slice());
 
         Self {
+            auto_retrieval_enabled,
             auto_summary_enabled,
             source: "agent_definition.retrievalDefaults",
             search_scope,
@@ -530,6 +774,7 @@ impl FirstTurnContextPolicy {
 
     fn default_project_records() -> Self {
         Self {
+            auto_retrieval_enabled: true,
             auto_summary_enabled: true,
             source: "runtime_default",
             search_scope: project_store::AgentRetrievalSearchScope::ProjectRecords,
@@ -546,6 +791,7 @@ impl FirstTurnContextPolicy {
         json!({
             "schema": "xero.first_turn_context_policy.v1",
             "source": self.source,
+            "autoRetrievalEnabled": self.auto_retrieval_enabled,
             "autoSummaryEnabled": self.auto_summary_enabled,
             "bulkDurableContextDelivery": "tool_mediated",
             "searchScope": retrieval_search_scope_label(&self.search_scope),
@@ -1661,7 +1907,8 @@ fn active_coordination_prompt_summary(
 fn append_empty_context_exclusions(
     excluded: &mut Vec<project_store::AgentContextManifestContributorRecord>,
     fragments: &[PromptFragment],
-    retrieved_project_context: &project_store::AgentContextRetrievalResponse,
+    retrieved_project_context: Option<&project_store::AgentContextRetrievalResponse>,
+    retrieval_decision: &PreProviderRetrievalDecision,
 ) {
     if fragments.iter().any(|fragment| {
         fragment.id == "xero.approved_memory" && fragment.body.contains("\n(none)\n")
@@ -1674,6 +1921,19 @@ fn append_empty_context_exclusions(
             reason: Some("no_approved_enabled_memory_for_project_or_session".into()),
         });
     }
+    let Some(retrieved_project_context) = retrieved_project_context else {
+        excluded.push(project_store::AgentContextManifestContributorRecord {
+            contributor_id: "xero.relevant_project_records:skipped".into(),
+            kind: "relevant_project_record".into(),
+            source_id: None,
+            estimated_tokens: 0,
+            reason: Some(format!(
+                "pre_provider_retrieval_skipped_{}",
+                retrieval_decision.reason_code
+            )),
+        });
+        return;
+    };
     if retrieved_project_context.results.is_empty() {
         excluded.push(project_store::AgentContextManifestContributorRecord {
             contributor_id: "xero.relevant_project_records:none".into(),
@@ -2699,6 +2959,71 @@ mod tests {
     }
 
     #[test]
+    fn s26_provider_context_package_skips_pre_provider_retrieval_for_generic_prompt() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (project_id, repo_root) = seed_project(&root);
+        seed_run(&repo_root, &project_id);
+        seed_retrievable_context(&repo_root, &project_id);
+        let messages = vec![ProviderMessage::User {
+            content: "how do I write fizz buzz in python".into(),
+            attachments: Vec::new(),
+        }];
+        let input = ProviderContextPackageInput {
+            repo_root: &repo_root,
+            project_id: &project_id,
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID,
+            run_id: "run-context-package",
+            runtime_agent_id: RuntimeAgentIdDto::Ask,
+            agent_definition_id: "ask",
+            agent_definition_version: project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+            agent_definition_snapshot: None,
+            provider_id: OPENAI_CODEX_PROVIDER_ID,
+            model_id: OPENAI_CODEX_PROVIDER_ID,
+            turn_index: 0,
+            browser_control_preference: BrowserControlPreferenceDto::Default,
+            tool_application_policy: ResolvedAgentToolApplicationStyleDto::default(),
+            soul_settings: None,
+            tools: &[],
+            tool_exposure_plan: None,
+            messages: &messages,
+            owned_process_summary: None,
+            provider_preflight: None,
+        };
+
+        let package =
+            assemble_provider_context_package(input, Vec::new(), Vec::new()).expect("package");
+
+        assert!(!package.pre_provider_retrieval_performed);
+        assert!(package.manifest.retrieval_query_ids.is_empty());
+        assert!(package.manifest.retrieval_result_ids.is_empty());
+        assert_eq!(
+            package.manifest.manifest["retrieval"]["preProviderRetrieval"]["action"],
+            json!("skip")
+        );
+        assert_eq!(
+            package.manifest.manifest["retrieval"]["preProviderRetrieval"]["reasonCode"],
+            json!("no_project_context_signal")
+        );
+        assert_eq!(
+            package.manifest.manifest["retrieval"]["method"],
+            json!("skipped_by_runtime_policy")
+        );
+        assert_eq!(
+            package.manifest.manifest["workingSet"]["deliveryModel"],
+            json!("none")
+        );
+        assert!(package.manifest.manifest["workingSet"]["sourceQueryId"].is_null());
+        assert!(!package
+            .compilation
+            .fragments
+            .iter()
+            .any(|fragment| fragment.id == "xero.working_set_context"));
+        assert!(!package
+            .system_prompt
+            .contains("Source-cited working set for this turn"));
+    }
+
+    #[test]
     fn s27_provider_context_package_honors_per_agent_first_turn_context_policy() {
         let root = tempfile::tempdir().expect("temp dir");
         let (project_id, repo_root) = seed_project(&root);
@@ -2743,6 +3068,7 @@ mod tests {
             record_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["searchScope"],
             json!("project_records")
         );
+        assert!(record_package.pre_provider_retrieval_performed);
         assert_eq!(
             record_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["recordKinds"],
             json!(["decision"])
@@ -2763,6 +3089,7 @@ mod tests {
             memory_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["searchScope"],
             json!("approved_memory")
         );
+        assert!(memory_package.pre_provider_retrieval_performed);
         assert_eq!(
             memory_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["memoryKinds"],
             json!(["project_fact"])
@@ -2784,8 +3111,23 @@ mod tests {
 
         assert_eq!(
             disabled_package.manifest.manifest["retrieval"]["firstTurnPolicy"]
+                ["autoRetrievalEnabled"],
+            json!(false)
+        );
+        assert_eq!(
+            disabled_package.manifest.manifest["retrieval"]["firstTurnPolicy"]
                 ["autoSummaryEnabled"],
             json!(false)
+        );
+        assert!(!disabled_package.pre_provider_retrieval_performed);
+        assert!(disabled_package.manifest.retrieval_query_ids.is_empty());
+        assert_eq!(
+            disabled_package.manifest.manifest["retrieval"]["preProviderRetrieval"]["action"],
+            json!("skip")
+        );
+        assert_eq!(
+            disabled_package.manifest.manifest["retrieval"]["preProviderRetrieval"]["reasonCode"],
+            json!("agent_definition_retrieval_disabled")
         );
         assert_eq!(
             disabled_package.manifest.manifest["retrieval"]["firstTurnPolicy"]["searchScope"],

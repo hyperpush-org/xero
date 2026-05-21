@@ -23,6 +23,27 @@ const session: CloudSession = {
 	relayTokenExpiresAt: "2026-05-17T08:00:00Z",
 };
 
+function mockMobileViewport() {
+	Object.defineProperty(window, "matchMedia", {
+		writable: true,
+		value: (query: string) => ({
+			matches: true,
+			media: query,
+			onchange: null,
+			addListener: vi.fn(),
+			removeListener: vi.fn(),
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			dispatchEvent: vi.fn(),
+		}),
+	});
+	Object.defineProperty(window, "innerWidth", {
+		writable: true,
+		configurable: true,
+		value: 320,
+	});
+}
+
 describe("SessionDrawer", () => {
 	afterEach(() => {
 		cleanup();
@@ -263,5 +284,62 @@ describe("SessionDrawer", () => {
 			"desktop-1",
 			"agent-session-2",
 		);
+	});
+
+	it("keeps the mobile project picker open until a project is selected", async () => {
+		mockMobileViewport();
+		const onSelectProject = vi.fn();
+		render(
+			<SessionDrawer
+				session={session}
+				visibleSessions={[]}
+				projects={[
+					{
+						computerId: "desktop-1",
+						projectId: "project-1",
+						projectName: "Clipstack",
+					},
+					{
+						computerId: "desktop-1",
+						projectId: "project-2",
+						projectName: "Mesh Lang",
+					},
+				]}
+				currentSessionKey={null}
+				onSelectSession={vi.fn()}
+				onSelectProject={onSelectProject}
+				onSignOut={vi.fn()}
+				trigger={<button type="button">Open sessions</button>}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Open sessions" }));
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Start new session" }),
+		);
+
+		expect(
+			await screen.findByRole("heading", { name: "New session" }),
+		).toBeTruthy();
+		expect(
+			document.querySelector(".cloud-session-drawer-content")?.getAttribute(
+				"data-state",
+			),
+		).toBe("open");
+
+		fireEvent.click(screen.getByRole("button", { name: "Mesh Lang" }));
+
+		expect(onSelectProject).toHaveBeenCalledWith(
+			expect.objectContaining({
+				computerId: "desktop-1",
+				projectId: "project-2",
+			}),
+		);
+		await waitFor(() => {
+			const content = document.querySelector(".cloud-session-drawer-content");
+			expect(
+				content === null || content.getAttribute("data-state") === "closed",
+			).toBe(true);
+		});
 	});
 });

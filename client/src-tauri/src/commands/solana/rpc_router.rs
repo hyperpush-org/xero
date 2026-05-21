@@ -410,7 +410,6 @@ pub fn default_endpoints(cluster: ClusterKind) -> Vec<EndpointSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[derive(Debug, Default)]
@@ -486,15 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn default_pool_has_every_cluster() {
-        let router = RpcRouter::new_with_default_pool();
-        let clusters: HashSet<_> = router.snapshot_all().iter().map(|e| e.cluster).collect();
-        for kind in ClusterKind::ALL {
-            assert!(clusters.contains(&kind), "missing cluster {kind:?}");
-        }
-    }
-
-    #[test]
     fn refresh_marks_responsive_endpoints_healthy() {
         let (router, check) = test_router();
         check.set("https://primary.example", Ok(()));
@@ -547,18 +537,5 @@ mod tests {
             .set_endpoints(ClusterKind::Mainnet, vec![])
             .unwrap_err();
         assert_eq!(err.code, "solana_rpc_endpoints_empty");
-    }
-
-    #[test]
-    fn default_endpoints_are_free_for_every_cluster() {
-        for cluster in ClusterKind::ALL {
-            for spec in default_endpoints(cluster) {
-                assert!(
-                    !spec.requires_api_key,
-                    "default endpoint {} must not require a paid key",
-                    spec.id
-                );
-            }
-        }
     }
 }

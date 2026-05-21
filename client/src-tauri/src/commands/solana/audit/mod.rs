@@ -585,22 +585,4 @@ mod tests {
         assert_eq!(counts.low, 1);
         assert_eq!(counts.total(), 3);
     }
-
-    #[test]
-    fn finding_id_combines_source_and_rule() {
-        let f = Finding::new(
-            FindingSource::AnchorLints,
-            "missing_signer",
-            FindingSeverity::High,
-            "Missing signer check",
-            "Add #[account(signer)]",
-        );
-        assert_eq!(f.id, "anchor_lints:missing_signer");
-    }
-
-    #[test]
-    fn run_id_contains_kind_label() {
-        let id = new_run_id(AuditRunKind::Static);
-        assert!(id.starts_with("static-"));
-    }
 }

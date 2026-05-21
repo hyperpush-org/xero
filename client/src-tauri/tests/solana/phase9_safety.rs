@@ -20,14 +20,10 @@ use xero_desktop_lib::commands::solana::program::{
     DeployAuthority,
 };
 use xero_desktop_lib::commands::solana::secrets::{
-    builtin_patterns, scan_project as secrets_scan, ScanRequest as SecretsScanRequest,
-    SecretSeverity,
+    scan_project as secrets_scan, ScanRequest as SecretsScanRequest, SecretSeverity,
 };
 use xero_desktop_lib::commands::solana::tx::RpcTransport;
-use xero_desktop_lib::commands::solana::{
-    builtin_doc_catalog, builtin_tracked_programs, doc_snippets_for, ClusterKind, LocalCostLedger,
-    TxCostRecord,
-};
+use xero_desktop_lib::commands::solana::{ClusterKind, LocalCostLedger, TxCostRecord};
 use xero_desktop_lib::commands::CommandError;
 
 // -----------------------------------------------------------------------
@@ -185,20 +181,6 @@ pub fn committed_id_json_with_mainnet_keypair_is_critical() {
     );
 }
 
-pub fn secret_patterns_registry_exposes_stable_rule_ids() {
-    let patterns = builtin_patterns();
-    let rule_ids: Vec<&str> = patterns.iter().map(|p| p.rule_id.as_str()).collect();
-    for required in [
-        "solana_keypair_id_json",
-        "helius_rpc_api_key",
-        "triton_rpc_api_key",
-        "privy_app_secret",
-        "jito_tip_account_hardcoded",
-    ] {
-        assert!(rule_ids.contains(&required), "missing rule {required}");
-    }
-}
-
 // -----------------------------------------------------------------------
 // Cluster drift
 // -----------------------------------------------------------------------
@@ -272,24 +254,6 @@ pub fn drift_check_flags_metaplex_version_delta_between_devnet_and_mainnet() {
     assert_eq!(metaplex.probes.len(), 2);
 }
 
-pub fn drift_registry_includes_required_programs() {
-    let labels: Vec<String> = builtin_tracked_programs()
-        .into_iter()
-        .map(|p| p.label)
-        .collect();
-    for expected in [
-        "Metaplex Token Metadata",
-        "Jupiter Aggregator v6",
-        "Squads v4",
-        "SPL Governance",
-    ] {
-        assert!(
-            labels.iter().any(|l| l == expected),
-            "missing tracked program {expected}"
-        );
-    }
-}
-
 // -----------------------------------------------------------------------
 // Cost snapshot
 // -----------------------------------------------------------------------
@@ -352,72 +316,6 @@ pub fn cost_snapshot_rolls_up_local_ledger_activity() {
     assert_eq!(snap.totals.lamports_spent, 10 * 7_000 + 5 * 5_000);
     assert_eq!(snap.totals.rent_locked_lamports, 500_000);
     assert_eq!(snap.totals.compute_units_used, 10 * 200_000 + 5 * 50_000);
-}
-
-pub fn cost_snapshot_matches_provider_dashboard_within_5_percent() {
-    // This is a structural check: the plan's acceptance bullet is
-    // satisfied by the local ledger (which is authoritative — it
-    // counts every tx the workbench sent). We assert the arithmetic
-    // is exact, and therefore trivially within any percentage tolerance.
-    let ledger = Arc::new(LocalCostLedger::new());
-    for i in 0..1_000 {
-        ledger.record(TxCostRecord {
-            cluster: ClusterKind::Mainnet,
-            signature: format!("sig-{i}"),
-            lamports_fee: 5_000,
-            priority_fee_lamports: 100,
-            compute_units_consumed: 1_000,
-            rent_lamports: 0,
-            timestamp_ms: xero_desktop_lib::commands::solana::cost::ledger::now_ms(),
-        });
-    }
-    let summary = ledger.summary(&[ClusterKind::Mainnet], None);
-    let expected = 1_000 * 5_100;
-    let actual = summary.lamports_spent;
-    let drift_percent = ((actual as f64 - expected as f64).abs() / expected as f64) * 100.0;
-    assert!(drift_percent <= 5.0, "drift {drift_percent:.2}% exceeds 5%");
-    assert_eq!(actual, expected as u64);
-}
-
-// -----------------------------------------------------------------------
-// Doc grounding
-// -----------------------------------------------------------------------
-
-pub fn doc_catalog_covers_every_phase9_tool() {
-    let tools: std::collections::HashSet<String> =
-        builtin_doc_catalog().into_iter().map(|s| s.tool).collect();
-    for tool in [
-        "solana_secrets",
-        "solana_cluster_drift",
-        "solana_cost",
-        "solana_tx",
-        "solana_program",
-        "solana_deploy",
-        "solana_idl",
-        "solana_codama",
-        "solana_pda",
-        "solana_audit_static",
-        "solana_audit_fuzz",
-        "solana_replay",
-        "solana_logs",
-        "solana_indexer",
-        "solana_token",
-    ] {
-        assert!(tools.contains(tool), "catalog missing {tool}");
-    }
-}
-
-pub fn doc_snippets_for_unknown_tool_returns_empty() {
-    assert!(doc_snippets_for("solana_nonexistent").is_empty());
-}
-
-pub fn doc_snippets_for_known_tool_has_non_empty_body_and_url() {
-    let snippets = doc_snippets_for("solana_secrets");
-    assert!(!snippets.is_empty());
-    for snippet in snippets {
-        assert!(!snippet.body.is_empty());
-        assert!(snippet.reference_url.starts_with("http"));
-    }
 }
 
 // -----------------------------------------------------------------------

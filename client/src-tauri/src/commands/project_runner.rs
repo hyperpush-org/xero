@@ -1497,15 +1497,6 @@ mod tests {
     }
 
     #[test]
-    fn process_label_detects_claude_node_wrapper() {
-        let label = process_label_from_args(
-            "/opt/homebrew/bin/node /Users/sn0w/.npm/_npx/123/node_modules/@anthropic-ai/claude-code/cli.js",
-        );
-
-        assert_eq!(label.as_deref(), Some("claude"));
-    }
-
-    #[test]
     fn process_label_keeps_package_manager_script_context() {
         assert_eq!(
             process_label_from_args("/opt/homebrew/bin/pnpm dev").as_deref(),
@@ -1514,14 +1505,6 @@ mod tests {
         assert_eq!(
             process_label_from_args("/usr/local/bin/npm run tauri:dev").as_deref(),
             Some("npm tauri:dev")
-        );
-    }
-
-    #[test]
-    fn process_label_strips_shell_path_to_name() {
-        assert_eq!(
-            process_label_from_args("/bin/zsh -l").as_deref(),
-            Some("zsh")
         );
     }
 

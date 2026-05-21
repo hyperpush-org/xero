@@ -567,7 +567,7 @@ function VcsSidebarBody({
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
       {/* Header */}
-      <div className="flex h-10 items-center justify-between gap-2 border-b border-border/70 px-3">
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border/70 px-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
             Source Control
@@ -598,11 +598,11 @@ function VcsSidebarBody({
 
       {/* Action banner */}
       {actionError ? (
-        <div className="border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive">
+        <div className="shrink-0 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive">
           {actionError}
         </div>
       ) : actionMessage ? (
-        <div className="border-b border-success/20 bg-success/10 px-3 py-1.5 text-[11px] text-success">
+        <div className="shrink-0 border-b border-success/20 bg-success/10 px-3 py-1.5 text-[11px] text-success">
           {actionMessage}
         </div>
       ) : null}
@@ -615,7 +615,7 @@ function VcsSidebarBody({
           style={{ width: FILE_LIST_WIDTH }}
         >
           {/* Branch + remote actions */}
-          <div className="flex h-9 items-center gap-1 border-b border-border/70 px-3">
+          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/70 px-3">
             <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" />
             <span className="min-w-0 truncate text-[12px] font-medium text-foreground/90">
               {branchLabel ?? status?.branchLabel ?? "No branch"}
@@ -872,7 +872,13 @@ const VcsFileList = memo(function VcsFileList({
       ref={virtualizer.scrollRef}
       role="listbox"
     >
-      {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.beforeSize }} /> : null}
+      {shouldVirtualize ? (
+        <div
+          aria-hidden="true"
+          className="shrink-0"
+          style={{ height: virtualizer.range.beforeSize }}
+        />
+      ) : null}
       {renderedRowIndexes.map((rowIndex) => {
         const row = rows[rowIndex]
         if (row.kind === "group") {
@@ -894,7 +900,7 @@ const VcsFileList = memo(function VcsFileList({
 
           return (
             <div
-              className="group flex h-[28px] w-full items-center gap-2 border-b border-border/40 px-3 text-left"
+              className="group flex h-[28px] w-full shrink-0 items-center gap-2 border-b border-border/40 px-3 text-left"
               key={`${row.groupKind}:group`}
               role="presentation"
             >
@@ -930,7 +936,7 @@ const VcsFileList = memo(function VcsFileList({
         if (row.kind === "empty") {
           return (
             <div
-              className="flex h-[28px] items-center border-b border-border/40 px-7 text-[11px] text-muted-foreground/70"
+              className="flex h-[28px] shrink-0 items-center border-b border-border/40 px-7 text-[11px] text-muted-foreground/70"
               key={`${row.groupKind}:empty`}
               role="presentation"
             >
@@ -953,7 +959,13 @@ const VcsFileList = memo(function VcsFileList({
           />
         )
       })}
-      {shouldVirtualize ? <div aria-hidden="true" style={{ height: virtualizer.range.afterSize }} /> : null}
+      {shouldVirtualize ? (
+        <div
+          aria-hidden="true"
+          className="shrink-0"
+          style={{ height: virtualizer.range.afterSize }}
+        />
+      ) : null}
     </div>
   )
 })
@@ -980,7 +992,7 @@ function FileRow({ busy, entry, groupKind, onDiscard, onSelect, onToggle, select
     <div
       aria-selected={selected}
       className={cn(
-        "group/row flex h-[28px] cursor-pointer items-center gap-1.5 px-3 py-0 text-left transition-colors",
+        "group/row flex h-[28px] shrink-0 cursor-pointer items-center gap-1.5 px-3 py-0 text-left transition-colors",
         selected ? "bg-primary/10" : "hover:bg-secondary/40",
       )}
       onClick={() => onSelect(entry.path)}
@@ -995,9 +1007,9 @@ function FileRow({ busy, entry, groupKind, onDiscard, onSelect, onToggle, select
       tabIndex={0}
     >
       <ChangeBadge entry={entry} kind={kind} untracked={groupKind === "unstaged" && entry.untracked} />
-      <span className="min-w-0 flex-1 truncate text-[12px] text-foreground/90">{fileName}</span>
+      <span className="min-w-0 shrink truncate text-[12px] text-foreground/90">{fileName}</span>
       {dir ? (
-        <span className="hidden min-w-0 truncate text-[10.5px] text-muted-foreground sm:inline">{dir}</span>
+        <span className="hidden min-w-0 flex-1 truncate text-[10.5px] text-muted-foreground sm:inline">{dir}</span>
       ) : null}
       <span className="invisible flex items-center gap-0.5 group-hover/row:visible">
         {groupKind === "unstaged" ? (

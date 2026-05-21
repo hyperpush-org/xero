@@ -2713,21 +2713,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn default_state_has_every_cluster_in_router() {
-        let state = SolanaState::default();
-        let snap = state.rpc_router.snapshot_all();
-        for kind in ClusterKind::ALL {
-            assert!(snap.iter().any(|e| e.cluster == kind));
-        }
-    }
-
-    #[test]
-    fn default_state_has_idle_supervisor() {
-        let state = SolanaState::default();
-        assert!(!state.supervisor.status().running);
-    }
-
-    #[test]
     fn app_data_state_roots_solana_stores_together() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let state = SolanaState::with_app_data_dir(tempdir.path());

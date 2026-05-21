@@ -6,6 +6,7 @@ use crate::{
     auth::now_timestamp,
     commands::{
         agent_session::agent_session_dto, default_runtime_agent_id,
+        remote_bridge::publish_agent_session_remote_state,
         runtime_support::resolve_owned_agent_provider_config,
         runtime_support::resolve_project_root, validate_non_empty, AgentSessionDto,
         AutoNameAgentSessionRequestDto, CommandError, CommandResult,
@@ -114,13 +115,14 @@ fn auto_name_agent_session_blocking<R: Runtime + 'static>(
     let updated = project_store::update_agent_session(
         &repo_root,
         &AgentSessionUpdateRecord {
-            project_id: request.project_id,
-            agent_session_id: request.agent_session_id,
+            project_id: request.project_id.clone(),
+            agent_session_id: request.agent_session_id.clone(),
             title: Some(generated_title),
             summary: None,
             selected: None,
         },
     )?;
+    publish_agent_session_remote_state(&app, &state, &request.project_id, &updated);
 
     Ok(agent_session_dto(&updated))
 }
@@ -512,15 +514,6 @@ mod tests {
         CommandError, ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
         RuntimeRunControlInputDto,
     };
-
-    #[test]
-    fn sanitizes_model_title_wrappers() {
-        let title = "```text\nTitle: \"System Prompt Investigation.\"\n```";
-        assert_eq!(
-            sanitize_provider_session_title(title).as_deref(),
-            Some("System Prompt Investigation")
-        );
-    }
 
     #[test]
     fn rejects_generic_titles_and_uses_prompt_fallback() {

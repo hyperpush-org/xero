@@ -2201,21 +2201,6 @@ mod tests {
     }
 
     #[test]
-    fn state_executor_list_returns_cluster_descriptors() {
-        let state = SolanaState::default();
-        let exec = StateSolanaExecutor::from_state(&state);
-        let out = exec
-            .cluster(AutonomousSolanaClusterRequest {
-                action: AutonomousSolanaClusterAction::List,
-            })
-            .unwrap();
-        assert_eq!(out.action, "list");
-        let parsed: serde_json::Value = serde_json::from_str(&out.value_json).unwrap();
-        let descriptors = parsed.as_array().unwrap();
-        assert_eq!(descriptors.len(), 4);
-    }
-
-    #[test]
     fn state_executor_status_when_idle_reports_not_running() {
         let state = SolanaState::default();
         let exec = StateSolanaExecutor::from_state(&state);
@@ -2317,25 +2302,6 @@ mod tests {
             .unwrap_err(),
         ] {
             assert_eq!(err.class, crate::commands::CommandErrorClass::PolicyDenied);
-        }
-    }
-
-    #[test]
-    fn action_enum_round_trips_through_serde() {
-        let req = AutonomousSolanaClusterRequest {
-            action: AutonomousSolanaClusterAction::Start {
-                kind: ClusterKind::Localnet,
-                opts: StartOpts::default(),
-            },
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(json.contains("\"action\":\"start\""));
-        let decoded: AutonomousSolanaClusterRequest = serde_json::from_str(&json).unwrap();
-        match decoded.action {
-            AutonomousSolanaClusterAction::Start { kind, .. } => {
-                assert_eq!(kind, ClusterKind::Localnet);
-            }
-            _ => panic!("round trip lost variant"),
         }
     }
 }

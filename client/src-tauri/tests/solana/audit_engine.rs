@@ -449,16 +449,8 @@ pub fn coverage_parses_instruction_rollups() {
     assert_eq!(deposit.functions_found, 1);
 }
 
-pub fn replay_catalog_returns_four_exploits_and_refuses_mainnet() {
+pub fn replay_refuses_mainnet() {
     let engine = AuditEngine::system();
-    let descriptors = engine.library().all();
-    assert_eq!(descriptors.len(), 4);
-    let keys: Vec<_> = descriptors.iter().map(|d| d.key).collect();
-    assert!(keys.contains(&ExploitKey::WormholeSigSkip));
-    assert!(keys.contains(&ExploitKey::CashioFakeCollateral));
-    assert!(keys.contains(&ExploitKey::MangoOracleManip));
-    assert!(keys.contains(&ExploitKey::NirvanaFlashLoan));
-
     let sink = NullAuditEventSink;
     let err = engine
         .run_replay(

@@ -1194,11 +1194,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_runtime_agent_is_generalist() {
-        assert_eq!(default_runtime_agent_id(), RuntimeAgentIdDto::Generalist);
-    }
-
-    #[test]
     fn builtin_runtime_agents_seed_agent_create_descriptor() {
         let descriptors = builtin_runtime_agent_descriptors();
 

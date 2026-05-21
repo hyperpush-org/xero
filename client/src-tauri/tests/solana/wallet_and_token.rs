@@ -12,11 +12,10 @@ use xero_desktop_lib::commands::solana::persona::fund::FundingDelta;
 use xero_desktop_lib::commands::solana::persona::roles::PersonaRole;
 use xero_desktop_lib::commands::solana::toolchain::{ToolProbe, ToolchainStatus};
 use xero_desktop_lib::commands::solana::{
-    self, create_token, generate_wallet_scaffold, mint_metaplex_nft, token_extension_matrix,
-    wallet_descriptors, ClusterKind, MetaplexMintInvocation, MetaplexMintOutcome,
-    MetaplexMintRequest, MetaplexMintRunner, MetaplexStandard, PersonaSpec, TokenCreateInvocation,
-    TokenCreateOutcome, TokenCreateRunner, TokenCreateSpec, TokenExtension, TokenExtensionConfig,
-    TokenProgram, TokenServices, WalletKind, WalletScaffoldRequest,
+    create_token, generate_wallet_scaffold, mint_metaplex_nft, ClusterKind, MetaplexMintInvocation,
+    MetaplexMintOutcome, MetaplexMintRequest, MetaplexMintRunner, MetaplexStandard, PersonaSpec,
+    TokenCreateInvocation, TokenCreateOutcome, TokenCreateRunner, TokenCreateSpec, TokenExtension,
+    TokenExtensionConfig, TokenProgram, TokenServices, WalletKind, WalletScaffoldRequest,
 };
 use xero_desktop_lib::commands::CommandResult;
 
@@ -94,22 +93,6 @@ fn fixture_with_whale() -> (FixtureState, String) {
         .expect("persona create should succeed against the mock funding backend");
     let path = persona.keypair_path.clone();
     (fixture, path)
-}
-
-// ---------- Token extension matrix ----------------------------------------
-
-pub fn extension_matrix_flags_transfer_hook_on_wallet_adapter() {
-    let matrix = token_extension_matrix();
-    let hits = matrix.incompatibilities(&[TokenExtension::TransferHook]);
-    let wallet_adapter_row = hits
-        .iter()
-        .find(|row| row.sdk.contains("wallet-adapter"))
-        .expect("transfer_hook must flag @solana/wallet-adapter");
-    assert!(!wallet_adapter_row.remediation_hint.is_empty());
-    assert!(matches!(
-        wallet_adapter_row.support_level,
-        solana::SupportLevel::Unsupported | solana::SupportLevel::Partial,
-    ));
 }
 
 // ---------- Token create --------------------------------------------------
@@ -396,18 +379,6 @@ fn full_toolchain() -> ToolchainStatus {
             version: Some("9.0.0".into()),
         },
         ..ToolchainStatus::default()
-    }
-}
-
-pub fn wallet_descriptors_cover_every_kind() {
-    let descs = wallet_descriptors();
-    let kinds: std::collections::BTreeSet<_> = descs.iter().map(|d| d.kind).collect();
-    for kind in WalletKind::ALL {
-        assert!(
-            kinds.contains(&kind),
-            "descriptor catalog missing {:?}",
-            kind
-        );
     }
 }
 

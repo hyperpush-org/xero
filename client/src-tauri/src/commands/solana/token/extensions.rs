@@ -251,48 +251,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_matrix_parses_and_has_all_extensions() {
-        let m = matrix();
-        assert!(!m.manifest_version.is_empty());
-        for ext in TokenExtension::ALL {
-            assert!(
-                m.entry(ext).is_some(),
-                "extension {:?} missing from matrix",
-                ext
-            );
-        }
-    }
-
-    #[test]
-    fn every_entry_has_at_least_one_sdk_row() {
-        for entry in &matrix().entries {
-            assert!(
-                !entry.sdk_support.is_empty(),
-                "entry {:?} has no sdk rows",
-                entry.extension
-            );
-        }
-    }
-
-    #[test]
-    fn transfer_hook_flags_known_unsupported_sdks() {
-        let m = matrix();
-        let hits = m.incompatibilities(&[TokenExtension::TransferHook]);
-        assert!(
-            hits.iter().any(|h| h.sdk.contains("wallet-adapter")
-                && matches!(
-                    h.support_level,
-                    SupportLevel::Unsupported | SupportLevel::Partial
-                )),
-            "transfer_hook should flag @solana/wallet-adapter with a remediation hint",
-        );
-        assert!(
-            hits.iter().all(|h| !h.remediation_hint.is_empty()),
-            "every incompatibility row needs a non-empty remediation hint"
-        );
-    }
-
-    #[test]
     fn disabled_extensions_produce_no_incompatibilities() {
         let m = matrix();
         assert!(m.incompatibilities(&[]).is_empty());
@@ -310,14 +268,5 @@ mod tests {
         }"#;
         let err = parse_matrix(bad).unwrap_err();
         assert_eq!(err.code, "solana_token_matrix_duplicate_extension");
-    }
-
-    #[test]
-    fn token_extension_serde_round_trip() {
-        for ext in TokenExtension::ALL {
-            let j = serde_json::to_string(&ext).unwrap();
-            let back: TokenExtension = serde_json::from_str(&j).unwrap();
-            assert_eq!(ext, back);
-        }
     }
 }

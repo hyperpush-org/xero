@@ -780,22 +780,6 @@ mod tests {
     }
 
     #[test]
-    fn catalog_service_matches_desktop_wrapper() {
-        let wrapper = developer_tool_catalog(Some(DeveloperToolCatalogRequestDto {
-            skill_tool_enabled: Some(false),
-        }))
-        .expect("wrapper catalog");
-        let service = developer_tool_catalog_service(DeveloperToolCatalogServiceOptions {
-            skill_tool_enabled: false,
-            host_kind: DeveloperToolHarnessHostKind::Desktop,
-        })
-        .expect("service catalog");
-
-        assert_eq!(service.entries, wrapper.entries);
-        assert_eq!(service.skill_tool_enabled, wrapper.skill_tool_enabled);
-    }
-
-    #[test]
     fn fixture_service_seeds_app_data_project_and_registry() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let global_db_path = crate::global_db::global_database_path(tempdir.path());

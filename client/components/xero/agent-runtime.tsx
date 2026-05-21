@@ -1126,6 +1126,110 @@ function appendPendingPromptTurn(
   ]
 }
 
+function getConversationTurnRunId(turn: ConversationTurn): string | null {
+  const id = turn.kind === 'routing_suggestion'
+    ? turn.id.replace(/^routing_suggestion:/, '')
+    : turn.id
+  const match = /^(?:transcript|history):(.+):[^:]+$/.exec(id)
+  return match?.[1] ?? null
+}
+
+function normalizeConversationTurnText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ')
+}
+
+function conversationTurnTextKey(turn: ConversationTurn): string | null {
+  if (turn.kind !== 'message') {
+    return null
+  }
+
+  const runId = getConversationTurnRunId(turn)
+  const text = normalizeConversationTurnText(turn.text)
+  if (!runId || !text) {
+    return null
+  }
+
+  return ['message', runId, turn.role, text].join('\u0000')
+}
+
+function conversationMessageCovers(
+  coveringTurn: ConversationTurn,
+  candidateTurn: ConversationTurn,
+): boolean {
+  if (
+    coveringTurn.kind !== 'message' ||
+    candidateTurn.kind !== 'message' ||
+    coveringTurn.role !== candidateTurn.role
+  ) {
+    return false
+  }
+
+  const coveringRunId = getConversationTurnRunId(coveringTurn)
+  const candidateRunId = getConversationTurnRunId(candidateTurn)
+  if (!coveringRunId || coveringRunId !== candidateRunId) {
+    return false
+  }
+
+  const coveringText = normalizeConversationTurnText(coveringTurn.text)
+  const candidateText = normalizeConversationTurnText(candidateTurn.text)
+  if (!coveringText || !candidateText) {
+    return false
+  }
+
+  return (
+    coveringText === candidateText ||
+    (candidateText.length >= 24 && coveringText.includes(candidateText))
+  )
+}
+
+function isConversationTurnCoveredByTurns(
+  candidateTurn: ConversationTurn,
+  coveringTurns: readonly ConversationTurn[],
+): boolean {
+  return coveringTurns.some((coveringTurn) =>
+    conversationMessageCovers(coveringTurn, candidateTurn),
+  )
+}
+
+function mergeHistoricalAndLiveTurns(
+  historicalTurns: readonly ConversationTurn[] | null | undefined,
+  liveTurns: readonly ConversationTurn[],
+): ConversationTurn[] {
+  if (!historicalTurns || historicalTurns.length === 0) {
+    return liveTurns.slice()
+  }
+
+  if (liveTurns.length === 0) {
+    return historicalTurns.slice()
+  }
+
+  const historicalIds = new Set(historicalTurns.map((turn) => turn.id))
+  const historicalTextKeys = new Set(
+    historicalTurns
+      .map(conversationTurnTextKey)
+      .filter((key): key is string => Boolean(key)),
+  )
+
+  const filteredLiveTurns = liveTurns.filter((turn) => {
+    if (historicalIds.has(turn.id)) {
+      return false
+    }
+
+    const textKey = conversationTurnTextKey(turn)
+    if (textKey && historicalTextKeys.has(textKey)) {
+      return false
+    }
+
+    if (isConversationTurnCoveredByTurns(turn, historicalTurns)) {
+      return false
+    }
+
+    return true
+  })
+
+  return [...historicalTurns, ...filteredLiveTurns]
+}
+
 interface ConversationContinuitySnapshot {
   sessionKey: string
   turns: ConversationTurn[]
@@ -1141,6 +1245,10 @@ function mergeConversationContinuityTurns(
 
   for (const currentTurn of currentTurns) {
     if (previousIds.has(currentTurn.id)) {
+      continue
+    }
+
+    if (isConversationTurnCoveredByTurns(currentTurn, mergedTurns)) {
       continue
     }
 
@@ -1657,13 +1765,11 @@ export const AgentRuntime = memo(function AgentRuntime({
   // Historical turns from prior runs in this agent session (loaded from the
   // persisted session transcript) are prepended so the conversation reads as
   // a continuous thread across same-session handoffs. The active run's items
-  // come from the live stream and are excluded from `historicalConversationTurns`
-  // by the caller, so there is no duplication to dedupe here.
+  // come from the live stream; the merge also guards the transient reload /
+  // session-switch case where a stale transcript fetch briefly overlaps with
+  // the live replay for the same run.
   const visibleTurnsWithHistory = useMemo(
-    () =>
-      historicalConversationTurns && historicalConversationTurns.length > 0
-        ? [...historicalConversationTurns, ...visibleTurns]
-        : visibleTurns,
+    () => mergeHistoricalAndLiveTurns(historicalConversationTurns, visibleTurns),
     [historicalConversationTurns, visibleTurns],
   )
   const visibleTurnsForDisplay = useMemo(

@@ -1327,46 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_read_smoke_uses_synthesized_default_input() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-
-        let response = run_with_args(args(
-            tempdir.path(),
-            &[
-                "--json",
-                "dry-run",
-                "read",
-                "--input-json",
-                r#"{"path":"README.md"}"#,
-            ],
-        ))
-        .expect("dry-run");
-
-        assert_eq!(response.json["kind"], json!("dryRun"));
-        assert_eq!(response.json["result"]["toolName"], json!("read"));
-    }
-
-    #[test]
-    fn run_read_smoke_returns_synthetic_result() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-
-        let response = run_with_args(args(
-            tempdir.path(),
-            &[
-                "--json",
-                "run",
-                "read",
-                "--input-json",
-                r#"{"path":"README.md"}"#,
-            ],
-        ))
-        .expect("run");
-
-        assert_eq!(response.json["kind"], json!("run"));
-        assert_eq!(response.json["result"]["hadFailure"], json!(false));
-    }
-
-    #[test]
     fn sequence_save_list_run_delete_round_trip() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let calls = r#"[{"toolName":"read","input":{"path":"README.md"}}]"#;

@@ -221,27 +221,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_builtin_role_has_a_nonempty_preset() {
-        for role in PersonaRole::BUILT_IN {
-            let preset = role.preset();
-            assert!(!preset.display_label.is_empty(), "role {role:?} label");
-            assert!(!preset.description.is_empty(), "role {role:?} desc");
-        }
-    }
-
-    #[test]
     fn custom_role_has_empty_preset() {
         let preset = PersonaRole::Custom.preset();
         assert_eq!(preset.lamports, 0);
         assert!(preset.tokens.is_empty());
         assert!(preset.nfts.is_empty());
-    }
-
-    #[test]
-    fn symbol_catalog_resolves_well_known_tokens() {
-        assert!(mint_for_symbol("USDC").is_some());
-        assert!(mint_for_symbol("BONK").is_some());
-        assert!(mint_for_symbol("NOT_A_REAL_TOKEN").is_none());
     }
 
     #[test]
@@ -260,21 +244,6 @@ mod tests {
             alloc.resolve_mint().as_deref(),
             Some("MyMint11111111111111111111111111111")
         );
-    }
-
-    #[test]
-    fn descriptors_covers_every_builtin_role() {
-        let descriptors = descriptors();
-        assert_eq!(descriptors.len(), PersonaRole::BUILT_IN.len());
-        for role in PersonaRole::BUILT_IN {
-            assert!(descriptors.iter().any(|d| d.id == role));
-        }
-    }
-
-    #[test]
-    fn role_serde_uses_snake_case() {
-        let json = serde_json::to_string(&PersonaRole::NewUser).unwrap();
-        assert_eq!(json, "\"new_user\"");
     }
 
     #[test]

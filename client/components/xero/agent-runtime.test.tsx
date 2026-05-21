@@ -1053,6 +1053,89 @@ describe('AgentRuntime current UI', () => {
     expect(continuationIdx).toBeGreaterThan(noticeIdx)
   })
 
+  it('dedupes replayed raw live fragments when historical messages already cover that run', () => {
+    const answerText = [
+      'FizzBuzz in Rust is a simple loop.',
+      '',
+      '```rust',
+      'fn main() {',
+      '    println!("FizzBuzz");',
+      '}',
+      '```',
+      '',
+      'How it works',
+    ].join('\n')
+    const replayedFragment = [
+      'println!("FizzBuzz");',
+      '}',
+      '```',
+      '',
+      'How it works',
+    ].join('\n')
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun({ runId: 'run-1' }),
+          runtimeStreamStatus: 'complete',
+          runtimeStreamStatusLabel: 'Complete',
+          runtimeStreamItems: [
+            {
+              id: 'transcript:run-1:12',
+              kind: 'transcript',
+              runId: 'run-1',
+              sequence: 12,
+              createdAt: '2026-04-29T00:48:02Z',
+              role: 'user',
+              text: 'How do I write fizz buzz in rust?',
+            },
+            {
+              id: 'transcript:run-1:18',
+              kind: 'transcript',
+              runId: 'run-1',
+              sequence: 18,
+              createdAt: '2026-04-29T00:48:09Z',
+              role: 'assistant',
+              text: replayedFragment,
+            },
+          ],
+        })}
+        historicalConversationTurns={[
+          {
+            id: 'history:run-1:1',
+            kind: 'message',
+            role: 'user',
+            sequence: 1,
+            text: 'How do I write fizz buzz in rust?',
+          },
+          {
+            id: 'history:run-1:2',
+            kind: 'message',
+            role: 'assistant',
+            sequence: 2,
+            text: answerText,
+          },
+        ]}
+      />,
+    )
+
+    const conversation = screen.getByRole('list', { name: 'Agent conversation turns' })
+    const items = within(conversation).getAllByRole('listitem')
+    expect(
+      items.filter((item) =>
+        item.textContent?.includes('How do I write fizz buzz in rust?') ?? false,
+      ),
+    ).toHaveLength(1)
+    expect(
+      items.filter((item) => item.textContent?.includes('FizzBuzz in Rust is a simple loop.') ?? false),
+    ).toHaveLength(1)
+    expect(
+      items.filter((item) => item.textContent?.includes('println!("FizzBuzz");') ?? false),
+    ).toHaveLength(1)
+    expect(within(conversation).getAllByText('rust')).toHaveLength(1)
+  })
+
   it('renders runtime stream messages as chronological conversation turns', () => {
     render(
       <AgentRuntime
@@ -2956,9 +3039,7 @@ describe('AgentRuntime current UI', () => {
     )
 
     expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
-    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent(
-      'anthropic/claude-3.5-haiku',
-    )
+    expect(screen.getByRole('combobox', { name: 'Model selector' })).toHaveTextContent('Claude 3.5 Haiku')
     expect(screen.getByRole('combobox', { name: 'Thinking level selector' })).toHaveTextContent('Low')
     expect(screen.getByRole('combobox', { name: 'Approval mode selector' })).toHaveTextContent('YOLO')
     expect(screen.getByRole('button', { name: 'Auto-compact before sending' })).toHaveAttribute(

@@ -114,4 +114,41 @@ describe("remoteVisibleSessionUpdateFromEnvelope", () => {
 			sessionId: "session-1",
 		});
 	});
+
+	it("maps desktop session-added frames into upsert updates", () => {
+		const envelope: RuntimeEnvelope = {
+			v: 1,
+			seq: 3,
+			computer_id: "desktop-1",
+			session_id: "__sessions__",
+			kind: "event",
+			payload: {
+				schema: "xero.remote_session_added.v1",
+				result: {
+					projectId: "project-1",
+					projectName: "Clipstack",
+					session: {
+						agentSessionId: "session-3",
+						title: "Simple Addition",
+						remoteVisible: true,
+						updatedAt: "2026-05-20T20:42:00Z",
+					},
+				},
+			},
+		};
+
+		expect(remoteVisibleSessionUpdateFromEnvelope(envelope)).toEqual({
+			kind: "upsert",
+			summary: {
+				computerId: "desktop-1",
+				sessionId: "session-3",
+				projectId: "project-1",
+				projectName: "Clipstack",
+				title: "Simple Addition",
+				lastActivityAt: "2026-05-20T20:42:00Z",
+				computerName: null,
+				remoteVisible: true,
+			},
+		});
+	});
 });

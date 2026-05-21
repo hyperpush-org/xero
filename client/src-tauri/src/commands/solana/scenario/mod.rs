@@ -426,16 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_lists_all_built_in_scenarios() {
-        let tmp = TempDir::new().unwrap();
-        let (_, _, engine) = make_engine(&tmp, ClusterKind::Localnet);
-        let scenarios = engine.registry();
-        assert!(scenarios.iter().any(|s| s.id == "swap_jupiter"));
-        assert!(scenarios.iter().any(|s| s.id == "metaplex_mint_list"));
-        assert!(scenarios.iter().any(|s| s.id == "token2022_transfer_hook"));
-    }
-
-    #[test]
     fn unknown_scenario_is_user_fixable_error() {
         let tmp = TempDir::new().unwrap();
         let (_, _, engine) = make_engine(&tmp, ClusterKind::Localnet);

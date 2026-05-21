@@ -383,65 +383,6 @@ fn list_notification_routes_returns_typed_error_when_global_database_is_unavaila
     assert_eq!(error.code, "global_database_open_failed");
 }
 
-// Phase 2.3 moved notification credentials into the global SQLite database, so the malformed-
-// JSON branch this test used to exercise is no longer reachable. The corresponding malformed
-// behavior under SQLite (corrupt DB header) is exercised by lower-level rusqlite open errors,
-// which are already covered by the global-database-unavailable test above.
-#[test]
-#[ignore]
-fn list_notification_routes_marks_malformed_store_as_fail_closed_with_typed_diagnostics() {
-    let root = tempfile::tempdir().expect("temp dir");
-    let app = build_mock_app(&root);
-    let project_id = "project-1";
-    let repo_root = seed_project(&root, &app, project_id, "Xero");
-
-    upsert_route(
-        &repo_root,
-        project_id,
-        "telegram-primary",
-        "telegram",
-        "telegram:@ops-room",
-    );
-
-    let credential_store_path = app
-        .state::<DesktopState>()
-        .global_db_path(app.handle())
-        .expect("credential store path");
-    if let Some(parent) = credential_store_path.parent() {
-        fs::create_dir_all(parent).expect("create app-data directory");
-    }
-    fs::write(&credential_store_path, "{ malformed json")
-        .expect("write malformed credential store");
-
-    let response = list_notification_routes(
-        app.handle().clone(),
-        app.state::<DesktopState>(),
-        ListNotificationRoutesRequestDto {
-            project_id: project_id.into(),
-        },
-    )
-    .expect("list notification routes");
-
-    assert_eq!(response.routes.len(), 1);
-
-    let readiness = response.routes[0]
-        .credential_readiness
-        .as_ref()
-        .expect("readiness should be projected");
-    assert!(!readiness.ready);
-    assert_eq!(
-        readiness.status,
-        NotificationRouteCredentialReadinessStatusDto::Malformed
-    );
-    assert_eq!(
-        readiness
-            .diagnostic
-            .as_ref()
-            .map(|diagnostic| diagnostic.code.as_str()),
-        Some("notification_adapter_credentials_malformed")
-    );
-}
-
 #[test]
 fn list_notification_routes_rejects_unsupported_persisted_route_kinds() {
     let root = tempfile::tempdir().expect("temp dir");

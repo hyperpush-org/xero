@@ -125,22 +125,24 @@ pub(crate) fn drive_provider_loop(
             AgentRunEventKind::ContextManifestRecorded,
             context_manifest_recorded_event_payload(&turn_context_package.manifest, turn_index),
         )?;
-        append_event(
-            repo_root,
-            project_id,
-            run_id,
-            AgentRunEventKind::RetrievalPerformed,
-            json!({
-                "kind": "provider_context_retrieval",
-                "manifestId": turn_context_package.manifest.manifest_id.clone(),
-                "turnIndex": turn_index,
-                "queryIds": turn_context_package.manifest.manifest["retrieval"]["queryIds"].clone(),
-                "resultIds": turn_context_package.manifest.manifest["retrieval"]["resultIds"].clone(),
-                "method": turn_context_package.manifest.manifest["retrieval"]["method"].clone(),
-                "diagnostic": turn_context_package.manifest.manifest["retrieval"]["diagnostic"].clone(),
-                "freshnessDiagnostics": turn_context_package.manifest.manifest["retrieval"]["freshnessDiagnostics"].clone(),
-            }),
-        )?;
+        if turn_context_package.pre_provider_retrieval_performed {
+            append_event(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunEventKind::RetrievalPerformed,
+                json!({
+                    "kind": "provider_context_retrieval",
+                    "manifestId": turn_context_package.manifest.manifest_id.clone(),
+                    "turnIndex": turn_index,
+                    "queryIds": turn_context_package.manifest.manifest["retrieval"]["queryIds"].clone(),
+                    "resultIds": turn_context_package.manifest.manifest["retrieval"]["resultIds"].clone(),
+                    "method": turn_context_package.manifest.manifest["retrieval"]["method"].clone(),
+                    "diagnostic": turn_context_package.manifest.manifest["retrieval"]["diagnostic"].clone(),
+                    "freshnessDiagnostics": turn_context_package.manifest.manifest["retrieval"]["freshnessDiagnostics"].clone(),
+                }),
+            )?;
+        }
         fail_closed_if_required_consumed_artifacts_missing(
             repo_root,
             project_id,
@@ -776,6 +778,7 @@ fn context_manifest_recorded_event_payload(
         "retrievalResultIds": manifest.retrieval_result_ids.clone(),
         "deliveryModel": manifest.manifest["retrieval"]["deliveryModel"].clone(),
         "rawContextInjected": manifest.manifest["retrieval"]["rawContextInjected"].clone(),
+        "preProviderRetrieval": manifest.manifest["retrieval"]["preProviderRetrieval"].clone(),
         "admittedProviderPreflightHash": manifest.manifest["admittedProviderPreflightHash"].clone(),
         "toolApplicationPolicy": manifest
             .manifest

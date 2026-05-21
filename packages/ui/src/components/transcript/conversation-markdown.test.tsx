@@ -75,6 +75,30 @@ describe('conversation markdown performance behavior', () => {
     expect(screen.queryByText('Plain')).not.toBeInTheDocument()
   })
 
+  it('renders indented fenced code blocks inside ordered-list instructions', () => {
+    const text = [
+      'Quick ways to run it',
+      '',
+      '1. Save as `fizzbuzz.rs`',
+      '2. Compile and run:',
+      '   ```bash',
+      '   rustc fizzbuzz.rs -o fizzbuzz && ./fizzbuzz',
+      '   ```',
+      '3. Or use Cargo:',
+      '   ```bash',
+      '   cargo new fizzbuzz --bin',
+      '   ```',
+    ].join('\n')
+
+    const { container } = render(<Markdown messageId="turn-list-fences" text={text} />)
+
+    expect(container.querySelectorAll('pre')).toHaveLength(2)
+    expect(screen.getAllByText('bash')).toHaveLength(2)
+    expect(screen.getByText('rustc fizzbuzz.rs -o fizzbuzz && ./fizzbuzz')).toBeInTheDocument()
+    expect(screen.getByText('cargo new fizzbuzz --bin')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('```bash')
+  })
+
   it('renders dense markdown at the condensed agent-pane scale', () => {
     const text = [
       '# Dense heading',

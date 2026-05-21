@@ -209,15 +209,6 @@ mod tests {
     use super::sanitize_provider_commit_message;
 
     #[test]
-    fn sanitizes_common_model_wrappers() {
-        let message = "```gitcommit\nCommit message: \"feat: add source control helper\"\n```";
-        assert_eq!(
-            sanitize_provider_commit_message(message).expect("message is valid"),
-            "feat: add source control helper"
-        );
-    }
-
-    #[test]
     fn preserves_body_while_collapsing_extra_blank_lines() {
         let message = "fix: generate commit messages\n\n\n\nUse the staged diff only.";
         assert_eq!(

@@ -173,6 +173,38 @@ describe('resolveSelectedModel', () => {
     expect(view.credentialKind).toBe('api_key')
   })
 
+  it('uses the selected control profile to resolve cross-provider model changes on an existing run', () => {
+    const credentials = makeSnapshot([
+      makeCredential({ providerId: 'xai', kind: 'oauth_session', readinessProof: 'oauth_session' }),
+      makeCredential({ providerId: 'openai_codex', kind: 'oauth_session', readinessProof: 'oauth_session' }),
+    ])
+    const options = buildComposerModelOptions(credentials, {
+      'xai-default': makeCatalog('xai', [
+        { modelId: 'grok-4.3-latest', displayName: 'grok-4.3-latest', thinking: true },
+      ]),
+      'openai_codex-default': makeCatalog('openai_codex', [
+        { modelId: 'gpt-5.4', displayName: 'GPT-5.4', thinking: true },
+      ]),
+    })
+
+    const view = resolveSelectedModel(
+      credentials,
+      makeSelectedRunControls({
+        providerProfileId: 'openai_codex-default',
+        modelId: 'gpt-5.4',
+      }),
+      {
+        runtimeRun: makeRuntimeRun({ providerId: 'xai' }),
+        composerModelOptions: options,
+      },
+    )
+
+    expect(view.source).toBe('runtime_run')
+    expect(view.providerId).toBe('openai_codex')
+    expect(view.modelId).toBe('gpt-5.4')
+    expect(view.hasCredential).toBe(true)
+  })
+
   it('uses runtime-run truth even when the provider has no credential', () => {
     const credentials = makeSnapshot([])
     const view = resolveSelectedModel(

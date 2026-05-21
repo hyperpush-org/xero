@@ -59,6 +59,13 @@ export function SessionDrawer({
 		},
 		[onOpenChange],
 	);
+	const handleSelectProject = useCallback(
+		(project: RemoteProjectSummary) => {
+			onSelectProject?.(project);
+			setIsOpen(false);
+		},
+		[onSelectProject, setIsOpen],
+	);
 
 	return (
 		<Sheet open={isOpen} onOpenChange={setIsOpen}>
@@ -86,15 +93,12 @@ export function SessionDrawer({
 					projects={projects}
 					currentSessionKey={currentSessionKey}
 					onSelectSession={onSelectSession}
-					onSelectProject={onSelectProject}
+					onSelectProject={onSelectProject ? handleSelectProject : undefined}
 					onArchiveSession={onArchiveSession}
 					onSignOut={onSignOut}
 					pendingProjectKey={pendingProjectKey}
 					alwaysShowRowActions
 					onAfterSelectSession={() => setIsOpen(false)}
-					onProjectPickerOpenChange={(pickerOpen) => {
-						if (pickerOpen) setIsOpen(false);
-					}}
 					closeSlot={
 						<SheetClose asChild>
 							<button

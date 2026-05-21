@@ -18,7 +18,10 @@ use crate::{
     state::DesktopState,
 };
 
-use super::remote_bridge::{handle_deleted_agent_session_remote_state, RemoteBridgeRuntimeState};
+use super::remote_bridge::{
+    handle_deleted_agent_session_remote_state, publish_agent_session_remote_state,
+    RemoteBridgeRuntimeState,
+};
 use super::runtime_support::{
     emit_runtime_run_updated_if_changed, load_persisted_runtime_run, resolve_project_root,
     stop_owned_runtime_run,
@@ -35,7 +38,8 @@ pub fn create_agent_session<R: Runtime>(
         validate_non_empty(title, "title")?;
     }
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let project_id = request.project_id.clone();
+    let repo_root = resolve_project_root(&app, state.inner(), &project_id)?;
     let session = project_store::create_agent_session(
         &repo_root,
         &AgentSessionCreateRecord {
@@ -47,6 +51,7 @@ pub fn create_agent_session<R: Runtime>(
             selected: request.selected,
         },
     )?;
+    publish_agent_session_remote_state(&app, state.inner(), &project_id, &session);
 
     Ok(agent_session_dto(&session))
 }
@@ -98,7 +103,8 @@ pub fn update_agent_session<R: Runtime>(
         validate_non_empty(title, "title")?;
     }
 
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let project_id = request.project_id.clone();
+    let repo_root = resolve_project_root(&app, state.inner(), &project_id)?;
     let session = project_store::update_agent_session(
         &repo_root,
         &AgentSessionUpdateRecord {
@@ -109,6 +115,7 @@ pub fn update_agent_session<R: Runtime>(
             selected: request.selected,
         },
     )?;
+    publish_agent_session_remote_state(&app, state.inner(), &project_id, &session);
     Ok(agent_session_dto(&session))
 }
 
@@ -189,12 +196,14 @@ pub fn restore_agent_session<R: Runtime>(
 ) -> CommandResult<AgentSessionDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
-    let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    let project_id = request.project_id.clone();
+    let repo_root = resolve_project_root(&app, state.inner(), &project_id)?;
     let session = project_store::restore_agent_session(
         &repo_root,
         &request.project_id,
         &request.agent_session_id,
     )?;
+    publish_agent_session_remote_state(&app, state.inner(), &project_id, &session);
     Ok(agent_session_dto(&session))
 }
 

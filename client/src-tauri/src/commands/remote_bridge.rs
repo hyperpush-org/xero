@@ -216,6 +216,40 @@ pub fn publish_remote_project_list_to_cloud<R: Runtime>(app: &AppHandle<R>, stat
     }
 }
 
+pub(crate) fn publish_agent_session_remote_state<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+    session: &AgentSessionRecord,
+) {
+    if let Err(error) = publish_agent_session_remote_state_inner(app, state, project_id, session) {
+        eprintln!("[remote-bridge] session publish skipped: {error}");
+    }
+}
+
+fn publish_agent_session_remote_state_inner<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    project_id: &str,
+    session: &AgentSessionRecord,
+) -> CommandResult<()> {
+    let Some(bridge) = runtime_event_forwarder() else {
+        return Ok(());
+    };
+    let project_name = project_name_for_id(app, state, project_id)?;
+    let payload = remote_session_result_payload(project_id, project_name.as_deref(), session);
+    bridge
+        .forward_control_event(
+            "__sessions__",
+            json!({
+                "schema": "xero.remote_session_added.v1",
+                "result": payload,
+            }),
+        )
+        .map_err(map_bridge_error)?;
+    Ok(())
+}
+
 pub fn forward_agent_event(repo_root: &Path, event: &AgentEventRecord) {
     let Some(bridge) = runtime_event_forwarder() else {
         return;
@@ -708,12 +742,14 @@ fn route_start_session<R: Runtime + 'static>(
         None => None,
     };
 
-    let session_payload = json!({
-        "projectId": &located_project.project_id,
-        "projectName": located_project.project_name.as_deref().unwrap_or(&located_project.project_id),
-        "session": agent_session_dto(&session),
-        "run": run,
-    });
+    let mut session_payload = remote_session_result_payload(
+        &located_project.project_id,
+        located_project.project_name.as_deref(),
+        &session,
+    );
+    if let Some(payload) = session_payload.as_object_mut() {
+        payload.insert("run".to_string(), json!(run));
+    }
     bridge
         .forward_control_event(
             "__new__",
@@ -1181,6 +1217,18 @@ fn remote_session_summary_payload(
             "createdAt": &session.created_at,
             "updatedAt": &session.updated_at,
         },
+    })
+}
+
+fn remote_session_result_payload(
+    project_id: &str,
+    project_name: Option<&str>,
+    session: &AgentSessionRecord,
+) -> JsonValue {
+    json!({
+        "projectId": project_id,
+        "projectName": project_name.unwrap_or(project_id),
+        "session": agent_session_dto(session),
     })
 }
 
@@ -1800,5 +1848,34 @@ mod tests {
         )
         .expect("controls should parse")
         .is_none());
+    }
+
+    #[test]
+    fn remote_session_result_payload_matches_cloud_directory_shape() {
+        let session = AgentSessionRecord {
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            title: "Simple Addition".into(),
+            summary: String::new(),
+            status: project_store::AgentSessionStatus::Active,
+            selected: true,
+            remote_visible: false,
+            created_at: "2026-05-20T20:40:00Z".into(),
+            updated_at: "2026-05-20T20:42:00Z".into(),
+            archived_at: None,
+            last_run_id: None,
+            last_runtime_kind: None,
+            last_provider_id: None,
+            lineage: None,
+        };
+
+        let payload = remote_session_result_payload("project-1", Some("Mesh Lang"), &session);
+
+        assert_eq!(payload["projectId"], "project-1");
+        assert_eq!(payload["projectName"], "Mesh Lang");
+        assert_eq!(payload["session"]["agentSessionId"], "session-1");
+        assert_eq!(payload["session"]["title"], "Simple Addition");
+        assert_eq!(payload["session"]["remoteVisible"], true);
+        assert_eq!(payload["session"]["updatedAt"], "2026-05-20T20:42:00Z");
     }
 }

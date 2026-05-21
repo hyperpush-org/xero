@@ -417,6 +417,32 @@ describe('VcsSidebar', () => {
     expect(screen.queryByText('file-0999.ts')).not.toBeInTheDocument()
   })
 
+  it('keeps changed-file rows from shrinking when the list overflows', async () => {
+    const entries = Array.from({ length: 64 }, (_, index) => ({
+      path: `src/file-${String(index).padStart(4, '0')}.ts`,
+      staged: null,
+      unstaged: 'modified' as const,
+      untracked: false,
+    }))
+
+    renderVcsSidebar(makeSingleFilePatch('visible diff'), {
+      status: makeStatus({
+        unstagedCount: entries.length,
+        statusCount: entries.length,
+        entries,
+      }),
+    })
+
+    await waitFor(() => expect(screen.getByText('file-0000.ts')).toBeInTheDocument())
+
+    expect(screen.getByLabelText('Changed files')).toHaveClass('overflow-y-auto')
+    expect(screen.getByText('No staged changes').closest('[role="presentation"]')).toHaveClass(
+      'shrink-0',
+    )
+    expect(screen.getByText('Changes').closest('[role="presentation"]')).toHaveClass('shrink-0')
+    expect(screen.getByText('file-0000.ts').closest('[role="option"]')).toHaveClass('shrink-0')
+  })
+
   it('windows large unified diffs', async () => {
     const patch = [
       'diff --git a/file.txt b/file.txt',
