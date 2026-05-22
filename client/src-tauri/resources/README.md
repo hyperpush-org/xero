@@ -1,7 +1,8 @@
 # Bundled sidecars
 
-This directory holds binaries we embed into the Xero desktop bundle at
-build time. They are resolved at runtime via `app.path().resolve(..., Resource)`.
+This directory holds sidecar assets that Xero can embed into desktop
+bundles or use during local builds. Bundled assets are resolved at runtime
+via `app.path().resolve(..., Resource)`.
 
 ## scrcpy-server-v2.7.jar
 
@@ -40,14 +41,14 @@ idb-companion.universal/
 
 The binary's `LC_RPATH` is `@executable_path/../Frameworks`, so the tree
 has to stay intact — shipping only `bin/idb_companion` yields
-`Library not loaded: @rpath/...` at spawn time. Tauri copies every file
-under the directory into the bundle's `Resources/resources/`, preserving
-that layout.
+`Library not loaded: @rpath/...` at spawn time.
 
 The base `tauri.conf.json` intentionally excludes this tree so Windows
-and Linux bundles do not depend on macOS-only resources. The macOS
-overlay `tauri.macos.conf.json` adds it back for app builds that can
-actually run iOS Simulator support.
+and Linux bundles do not depend on macOS-only resources. The signed macOS
+release overlay also excludes it: Apple's notarization service rejects the
+upstream universal framework bundle after Tauri resource copying. Release
+builds therefore rely on the runtime Homebrew / `PATH` fallback for
+`idb_companion`.
 
 The pinned version and digest live in `build.rs::IDB_COMPANION_VERSION` /
 `IDB_COMPANION_SHA256`. A `.xero-version` sentinel inside the
@@ -58,7 +59,8 @@ the pin means:
 2. `rm -rf resources/idb-companion.universal resources/*.tar.gz` once so
    the sentinel mismatches and the fetcher re-runs on the next build.
 
-Set `XERO_SKIP_SIDECAR_FETCH=1` to bypass the fetcher entirely.
+Set `XERO_SKIP_SIDECAR_FETCH=1` to bypass the fetcher entirely. Signed
+macOS CI sets this because the tree is not bundled into notarized apps.
 
 Manual override: drop a compatible `idb-companion.universal/` tree into
 this directory (for example, the one Homebrew installs at
@@ -69,7 +71,8 @@ sentinel is already in place.
 
 The iOS pipeline picks up `idb_companion` in this order:
 
-1. Tauri resource directory — the bundled `idb-companion.universal/bin/idb_companion`.
+1. Tauri resource directory — a manually bundled or local
+   `idb-companion.universal/bin/idb_companion`.
 2. `which idb_companion` on `PATH`.
 3. `/opt/homebrew/bin/idb_companion`, `/usr/local/bin/idb_companion`
    (Homebrew fallbacks for dev builds that skipped the fetcher).
@@ -78,9 +81,8 @@ MIT-licensed (Meta / facebook/idb).
 
 ### Signing / notarization
 
-`tauri build` code-signs everything under `Resources/`, including every
-framework inside `idb-companion.universal/Frameworks`. After a release
-build, smoke-test with:
+Release builds do not bundle `idb-companion.universal`, so the normal app
+signing check is enough:
 
 ```
 codesign --verify --deep --strict \
@@ -88,14 +90,12 @@ codesign --verify --deep --strict \
 ```
 
 and check that `spctl --assess --type execute --verbose` returns
-"accepted". Both should pass without additional entitlements — the
-frameworks are already signed by Meta, and Tauri's codesign pass
-re-signs them under the Xero identity.
+"accepted".
 
 ### Required host state
 
-Bundling `idb_companion` removes the "install via Homebrew" step from
-the user's onboarding. It does **not** remove the need for Xcode itself —
+Because release builds do not bundle `idb_companion`, users need an
+install discoverable via Homebrew or `PATH`. They also need Xcode itself:
 `idb_companion` links against Apple's private
 `CoreSimulator.framework`, which only ships inside the Xcode.app
 install. The titlebar discovery UI surfaces an "Install Xcode" CTA when

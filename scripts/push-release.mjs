@@ -101,13 +101,13 @@ function ensureReleaseVersion(version) {
 }
 
 function ensureCleanWorktree(dryRun) {
-  const status = gitOutput(['status', '--porcelain'])
+  const status = gitOutput(['status', '--porcelain', '--untracked-files=no'])
   if (!status) return
   if (dryRun) {
-    console.warn('[release:push] dry run continuing with a dirty worktree')
+    console.warn('[release:push] dry run continuing with tracked worktree changes')
     return
   }
-  fail('Worktree is dirty. Commit or discard changes before pushing a release tag.')
+  fail('Tracked worktree changes remain. Commit or discard them before pushing a release tag.')
 }
 
 function ensureBranch() {

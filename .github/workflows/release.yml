@@ -418,6 +418,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          XERO_SKIP_SIDECAR_FETCH: ${{ contains(matrix.platform, 'macos') && '1' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -430,7 +431,7 @@ jobs:
           projectPath: client
           args: ${{ matrix.args }}
 
-      - name: Verify macOS signing and bundled resources
+      - name: Verify macOS signing
         if: contains(matrix.platform, 'macos')
         shell: bash
         run: |
@@ -442,13 +443,6 @@ jobs:
             exit 1
           fi
 
-          IDB_COMPANION="$APP_BUNDLE/Contents/Resources/resources/idb-companion.universal/bin/idb_companion"
-          if [ ! -x "$IDB_COMPANION" ]; then
-            echo "::error::Missing executable bundled idb_companion at $IDB_COMPANION."
-            exit 1
-          fi
-
-          codesign --verify --strict --verbose=2 "$IDB_COMPANION"
           codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
           spctl --assess --type execute --verbose "$APP_BUNDLE"
 

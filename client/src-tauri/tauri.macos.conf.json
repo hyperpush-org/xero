@@ -1,12 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "build": {
-    "beforeBundleCommand": "bash src-tauri/scripts/sign-macos-bundle-resources.sh"
-  },
   "bundle": {
     "resources": [
       "resources/scrcpy-server-v2.7.jar",
-      "resources/idb-companion.universal/**/*",
       "resources/solana-toolchain/**/*"
     ]
   }

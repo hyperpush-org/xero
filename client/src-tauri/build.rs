@@ -414,11 +414,10 @@ fn fetch_scrcpy_server() {
 /// compiled out entirely by `#[cfg(target_os = "macos")]` guards, so the
 /// bundled resource would never be loaded.
 ///
-/// The fetch is skipped when `XERO_SKIP_SIDECAR_FETCH` is set (CI caches
-/// the extraction itself) or when the pinned version marker is already
-/// present. Failures downgrade to a `cargo:warning`; the runtime probe
-/// falls back to Homebrew / `PATH` so `tauri dev` without a prior fetch
-/// still works.
+/// The fetch is skipped when `XERO_SKIP_SIDECAR_FETCH` is set or when the
+/// pinned version marker is already present. Failures downgrade to a
+/// `cargo:warning`; the runtime probe falls back to Homebrew / `PATH` so
+/// `tauri dev` without a prior fetch still works.
 #[cfg(target_os = "macos")]
 fn fetch_idb_companion() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
