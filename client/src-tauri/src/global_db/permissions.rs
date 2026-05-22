@@ -15,7 +15,6 @@
 
 use std::path::Path;
 
-#[cfg(unix)]
 const APP_DATA_DIRECTORY_MODE: u32 = 0o700;
 #[cfg(unix)]
 const DATABASE_FILE_MODE: u32 = 0o600;

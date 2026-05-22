@@ -6131,12 +6131,14 @@ fn default_headless_state_dir() -> Result<PathBuf, CliError> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
 }
 
+#[cfg(not(target_os = "windows"))]
 fn home_dir_error() -> CliError {
     CliError::system_fault(
         "xero_cli_home_unavailable",

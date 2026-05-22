@@ -1,9 +1,10 @@
+#[cfg(unix)]
+use std::process::Command;
 use std::{
     collections::BTreeMap,
     fs,
     io::Read,
     path::{Path, PathBuf},
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 #[cfg(target_os = "macos")]

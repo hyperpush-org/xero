@@ -95,7 +95,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: client
-          args: --target ${{ matrix.target }} --config src-tauri/tauri.macos.conf.json
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
 
       - name: Verify signing and bundled resources
         shell: bash

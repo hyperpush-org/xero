@@ -310,19 +310,19 @@ jobs:
       matrix:
         include:
           - platform: macos-15
-            args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json
+            args: --target aarch64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-aarch64
             platform_key: darwin-aarch64
           - platform: macos-15-intel
-            args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json
+            args: --target x86_64-apple-darwin --config src-tauri/tauri.macos.conf.json -- --bin xero-desktop
             artifact_suffix: macos-x86_64
             platform_key: darwin-x86_64
           - platform: windows-latest
-            args: --bundles nsis
+            args: --bundles nsis -- --bin xero-desktop
             artifact_suffix: windows-x86_64
             platform_key: windows-x86_64
           - platform: ubuntu-24.04
-            args: --bundles appimage
+            args: --bundles appimage -- --bin xero-desktop
             artifact_suffix: linux-x86_64
             platform_key: linux-x86_64
     runs-on: ${{ matrix.platform }}
