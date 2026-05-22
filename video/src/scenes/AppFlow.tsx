@@ -58,6 +58,26 @@ const SOL_TAB_NAMES = [
 const SOL_TAB_NAME_START = SOL_WORKBENCH_SHOW;
 const SOL_TAB_NAME_STRIDE = 18;
 const SOL_TAB_NAME_TRANSITION = 7;
+const CLOSEOUT_START = SOL_FINAL_PULLBACK_START - 8;
+const CLOSEOUT_LAYER_TOP = -400;
+const XERO_MARK_QUADRANTS = [
+  {
+    d: "M182.98 182.984L0.000640869 182.984L0.000629244 50.0041C0.00062683 22.3898 22.3864 0.00413391 50.0006 0.0041315L182.98 0.00411987L182.98 182.984Z",
+    fill: "#D4A574",
+  },
+  {
+    d: "M237.02 0L370 0C397.614 0 420 22.3858 420 50V182.98H237.02V0Z",
+    fill: "#4E4337",
+  },
+  {
+    d: "M237.02 237.023H419.999V370.004C419.999 397.618 397.614 420.004 369.999 420.004H237.02V237.023Z",
+    fill: "#D4A574",
+  },
+  {
+    d: "M0 237.023H182.98V420.004H50C22.3857 420.004 0 397.618 0 370.004L0 237.023Z",
+    fill: "#4E4337",
+  },
+] as const;
 
 // Beat timing (frames @ 30fps).
 const CLICK1 = 38; // click "Create agent"
@@ -67,7 +87,7 @@ const CANVAS_IN = 72;
 // Scene-3 hand-off (no cut): the list slides out while the app flattens and
 // zooms into the top-left tabs, clicks "Agent", and the screen swaps.
 const T3_START = 150;
-const CLICK3 = 198; // click the "Agent" tab
+const CLICK3 = 194; // click the "Agent" tab
 const AGENT_CURSOR_START = CLICK3 - 20;
 const AGENT_CURSOR_VISIBLE_START = AGENT_CURSOR_START;
 const AGENT_CURSOR_GLITCH_DELAY = 11;
@@ -390,7 +410,7 @@ const ChatCaption: React.FC = () => {
     extrapolateRight: "clamp",
     easing: Easing.out(Easing.cubic),
   });
-  const capOut = interpolate(frame, [188, 198], [0, 1], {
+  const capOut = interpolate(frame, [228, 240], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
     easing: Easing.in(Easing.cubic),
@@ -552,6 +572,201 @@ const SolanaCaption: React.FC = () => {
           Solana workbench
         </span>
         <SolanaTabName />
+      </div>
+    </div>
+  );
+};
+
+const CloseoutGlitchText: React.FC<{
+  children: React.ReactNode;
+  fontSize: number;
+  intensity: number;
+  seed: number;
+  color?: string;
+  fontWeight?: number;
+  fontStyle?: React.CSSProperties["fontStyle"];
+  style?: React.CSSProperties;
+}> = ({
+  children,
+  fontSize,
+  intensity,
+  seed,
+  color = "#ffffff",
+  fontWeight = 600,
+  fontStyle,
+  style,
+}) => {
+  const base: React.CSSProperties = {
+    fontFamily,
+    fontWeight,
+    fontStyle,
+    fontSize,
+    lineHeight: 1,
+    letterSpacing: 0,
+    whiteSpace: "nowrap",
+    ...style,
+  };
+
+  if (intensity <= 0.001) {
+    return <span style={{ ...base, color }}>{children}</span>;
+  }
+
+  const rnd = (k: string) => random(`closeout-${seed}-${k}`);
+  const signed = (k: string) => rnd(k) * 2 - 1;
+
+  const shift = (0.04 + 0.05 * rnd("rgb")) * fontSize * intensity;
+  const ry = signed("ry") * 0.028 * fontSize * intensity;
+  const baseJitter = signed("bx") * 0.045 * fontSize * intensity;
+  const flicker = 1 - rnd("flk") * 0.35 * intensity;
+  const slices = [0, 1, 2, 3, 4]
+    .filter((k) => rnd(`slice-on-${k}`) < 0.72)
+    .map((k) => {
+      const top = Math.round(rnd(`slice-top-${k}`) * 76);
+      const h = 4 + Math.round(rnd(`slice-h-${k}`) * 18);
+      const dx = signed(`slice-dx-${k}`) * 0.24 * fontSize * intensity;
+      const dy = signed(`slice-dy-${k}`) * 0.02 * fontSize * intensity;
+      return { k, top, bottom: Math.max(0, 100 - top - h), dx, dy };
+    });
+  const layer = (
+    layerColor: string,
+    dx: number,
+    dy: number,
+    extra?: React.CSSProperties,
+  ): React.CSSProperties => ({
+    ...base,
+    color: layerColor,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    mixBlendMode: "screen",
+    transform: `translate(${dx}px, ${dy}px)`,
+    ...extra,
+  });
+
+  return (
+    <span
+      style={{
+        ...base,
+        position: "relative",
+        display: "inline-block",
+        isolation: "isolate",
+        color,
+        opacity: flicker,
+        transform: `translateX(${baseJitter}px)`,
+      }}
+    >
+      <span
+        style={{
+          ...base,
+          color: "#00ff00",
+          display: "block",
+          position: "relative",
+          mixBlendMode: "screen",
+        }}
+      >
+        {children}
+      </span>
+      <span style={layer("#ff0000", shift, ry)}>{children}</span>
+      <span style={layer("#0000ff", -shift, -ry)}>{children}</span>
+      {slices.map((slice) => (
+        <span
+          key={slice.k}
+          style={layer("#ffffff", slice.dx, slice.dy, {
+            clipPath: `inset(${slice.top}% 0 ${slice.bottom}% 0)`,
+          })}
+        >
+          {children}
+        </span>
+      ))}
+    </span>
+  );
+};
+
+const CloseoutMark: React.FC<{ size: number; opacity: number }> = ({
+  size,
+  opacity,
+}) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 420 420"
+    fill="none"
+    style={{
+      opacity,
+      filter: "drop-shadow(0 18px 42px rgba(0,0,0,0.38))",
+    }}
+  >
+    {XERO_MARK_QUADRANTS.map((quadrant) => (
+      <path key={quadrant.d} d={quadrant.d} fill={quadrant.fill} />
+    ))}
+  </svg>
+);
+
+const Closeout: React.FC = () => {
+  const frame = useCurrentFrame();
+  if (frame < CLOSEOUT_START) {
+    return null;
+  }
+
+  const taglineGlitchCycle = (frame - CLOSEOUT_START + 9999) % 16;
+  const taglineGlitch = interpolate(
+    taglineGlitchCycle,
+    [0, 5, 16],
+    [0.95, 0.3, 0.3],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: CLOSEOUT_LAYER_TOP,
+        left: 0,
+        right: 0,
+        pointerEvents: "none",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        fontFamily,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 32,
+        }}
+      >
+        <CloseoutMark size={88} opacity={1} />
+        <div style={{ transform: "translateY(-7px)" }}>
+          <CloseoutGlitchText
+            fontSize={102}
+            intensity={0}
+            seed={frame}
+          >
+            xero
+          </CloseoutGlitchText>
+        </div>
+      </div>
+      <div
+        style={{
+          marginTop: 30,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+        }}
+      >
+          <CloseoutGlitchText
+            fontSize={62}
+            intensity={taglineGlitch}
+          seed={frame}
+          color="rgba(245,245,245,0.92)"
+        >
+          One harness. Every surface.
+        </CloseoutGlitchText>
       </div>
     </div>
   );
@@ -2280,6 +2495,7 @@ export const AppFlow: React.FC = () => {
                 transform: `translate(${solTx}px, ${solTy}px) scale(${solS})`,
               }}
             >
+              <Closeout />
               <Img
                 src={staticFile("agent_chat.png")}
                 style={{
