@@ -5,12 +5,20 @@ if [ "${TAURI_ENV_PLATFORM:-}" != "darwin" ] && [ "$(uname -s)" != "Darwin" ]; t
   exit 0
 fi
 
+find_developer_id_identity() {
+  security find-identity -v -p codesigning 2>/dev/null |
+    awk -F '"' '/Developer ID Application/ { print $2; exit }'
+}
+
 identity="${XERO_MACOS_CODESIGN_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
+if [ -n "$identity" ] &&
+  ! security find-identity -v -p codesigning 2>/dev/null | grep -Fq "$identity"; then
+  echo "Configured macOS signing identity is not available in the keychain; using imported Developer ID identity."
+  identity=""
+fi
+
 if [ -z "$identity" ]; then
-  identity="$(
-    security find-identity -v -p codesigning 2>/dev/null |
-      awk -F '"' '/Developer ID Application/ { print $2; exit }'
-  )"
+  identity="$(find_developer_id_identity)"
 fi
 
 if [ -z "$identity" ]; then
