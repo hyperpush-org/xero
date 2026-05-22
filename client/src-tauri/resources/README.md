@@ -59,8 +59,10 @@ the pin means:
 2. `rm -rf resources/idb-companion.universal resources/*.tar.gz` once so
    the sentinel mismatches and the fetcher re-runs on the next build.
 
-Set `XERO_SKIP_SIDECAR_FETCH=1` to bypass the fetcher entirely. Signed
+Set `XERO_SKIP_IDB_COMPANION_FETCH=1` to bypass only this fetcher. Signed
 macOS CI sets this because the tree is not bundled into notarized apps.
+`XERO_SKIP_SIDECAR_FETCH=1` bypasses every resource fetcher and should only
+be used by builds that also remove all bundled resources.
 
 Manual override: drop a compatible `idb-companion.universal/` tree into
 this directory (for example, the one Homebrew installs at

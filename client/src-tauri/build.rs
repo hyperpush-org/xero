@@ -20,6 +20,9 @@ const IDB_COMPANION_SHA256: &str =
 const IDB_COMPANION_DIR: &str = "idb-companion.universal";
 const BUILD_COOKIE_IMPORTER_ENV: &str = "XERO_BUILD_COOKIE_IMPORTER";
 const SKIP_COOKIE_IMPORTER_ENV: &str = "XERO_SKIP_COOKIE_IMPORTER";
+const SKIP_SIDECAR_FETCH_ENV: &str = "XERO_SKIP_SIDECAR_FETCH";
+#[cfg(target_os = "macos")]
+const SKIP_IDB_COMPANION_FETCH_ENV: &str = "XERO_SKIP_IDB_COMPANION_FETCH";
 const XAI_OAUTH_CLIENT_ID_ENV: &str = "XERO_XAI_OAUTH_CLIENT_ID";
 const LEGACY_XAI_OAUTH_CLIENT_ID_ENV: &str = "XAI_OAUTH_CLIENT_ID";
 
@@ -353,10 +356,10 @@ fn fetch_scrcpy_server() {
     let target = resources_dir.join(format!("scrcpy-server-v{SCRCPY_VERSION}.jar"));
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=XERO_SKIP_SIDECAR_FETCH");
+    println!("cargo:rerun-if-env-changed={SKIP_SIDECAR_FETCH_ENV}");
     println!("cargo:rerun-if-changed={}", target.display());
 
-    if std::env::var_os("XERO_SKIP_SIDECAR_FETCH").is_some() {
+    if std::env::var_os(SKIP_SIDECAR_FETCH_ENV).is_some() {
         return;
     }
 
@@ -414,10 +417,11 @@ fn fetch_scrcpy_server() {
 /// compiled out entirely by `#[cfg(target_os = "macos")]` guards, so the
 /// bundled resource would never be loaded.
 ///
-/// The fetch is skipped when `XERO_SKIP_SIDECAR_FETCH` is set or when the
-/// pinned version marker is already present. Failures downgrade to a
-/// `cargo:warning`; the runtime probe falls back to Homebrew / `PATH` so
-/// `tauri dev` without a prior fetch still works.
+/// The fetch is skipped when either `XERO_SKIP_SIDECAR_FETCH` or
+/// `XERO_SKIP_IDB_COMPANION_FETCH` is set, or when the pinned version marker
+/// is already present. Failures downgrade to a `cargo:warning`; the runtime
+/// probe falls back to Homebrew / `PATH` so `tauri dev` without a prior fetch
+/// still works.
 #[cfg(target_os = "macos")]
 fn fetch_idb_companion() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -426,10 +430,13 @@ fn fetch_idb_companion() {
     let sentinel = extracted.join(".xero-version");
 
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=XERO_SKIP_SIDECAR_FETCH");
+    println!("cargo:rerun-if-env-changed={SKIP_SIDECAR_FETCH_ENV}");
+    println!("cargo:rerun-if-env-changed={SKIP_IDB_COMPANION_FETCH_ENV}");
     println!("cargo:rerun-if-changed={}", sentinel.display());
 
-    if std::env::var_os("XERO_SKIP_SIDECAR_FETCH").is_some() {
+    if std::env::var_os(SKIP_SIDECAR_FETCH_ENV).is_some()
+        || std::env::var_os(SKIP_IDB_COMPANION_FETCH_ENV).is_some()
+    {
         return;
     }
 

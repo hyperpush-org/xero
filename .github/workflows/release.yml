@@ -418,7 +418,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          XERO_SKIP_SIDECAR_FETCH: ${{ contains(matrix.platform, 'macos') && '1' || '' }}
+          XERO_SKIP_IDB_COMPANION_FETCH: ${{ contains(matrix.platform, 'macos') && '1' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
