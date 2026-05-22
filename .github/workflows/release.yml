@@ -187,6 +187,8 @@ jobs:
       - name: Build TUI binary
         working-directory: client/src-tauri
         env:
+          # The TUI artifact packages only the terminal binary; desktop sidecars are not present in checkout.
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
           XERO_SKIP_COOKIE_IMPORTER: "1"
           XERO_SKIP_DICTATION_SHIM: "1"
           XERO_SKIP_SIDECAR_FETCH: "1"

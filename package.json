@@ -25,6 +25,7 @@
     "rust:test": "pnpm --dir ./client run rust:test",
     "rust:target:prune": "pnpm --dir ./client run rust:target:prune",
     "rust:target:prune:dry-run": "pnpm --dir ./client run rust:target:prune:dry-run",
+    "release:push": "node scripts/push-release.mjs",
     "agent-system:verify-plan": "node scripts/verify-agent-system-plan.mjs",
     "data:delete": "node scripts/delete-app-data.mjs",
     "db:up": "node scripts/docker-compose.mjs -f server/docker-compose.yml up -d",

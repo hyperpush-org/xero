@@ -138,7 +138,7 @@ Confirm the cloud app has:
 Run the first release from a clean commit after all secrets are configured.
 
 1. Confirm the desktop app version is the version you want to ship.
-2. Push a tag in the form `vX.Y.Z` that matches the desktop app version.
+2. Run `pnpm release:push X.Y.Z` to push the current branch and a matching `vX.Y.Z` tag.
 3. Let the release workflow create a draft GitHub Release.
 4. Confirm the workflow uploads installers, updater archives, signatures, and `latest.json` to the same repository release.
 5. Confirm the workflow publishes the release only after all platform artifacts are uploaded.
