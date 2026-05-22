@@ -12,7 +12,7 @@ primary_region = "ord"
   HOST = "0.0.0.0"
   NODE_ENV = "production"
   PORT = "3000"
-  XERO_SERVER_URL = "https://xeroshell.com"
+  XERO_SERVER_URL = "https://api.xeroshell.com"
 
 [http_service]
   internal_port = 3000

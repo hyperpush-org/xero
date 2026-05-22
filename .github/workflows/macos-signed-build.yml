@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SERVER_URL: https://xero-server.fly.dev
+  SERVER_URL: https://api.xeroshell.com
 
 jobs:
   build:

@@ -16,7 +16,7 @@ concurrency:
 
 env:
   RELEASE_REPO: ${{ github.repository }}
-  SERVER_URL: https://xero-server.fly.dev
+  SERVER_URL: https://api.xeroshell.com
 
 jobs:
   create-release:
