@@ -88,6 +88,7 @@ defmodule Xero.MixProject do
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind xero", "esbuild xero"],
       "assets.deploy": [
+        "compile",
         "tailwind xero --minify",
         "esbuild xero --minify",
         "phx.digest"

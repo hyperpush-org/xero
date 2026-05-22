@@ -31,6 +31,7 @@ RUN mix deps.compile
 COPY assets assets
 COPY priv priv
 COPY lib lib
+COPY rel rel
 COPY config/runtime.exs config/
 
 RUN mix assets.deploy
