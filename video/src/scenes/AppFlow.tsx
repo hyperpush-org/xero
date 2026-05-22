@@ -17,10 +17,13 @@ import { measureText } from "@remotion/layout-utils";
 import { SceneBackground } from "../SceneBackground";
 
 const { fontFamily } = loadFont("normal", { weights: ["400", "600"] });
-const { fontFamily: monoFamily } = loadMono("normal", { weights: ["400", "700"] });
+const { fontFamily: monoFamily } = loadMono("normal", {
+  weights: ["400", "700"],
+});
 
 // The app screenshots are 2000x1199; keep that aspect when fitting to frame.
 const SCREEN_RATIO = 2000 / 1199;
+export const APPFLOW_FRAMES = 1060;
 
 // Head-turn exit at the very end.
 const HEAD_TURN_START = 589;
@@ -65,6 +68,11 @@ const FINAL_ZOOM_START = SOL_FINAL_PULLBACK_END + 10;
 const FINAL_ZOOM_END = FINAL_ZOOM_START + 36;
 const FINAL_SHOVE_START = FINAL_ZOOM_END + 10;
 const FINAL_DOMAIN_REVEAL_START = FINAL_SHOVE_START + 28;
+const FINAL_BACKGROUND_HOLD_FRAMES = 45;
+const FINAL_DOMAIN_GLITCH_OUT_FRAMES = 12;
+const FINAL_DOMAIN_CLEAR_START = APPFLOW_FRAMES - FINAL_BACKGROUND_HOLD_FRAMES;
+const FINAL_DOMAIN_GLITCH_OUT_START =
+  FINAL_DOMAIN_CLEAR_START - FINAL_DOMAIN_GLITCH_OUT_FRAMES;
 const XERO_MARK_QUADRANTS = [
   {
     d: "M182.98 182.984L0.000640869 182.984L0.000629244 50.0041C0.00062683 22.3898 22.3864 0.00413391 50.0006 0.0041315L182.98 0.00411987L182.98 182.984Z",
@@ -127,6 +135,7 @@ const COMPOSER = {
 };
 
 // Cursor waypoints + click targets, as % of the app area.
+const INITIAL_CURSOR_START = 12;
 const START = { x: 62, y: 72 };
 const CREATE_AGENT = { x: 51.5, y: 55.7 };
 const NEW_AGENT = { x: 50.4, y: 47.9 };
@@ -152,11 +161,16 @@ const kf = (frame: number, times: number[], values: number[]) => {
   if (frame <= times[0]) return values[0];
   for (let i = 0; i < times.length - 1; i++) {
     if (frame <= times[i + 1]) {
-      return interpolate(frame, [times[i], times[i + 1]], [values[i], values[i + 1]], {
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-        easing: CAM_EASE,
-      });
+      return interpolate(
+        frame,
+        [times[i], times[i + 1]],
+        [values[i], values[i + 1]],
+        {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+          easing: CAM_EASE,
+        },
+      );
     }
   }
   return values[values.length - 1];
@@ -164,25 +178,7 @@ const kf = (frame: number, times: number[], values: number[]) => {
 
 type CursorExitClick = number | { at: number; delay?: number };
 
-const cursorExitAt = (frame: number, clicks: CursorExitClick[]) => {
-  const progress = Math.max(
-    0,
-    ...clicks.map((click) => {
-      const at = typeof click === "number" ? click : click.at;
-      const delay =
-        typeof click === "number" ? CURSOR_GLITCH_DELAY : (click.delay ?? CURSOR_GLITCH_DELAY);
-      const start = at + delay;
-      const end = start + CURSOR_GLITCH_FRAMES;
-      if (frame < start || frame > end) {
-        return 0;
-      }
-      return interpolate(frame, [start, end], [0, 1], {
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-      });
-    }),
-  );
-
+const cursorGlitchOutState = (progress: number) => {
   if (progress <= 0) {
     return { glitch: 0, opacity: 1 };
   }
@@ -201,7 +197,52 @@ const cursorExitAt = (frame: number, clicks: CursorExitClick[]) => {
   };
 };
 
-const CursorGlyph: React.FC<{ glitch: number; seed: number }> = ({ glitch, seed }) => {
+const cursorExitAt = (frame: number, clicks: CursorExitClick[]) => {
+  const progress = Math.max(
+    0,
+    ...clicks.map((click) => {
+      const at = typeof click === "number" ? click : click.at;
+      const delay =
+        typeof click === "number"
+          ? CURSOR_GLITCH_DELAY
+          : (click.delay ?? CURSOR_GLITCH_DELAY);
+      const start = at + delay;
+      const end = start + CURSOR_GLITCH_FRAMES;
+      if (frame < start || frame > end) {
+        return 0;
+      }
+      return interpolate(frame, [start, end], [0, 1], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      });
+    }),
+  );
+
+  return cursorGlitchOutState(progress);
+};
+
+const cursorEnterAt = (frame: number, start: number) => {
+  if (frame < start) {
+    return { glitch: 0, opacity: 0 };
+  }
+
+  const progress = interpolate(
+    frame,
+    [start, start + CURSOR_GLITCH_FRAMES],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
+
+  return cursorGlitchOutState(1 - progress);
+};
+
+const CursorGlyph: React.FC<{ glitch: number; seed: number }> = ({
+  glitch,
+  seed,
+}) => {
   const svg = (
     style?: React.CSSProperties,
     fill = "#ffffff",
@@ -233,7 +274,11 @@ const CursorGlyph: React.FC<{ glitch: number; seed: number }> = ({ glitch, seed 
   const jitterX = signed("jitter-x") * 3.8 * glitch;
   const jitterY = signed("jitter-y") * 2.4 * glitch;
   const flicker = 1 - rnd("flicker") * 0.28 * glitch;
-  const overlay = (color: string, dx: number, dy: number): React.CSSProperties => ({
+  const overlay = (
+    color: string,
+    dx: number,
+    dy: number,
+  ): React.CSSProperties => ({
     position: "absolute",
     top: 0,
     left: 0,
@@ -298,15 +343,7 @@ const Cursor: React.FC<{
   glitch: number;
   opacity: number;
   seed: number;
-}> = ({
-  x,
-  y,
-  press,
-  cam,
-  glitch,
-  opacity,
-  seed,
-}) => (
+}> = ({ x, y, press, cam, glitch, opacity, seed }) => (
   <div
     style={{
       position: "absolute",
@@ -322,12 +359,12 @@ const Cursor: React.FC<{
   </div>
 );
 
-const ClickRipple: React.FC<{ x: number; y: number; at: number; cam: number }> = ({
-  x,
-  y,
-  at,
-  cam,
-}) => {
+const ClickRipple: React.FC<{
+  x: number;
+  y: number;
+  at: number;
+  cam: number;
+}> = ({ x, y, at, cam }) => {
   const frame = useCurrentFrame();
   if (frame < at || frame > at + CLICK_RIPPLE_FRAMES) {
     return null;
@@ -437,7 +474,12 @@ const ChatCaption: React.FC = () => {
       }}
     >
       <div
-        style={{ width: 5, height: 56, borderRadius: 3, backgroundColor: "#D4A574" }}
+        style={{
+          width: 5,
+          height: 56,
+          borderRadius: 3,
+          backgroundColor: "#D4A574",
+        }}
       />
       <span
         style={{
@@ -458,7 +500,8 @@ const ChatCaption: React.FC = () => {
 const SolanaTabName: React.FC = () => {
   const frame = useCurrentFrame();
   const elapsed = Math.max(0, frame - SOL_TAB_NAME_START);
-  const index = Math.floor(elapsed / SOL_TAB_NAME_STRIDE) % SOL_TAB_NAMES.length;
+  const index =
+    Math.floor(elapsed / SOL_TAB_NAME_STRIDE) % SOL_TAB_NAMES.length;
   const previousIndex =
     (index + SOL_TAB_NAMES.length - 1) % SOL_TAB_NAMES.length;
   const label = SOL_TAB_NAMES[index];
@@ -520,11 +563,16 @@ const SolanaTabName: React.FC = () => {
 // Bottom-left caption that animates in as the solana zoom settles.
 const SolanaCaption: React.FC = () => {
   const frame = useCurrentFrame();
-  const capIn = interpolate(frame, [SOL_CAPTION_START, SOL_CAPTION_START + 14], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.out(Easing.cubic),
-  });
+  const capIn = interpolate(
+    frame,
+    [SOL_CAPTION_START, SOL_CAPTION_START + 14],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    },
+  );
   const capOut = interpolate(
     frame,
     [SOL_FINAL_PULLBACK_START - 5, SOL_FINAL_PULLBACK_START + 2],
@@ -784,7 +832,7 @@ const Closeout: React.FC = () => {
       easing: Easing.out(Easing.cubic),
     },
   );
-  const domainGlitch = interpolate(
+  const domainRevealGlitch = interpolate(
     frame,
     [
       FINAL_DOMAIN_REVEAL_START,
@@ -798,6 +846,27 @@ const Closeout: React.FC = () => {
       easing: Easing.out(Easing.cubic),
     },
   );
+  const domainExitGlitch = interpolate(
+    frame,
+    [FINAL_DOMAIN_GLITCH_OUT_START, FINAL_DOMAIN_GLITCH_OUT_START + 6],
+    [0, 1.15],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
+  const domainExitFade = interpolate(
+    frame,
+    [FINAL_DOMAIN_GLITCH_OUT_START + 2, FINAL_DOMAIN_CLEAR_START],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.in(Easing.cubic),
+    },
+  );
+  const domainGlitch = Math.max(domainRevealGlitch, domainExitGlitch);
+  const xeroGlitch = Math.max(domainRevealGlitch * 0.3, domainExitGlitch);
   const taglineGlitchCycle = (frame - CLOSEOUT_START + 9999) % 16;
   const taglineGlitch = interpolate(
     taglineGlitchCycle,
@@ -866,11 +935,12 @@ const Closeout: React.FC = () => {
             top: -7,
             width: xeroWidth + suffixWidth,
             height: wordFontSize,
+            opacity: 1 - domainExitFade,
           }}
         >
           <CloseoutGlitchText
             fontSize={wordFontSize}
-            intensity={domainGlitch * 0.3}
+            intensity={xeroGlitch}
             seed={frame}
           >
             xero
@@ -1007,7 +1077,10 @@ const FeaturePanel: React.FC = () => {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
         {FEATURES.map((label, i) => {
-          const { opacity, dx } = riseIn(frame, PANEL_ITEMS + i * PANEL_STAGGER);
+          const { opacity, dx } = riseIn(
+            frame,
+            PANEL_ITEMS + i * PANEL_STAGGER,
+          );
           return (
             <div
               key={label}
@@ -1318,7 +1391,9 @@ const Conversation: React.FC = () => {
         <div style={appear(frame, CONV_START + 20)}>
           I&apos;ll skim the README and manifest, then list the tree to see
         </div>
-        <div style={appear(frame, CONV_START + 24)}>what actually ships here.</div>
+        <div style={appear(frame, CONV_START + 24)}>
+          what actually ships here.
+        </div>
       </div>
 
       {/* tool calls */}
@@ -1342,7 +1417,9 @@ const Conversation: React.FC = () => {
         >
           4 tool calls
         </span>
-        <span style={{ flex: 1, fontSize: 15, color: "rgba(150,150,150,0.75)" }}>
+        <span
+          style={{ flex: 1, fontSize: 15, color: "rgba(150,150,150,0.75)" }}
+        >
           4 succeeded · latest read package.json
         </span>
         <ToolChevron up />
@@ -1496,7 +1573,12 @@ const CloudPanel: React.FC<{ exitX: number }> = ({ exitX }) => {
         }}
       >
         <div
-          style={{ width: 5, height: 58, borderRadius: 3, backgroundColor: "#D4A574" }}
+          style={{
+            width: 5,
+            height: 58,
+            borderRadius: 3,
+            backgroundColor: "#D4A574",
+          }}
         />
         <span style={{ fontWeight: 600, fontSize: 56, color: "#ffffff" }}>
           Take it on the go
@@ -1619,7 +1701,9 @@ const MobileConversation: React.FC = () => (
       />
     </div>
 
-    <div style={{ marginTop: 52, display: "flex", alignItems: "center", gap: 12 }}>
+    <div
+      style={{ marginTop: 52, display: "flex", alignItems: "center", gap: 12 }}
+    >
       <BrainIcon size={32} />
       <span
         style={{
@@ -1657,7 +1741,9 @@ const MobileConversation: React.FC = () => (
       here.
     </div>
 
-    <div style={{ marginTop: 44, display: "flex", alignItems: "center", gap: 16 }}>
+    <div
+      style={{ marginTop: 44, display: "flex", alignItems: "center", gap: 16 }}
+    >
       <Check size={34} />
       <span style={{ fontSize: 30, fontWeight: 500, color: "#ededed" }}>
         4 tool calls
@@ -1750,7 +1836,15 @@ const StatusBar: React.FC = () => (
           opacity="0.45"
         />
         <rect x="4" y="6" width="30" height="12" rx="2.5" fill="#fff" />
-        <rect x="42" y="9" width="3" height="6" rx="1.5" fill="#fff" opacity="0.45" />
+        <rect
+          x="42"
+          y="9"
+          width="3"
+          height="6"
+          rx="1.5"
+          fill="#fff"
+          opacity="0.45"
+        />
       </svg>
     </div>
   </div>
@@ -1786,9 +1880,19 @@ const MobileHeader: React.FC = () => (
         <div style={{ background: "#4E4337", borderRadius: 2 }} />
         <div style={{ background: "#D4A574", borderRadius: 2 }} />
       </div>
-      <span style={{ fontFamily, fontSize: 30, color: "#cfcfcf" }}>New chat</span>
+      <span style={{ fontFamily, fontSize: 30, color: "#cfcfcf" }}>
+        New chat
+      </span>
     </div>
-    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" strokeWidth="2" strokeLinecap="round">
+    <svg
+      width="34"
+      height="34"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#cfcfcf"
+      strokeWidth="2"
+      strokeLinecap="round"
+    >
       <path d="M4 7h16M4 12h16M4 17h16" />
     </svg>
   </div>
@@ -1811,11 +1915,28 @@ const MobileComposer: React.FC = () => (
     <div style={{ fontFamily, fontSize: 30, color: "#737373" }}>
       Ask anything...
     </div>
-    <div style={{ marginTop: 26, display: "flex", alignItems: "center", gap: 22 }}>
-      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" strokeWidth="2" strokeLinecap="round">
+    <div
+      style={{ marginTop: 26, display: "flex", alignItems: "center", gap: 22 }}
+    >
+      <svg
+        width="36"
+        height="36"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#9a9a9a"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
         <path d="M12 5v14M5 12h14" />
       </svg>
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" strokeWidth="1.8">
+      <svg
+        width="32"
+        height="32"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#9a9a9a"
+        strokeWidth="1.8"
+      >
         <circle cx="12" cy="12" r="3.2" />
         <path
           d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6l1.4 1.4M18 6l-1.4 1.4M7.4 16.6L6 18"
@@ -1838,7 +1959,15 @@ const MobileComposer: React.FC = () => (
           <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8z" />
         </svg>
       </div>
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9a9a9a" strokeWidth="1.8" strokeLinecap="round">
+      <svg
+        width="32"
+        height="32"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#9a9a9a"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      >
         <rect x="9" y="3" width="6" height="11" rx="3" />
         <path d="M6 11a6 6 0 0 0 12 0M12 17v3" />
       </svg>
@@ -1853,7 +1982,16 @@ const MobileComposer: React.FC = () => (
           justifyContent: "center",
         }}
       >
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="28"
+          height="28"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#cfcfcf"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <path d="M12 19V5M5 12l7-7 7 7" />
         </svg>
       </div>
@@ -1867,7 +2005,8 @@ const CloudPhone: React.FC = () => (
       width: PH_W,
       height: PH_H,
       borderRadius: 134,
-      background: "linear-gradient(150deg, #34353b 0%, #18191d 46%, #26272c 100%)",
+      background:
+        "linear-gradient(150deg, #34353b 0%, #18191d 46%, #26272c 100%)",
       boxShadow: "0 50px 120px rgba(0,0,0,0.55)",
       padding: PH_BEZEL,
       boxSizing: "border-box",
@@ -1886,7 +2025,12 @@ const CloudPhone: React.FC = () => (
     >
       <Img
         src={staticFile("cloud.png")}
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+        }}
       />
       {/* re-skin the whole screen over cloud.png so it fits the frame cleanly */}
       <div
@@ -1971,7 +2115,12 @@ const TuiPanel: React.FC = () => {
         }}
       >
         <div
-          style={{ width: 5, height: 52, borderRadius: 3, backgroundColor: "#D4A574" }}
+          style={{
+            width: 5,
+            height: 52,
+            borderRadius: 3,
+            backgroundColor: "#D4A574",
+          }}
         />
         <span style={{ fontWeight: 600, fontSize: 50, color: "#ffffff" }}>
           Live in the terminal
@@ -2126,7 +2275,9 @@ const TerminalWindow: React.FC = () => (
         >
           {TUI_LOGO}
         </pre>
-        <div style={{ marginTop: 28, color: T_FG, fontSize: 26 }}>@xeroshell</div>
+        <div style={{ marginTop: 28, color: T_FG, fontSize: 26 }}>
+          @xeroshell
+        </div>
         <div style={{ marginTop: 6, color: T_DIM, fontSize: 26 }}>v0.1.0</div>
       </div>
 
@@ -2165,7 +2316,7 @@ const TerminalWindow: React.FC = () => (
           <span style={{ color: T_FG }}>~/Documents/dev/xero</span>
           <span style={{ color: T_ACCENT }}>:main</span>
         </span>
-        <span style={{ color: T_DIM }}>tab agents   ctrl+p /commands   0.1.0</span>
+        <span style={{ color: T_DIM }}>tab agents ctrl+p /commands 0.1.0</span>
       </div>
     </div>
   </div>
@@ -2230,14 +2381,27 @@ export const AppFlow: React.FC = () => {
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
   );
   const activeSolFy = 0.5 - solZoom * 0.32 + solPanDown; // center -> top, then pan down
-  const finalZoom = interpolate(frame, [FINAL_ZOOM_START, FINAL_ZOOM_END], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: CAM_EASE,
-  });
+  const finalZoom = interpolate(
+    frame,
+    [FINAL_ZOOM_START, FINAL_ZOOM_END],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: CAM_EASE,
+    },
+  );
   const settledSolS = interpolate(solFinalPullback, [0, 1], [activeSolS, 0.88]);
-  const settledSolFx = interpolate(solFinalPullback, [0, 1], [activeSolFx, 0.5]);
-  const settledSolFy = interpolate(solFinalPullback, [0, 1], [activeSolFy, 0.04]);
+  const settledSolFx = interpolate(
+    solFinalPullback,
+    [0, 1],
+    [activeSolFx, 0.5],
+  );
+  const settledSolFy = interpolate(
+    solFinalPullback,
+    [0, 1],
+    [activeSolFy, 0.04],
+  );
   const solS = interpolate(finalZoom, [0, 1], [settledSolS, 1.72]);
   const solFx = interpolate(finalZoom, [0, 1], [settledSolFx, 0.5]);
   const solFy = interpolate(finalZoom, [0, 1], [settledSolFy, -0.32]);
@@ -2263,15 +2427,25 @@ export const AppFlow: React.FC = () => {
   // Cursor: one continuous pointer opens the Workbench, continues through the
   // sidebar tab sequence, then glitches away only after the final click. All
   // targets track the live camera pan.
-  const solCurIn = interpolate(frame, [SOL_CURSOR_START, SOL_CURSOR_START + 4], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
-  const approachOpen = interpolate(frame, [SOL_CURSOR_START, SOL_OPEN_CLICK], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.inOut(Easing.cubic),
-  });
+  const solCurIn = interpolate(
+    frame,
+    [SOL_CURSOR_START, SOL_CURSOR_START + 4],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
+  const approachOpen = interpolate(
+    frame,
+    [SOL_CURSOR_START, SOL_OPEN_CLICK],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.inOut(Easing.cubic),
+    },
+  );
   const toTab2 = interpolate(frame, [SOL_OPEN_CLICK + 14, SOL_CLICK], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
@@ -2312,7 +2486,10 @@ export const AppFlow: React.FC = () => {
   // Opens further out (whole app visible) with a brief hold, then zooms in.
   const camS = kf(
     frame,
-    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 400, 438, 504, 526],
+    [
+      0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 400, 438, 504,
+      526,
+    ],
     [
       0.78, 0.78, 1.55, 1.55, 1.45, 1.45, 0.85, 0.85, 2.6, 2.6, 1.9, 1.9, 1.62,
       1.62, 0.85, 0.85, 0.85,
@@ -2320,15 +2497,21 @@ export const AppFlow: React.FC = () => {
   );
   const camFx = kf(
     frame,
-    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 400, 438, 504, 526],
     [
-      0.5, 0.5, 0.515, 0.515, 0.5, 0.5, 0.034, 0.034, 0.157, 0.157, 0.518, 0.518,
-      0.55, 0.55, 0.034, 0.034, 1.17,
+      0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 400, 438, 504,
+      526,
+    ],
+    [
+      0.5, 0.5, 0.515, 0.515, 0.5, 0.5, 0.034, 0.034, 0.157, 0.157, 0.518,
+      0.518, 0.55, 0.55, 0.034, 0.034, 1.17,
     ],
   );
   const camFy = kf(
     frame,
-    [0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 400, 438, 504, 526],
+    [
+      0, 12, 30, 44, 58, 74, 108, 150, 176, 208, 236, 274, 298, 400, 438, 504,
+      526,
+    ],
     [
       0.5, 0.5, 0.557, 0.557, 0.5, 0.5, 0.5, 0.5, 0.09, 0.09, 0.715, 0.715, 0.4,
       0.4, 0.5, 0.5, 0.525,
@@ -2352,13 +2535,13 @@ export const AppFlow: React.FC = () => {
     });
   const cx =
     frame < 46
-      ? seg(12, 30, START.x, CREATE_AGENT.x)
+      ? seg(INITIAL_CURSOR_START, 30, START.x, CREATE_AGENT.x)
       : frame < T3_START
         ? seg(48, 62, CREATE_AGENT.x, NEW_AGENT.x)
         : seg(AGENT_CURSOR_START, CLICK3, AGENT_FROM.x, AGENT_TAB.x);
   const cy =
     frame < 46
-      ? seg(12, 30, START.y, CREATE_AGENT.y)
+      ? seg(INITIAL_CURSOR_START, 30, START.y, CREATE_AGENT.y)
       : frame < T3_START
         ? seg(48, 62, CREATE_AGENT.y, NEW_AGENT.y)
         : seg(AGENT_CURSOR_START, CLICK3, AGENT_FROM.y, AGENT_TAB.y);
@@ -2374,8 +2557,13 @@ export const AppFlow: React.FC = () => {
     CLICK2,
     { at: CLICK3, delay: AGENT_CURSOR_GLITCH_DELAY },
   ]);
+  const cursorEnter = cursorEnterAt(
+    frame,
+    frame < T3_START ? INITIAL_CURSOR_START : AGENT_CURSOR_VISIBLE_START,
+  );
   const cursorVisible =
-    frame < CLICK2 + CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES ||
+    (frame >= INITIAL_CURSOR_START &&
+      frame < CLICK2 + CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES) ||
     (frame >= AGENT_CURSOR_VISIBLE_START &&
       frame < CLICK3 + AGENT_CURSOR_GLITCH_DELAY + CURSOR_GLITCH_FRAMES);
 
@@ -2451,7 +2639,6 @@ export const AppFlow: React.FC = () => {
   const tiltTransform = `perspective(1700px) translateY(${tiltFloat}px) rotateX(${tiltRx}deg) rotateY(${tiltRy}deg)`;
   const tiltShadow = tiltP * 0.5;
 
-
   const mw = MODAL.right - MODAL.left;
   const mh = MODAL.bottom - MODAL.top;
   const fill: React.CSSProperties = {
@@ -2472,164 +2659,183 @@ export const AppFlow: React.FC = () => {
             transformOrigin: "center center",
           }}
         >
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          overflow: "hidden",
-          opacity: enter,
-        }}
-      >
-        <div
-          style={{
-            position: "absolute",
-            width: baseW,
-            height: baseH,
-            transformOrigin: "0 0",
-            transform: `translate(${camTx}px, ${camTy}px) scale(${camS})`,
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              width: baseW,
-              height: baseH,
-              transformOrigin: "center center",
-              transform: tiltTransform,
-              filter: `drop-shadow(0 44px 80px rgba(0,0,0,${tiltShadow}))`,
-            }}
-          >
-            <Img src={staticFile("app/main.png")} style={fill} />
-
           <div
             style={{
               position: "absolute",
               inset: 0,
-              backgroundColor: "#000000",
-              opacity: dim,
+              overflow: "hidden",
+              opacity: enter,
             }}
-          />
-
-          {modalOpacity > 0.001 && (
+          >
             <div
               style={{
                 position: "absolute",
-                left: `${MODAL.left}%`,
-                top: `${MODAL.top}%`,
-                width: `${mw}%`,
-                height: `${mh}%`,
-                overflow: "hidden",
-                borderRadius: 14,
-                opacity: modalOpacity,
-                transform: `scale(${modalScale})`,
-                transformOrigin: "center",
-                boxShadow: "0 30px 80px rgba(0,0,0,0.6)",
-              }}
-            >
-              <Img
-                src={staticFile("app/modal.png")}
-                style={{
-                  position: "absolute",
-                  width: `${10000 / mw}%`,
-                  height: `${10000 / mh}%`,
-                  left: `${(-MODAL.left / mw) * 100}%`,
-                  top: `${(-MODAL.top / mh) * 100}%`,
-                  maxWidth: "none",
-                }}
-              />
-            </div>
-          )}
-
-          {canvasIn > 0.001 && (
-            <Img
-              src={staticFile("app/canvas.png")}
-              style={{ ...fill, opacity: canvasIn }}
-            />
-          )}
-
-          {agentChatIn > 0.001 && (
-            <Img
-              src={staticFile("agent_chat.png")}
-              style={{ ...fill, opacity: agentChatIn }}
-            />
-          )}
-
-          <ComposerType />
-
-          {frame >= REVEAL_START && (
-            <div
-              style={{
-                position: "absolute",
-                left: "5%",
-                top: "10.5%",
-                width: "90%",
-                height: "69%",
-                overflow: "hidden",
+                width: baseW,
+                height: baseH,
+                transformOrigin: "0 0",
+                transform: `translate(${camTx}px, ${camTy}px) scale(${camS})`,
               }}
             >
               <div
-                style={{ position: "absolute", inset: 0, backgroundColor: "#121212" }}
-              />
-              <Conversation />
-            </div>
-          )}
+                style={{
+                  position: "absolute",
+                  width: baseW,
+                  height: baseH,
+                  transformOrigin: "center center",
+                  transform: tiltTransform,
+                  filter: `drop-shadow(0 44px 80px rgba(0,0,0,${tiltShadow}))`,
+                }}
+              >
+                <Img src={staticFile("app/main.png")} style={fill} />
 
-          <ClickRipple x={CREATE_AGENT.x} y={CREATE_AGENT.y} at={CLICK1} cam={camS} />
-          <ClickRipple x={NEW_AGENT.x} y={NEW_AGENT.y} at={CLICK2} cam={camS} />
-          <ClickRipple x={AGENT_TAB.x} y={AGENT_TAB.y} at={CLICK3} cam={camS} />
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    backgroundColor: "#000000",
+                    opacity: dim,
+                  }}
+                />
 
-            {cursorVisible && (
-              <Cursor
-                x={cx}
-                y={cy}
-                press={press}
-                cam={camS}
-                glitch={cursorExit.glitch}
-                opacity={cursorExit.opacity}
-                seed={frame}
-              />
-            )}
+                {modalOpacity > 0.001 && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: `${MODAL.left}%`,
+                      top: `${MODAL.top}%`,
+                      width: `${mw}%`,
+                      height: `${mh}%`,
+                      overflow: "hidden",
+                      borderRadius: 14,
+                      opacity: modalOpacity,
+                      transform: `scale(${modalScale})`,
+                      transformOrigin: "center",
+                      boxShadow: "0 30px 80px rgba(0,0,0,0.6)",
+                    }}
+                  >
+                    <Img
+                      src={staticFile("app/modal.png")}
+                      style={{
+                        position: "absolute",
+                        width: `${10000 / mw}%`,
+                        height: `${10000 / mh}%`,
+                        left: `${(-MODAL.left / mw) * 100}%`,
+                        top: `${(-MODAL.top / mh) * 100}%`,
+                        maxWidth: "none",
+                      }}
+                    />
+                  </div>
+                )}
 
-            {/* Cloud iPhone, on the app's own tilted plane — revealed (not slid
+                {canvasIn > 0.001 && (
+                  <Img
+                    src={staticFile("app/canvas.png")}
+                    style={{ ...fill, opacity: canvasIn }}
+                  />
+                )}
+
+                {agentChatIn > 0.001 && (
+                  <Img
+                    src={staticFile("agent_chat.png")}
+                    style={{ ...fill, opacity: agentChatIn }}
+                  />
+                )}
+
+                <ComposerType />
+
+                {frame >= REVEAL_START && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: "5%",
+                      top: "10.5%",
+                      width: "90%",
+                      height: "69%",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        backgroundColor: "#121212",
+                      }}
+                    />
+                    <Conversation />
+                  </div>
+                )}
+
+                <ClickRipple
+                  x={CREATE_AGENT.x}
+                  y={CREATE_AGENT.y}
+                  at={CLICK1}
+                  cam={camS}
+                />
+                <ClickRipple
+                  x={NEW_AGENT.x}
+                  y={NEW_AGENT.y}
+                  at={CLICK2}
+                  cam={camS}
+                />
+                <ClickRipple
+                  x={AGENT_TAB.x}
+                  y={AGENT_TAB.y}
+                  at={CLICK3}
+                  cam={camS}
+                />
+
+                {cursorVisible && (
+                  <Cursor
+                    x={cx}
+                    y={cy}
+                    press={press}
+                    cam={camS}
+                    glitch={Math.max(cursorEnter.glitch, cursorExit.glitch)}
+                    opacity={cursorEnter.opacity * cursorExit.opacity}
+                    seed={frame}
+                  />
+                )}
+
+                {/* Cloud iPhone, on the app's own tilted plane — revealed (not slid
                 in) by the zoom-out, so it moves attached to the app. */}
-            {frame >= PHONE_SHOW && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: PHONE_CX,
-                  top: PHONE_CY,
-                  transform: `scale(${PH_CONTENT_SCALE})`,
-                  transformOrigin: "top left",
-                }}
-              >
-                <CloudPhone />
-              </div>
-            )}
+                {frame >= PHONE_SHOW && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: PHONE_CX,
+                      top: PHONE_CY,
+                      transform: `scale(${PH_CONTENT_SCALE})`,
+                      transformOrigin: "top left",
+                    }}
+                  >
+                    <CloudPhone />
+                  </div>
+                )}
 
-            {/* macOS terminal (Xero TUI), to the right of the app on the same
+                {/* macOS terminal (Xero TUI), to the right of the app on the same
                 plane — revealed as the combo pans left at the close. */}
-            {frame >= TERM_SHOW && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: TERM_CX,
-                  top: TERM_CY,
-                  transform: `scale(${TERM_CONTENT_SCALE})`,
-                  transformOrigin: "top left",
-                }}
-              >
-                <TerminalWindow />
+                {frame >= TERM_SHOW && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: TERM_CX,
+                      top: TERM_CY,
+                      transform: `scale(${TERM_CONTENT_SCALE})`,
+                      transformOrigin: "top left",
+                    }}
+                  >
+                    <TerminalWindow />
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
-        </div>
-      </div>
 
-      <Caption />
-      <FeaturePanel />
-      <ChatCaption />
-      <CloudPanel exitX={cloudExitX} />
-      <TuiPanel />
+          <Caption />
+          <FeaturePanel />
+          <ChatCaption />
+          <CloudPanel exitX={cloudExitX} />
+          <TuiPanel />
         </AbsoluteFill>
       </AbsoluteFill>
 
@@ -2741,14 +2947,20 @@ export const AppFlow: React.FC = () => {
 
       {frame >= SOL_CAPTION_START && <SolanaCaption />}
 
-      {[CLICK1, CLICK2, CLICK3, SOL_OPEN_CLICK, SOL_CLICK, SOL_CLICK2].map((at) => (
-        <Sequence key={at} from={at} durationInFrames={12} layout="none">
-          <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.4} />
-        </Sequence>
-      ))}
+      {[CLICK1, CLICK2, CLICK3, SOL_OPEN_CLICK, SOL_CLICK, SOL_CLICK2].map(
+        (at) => (
+          <Sequence key={at} from={at} durationInFrames={12} layout="none">
+            <Audio src={staticFile("click.mp3")} trimBefore={1} volume={0.4} />
+          </Sequence>
+        ),
+      )}
 
       {/* keyboard sound while the prompt is typed in the composer */}
-      <Sequence from={TYPE_START} durationInFrames={TYPING_FRAMES} layout="none">
+      <Sequence
+        from={TYPE_START}
+        durationInFrames={TYPING_FRAMES}
+        layout="none"
+      >
         <Audio src={staticFile("keyboard.mp3")} volume={1} />
       </Sequence>
 
@@ -2760,7 +2972,18 @@ export const AppFlow: React.FC = () => {
       <Sequence from={FINAL_SHOVE_START} durationInFrames={27} layout="none">
         <Audio src={staticFile("pop.mp3")} trimBefore={3} volume={0.2} />
       </Sequence>
-      <Sequence from={FINAL_DOMAIN_REVEAL_START} durationInFrames={13} layout="none">
+      <Sequence
+        from={FINAL_DOMAIN_REVEAL_START}
+        durationInFrames={13}
+        layout="none"
+      >
+        <Audio src={staticFile("glitch2.mp3")} trimBefore={22} volume={0.1} />
+      </Sequence>
+      <Sequence
+        from={FINAL_DOMAIN_GLITCH_OUT_START}
+        durationInFrames={13}
+        layout="none"
+      >
         <Audio src={staticFile("glitch2.mp3")} trimBefore={22} volume={0.1} />
       </Sequence>
     </AbsoluteFill>

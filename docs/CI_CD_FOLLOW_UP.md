@@ -6,7 +6,7 @@ Post-read action: configure the missing external services, run the first signed 
 
 ## Current State
 
-CI/CD scaffolding is in place for the landing site, Elixir server, and Tauri desktop app.
+CI/CD scaffolding is in place for the landing site, cloud app, Elixir server, and Tauri desktop app.
 
 The release pipeline is designed to publish desktop update artifacts to this repository's GitHub Releases. The app checks the latest release metadata on startup, blocks normal startup when an update is available, shows the full-screen update UI with progress, installs the update, and restarts.
 
@@ -18,9 +18,10 @@ Add these repository secrets before running the release workflow:
 
 - `TAURI_SIGNING_PRIVATE_KEY`: contents of the generated Tauri updater private key.
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: optional. Leave unset if the generated updater key has no password.
-- `FLY_API_TOKEN`: fallback Fly deploy token for both apps.
+- `FLY_API_TOKEN`: fallback Fly deploy token for the web/server apps.
 - `FLY_SERVER_TOKEN`: optional server-specific Fly token.
 - `FLY_LANDING_TOKEN`: optional landing-specific Fly token.
+- `FLY_CLOUD_TOKEN`: optional cloud-app-specific Fly token.
 - `APPLE_CERTIFICATE`: base64-encoded Apple Developer certificate for macOS signing.
 - `APPLE_CERTIFICATE_PASSWORD`: password for the Apple certificate.
 - `APPLE_ID`: Apple ID used for notarization.
@@ -53,7 +54,8 @@ Generate `SECRET_KEY_BASE` with the Phoenix secret generator from the server pro
 Create or verify the Fly apps before the release workflow deploys:
 
 - Server app: `xero-server`
-- Landing app: match the landing Fly configuration
+- Landing app: `xero-landing`
+- Cloud app: `xero-cloud`
 
 Confirm the server app has:
 
@@ -67,6 +69,14 @@ Confirm the landing app has:
 - Correct Fly app name
 - Public hostname configured
 - Any production environment variables needed by the landing build
+
+Confirm the cloud app has:
+
+- Fly app `xero-cloud` created
+- Public hostname `cloud.xeroshell.com` attached in Fly certificates
+- Vercel DNS record for `cloud.xeroshell.com` pointing at the Fly target shown by `fly certs setup`
+- `XERO_SERVER_URL` pointing at the production Phoenix relay/auth API
+- PWA resources reachable over HTTPS (`/manifest.webmanifest`, `/sw.js`)
 
 ## First Release Rehearsal
 
@@ -110,6 +120,7 @@ Before shipping publicly:
 After each release:
 
 - Open the landing production URL and confirm it points at the production server.
+- Open `https://cloud.xeroshell.com` and confirm the Cloud app loads over Fly, not the Vercel fallback 404.
 - Check the server health endpoint.
 - Check server logs for boot errors and migration errors.
 - Confirm desktop app startup can reach the production API.

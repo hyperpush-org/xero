@@ -64,6 +64,21 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_LANDING_TOKEN || secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only
 
+  cloud:
+    name: Deploy cloud to Fly.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_CLOUD_TOKEN || secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --config cloud/fly.toml
+
   server:
     name: Deploy server to Fly.io
     runs-on: ubuntu-latest

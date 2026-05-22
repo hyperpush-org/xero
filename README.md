@@ -29,6 +29,7 @@ It combines:
 │  ├─ components/          # ShadCN UI + Xero shell/views
 │  ├─ src-tauri/           # Rust backend, commands, state, tests
 │  └─ package.json
+├─ cloud/                  # TanStack Start web/PWA cloud session surface
 ├─ landing/                # Separate Next.js marketing site
 ├─ server/                 # Phoenix service + Postgres-backed features
 ├─ docs/                   # Provider, memory, skills/plugin docs
@@ -39,6 +40,7 @@ It combines:
 ### Key top-level projects
 
 - `client/`: production desktop app (`productName: Xero`, `identifier: dev.sn0w.xero`)
+- `cloud/`: browser/PWA surface for remote sessions, deployed to `cloud.xeroshell.com`
 - `landing/`: separate website, run on port `3001` in root dev workflow
 - `server/`: Phoenix 1.8 service, local Postgres, GitHub auth callback/session support, Oban jobs
 
@@ -61,6 +63,10 @@ It combines:
 ### Landing site (`landing/`)
 
 - Next.js 16, TypeScript, Tailwind CSS
+
+### Cloud app (`cloud/`)
+
+- TanStack Start, React 19, TypeScript, Tailwind CSS, PWA assets
 
 ### Server (`server/`)
 
@@ -142,7 +148,7 @@ If tools are missing, workbench surfaces degraded/missing-toolchain states rathe
 
 ## Setup
 
-This repo is **not** a pnpm workspace, but the root dev preflight installs each package in place.
+This repo is a pnpm workspace, and the root dev preflight also installs each package in place.
 After cloning and completing the prerequisite toolchain/env setup above, the happy path is:
 
 ```bash
@@ -151,7 +157,7 @@ pnpm run dev
 
 The root `pnpm run dev` command runs an idempotent preflight that:
 
-- installs root, `client/`, and `landing/` pnpm dependencies from their lockfiles
+- installs root, `client/`, `cloud/`, and `landing/` pnpm dependencies from their lockfiles
 - verifies required local commands (`pnpm`, `git`, `mix`, `cargo`, `protoc`)
 - installs Hex/Rebar if missing, fetches Mix deps, and installs Phoenix asset tools
 - starts Docker/Postgres where the OS allows it, creates the database, and applies migrations
@@ -161,6 +167,7 @@ Manual setup commands still work if you need to isolate a failing step:
 ```bash
 pnpm install
 pnpm --dir client install
+pnpm --dir cloud install
 pnpm --dir landing install
 cd server && mix setup
 ```
@@ -258,6 +265,15 @@ pnpm --dir landing dev
 pnpm --dir landing build
 pnpm --dir landing start
 pnpm --dir landing lint
+```
+
+### Cloud app (`cloud/`) commands
+
+```bash
+pnpm --dir cloud dev
+pnpm --dir cloud build
+pnpm --dir cloud check
+pnpm --dir cloud test
 ```
 
 ---

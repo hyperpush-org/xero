@@ -1,4 +1,7 @@
-import { CheckCheck, Github, MonitorSmartphone, ShieldCheck } from "lucide-react"
+import Link from "next/link"
+import { ArrowUpRight, CheckCheck, Github, MonitorSmartphone, ShieldCheck } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { siteConfig } from "@/lib/site"
 
 export function CloudApp() {
   return (
@@ -52,6 +55,15 @@ export function CloudApp() {
               </li>
             ))}
           </ul>
+
+          <div className="mt-8 flex flex-wrap gap-3">
+            <Button asChild className="gap-2 bg-primary text-primary-foreground">
+              <Link href={siteConfig.cloudUrl}>
+                Open Xero Cloud
+                <ArrowUpRight className="h-4 w-4" />
+              </Link>
+            </Button>
+          </div>
         </div>
 
         <div className="relative flex items-center justify-center">

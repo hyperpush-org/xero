@@ -10,4 +10,14 @@ pnpm check
 pnpm build
 ```
 
-The app currently renders no UI by default. Shared shadcn/ui components live in `src/components/ui`, matching the Tauri app component set, and the default CSS tokens use the Xero Dusk palette.
+## Production
+
+The production app is configured in `fly.toml` as `xero-cloud` and is intended to run at `https://cloud.xeroshell.com`.
+
+Deploy from the repo root so the Docker build context includes `packages/ui`:
+
+```bash
+fly deploy --remote-only --config cloud/fly.toml
+```
+
+The Fly app reads `XERO_SERVER_URL` for the Phoenix relay/auth API origin.

@@ -1,4 +1,5 @@
 const DEFAULT_SITE_URL = "https://xeroshell.com"
+const DEFAULT_CLOUD_URL = "https://cloud.xeroshell.com"
 
 function normalizeSiteUrl(url: string) {
   return url.replace(/\/+$/, "")
@@ -8,6 +9,7 @@ export const siteConfig = {
   name: "Xero",
   legalName: "Xero Labs",
   url: normalizeSiteUrl(process.env.NEXT_PUBLIC_SITE_URL ?? DEFAULT_SITE_URL),
+  cloudUrl: normalizeSiteUrl(process.env.NEXT_PUBLIC_CLOUD_URL ?? DEFAULT_CLOUD_URL),
   title: "Xero | Agentic coding studio for desktop developers",
   description:
     "Xero is a local-first desktop app for building custom coding agents, visual workflows, and production software with your own model provider keys.",

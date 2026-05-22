@@ -3,7 +3,7 @@
 import Link from "next/link"
 import Image from "next/image"
 import { useEffect, useState } from "react"
-import { Menu, X, Github, Download } from "lucide-react"
+import { Menu, X, Github, Download, Cloud } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { siteConfig } from "@/lib/site"
@@ -11,6 +11,7 @@ import { siteConfig } from "@/lib/site"
 const nav = [
   { label: "Product", href: "/#product" },
   { label: "Capabilities", href: "/#capabilities" },
+  { label: "Cloud", href: "/#cloud" },
   { label: "Models", href: "/#models" },
   { label: "Pricing", href: "/#pricing" },
 ]
@@ -74,6 +75,17 @@ export function SiteHeader() {
             <Link href="/#download">
               <Download className="h-3.5 w-3.5" />
               Install TUI
+            </Link>
+          </Button>
+          <Button
+            asChild
+            size="sm"
+            variant="secondary"
+            className="hidden gap-1.5 border border-border/70 bg-secondary/70 md:inline-flex"
+          >
+            <Link href={siteConfig.cloudUrl}>
+              <Cloud className="h-3.5 w-3.5" />
+              Cloud
             </Link>
           </Button>
 
