@@ -13,6 +13,7 @@ import {
 import { Audio } from "@remotion/media";
 import { loadFont } from "@remotion/google-fonts/Inter";
 import { loadFont as loadMono } from "@remotion/google-fonts/JetBrainsMono";
+import { measureText } from "@remotion/layout-utils";
 import { SceneBackground } from "../SceneBackground";
 
 const { fontFamily } = loadFont("normal", { weights: ["400", "600"] });
@@ -60,8 +61,10 @@ const SOL_TAB_NAME_STRIDE = 18;
 const SOL_TAB_NAME_TRANSITION = 7;
 const CLOSEOUT_START = SOL_FINAL_PULLBACK_START - 8;
 const CLOSEOUT_LAYER_TOP = -400;
-const FINAL_ZOOM_START = 1000;
-const FINAL_ZOOM_END = 1059;
+const FINAL_ZOOM_START = 940;
+const FINAL_ZOOM_END = 982;
+const FINAL_SHOVE_START = 1000;
+const FINAL_DOMAIN_REVEAL_START = FINAL_SHOVE_START + 28;
 const XERO_MARK_QUADRANTS = [
   {
     d: "M182.98 182.984L0.000640869 182.984L0.000629244 50.0041C0.00062683 22.3898 22.3864 0.00413391 50.0006 0.0041315L182.98 0.00411987L182.98 182.984Z",
@@ -706,10 +709,95 @@ const CloseoutMark: React.FC<{ size: number; opacity: number }> = ({
 
 const Closeout: React.FC = () => {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   if (frame < CLOSEOUT_START) {
     return null;
   }
 
+  const markSize = 88;
+  const wordFontSize = 102;
+  const gap = 32;
+  const wordWeight = 600;
+  const xeroWidth = measureText({
+    text: "xero",
+    fontFamily,
+    fontSize: wordFontSize,
+    fontWeight: wordWeight,
+    letterSpacing: "0px",
+  }).width;
+  const suffixWidth = measureText({
+    text: "shell.com",
+    fontFamily,
+    fontSize: wordFontSize,
+    fontWeight: wordWeight,
+    letterSpacing: "0px",
+  }).width;
+  const startWidth = markSize + gap + xeroWidth;
+  const finalTextWidth = xeroWidth + suffixWidth;
+  const endWidth = startWidth + suffixWidth;
+  const finalShove = spring({
+    frame: frame - FINAL_SHOVE_START,
+    fps,
+    config: { mass: 0.4, damping: 9, stiffness: 320 },
+  });
+  const domainReveal = interpolate(
+    frame,
+    [FINAL_DOMAIN_REVEAL_START, FINAL_DOMAIN_REVEAL_START + 22],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    },
+  );
+  const textStartX = -startWidth / 2 + markSize + gap;
+  const textCenteredX = -xeroWidth / 2;
+  const domainCenteredX = -finalTextWidth / 2;
+  const textX =
+    textStartX +
+    (textCenteredX - textStartX) * finalShove +
+    (domainCenteredX - textCenteredX) * domainReveal;
+  const logoEjectX = interpolate(
+    frame,
+    [FINAL_SHOVE_START + 2, FINAL_SHOVE_START + 16],
+    [0, -markSize * 2.6],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    },
+  );
+  const logoOpacity = interpolate(
+    frame,
+    [FINAL_SHOVE_START + 6, FINAL_SHOVE_START + 15],
+    [1, 0],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+  );
+  const markX = -startWidth / 2 + logoEjectX;
+  const suffixReveal = interpolate(
+    frame,
+    [FINAL_DOMAIN_REVEAL_START, FINAL_DOMAIN_REVEAL_START + 22],
+    [0, 1],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    },
+  );
+  const domainGlitch = interpolate(
+    frame,
+    [
+      FINAL_DOMAIN_REVEAL_START,
+      FINAL_DOMAIN_REVEAL_START + 8,
+      FINAL_DOMAIN_REVEAL_START + 24,
+    ],
+    [0, 1.1, 0],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    },
+  );
   const taglineGlitchCycle = (frame - CLOSEOUT_START + 9999) % 16;
   const taglineGlitch = interpolate(
     taglineGlitchCycle,
@@ -757,20 +845,57 @@ const Closeout: React.FC = () => {
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 32,
+          position: "relative",
+          width: endWidth,
+          height: wordFontSize,
         }}
       >
-        <CloseoutMark size={88} opacity={1} />
-        <div style={{ transform: "translateY(-7px)" }}>
+        <div
+          style={{
+            position: "absolute",
+            left: `calc(50% + ${markX}px)`,
+            top: 7,
+          }}
+        >
+          <CloseoutMark size={markSize} opacity={logoOpacity} />
+        </div>
+        <div
+          style={{
+            position: "absolute",
+            left: `calc(50% + ${textX}px)`,
+            top: -7,
+            width: xeroWidth + suffixWidth,
+            height: wordFontSize,
+          }}
+        >
           <CloseoutGlitchText
-            fontSize={102}
-            intensity={0}
+            fontSize={wordFontSize}
+            intensity={domainGlitch * 0.3}
             seed={frame}
           >
             xero
           </CloseoutGlitchText>
+          <div
+            style={{
+              position: "absolute",
+              left: xeroWidth,
+              top: 0,
+              width: suffixWidth,
+              height: wordFontSize,
+              overflow: "hidden",
+              opacity: suffixReveal,
+              transform: `translateX(${(1 - suffixReveal) * 26}px)`,
+              clipPath: `inset(0 ${(1 - suffixReveal) * 100}% 0 0)`,
+            }}
+          >
+            <CloseoutGlitchText
+              fontSize={wordFontSize}
+              intensity={domainGlitch}
+              seed={frame + 913}
+            >
+              shell.com
+            </CloseoutGlitchText>
+          </div>
         </div>
       </div>
       <div
@@ -2630,6 +2755,13 @@ export const AppFlow: React.FC = () => {
       {/* single Enter/Return press as the prompt sends and the empty state is covered */}
       <Sequence from={REVEAL_START - 2} durationInFrames={5} layout="none">
         <Audio src={staticFile("keyboard.mp3")} volume={1} />
+      </Sequence>
+
+      <Sequence from={FINAL_SHOVE_START} durationInFrames={27} layout="none">
+        <Audio src={staticFile("pop.mp3")} trimBefore={3} volume={0.2} />
+      </Sequence>
+      <Sequence from={FINAL_DOMAIN_REVEAL_START} durationInFrames={13} layout="none">
+        <Audio src={staticFile("glitch2.mp3")} trimBefore={22} volume={0.1} />
       </Sequence>
     </AbsoluteFill>
   );
